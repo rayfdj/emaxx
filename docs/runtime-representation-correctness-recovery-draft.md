@@ -127,7 +127,13 @@ passes on documentation-only `6ee4bd1b` with the **same Rust executable hash**
 Its fresh Emaxx image differs; GNU executable hashes were not retained in these
 Rust jobs. This does not identify the census variation's cause or certify the
 failed full inventory. The unchanged 643-test primitives-group diagnosis
-[36816077037](https://github.com/rayfdj/emaxx/actions/runs/36816077037) is active.
+[36816077037](https://github.com/rayfdj/emaxx/actions/runs/36816077037) now
+reproduces the same GNU failure: 642 passes and one failure with the same Rust
+executable hash. The [closed group and draft release evidence](handover/2026-09-30-shared-reader-draft/source240-release-and-open-failures-manifest.json)
+retain all 643 raw names/verdicts, executable and image identities. The passing
+single-test replay and failing group narrow the investigation to an order or
+environment dependent reproduction; the actual GNU retaining root is unproven.
+Do not change the census expectation or relabel the complete failed run.
 
 Helpers and receipts are under `target/runtime-goal/resume-2026-09-28`. Do not
 modify these candidates or their executing helpers/artifacts. Read live receipts
@@ -188,10 +194,26 @@ fields except editor labels and measured durations; raw reports remain unchanged
 This independently repairs the reproduced report-writing failure. It does not
 claim every possible report or coding system is correct.
 
-Full macOS supervisor **43216** and release/ordinary supervisor **43217** are
-active. The latter also rechecks all 57 preceding ordinary fixtures. Read live
-receipts before acting; do not modify executing candidates or restart active jobs.
+The [completed release and ordinary audit](handover/2026-09-30-shared-reader-draft/source240-release-and-open-failures-manifest.json)
+now verifies **160 focused release passes / two existing ignores**, all **944
+affected release passes**, and all **57 preceding ordinary comparisons**. Combined
+with the four new coding/copy fixtures, that is 61 audited ordinary comparisons.
+Every raw name, verdict, artifact identity and process result is checked.
+Release/ordinary supervisor **43217** has exited. Full macOS **43216** remains
+active; read its receipt before acting and do not modify the executing candidate.
+
+A separately added ordinary save/revisit probe still fails on source240. Both
+editors begin with `undecided-unix` for the source file and nil for the new file;
+after saving, GNU records `utf-8-unix`, Emaxx `prefer-utf-8-unix`. Both read identical
+file bytes and revisit as `undecided-unix`. This provides a nonterminal reproduction
+of the coding metadata distinction. `fileio.c:choose_write_coding_system` consults
+`find-operation-coding-system` and the unchanged Lisp
+`select-safe-coding-system-function`; Emaxx's `current_write_coding` falls back to
+`prefer-utf-8` for ASCII. Repair the actual selection path with GNU Lisp ownership
+preserved; do not special-case the scenario, force the displayed indicator or
+weaken the terminal comparison. Freeze a new source version for any further edit.
+
 Source240 has no complete Linux, frozen or terminal certification. The new-file
-coding indicator, unresolved GNU census variation, further display review,
+coding selection, unresolved GNU census variation, further display review,
 remaining architecture/accounting/ownership work and locked 16-workload 3%
 performance requirement remain open. No current performance-parity claim exists.

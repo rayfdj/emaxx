@@ -1,0 +1,3853 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "release": {
+      "status": "all focused and affected release controls pass",
+      "inputs_verified": 454,
+      "groups": [
+        {
+          "group": "controls",
+          "passed": 160,
+          "failed": 0,
+          "ignored": [
+            "tty::tty_differential_end_to_end",
+            "tty::tty_smoke_end_to_end"
+          ]
+        },
+        {
+          "group": "broad",
+          "passed": 944,
+          "failed": 0,
+          "ignored": []
+        }
+      ],
+      "retained_files": [
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source240-release-libtest",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source240-release-retained-inputs/source240-release-libtest",
+          "sha256": "90714fe05479264f5e699ff109909ccc2aff5967730ccca722eb38048d4e876d",
+          "bytes": 22331600
+        },
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source240/loadup-90714fe0-44409a21.pdmp",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source240-release-retained-inputs/loadup-90714fe0-44409a21.pdmp",
+          "sha256": "a79d3385fff93ce936f27c50abd85e1be079bb9fec2ceed42bacd82fccb610e9",
+          "bytes": 22361800
+        }
+      ],
+      "goal_complete": false,
+      "qualification": "160 focused release passes with two pre-existing ignores, plus 944 affected-module passes. Raw inventories, names, verdicts and identities verified. The additional new-file-coding diagnostic still fails; the complete macOS run is separate and source240 is not applied to the task branch. No Linux, frozen, terminal or performance certification of this draft."
+    },
+    "ordinary": {
+      "status": "all ordinary differential comparisons pass",
+      "fixtures": [
+        "input-decode-general",
+        "input-decode-extra",
+        "input-decode-pipeline",
+        "input-decode-reader-contract",
+        "input-decode-case-state",
+        "input-decode-xt-setup",
+        "input-decode-case-variants",
+        "input-decode-command-reader",
+        "input-decode-macro-shared",
+        "input-decode-autoload-prefix",
+        "input-decode-first-unbound",
+        "input-decode-shift-tab-variants",
+        "input-decode-remapped-undefined",
+        "input-decode-map-authority",
+        "input-decode-tab-map-installation",
+        "input-decode-minibuffer-shared",
+        "input-decode-minibuffer-queue",
+        "input-decode-mouse-menu-cases",
+        "input-decode-mouse-raw-mutation",
+        "input-decode-menu-bar",
+        "input-decode-position-lookup",
+        "input-decode-macro-live-array",
+        "input-decode-macro-raw-array",
+        "input-decode-macro-nested-roots",
+        "input-decode-macro-read-order",
+        "input-decode-unread-wrapper",
+        "input-decode-macro-reclamation",
+        "input-decode-down-event-binding",
+        "vector-closure-rounded-census",
+        "vector-pseudovector-word-census",
+        "shared-vector-native-words",
+        "shared-positioned-symbol-native-words",
+        "shared-string-native-words",
+        "char-table-identity",
+        "char-table-authoritative-values",
+        "char-table-range-uniprop",
+        "runtime-cons-mutation",
+        "unwind-payload-reclamation",
+        "reader-callable-gc",
+        "eval-original-argument-words",
+        "bytecode-closure-shared-constants",
+        "bytecode-code-active-mutation-baseline",
+        "bytecode-code-mutation-baseline",
+        "bytecode-constructor-gnu-fields",
+        "bytecode-live-fetch",
+        "bytecode-unused-destinations",
+        "canonical-string-bytes",
+        "canonical-string-constructors",
+        "completion-result-storage",
+        "canonical-concat-storage",
+        "substring-character-storage",
+        "substring-argument-validation",
+        "substring-reversed-bounds",
+        "quoted-bytecode-reader-closure",
+        "interactive-closure-environments",
+        "reader-hex-byte-boundary",
+        "canonical-mapconcat-storage"
+      ],
+      "inputs_verified": 454,
+      "ordinary_artifacts": {
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/coding-repair/emaxx/target/frame-validation/release/emaxx": {
+          "sha256": "593b29409432dd2214f657e0931c1a73af52f6dd44a9d8eca0a78562dd84acf7",
+          "immutable_copy": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source240-ordinary-emaxx",
+          "bytes": 13261936
+        },
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/coding-repair/emaxx/target/frame-validation/release/emaxx.pdmp": {
+          "sha256": "61d331356fee7af9dcac82b26e1a58e6d6262cbdb9c8b7c183012f3711501dfd",
+          "immutable_copy": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source240-ordinary-emaxx.pdmp",
+          "bytes": 22347648
+        }
+      },
+      "goal_complete": false,
+      "qualification": "All 40 preceding ordinary controls plus seventeen string/bytecode/completion/reader fixtures pass; four additional coding/copy comparisons are audited separately and the later new-file-coding probe remains failed. These 57 controls pass through normal -Q batch entry points with each editor using its own executable/image. The four self-printing fixtures execute their original form; all other fixtures print their returned value. No runtime output is normalized. Every raw process status, output, stderr, input hash and C locale is checked. Previous source225 wrapper failures remain separate failed evidence. GNU is source/native-ABI matched, not pinned Darwin. No full-platform, stack-capacity, physical-accounting or performance claim."
+    },
+    "new_file_coding_failure": "Both ordinary processes exit 0. GNU records utf-8-unix after save; source240 records prefer-utf-8-unix. Both revisit as undecided-unix and read identical file bytes. This reproduces the coding metadata distinction behind the source238 terminal indicator failure; no repair claimed.",
+    "gnu_reference": "fileio.c:choose_write_coding_system consults find-operation-coding-system and the unchanged Lisp select-safe-coding-system-function before recording last-coding-system-used. Current Emaxx current_write_coding instead falls back to prefer-utf-8 for ASCII. Repair should preserve GNU Lisp ownership, not special-case the scenario or alter its expected indicator.",
+    "linux_group_replay": {
+      "status": "original GNU census failure reproduces in unchanged primitives group",
+      "run_id": 36816077037,
+      "source_commit": "6ee4bd1b9e79cef790c6dc88a64ef1896a2679f2",
+      "runtime_source": "source238",
+      "passed": 642,
+      "failed": [
+        "lisp::primitives::tests::native_vector_and_closure_census_matches_gnu_word_layout"
+      ],
+      "ignored": [],
+      "raw_verdicts": {
+        "lisp::primitives::tests::a_failing_finalizer_is_logged_not_signalled": "ok",
+        "lisp::primitives::tests::accept_process_output_does_not_count_an_outputless_exit_as_delivery": "ok",
+        "lisp::primitives::tests::accept_process_output_honors_seconds_with_no_millis_argument": "ok",
+        "lisp::primitives::tests::accept_process_output_ignores_distractor_output_until_target_delivers": "ok",
+        "lisp::primitives::tests::accept_process_output_just_this_one_suspends_distractor_filters_like_emacs": "ok",
+        "lisp::primitives::tests::accept_process_output_with_a_timeout_returns_once_the_process_has_exited": "ok",
+        "lisp::primitives::tests::accept_process_output_without_timeout_waits_for_requested_process": "ok",
+        "lisp::primitives::tests::active_minibuffer_selected_window_tracks_entry_across_nested_reads": "ok",
+        "lisp::primitives::tests::add_face_text_property_preserves_other_string_properties": "ok",
+        "lisp::primitives::tests::all_completions_preserves_propertized_string_candidate_identity": "ok",
+        "lisp::primitives::tests::anonymous_keymaps_survive_while_reachable_and_are_reclaimed_after_return": "ok",
+        "lisp::primitives::tests::apply_follows_eval_c_proper_list_contract": "ok",
+        "lisp::primitives::tests::ascii_file_detection_records_undecided": "ok",
+        "lisp::primitives::tests::ash_with_a_bignum_count_follows_data_c": "ok",
+        "lisp::primitives::tests::atan_treats_an_explicit_nil_second_argument_as_omitted_like_gnu": "ok",
+        "lisp::primitives::tests::backquote_shorthand_prints_only_the_reader_s_symbols_within_a_backquote": "ok",
+        "lisp::primitives::tests::backtrace_frame_internal_honors_depth_relative_to_base": "ok",
+        "lisp::primitives::tests::backward_regexp_search_takes_the_latest_start_as_gnu_does": "ok",
+        "lisp::primitives::tests::batch_recenter_cycling_matches_the_oracle": "ok",
+        "lisp::primitives::tests::batch_scroll_semantics_match_the_oracle": "ok",
+        "lisp::primitives::tests::batch_startup_image_round_trip_or_explicit_native_image_limit": "ok",
+        "lisp::primitives::tests::bidi_override_positions_match_upstream_cases": "ok",
+        "lisp::primitives::tests::big5_conversion_follows_the_oracle_contract": "ok",
+        "lisp::primitives::tests::blocking_tty_event_read_redraws_after_a_due_timer": "ok",
+        "lisp::primitives::tests::blocking_tty_event_read_redraws_after_process_output": "ok",
+        "lisp::primitives::tests::bootstrap_coding_plists_expose_gnu_display_and_keyboard_metadata": "ok",
+        "lisp::primitives::tests::buffer_file_name_primitive_observes_current_buffer_dynamic_binding": "ok",
+        "lisp::primitives::tests::buffer_local_cells_follow_data_c": "ok",
+        "lisp::primitives::tests::buffer_lookup_preserves_object_identity_after_rename_or_kill": "ok",
+        "lisp::primitives::tests::buffer_multibyte_non_t_flags_preserve_ascii_and_convert_eight_bit_bytes": "ok",
+        "lisp::primitives::tests::buffer_searches_convert_offsets_through_the_rope": "ok",
+        "lisp::primitives::tests::buffer_substring_accepts_reversed_bounds": "ok",
+        "lisp::primitives::tests::buffer_substring_preserves_properties_with_reversed_bounds": "ok",
+        "lisp::primitives::tests::buffer_undo_list_assignment_preserves_cons_identity": "ok",
+        "lisp::primitives::tests::builtin_metadata_covers_the_whole_c_manifest_without_lisp_string_leakage": "ok",
+        "lisp::primitives::tests::bytecode_closure_aref_and_func_arity_preserve_gnu_argument_descriptors": "ok",
+        "lisp::primitives::tests::bytecode_closure_constants_and_clone_share_gnu_slots": "ok",
+        "lisp::primitives::tests::bytecode_code_mutation_between_calls_matches_gnu": "ok",
+        "lisp::primitives::tests::bytecode_code_mutation_during_active_call_matches_gnu": "ok",
+        "lisp::primitives::tests::bytecode_constructor_preserves_gnu_field_validation_and_sharing": "ok",
+        "lisp::primitives::tests::bytecode_live_fetch_preserves_changed_widths_operands_and_suspended_callers": "ok",
+        "lisp::primitives::tests::call_process_reports_signal_termination_in_both_entry_points": "ok",
+        "lisp::primitives::tests::canonical_combining_classes_come_from_complete_unicode_data": "ok",
+        "lisp::primitives::tests::canonical_string_bytes_preserve_gnu_characters_mutation_and_clear": "ok",
+        "lisp::primitives::tests::capitalize_uses_current_syntax_table_word_boundaries": "ok",
+        "lisp::primitives::tests::case_class_regexps_follow_table_selection_and_mutation_without_case_folding": "ok",
+        "lisp::primitives::tests::case_folded_try_completion_preserves_unextended_input_spelling": "ok",
+        "lisp::primitives::tests::case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_regions": "ok",
+        "lisp::primitives::tests::case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_strings": "ok",
+        "lisp::primitives::tests::case_tables_preserve_gnu_unset_mappings_and_special_casing": "ok",
+        "lisp::primitives::tests::change_hook_nonlocal_exits_clear_the_active_hook_value": "ok",
+        "lisp::primitives::tests::char_charset_family_follows_charset_c": "ok",
+        "lisp::primitives::tests::char_charset_restriction_narrows_to_charset_list_or_coding_system": "ok",
+        "lisp::primitives::tests::char_property_primitives_accept_windows_and_filter_window_overlays": "ok",
+        "lisp::primitives::tests::char_table_casing_preserves_gnu_modifier_and_integer_semantics": "ok",
+        "lisp::primitives::tests::char_table_compressed_unicode_slots_decode_into_the_canonical_tree": "ok",
+        "lisp::primitives::tests::char_table_cons_range_uses_local_contents_without_parent_or_ascii_cache": "ok",
+        "lisp::primitives::tests::char_table_cons_ranges_expand_compressed_neighbors_until_values_differ": "ok",
+        "lisp::primitives::tests::char_table_identity_callbacks_and_specialized_values_follow_gnu": "ok",
+        "lisp::primitives::tests::char_table_keymap_callbacks_see_live_slots_and_keep_distinct_ranges": "ok",
+        "lisp::primitives::tests::char_table_keymap_enumerators_read_live_slots_and_preserve_binding_identity": "ok",
+        "lisp::primitives::tests::char_table_keymap_events_preserve_numeric_identity_and_normalize_symbols": "ok",
+        "lisp::primitives::tests::char_table_keymap_public_tail_survives_api_writes_and_live_callbacks": "ok",
+        "lisp::primitives::tests::char_table_keymap_range_removal_preserves_sparse_storage_and_inheritance": "ok",
+        "lisp::primitives::tests::char_table_keymap_ranges_validate_character_bounds": "ok",
+        "lisp::primitives::tests::char_table_keymap_traversal_preserves_aliases_parents_and_meta_order": "ok",
+        "lisp::primitives::tests::char_table_keymaps_convert_lucid_lists_before_ranges_and_lookup": "ok",
+        "lisp::primitives::tests::char_table_keymaps_keep_modified_events_out_of_character_slots": "ok",
+        "lisp::primitives::tests::char_table_keymaps_preserve_meta_escape_and_event_boundaries": "ok",
+        "lisp::primitives::tests::char_table_parameterized_key_events_keep_physical_slots_without_a_dump": "ok",
+        "lisp::primitives::tests::char_tables_follow_gnu_defaults_inheritance_and_reclaim_overwritten_values": "ok",
+        "lisp::primitives::tests::character_table_literal_materializes_nested_bytecode_decoder": "ok",
+        "lisp::primitives::tests::charset_decoders_annotate_like_produce_charset_and_emacs_mule_encodes_like_coding_c": "ok",
+        "lisp::primitives::tests::charset_helpers_cover_ascii_unicode_and_priority_mutation": "ok",
+        "lisp::primitives::tests::closure_body_identity_and_text_property_identity_match_gnu": "ok",
+        "lisp::primitives::tests::coding_detection_follows_detect_coding_system": "ok",
+        "lisp::primitives::tests::coding_system_eol_type_exposes_base_variant_vectors": "ok",
+        "lisp::primitives::tests::coding_system_mnemonics_match_the_oracle": "ok",
+        "lisp::primitives::tests::combine_change_calls_coalesces_hooks_and_tracks_the_updated_end": "ok",
+        "lisp::primitives::tests::command_error_echo_accepts_mutable_error_message_strings": "ok",
+        "lisp::primitives::tests::command_remapping_finds_fresh_remap_bindings": "ok",
+        "lisp::primitives::tests::commandp_follows_fcommandp_order_and_property_error": "ok",
+        "lisp::primitives::tests::compare_buffer_substrings_accepts_current_buffer_and_bounds_as_nil": "ok",
+        "lisp::primitives::tests::compare_buffer_substrings_uses_dynamic_case_folding_and_the_canonical_table": "ok",
+        "lisp::primitives::tests::compiled_regexp_introspection_preserves_the_real_backend_boundary": "ok",
+        "lisp::primitives::tests::compiled_time_string_results_keep_text_property_mutation": "ok",
+        "lisp::primitives::tests::compiled_variable_references_and_sets_follow_bytecode_c": "ok",
+        "lisp::primitives::tests::completion_predicates_preserve_string_list_membership": "ok",
+        "lisp::primitives::tests::completion_results_accept_text_properties": "ok",
+        "lisp::primitives::tests::completion_results_preserve_gnu_encoding_properties_and_identity": "ok",
+        "lisp::primitives::tests::composition_gstring_uses_the_effective_terminal_coding_system": "ok",
+        "lisp::primitives::tests::concat_preserves_canonical_bytes_properties_and_sequence_characters": "ok",
+        "lisp::primitives::tests::cons_mutation_reads_current_macro_keymap_and_shared_graph_fields": "ok",
+        "lisp::primitives::tests::copy_family_native_path_uses_handler_expanded_names": "ok",
+        "lisp::primitives::tests::copy_keymap_copies_a_list_keymap_like_keymap_c": "ok",
+        "lisp::primitives::tests::copy_overlay_clones_region_and_properties_with_new_identity": "ok",
+        "lisp::primitives::tests::core_libraries_are_not_shadowed_by_cedet_subdirectories": "ok",
+        "lisp::primitives::tests::current_cpu_time_returns_a_readable_tick_pair_in_both_time_modes": "ok",
+        "lisp::primitives::tests::current_time_and_a_nil_time_convert_form_follow_current_time_list": "ok",
+        "lisp::primitives::tests::dead_thread_results_are_rooted_only_through_reachable_thread_objects": "ok",
+        "lisp::primitives::tests::default_file_modes_is_the_process_umask_and_temp_files_are_private": "ok",
+        "lisp::primitives::tests::define_key_creates_a_local_prefix_over_an_inherited_non_prefix_binding": "ok",
+        "lisp::primitives::tests::define_key_creates_a_specific_prefix_over_a_default_binding": "ok",
+        "lisp::primitives::tests::define_key_preserves_raw_space_events_in_shared_prefixes": "ok",
+        "lisp::primitives::tests::defvar_and_defconst_use_gnu_check_symbol_for_positioned_names": "ok",
+        "lisp::primitives::tests::defvar_bool_stores_coerce_and_makunbound_detaches": "ok",
+        "lisp::primitives::tests::defvaralias_follows_eval_c": "ok",
+        "lisp::primitives::tests::defvaralias_records_the_alias_in_load_history": "ok",
+        "lisp::primitives::tests::delayed_tty_timer_uses_the_native_clock_when_float_time_is_redefined": "ok",
+        "lisp::primitives::tests::delete_and_extract_region_preserves_text_properties": "ok",
+        "lisp::primitives::tests::delete_line_removes_the_current_line": "ok",
+        "lisp::primitives::tests::deleted_process_is_not_returned_for_buffer": "ok",
+        "lisp::primitives::tests::describe_vector_groups_equal_ranges_and_shares_standard_output_with_describers": "ok",
+        "lisp::primitives::tests::directory_files_returns_mutable_sorted_names_with_dot_entries": "ok",
+        "lisp::primitives::tests::dropping_an_interpreter_terminates_and_reaps_its_child": "ok",
+        "lisp::primitives::tests::dump_emacs_portable_prelude_follows_pdumper_c": "ok",
+        "lisp::primitives::tests::dump_emacs_portable_restores_context_and_reports_native_image_limit": "ok",
+        "lisp::primitives::tests::dumped_default_bindings_resolve_for_the_terminal_frontend": "ok",
+        "lisp::primitives::tests::dumped_directory_family_ignores_the_test_harness_variable": "ok",
+        "lisp::primitives::tests::dynamic_buffer_undo_list_binding_restores_native_history": "ok",
+        "lisp::primitives::tests::eager_load_expansion_invokes_the_lisp_owner_for_both_phases": "ok",
+        "lisp::primitives::tests::embedded_native_compilation_builds_uncached_advice_trampolines": "ok",
+        "lisp::primitives::tests::eql_uses_position_aware_eq_for_non_numbers": "ok",
+        "lisp::primitives::tests::equal_hash_table_answers_survive_removals_and_slot_reuse": "ok",
+        "lisp::primitives::tests::equal_string_hash_tables_scale_without_losing_public_semantics": "ok",
+        "lisp::primitives::tests::equal_structured_hash_tables_use_structural_buckets": "ok",
+        "lisp::primitives::tests::error_message_strings_match_the_oracle": "ok",
+        "lisp::primitives::tests::error_message_strings_use_gnu_condition_specific_data_quoting": "ok",
+        "lisp::primitives::tests::euc_jp_codec_follows_the_oracle_contract": "ok",
+        "lisp::primitives::tests::eval_buffer_binds_lexical_binding_from_the_first_line_cookie": "ok",
+        "lisp::primitives::tests::eval_region_delegates_to_load_read_function_without_reinterning": "ok",
+        "lisp::primitives::tests::eval_region_preserves_point_and_uses_the_supplied_reader": "ok",
+        "lisp::primitives::tests::every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract": "ok",
+        "lisp::primitives::tests::every_literal_native_dispatch_arm_is_owned_by_gnu_c": "ok",
+        "lisp::primitives::tests::exec_failure_follows_emacs_spawn": "ok",
+        "lisp::primitives::tests::explicit_process_filter_uses_and_restores_the_callers_current_buffer": "ok",
+        "lisp::primitives::tests::failed_deletions_report_as_fileio_c_does": "ok",
+        "lisp::primitives::tests::failed_search_with_move_noerror_moves_to_bound": "ok",
+        "lisp::primitives::tests::file_attributes_nil_matches_gnu_missing_file_contract": "ok",
+        "lisp::primitives::tests::file_name_case_insensitivity_is_asked_of_the_filesystem": "ok",
+        "lisp::primitives::tests::file_name_path_helpers_match_core_unix_cases": "ok",
+        "lisp::primitives::tests::file_notification_callback_errors_propagate_from_read_event": "ok",
+        "lisp::primitives::tests::file_notification_primitives_follow_the_host_contract": "ok",
+        "lisp::primitives::tests::file_reads_consult_the_coding_alist_and_name_like_the_oracle": "ok",
+        "lisp::primitives::tests::filenotify_scenarios_match_the_oracle_through_keyboard_reads": "ok",
+        "lisp::primitives::tests::finalizers_follow_alloc_c": "ok",
+        "lisp::primitives::tests::find_composition_reports_the_automatic_composition_for_a_displayed_buffer": "ok",
+        "lisp::primitives::tests::fixture_image_directory_dumps_once_and_starts_every_later_boot_from_it": "ok",
+        "lisp::primitives::tests::float_time_rounds_as_frac_to_double": "ok",
+        "lisp::primitives::tests::font_lock_mode_declines_to_enable_in_a_batch_session": "ok",
+        "lisp::primitives::tests::font_lock_text_property_helpers_keep_anonymous_faces_atomic": "ok",
+        "lisp::primitives::tests::fontp_matches_the_gnu_font_record_contract": "ok",
+        "lisp::primitives::tests::format_message_quotes_only_format_literals_with_the_effective_text_style": "ok",
+        "lisp::primitives::tests::format_mode_line_renders_the_dumped_spec_interactively": "ok",
+        "lisp::primitives::tests::forwarded_c_variables_follow_store_symval_forwarding": "ok",
+        "lisp::primitives::tests::func_arity_uses_gnu_symbolp_for_positioned_symbols": "ok",
+        "lisp::primitives::tests::garbage_collect_maybe_reads_the_counters_the_last_collection_left": "ok",
+        "lisp::primitives::tests::garbage_collect_reports_the_live_census": "ok",
+        "lisp::primitives::tests::generated_rust_manifests_never_contain_trailing_whitespace": "ok",
+        "lisp::primitives::tests::generic_record_argument_errors_match_gnu_without_large_allocation": "ok",
+        "lisp::primitives::tests::generic_record_constructors_reader_and_purecopy_match_gnu": "ok",
+        "lisp::primitives::tests::generic_record_property_values_preserve_eq_boundaries": "ok",
+        "lisp::primitives::tests::generic_record_purecopy_message_preserves_coding_and_log_state": "ok",
+        "lisp::primitives::tests::generic_record_sharing_cycles_and_copying_match_gnu": "ok",
+        "lisp::primitives::tests::generic_record_size_limits_include_the_type_slot": "ok",
+        "lisp::primitives::tests::get_text_property_inherits_from_category_symbol": "ok",
+        "lisp::primitives::tests::get_unused_iso_final_char_scans_the_registered_charsets": "ok",
+        "lisp::primitives::tests::get_walks_the_plist_as_plist_get_does": "ok",
+        "lisp::primitives::tests::glass_mode_line_honors_font_lock_face_string_properties": "ok",
+        "lisp::primitives::tests::glass_mode_line_pads_min_width_spans_like_the_display_engine": "ok",
+        "lisp::primitives::tests::gnu_c_bool_variables_match_fresh_grep": "ok",
+        "lisp::primitives::tests::gnutls_digests_are_queried_from_the_library": "ok",
+        "lisp::primitives::tests::handler_bind_handlers_run_once_with_the_signaling_frame_innermost": "ok",
+        "lisp::primitives::tests::hash_buckets_preserve_identity_matching_and_empty_clear_slot_order": "ok",
+        "lisp::primitives::tests::hash_captured_functions_survive_redefinition_copy_and_gc": "ok",
+        "lisp::primitives::tests::hash_captured_symbols_keep_dynamic_function_resolution": "ok",
+        "lisp::primitives::tests::hash_constructor_preserves_keyword_positions_and_error_precedence": "ok",
+        "lisp::primitives::tests::hash_copy_preserves_stored_codes_after_key_mutation": "ok",
+        "lisp::primitives::tests::hash_descriptors_capture_the_first_eq_function_pair": "ok",
+        "lisp::primitives::tests::hash_purecopy_preserves_stored_codes_without_calling_hash_functions": "ok",
+        "lisp::primitives::tests::headless_input_mode_family_matches_the_upstream_batch_terminal": "ok",
+        "lisp::primitives::tests::headless_terminal_queries_match_the_upstream_batch_terminal": "ok",
+        "lisp::primitives::tests::indent_rigidly_shifts_each_line_in_region": "ok",
+        "lisp::primitives::tests::indirect_buffers_share_text_properties_with_their_base": "ok",
+        "lisp::primitives::tests::inhibit_read_only_allows_buffer_read_only_edits": "ok",
+        "lisp::primitives::tests::init_editfns_computes_the_user_names_once_per_process": "ok",
+        "lisp::primitives::tests::inotify_directory_watch_reports_external_child_creation": "ok",
+        "lisp::primitives::tests::inotify_error_data_follows_report_file_notify_error": "ok",
+        "lisp::primitives::tests::inotify_events_reach_lisp_only_through_keyboard_reads": "ok",
+        "lisp::primitives::tests::input_decode_autoloaded_prefix_collects_before_the_next_input_event": "ok",
+        "lisp::primitives::tests::input_decode_case_state_matches_gnu": "ok",
+        "lisp::primitives::tests::input_decode_command_reader_preserves_reached_prefix_and_live_remapping": "ok",
+        "lisp::primitives::tests::input_decode_default_function_map_supplies_shifted_tab_translation": "ok",
+        "lisp::primitives::tests::input_decode_down_events_follow_live_bindings_without_bootstrap_fallbacks": "ok",
+        "lisp::primitives::tests::input_decode_extra_matches_gnu": "ok",
+        "lisp::primitives::tests::input_decode_function_keys_consult_live_undefined_command_remapping": "ok",
+        "lisp::primitives::tests::input_decode_general_matches_gnu": "ok",
+        "lisp::primitives::tests::input_decode_initial_maps_keep_identity_and_the_shared_function_parent": "ok",
+        "lisp::primitives::tests::input_decode_keyboard_macro_uses_the_same_live_translation_pipeline": "ok",
+        "lisp::primitives::tests::input_decode_macro_nested_state_survives_collecting_commands_and_errors": "ok",
+        "lisp::primitives::tests::input_decode_macro_raw_readers_observe_directly_bound_arrays": "ok",
+        "lisp::primitives::tests::input_decode_macro_reads_the_live_array_and_stops_on_t": "ok",
+        "lisp::primitives::tests::input_decode_macro_roots_survive_callbacks_then_release_completed_arrays": "ok",
+        "lisp::primitives::tests::input_decode_macro_timed_reads_preserve_queue_order_and_errors": "ok",
+        "lisp::primitives::tests::input_decode_minibuffer_preserves_live_queue_mutation_and_return_binding": "ok",
+        "lisp::primitives::tests::input_decode_minibuffer_shares_macro_and_unread_translation_state": "ok",
+        "lisp::primitives::tests::input_decode_mouse_menu_uses_unchanged_lisp_translation": "ok",
+        "lisp::primitives::tests::input_decode_mouse_translation_preserves_raw_spine_and_live_event_kind": "ok",
+        "lisp::primitives::tests::input_decode_non_mouse_menu_events_mark_the_shared_position": "ok",
+        "lisp::primitives::tests::input_decode_pipeline_matches_gnu": "ok",
+        "lisp::primitives::tests::input_decode_positions_follow_display_motion_without_moving_point": "ok",
+        "lisp::primitives::tests::input_decode_raw_reads_unwrap_pending_events_before_terminal_polling": "ok",
+        "lisp::primitives::tests::input_decode_reader_contract_matches_gnu": "ok",
+        "lisp::primitives::tests::input_decode_restarts_after_an_unbound_prefix_loses_all_translations": "ok",
+        "lisp::primitives::tests::input_decode_shifted_tab_character_and_function_key_follow_distinct_maps": "ok",
+        "lisp::primitives::tests::input_pending_check_timers_dispatches_an_already_due_timer": "ok",
+        "lisp::primitives::tests::insert_file_contents_replace_collapses_point_in_the_differing_middle": "ok",
+        "lisp::primitives::tests::insert_file_contents_reports_missing_input_as_file_missing": "ok",
+        "lisp::primitives::tests::insert_signals_buffer_read_only_unless_inhibited": "ok",
+        "lisp::primitives::tests::interactive_closures_use_the_gnu_metadata_environment": "ok",
+        "lisp::primitives::tests::interactive_form_prefers_the_property_over_advice_and_walks_aliases": "ok",
+        "lisp::primitives::tests::interactive_form_strips_command_modes_like_gnu": "ok",
+        "lisp::primitives::tests::interactive_recenter_uses_the_live_shrunken_window_height": "ok",
+        "lisp::primitives::tests::interactive_spec_i_passes_nil_without_reading_anything": "ok",
+        "lisp::primitives::tests::interactive_undo_restores_the_unmodified_state": "ok",
+        "lisp::primitives::tests::interactive_vertical_motion_honors_the_cons_goal_column": "ok",
+        "lisp::primitives::tests::intern_retains_the_supplied_name_and_does_not_replace_it_on_a_hit": "ok",
+        "lisp::primitives::tests::intern_uses_gnu_name_copy_and_type_check_boundaries": "ok",
+        "lisp::primitives::tests::internal_buffer_completion_preserves_hidden_filtering_metadata_and_predicate_values": "ok",
+        "lisp::primitives::tests::internal_char_font_accepts_gnu_characters_and_checks_position_first": "ok",
+        "lisp::primitives::tests::internal_char_font_matches_the_headless_gnu_font_boundary": "ok",
+        "lisp::primitives::tests::interning_after_unintern_makes_a_fresh_symbol_in_a_private_obarray": "ok",
+        "lisp::primitives::tests::interpreted_closure_bodies_survive_only_while_reachable": "ok",
+        "lisp::primitives::tests::interpreted_closure_reader_preserves_gnu_slot_and_record_types": "ok",
+        "lisp::primitives::tests::interpreted_closures_keep_their_argument_body_and_environment_objects": "ok",
+        "lisp::primitives::tests::interpreter_drop_releases_a_pty_child_that_ignores_hangup_and_never_blocks": "ok",
+        "lisp::primitives::tests::iso_2022_and_raw_text_encoders_follow_coding_c": "ok",
+        "lisp::primitives::tests::iso_2022_decoder_annotates_charsets_and_detection_reaches_regions_and_files": "ok",
+        "lisp::primitives::tests::json_serialize_treats_a_vector_as_an_array": "ok",
+        "lisp::primitives::tests::just_this_one_wait_still_notifies_an_exited_distractor": "ok",
+        "lisp::primitives::tests::key_binding_and_remapping_preserve_live_filters_and_nonlocal_exits": "ok",
+        "lisp::primitives::tests::key_binding_macro_dispatch_uses_actual_bindings_once": "ok",
+        "lisp::primitives::tests::key_description_formats_follow_prefix_defaults": "ok",
+        "lisp::primitives::tests::key_description_matches_upstream_string_and_vector_cases": "ok",
+        "lisp::primitives::tests::key_sequence_binding_parts_preserve_control_prefixes": "ok",
+        "lisp::primitives::tests::keyboard_macro_records_input_read_inside_a_command": "ok",
+        "lisp::primitives::tests::keyboard_macro_records_minibuffer_command_events_exactly_once": "ok",
+        "lisp::primitives::tests::keymap_bindings_accept_t_vector_events": "ok",
+        "lisp::primitives::tests::keymap_character_contracts_share_gnu_control_and_full_map_storage": "ok",
+        "lisp::primitives::tests::keymap_descriptions_use_the_source_buffer_and_gnu_map_tree_formatter": "ok",
+        "lisp::primitives::tests::keymap_lookup_composes_prefixes_with_gnu_precedence_and_nil_shadowing": "ok",
+        "lisp::primitives::tests::keymap_lookup_preserves_menu_filter_effects_and_nonlocal_exits": "ok",
+        "lisp::primitives::tests::keymap_lookup_reads_live_vectors_strings_and_translated_sequences": "ok",
+        "lisp::primitives::tests::keymap_lookup_requires_a_string_or_vector_before_checking_length": "ok",
+        "lisp::primitives::tests::keymap_lookup_runs_each_prefix_filter_once_before_advancing": "ok",
+        "lisp::primitives::tests::keymap_lookup_uses_the_event_head_of_a_character_range": "ok",
+        "lisp::primitives::tests::keymap_lookup_validates_the_map_before_the_key_and_resolves_symbols": "ok",
+        "lisp::primitives::tests::keymap_menu_case_tables_preserve_unicode_priority_and_captured_roots": "ok",
+        "lisp::primitives::tests::keymap_menu_lookup_preserves_exact_bindings_and_gnu_case_fallback": "ok",
+        "lisp::primitives::tests::keymap_parent_primitives_keep_constructor_object_identity": "ok",
+        "lisp::primitives::tests::keymap_parent_replacement_keeps_lookup_and_mutation_shared": "ok",
+        "lisp::primitives::tests::keymap_parent_resolves_symbol_function_cells_before_installing": "ok",
+        "lisp::primitives::tests::keymap_set_where_is_internal_preserves_control_prefixes": "ok",
+        "lisp::primitives::tests::keymap_symbol_stores_follow_alias_redefinition_ranges_and_autoload": "ok",
+        "lisp::primitives::tests::keymap_translated_sequences_keep_gnu_type_and_empty_checks": "ok",
+        "lisp::primitives::tests::keymap_views_hand_out_their_own_cells": "ok",
+        "lisp::primitives::tests::keymap_walkers_follow_prefix_command_symbols_and_run_leaf_menu_filters": "ok",
+        "lisp::primitives::tests::keymaps_nest_multi_event_bindings_and_report_full_map_ranges": "ok",
+        "lisp::primitives::tests::kill_buffer_queries_before_the_interactive_modified_prompt": "ok",
+        "lisp::primitives::tests::kill_buffer_restores_the_current_buffer_when_a_query_signals": "ok",
+        "lisp::primitives::tests::labeled_restriction_bounds_survive_a_collection": "ok",
+        "lisp::primitives::tests::large_bounded_repeats_over_a_bracket_expression_become_counted_loops": "ok",
+        "lisp::primitives::tests::let_binding_lists_must_be_lists": "ok",
+        "lisp::primitives::tests::let_initializers_precede_name_validation_and_binding_names_are_reread": "ok",
+        "lisp::primitives::tests::lisp_eval_depth_counts_ffuncall_entries_like_eval_c": "ok",
+        "lisp::primitives::tests::live_minibuffer_recursive_commands_restore_the_outer_command_identity": "ok",
+        "lisp::primitives::tests::live_read_string_records_an_accepted_default_in_history": "ok",
+        "lisp::primitives::tests::load_history_lists_a_repeated_definition_twice_as_gnu_does": "ok",
+        "lisp::primitives::tests::load_warns_about_unescaped_character_literals_on_the_eval_buffer_path": "ok",
+        "lisp::primitives::tests::local_network_process_rejects_overlong_service_before_host_bind": "ok",
+        "lisp::primitives::tests::localhost_family_fallback_opens_without_polluting_the_process_buffer": "ok",
+        "lisp::primitives::tests::lock_file_ignores_a_lock_it_cannot_create": "ok",
+        "lisp::primitives::tests::log_nil_base_uses_the_natural_logarithm": "ok",
+        "lisp::primitives::tests::looking_at_does_not_create_or_assign_unrelated_lisp_variables": "ok",
+        "lisp::primitives::tests::looking_at_p_preserves_existing_match_data": "ok",
+        "lisp::primitives::tests::looking_back_matches_text_before_point_with_limit": "ok",
+        "lisp::primitives::tests::make_button_signals_on_an_incomplete_range": "ok",
+        "lisp::primitives::tests::make_char_uses_charset_positions_in_interpreted_and_native_calls": "ok",
+        "lisp::primitives::tests::make_network_process_coding_precedence_matches_gnu": "ok",
+        "lisp::primitives::tests::make_network_process_ipv4_family_prefers_an_ipv4_listener": "ok",
+        "lisp::primitives::tests::make_network_process_ipv6_family_uses_an_ipv6_listener": "ok",
+        "lisp::primitives::tests::make_network_process_nowait_opens_on_the_next_event_pump": "ok",
+        "lisp::primitives::tests::make_network_process_requires_the_gnu_name_contract": "ok",
+        "lisp::primitives::tests::make_process_accepts_nil_coding_like_emacs": "ok",
+        "lisp::primitives::tests::make_process_honors_split_pipe_and_pty_connection_types": "ok",
+        "lisp::primitives::tests::make_process_nil_or_omitted_connection_type_uses_the_dynamic_default": "ok",
+        "lisp::primitives::tests::make_string_and_aset_share_the_internal_character_encoding": "ok",
+        "lisp::primitives::tests::make_string_follows_alloc_c_for_the_multibyte_flag": "ok",
+        "lisp::primitives::tests::make_symbol_creates_distinct_symbols_with_stable_visible_names": "ok",
+        "lisp::primitives::tests::make_temp_file_internal_reports_a_failed_creation_as_a_file_error": "ok",
+        "lisp::primitives::tests::map_char_table_exposes_public_syntax_descriptors": "ok",
+        "lisp::primitives::tests::map_keymap_internal_visits_only_direct_bindings_and_returns_the_parent": "ok",
+        "lisp::primitives::tests::map_keymap_visits_runtime_keymap_bindings": "ok",
+        "lisp::primitives::tests::mapatoms_honors_dynamic_obarrays_legacy_conversion_and_function_cells": "ok",
+        "lisp::primitives::tests::mapatoms_walks_the_standard_obarray_in_place": "ok",
+        "lisp::primitives::tests::mapcar_iterates_runtime_keymaps_as_lisp_keymap_lists": "ok",
+        "lisp::primitives::tests::mapconcat_preserves_canonical_bytes_and_character_sequences": "ok",
+        "lisp::primitives::tests::mapconcat_result_preserves_gnu_mutable_string_identity": "ok",
+        "lisp::primitives::tests::marker_adjustments_stay_adjacent_to_their_deletion_in_the_undo_list": "ok",
+        "lisp::primitives::tests::markers_preserve_identity_positions_and_weak_buffer_ownership": "ok",
+        "lisp::primitives::tests::markers_the_collector_reaches_survive_and_the_rest_are_unchained": "ok",
+        "lisp::primitives::tests::match_data_preserves_gnu_source_reuse_reseat_and_elision_contracts": "ok",
+        "lisp::primitives::tests::max_char_distinguishes_the_internal_and_unicode_character_spaces": "ok",
+        "lisp::primitives::tests::max_lisp_eval_depth_is_honoured_dynamically": "ok",
+        "lisp::primitives::tests::md5_coding_endpoints_and_noerror_follow_gnu_in_native_calls": "ok",
+        "lisp::primitives::tests::memory_use_counts_exposes_the_allocation_telemetry_boundary_honestly": "ok",
+        "lisp::primitives::tests::message_callback_bindings_are_special_before_and_after_disconnection": "ok",
+        "lisp::primitives::tests::message_log_disables_undo_in_the_messages_buffer": "ok",
+        "lisp::primitives::tests::minibuffer_prompt_carries_its_face_through_the_read": "ok",
+        "lisp::primitives::tests::minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window": "ok",
+        "lisp::primitives::tests::minibuffer_reads_under_a_keyboard_macro_follow_read_minibuf": "ok",
+        "lisp::primitives::tests::minor_mode_keymap_consumers_share_gnu_order_replacement_and_default_rules": "ok",
+        "lisp::primitives::tests::mode_line_line_number_is_relative_to_the_accessible_region": "ok",
+        "lisp::primitives::tests::modify_syntax_entry_nil_table_uses_the_current_buffer": "ok",
+        "lisp::primitives::tests::module_load_validates_and_initializes_real_libraries": "ok",
+        "lisp::primitives::tests::native_buffer_lookup_preserves_object_identity_after_rename_or_kill": "ok",
+        "lisp::primitives::tests::native_cleanup_can_exit_to_a_handler_inside_the_original_target": "ok",
+        "lisp::primitives::tests::native_cleanup_retires_popped_handlers_before_interpreted_calls": "ok",
+        "lisp::primitives::tests::native_combined_after_change_merges_ranges_before_running_hooks": "ok",
+        "lisp::primitives::tests::native_command_and_variable_readers_normalize_defaults_and_intern_results": "ok",
+        "lisp::primitives::tests::native_comp_context_and_loader_entry_points_follow_comp_c": "ok",
+        "lisp::primitives::tests::native_comp_pure_introspection_family_matches_gnu_and_the_backend_boundary": "ok",
+        "lisp::primitives::tests::native_comp_source_names_hash_canonical_paths_and_real_contents": "ok",
+        "lisp::primitives::tests::native_composite_c_family_and_text_property_identity_match_gnu": "ok",
+        "lisp::primitives::tests::native_condition_wait_releases_and_restores_recursive_mutex_ownership": "ok",
+        "lisp::primitives::tests::native_conditional_gc_and_memory_info_match_the_host_contract": "ok",
+        "lisp::primitives::tests::native_connection_control_and_pid_signals_follow_gnu_process_c": "ok",
+        "lisp::primitives::tests::native_datagram_addresses_track_udp_peer_state_and_contact_metadata": "ok",
+        "lisp::primitives::tests::native_delete_terminal_tracks_liveness_and_runs_its_hook_before_removal": "ok",
+        "lisp::primitives::tests::native_dispatch_fails_closed_at_the_gnu_c_boundary": "ok",
+        "lisp::primitives::tests::native_display_connection_management_stops_at_the_headless_backend": "ok",
+        "lisp::primitives::tests::native_dispnew_family_tracks_menu_state_and_headless_redisplay_contracts": "ok",
+        "lisp::primitives::tests::native_doc_c_family_uses_one_doc_file_index_and_resolution_contract": "ok",
+        "lisp::primitives::tests::native_file_lock_primitives_share_the_buffer_lock_state_machine": "ok",
+        "lisp::primitives::tests::native_fixed_pseudovectors_use_gnu_full_vector_footprints": "ok",
+        "lisp::primitives::tests::native_font_at_and_info_match_the_headless_gnu_boundary": "ok",
+        "lisp::primitives::tests::native_font_backend_boundary_and_glyph_validation_match_gnu": "ok",
+        "lisp::primitives::tests::native_font_spec_state_and_headless_lookup_family_matches_gnu": "ok",
+        "lisp::primitives::tests::native_font_spec_validation_and_name_normalization_match_gnu": "ok",
+        "lisp::primitives::tests::native_fontset_registry_family_matches_gnu": "ok",
+        "lisp::primitives::tests::native_frame_focus_mouse_geometry_and_headless_errors_match_gnu": "ok",
+        "lisp::primitives::tests::native_frame_geometry_parameters_and_state_flags_match_gnu": "ok",
+        "lisp::primitives::tests::native_frame_identity_and_single_tty_traversal_match_gnu": "ok",
+        "lisp::primitives::tests::native_frame_terminal_and_buffer_owners_contribute_to_vector_census": "ok",
+        "lisp::primitives::tests::native_fringe_bitmap_registry_family_matches_gnu": "ok",
+        "lisp::primitives::tests::native_gnutls_advertises_loaded_host_capabilities": "ok",
+        "lisp::primitives::tests::native_gnutls_boot_and_bye_preserve_gnu_validation_contracts": "ok",
+        "lisp::primitives::tests::native_gnutls_catalogs_and_error_diagnostics_use_the_host_library": "ok",
+        "lisp::primitives::tests::native_gnutls_digest_catalog_and_hashing_use_rustcrypto": "ok",
+        "lisp::primitives::tests::native_gnutls_formats_x509_certificates_with_the_host_library": "ok",
+        "lisp::primitives::tests::native_gnutls_mac_uses_the_host_crypto_and_zeroizes_keys": "ok",
+        "lisp::primitives::tests::native_gnutls_pre_session_state_warnings_and_error_predicate_match_gnu": "ok",
+        "lisp::primitives::tests::native_gnutls_session_encrypts_process_io_and_closes_the_same_transport": "ok",
+        "lisp::primitives::tests::native_gnutls_symmetric_crypto_round_trips_block_and_aead_ciphers": "ok",
+        "lisp::primitives::tests::native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch": "ok",
+        "lisp::primitives::tests::native_gui_creation_tip_and_chooser_boundary_matches_gnu": "ok",
+        "lisp::primitives::tests::native_headless_menu_and_drag_actions_preserve_gnu_boundaries": "ok",
+        "lisp::primitives::tests::native_headless_window_geometry_and_hscroll_match_gnu_c_contracts": "ok",
+        "lisp::primitives::tests::native_image_cache_family_matches_the_headless_frame_contract": "ok",
+        "lisp::primitives::tests::native_image_variables_match_the_gnu_image_c_contract": "ok",
+        "lisp::primitives::tests::native_imagep_validates_the_shared_image_specification_shape": "ok",
+        "lisp::primitives::tests::native_indent_c_motion_and_line_number_width_family_matches_gnu": "ok",
+        "lisp::primitives::tests::native_internal_lisp_face_p_is_a_total_predicate": "ok",
+        "lisp::primitives::tests::native_invocation_queries_copy_host_values_and_daemon_finalization_rejects_batch": "ok",
+        "lisp::primitives::tests::native_keyboard_input_family_matches_gnu_kboard_contracts": "ok",
+        "lisp::primitives::tests::native_keyboard_macro_family_matches_gnu_recording_and_execution_contracts": "ok",
+        "lisp::primitives::tests::native_keyboard_macro_family_publishes_gnu_status_messages": "ok",
+        "lisp::primitives::tests::native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping": "ok",
+        "lisp::primitives::tests::native_libxml_family_uses_strict_xml_and_tolerant_html_dom_contracts": "ok",
+        "lisp::primitives::tests::native_loader_interns_symbols_inside_relocation_vectors": "ok",
+        "lisp::primitives::tests::native_mapatoms_preserves_collection_redefinition_and_nonlocal_exit": "ok",
+        "lisp::primitives::tests::native_menu_activity_predicate_is_false_without_a_graphical_menu": "ok",
+        "lisp::primitives::tests::native_message_dialog_fallbacks_share_the_headless_message_contract": "ok",
+        "lisp::primitives::tests::native_minibuffer_runs_initial_post_command_hook_before_input": "ok",
+        "lisp::primitives::tests::native_minibuffer_stack_queries_match_gnu_minibuf_c": "ok",
+        "lisp::primitives::tests::native_mutex_name_reads_the_shared_mutex_state": "ok",
+        "lisp::primitives::tests::native_network_accept_preserves_binary_bytes_without_listener_buffer": "ok",
+        "lisp::primitives::tests::native_network_interface_list_reports_the_ipv4_loopback_subnet": "ok",
+        "lisp::primitives::tests::native_network_lookup_delegates_numeric_syntax_to_the_host_resolver": "ok",
+        "lisp::primitives::tests::native_network_lookup_uses_platform_address_vectors_and_gnu_validation": "ok",
+        "lisp::primitives::tests::native_network_process_resolves_named_services_from_the_services_database": "ok",
+        "lisp::primitives::tests::native_network_socket_errors_preserve_gnu_file_conditions": "ok",
+        "lisp::primitives::tests::native_numeric_predicates_and_sorting_recognize_all_bignums": "ok",
+        "lisp::primitives::tests::native_open_dribble_file_creates_and_closes_a_private_file_like_gnu": "ok",
+        "lisp::primitives::tests::native_overlay_and_char_table_census_uses_gnu_layouts": "ok",
+        "lisp::primitives::tests::native_posix_buffer_search_and_search_state_helpers_match_gnu_contracts": "ok",
+        "lisp::primitives::tests::native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model": "ok",
+        "lisp::primitives::tests::native_process_thread_ownership_matches_gnu_descriptor_locking": "ok",
+        "lisp::primitives::tests::native_process_window_and_foreground_queries_follow_pty_ownership": "ok",
+        "lisp::primitives::tests::native_pseudovector_census_matches_gnu_word_layout": "ok",
+        "lisp::primitives::tests::native_read_expression_history_matches_gnu_minibuf_c_value_cell": "ok",
+        "lisp::primitives::tests::native_record_and_pseudovector_type_names_match_gnu_data_c": "ok",
+        "lisp::primitives::tests::native_serial_process_pumps_and_sends_bytes_over_a_real_pty": "ok",
+        "lisp::primitives::tests::native_serial_process_surface_and_configuration_match_gnu": "ok",
+        "lisp::primitives::tests::native_serial_process_validation_matches_gnu_process_c": "ok",
+        "lisp::primitives::tests::native_serial_speed_nil_preserves_the_unconfigured_gnu_contract": "ok",
+        "lisp::primitives::tests::native_sqlite_columns_uses_the_live_result_set_schema": "ok",
+        "lisp::primitives::tests::native_sqlite_errors_publish_the_gnu_condition_hierarchy": "ok",
+        "lisp::primitives::tests::native_stores_into_a_keymaps_public_view_reach_its_record": "ok",
+        "lisp::primitives::tests::native_string_words_preserve_mutation_and_cycles_across_execution_modes": "ok",
+        "lisp::primitives::tests::native_subprocess_job_control_uses_child_groups_and_reaps_signal_states": "ok",
+        "lisp::primitives::tests::native_syntax_description_decodes_the_shared_descriptor_bits": "ok",
+        "lisp::primitives::tests::native_system_process_inventory_and_attributes_share_the_host_snapshot": "ok",
+        "lisp::primitives::tests::native_system_process_inventory_matches_oracle_availability": "ok",
+        "lisp::primitives::tests::native_terminal_identity_is_opaque_and_shared_with_the_frame": "ok",
+        "lisp::primitives::tests::native_terminal_state_and_tty_controls_share_the_gnu_headless_contract": "ok",
+        "lisp::primitives::tests::native_thread_and_synchronization_handles_compare_by_identity": "ok",
+        "lisp::primitives::tests::native_treesit_parser_lifecycle_and_real_json_nodes_use_official_runtime": "ok",
+        "lisp::primitives::tests::native_treesit_queries_and_traversal_use_official_runtime": "ok",
+        "lisp::primitives::tests::native_treesit_runtime_capabilities_and_query_predicates_match_gnu": "ok",
+        "lisp::primitives::tests::native_udp_event_pump_preserves_datagrams_and_updates_the_reply_peer": "ok",
+        "lisp::primitives::tests::native_units_and_functions_round_trip_through_the_image": "ok",
+        "lisp::primitives::tests::native_unwind_preserves_pending_values_and_error_payloads_across_cleanup_gc": "ok",
+        "lisp::primitives::tests::native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model": "ok",
+        "lisp::primitives::tests::native_vector_and_closure_census_matches_gnu_word_layout": "FAILED",
+        "lisp::primitives::tests::native_vector_words_preserve_mixed_elements_and_cyclic_closures": "ok",
+        "lisp::primitives::tests::native_window_change_state_hooks_and_minibuffer_resize_match_gnu": "ok",
+        "lisp::primitives::tests::native_x_display_queries_observe_the_headless_backend_boundary": "ok",
+        "lisp::primitives::tests::native_xdisp_headless_query_family_matches_gnu": "ok",
+        "lisp::primitives::tests::native_xfaces_frame_table_and_resource_boundary_match_gnu": "ok",
+        "lisp::primitives::tests::native_xfaces_lisp_face_registry_family_matches_gnu": "ok",
+        "lisp::primitives::tests::native_xfaces_set_attribute_frame_and_creation_contract_matches_gnu": "ok",
+        "lisp::primitives::tests::next_read_file_uses_dialog_p_follows_the_oracle_toolkit": "ok",
+        "lisp::primitives::tests::next_single_property_change_returns_nil_for_uniform_string_property": "ok",
+        "lisp::primitives::tests::next_single_property_change_uses_string_positions": "ok",
+        "lisp::primitives::tests::nil_coding_system_queries_match_the_gnu_primitive_contract": "ok",
+        "lisp::primitives::tests::noninteractive_kill_buffer_does_not_prompt_for_a_modified_file": "ok",
+        "lisp::primitives::tests::opaque_native_objects_reject_array_access_without_exposing_storage": "ok",
+        "lisp::primitives::tests::operating_system_release_is_wired_to_the_uname_syscall": "ok",
+        "lisp::primitives::tests::oracle_only_forwarded_c_variables_are_bound_as_the_oracle_binds_them": "ok",
+        "lisp::primitives::tests::ordinary_memq_skips_symbol_with_position_mode_resolution": "ok",
+        "lisp::primitives::tests::overlay_get_inherits_from_category_symbol": "ok",
+        "lisp::primitives::tests::overlay_objects_follow_gnu_geometry_ownership_and_hook_mutation": "ok",
+        "lisp::primitives::tests::overlay_priority_sorting_handles_crossing_intervals_without_a_total_order": "ok",
+        "lisp::primitives::tests::overlay_properties_accept_nil_keys_and_accessible_endpoints": "ok",
+        "lisp::primitives::tests::overlay_property_keys_use_lisp_identity": "ok",
+        "lisp::primitives::tests::overlay_property_lists_preserve_gnu_order_eq_keys_and_sharing": "ok",
+        "lisp::primitives::tests::overriding_keymaps_follow_the_oracle_contract": "ok",
+        "lisp::primitives::tests::paging_keys_carry_the_gnu_bindings": "ok",
+        "lisp::primitives::tests::parse_font_names_matches_core_upstream_cases": "ok",
+        "lisp::primitives::tests::plain_regexp_cache_hits_skip_syntax_table_rendering": "ok",
+        "lisp::primitives::tests::portable_dump_introspection_and_backend_boundary_are_honest": "ok",
+        "lisp::primitives::tests::positioned_reader_keeps_uninterned_names_and_source_positions": "ok",
+        "lisp::primitives::tests::positioned_reader_preserves_cycles_shorthands_and_private_identity": "ok",
+        "lisp::primitives::tests::positioned_reader_resolves_private_nil_and_t_before_wrapping": "ok",
+        "lisp::primitives::tests::positioned_symbol_fields_survive_interpreted_bytecode_and_native_calls": "ok",
+        "lisp::primitives::tests::preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior": "ok",
+        "lisp::primitives::tests::primitive_minimum_arities_match_gnu": "ok",
+        "lisp::primitives::tests::primitive_undo_consumes_marker_adjustments_with_their_deletion": "ok",
+        "lisp::primitives::tests::print_prunes_charset_properties_like_print_prune_string_charset": "ok",
+        "lisp::primitives::tests::process_attributes_follows_sysdep_procfs": "ok",
+        "lisp::primitives::tests::process_command_reports_child_argv_and_nil_for_connection_records": "ok",
+        "lisp::primitives::tests::process_filter_t_holds_os_output_until_the_default_filter_is_restored": "ok",
+        "lisp::primitives::tests::process_filters_can_observe_that_read_event_is_waiting_for_user_input": "ok",
+        "lisp::primitives::tests::process_lines_uses_default_directory_as_subprocess_cwd": "ok",
+        "lisp::primitives::tests::process_list_is_newest_first_and_excludes_deleted_processes": "ok",
+        "lisp::primitives::tests::process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof": "ok",
+        "lisp::primitives::tests::process_send_eof_uses_the_pty_eof_character_and_drains_final_output": "ok",
+        "lisp::primitives::tests::process_send_string_and_region_route_output_to_the_process_buffer": "ok",
+        "lisp::primitives::tests::process_sentinel_can_delete_its_own_process_exactly_once": "ok",
+        "lisp::primitives::tests::process_tls_peer_reports_are_independent_values_from_the_live_session": "ok",
+        "lisp::primitives::tests::process_tls_state_survives_collection_before_and_after_async_handshake": "ok",
+        "lisp::primitives::tests::process_tty_name_rejects_unknown_streams": "ok",
+        "lisp::primitives::tests::prog1_preserves_the_saved_object_when_its_variable_is_rebound": "ok",
+        "lisp::primitives::tests::program_search_follows_openp_over_exec_path": "ok",
+        "lisp::primitives::tests::project_does_not_ship_lisp_compatibility_facades": "ok",
+        "lisp::primitives::tests::propertize_preserves_existing_string_properties": "ok",
+        "lisp::primitives::tests::property_change_helpers_accept_markers": "ok",
+        "lisp::primitives::tests::punct_class_beyond_ascii_follows_buffer_syntax": "ok",
+        "lisp::primitives::tests::purecopy_callbacks_observe_current_purify_flag": "ok",
+        "lisp::primitives::tests::purecopy_callbacks_preserve_vector_and_record_source_snapshots": "ok",
+        "lisp::primitives::tests::purecopy_callbacks_retain_copied_fields_in_five_sequence_kinds": "ok",
+        "lisp::primitives::tests::push_mark_separates_marker_motion_from_transient_region_activation": "ok",
+        "lisp::primitives::tests::put_text_property_preserves_string_identity_and_mutation": "ok",
+        "lisp::primitives::tests::quoted_objects_survive_only_while_reachable": "ok",
+        "lisp::primitives::tests::quoting_style_reaches_message_error_text_and_display_table": "ok",
+        "lisp::primitives::tests::random_default_and_reseeded_values_follow_the_gnu_fixnum_contract": "ok",
+        "lisp::primitives::tests::read_coding_system_matches_the_gnu_coding_primitive_contract": "ok",
+        "lisp::primitives::tests::read_positioning_symbols_positions_the_symbols_inside_vectors": "ok",
+        "lisp::primitives::tests::read_string_history_keeps_the_minibuffer_map_and_initial_properties": "ok",
+        "lisp::primitives::tests::read_string_nil_default_returns_empty_input_like_gnu": "ok",
+        "lisp::primitives::tests::reader_byte_printing_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_consumption_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_dots_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_encoding_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_errors_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_execution_modes_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_gc_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_lifetime_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_obarray_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_redefinition_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_streams_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_syntax_match_gnu": "ok",
+        "lisp::primitives::tests::reader_distinguishes_unibyte_string_characters_from_byte8_sources": "ok",
+        "lisp::primitives::tests::reader_entrypoints_preserve_cyclic_object_identity_through_gc": "ok",
+        "lisp::primitives::tests::reader_hex_escapes_preserve_the_raw_byte_boundary_and_digit_count": "ok",
+        "lisp::primitives::tests::reader_interns_symbols_inside_shared_and_circular_vectors": "ok",
+        "lisp::primitives::tests::reader_interns_vector_symbols_in_the_dynamic_obarray": "ok",
+        "lisp::primitives::tests::reader_printer_bindings_match_gnu": "ok",
+        "lisp::primitives::tests::reader_stream_entrypoints_match_gnu": "ok",
+        "lisp::primitives::tests::reader_stream_positions_match_gnu": "ok",
+        "lisp::primitives::tests::recenter_uses_the_published_window_height_for_negative_lines": "ok",
+        "lisp::primitives::tests::record_literal_detection_does_not_traverse_vector_storage": "ok",
+        "lisp::primitives::tests::redisplay_defaults_match_native_terminal_and_input_state": "ok",
+        "lisp::primitives::tests::redisplay_dispatches_an_already_due_timer": "ok",
+        "lisp::primitives::tests::regex_resource_helper_patterns_compile": "ok",
+        "lisp::primitives::tests::regexp_table_cache_observes_shared_leaf_mutation_and_replaced_edges_after_gc": "ok",
+        "lisp::primitives::tests::registered_subrs_never_request_function_cell_overrides": "ok",
+        "lisp::primitives::tests::replace_match_grafts_replacement_string_properties": "ok",
+        "lisp::primitives::tests::replace_match_on_a_string_returns_concat3_multibyteness": "ok",
+        "lisp::primitives::tests::reused_minibuffer_discards_overlays_from_the_previous_read": "ok",
+        "lisp::primitives::tests::run_at_time_callbacks_fire_on_accept_process_output": "ok",
+        "lisp::primitives::tests::run_with_timer_callbacks_fire_on_accept_process_output": "ok",
+        "lisp::primitives::tests::selected_global_keymap_is_distinct_from_the_global_map_variable": "ok",
+        "lisp::primitives::tests::seq_uniq_preserves_first_occurrence_order": "ok",
+        "lisp::primitives::tests::set_buffer_redisplay_is_a_callable_variable_watcher": "ok",
+        "lisp::primitives::tests::set_file_times_keeps_the_whole_timestamp": "ok",
+        "lisp::primitives::tests::set_minibuffer_window_validates_and_updates_the_shared_window_state": "ok",
+        "lisp::primitives::tests::set_network_process_option_applies_the_option_or_refuses": "ok",
+        "lisp::primitives::tests::set_text_properties_replaces_existing_properties": "ok",
+        "lisp::primitives::tests::shared_string_bytes_are_the_authoritative_unibyte_payload": "ok",
+        "lisp::primitives::tests::signal_process_preserves_os_signal_status_and_sentinel_event": "ok",
+        "lisp::primitives::tests::single_key_description_matches_symbol_cases": "ok",
+        "lisp::primitives::tests::sjis_conversion_follows_the_oracle_contract": "ok",
+        "lisp::primitives::tests::skip_chars_word_class_includes_ascii_digits": "ok",
+        "lisp::primitives::tests::sleep_for_zero_returns_without_waiting_or_running_timers": "ok",
+        "lisp::primitives::tests::sort_calls_the_numeric_lambda_with_its_arguments_bound": "ok",
+        "lisp::primitives::tests::special_event_maps_use_live_lookup_through_collecting_filters": "ok",
+        "lisp::primitives::tests::sqlite_extension_loading_executes_real_code_and_rejects_invalid_files": "ok",
+        "lisp::primitives::tests::sqlite_values_are_a_list_or_a_vector": "ok",
+        "lisp::primitives::tests::string_byte_conversions_use_the_internal_encoding": "ok",
+        "lisp::primitives::tests::string_case_conversion_preserves_properties_until_character_count_changes": "ok",
+        "lisp::primitives::tests::string_constructors_preserve_gnu_full_character_range_and_errors": "ok",
+        "lisp::primitives::tests::string_decode_names_last_coding_system_used_like_the_oracle": "ok",
+        "lisp::primitives::tests::string_limit_supports_end_flag": "ok",
+        "lisp::primitives::tests::string_make_multibyte_preserves_identity_or_converts_raw_bytes_without_properties": "ok",
+        "lisp::primitives::tests::string_to_syntax_encodes_classes_flags_and_matching_characters": "ok",
+        "lisp::primitives::tests::subprocess_cwd_uses_native_unhandled_directory_mechanism": "ok",
+        "lisp::primitives::tests::subr_arity_answers_the_host_inotify_primitives": "ok",
+        "lisp::primitives::tests::subr_frontier_aset_promotes_ascii_unibyte_strings_like_gnu": "ok",
+        "lisp::primitives::tests::subr_frontier_backquote_folds_the_constant_suffix_like_gnu": "ok",
+        "lisp::primitives::tests::subr_frontier_buffer_local_value_signals_when_no_binding_exists": "ok",
+        "lisp::primitives::tests::subr_frontier_compare_strings_uses_gnu_simple_upcase_canonicalization": "ok",
+        "lisp::primitives::tests::subr_frontier_delete_reuses_retained_cons_cells_and_copies_other_sequences": "ok",
+        "lisp::primitives::tests::subr_frontier_direct_vector_evaluation_materializes_nested_record_literals": "ok",
+        "lisp::primitives::tests::subr_frontier_fundamental_mode_is_not_a_stored_derived_parent": "ok",
+        "lisp::primitives::tests::subr_frontier_hook_execution_uses_elisp_owned_local_value_cells": "ok",
+        "lisp::primitives::tests::subr_frontier_mapbacktrace_with_an_absent_base_is_an_empty_traversal": "ok",
+        "lisp::primitives::tests::subr_frontier_reader_decodes_the_complete_classic_string_escape_table": "ok",
+        "lisp::primitives::tests::subr_frontier_recordp_does_not_expose_hash_table_runtime_storage": "ok",
+        "lisp::primitives::tests::subr_frontier_replace_match_applies_gnu_case_adaptation": "ok",
+        "lisp::primitives::tests::subr_frontier_replace_match_distinguishes_string_and_buffer_escapes": "ok",
+        "lisp::primitives::tests::subregexp_context_rejects_classes_bounds_and_trailing_escape": "ok",
+        "lisp::primitives::tests::substitute_command_keys_uses_explicit_keymaps": "ok",
+        "lisp::primitives::tests::substitute_in_file_name_expands_shell_style_env_vars": "ok",
+        "lisp::primitives::tests::substring_copies_canonical_bytes_properties_and_vector_fields": "ok",
+        "lisp::primitives::tests::substring_of_completion_result_accepts_text_properties": "ok",
+        "lisp::primitives::tests::substring_reversed_bounds_signal_without_host_panics": "ok",
+        "lisp::primitives::tests::substring_validates_gnu_array_types_and_index_error_order": "ok",
+        "lisp::primitives::tests::suspended_bytecode_observes_live_constant_vector_mutation": "ok",
+        "lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots": "ok",
+        "lisp::primitives::tests::symbol_fast_paths_preserve_nil_and_t_identity": "ok",
+        "lisp::primitives::tests::syntax_class_rendering_survives_writes_to_tables_outside_its_chain": "ok",
+        "lisp::primitives::tests::syntax_property_searches_after_random_edits_match_the_oracle": "ok",
+        "lisp::primitives::tests::syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation": "ok",
+        "lisp::primitives::tests::system_move_file_to_trash_preserves_gnu_missing_file_contract": "ok",
+        "lisp::primitives::tests::terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event": "ok",
+        "lisp::primitives::tests::terminal_frames_follow_gnu_device_window_and_deletion_lifecycle": "ok",
+        "lisp::primitives::tests::terminal_frames_isolate_faces_keyboards_and_saved_configurations": "ok",
+        "lisp::primitives::tests::terminal_frames_preserve_other_frames_when_windows_change": "ok",
+        "lisp::primitives::tests::terminal_parameters_preserve_identity_through_bytecode_and_gc": "ok",
+        "lisp::primitives::tests::text_conversion_alias_and_indirect_buffer_state_matches_gnu": "ok",
+        "lisp::primitives::tests::text_conversion_c_store_does_not_localize_or_duplicate_the_field": "ok",
+        "lisp::primitives::tests::text_conversion_detached_state_matches_gnu": "ok",
+        "lisp::primitives::tests::text_conversion_native_store_matches_gnu_without_localizing": "ok",
+        "lisp::primitives::tests::text_conversion_variable_state_matches_gnu": "ok",
+        "lisp::primitives::tests::text_conversion_void_default_let_matches_gnu": "ok",
+        "lisp::primitives::tests::text_property_copies_follow_add_text_properties_order": "ok",
+        "lisp::primitives::tests::text_property_search_helpers_find_matches_and_gaps": "ok",
+        "lisp::primitives::tests::text_property_writes_touch_only_the_spans_they_cover": "ok",
+        "lisp::primitives::tests::text_quoting_default_is_derived_from_the_process_locale": "ok",
+        "lisp::primitives::tests::text_quoting_policy_is_shared_by_the_query_and_substitution_primitives": "ok",
+        "lisp::primitives::tests::text_quoting_style_follows_the_locale_flag_only_for_a_nil_setting": "ok",
+        "lisp::primitives::tests::thread_join_leaves_unrelated_timers_pending": "ok",
+        "lisp::primitives::tests::thread_signal_queues_a_thread_event_for_the_main_thread": "ok",
+        "lisp::primitives::tests::threads_get_their_own_bindings_handlers_and_join_semantics": "ok",
+        "lisp::primitives::tests::threads_retain_lexical_caller_roots_across_separate_callee_environments": "ok",
+        "lisp::primitives::tests::time_values_follow_timefns_c": "ok",
+        "lisp::primitives::tests::timed_tty_event_read_pumps_process_output_and_deferred_callbacks": "ok",
+        "lisp::primitives::tests::timers_run_inside_a_child_threads_sleep_with_its_bindings": "ok",
+        "lisp::primitives::tests::tmm_nested_menu_keeps_the_completions_window_at_its_first_line": "ok",
+        "lisp::primitives::tests::translate_elisp_regex_elides_repeated_empty_shy_groups": "ok",
+        "lisp::primitives::tests::translate_elisp_regex_handles_rx_generated_hyphen_classes": "ok",
+        "lisp::primitives::tests::tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it": "ok",
+        "lisp::primitives::tests::tty_color_primitives_follow_xfaces_c": "ok",
+        "lisp::primitives::tests::tty_completing_read_completes_with_tab": "ok",
+        "lisp::primitives::tests::tty_event_reader_does_not_preempt_queued_events": "ok",
+        "lisp::primitives::tests::tty_event_reader_feeds_interactive_event_reads": "ok",
+        "lisp::primitives::tests::tty_event_reader_quit_signals_gnu_quit": "ok",
+        "lisp::primitives::tests::tty_events_answer_interactive_minibuffer_prompts": "ok",
+        "lisp::primitives::tests::tty_frame_size_shapes_the_root_and_minibuffer_windows": "ok",
+        "lisp::primitives::tests::tty_menu_key_hints_follow_preferred_binding_and_live_removal": "ok",
+        "lisp::primitives::tests::tty_minibuffer_edits_complete_and_recall_history": "ok",
+        "lisp::primitives::tests::tty_minibuffer_history_recall_submits_the_recalled_entry": "ok",
+        "lisp::primitives::tests::tty_minibuffer_quit_signals_gnu_quit": "ok",
+        "lisp::primitives::tests::tty_read_buffer_formats_a_buffer_default_into_the_prompt": "ok",
+        "lisp::primitives::tests::tty_real_minibuffer_history_recalls_through_simple_el": "ok",
+        "lisp::primitives::tests::tty_real_minibuffer_loop_runs_the_lisp_minibuffer_commands": "ok",
+        "lisp::primitives::tests::undecided_decode_detects_shift_jis_like_coding_c": "ok",
+        "lisp::primitives::tests::undo_file_marker_records_the_visited_modtime": "ok",
+        "lisp::primitives::tests::undo_host_records_match_gnu_save_point_property_and_multibyte_contracts": "ok",
+        "lisp::primitives::tests::unicode_char_property_helpers_cover_names_and_general_categories": "ok",
+        "lisp::primitives::tests::unicode_property_internal_encoders_follow_gnu_decision_table": "ok",
+        "lisp::primitives::tests::unicode_property_tables_are_stable_and_preserve_overrides": "ok",
+        "lisp::primitives::tests::unify_charset_validates_and_deunifies_like_charset_c": "ok",
+        "lisp::primitives::tests::uninterned_symbols_are_reached_by_object_not_by_name": "ok",
+        "lisp::primitives::tests::unreached_markers_leave_their_buffers_edit_walk": "ok",
+        "lisp::primitives::tests::unused_bytecode_destinations_follow_actual_control_flow": "ok",
+        "lisp::primitives::tests::unwind_payload_roots_release_after_interpreted_bytecode_and_native_handlers": "ok",
+        "lisp::primitives::tests::unwind_protect_preserves_pending_values_and_error_payloads_across_cleanup_gc": "ok",
+        "lisp::primitives::tests::url_retrieve_synchronously_matches_gnu_over_a_real_local_http_connection": "ok",
+        "lisp::primitives::tests::variable_cells_follow_data_c": "ok",
+        "lisp::primitives::tests::where_is_internal_runs_menu_item_filters_only_for_verified_matches": "ok",
+        "lisp::primitives::tests::window_configuration_restore_keeps_the_current_frame_size_like_gnu": "ok",
+        "lisp::primitives::tests::window_cycling_follows_tree_order_from_the_selected_window": "ok",
+        "lisp::primitives::tests::window_end_and_posn_follow_published_interactive_geometry": "ok",
+        "lisp::primitives::tests::window_mode_lines_render_in_each_windows_own_context": "ok",
+        "lisp::primitives::tests::window_render_layout_reports_split_geometry_in_tree_order": "ok",
+        "lisp::primitives::tests::window_resize_apply_commits_staged_pixel_sizes": "ok",
+        "lisp::primitives::tests::window_text_pixel_size_measures_the_window_buffer_with_mode_lines": "ok",
+        "lisp::primitives::tests::write_region_mustbenew_consumes_a_full_negative_answer": "ok",
+        "lisp::primitives::tests::x_window_properties_validate_the_frame_before_property_arguments": "ok",
+        "lisp::primitives::tests::zero_duration_sleep_does_not_dispatch_ready_process_output_like_emacs": "ok"
+      },
+      "binary_sha256": "b872b12e92a71a4475231f7d001a74ec20a1ca5571ab547f441066716d7ba262",
+      "fixture_images": [
+        {
+          "source": "/home/runner/work/emaxx/emaxx/emaxx/target/grouped-gate/fixture-images/loadup-b872b12e-988ea42f.pdmp",
+          "artifact": "fixture-images/loadup-b872b12e-988ea42f.pdmp",
+          "sha256": "57e2598b265873a01abdeba73188942328de4a7234a224ab626d8fd9292f76e6",
+          "bytes": 22409416
+        }
+      ],
+      "actual_gnu_output": "(((0 -9) (1 2) (2 3) (3 4) (4 5) (5 6) (6 7) (7 8) (8 9) (31 32) (32 33) (511 512) (512 513) (1023 1024) (1024 1025)) ((3 4) (5 6) (6 7)))",
+      "goal_complete": false,
+      "qualification": "All 643 original group controls run with the same Rust executable hash as the failed full run and passing single-test replay. The sole failure is the same GNU reference -9-slot first sample, before Emaxx evaluation. This narrows investigation to an order/environment-dependent reproduction; it does not establish the retaining root or justify changing expectations. Original full run remains failed. GNU executable identity was not hashed by these Rust jobs."
+    },
+    "qualification": "Source240 has 160 focused and 944 affected passes per profile, 61 total audited ordinary comparisons and the reporting repair. The additional new-file-coding probe remains failed. Full Mac supervisor43216 is still active; release supervisor43217 has exited. Source238 frozen recovery stays separate. Neither source240 runtime nor a coding-selection repair is applied to the task branch. Main and the full performance goal remain unchanged."
+  },
+  "archive": {
+    "path": "source240-release-and-open-failures.tar.gz",
+    "bytes": 373261,
+    "sha256": "a7da1549effb699a0bf110bd2af2b9728e6c718607d48578ee7a7a811efee0cc"
+  },
+  "files": [
+    {
+      "path": "audit-source238-primitives-replay.py",
+      "bytes": 3446,
+      "sha256": "60d4bbef3e3488d1711471cebf5714a79a1f93acce80450ad688c61b86dc03b1"
+    },
+    {
+      "path": "audit-source240-ordinary-and-reports.py",
+      "bytes": 5367,
+      "sha256": "0664d1d9840d536c84162a6edd11e62e8dcb0d5b4dbe37b6257a6dcad5c05092"
+    },
+    {
+      "path": "audit-source240-ordinary.py",
+      "bytes": 4116,
+      "sha256": "fb128873e636248400591baee09c7e0842890096d4bbc2f2ea78e34fcb5962c2"
+    },
+    {
+      "path": "audit-source240-release.py",
+      "bytes": 3935,
+      "sha256": "7990e4e5782f25218edc8465677fe41958c2e4db7bc7d770701ac057e9a01aac"
+    },
+    {
+      "path": "collect-source238-primitives-replay.py",
+      "bytes": 1822,
+      "sha256": "d97adf35becf5c2d3a7691f4a3b230de9aaef7939137c8f71d61477e530eb666"
+    },
+    {
+      "path": "commit-source240-coding-continuation.py",
+      "bytes": 3575,
+      "sha256": "344cb7df68fccfb471a6f347eb621a7eee1510ff5543f82339c0143942a30ed9"
+    },
+    {
+      "path": "launch-source238-primitives-replay.py",
+      "bytes": 2011,
+      "sha256": "5884aedee010673af9c63601927d0714736b9f6ae10c4de049cb386daa5e83d5"
+    },
+    {
+      "path": "new-file-coding-probe.el",
+      "bytes": 1183,
+      "sha256": "6bac3ed7c6449c103db93d51001c7ac412b634c3a6f330de969c9ac83cae22bb"
+    },
+    {
+      "path": "package-source240-release-and-open-failures.py",
+      "bytes": 3859,
+      "sha256": "2d70fa405309cdc9373b8147e833cd5554d821c0fc563f2233507cd5a7e31cc5"
+    },
+    {
+      "path": "run-source240-release-and-ordinary.py",
+      "bytes": 2317,
+      "sha256": "b4fbd769edc45ac8d4a03f02b0942a6da9e2287a052b61aac8777cce596a56fc"
+    },
+    {
+      "path": "source238-linux-primitives-replay-artifacts/metadata/oracle.txt",
+      "bytes": 449,
+      "sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4"
+    },
+    {
+      "path": "source238-linux-primitives-replay-artifacts/rust-replay/build.log",
+      "bytes": 174752,
+      "sha256": "aa4e3f1846773d66e870410ce7c4865b171600c326d39f5aa192883a6be5e1af"
+    },
+    {
+      "path": "source238-linux-primitives-replay-artifacts/rust-replay/full-inventory.log",
+      "bytes": 264311,
+      "sha256": "52acf251ca372249a2633fd1061adf45d93817ad69ce3b53f1798419b8f7e14a"
+    },
+    {
+      "path": "source238-linux-primitives-replay-artifacts/rust-replay/ignored-inventory.log",
+      "bytes": 22,
+      "sha256": "414c144fa67f1df75f7b14a69af5641637772e81c4c3fa0a171e3228adbb922e"
+    },
+    {
+      "path": "source238-linux-primitives-replay-artifacts/rust-replay/replay.log",
+      "bytes": 64724,
+      "sha256": "40f338faebcd8b55f3df86283afeef5dcd1daa8f1c41c58ed531097227933211"
+    },
+    {
+      "path": "source238-linux-primitives-replay-artifacts/rust-replay/selected-inventory.log",
+      "bytes": 57469,
+      "sha256": "737930c080289c6fa26cdbc6fde79670a86ac394855518cd1a8301430034d6fd"
+    },
+    {
+      "path": "source238-linux-primitives-replay-artifacts/rust-replay/summary.json",
+      "bytes": 118093,
+      "sha256": "420524c8b68d37f53794f89995faab00214afb4a3e4bc88a88302e81c65aa0e6"
+    },
+    {
+      "path": "source238-linux-primitives-replay-audit.json",
+      "bytes": 63413,
+      "sha256": "291913610f3b70e95f436a707922d302c1af0b8c3694b12a149f787bafc1dcd8"
+    },
+    {
+      "path": "source238-linux-primitives-replay-dispatch.json",
+      "bytes": 632,
+      "sha256": "d04119084df83ff743d6942690477532fe647ad356bd147e111237786f6f7df9"
+    },
+    {
+      "path": "source238-linux-primitives-replay-download.json",
+      "bytes": 2709,
+      "sha256": "c9b016b46d87ee2354efea41b0eb85063a957669297ad65ca7744455d2f3b865"
+    },
+    {
+      "path": "source238-linux-primitives-replay-failed.log",
+      "bytes": 46982,
+      "sha256": "fe4f50843479f6633ae19677ac3387452d4e9d2321c2d95d47b1585389f0c2c6"
+    },
+    {
+      "path": "source238-linux-primitives-replay-final-state.json",
+      "bytes": 5889,
+      "sha256": "6abe7c021d0c62845a82f31b66d4255ed4acaf45be491367c1b653f4af50b771"
+    },
+    {
+      "path": "source238-linux-primitives-replay-launch.json",
+      "bytes": 421,
+      "sha256": "b65fb042a6f4bc811dfe1ceb3030c65a2b38981e59611e963161e6ea12d3ec79"
+    },
+    {
+      "path": "source240-coding-continuation-commit.json",
+      "bytes": 1184,
+      "sha256": "184a63e4c630bab5384dd09dd8779e020324bbb911d97d4886042231812f76db"
+    },
+    {
+      "path": "source240-coding-continuation-push.json",
+      "bytes": 243,
+      "sha256": "f440d51358a2870eb6c12a0f03ad9115773c22f84884e104b559c5861cb2eb67"
+    },
+    {
+      "path": "source240-coding-continuation-remote.json",
+      "bytes": 143,
+      "sha256": "c294cb2c5fbbcb7577e5518025dba8e2d640080dcb8f69db53c2c78cca45681a"
+    },
+    {
+      "path": "source240-manifest.json",
+      "bytes": 51893,
+      "sha256": "95f1c82a5dc6476e04450ecbe3d2868c6b2d400b25a01a6a022624e2e51f7b98"
+    },
+    {
+      "path": "source240-ordinary-and-report-audit.json",
+      "bytes": 1847,
+      "sha256": "a68507e8f2a77cde23ae174e5555641b37d4e46729811be809720f2d344e6bb8"
+    },
+    {
+      "path": "source240-ordinary-artifacts.json",
+      "bytes": 746,
+      "sha256": "e2477f38093cb82d1cb30326bde236c1782c32112c032bf36d061b2da2395c73"
+    },
+    {
+      "path": "source240-ordinary-audit.json",
+      "bytes": 3691,
+      "sha256": "29b2c09febb076f39717a2edb27206e0027ff38a8cac1303f4c47b6d668351c4"
+    },
+    {
+      "path": "source240-ordinary-build-command.json",
+      "bytes": 1001,
+      "sha256": "b43c487944b2cba272d3b0437a9129dca3c572730f7ba30d72af453362e3fcb0"
+    },
+    {
+      "path": "source240-ordinary-build-result.json",
+      "bytes": 89,
+      "sha256": "125308371bbad59f9f176c100340a7eace4b87cae8d5ddbde0071a94659d6847"
+    },
+    {
+      "path": "source240-ordinary-build.log",
+      "bytes": 185,
+      "sha256": "0fc7fa92053bee7c29ee69f798aca23ed3e7b58887cc5595b8b864f5e2d91693"
+    },
+    {
+      "path": "source240-ordinary-bytecode-closure-shared-constants-comparison.json",
+      "bytes": 710,
+      "sha256": "1d847b7c904a14bdc944096aa8e8795763c3f1e2223f8787064bb8478bb59e7d"
+    },
+    {
+      "path": "source240-ordinary-bytecode-closure-shared-constants-emaxx.command.json",
+      "bytes": 2764,
+      "sha256": "4ac72b7b6b27b1f1f91ea33a9564e8bb6be65926462ceaa118f1d70c72e0f7ef"
+    },
+    {
+      "path": "source240-ordinary-bytecode-closure-shared-constants-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "40cc3e4b736dcca06ef58ac9e6c8d8f5563c59bb6bb6f8d0f27fbff04b6e86f0"
+    },
+    {
+      "path": "source240-ordinary-bytecode-closure-shared-constants-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-bytecode-closure-shared-constants-emaxx.stdout",
+      "bytes": 169,
+      "sha256": "ffbfc1061e3dcda303cda08d3a6b7435b95a9fd90dc779de02481e1b32175e4e"
+    },
+    {
+      "path": "source240-ordinary-bytecode-closure-shared-constants-gnu.command.json",
+      "bytes": 2638,
+      "sha256": "b90186eb25b1039fdc33f94296a41314152c34cec1973e11b1adcaaaa6cfc6a0"
+    },
+    {
+      "path": "source240-ordinary-bytecode-closure-shared-constants-gnu.result.json",
+      "bytes": 274,
+      "sha256": "b669c72ed0f95e6d7516911e531c639d32649cca0104a4019d732e7bae44f1ec"
+    },
+    {
+      "path": "source240-ordinary-bytecode-closure-shared-constants-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-bytecode-closure-shared-constants-gnu.stdout",
+      "bytes": 169,
+      "sha256": "ffbfc1061e3dcda303cda08d3a6b7435b95a9fd90dc779de02481e1b32175e4e"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-active-mutation-baseline-comparison.json",
+      "bytes": 710,
+      "sha256": "964d90ad18c716649679a2f75f8d14563beb14e261e2ebe0900cd3a82d8e583e"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-active-mutation-baseline-emaxx.command.json",
+      "bytes": 1959,
+      "sha256": "418e241abde6252097a5e55fe2f40c2a47d3914936c25cea7c69d10e1e0d8b42"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-active-mutation-baseline-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "2d1878cb4134821e3de3986b2198a9ee66e36de7c7f3f723c88b96f42ad51d14"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-active-mutation-baseline-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-active-mutation-baseline-emaxx.stdout",
+      "bytes": 8,
+      "sha256": "b915ca091f62f78e9f451afdabd976a4bad0182893dd09c63dbc130749c6dcf2"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-active-mutation-baseline-gnu.command.json",
+      "bytes": 1833,
+      "sha256": "295a3da9690c4aa9232cb19c9dd165ad035b8b79069771a94af2ef5010484d2e"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-active-mutation-baseline-gnu.result.json",
+      "bytes": 274,
+      "sha256": "3d675949c52ea193c4bd0e27483fe20d45fa5a14d017c1531407836bda496981"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-active-mutation-baseline-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-active-mutation-baseline-gnu.stdout",
+      "bytes": 8,
+      "sha256": "b915ca091f62f78e9f451afdabd976a4bad0182893dd09c63dbc130749c6dcf2"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-mutation-baseline-comparison.json",
+      "bytes": 710,
+      "sha256": "a4fc780c8fcd4f100967c19c04807cba9714b0c332dd973628ed1c6150f549cf"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-mutation-baseline-emaxx.command.json",
+      "bytes": 2212,
+      "sha256": "f22261be1f8ff9fa0bf375ca8b84adaa93dd91bb3261a6d872cc096ca5707ad3"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-mutation-baseline-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "7123509be7546b514378a767f25c0f6a26e569c290ef13d2f3b658db2b8985d4"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-mutation-baseline-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-mutation-baseline-emaxx.stdout",
+      "bytes": 30,
+      "sha256": "e05bf1816a76375d1d4b7e38382ce6c14ed8b7bc2ba9defa9527761eafb52438"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-mutation-baseline-gnu.command.json",
+      "bytes": 2086,
+      "sha256": "e5e552f6f7e51b3485e9336f2ffd8d2fbff0317bdbea9045a084347cd3b29830"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-mutation-baseline-gnu.result.json",
+      "bytes": 273,
+      "sha256": "4dd19ff434ca0d7250657f2cdefda51b438fac5082cdc5816ade1dda918e7903"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-mutation-baseline-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-bytecode-code-mutation-baseline-gnu.stdout",
+      "bytes": 30,
+      "sha256": "e05bf1816a76375d1d4b7e38382ce6c14ed8b7bc2ba9defa9527761eafb52438"
+    },
+    {
+      "path": "source240-ordinary-bytecode-constructor-gnu-fields-comparison.json",
+      "bytes": 711,
+      "sha256": "827189e2ec7d233a7797eb6fd339e7d0d7623f3a46003a89b0f304c599972de3"
+    },
+    {
+      "path": "source240-ordinary-bytecode-constructor-gnu-fields-emaxx.command.json",
+      "bytes": 3701,
+      "sha256": "1a9cd14b23a7ab52218a0e584a03779bf6f96cd7db1b3007e90718cc7679754e"
+    },
+    {
+      "path": "source240-ordinary-bytecode-constructor-gnu-fields-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "1f74fc2ac2fc75baed0050c8d6d1b00dd12742d6e1704aa6b9e9d611edb21b64"
+    },
+    {
+      "path": "source240-ordinary-bytecode-constructor-gnu-fields-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-bytecode-constructor-gnu-fields-emaxx.stdout",
+      "bytes": 550,
+      "sha256": "7f48c0fe3b3c777dd23d5f2c9fafbc44a2d54bc580ef231ec2e907675c82e711"
+    },
+    {
+      "path": "source240-ordinary-bytecode-constructor-gnu-fields-gnu.command.json",
+      "bytes": 3575,
+      "sha256": "d8e41d0a9b744a25e317a01a8807478ef1561bc30a12fbb17622e991486a6275"
+    },
+    {
+      "path": "source240-ordinary-bytecode-constructor-gnu-fields-gnu.result.json",
+      "bytes": 274,
+      "sha256": "e6e6613fb6933b0d9cc91d09ff1585ec4f9fbdab2972dd945a6d03d2d5cb2a22"
+    },
+    {
+      "path": "source240-ordinary-bytecode-constructor-gnu-fields-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-bytecode-constructor-gnu-fields-gnu.stdout",
+      "bytes": 550,
+      "sha256": "7f48c0fe3b3c777dd23d5f2c9fafbc44a2d54bc580ef231ec2e907675c82e711"
+    },
+    {
+      "path": "source240-ordinary-bytecode-live-fetch-comparison.json",
+      "bytes": 710,
+      "sha256": "ed893c1f0b7760fb7dab2ced9050ff3d08f38120816f0a1f28d1ab90fe8e4321"
+    },
+    {
+      "path": "source240-ordinary-bytecode-live-fetch-emaxx.command.json",
+      "bytes": 3948,
+      "sha256": "c5d34be08ea8145abd556cd03343865f0693ef7611d0c0d3b8945595664e3a4c"
+    },
+    {
+      "path": "source240-ordinary-bytecode-live-fetch-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "35ccb00e54916d35860afc8a0717d6d6c4f0a33392875d5e6d5d14ddecac2a4c"
+    },
+    {
+      "path": "source240-ordinary-bytecode-live-fetch-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-bytecode-live-fetch-emaxx.stdout",
+      "bytes": 160,
+      "sha256": "aee2f8773046d40f5968fc2a74fb8f659078a859260f072b4c49ae59d89e2f33"
+    },
+    {
+      "path": "source240-ordinary-bytecode-live-fetch-gnu.command.json",
+      "bytes": 3822,
+      "sha256": "ef707821b7b5de5dc2769384e15b2d23c03bd6f84dc9374b41659b5d36528be2"
+    },
+    {
+      "path": "source240-ordinary-bytecode-live-fetch-gnu.result.json",
+      "bytes": 274,
+      "sha256": "f4f7f318465ef7b60b39c2ed50740c4ae4dc925ef31ed44be2a4948926a57255"
+    },
+    {
+      "path": "source240-ordinary-bytecode-live-fetch-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-bytecode-live-fetch-gnu.stdout",
+      "bytes": 160,
+      "sha256": "aee2f8773046d40f5968fc2a74fb8f659078a859260f072b4c49ae59d89e2f33"
+    },
+    {
+      "path": "source240-ordinary-bytecode-unused-destinations-comparison.json",
+      "bytes": 710,
+      "sha256": "d0cf6f1e703678db8bafc3e5988df04108f152724820a47ab1d0090810a43096"
+    },
+    {
+      "path": "source240-ordinary-bytecode-unused-destinations-emaxx.command.json",
+      "bytes": 2290,
+      "sha256": "efe0492ba74372a9a6b5c141044feb3e800421194effa7715a562f53cdca522b"
+    },
+    {
+      "path": "source240-ordinary-bytecode-unused-destinations-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "fbb99f75c78bb6c7d22d7660f4ae9f6f5a9ceff5b227c21988a9b29e8d697e75"
+    },
+    {
+      "path": "source240-ordinary-bytecode-unused-destinations-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-bytecode-unused-destinations-emaxx.stdout",
+      "bytes": 53,
+      "sha256": "27f3c3afad1d3a344f02a8e0e23aeab6e747792123454c5371ef6cdba6cc1a23"
+    },
+    {
+      "path": "source240-ordinary-bytecode-unused-destinations-gnu.command.json",
+      "bytes": 2164,
+      "sha256": "bcaf7ebe7334c851ed24970e77baf2fa7031ab1ca37cf1fad3f2839938616b3a"
+    },
+    {
+      "path": "source240-ordinary-bytecode-unused-destinations-gnu.result.json",
+      "bytes": 273,
+      "sha256": "460a0ffe4c99c72eb7856bdfdf66d2a5bbeae038d2285db598daad2f496047d7"
+    },
+    {
+      "path": "source240-ordinary-bytecode-unused-destinations-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-bytecode-unused-destinations-gnu.stdout",
+      "bytes": 53,
+      "sha256": "27f3c3afad1d3a344f02a8e0e23aeab6e747792123454c5371ef6cdba6cc1a23"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-character-storage-comparison.json",
+      "bytes": 702,
+      "sha256": "1e5bca73e3ba7f2a859dc2422c1ee2c4969a6e099a5bba80ee8e0d8ea27cde34"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-character-storage-emaxx.command.json",
+      "bytes": 2810,
+      "sha256": "70de38facf1b722ff616e5f55afe244a22f1d3448fef5f01e2120371bdece723"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-character-storage-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "3ef7d62f4b3db566b07683e765cd517e44508878a3c1054c3f447e2afadd518b"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-character-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-character-storage-emaxx.stdout",
+      "bytes": 1339,
+      "sha256": "8d0203f55bb5cc649336b089bb326a897dfea2491f1ac834a78042f1117fb445"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-character-storage-gnu.command.json",
+      "bytes": 2684,
+      "sha256": "97ad98601ad6c94aa89d9ee111e25deab38f3228ed7fb2d64ac339a5e7ac321c"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-character-storage-gnu.result.json",
+      "bytes": 266,
+      "sha256": "cb5bfd7d01f18cee9ac4d81dbf91b9ea20836dc9d99301a026ea487afaa99b57"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-character-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-character-storage-gnu.stdout",
+      "bytes": 1339,
+      "sha256": "8d0203f55bb5cc649336b089bb326a897dfea2491f1ac834a78042f1117fb445"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-conversion-storage-comparison.json",
+      "bytes": 702,
+      "sha256": "00b0fccbd0694a06c25102372401f36b44cffe10b65482e0871d6c7bda3f20dc"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-conversion-storage-emaxx.command.json",
+      "bytes": 3933,
+      "sha256": "b359c0526b8d4e74607b067d8691b5043f45650098638bd44b2d23ce7321f13e"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-conversion-storage-emaxx.result.json",
+      "bytes": 266,
+      "sha256": "2c5d270d18a19408038ed30d23c1d51fe7cdf359011df8d902cba0d3fd65d319"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-conversion-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-conversion-storage-emaxx.stdout",
+      "bytes": 652,
+      "sha256": "1d2863adc2140a37a1500d6a0756a26c2f30c139559f749fb898511cee653cf8"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-conversion-storage-gnu.command.json",
+      "bytes": 3807,
+      "sha256": "18aae401f1af8c0be6871b764c5a4e741a1a68974d2cd546652364c00540a4fa"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-conversion-storage-gnu.result.json",
+      "bytes": 273,
+      "sha256": "9adedfe47150c40de0594bd2879297aca22b8c6b6ceab4a537155395f9b8aada"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-conversion-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-conversion-storage-gnu.stdout",
+      "bytes": 652,
+      "sha256": "1d2863adc2140a37a1500d6a0756a26c2f30c139559f749fb898511cee653cf8"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-identity-storage-comparison.json",
+      "bytes": 711,
+      "sha256": "339ad8c67fe4e3ba0f2aa14f017b2cbe8cc86005bf9a24f27c9e0de98593e4c0"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-identity-storage-emaxx.command.json",
+      "bytes": 2747,
+      "sha256": "58e8412316aa4fd9f34328b25e10666109cd03c0f142c0e9d7fd5e50dc743240"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-identity-storage-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "72c082b2e39f746ebcf571714812616ff39fa28e6aa26f47f82f49ecb211aad7"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-identity-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-identity-storage-emaxx.stdout",
+      "bytes": 3086,
+      "sha256": "410ac62c8f094e66c8b869a388c8424741f9c7c11a0d09364d6ff61e71b91178"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-identity-storage-gnu.command.json",
+      "bytes": 2621,
+      "sha256": "96fbac1dea16051860d0953ababdc4ed4dc231d18818265df2d48c9be7b079b9"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-identity-storage-gnu.result.json",
+      "bytes": 274,
+      "sha256": "fd2816941067c775837ae78cd66374626e0f2c370e658b7dca4a77d6efb783a1"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-identity-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-canonical-coding-identity-storage-gnu.stdout",
+      "bytes": 3086,
+      "sha256": "410ac62c8f094e66c8b869a388c8424741f9c7c11a0d09364d6ff61e71b91178"
+    },
+    {
+      "path": "source240-ordinary-canonical-concat-storage-comparison.json",
+      "bytes": 709,
+      "sha256": "ceaa27658c136c029179ccc50796b634567b533c5c913c1c0a8a1262de118ab7"
+    },
+    {
+      "path": "source240-ordinary-canonical-concat-storage-emaxx.command.json",
+      "bytes": 3874,
+      "sha256": "d007aedc56113e4d71a0e7aaf0fb0d35156e22c59d8403c112781437c6a1ebf2"
+    },
+    {
+      "path": "source240-ordinary-canonical-concat-storage-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "f5563de7d7808e9d6d4056ad22eda562a9f05e869107bd66f5f8c5d5cc7ea0fa"
+    },
+    {
+      "path": "source240-ordinary-canonical-concat-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-canonical-concat-storage-emaxx.stdout",
+      "bytes": 1872,
+      "sha256": "1665d875283697bc3d83d7938310b31ac69c4720ecb6f68f85dac75d4abbab0a"
+    },
+    {
+      "path": "source240-ordinary-canonical-concat-storage-gnu.command.json",
+      "bytes": 3748,
+      "sha256": "d8bc848e902ad17e45bbcb6430665279da2de5f74290d23f601cddca016ed387"
+    },
+    {
+      "path": "source240-ordinary-canonical-concat-storage-gnu.result.json",
+      "bytes": 273,
+      "sha256": "b9dc7a04d3503a7867fec013d441a82e76f9b2c150d9b7292c19a5c0d059cddd"
+    },
+    {
+      "path": "source240-ordinary-canonical-concat-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-canonical-concat-storage-gnu.stdout",
+      "bytes": 1872,
+      "sha256": "1665d875283697bc3d83d7938310b31ac69c4720ecb6f68f85dac75d4abbab0a"
+    },
+    {
+      "path": "source240-ordinary-canonical-mapconcat-storage-comparison.json",
+      "bytes": 710,
+      "sha256": "f694620313b64f625cf34106ba96dd752e063775cca4b2b8982202578f4ccfc5"
+    },
+    {
+      "path": "source240-ordinary-canonical-mapconcat-storage-emaxx.command.json",
+      "bytes": 3549,
+      "sha256": "578739ff22a23ff8ab0bfc7d0dee2e77dd137446ee437be15bfdee444b4faaab"
+    },
+    {
+      "path": "source240-ordinary-canonical-mapconcat-storage-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "d04ccaef7ab5a4277c8cd785fe213d9c884bb45eeff28fe81e5943821e2366c5"
+    },
+    {
+      "path": "source240-ordinary-canonical-mapconcat-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-canonical-mapconcat-storage-emaxx.stdout",
+      "bytes": 794,
+      "sha256": "43dcc19189c35c9ffb9ceb5dc2bdc7329ed3ec1f2bd22092c4a6b2eeba3ba256"
+    },
+    {
+      "path": "source240-ordinary-canonical-mapconcat-storage-gnu.command.json",
+      "bytes": 3423,
+      "sha256": "447ba4b502b05f812fe7858b2a2279c0e5865dd11798091a125ef5c2a11072d4"
+    },
+    {
+      "path": "source240-ordinary-canonical-mapconcat-storage-gnu.result.json",
+      "bytes": 274,
+      "sha256": "66d1978132c2087eedee1391a9c50ab59404e09bc683b36bb68003bbec05fe8d"
+    },
+    {
+      "path": "source240-ordinary-canonical-mapconcat-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-canonical-mapconcat-storage-gnu.stdout",
+      "bytes": 794,
+      "sha256": "43dcc19189c35c9ffb9ceb5dc2bdc7329ed3ec1f2bd22092c4a6b2eeba3ba256"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-bytes-comparison.json",
+      "bytes": 710,
+      "sha256": "56a970fea6435d9d96b4f1162bae972fcd99aa7137526c762f8bbcb4657b5042"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-bytes-emaxx.command.json",
+      "bytes": 3032,
+      "sha256": "3449007ff8efb68171a5b2ce60c29f352cbaf0e4d77ae5b5685b1e7dea0ab395"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-bytes-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "54ccf00c2e4150a6ab5ddf331dbd88d7b72dfddd70a9e4d1e5816913de2900f1"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-bytes-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-bytes-emaxx.stdout",
+      "bytes": 744,
+      "sha256": "3248e83a52b6b60f89dcaaa0609394f31d3fb62158988345e6a7f86215647740"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-bytes-gnu.command.json",
+      "bytes": 2906,
+      "sha256": "448b81033705b7e166e39b4a354d4854b623702a3f8316e4d7566747d84b33ca"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-bytes-gnu.result.json",
+      "bytes": 274,
+      "sha256": "ba36769bd5a7723bf8179e3ae0f3dd86a89d12aeb41a9914646b2e15a1e65bd0"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-bytes-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-bytes-gnu.stdout",
+      "bytes": 744,
+      "sha256": "3248e83a52b6b60f89dcaaa0609394f31d3fb62158988345e6a7f86215647740"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-constructors-comparison.json",
+      "bytes": 711,
+      "sha256": "5577b643fca00efed2478a36b377bdaacb736b4ff939b21068c37f005feacf7d"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-constructors-emaxx.command.json",
+      "bytes": 3599,
+      "sha256": "28d016f2ef9e838474f9a7efa15f41d5eb6eeed7e5c02625ac4e8587de47b9dc"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-constructors-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "efefdd3db96edadcbaaac2b045cf21d8d9be057924dcf6ea264631a9fdd9d67f"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-constructors-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-constructors-emaxx.stdout",
+      "bytes": 8882,
+      "sha256": "d22b660464596a503ea768363bfe3bea21899ee4250aa34180a8b14af0843f7f"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-constructors-gnu.command.json",
+      "bytes": 3473,
+      "sha256": "8bcc55982733c550998cd4103c3a071e4f1ba1aa9a022688a0009b55b2a1ed23"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-constructors-gnu.result.json",
+      "bytes": 274,
+      "sha256": "288cab66f9be96385106cc7961425fa2ddea8f6f03ba8730769433bf20d70dc8"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-constructors-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-canonical-string-constructors-gnu.stdout",
+      "bytes": 8882,
+      "sha256": "d22b660464596a503ea768363bfe3bea21899ee4250aa34180a8b14af0843f7f"
+    },
+    {
+      "path": "source240-ordinary-char-table-authoritative-values-comparison.json",
+      "bytes": 709,
+      "sha256": "08aca83f67ce92fe5f2560f834d8cce3529b8233c1b82892d6be7149382ffacd"
+    },
+    {
+      "path": "source240-ordinary-char-table-authoritative-values-emaxx.command.json",
+      "bytes": 3340,
+      "sha256": "fce16a2182a633a5828d7f68edc724d78c3c06f1693959af2fb849467bc6c72c"
+    },
+    {
+      "path": "source240-ordinary-char-table-authoritative-values-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "4180038375110c9e5b7264e7b005bd56272953c3887b0deba70b22ca3d9699a6"
+    },
+    {
+      "path": "source240-ordinary-char-table-authoritative-values-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-char-table-authoritative-values-emaxx.stdout",
+      "bytes": 113,
+      "sha256": "b13ff26e468e066071392098a1fcc49fe7b5a3b976b775816da194f706ef5197"
+    },
+    {
+      "path": "source240-ordinary-char-table-authoritative-values-gnu.command.json",
+      "bytes": 3214,
+      "sha256": "55774e352dd9eef1b69a619fa3e6622820c2026c5d6dee23502a6e62f60a15fc"
+    },
+    {
+      "path": "source240-ordinary-char-table-authoritative-values-gnu.result.json",
+      "bytes": 272,
+      "sha256": "a288c0b35251d630d5d067d8a50019566e5986fb83f911380e26bf067afdeb6f"
+    },
+    {
+      "path": "source240-ordinary-char-table-authoritative-values-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-char-table-authoritative-values-gnu.stdout",
+      "bytes": 113,
+      "sha256": "b13ff26e468e066071392098a1fcc49fe7b5a3b976b775816da194f706ef5197"
+    },
+    {
+      "path": "source240-ordinary-char-table-identity-comparison.json",
+      "bytes": 710,
+      "sha256": "3047f09484e03fa207281cf41d3905498c58c78e0c54acdf7da60ef7165f32f9"
+    },
+    {
+      "path": "source240-ordinary-char-table-identity-emaxx.command.json",
+      "bytes": 5322,
+      "sha256": "0933168621d73798490235b6cc2c4128baa9dda48d8cce4fd6a7c0b925c63419"
+    },
+    {
+      "path": "source240-ordinary-char-table-identity-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "ddf782007c9e61a1d47fe19782c039e2ba62c4764f455b2069f39f2fc22d9737"
+    },
+    {
+      "path": "source240-ordinary-char-table-identity-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-char-table-identity-emaxx.stdout",
+      "bytes": 265,
+      "sha256": "1eaac07c560e3fc1918bebd2f86d61cfe732a50c17160fd4cf3637ec3e367991"
+    },
+    {
+      "path": "source240-ordinary-char-table-identity-gnu.command.json",
+      "bytes": 5196,
+      "sha256": "d6715989654eb3b711e05b57cdfd2feafcfcca1e7bca516292464baf77a185a5"
+    },
+    {
+      "path": "source240-ordinary-char-table-identity-gnu.result.json",
+      "bytes": 274,
+      "sha256": "afe73f7e733f3940ae80858431255a812b4dac8891c1129555f7ec990944a317"
+    },
+    {
+      "path": "source240-ordinary-char-table-identity-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-char-table-identity-gnu.stdout",
+      "bytes": 265,
+      "sha256": "1eaac07c560e3fc1918bebd2f86d61cfe732a50c17160fd4cf3637ec3e367991"
+    },
+    {
+      "path": "source240-ordinary-char-table-range-uniprop-comparison.json",
+      "bytes": 711,
+      "sha256": "8ec75cc60d2015df5b9236640949e530977412cbeb700b94334a40ee94588404"
+    },
+    {
+      "path": "source240-ordinary-char-table-range-uniprop-emaxx.command.json",
+      "bytes": 2883,
+      "sha256": "3a8fccb25ee864660eb4aa30f17e756e04a5aee3753842a8ed83f6bc65f4a750"
+    },
+    {
+      "path": "source240-ordinary-char-table-range-uniprop-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "8b218b457c54b3a6dcf981e80de4bfb9019484faf87c10cfa4f96c9b3be27546"
+    },
+    {
+      "path": "source240-ordinary-char-table-range-uniprop-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-char-table-range-uniprop-emaxx.stdout",
+      "bytes": 57,
+      "sha256": "407a3b594741b88ad75d9b9078ca194b860fe13de0b954ccbc034c645c506bac"
+    },
+    {
+      "path": "source240-ordinary-char-table-range-uniprop-gnu.command.json",
+      "bytes": 2757,
+      "sha256": "888a34b0077091999417be5a4d60c4b14f7cd578457deeea4f178b2cf21d9b8d"
+    },
+    {
+      "path": "source240-ordinary-char-table-range-uniprop-gnu.result.json",
+      "bytes": 274,
+      "sha256": "2c8283ce1f869f3d0d00ae318b9d4deebb92a924d8ffa85d61fe211c12316a40"
+    },
+    {
+      "path": "source240-ordinary-char-table-range-uniprop-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-char-table-range-uniprop-gnu.stdout",
+      "bytes": 57,
+      "sha256": "407a3b594741b88ad75d9b9078ca194b860fe13de0b954ccbc034c645c506bac"
+    },
+    {
+      "path": "source240-ordinary-comparisons-command.json",
+      "bytes": 4545,
+      "sha256": "cf323895d057d1b6f114854b7af0e8dff2a8adbf13c5c1e1220b42730833ef1d"
+    },
+    {
+      "path": "source240-ordinary-comparisons-result.json",
+      "bytes": 73,
+      "sha256": "0a1b863828202d90817362e168e9a43d0248546a881640df1489e3a6f760da4d"
+    },
+    {
+      "path": "source240-ordinary-comparisons.log",
+      "bytes": 16400,
+      "sha256": "9d4e3361746b682bb1b11d49b12f916a70f0982398f72f5c3cd4e8653d40eb1a"
+    },
+    {
+      "path": "source240-ordinary-completion-result-storage-comparison.json",
+      "bytes": 709,
+      "sha256": "c1e14c0a1392ab5bbb44016468c98e18dfc9c1d7c516aaaecd5c520f31c31abd"
+    },
+    {
+      "path": "source240-ordinary-completion-result-storage-emaxx.command.json",
+      "bytes": 3900,
+      "sha256": "97e4e3be4a2770cb5bf438e62e2e80354495dd23f4aefc993f499d0a44b54b80"
+    },
+    {
+      "path": "source240-ordinary-completion-result-storage-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "171d3ea9ef75a8adc1900a35c3ff1257a0699736c5d20d177b85a0059b596d6c"
+    },
+    {
+      "path": "source240-ordinary-completion-result-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-completion-result-storage-emaxx.stdout",
+      "bytes": 473,
+      "sha256": "09bbcb999b45b99dc72dd4c34f1cd61bfa01530ec41e005f881e6721654cd4ec"
+    },
+    {
+      "path": "source240-ordinary-completion-result-storage-gnu.command.json",
+      "bytes": 3774,
+      "sha256": "694b5c7cef1561a19eb5cf29f83454093ac0b79af2292ca268f237dfcc5e7960"
+    },
+    {
+      "path": "source240-ordinary-completion-result-storage-gnu.result.json",
+      "bytes": 273,
+      "sha256": "cf1b1747f8056d652a8c92b07e409be8bffe242c27ff1997d54a1004765bb690"
+    },
+    {
+      "path": "source240-ordinary-completion-result-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-completion-result-storage-gnu.stdout",
+      "bytes": 473,
+      "sha256": "09bbcb999b45b99dc72dd4c34f1cd61bfa01530ec41e005f881e6721654cd4ec"
+    },
+    {
+      "path": "source240-ordinary-copied-canonical-string-storage-comparison.json",
+      "bytes": 703,
+      "sha256": "0f08826770ad814f21c3ca49426ac7d140b5a92ce27a5a004d518a2e5bc03934"
+    },
+    {
+      "path": "source240-ordinary-copied-canonical-string-storage-emaxx.command.json",
+      "bytes": 2510,
+      "sha256": "16c0904d79e0817601925e28f8738d10e890e40c44c7cca550cfda5a49c2aca4"
+    },
+    {
+      "path": "source240-ordinary-copied-canonical-string-storage-emaxx.result.json",
+      "bytes": 266,
+      "sha256": "409c62a77fca9c5500fcb4a69555d554d8d8e59460fe93118392cb18b7d5f66c"
+    },
+    {
+      "path": "source240-ordinary-copied-canonical-string-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-copied-canonical-string-storage-emaxx.stdout",
+      "bytes": 841,
+      "sha256": "7895e3546afb4a0af177d49982a23e16094880686750d350375c821e246e7e38"
+    },
+    {
+      "path": "source240-ordinary-copied-canonical-string-storage-gnu.command.json",
+      "bytes": 2384,
+      "sha256": "7dab48410f95177844618254cf03b4c40023aa9e6baa44e4e1f6c3ef62fbdce5"
+    },
+    {
+      "path": "source240-ordinary-copied-canonical-string-storage-gnu.result.json",
+      "bytes": 274,
+      "sha256": "b136fcfdedb0e17c390449b9791178424d02621481b2db9678463645e9be0d6a"
+    },
+    {
+      "path": "source240-ordinary-copied-canonical-string-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-copied-canonical-string-storage-gnu.stdout",
+      "bytes": 841,
+      "sha256": "7895e3546afb4a0af177d49982a23e16094880686750d350375c821e246e7e38"
+    },
+    {
+      "path": "source240-ordinary-eval-original-argument-words-comparison.json",
+      "bytes": 709,
+      "sha256": "e8b55b0fecc92aed161c13450a3d447dcc748fc646cb8d3dbb0e941ad4ac886e"
+    },
+    {
+      "path": "source240-ordinary-eval-original-argument-words-emaxx.command.json",
+      "bytes": 3264,
+      "sha256": "960ec8a3638b54cf4ac354ce68bf0a261f2c470c741f45de1e6cee30c14e3bed"
+    },
+    {
+      "path": "source240-ordinary-eval-original-argument-words-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "3a111f020f5de0ce1ca8b628cce97e2b78e4be7fc8f1ac2cdadec6e7f71173bc"
+    },
+    {
+      "path": "source240-ordinary-eval-original-argument-words-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-eval-original-argument-words-emaxx.stdout",
+      "bytes": 483,
+      "sha256": "801589517f87a3071656fc6a9dbc5e33ea3d9bd34aeb03f0ccb1f9b67150de5f"
+    },
+    {
+      "path": "source240-ordinary-eval-original-argument-words-gnu.command.json",
+      "bytes": 3138,
+      "sha256": "bb316c9db77a6b37acb033152c0f1e3b06c8d5cb8237728e172a2e045319df67"
+    },
+    {
+      "path": "source240-ordinary-eval-original-argument-words-gnu.result.json",
+      "bytes": 273,
+      "sha256": "148fc5df20db989483a18c17963594ecd32ea4eb20c9ceddb09e59bb467eeec8"
+    },
+    {
+      "path": "source240-ordinary-eval-original-argument-words-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-eval-original-argument-words-gnu.stdout",
+      "bytes": 483,
+      "sha256": "801589517f87a3071656fc6a9dbc5e33ea3d9bd34aeb03f0ccb1f9b67150de5f"
+    },
+    {
+      "path": "source240-ordinary-image-command.json",
+      "bytes": 1028,
+      "sha256": "7527de6246b24222290ca7f0451b31d4a5297f6fe9065b1848a3a5436907b035"
+    },
+    {
+      "path": "source240-ordinary-image-result.json",
+      "bytes": 88,
+      "sha256": "448e89a949f2dc4470258eda41318669cac75a1f90246d35fce3494f2a273fa3"
+    },
+    {
+      "path": "source240-ordinary-image.log",
+      "bytes": 6630,
+      "sha256": "1e48797be905feb320bde3bcc5637229b0ed0b53ecd6c994581a71fb4c22ced4"
+    },
+    {
+      "path": "source240-ordinary-input-decode-autoload-prefix-comparison.json",
+      "bytes": 711,
+      "sha256": "066ec321e32a271121f710411edb39c15e34369467617bb27b0ba1e0b355e3c4"
+    },
+    {
+      "path": "source240-ordinary-input-decode-autoload-prefix-emaxx.command.json",
+      "bytes": 2975,
+      "sha256": "b045801f8b4e9ae034f5046fc9b9af4cab28629c3a7467d0f5bdeba1af779a6c"
+    },
+    {
+      "path": "source240-ordinary-input-decode-autoload-prefix-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "b09e47cd104d337c1e2e06393486acfc102ddb654736e3ee0e0846e8841f7729"
+    },
+    {
+      "path": "source240-ordinary-input-decode-autoload-prefix-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-autoload-prefix-emaxx.stdout",
+      "bytes": 17,
+      "sha256": "49d2e9a08c915dc37b68905ef97e6f94c770f4c5827461464f48fde93061e343"
+    },
+    {
+      "path": "source240-ordinary-input-decode-autoload-prefix-gnu.command.json",
+      "bytes": 2849,
+      "sha256": "f207e59d45d1702679b15d2c78d5120d2f9309a3e5663d25cd13dfddd831b57f"
+    },
+    {
+      "path": "source240-ordinary-input-decode-autoload-prefix-gnu.result.json",
+      "bytes": 274,
+      "sha256": "88ba447588636e3a7b203957054dca8bfbb57d96f4e6b3ce3ff0424f7ebfe206"
+    },
+    {
+      "path": "source240-ordinary-input-decode-autoload-prefix-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-autoload-prefix-gnu.stdout",
+      "bytes": 17,
+      "sha256": "49d2e9a08c915dc37b68905ef97e6f94c770f4c5827461464f48fde93061e343"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-state-comparison.json",
+      "bytes": 710,
+      "sha256": "c6f818e2907af403f2e94a5af30503fd288fdefb1ced93cda865a4b97ed85821"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-state-emaxx.command.json",
+      "bytes": 2565,
+      "sha256": "1463f135442d7341243f90ced82f801784c203f5828fac0f01958b89c762c183"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-state-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "7c3f0739ccb85a953eb15bf954e49de4f8d4af529393f4ac26de6f9f51120dfc"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-state-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-state-emaxx.stdout",
+      "bytes": 53,
+      "sha256": "9b7fc788345e0547c05fde2fc618ae504c9b8e720f8af147f4239d321b1fa049"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-state-gnu.command.json",
+      "bytes": 2439,
+      "sha256": "b88a41b5aba14434baac53558e1b8d60bd136977dd22855922e682ea1de1ca45"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-state-gnu.result.json",
+      "bytes": 274,
+      "sha256": "7053a6ea836c010ff36f0c14c1aa7f388f73fbc82dcd3b00478b55acfbb2488c"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-state-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-state-gnu.stdout",
+      "bytes": 53,
+      "sha256": "9b7fc788345e0547c05fde2fc618ae504c9b8e720f8af147f4239d321b1fa049"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-variants-comparison.json",
+      "bytes": 711,
+      "sha256": "670c63c186b144d8b70aed3ee983a776577f627a307f58129531411f4e7a6fb2"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-variants-emaxx.command.json",
+      "bytes": 3185,
+      "sha256": "8f338a2430b3bcde627e480d89e42e5a56ac0ccdd1fbb936a02449699e2b7cff"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-variants-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "614cc60e767b8a28e342e0a2c2d217893bbb05e9ec0c18d9df0baa8e91e05cb7"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-variants-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-variants-emaxx.stdout",
+      "bytes": 115,
+      "sha256": "a79eb171fad29f992f78b91d967315a6729460d5a96d3bc9fb21e5e0c7dd9215"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-variants-gnu.command.json",
+      "bytes": 3059,
+      "sha256": "d5a363024be873805bcb3f83a8a193088607f8f2a22401b48599923a743fea90"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-variants-gnu.result.json",
+      "bytes": 274,
+      "sha256": "8230f1097439d6bc57055f0c005dd1bc0cf3b9f51a45ab786a96373d271b8b3c"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-variants-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-case-variants-gnu.stdout",
+      "bytes": 115,
+      "sha256": "a79eb171fad29f992f78b91d967315a6729460d5a96d3bc9fb21e5e0c7dd9215"
+    },
+    {
+      "path": "source240-ordinary-input-decode-command-reader-comparison.json",
+      "bytes": 711,
+      "sha256": "3b5ebf7948e4c3683451e41d67439e8ea0708977e6c7b283b5bba75454810b4d"
+    },
+    {
+      "path": "source240-ordinary-input-decode-command-reader-emaxx.command.json",
+      "bytes": 3065,
+      "sha256": "7df938fafd58f826c9649cbe24cee6de5960749fe8ab8a59ec81010acf43487d"
+    },
+    {
+      "path": "source240-ordinary-input-decode-command-reader-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "212d596a17ddb1911b25b7969f535938c0dd27b243d946352a59f0c534ccba87"
+    },
+    {
+      "path": "source240-ordinary-input-decode-command-reader-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-command-reader-emaxx.stdout",
+      "bytes": 34,
+      "sha256": "3af2fa472622c8f90b584f03ae5cf26bcb48b10dd053abe0233fad68ff5eb5ce"
+    },
+    {
+      "path": "source240-ordinary-input-decode-command-reader-gnu.command.json",
+      "bytes": 2939,
+      "sha256": "38596b5c3ed4760435925704da84fdc73d7fb6c41c6baab09a59a26f13e3c076"
+    },
+    {
+      "path": "source240-ordinary-input-decode-command-reader-gnu.result.json",
+      "bytes": 274,
+      "sha256": "b24feee78313c444b952a950401fd0effff01582539a0a16d6ba1cade180b659"
+    },
+    {
+      "path": "source240-ordinary-input-decode-command-reader-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-command-reader-gnu.stdout",
+      "bytes": 34,
+      "sha256": "3af2fa472622c8f90b584f03ae5cf26bcb48b10dd053abe0233fad68ff5eb5ce"
+    },
+    {
+      "path": "source240-ordinary-input-decode-down-event-binding-comparison.json",
+      "bytes": 709,
+      "sha256": "ccea86bc9813611697994baa0b0a18f23ecab887a0351e9b47ef4738df3da29d"
+    },
+    {
+      "path": "source240-ordinary-input-decode-down-event-binding-emaxx.command.json",
+      "bytes": 2444,
+      "sha256": "4974c47452b91c8ae09763e9551faa2c20663f5124ddcd1eef691ae9028fe8a5"
+    },
+    {
+      "path": "source240-ordinary-input-decode-down-event-binding-emaxx.result.json",
+      "bytes": 272,
+      "sha256": "875e82843647f654d90cec8c3bfef6927b915af0e604ad844abe21fb67fda7cb"
+    },
+    {
+      "path": "source240-ordinary-input-decode-down-event-binding-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-down-event-binding-emaxx.stdout",
+      "bytes": 44,
+      "sha256": "5a88043eb8f7bf9ef246cdffa0d420c38bf3d3b932d3b42e2568027311f9a5ff"
+    },
+    {
+      "path": "source240-ordinary-input-decode-down-event-binding-gnu.command.json",
+      "bytes": 2318,
+      "sha256": "9a2fc230372b638254e2858fb6727a8e5e1bd617fbfbe30043e7dd3f3dcef715"
+    },
+    {
+      "path": "source240-ordinary-input-decode-down-event-binding-gnu.result.json",
+      "bytes": 274,
+      "sha256": "46a6820ac07cd9e98492dfcd52f7e8e0a1d159f861fad61dd9e954673c979967"
+    },
+    {
+      "path": "source240-ordinary-input-decode-down-event-binding-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-down-event-binding-gnu.stdout",
+      "bytes": 44,
+      "sha256": "5a88043eb8f7bf9ef246cdffa0d420c38bf3d3b932d3b42e2568027311f9a5ff"
+    },
+    {
+      "path": "source240-ordinary-input-decode-extra-comparison.json",
+      "bytes": 710,
+      "sha256": "77beffc3e43d17c086bd7c8d0919cbaf579b3769ca613c6cd2810927d19d317d"
+    },
+    {
+      "path": "source240-ordinary-input-decode-extra-emaxx.command.json",
+      "bytes": 3331,
+      "sha256": "4f639f786277db33087afe7a9b1352238dec18158fcc550b64b69ad0611837dd"
+    },
+    {
+      "path": "source240-ordinary-input-decode-extra-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "09a12d7ab7ffde64c74586359e413c8d279bbfbb5e3334a11eac61891fdc4b9d"
+    },
+    {
+      "path": "source240-ordinary-input-decode-extra-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-extra-emaxx.stdout",
+      "bytes": 82,
+      "sha256": "d2400ba2235e416dd57a91b4155c767639f9318cbc4ac4c0971ef07cbd766250"
+    },
+    {
+      "path": "source240-ordinary-input-decode-extra-gnu.command.json",
+      "bytes": 3205,
+      "sha256": "4aef066200746cb9727208d6701d823fd66a95107b9b54d37462946f7bca4231"
+    },
+    {
+      "path": "source240-ordinary-input-decode-extra-gnu.result.json",
+      "bytes": 274,
+      "sha256": "5de2cc9e10311d725b47b21e15aa8179ae2bbbe912b45d4ac912ea7b340f06e6"
+    },
+    {
+      "path": "source240-ordinary-input-decode-extra-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-extra-gnu.stdout",
+      "bytes": 82,
+      "sha256": "d2400ba2235e416dd57a91b4155c767639f9318cbc4ac4c0971ef07cbd766250"
+    },
+    {
+      "path": "source240-ordinary-input-decode-first-unbound-comparison.json",
+      "bytes": 711,
+      "sha256": "24b8a672d81fab3da313ed4d77a6ace25a3b3785e35f8cab82a490d76b751abd"
+    },
+    {
+      "path": "source240-ordinary-input-decode-first-unbound-emaxx.command.json",
+      "bytes": 2815,
+      "sha256": "1f3a32140d219fc749f41c5e10149468c942b84338c991ce85576708e35921e8"
+    },
+    {
+      "path": "source240-ordinary-input-decode-first-unbound-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "803097ca34b1e01fac03b2d43f58ff41fc2457f23af2d5a7e0b7d78380a2dc9b"
+    },
+    {
+      "path": "source240-ordinary-input-decode-first-unbound-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-first-unbound-emaxx.stdout",
+      "bytes": 145,
+      "sha256": "5e5862857cdf0ed46c20c40114c6d0014ef0add8422f58d7d2f9da899cdd29ae"
+    },
+    {
+      "path": "source240-ordinary-input-decode-first-unbound-gnu.command.json",
+      "bytes": 2689,
+      "sha256": "0849f7968f788b626512f086e61cbfeb0ecd960b2e488ced85ff8534b0b1d552"
+    },
+    {
+      "path": "source240-ordinary-input-decode-first-unbound-gnu.result.json",
+      "bytes": 274,
+      "sha256": "1e64b4601d30c2f3f9c7866ad18bb8970c92ef9882955cf22ec9c98bc9a0c938"
+    },
+    {
+      "path": "source240-ordinary-input-decode-first-unbound-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-first-unbound-gnu.stdout",
+      "bytes": 145,
+      "sha256": "5e5862857cdf0ed46c20c40114c6d0014ef0add8422f58d7d2f9da899cdd29ae"
+    },
+    {
+      "path": "source240-ordinary-input-decode-general-comparison.json",
+      "bytes": 693,
+      "sha256": "855e69b793e5eb47b492b9e268c9285b0005b0b997cfcf3e54b6c75ed27b6da7"
+    },
+    {
+      "path": "source240-ordinary-input-decode-general-emaxx.command.json",
+      "bytes": 3409,
+      "sha256": "685faa027b687a22efd38dec83ee890ad34df4167519d4ae04dbaa32bf5d233f"
+    },
+    {
+      "path": "source240-ordinary-input-decode-general-emaxx.result.json",
+      "bytes": 266,
+      "sha256": "9b7604addc8e4b55880c04a48550dfb674b78485f380ea116b11c9b99fdc825e"
+    },
+    {
+      "path": "source240-ordinary-input-decode-general-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-general-emaxx.stdout",
+      "bytes": 197,
+      "sha256": "35414393d016c182b8ee1ffbbc1f81e647e509826047618b8d8f7a9637f8acc2"
+    },
+    {
+      "path": "source240-ordinary-input-decode-general-gnu.command.json",
+      "bytes": 3283,
+      "sha256": "5c9c2f6d7aa65b86e03ddc6939e122bf5f5bdc52e4e18652570412d40e250bff"
+    },
+    {
+      "path": "source240-ordinary-input-decode-general-gnu.result.json",
+      "bytes": 264,
+      "sha256": "357c865212197a68497d4080087f40a5a4c23863d81fd9c606e638edd9089507"
+    },
+    {
+      "path": "source240-ordinary-input-decode-general-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-general-gnu.stdout",
+      "bytes": 197,
+      "sha256": "35414393d016c182b8ee1ffbbc1f81e647e509826047618b8d8f7a9637f8acc2"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-live-array-comparison.json",
+      "bytes": 709,
+      "sha256": "cc773ab1daa09f15023a778255756107d76d312e08bf4eb49a09e66828f69ba7"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-live-array-emaxx.command.json",
+      "bytes": 2859,
+      "sha256": "b40e6f8b5d1406171ffb38489e4ae2a65092ab3047f1b9fba3975d3990ee744c"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-live-array-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "14e039eca87b1e1b58c3bc75c7d9f100b51c597070d3fa7cd49b533f1c1ffc0a"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-live-array-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-live-array-emaxx.stdout",
+      "bytes": 47,
+      "sha256": "f0df49c4425d896b2a77bbed413e8fc901449fb73501448bc177625e9d681ae7"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-live-array-gnu.command.json",
+      "bytes": 2733,
+      "sha256": "d42747d0b5bc5ae4df45cb7e1499e5080473da6953733943f26e427c25ec132c"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-live-array-gnu.result.json",
+      "bytes": 273,
+      "sha256": "c91d21a236ea878c7090985c1c018c5a103dcf57bc7cbbae1804ee0d3d314e02"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-live-array-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-live-array-gnu.stdout",
+      "bytes": 47,
+      "sha256": "f0df49c4425d896b2a77bbed413e8fc901449fb73501448bc177625e9d681ae7"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-nested-roots-comparison.json",
+      "bytes": 710,
+      "sha256": "f1cf2a48af7e11db05e203b9b59bf87fca88162458dd29b53a9ae6f351888c6a"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-nested-roots-emaxx.command.json",
+      "bytes": 3203,
+      "sha256": "7a0d3a327eb172846deadc5fd4a4c7ea7257dc6477f4e2a0f4c2684c49b1a081"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-nested-roots-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "cfaab8c9648fdd7f6841c3f54a2e01bb550c8c05f2bb9c6a0cd019d171b1629b"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-nested-roots-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-nested-roots-emaxx.stdout",
+      "bytes": 133,
+      "sha256": "56215f674d1f676326011a104d23a92226aa1b341d2180dae71ed099df4cb08e"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-nested-roots-gnu.command.json",
+      "bytes": 3077,
+      "sha256": "a0fed19deba5f5deaca3c368947216300c6d5409c8db174f53672308f47fd2fb"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-nested-roots-gnu.result.json",
+      "bytes": 274,
+      "sha256": "b3b920a50a81494a54edec1f600861058f806897a58756961ade7069f5d882bc"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-nested-roots-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-nested-roots-gnu.stdout",
+      "bytes": 133,
+      "sha256": "56215f674d1f676326011a104d23a92226aa1b341d2180dae71ed099df4cb08e"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-raw-array-comparison.json",
+      "bytes": 711,
+      "sha256": "53d1199aa0dd9d17c03025b83ddeb9254769cd8cb0b531cee611e878d64c92b0"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-raw-array-emaxx.command.json",
+      "bytes": 2268,
+      "sha256": "d91d6d8b2de695952798c0c1ab584f7de17c9ab52d737305000023cf0bf76b44"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-raw-array-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "4c1e59233c605c626cbb23b58ae9adcf1404c27fa64dde1f8f951aa3c052b707"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-raw-array-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-raw-array-emaxx.stdout",
+      "bytes": 132,
+      "sha256": "cff68d987d74ff88f9125a7c303b637eba85e3703e2098a69d42028f44387695"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-raw-array-gnu.command.json",
+      "bytes": 2142,
+      "sha256": "3ad8b39ef0bdf62b3236c491b4a4e0fb91ee63728eec262bcd06682bc392243f"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-raw-array-gnu.result.json",
+      "bytes": 274,
+      "sha256": "8bf6e9037bcaaa257caeb0a475397fda1a3db8a62a7ab9ef648ea005989f2c7e"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-raw-array-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-raw-array-gnu.stdout",
+      "bytes": 132,
+      "sha256": "cff68d987d74ff88f9125a7c303b637eba85e3703e2098a69d42028f44387695"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-read-order-comparison.json",
+      "bytes": 710,
+      "sha256": "9fa17b95147189f6d3839040e528bb50187e5116d184ff1d68666bd405bc834e"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-read-order-emaxx.command.json",
+      "bytes": 2582,
+      "sha256": "5a64ea6f7a391c32e4fc0eeca429b3c2e1cdf519c044baab55b2f5c7d789c0c9"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-read-order-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "0ed0cb4252a660e38541b733bb16d94b06744fee7d23741ac6043df463dca76f"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-read-order-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-read-order-emaxx.stdout",
+      "bytes": 114,
+      "sha256": "1deecf121e57b8b1faf34ab254d20def70079a2478c70a5266c93c1de2917b5d"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-read-order-gnu.command.json",
+      "bytes": 2456,
+      "sha256": "9149674219c3011cc9e6c02e5c66e008f3f84f805c5b12b0a7017cb945af2a57"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-read-order-gnu.result.json",
+      "bytes": 273,
+      "sha256": "8e0edeb08a53c743b925a8fc0b6452bf568c70de68eb30bfc9b4b1041f459083"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-read-order-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-read-order-gnu.stdout",
+      "bytes": 114,
+      "sha256": "1deecf121e57b8b1faf34ab254d20def70079a2478c70a5266c93c1de2917b5d"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-reclamation-comparison.json",
+      "bytes": 709,
+      "sha256": "a9bc74953294c6ceebeeff4bba24e09ecd32cc9845f375b1a2f789f3ecb59e8a"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-reclamation-emaxx.command.json",
+      "bytes": 3220,
+      "sha256": "f9223be95879294bb57c3c7ccc7ff939b8bbdf9f9b5a1f42616e438c7acf2fbb"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-reclamation-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "9d3ba82dffaec0f1604a826e56780d629ffa9f38e3c728377636c56175ece1dd"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-reclamation-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-reclamation-emaxx.stdout",
+      "bytes": 110,
+      "sha256": "1ad4832cdb8a1a57b1e3ddaaa9cc17c51d13b4245c3fd5dd2fec1805af40fbfe"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-reclamation-gnu.command.json",
+      "bytes": 3094,
+      "sha256": "ec078ab98df3e26d414695879a1d17e6d8c0555cd49ba0f749058f215c214c70"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-reclamation-gnu.result.json",
+      "bytes": 273,
+      "sha256": "ade713ccfff205215fcdf7606bba0f632694fbf6d887d32ee2d86a4cfc762577"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-reclamation-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-reclamation-gnu.stdout",
+      "bytes": 110,
+      "sha256": "1ad4832cdb8a1a57b1e3ddaaa9cc17c51d13b4245c3fd5dd2fec1805af40fbfe"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-shared-comparison.json",
+      "bytes": 711,
+      "sha256": "05a2d52983531ddad95faffdb0d8015f4acba7b143cd3ee339d0d786210fb0cc"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-shared-emaxx.command.json",
+      "bytes": 2447,
+      "sha256": "6b61be3ea829a3e75c8f4daffad00caf75dd193f4a88bc2a253a97ede660bba9"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-shared-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "e31cc199662d1f93b070f30321642e4bbf06d18016b2130db6837c566a5da11d"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-shared-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-shared-emaxx.stdout",
+      "bytes": 19,
+      "sha256": "a5463db69a5cb968906925050f3a452219a5613c5c12dfca5f3562e1f0dc97d6"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-shared-gnu.command.json",
+      "bytes": 2321,
+      "sha256": "979368cc01f6aac727600723f254b128a5b28d3555ed304f8bca293224910811"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-shared-gnu.result.json",
+      "bytes": 274,
+      "sha256": "17edee580c581c938da6771643ca5a53307f41d438671aebd6285a6cd65098f0"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-shared-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-macro-shared-gnu.stdout",
+      "bytes": 19,
+      "sha256": "a5463db69a5cb968906925050f3a452219a5613c5c12dfca5f3562e1f0dc97d6"
+    },
+    {
+      "path": "source240-ordinary-input-decode-map-authority-comparison.json",
+      "bytes": 702,
+      "sha256": "55a97406daf3d80bb50282d8ead74019e99c43f4c17392ee69f7c2462841839c"
+    },
+    {
+      "path": "source240-ordinary-input-decode-map-authority-emaxx.command.json",
+      "bytes": 2586,
+      "sha256": "6317447b5023a71fc7e71fc50c3c9b2e55d5ad8b7f8bbc0a912c8212963e5c7f"
+    },
+    {
+      "path": "source240-ordinary-input-decode-map-authority-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "c597d6331c98ec96b0a6869cf23497313c2b408bca5177842de8ee5127f5b5d6"
+    },
+    {
+      "path": "source240-ordinary-input-decode-map-authority-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-map-authority-emaxx.stdout",
+      "bytes": 47,
+      "sha256": "ea8877fd7b9843769bbcd20ca2e29628340aa8d842dbc0242ddc4dc389f061d8"
+    },
+    {
+      "path": "source240-ordinary-input-decode-map-authority-gnu.command.json",
+      "bytes": 2460,
+      "sha256": "7a2749640952117177a801ca2c14d498eb591b317c364a53c7dc119fee28ba14"
+    },
+    {
+      "path": "source240-ordinary-input-decode-map-authority-gnu.result.json",
+      "bytes": 266,
+      "sha256": "348489238feefd0747f2f14fe588161be58295adc11e13089554ea75afaeaed8"
+    },
+    {
+      "path": "source240-ordinary-input-decode-map-authority-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-map-authority-gnu.stdout",
+      "bytes": 47,
+      "sha256": "ea8877fd7b9843769bbcd20ca2e29628340aa8d842dbc0242ddc4dc389f061d8"
+    },
+    {
+      "path": "source240-ordinary-input-decode-menu-bar-comparison.json",
+      "bytes": 711,
+      "sha256": "87d0b146d81adf0002eabb68b8289350dff1c2fdff5eea8f9d49ed102e8e083c"
+    },
+    {
+      "path": "source240-ordinary-input-decode-menu-bar-emaxx.command.json",
+      "bytes": 1970,
+      "sha256": "19bcac2c9a59eb8c14083acfcc036f4c2760dbd176cd0049ba71e7d119559eb8"
+    },
+    {
+      "path": "source240-ordinary-input-decode-menu-bar-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "23ba69c266eea3820cc6fb1f39b0a584d08dee35b52efde824fadfc2b2cc68da"
+    },
+    {
+      "path": "source240-ordinary-input-decode-menu-bar-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-menu-bar-emaxx.stdout",
+      "bytes": 137,
+      "sha256": "117a5cea5ca7a371e9ef1df813b362c2a6f2c350f8faf98510444a2f97fe1997"
+    },
+    {
+      "path": "source240-ordinary-input-decode-menu-bar-gnu.command.json",
+      "bytes": 1844,
+      "sha256": "e2d63b9a414b120b771e751335c45d50e9e35b3786429268676f294233fc4076"
+    },
+    {
+      "path": "source240-ordinary-input-decode-menu-bar-gnu.result.json",
+      "bytes": 274,
+      "sha256": "c889b599d984fc8319315b3311900310a1c1e535d409ca62076f79a17605439b"
+    },
+    {
+      "path": "source240-ordinary-input-decode-menu-bar-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-menu-bar-gnu.stdout",
+      "bytes": 137,
+      "sha256": "117a5cea5ca7a371e9ef1df813b362c2a6f2c350f8faf98510444a2f97fe1997"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-queue-comparison.json",
+      "bytes": 710,
+      "sha256": "8574775a3586d9b2c38e3c79a265a54985be6557fefbc6c28fef33772a75967e"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-queue-emaxx.command.json",
+      "bytes": 2586,
+      "sha256": "6cdbb5f631f3f045675c1851288503aca90de3c7b456ea260175466a2ef98854"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-queue-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "3fb230bfcb9c431abc2a0dd3256d01dea5e94f886699d88445f9d37e6738f6d8"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-queue-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-queue-emaxx.stdout",
+      "bytes": 23,
+      "sha256": "e91e442e56afa426b0769a70fae09446cad7c781d61e9e70217f00365bf42d75"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-queue-gnu.command.json",
+      "bytes": 2460,
+      "sha256": "f37bb38b7778ccfbad3a4a8de2a2c4e854a0035e12fbae6153d238476892a75a"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-queue-gnu.result.json",
+      "bytes": 274,
+      "sha256": "0097eb0cca9af2c887dc7671f743264c4580d10d822cf961a16819bedfe74262"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-queue-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-queue-gnu.stdout",
+      "bytes": 23,
+      "sha256": "e91e442e56afa426b0769a70fae09446cad7c781d61e9e70217f00365bf42d75"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-shared-comparison.json",
+      "bytes": 710,
+      "sha256": "ed6137a12660dce639332d7ce7da1bf5c4f3e5718519401b6e831b813859a783"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-shared-emaxx.command.json",
+      "bytes": 2808,
+      "sha256": "561067d6fbadcb04e66940b245864cc1ac49fb287ce9d0a5d83f1c794cd99f7f"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-shared-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "11d5c4029f3213e25ea76f93871b2d12887da2578ab6b6c23c059db94866a2be"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-shared-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-shared-emaxx.stdout",
+      "bytes": 53,
+      "sha256": "cf4a145b0212bdf7f3d998742d223f2c247cd7dd1e8e44cb5f34583f71a2942d"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-shared-gnu.command.json",
+      "bytes": 2682,
+      "sha256": "23db108f69c3a289d76b5a4cfdac6c393832e425ba549d12f887d92ae9e23c31"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-shared-gnu.result.json",
+      "bytes": 273,
+      "sha256": "499ab115bc62d9c4e7da279371ce594a17c04baf736d13d0a6e17340188bc583"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-shared-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-minibuffer-shared-gnu.stdout",
+      "bytes": 53,
+      "sha256": "cf4a145b0212bdf7f3d998742d223f2c247cd7dd1e8e44cb5f34583f71a2942d"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-menu-cases-comparison.json",
+      "bytes": 710,
+      "sha256": "07997d4772e4bd50d5a41b231f741338f7167ada16cae2848f0f8d1c70267417"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-menu-cases-emaxx.command.json",
+      "bytes": 2243,
+      "sha256": "a4587382d10937d78028c5a943f222af9321c5e5863dfe3a9f42211ead68f4f3"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-menu-cases-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "b9536c61c87b8b41752a5decda3e38645221237d233dde750a859b7feef3dce2"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-menu-cases-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-menu-cases-emaxx.stdout",
+      "bytes": 291,
+      "sha256": "a12ee296093fd57684cad4510a9fb3948b1ca1ef73c721364dedc2629bfffd82"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-menu-cases-gnu.command.json",
+      "bytes": 2117,
+      "sha256": "089bed6f516319036aa4feca5956d1110edd0c68b935ccb3847d8df0eb804cf0"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-menu-cases-gnu.result.json",
+      "bytes": 273,
+      "sha256": "e7bd051ea351a25f36c21d84dc01658003ef0096cc5de3503e574ee49907b63f"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-menu-cases-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-menu-cases-gnu.stdout",
+      "bytes": 291,
+      "sha256": "a12ee296093fd57684cad4510a9fb3948b1ca1ef73c721364dedc2629bfffd82"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-raw-mutation-comparison.json",
+      "bytes": 711,
+      "sha256": "a57759cb0a6813f49eddfe4a20a5950f360858a51287792b005f9f111c2be3b9"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-raw-mutation-emaxx.command.json",
+      "bytes": 3025,
+      "sha256": "12be27adc2ed219c49290313f79014050eb8c7030e640ba3bdeb010b3de64c45"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-raw-mutation-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "7aef2265cf0bf6585b562adbcbba3c4783577e0eff42b73ff2c602cff34160a8"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-raw-mutation-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-raw-mutation-emaxx.stdout",
+      "bytes": 359,
+      "sha256": "6658fb5b2ddd5290b5d74c61a327a653c4a5afb04f5b6824810f8bf4c802f767"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-raw-mutation-gnu.command.json",
+      "bytes": 2899,
+      "sha256": "c91ecf3f62394492ed01a5b6888c5274116bc7b83cc0e655dfc873f5f69cc259"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-raw-mutation-gnu.result.json",
+      "bytes": 274,
+      "sha256": "fe5133b29c66886daa7cc7b0a724fd5936f4eb16220b155eff39a055df738625"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-raw-mutation-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-mouse-raw-mutation-gnu.stdout",
+      "bytes": 359,
+      "sha256": "6658fb5b2ddd5290b5d74c61a327a653c4a5afb04f5b6824810f8bf4c802f767"
+    },
+    {
+      "path": "source240-ordinary-input-decode-pipeline-comparison.json",
+      "bytes": 702,
+      "sha256": "4cb795a71b36867f30b4ab910e55bd119f23c144ce2db8d43307b49ef84a7652"
+    },
+    {
+      "path": "source240-ordinary-input-decode-pipeline-emaxx.command.json",
+      "bytes": 4656,
+      "sha256": "f51fe8d2425781165e256adda9866d90f1666e3ed2a20a2bcc0b27a0365febdf"
+    },
+    {
+      "path": "source240-ordinary-input-decode-pipeline-emaxx.result.json",
+      "bytes": 266,
+      "sha256": "2537518297502f663e1c80057ae0c4863e0081ad6520be03c879c20bfbadf8e7"
+    },
+    {
+      "path": "source240-ordinary-input-decode-pipeline-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-pipeline-emaxx.stdout",
+      "bytes": 155,
+      "sha256": "a90770952aaca292e42184d2fbe158eab3673762160905b1b7b4335bbf0dfebb"
+    },
+    {
+      "path": "source240-ordinary-input-decode-pipeline-gnu.command.json",
+      "bytes": 4530,
+      "sha256": "dc58b033f066b9bf72f9a4ecf50828b43497ecf7d45948ec0daf84f89f92e445"
+    },
+    {
+      "path": "source240-ordinary-input-decode-pipeline-gnu.result.json",
+      "bytes": 273,
+      "sha256": "22f59d3cbac5b7b85e5738350d556420408448740b188525e41a7106821d637e"
+    },
+    {
+      "path": "source240-ordinary-input-decode-pipeline-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-pipeline-gnu.stdout",
+      "bytes": 155,
+      "sha256": "a90770952aaca292e42184d2fbe158eab3673762160905b1b7b4335bbf0dfebb"
+    },
+    {
+      "path": "source240-ordinary-input-decode-position-lookup-comparison.json",
+      "bytes": 710,
+      "sha256": "e00f523caf8f296e1517413dce357d50ceb1272c3989a2990e7b5c2633f9af9e"
+    },
+    {
+      "path": "source240-ordinary-input-decode-position-lookup-emaxx.command.json",
+      "bytes": 2426,
+      "sha256": "916d57ebbfcdbbe31dbff32b61c82dc3c46a180d067bfd3c9a4b63b314abafa1"
+    },
+    {
+      "path": "source240-ordinary-input-decode-position-lookup-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "1a0d5155f071d50470e7676765224c7e5a4f54ddffa26d4176759d72ca880621"
+    },
+    {
+      "path": "source240-ordinary-input-decode-position-lookup-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-position-lookup-emaxx.stdout",
+      "bytes": 410,
+      "sha256": "14ee3b87f837ed96cddfdaca09f6249a8adc4997465b6a1654c0201fd7e5ad0d"
+    },
+    {
+      "path": "source240-ordinary-input-decode-position-lookup-gnu.command.json",
+      "bytes": 2300,
+      "sha256": "9c613f82ca9451cb94d03bf625a79d7b1bc099cf9375f1f56613576b08fc6f1b"
+    },
+    {
+      "path": "source240-ordinary-input-decode-position-lookup-gnu.result.json",
+      "bytes": 274,
+      "sha256": "149710797ac9c4b0cb31a71c8b61e5566a26db90270b587d7de69d98dbc06777"
+    },
+    {
+      "path": "source240-ordinary-input-decode-position-lookup-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-position-lookup-gnu.stdout",
+      "bytes": 410,
+      "sha256": "14ee3b87f837ed96cddfdaca09f6249a8adc4997465b6a1654c0201fd7e5ad0d"
+    },
+    {
+      "path": "source240-ordinary-input-decode-reader-contract-comparison.json",
+      "bytes": 702,
+      "sha256": "00e934cd039e7b1d4b5cc4da11a395598b9ddcfdab26ac77a8c335dad44fd9d1"
+    },
+    {
+      "path": "source240-ordinary-input-decode-reader-contract-emaxx.command.json",
+      "bytes": 5072,
+      "sha256": "47864010f46da2012f08f1250fed6191b119656edb2fe4f19f1097b53244a26c"
+    },
+    {
+      "path": "source240-ordinary-input-decode-reader-contract-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "9b03a9b5400cff727111fe472b4189aab3ea9842ff91ec5357b0d61f7851e610"
+    },
+    {
+      "path": "source240-ordinary-input-decode-reader-contract-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-reader-contract-emaxx.stdout",
+      "bytes": 215,
+      "sha256": "d1c92ae6c2e65cd547f7979b55da687674539cede33a8a110a0d4a34b4081b89"
+    },
+    {
+      "path": "source240-ordinary-input-decode-reader-contract-gnu.command.json",
+      "bytes": 4946,
+      "sha256": "441fd22e0d8a48b019e2175950e179ab78fb43f2bbe60bb3e27b94b1395fde8f"
+    },
+    {
+      "path": "source240-ordinary-input-decode-reader-contract-gnu.result.json",
+      "bytes": 265,
+      "sha256": "50aa63797d9ea5009018c37e67926a406356edddde4f13a2845b552b2c259386"
+    },
+    {
+      "path": "source240-ordinary-input-decode-reader-contract-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-reader-contract-gnu.stdout",
+      "bytes": 215,
+      "sha256": "d1c92ae6c2e65cd547f7979b55da687674539cede33a8a110a0d4a34b4081b89"
+    },
+    {
+      "path": "source240-ordinary-input-decode-remapped-undefined-comparison.json",
+      "bytes": 709,
+      "sha256": "1425e27e78b1b8eccdc556422f18e21de7eafa6ea00f01bcd2beb33d8796c981"
+    },
+    {
+      "path": "source240-ordinary-input-decode-remapped-undefined-emaxx.command.json",
+      "bytes": 2677,
+      "sha256": "da308fedf111c00ec8273bf1d150d3da6a6218ce22dd81330b42fc4a4feedec3"
+    },
+    {
+      "path": "source240-ordinary-input-decode-remapped-undefined-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "5945bff5a79fed597497409fa02ab09d898cdf0a50fa76bbac02d376b240f536"
+    },
+    {
+      "path": "source240-ordinary-input-decode-remapped-undefined-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-remapped-undefined-emaxx.stdout",
+      "bytes": 35,
+      "sha256": "63ea4c024cb000d75da006ec5d11163e6949051189a197840cdf0445e3eee18c"
+    },
+    {
+      "path": "source240-ordinary-input-decode-remapped-undefined-gnu.command.json",
+      "bytes": 2551,
+      "sha256": "23d72f12963e7b8b86459390b056e2a99ed0085ab893aad118421dd02514106b"
+    },
+    {
+      "path": "source240-ordinary-input-decode-remapped-undefined-gnu.result.json",
+      "bytes": 273,
+      "sha256": "014f79b1b9a016f89fecc5bef56acdc172776b508236fa1f116057fc045fbded"
+    },
+    {
+      "path": "source240-ordinary-input-decode-remapped-undefined-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-remapped-undefined-gnu.stdout",
+      "bytes": 35,
+      "sha256": "63ea4c024cb000d75da006ec5d11163e6949051189a197840cdf0445e3eee18c"
+    },
+    {
+      "path": "source240-ordinary-input-decode-shift-tab-variants-comparison.json",
+      "bytes": 711,
+      "sha256": "b6d676ccd0471b42b3e54b619bfad519aa8a4c4066df6fa3542591d9b742fc8b"
+    },
+    {
+      "path": "source240-ordinary-input-decode-shift-tab-variants-emaxx.command.json",
+      "bytes": 2065,
+      "sha256": "d7b83c4d5e96a08f5cae31829b90e60f15ee530b91b37dd0dce6e25315f6c321"
+    },
+    {
+      "path": "source240-ordinary-input-decode-shift-tab-variants-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "619c56930e51ee96662fd718954a0244aa59f4d34e45f9126e4e1d9573200f4c"
+    },
+    {
+      "path": "source240-ordinary-input-decode-shift-tab-variants-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-shift-tab-variants-emaxx.stdout",
+      "bytes": 34,
+      "sha256": "44b33b5f93145a9888ca7c906c136a7b596a4168a0b970c3c3405374b82705ab"
+    },
+    {
+      "path": "source240-ordinary-input-decode-shift-tab-variants-gnu.command.json",
+      "bytes": 1939,
+      "sha256": "dfa6438a8f13a0e2a8665aec5f5c0f271be8cf4190871d0e796d9cc0c68c48ca"
+    },
+    {
+      "path": "source240-ordinary-input-decode-shift-tab-variants-gnu.result.json",
+      "bytes": 274,
+      "sha256": "8f6124a82723831a0c41c38173c7c4c765caac3407d1eb617ec17557e1d9e98c"
+    },
+    {
+      "path": "source240-ordinary-input-decode-shift-tab-variants-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-shift-tab-variants-gnu.stdout",
+      "bytes": 34,
+      "sha256": "44b33b5f93145a9888ca7c906c136a7b596a4168a0b970c3c3405374b82705ab"
+    },
+    {
+      "path": "source240-ordinary-input-decode-tab-map-installation-comparison.json",
+      "bytes": 711,
+      "sha256": "c4f508eb140fd14fdc48de9f354180baf9a101b4e8b23b25b7622df6e3a6f73c"
+    },
+    {
+      "path": "source240-ordinary-input-decode-tab-map-installation-emaxx.command.json",
+      "bytes": 1918,
+      "sha256": "04bec865c632eab07a3c0c1dc7521b238de0031c35409540937d5b15ea204a77"
+    },
+    {
+      "path": "source240-ordinary-input-decode-tab-map-installation-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "cae9dca135aa42cc34dcadb3b8405a3e17445e807da89728d2b4e227d537f19b"
+    },
+    {
+      "path": "source240-ordinary-input-decode-tab-map-installation-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-tab-map-installation-emaxx.stdout",
+      "bytes": 49,
+      "sha256": "a07946a49db0052849520064c04f035534d4675c2cad523d5aed4e81d87babbe"
+    },
+    {
+      "path": "source240-ordinary-input-decode-tab-map-installation-gnu.command.json",
+      "bytes": 1792,
+      "sha256": "f18850db5f167af081d3d4931799277c7fad2609655f3046f3d7ff1d261c5487"
+    },
+    {
+      "path": "source240-ordinary-input-decode-tab-map-installation-gnu.result.json",
+      "bytes": 274,
+      "sha256": "067a3ce312af4324186587d052684624c524c42d934de1275a5f1e0323b1ed3e"
+    },
+    {
+      "path": "source240-ordinary-input-decode-tab-map-installation-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-tab-map-installation-gnu.stdout",
+      "bytes": 49,
+      "sha256": "a07946a49db0052849520064c04f035534d4675c2cad523d5aed4e81d87babbe"
+    },
+    {
+      "path": "source240-ordinary-input-decode-unread-wrapper-comparison.json",
+      "bytes": 711,
+      "sha256": "2cded1797ba1bbf470e49ab4e30ea7182cf3f3b7ad38eb03ca4801d4b5891bd6"
+    },
+    {
+      "path": "source240-ordinary-input-decode-unread-wrapper-emaxx.command.json",
+      "bytes": 2048,
+      "sha256": "00380999c6a5ab8911c646b0d10283dda1c64ccb36828bf84d5854664c539190"
+    },
+    {
+      "path": "source240-ordinary-input-decode-unread-wrapper-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "7ca160219529f4c0574e48c4db25431ab56bd92796a5e54eb1ee829a531f5b8e"
+    },
+    {
+      "path": "source240-ordinary-input-decode-unread-wrapper-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-unread-wrapper-emaxx.stdout",
+      "bytes": 171,
+      "sha256": "388f86a41bf248d48fc54b502dab37db25ba8667449f1ce2866652c5cf8b13ac"
+    },
+    {
+      "path": "source240-ordinary-input-decode-unread-wrapper-gnu.command.json",
+      "bytes": 1922,
+      "sha256": "e8ba707a1d2651598263bcd13c70af2d09a5ebf2e3f8fa6f60ce4ba0b5f52ab6"
+    },
+    {
+      "path": "source240-ordinary-input-decode-unread-wrapper-gnu.result.json",
+      "bytes": 274,
+      "sha256": "1f530aa8d29d003e6157b44db3d0c18db384f49061b22e8e88303644ce8c273b"
+    },
+    {
+      "path": "source240-ordinary-input-decode-unread-wrapper-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-unread-wrapper-gnu.stdout",
+      "bytes": 171,
+      "sha256": "388f86a41bf248d48fc54b502dab37db25ba8667449f1ce2866652c5cf8b13ac"
+    },
+    {
+      "path": "source240-ordinary-input-decode-xt-setup-comparison.json",
+      "bytes": 702,
+      "sha256": "96c0751750154fe99d7d85192d72cc7ac7dd12630a33ba47f5370a9b01326890"
+    },
+    {
+      "path": "source240-ordinary-input-decode-xt-setup-emaxx.command.json",
+      "bytes": 2783,
+      "sha256": "bfd4ec0d5f93c967d13eeb61b879ffa0d01f0d6a001377cd87107307dd98703a"
+    },
+    {
+      "path": "source240-ordinary-input-decode-xt-setup-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "3e4fa4df592ec73631e5510f6f98c45161a4632ea307f67e0cade2be7c152992"
+    },
+    {
+      "path": "source240-ordinary-input-decode-xt-setup-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-xt-setup-emaxx.stdout",
+      "bytes": 90,
+      "sha256": "236cce0e87b2f68b73c76205a4ac31981e11bcb080f61098fdf65ce3bf2cb31b"
+    },
+    {
+      "path": "source240-ordinary-input-decode-xt-setup-gnu.command.json",
+      "bytes": 2657,
+      "sha256": "6634f5f401d813eedab674e631dffc88c13fa4cfb2f628ff323529268aef6dc4"
+    },
+    {
+      "path": "source240-ordinary-input-decode-xt-setup-gnu.result.json",
+      "bytes": 266,
+      "sha256": "d23622cee591848a567b8f91e76ef9aca9509a1c62c3b92226895a0105dfdd33"
+    },
+    {
+      "path": "source240-ordinary-input-decode-xt-setup-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-input-decode-xt-setup-gnu.stdout",
+      "bytes": 90,
+      "sha256": "236cce0e87b2f68b73c76205a4ac31981e11bcb080f61098fdf65ce3bf2cb31b"
+    },
+    {
+      "path": "source240-ordinary-interactive-closure-environments-comparison.json",
+      "bytes": 711,
+      "sha256": "819b6442de03a592a9e49a17964905a7c99dfd6bc8286260fc7e59eef2eb79b9"
+    },
+    {
+      "path": "source240-ordinary-interactive-closure-environments-emaxx.command.json",
+      "bytes": 4149,
+      "sha256": "0ee8a152f0d2b200834044f34f33e032a68e595715441515cd54c4855b761162"
+    },
+    {
+      "path": "source240-ordinary-interactive-closure-environments-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "e7b2bc8f90ab91b2ef3b5ea8d78fdb6465fa7332e2d42100131a7cb9a91413d2"
+    },
+    {
+      "path": "source240-ordinary-interactive-closure-environments-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-interactive-closure-environments-emaxx.stdout",
+      "bytes": 93,
+      "sha256": "859b0f49ef041ccc4d523cc884e0c3e9cfee0af19a38bfa5c2840efb27b7fd03"
+    },
+    {
+      "path": "source240-ordinary-interactive-closure-environments-gnu.command.json",
+      "bytes": 4023,
+      "sha256": "3f6779dfad936bdfa17dfb67bc1eab2f76038fc774ad8fb6d60f91d5ec22eeb8"
+    },
+    {
+      "path": "source240-ordinary-interactive-closure-environments-gnu.result.json",
+      "bytes": 274,
+      "sha256": "b57ae58555dce8707714fea49e9fd0b41f17af9cc33165e8c663fe7545ea89f7"
+    },
+    {
+      "path": "source240-ordinary-interactive-closure-environments-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-interactive-closure-environments-gnu.stdout",
+      "bytes": 93,
+      "sha256": "859b0f49ef041ccc4d523cc884e0c3e9cfee0af19a38bfa5c2840efb27b7fd03"
+    },
+    {
+      "path": "source240-ordinary-new-file-coding-probe-comparison.json",
+      "bytes": 697,
+      "sha256": "bc5f2c5d25d02a552e53503572cb173744512bca17788261abcf9bd4ac7f16ef"
+    },
+    {
+      "path": "source240-ordinary-new-file-coding-probe-emaxx.command.json",
+      "bytes": 2657,
+      "sha256": "92de41c24d71b2ec321054e38c7b944db9981390713e5fb841d07e973c504ebd"
+    },
+    {
+      "path": "source240-ordinary-new-file-coding-probe-emaxx.result.json",
+      "bytes": 266,
+      "sha256": "4e1158914ff44556cec5437da3703153efe960c1e34bfbd3c6c2515ecb93458d"
+    },
+    {
+      "path": "source240-ordinary-new-file-coding-probe-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-new-file-coding-probe-emaxx.stdout",
+      "bytes": 88,
+      "sha256": "93e2ef5aae957b46e836f63db9acb5137ca5c755cf5e83371aa8f0acc4988cdc"
+    },
+    {
+      "path": "source240-ordinary-new-file-coding-probe-gnu.command.json",
+      "bytes": 2531,
+      "sha256": "789cadd743749eeb3f6334e686959275544bbf1903880a2bfae81a170ab8fee2"
+    },
+    {
+      "path": "source240-ordinary-new-file-coding-probe-gnu.result.json",
+      "bytes": 266,
+      "sha256": "2eaa230f4d6d5f8c32d243e9db33ed994aa30a4a9c26dfb74394ce54037836de"
+    },
+    {
+      "path": "source240-ordinary-new-file-coding-probe-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-new-file-coding-probe-gnu.stdout",
+      "bytes": 74,
+      "sha256": "43dee18598cb9aa720f8f5b65fb7433f91f82f039971f885d2184f6b9be4c8c5"
+    },
+    {
+      "path": "source240-ordinary-quoted-bytecode-reader-closure-comparison.json",
+      "bytes": 711,
+      "sha256": "19a7afc8bd69654be9fee21e47359f7ad72dbbc501159d2cbb0fac18c2b84c65"
+    },
+    {
+      "path": "source240-ordinary-quoted-bytecode-reader-closure-emaxx.command.json",
+      "bytes": 1997,
+      "sha256": "ef03b216794534bbd1114def684e3e1d70ef809bfe9af5e18a6a24bde83559f2"
+    },
+    {
+      "path": "source240-ordinary-quoted-bytecode-reader-closure-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "2acb3a1dfc07bf700345b832b87da3183887deacf1d685bb060f101d13198ed9"
+    },
+    {
+      "path": "source240-ordinary-quoted-bytecode-reader-closure-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-quoted-bytecode-reader-closure-emaxx.stdout",
+      "bytes": 29,
+      "sha256": "e84b426f30173f7f752c841b43e4684417c6b798fa58b6d8fadaf23008a01bf7"
+    },
+    {
+      "path": "source240-ordinary-quoted-bytecode-reader-closure-gnu.command.json",
+      "bytes": 1871,
+      "sha256": "2d4819dbccbcbbd84a7122e31459cb8b5cab20bfd74714edc00a1a3a10109026"
+    },
+    {
+      "path": "source240-ordinary-quoted-bytecode-reader-closure-gnu.result.json",
+      "bytes": 274,
+      "sha256": "94ee43de7c858fed027f49531fa328ecae1421ce1ff7e8094cf767ae03686964"
+    },
+    {
+      "path": "source240-ordinary-quoted-bytecode-reader-closure-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-quoted-bytecode-reader-closure-gnu.stdout",
+      "bytes": 29,
+      "sha256": "e84b426f30173f7f752c841b43e4684417c6b798fa58b6d8fadaf23008a01bf7"
+    },
+    {
+      "path": "source240-ordinary-reader-callable-gc-comparison.json",
+      "bytes": 708,
+      "sha256": "69452752d39e4174122edb66382db6638d0574637fb029006f9501d7bfd42342"
+    },
+    {
+      "path": "source240-ordinary-reader-callable-gc-emaxx.command.json",
+      "bytes": 2543,
+      "sha256": "d0b932e536f8ef6d40ab48d62776b109914074c72dc3cac4725891bc06c89639"
+    },
+    {
+      "path": "source240-ordinary-reader-callable-gc-emaxx.result.json",
+      "bytes": 272,
+      "sha256": "f3bbf2397908323f56d567d6faf4ede8ab36337ed315e2364376ef4a49aeb52c"
+    },
+    {
+      "path": "source240-ordinary-reader-callable-gc-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-reader-callable-gc-emaxx.stdout",
+      "bytes": 99,
+      "sha256": "289dda3f1e1abbb50d4a007276707692d55296519e3df2000b9c45e92d81ad38"
+    },
+    {
+      "path": "source240-ordinary-reader-callable-gc-gnu.command.json",
+      "bytes": 2417,
+      "sha256": "63b332daa1d935fabdd72a95a0355bc90b44a73cd5fe21d05eca8edefb677a13"
+    },
+    {
+      "path": "source240-ordinary-reader-callable-gc-gnu.result.json",
+      "bytes": 273,
+      "sha256": "29e83fdb79bcfae866f2bf9fba00989ecff1ac8a8a678f20d5bae79790493c5b"
+    },
+    {
+      "path": "source240-ordinary-reader-callable-gc-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-reader-callable-gc-gnu.stdout",
+      "bytes": 99,
+      "sha256": "289dda3f1e1abbb50d4a007276707692d55296519e3df2000b9c45e92d81ad38"
+    },
+    {
+      "path": "source240-ordinary-reader-hex-byte-boundary-comparison.json",
+      "bytes": 710,
+      "sha256": "8415479167ab7eaa688dd00cf8eebf21d8f6e91f68b08f679d4a13b1ebf48787"
+    },
+    {
+      "path": "source240-ordinary-reader-hex-byte-boundary-emaxx.command.json",
+      "bytes": 2133,
+      "sha256": "5bfbe258fc104d9fe150d419c9f04709a0eee1e36b1dbd92d3f9d6752fa868df"
+    },
+    {
+      "path": "source240-ordinary-reader-hex-byte-boundary-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "8b5ae3237bf850ec4270f28cb5296281f10c75e3071b95231b8949e34ab989c9"
+    },
+    {
+      "path": "source240-ordinary-reader-hex-byte-boundary-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-reader-hex-byte-boundary-emaxx.stdout",
+      "bytes": 453,
+      "sha256": "19a16484947564829ea2345be825df6f0d5003cbc36d7297a1c8b8a5332c7dc7"
+    },
+    {
+      "path": "source240-ordinary-reader-hex-byte-boundary-gnu.command.json",
+      "bytes": 2007,
+      "sha256": "518793a03ca1154704993c9942b9d76ba9c04975817a055ea994830a957c2c43"
+    },
+    {
+      "path": "source240-ordinary-reader-hex-byte-boundary-gnu.result.json",
+      "bytes": 274,
+      "sha256": "ba22a764ebf1ddc52694abe899b4e9fcb9ed3ecc1a3f9393d0c3fe28e14cbf4e"
+    },
+    {
+      "path": "source240-ordinary-reader-hex-byte-boundary-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-reader-hex-byte-boundary-gnu.stdout",
+      "bytes": 453,
+      "sha256": "19a16484947564829ea2345be825df6f0d5003cbc36d7297a1c8b8a5332c7dc7"
+    },
+    {
+      "path": "source240-ordinary-runtime-cons-mutation-comparison.json",
+      "bytes": 710,
+      "sha256": "100b5535310e75f9b0f7e8fec97dffe0f744e5ea7b4a4f114221f421ff3344f1"
+    },
+    {
+      "path": "source240-ordinary-runtime-cons-mutation-emaxx.command.json",
+      "bytes": 2538,
+      "sha256": "af90e8767946fa180ded5c0d8ba8596a7e87e49ce581b8d648a95aef405347a2"
+    },
+    {
+      "path": "source240-ordinary-runtime-cons-mutation-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "c278e9863c11b8ae67930cc977a7a9158f1fdad9bc35469c33d35be7556bd209"
+    },
+    {
+      "path": "source240-ordinary-runtime-cons-mutation-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-runtime-cons-mutation-emaxx.stdout",
+      "bytes": 60,
+      "sha256": "1d16d8d60ee9cffcba8c1f54da53ced24c5b7032bef1a49f0644484a1b078b07"
+    },
+    {
+      "path": "source240-ordinary-runtime-cons-mutation-gnu.command.json",
+      "bytes": 2412,
+      "sha256": "74fd1ebc9fe65034b17db0415b1bda0e8ce7352b8b98cdb259f9d1a485fba679"
+    },
+    {
+      "path": "source240-ordinary-runtime-cons-mutation-gnu.result.json",
+      "bytes": 273,
+      "sha256": "8c02b00d9ca803803b8bd6529403c708f86b765d86fb5ef8579ad17ece31a618"
+    },
+    {
+      "path": "source240-ordinary-runtime-cons-mutation-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-runtime-cons-mutation-gnu.stdout",
+      "bytes": 60,
+      "sha256": "1d16d8d60ee9cffcba8c1f54da53ced24c5b7032bef1a49f0644484a1b078b07"
+    },
+    {
+      "path": "source240-ordinary-shared-positioned-symbol-native-words-comparison.json",
+      "bytes": 709,
+      "sha256": "5eb247d0ad4fabbbcc8477abe9df3bf787eafb33745ad4e70292f774ce7b7b87"
+    },
+    {
+      "path": "source240-ordinary-shared-positioned-symbol-native-words-emaxx.command.json",
+      "bytes": 5017,
+      "sha256": "3069ac136dbc8d8e4ba0ad36a72326344dae58d9dcddb7204cf0002308ecd0a0"
+    },
+    {
+      "path": "source240-ordinary-shared-positioned-symbol-native-words-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "0a34cdf471d7539ff120f5672554fec7ab1ba81bd7a38e31ad807a4239dbcb84"
+    },
+    {
+      "path": "source240-ordinary-shared-positioned-symbol-native-words-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-shared-positioned-symbol-native-words-emaxx.stdout",
+      "bytes": 27,
+      "sha256": "d48f2c4e7eff5d36205145aae8cc2a3a4eeecba68fdce56a74107a3321d126e9"
+    },
+    {
+      "path": "source240-ordinary-shared-positioned-symbol-native-words-gnu.command.json",
+      "bytes": 4891,
+      "sha256": "62d51706d01f3507b5549d9ecd563d253cc755012fe3f41ad0499667df38b47b"
+    },
+    {
+      "path": "source240-ordinary-shared-positioned-symbol-native-words-gnu.result.json",
+      "bytes": 273,
+      "sha256": "c7c138b7f60f67cff044a0bee6478ecb9b77582d1a6d7f870c2f8c4aae32944a"
+    },
+    {
+      "path": "source240-ordinary-shared-positioned-symbol-native-words-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-shared-positioned-symbol-native-words-gnu.stdout",
+      "bytes": 27,
+      "sha256": "d48f2c4e7eff5d36205145aae8cc2a3a4eeecba68fdce56a74107a3321d126e9"
+    },
+    {
+      "path": "source240-ordinary-shared-string-native-words-comparison.json",
+      "bytes": 708,
+      "sha256": "475b516c4ba509d9c7dab836c242ee914970e1f23b728ad94ae15b8e8e72fd66"
+    },
+    {
+      "path": "source240-ordinary-shared-string-native-words-emaxx.command.json",
+      "bytes": 4746,
+      "sha256": "c5e93e69e041cc12a4207dbf016dd610031355b3808d0b287dd760134801445b"
+    },
+    {
+      "path": "source240-ordinary-shared-string-native-words-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "cec0b97db777e9b4f8da2febe5f3a89fddd718b7070c09ee30dfe6b0a924cfb1"
+    },
+    {
+      "path": "source240-ordinary-shared-string-native-words-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-shared-string-native-words-emaxx.stdout",
+      "bytes": 27,
+      "sha256": "d48f2c4e7eff5d36205145aae8cc2a3a4eeecba68fdce56a74107a3321d126e9"
+    },
+    {
+      "path": "source240-ordinary-shared-string-native-words-gnu.command.json",
+      "bytes": 4620,
+      "sha256": "68e3f828cdd4ffba8bf81ceca3bdb0289bb3d987b793f46847c34101f2ec1cba"
+    },
+    {
+      "path": "source240-ordinary-shared-string-native-words-gnu.result.json",
+      "bytes": 272,
+      "sha256": "93338339fb001c917bcb17676c7c0da47745a74123899cc32085a2552338deec"
+    },
+    {
+      "path": "source240-ordinary-shared-string-native-words-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-shared-string-native-words-gnu.stdout",
+      "bytes": 27,
+      "sha256": "d48f2c4e7eff5d36205145aae8cc2a3a4eeecba68fdce56a74107a3321d126e9"
+    },
+    {
+      "path": "source240-ordinary-shared-vector-native-words-comparison.json",
+      "bytes": 708,
+      "sha256": "e41889440b17a5b847ad11658f74dd5990fd355ee3656ae73b873b13434ae852"
+    },
+    {
+      "path": "source240-ordinary-shared-vector-native-words-emaxx.command.json",
+      "bytes": 5271,
+      "sha256": "cb96071d38bf90a3bd5ac7689b6017aa773af3d41b66c2d75a5678eaf84cde3d"
+    },
+    {
+      "path": "source240-ordinary-shared-vector-native-words-emaxx.result.json",
+      "bytes": 272,
+      "sha256": "834fc06cd5f793ab7e97508a85c8c3c21f7b0638615d85be45ec25b215ce7a16"
+    },
+    {
+      "path": "source240-ordinary-shared-vector-native-words-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-shared-vector-native-words-emaxx.stdout",
+      "bytes": 19,
+      "sha256": "75b298ca8299131ae4a3ca5bebc2eba1db0d7c98b69610b2facf5163efc6061c"
+    },
+    {
+      "path": "source240-ordinary-shared-vector-native-words-gnu.command.json",
+      "bytes": 5145,
+      "sha256": "5607bd077d599545fbb13707971ed63671db3f8f578845905392572a75a5addf"
+    },
+    {
+      "path": "source240-ordinary-shared-vector-native-words-gnu.result.json",
+      "bytes": 273,
+      "sha256": "32d3796b2ba24d9123b45babe16947a3dd3c2e01d68cc85d876675bd5671f6b1"
+    },
+    {
+      "path": "source240-ordinary-shared-vector-native-words-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-shared-vector-native-words-gnu.stdout",
+      "bytes": 19,
+      "sha256": "75b298ca8299131ae4a3ca5bebc2eba1db0d7c98b69610b2facf5163efc6061c"
+    },
+    {
+      "path": "source240-ordinary-substring-argument-validation-comparison.json",
+      "bytes": 710,
+      "sha256": "58609515629b371e326777e1f95f524a475e01ec8bae98df8f0026f85a336e0f"
+    },
+    {
+      "path": "source240-ordinary-substring-argument-validation-emaxx.command.json",
+      "bytes": 2298,
+      "sha256": "df2dac24b5a9329b5c3455114accb46b66dc11b0724479bbebf9396bf4d0a985"
+    },
+    {
+      "path": "source240-ordinary-substring-argument-validation-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "161066c685f8824d348cbcf0b84209d4b01c40571ca6b5f86d1734576088ca07"
+    },
+    {
+      "path": "source240-ordinary-substring-argument-validation-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-substring-argument-validation-emaxx.stdout",
+      "bytes": 362,
+      "sha256": "7c9c56537bc9e952344e34ac483d810f94fd352407da793c0e47be6641880244"
+    },
+    {
+      "path": "source240-ordinary-substring-argument-validation-gnu.command.json",
+      "bytes": 2172,
+      "sha256": "8b5def3db1c19b4f00e497a766bc40796732283aef0b39659ab2b791c3a650cb"
+    },
+    {
+      "path": "source240-ordinary-substring-argument-validation-gnu.result.json",
+      "bytes": 274,
+      "sha256": "4f34df884c565134e008b5c03e42dcc1ad077146f2f51fe9b3cc5ea3b4a902af"
+    },
+    {
+      "path": "source240-ordinary-substring-argument-validation-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-substring-argument-validation-gnu.stdout",
+      "bytes": 362,
+      "sha256": "7c9c56537bc9e952344e34ac483d810f94fd352407da793c0e47be6641880244"
+    },
+    {
+      "path": "source240-ordinary-substring-character-storage-comparison.json",
+      "bytes": 708,
+      "sha256": "ffc320b64584f3e79a8796290f1af53cb9ae0fedd8afe2d7453952fe58b7f124"
+    },
+    {
+      "path": "source240-ordinary-substring-character-storage-emaxx.command.json",
+      "bytes": 3100,
+      "sha256": "2afbcb9f58b63bb80485a5095253657575c7920f9150eb3666ea66e33740db40"
+    },
+    {
+      "path": "source240-ordinary-substring-character-storage-emaxx.result.json",
+      "bytes": 272,
+      "sha256": "7a7e9c3dd8911dc4f82819d1f04eae07a11a98b4dc54ae6bca312a0927b20535"
+    },
+    {
+      "path": "source240-ordinary-substring-character-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-substring-character-storage-emaxx.stdout",
+      "bytes": 4411,
+      "sha256": "5191c53208780127fab9c8099b937d41221957e9701d09aac8578a86565d357d"
+    },
+    {
+      "path": "source240-ordinary-substring-character-storage-gnu.command.json",
+      "bytes": 2974,
+      "sha256": "8f7855764cc4497055754c07fb45b2c57f5ee3e58edc5b2244614eb75466402d"
+    },
+    {
+      "path": "source240-ordinary-substring-character-storage-gnu.result.json",
+      "bytes": 273,
+      "sha256": "b61e3103dfec41d39aba527d51c9899bcfcf0bea68646e1b53d0bca7d84e6766"
+    },
+    {
+      "path": "source240-ordinary-substring-character-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-substring-character-storage-gnu.stdout",
+      "bytes": 4411,
+      "sha256": "5191c53208780127fab9c8099b937d41221957e9701d09aac8578a86565d357d"
+    },
+    {
+      "path": "source240-ordinary-substring-reversed-bounds-comparison.json",
+      "bytes": 711,
+      "sha256": "5550d7137106f98c100b4c1f524e53b3d6241d052c16fe19252edb4d1826ac05"
+    },
+    {
+      "path": "source240-ordinary-substring-reversed-bounds-emaxx.command.json",
+      "bytes": 1965,
+      "sha256": "3e9a9be8f5cdc2d35ef4ede32152781de8e4c166b893aa57185476440e19a963"
+    },
+    {
+      "path": "source240-ordinary-substring-reversed-bounds-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "d51ce5d0bac31ae5f3e2a38914b02cd79f5b08c343fe1719beecc6d535fedee1"
+    },
+    {
+      "path": "source240-ordinary-substring-reversed-bounds-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-substring-reversed-bounds-emaxx.stdout",
+      "bytes": 93,
+      "sha256": "62857d17f687ae6cf5013a18e58fb9bd86a60cec0740cb4c8a43ccfc57e80677"
+    },
+    {
+      "path": "source240-ordinary-substring-reversed-bounds-gnu.command.json",
+      "bytes": 1839,
+      "sha256": "9d8d059e21aab883cd16f3a777742e6e4fed54542077c0e1b8d854fbb5d96a96"
+    },
+    {
+      "path": "source240-ordinary-substring-reversed-bounds-gnu.result.json",
+      "bytes": 274,
+      "sha256": "5608ab84a275f1eec13c3736c64459581ceb8e70c7bc9f0ff2e755b9c3952059"
+    },
+    {
+      "path": "source240-ordinary-substring-reversed-bounds-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-substring-reversed-bounds-gnu.stdout",
+      "bytes": 93,
+      "sha256": "62857d17f687ae6cf5013a18e58fb9bd86a60cec0740cb4c8a43ccfc57e80677"
+    },
+    {
+      "path": "source240-ordinary-unwind-payload-reclamation-comparison.json",
+      "bytes": 709,
+      "sha256": "75fcbb34ebd7c58c90d7417ab49e2486b29ff2dc97558392fe8bd9708bc01956"
+    },
+    {
+      "path": "source240-ordinary-unwind-payload-reclamation-emaxx.command.json",
+      "bytes": 3804,
+      "sha256": "fd417c40f0511c2469f8c43b7964c359fee799add25bb0aa92fd395428cd0f56"
+    },
+    {
+      "path": "source240-ordinary-unwind-payload-reclamation-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "45c6fd5487f67b070e9782e6247939ad38091fe19752c7532d46a7d4aa943245"
+    },
+    {
+      "path": "source240-ordinary-unwind-payload-reclamation-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-unwind-payload-reclamation-emaxx.stdout",
+      "bytes": 25,
+      "sha256": "0b51a24c9938ab2d264bac0ff646387e0313227387413aecd226af988525eff8"
+    },
+    {
+      "path": "source240-ordinary-unwind-payload-reclamation-gnu.command.json",
+      "bytes": 3678,
+      "sha256": "00c37319d4caf43d2b1ff7739df7d29deb80c5545c79bdc287a440424a788fcf"
+    },
+    {
+      "path": "source240-ordinary-unwind-payload-reclamation-gnu.result.json",
+      "bytes": 273,
+      "sha256": "d7421482ae16ac36ffa2c9ca46adb9d44c94b1a8ab4e9fe7ab8623e9648bc27c"
+    },
+    {
+      "path": "source240-ordinary-unwind-payload-reclamation-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-unwind-payload-reclamation-gnu.stdout",
+      "bytes": 25,
+      "sha256": "0b51a24c9938ab2d264bac0ff646387e0313227387413aecd226af988525eff8"
+    },
+    {
+      "path": "source240-ordinary-vector-closure-rounded-census-comparison.json",
+      "bytes": 709,
+      "sha256": "81f781bd7d2f9ff8e8344ff88bb888d54cc297583e774b7323d9f5142afd2225"
+    },
+    {
+      "path": "source240-ordinary-vector-closure-rounded-census-emaxx.command.json",
+      "bytes": 2651,
+      "sha256": "795fba14d31fbb08f197187e986cbed7a398eab92f9b91eb6b30eba1f034a9d7"
+    },
+    {
+      "path": "source240-ordinary-vector-closure-rounded-census-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "a93df5d84fde17fdd2fcb29b1dafe4d5d4f1072d55b4f2f3ed487118d31390f0"
+    },
+    {
+      "path": "source240-ordinary-vector-closure-rounded-census-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-vector-closure-rounded-census-emaxx.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source240-ordinary-vector-closure-rounded-census-gnu.command.json",
+      "bytes": 2525,
+      "sha256": "f70ebe9d2a5bf56db7a9a614d940a5695694ffb7afc10a9e5a7fc1152626a770"
+    },
+    {
+      "path": "source240-ordinary-vector-closure-rounded-census-gnu.result.json",
+      "bytes": 273,
+      "sha256": "a124dbde05ae9a20ec5ed241a0fad51332939d643dc94d2cba754d681102adb1"
+    },
+    {
+      "path": "source240-ordinary-vector-closure-rounded-census-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-vector-closure-rounded-census-gnu.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source240-ordinary-vector-pseudovector-word-census-comparison.json",
+      "bytes": 710,
+      "sha256": "2f0c6deae0cf4b75a58f323e6dc6e67f8aaa8989375117cf12cc35045ac72105"
+    },
+    {
+      "path": "source240-ordinary-vector-pseudovector-word-census-emaxx.command.json",
+      "bytes": 3090,
+      "sha256": "4a76cb837b49c5d0aee2e9b23d76c4ddcd54b0f95ac1f92fa5cca09fa1962a9b"
+    },
+    {
+      "path": "source240-ordinary-vector-pseudovector-word-census-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "d0ac0333fb8386019f88cf1daa29760ea900b7841fd48540162bf819e7516335"
+    },
+    {
+      "path": "source240-ordinary-vector-pseudovector-word-census-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-vector-pseudovector-word-census-emaxx.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source240-ordinary-vector-pseudovector-word-census-gnu.command.json",
+      "bytes": 2964,
+      "sha256": "553e6ecfe1039cc419413facf3fbda28f2bf18da4c067b3a5ac5747237945e23"
+    },
+    {
+      "path": "source240-ordinary-vector-pseudovector-word-census-gnu.result.json",
+      "bytes": 274,
+      "sha256": "57eee903908ec076d2a407ec99ec63400334120829c219af13c2d3f3c2c837d7"
+    },
+    {
+      "path": "source240-ordinary-vector-pseudovector-word-census-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source240-ordinary-vector-pseudovector-word-census-gnu.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source240-release-and-ordinary-driver.log",
+      "bytes": 32491,
+      "sha256": "61e640317809e240371f46fbfd8cac64e933b27d2d0b064fcee181175d625c31"
+    },
+    {
+      "path": "source240-release-and-ordinary-launch.json",
+      "bytes": 506,
+      "sha256": "a601baff237aecb8755068d8a501a3204d951873ed1202614e62859453227109"
+    },
+    {
+      "path": "source240-release-and-ordinary-result.json",
+      "bytes": 3091,
+      "sha256": "af41faf86f0ee586926e25058df1aa28cea790d3ece37a6c74de8c2cc8e4232f"
+    },
+    {
+      "path": "source240-release-audit.json",
+      "bytes": 1636,
+      "sha256": "f364a3756a1bd648de47a3e862a4e4467625a97ca577c85c9856eb6c9d003b6a"
+    },
+    {
+      "path": "source240-release-broad-command.json",
+      "bytes": 172002,
+      "sha256": "06c4f29d05b352ffd2e69e7ff87eb0615502353f4091ddf19e3dbabaa1c342cd"
+    },
+    {
+      "path": "source240-release-broad-result.json",
+      "bytes": 85,
+      "sha256": "47a4cac59e53c71486d2f2ba7bccf6261996af95ffc2743d3a468ce55aace650"
+    },
+    {
+      "path": "source240-release-broad.log",
+      "bytes": 94674,
+      "sha256": "be6b4b6b4102cee96ea22ad1f6daf0a006bc10d89dd2e8b57747ef1e1e315702"
+    },
+    {
+      "path": "source240-release-build-command.json",
+      "bytes": 1157,
+      "sha256": "15d00ee5a5ebaee2bb255f01a92ffb8c0fd5d9428b4a7b17974d94650d35e1a2"
+    },
+    {
+      "path": "source240-release-build-result.json",
+      "bytes": 85,
+      "sha256": "82a894db5036762e5fa102c545baa39d7e94098325fd9f4069a15dc5a6467c23"
+    },
+    {
+      "path": "source240-release-build.log",
+      "bytes": 216551,
+      "sha256": "5109d2c94da2adf57fedaf28518285c4c4ed462c9cf09294541e2835e15eba70"
+    },
+    {
+      "path": "source240-release-controls-command.json",
+      "bytes": 28753,
+      "sha256": "6d9de9311bb840d431f6a5c31ed5df0701bbbd5021b96f1bc0cd1b5753d19c79"
+    },
+    {
+      "path": "source240-release-controls-result.json",
+      "bytes": 84,
+      "sha256": "b7d5737c4aa97fdc2da0a09854cf2d02d122495e83db2ac5039914f483424fb1"
+    },
+    {
+      "path": "source240-release-controls.log",
+      "bytes": 16109,
+      "sha256": "34a3dd31c65518fdfd8181a2dc1f05429877fadb0b1782665722988a58246ee1"
+    },
+    {
+      "path": "source240-release-inventory.txt",
+      "bytes": 263893,
+      "sha256": "e801d606a7bdea550090091a14f9143d8f7d07b25ccdf2f09e744fc0d97127f5"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

@@ -38,17 +38,23 @@ retain **2,250 passes / one failed GNU reference assertion**; 745 later library
 tests and both Cargo stages never run. The first empty-vector GNU census is -9
 instead of 0, before the Emaxx comparison starts. An unchanged single-test replay
 passes with the same Rust executable hash. This does not identify the cause or
-erase the failed full run. The unchanged 643-test group diagnosis is active in
-[run 36816077037](https://github.com/rayfdj/emaxx/actions/runs/36816077037).
+erase the failed full run. The unchanged 643-test group diagnosis in
+[run 36816077037](https://github.com/rayfdj/emaxx/actions/runs/36816077037)
+now reproduces the same GNU failure: 642 passes / one failure, with the same
+Rust executable hash. Its [closed audit](docs/handover/2026-09-30-shared-reader-draft/source240-release-and-open-failures-manifest.json)
+retains every raw verdict. The retaining root or environment cause is unresolved.
 
 The separate [source240 coding/copy draft](docs/handover/2026-09-30-shared-reader-draft/source240-coding-recovery-draft-manifest.json)
 in `target/runtime-goal/recovered-2026-09-30/coding-repair/emaxx` has **454 inputs**.
-Strict checks have zero warnings; **160 focused tests / two existing ignores**,
-**944 affected gate tests** and four new ordinary GNU comparisons pass. It also
+Strict checks have zero warnings; **160 focused tests / two existing ignores**
+and **944 affected tests pass in both gate and release profiles**. All **61
+ordinary GNU comparisons** pass. It also
 repairs source238's reproduced U+F8FF failure-report error while preserving the
 known pass, failure, expected-failure and skip outcomes. The failed source239
-draft remains preserved. Full macOS supervisor **43216** and release/ordinary
-supervisor **43217** are active; read their receipts before acting. Do not edit
+draft remains preserved. The separately added save/revisit probe still fails:
+GNU records `utf-8-unix` after save, Emaxx `prefer-utf-8-unix`; file bytes match.
+Full macOS supervisor **43216** is active; release/ordinary **43217** has exited.
+Read their receipts before acting. Do not edit
 executing candidates or helpers. Root runtime is still source238; the draft is
 packaged separately. **Main is unchanged; complete correctness and the full
 architecture/performance goal remain unfinished.**

@@ -12,13 +12,19 @@ one new-file coding-indicator divergence and three unexecuted comparisons.
 
 Linux Rust retains 2,250 passes and one GNU reference census failure before that
 control reaches Emaxx; 745 library tests and both Cargo stages never run. An
-unchanged selected replay passes with the same Rust executable; the cause remains
-unresolved and a 643-test group diagnosis is active. The separate 454-input
+unchanged selected replay passes with the same Rust executable; the full 643-test
+group reproduces the same GNU failure after 642 passes. The cause remains
+unresolved. The separate 454-input
 [source240 draft](handover/2026-09-30-shared-reader-draft/source240-coding-recovery-draft-manifest.json)
 repairs full-range encoding, canonical string copying and the independently
 reproduced U+F8FF report-writing error. Strict checks, 160 focused gate tests
 (two existing ignores), 944 affected gate tests and four new ordinary comparisons
-pass. Full macOS and release/ordinary supervisors 43216/43217 are active. Root
+pass. The [release and open-failure audit](handover/2026-09-30-shared-reader-draft/source240-release-and-open-failures-manifest.json)
+also verifies 160 focused release passes (two existing ignores), 944 affected
+release passes and all 57 preceding ordinary comparisons: 61 total ordinary
+comparisons. A separate save/revisit probe reproduces the remaining coding-system
+selection mismatch; its file bytes match. Full macOS supervisor43216 is active;
+release/ordinary43217 has exited. Root
 runtime remains source238 and main remains source174. Restore complete correctness
 before further architecture work; the full goal and performance criterion are open.
 
