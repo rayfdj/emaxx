@@ -142,7 +142,7 @@ integration passes. All 3,010 raw library names, native artifact identity and fo
 retained executable/image files are checked. The original and retained GNU
 executable/dump/configuration/Makefile also match. An initial bounded-input audit
 used the wrong metadata key and wrote no passing receipt; its correction is recorded.
-Supervisor **31023** now runs the unchanged frozen comparison; terminal follows.
+Supervisor **31023** now runs the unchanged full terminal comparison after frozen.
 The clean full-validation checkout is
 `target/runtime-goal/recovered-2026-09-30/common-strings-full/emaxx`, commit `eddfe782`,
 with the same 488 inputs. Exact-head Linux
@@ -155,8 +155,16 @@ native artifact identity and four retained Rust inputs. Full frozen verifies
 has 7,670 passes, 47 expected failures and 211 skips, including all 177 original
 compiler tests passing. Every execution hash, paired outcome and actual GNU
 executable/dump/configuration/Makefile is checked. Historical failures remain.
-Keep both source261 checkouts unchanged. MacOS frozen and terminal results remain
-pending. No measured saving or full-goal completion is implied.
+The [closed macOS frozen audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-frozen-manifest.json)
+verifies all 519 files and 1,038 successful processes, with **7,915 matching / six
+mismatching outcomes**. Both editors have 7,623 passes, 46 expected failures and
+252 skips; all 177 original compiler tests pass. The six existing seccomp skip
+diagnostics contain different `system-configuration-features` text, as in source249.
+They remain strict failures. Every raw inventory, outcome, execution hash and actual
+GNU/Emaxx input is checked. No capability string or comparison rule changed.
+The retained gate executable is `aa99dd97…`, its image `ca97eca7…`; terminal validation
+uses that exact pair. Keep both source261 checkouts unchanged. Terminal is still
+running. No measured saving or full-goal completion is implied.
 
 ## Subsequent ordering repair: source262
 
@@ -224,6 +232,17 @@ and tests remain. Queue **64601** waits for full macOS supervisor31023, then run
 comparisons**, including the original modifier-casing control. No runtime stage has
 run, and the candidate remains unapplied. Keep its source and executing helpers
 unchanged. The full architecture/performance requirements below still apply.
+
+An [additional ordinary prefix-boundary control](handover/2026-09-30-shared-reader-draft/source263-ordering-boundary-control-manifest.json)
+matches GNU/source261 byte for byte on **12,600 comparisons**: 14 prefix lengths
+around word boundaries and 30 character/storage cases, including non-Unicode,
+surrogate, byte8, private-use and mixed storage. This specifically challenges the
+new shared-byte-prefix loop rather than certifying it from single-character cases.
+Queue **87187** waits for source263 selected queue64601 to exit successfully, then
+runs `audit-source263-selected.py` and this unchanged fixture on the retained release
+executable/image. It owns that selected-audit receipt; do not run the auditor twice.
+Wait for both queues before applying source263. Neither this passing source261
+baseline nor the prepared follow-up is a source263 runtime or performance pass.
 
 ## Remaining requirements
 

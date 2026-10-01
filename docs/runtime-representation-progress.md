@@ -7,7 +7,7 @@ and **962 affected passes in each profile**, plus **22 ordinary exact GNU matche
 The [complete macOS Rust audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-rust-manifest.json)
 verifies **3,107 passes / two existing ignores**, all 3,010 library names, native
 artifact identity, four retained inputs and unchanged source. Supervisor31023 now
-runs frozen validation in the clean checkout at that same commit; terminal follows.
+runs terminal validation in the clean checkout at that same commit, after frozen.
 Linux
 [Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
 [frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are complete
@@ -15,8 +15,13 @@ on exact `eddfe782`. The [closed Linux audit](handover/2026-09-30-shared-reader-
 verifies **3,119 Rust passes / two existing ignores**, all 3,018 library names,
 native artifact identity and **519 frozen files / 7,928 matching outcomes / 1,038
 successful processes**. Raw execution hashes and actual GNU inputs are checked;
-each editor has 7,670 passes, 47 expected failures and 211 skips. MacOS frozen and
-terminal verdicts remain pending. Main remains `21d20f0e`; the full goal remains open.
+each editor has 7,670 passes, 47 expected failures and 211 skips. The
+[complete macOS frozen audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-frozen-manifest.json)
+retains **7,915 matches / six strict mismatches**, all 519 files and 1,038 successful
+processes. Both editors have 7,623 passes, 46 expected failures and 252 skips, and
+all 177 compiler tests pass. The six build-feature skip diagnostics match the
+preceding source249 differences; they remain failures. All raw evidence and actual
+GNU/Emaxx inputs are verified. Terminal is pending; main and the full goal are unchanged.
 
 The [unapplied source262 ordering draft](handover/2026-09-30-shared-reader-draft/source262-string-ordering-draft-manifest.json)
 preserves new ordinary negatives: source261 has 154 wrong symbol/storage ordering
@@ -36,7 +41,11 @@ numeric casing rows. Main reproduces the range/live/numeric results; its full
 character matrix exits255 before comparison and supplies no historical row verdicts.
 All 500 inputs replay exactly and strict checks pass with zero warnings. Queue64601
 waits for supervisor31023, then runs all 199 focused selectors, 1,054 affected tests
-per profile and 28 ordinary comparisons. No runtime pass or measured saving is claimed.
+per profile and 28 ordinary comparisons. The
+[additional prefix-boundary baseline](handover/2026-09-30-shared-reader-draft/source263-ordering-boundary-control-manifest.json)
+matches GNU/source261 on all 12,600 rows. Queue87187 waits for64601, owns the selected
+audit and repeats this exact ordinary fixture on source263. Both must finish before
+applying the draft. No source263 runtime pass or measured saving is claimed.
 
 The preceding **source249**, pushed as `99e61fca`, has **476 frozen inputs** and
 [audited selected validation](handover/2026-09-30-shared-reader-draft/source249-selected-and-setup-manifest.json):

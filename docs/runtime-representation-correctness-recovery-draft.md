@@ -953,7 +953,7 @@ is now applied and pushed as `eddfe782`, with 488 exact inputs. Its
 [complete macOS Rust audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-rust-manifest.json)
 verifies **3,107 passes / two existing ignores**, all 3,010 library names, native
 artifact identity, four retained inputs and unchanged source. Supervisor31023 now
-runs frozen validation; terminal follows. Exact-head Linux
+runs terminal validation after the completed frozen comparison. Exact-head Linux
 [Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
 [frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are complete.
 The [closed Linux audit](handover/2026-09-30-shared-reader-draft/source261-complete-linux-manifest.json)
@@ -961,6 +961,12 @@ verifies **3,119 Rust passes / two existing ignores**, all 3,018 library names,
 native artifact identity and **519 frozen files / 7,928 matching outcomes / 1,038
 successful processes**. Every raw execution hash and actual GNU input is checked;
 7,670 passes, 47 expected failures and 211 skips per editor remain distinct.
+The [complete macOS frozen audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-frozen-manifest.json)
+retains **7,915 matches / six strict mismatches**, all 519 files and 1,038 successful
+processes. Both editors report 7,623 passes, 46 expected failures and 252 skips; all
+177 compiler tests pass. The same six build-feature skip-diagnostic differences as
+source249 remain failures, with unchanged comparison/capability rules. Raw outcomes,
+hashes and actual GNU/Emaxx inputs are verified; terminal validation remains pending.
 Source255's failed executable/image, all compiler/lint/helper failures
 and original negatives remain retained. Remaining full validation is pending; no physical-memory,
 ownership, performance or full-goal completion is claimed.
@@ -986,4 +992,8 @@ The repair follows actual GNU validation order, canonical byte cursors, octet
 promotion before casing, and direct numeric case-table keys. All source262 code
 and controls remain. Its 500 inputs replay exactly and strict checks have zero
 warnings. Queue64601 waits for supervisor31023 before 199 focused selectors, 1,054
-affected tests per profile and 28 ordinary comparisons. No runtime pass is claimed.
+affected tests per profile and 28 ordinary comparisons. The
+[additional prefix-boundary control](handover/2026-09-30-shared-reader-draft/source263-ordering-boundary-control-manifest.json)
+matches all 12,600 GNU/source261 baseline rows. Queue87187 then owns the selected
+source263 audit and this same ordinary comparison. Wait for both before applying
+the draft. No source263 runtime pass is claimed.

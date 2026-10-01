@@ -29,8 +29,8 @@ The [complete macOS Rust audit](docs/handover/2026-09-30-shared-reader-draft/sou
 verifies **3,107 passes / two existing ignores**, all 3,010 library names, native
 artifact identity and four retained executable/image files. The clean checkout
 `target/runtime-goal/recovered-2026-09-30/common-strings-full/emaxx` remains at
-`eddfe782`, with all 488 inputs unchanged. Supervisor **31023** now runs the
-unchanged frozen comparison; full terminal validation follows. Linux
+`eddfe782`, with all 488 inputs unchanged. Supervisor **31023** now runs full
+terminal validation after the completed frozen comparison below. Linux
 [Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
 [frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are
 complete on exact `eddfe782`. The [closed Linux audit](docs/handover/2026-09-30-shared-reader-draft/source261-complete-linux-manifest.json)
@@ -38,8 +38,13 @@ verifies **3,119 Rust passes / two existing ignores**, all 3,018 library names,
 native artifact identity and retained inputs, plus **519 frozen files / 7,928
 matching outcomes / 1,038 successful processes**. Each editor reports 7,670 passes,
 47 expected failures and 211 skips; all 177 original compiler tests pass. Every raw
-execution hash and actual GNU input is checked. MacOS frozen/terminal verdicts remain
-pending; no Linux result certifies them.
+execution hash and actual GNU input is checked. The
+[complete macOS frozen audit](docs/handover/2026-09-30-shared-reader-draft/source261-complete-macos-frozen-manifest.json)
+retains **7,915 matches / six strict mismatches**, all 519 files and 1,038 successful
+processes. Both editors have 7,623 passes, 46 expected failures and 252 skips; all
+177 compiler tests pass. The same six build-feature skip diagnostics differ as in
+source249. Every raw outcome, execution hash and retained GNU/Emaxx input is checked.
+No comparison rule or reported feature changes. Terminal validation remains pending.
 Main remains `21d20f0e`, PR79 is draft, and the architecture/performance goal is open.
 
 The [separate source262 ordering draft and negatives](docs/handover/2026-09-30-shared-reader-draft/source262-string-ordering-draft-manifest.json)
@@ -67,6 +72,11 @@ GNU's type/range validation order. All **500 inputs** replay exactly and strict
 checks pass with zero warnings. Queue **64601** waits for supervisor31023, then runs
 199 focused selectors and 1,054 affected tests per profile plus 28 ordinary comparisons.
 No source263 runtime stage has run; keep the unapplied checkout and helpers unchanged.
+The [additional boundary control](docs/handover/2026-09-30-shared-reader-draft/source263-ordering-boundary-control-manifest.json)
+matches GNU/source261 on **12,600 comparisons**, covering 14 prefix lengths around
+machine-word boundaries and 30 character/storage cases. Queue **87187** waits for
+64601, then owns the complete selected audit and runs that same fixture on source263.
+Wait for both queues before applying the draft; no source263 pass is inferred yet.
 
 ## Preceding source249 validation
 
