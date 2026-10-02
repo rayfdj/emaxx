@@ -1,11 +1,17 @@
 # Correctness recovery — 1 October 2026
 
 Latest continuation: [source279 string allocation recovery](runtime-representation-string-allocation-recovery.md).
-The applied runtime remains source272. The source276 allocator abort is repaired
-in an isolated successor with unchanged negative controls, while its separate
-broader Emaxx GC-census mismatch remains unresolved. Source270 terminal validation
-now matches every original scenario/comparison. The linked document records
-current validation state and the bounded Eglot review.
+The applied runtime is source279 (`d64040a7`), with 511 verified inputs. Both profiles
+pass 211 focused controls/two existing ignores and all 1,067 affected controls;
+37 ordinary outputs match GNU exactly. Full macOS and Linux validation are running.
+The additional generated probe remains failed on 53/198 rows, exposing an older
+extended-character printer defect; source270 has 58 wrong rows on the identical
+input, with no change in the first 192 rows. No printer repair is applied.
+A user-authorized bounded macOS Eglot retry completes both editors and verifies
+identical actual final buffer bytes. The prior Linux timeout remains recorded.
+The source276 GC-census mismatch remains unresolved, and source270 terminal
+validation now matches every original scenario/comparison. The linked document
+records raw evidence and its limits.
 
 The [full goal](runtime-representation-goal.md) is active and incomplete. The
 user's latest question challenges the correctness regression. Current work follows GNU C and keeps new architectural drafts isolated until their
@@ -14,7 +20,7 @@ frozen checkpoint; those historical results do not certify later shared-closure,
 canonical-string and direct-bytecode changes. Main remains source174 at
 `21d20f0e`. Do not merge the unfinished branch or declare the performance goal met.
 
-## Current checkpoint: source272
+## Preceding checkpoint: source272
 
 The [borrow-root repair](handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json)
 passes 206 focused controls and 1,062 affected controls in each profile, retaining

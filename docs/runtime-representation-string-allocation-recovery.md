@@ -1,12 +1,18 @@
 # String allocation recovery — 2 October 2026
 
 The [full goal](runtime-representation-goal.md) remains active and incomplete.
-The applied runtime is **source272** (`eb286e23`), main is `21d20f0e`, and PR79
-remains draft. **Source279 is isolated and unapplied**, in
+The applied runtime is **source279** (`d64040a7`), main is `21d20f0e`, and PR79
+remains draft. Its original selected checkout remains frozen in
 `target/runtime-goal/recovered-2026-09-30/string-allocation-recovery/emaxx`.
 Its [portable draft and bounded evidence](handover/2026-09-30-shared-reader-draft/source279-string-allocation-recovery-draft-manifest.json)
 retain failed predecessors and all 511 input identities. Receipts/helpers are in
 `target/runtime-goal/resume-2026-09-28`; preserve frozen inputs and executed helpers.
+The [closed selected validation and full-validation launches](handover/2026-09-30-shared-reader-draft/source279-string-allocation-selected-manifest.json)
+record both profiles and 37 ordinary comparisons. The separate
+[generated-output failure and bounded Eglot retry](handover/2026-09-30-shared-reader-draft/source279-varied-output-and-eglot-retry-manifest.json)
+must be read with that passing selected result: **53 of 198 generated output
+rows still differ from GNU**. This is an incremental allocator checkpoint,
+not a complete correctness certificate.
 
 ## Recoverable allocation errors
 
@@ -54,14 +60,51 @@ starts. Exact same-binary replays pass alone and with the two immediate predeces
 that suggests an interaction but neither identifies its cause nor erases the failure.
 The original fixture, expectations, timeouts and comparison rules remain unchanged.
 
-Source279 passes **211 focused gate tests / two existing ignores** and all **1,067
-affected gate controls**, with [every raw verdict audited](handover/2026-09-30-shared-reader-draft/source279-string-allocation-gate-broad-manifest.json).
+Source279 passes **211 focused tests / two existing ignores** and all **1,067
+affected controls in each profile**, with every raw verdict audited. Its
+**37 ordinary comparisons** match GNU byte for byte in stdout, stderr and exit
+status: all 33 preceding fixtures, both allocation probes and both census fixtures.
+The preceding fixtures and expected-output digests are unchanged.
 That later pass does not diagnose the earlier interaction.
-Supervisor **72187** continues 1,067 affected release controls, 213 focused release
-selectors, and **37 ordinary GNU comparisons**: all 33 preceding fixtures, both
-allocation probes and both census fixtures. Read `source279-selected-*` for live
-state. Failed stages remain failed while independent profiles/diagnostics continue.
-A launch or fresh-process pass does not certify broader validation.
+Supervisor **72187 has exited**, and all eight selected stages and the final raw
+audit pass. Source279 is applied and pushed as `d64040a7` with all 511 inputs/modes
+unchanged. Full macOS supervisor **77583** runs in the clean exact-commit checkout
+`target/runtime-goal/recovered-2026-09-30/string-allocation-full/emaxx`.
+Linux [Rust36950663403](https://github.com/rayfdj/emaxx/actions/runs/36950663403) and
+[frozen36950667238](https://github.com/rayfdj/emaxx/actions/runs/36950667238)
+are launched on that exact commit. Read `source279-full-*` and `source279-linux-*`
+for their actual state; a launch does not certify a result.
+
+## Additional adversarial output failure
+
+A deterministic seed generates 96 varied string length/content/mutation cases
+in each of interpreted and verified bytecode execution, plus six allocation-error
+rows. It checks full printed strings, copies, aliases, properties and forced GC,
+using changed names and contents. The first generator omits a closing parenthesis;
+both editors reject it. Its corrected successor executes all **198 rows** but
+**53 differ**. Both emit the same bytecompiler warning for an unused `make-string`
+result. The original failed helpers, inputs, warnings and raw outputs remain intact.
+
+The retained source270 executable runs the identical input and has **58 wrong
+rows**. Its first 192 rows are byte-identical to source279's. Only the final six
+allocation rows change: source279 repairs condition identity and bounds, leaving
+five fewer whole-row differences. The earlier printing defect therefore predates
+the allocator repair; its precise introduction remains unestablished.
+
+The reviewed printer consumes `SharedStringState::text()` and iterates Rust `char`
+values. That host view replaces extended Emacs characters with U+F8FF. GNU
+`print.c:print_object` reads the actual character codes before escaping or emitting
+them. Both escaped output and an unescaped extended-character stdout row fail.
+The repair must carry actual character codes/bytes through rendering and output
+destinations; adjusting expected output or only the generated fixture would not
+repair the runtime. Formatting, string-returning/buffer/function streams, raw-byte
+characters and native serialization also need review. No printer repair is applied.
+
+The unused-result warning means the generated loop's extra discarded allocations
+are not evidence that bytecode performed those allocations. Preserve this limit;
+a successor can assert their live state while retaining all original value checks.
+Neither the successful selected suite nor the bounded Eglot retry cancels this
+new failure. Main and full-goal completion remain held.
 
 ## Other closed evidence and user steering
 
@@ -73,15 +116,29 @@ This does not certify source279.
 The user explicitly welcomes faster Emaxx execution when the work and answers are
 correct. A GNU timeout must not be copied into Emaxx behavior. Source272 Linux
 frozen still has 7,927 matching outcomes and one GNU Eglot completion timeout;
-that case establishes neither identical answers nor a speedup.
+that original case establishes neither identical answers nor a speedup.
 
 The bounded Eglot review verifies retained executable/command provenance, the
 selected unchanged upstream test, the real pinned rust-analyzer identity and the
 Emaxx log reaching completion. The test asserts exact final buffer contents after
 choosing a completion. Rust source contains no special case for its name or its
 input/result literals. No canned result or oracle forwarding was found in the
-reviewed path. This is not a universal no-cheating proof: no new adversarial Eglot
-execution or syscall trace was performed; the whole-runtime audit remains open.
+reviewed path. The original review performed no new Eglot execution or syscall
+trace; the separately recorded retry below now adds a completed execution.
+
+The user subsequently requested a reasonable longer wait to obtain GNU's answer.
+`retry-source279-eglot-bounded.py` runs the unchanged upstream case with the same
+**60-second JSON-RPC default and 180-second process bound** for both editors.
+It uses their own executable/images and the real pinned Rust1.75 toolchain, and
+passively captures the actual buffer after completion selection. Both editors
+pass all original assertions, with no skip, in about 4.3 seconds of test execution.
+Their captured buffer bytes are identical:
+`fn test() -> i32 { let v: usize = 1; v.count_ones.1234567890;`.
+All actual executable/image, fixture, observation helper and Rust toolchain inputs
+are hashed and unchanged. This is a **new macOS diagnostic**, not a reclassification
+of the original Linux timeout, a full-suite pass, a speed comparison or a universal
+no-cheating proof. Future timeouts should receive bounded diagnostic retries to
+obtain an answer when practical; keep the original timeout and retry separate.
 
 Remaining requirements include final sblock validation, real property intervals,
 unified pure storage, physical accounting/counters, public ownership, symbol

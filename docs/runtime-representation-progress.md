@@ -1,15 +1,23 @@
 # Current goal status — 2 October 2026
 
 The latest [string allocation recovery](runtime-representation-string-allocation-recovery.md)
-supersedes the source276 queue state below. Unapplied source279 passes the three
-original allocation-abort controls, zero-warning strict checks and 211 focused
-gate tests / two existing ignores, plus all 1,067 affected gate tests. Its
-release/ordinary supervisor72187 continues. Source276's original affected suite has 1,063 passes / one **Emaxx**
+supersedes the source276 queue state below. Source279 is applied and pushed as
+`d64040a7`, with 511 verified inputs, zero-warning strict checks, 211 focused passes /
+two existing ignores and all 1,067 affected passes in each profile, plus 37 ordinary
+exact GNU comparisons. Supervisor72187 has exited. Full macOS77583 and Linux
+Rust36950663403/frozen36950667238 validate that exact source; outcomes remain pending.
+The additional generated probe remains failed:53/198 output rows differ, against
+58/198 on retained source270. The first 192 rows are identical across those two
+Emaxx revisions; the allocator improves the last six error rows, while the older
+extended-character printer defect remains open. A user-authorized bounded macOS
+Eglot retry completes in both editors and captures identical final buffer bytes;
+it does not reclassify the prior Linux timeout. All raw evidence is linked from
+the recovery document. Source276's original affected suite has 1,063 passes / one **Emaxx**
 first-vector census difference, not a GNU failure; it remains unresolved.
 Source270 terminal validation is now complete: 226 scenarios / 686 exact
-comparisons. Main and the applied source272 runtime remain unchanged.
+comparisons. Main remains unchanged.
 
-The current runtime is **source272** (`eb286e23`), with 510 verified inputs and
+The preceding runtime **source272** (`eb286e23`) has 510 verified inputs and
 [closed borrow-root repair evidence](handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json):
 zero-warning strict checks, **206 focused passes / two existing ignores** and
 **1,062 affected passes in each profile**, retaining all original tests/fixtures.

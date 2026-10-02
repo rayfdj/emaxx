@@ -2,18 +2,21 @@
 
 Read the [complete goal](runtime-representation-goal.md), [current handover](../HANDOVER.md)
 and [correctness recovery](runtime-representation-correctness-recovery-draft.md).
-The full goal is active and incomplete. The current task runtime is source272,
-with 510 inputs and [closed borrow-root repair validation](handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json).
-It retains source270's direct string header/storage fixes and repairs off-stack
-Rust borrow tracing; broader ownership, sblocks and actual intervals remain open.
+The full goal is active and incomplete. The current task runtime is source279,
+with 511 inputs and [closed selected validation](handover/2026-09-30-shared-reader-draft/source279-string-allocation-selected-manifest.json).
+It retains source270's direct string header/storage fixes and source272's off-stack
+Rust borrow tracing, and applies pooled string data plus recoverable allocation
+errors. Broader ownership, complete sblock validation and actual intervals remain open.
 The source256/source261 development record below preserves its original failures
 and bounded results. Use HANDOVER.md for current execution/publication state.
 Main remains `21d20f0e`.
 
-The latest isolated continuation is the [source279 allocation-error repair](runtime-representation-string-allocation-recovery.md).
-Its three original source278 aborts become passing controls, and 211 focused gate
-tests pass with two existing ignores; all 1,067 affected gate controls pass.
-Release and ordinary validation continue. Source276's
+The latest continuation is the [source279 allocation-error repair](runtime-representation-string-allocation-recovery.md).
+Both profiles pass 211 focused tests with two existing ignores and all 1,067 affected
+controls; all 37 ordinary GNU comparisons match. Full validation runs on `d64040a7`.
+An additional generated probe exposes 53 wrong output rows caused by a pre-existing
+extended-character printer defect; it remains failed. The bounded macOS Eglot
+retry completes with identical actual buffer output in both editors. Source276's
 original broader Emaxx census failure remains open; the historical waiting-state
 description below is superseded by that recovery document.
 
@@ -23,7 +26,7 @@ The [source276 package](handover/2026-09-30-shared-reader-draft/source276-string
 contains exact 511-input incremental/main patches, GNU C mappings, immutable helpers,
 original source273 compiler and source274/275 Clippy failures, and the seven passing
 gate controls. The draft is in `target/runtime-goal/recovered-2026-09-30/string-data-pools/emaxx`.
-It passes strict zero-warning checks but remains unapplied. Root remains source272.
+It passes strict zero-warning checks but remains a frozen precursor; source279 supersedes it.
 
 `alloc.c:allocate_string_data`, `resize_string_data`, `sweep_strings`,
 `free_large_strings` and `compact_small_strings` now guide the data allocator.

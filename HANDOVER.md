@@ -19,11 +19,25 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 ## Current correctness recovery
 
 Read the latest [string allocation recovery](docs/runtime-representation-string-allocation-recovery.md)
-before continuing. **Source279 is the current isolated draft; the applied runtime
-remains source272.** Three unchanged controls that abort in source278 now pass,
-and strict checks, 211 focused gate tests and all 1,067 affected gate tests pass,
-with two existing focused ignores. Supervisor72187 continues release and ordinary
-GNU comparisons. Source276's
+before continuing. **Source279 is applied and pushed as `d64040a7`, with 511
+verified inputs.** Its [closed selected evidence](docs/handover/2026-09-30-shared-reader-draft/source279-string-allocation-selected-manifest.json)
+records zero-warning strict checks, 211 focused passes / two existing ignores and
+all 1,067 affected passes in each profile, plus 37 byte-for-byte ordinary GNU
+comparisons. Supervisor72187 has exited. Full macOS supervisor77583 and Linux
+Rust36950663403/frozen36950667238 validate that exact commit; launches are not passes.
+
+The [additional generated failure and Eglot retry](docs/handover/2026-09-30-shared-reader-draft/source279-varied-output-and-eglot-retry-manifest.json)
+preserve **53 wrong output rows among 198**. The identical probe has 58 wrong rows
+on retained source270; all first 192 mutation/copy rows are unchanged. The allocator
+repairs five additional whole rows, but an older extended-character printer still
+loses real codes through its Rust text view. No printer repair is applied. Both
+the initial malformed probe and matching bytecompiler warning remain recorded.
+The user requests a bounded longer GNU wait to obtain and compare answers.
+A fresh macOS retry uses 60s JSON-RPC/180s process bounds for both editors; both
+complete the unchanged Eglot test and their actual final buffer bytes match.
+This does not reclassify the original Linux timeout or establish a speedup.
+
+Source276's
 broader **1,063 passes / one Emaxx GC-census failure** remains unresolved; its
 release never ran. Source270 terminal validation is now audited complete:
 **226 scenarios / 686 exact comparisons**, none missing. The linked recovery
@@ -31,7 +45,7 @@ preserves raw failures, exact patches, the active queue and bounded Eglot review
 Current user steering welcomes Emaxx being faster and requires equal answers and
 honest work; a GNU timeout must not be copied into Emaxx behavior.
 
-The task runtime is **source272**, pushed as **`eb286e23`**, with **510 verified inputs**. Its
+The preceding runtime **source272**, pushed as **`eb286e23`**, has **510 verified inputs**. Its
 [closed borrow-root repair evidence](docs/handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json)
 verifies zero-warning strict checks, **206 focused passes / two existing ignores**
 and **1,062 affected passes in each profile**. Every original selector, test,
@@ -77,8 +91,8 @@ is active and incomplete.
 
 The [portable source276 draft and original preparation failures](docs/handover/2026-09-30-shared-reader-draft/source276-string-sblocks-draft-manifest.json)
 replay all **511 inputs and file modes** from `b5a1558c` and main. It is isolated in
-`target/runtime-goal/recovered-2026-09-30/string-data-pools/emaxx`; the task runtime
-remains source272. Strict formatting, all-target checking, Clippy and diff checks
+`target/runtime-goal/recovered-2026-09-30/string-data-pools/emaxx`; it was prepared
+against source272 and is superseded by source279. Strict formatting, all-target checking, Clippy and diff checks
 pass with zero warnings. **Seven gate controls pass**, including actual compaction,
 block reclamation, borrowed-pointer stability, aligned resizing, property roots,
 weak references, release and pure-string survival. These are bounded controls.
