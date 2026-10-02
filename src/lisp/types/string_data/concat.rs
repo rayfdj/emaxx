@@ -1,7 +1,8 @@
 //! fns.c:concat_to_string copies strings in their actual internal encoding.
 
-use super::{Kind, LispError, SharedStringState, StringPropertySpan, Value};
-use super::{allocate_bytes, character_code, encode_character, string_overflow};
+use super::{Kind, LispError, StringError, StringObjectRef, StringPropertySpan, Value};
+use super::{StringAllocation, character_code, encode_character, string_overflow, validate_size};
+use std::ptr;
 
 fn visit_sequence(
     value: Value,
@@ -19,15 +20,33 @@ fn visit_sequence(
     }
 }
 
-fn extend_encoded(bytes: &mut Vec<u8>, code: u32, multibyte: bool) -> Result<(), LispError> {
-    if multibyte {
-        let (encoded, width) = encode_character(code)?;
-        bytes.extend_from_slice(&encoded[..width]);
-    } else {
-        // An unibyte result contains only ASCII and byte8 sequence values.
-        bytes.push(code as u8);
+struct Output {
+    data: *mut u8,
+    length: usize,
+    filled: usize,
+}
+
+impl Output {
+    fn extend(&mut self, bytes: &[u8]) {
+        assert!(bytes.len() <= self.length - self.filled);
+        if !bytes.is_empty() {
+            // SAFETY: the constructor owns this fresh allocation, and the
+            // checked range is disjoint from the input string/encoded word.
+            unsafe {
+                ptr::copy_nonoverlapping(bytes.as_ptr(), self.data.add(self.filled), bytes.len())
+            };
+        }
+        self.filled += bytes.len();
     }
-    Ok(())
+
+    fn character(&mut self, code: u32, multibyte: bool) {
+        if multibyte {
+            let (encoded, width) = encode_character(code).expect("validated character");
+            self.extend(&encoded[..width]);
+        } else {
+            self.extend(&[code as u8]);
+        }
+    }
 }
 
 fn copy_properties(
@@ -43,8 +62,8 @@ fn copy_properties(
     }));
 }
 
-impl SharedStringState {
-    pub(crate) fn concatenate(args: &[Value]) -> Result<Self, LispError> {
+impl StringObjectRef {
+    pub(crate) fn concatenate(args: &[Value]) -> Result<Self, StringError> {
         let mut characters = 0usize;
         let mut nbytes = 0usize;
         let mut multibyte = false;
@@ -99,50 +118,67 @@ impl SharedStringState {
             nbytes = characters;
         }
 
-        let mut bytes = allocate_bytes(nbytes)?;
-        let mut props = Vec::new();
-        let mut offset = 0usize;
-        for &arg in args {
-            match arg.kind() {
-                Kind::StringObject(state) => {
-                    let state = state.borrow();
-                    if state.is_multibyte() == multibyte {
-                        bytes.extend_from_slice(state.bytes());
-                    } else {
-                        for &byte in state.bytes() {
-                            let code = if byte < 128 {
-                                u32::from(byte)
+        validate_size(nbytes)?;
+        Self::from_data(
+            nbytes,
+            characters,
+            multibyte,
+            StringAllocation::Ordinary,
+            |data| {
+                let mut bytes = Output {
+                    data,
+                    length: nbytes,
+                    filled: 0,
+                };
+                let mut props = Vec::new();
+                let mut offset = 0usize;
+                for &arg in args {
+                    match arg.kind() {
+                        Kind::StringObject(state) => {
+                            let state = state.borrow();
+                            if state.is_multibyte() == multibyte {
+                                bytes.extend(state.bytes());
                             } else {
-                                0x3fff00 + u32::from(byte)
-                            };
-                            extend_encoded(&mut bytes, code, true)?;
+                                for &byte in state.bytes() {
+                                    let code = if byte < 128 {
+                                        u32::from(byte)
+                                    } else {
+                                        0x3fff00 + u32::from(byte)
+                                    };
+                                    bytes.character(code, true);
+                                }
+                            }
+                            copy_properties(&mut props, &state.props, offset);
+                            offset += state.len();
                         }
+                        _ => visit_sequence(arg, |value| {
+                            bytes.character(
+                                character_code(value).expect("validated character"),
+                                multibyte,
+                            );
+                            offset += 1;
+                            Ok(())
+                        })
+                        .expect("validated sequence"),
                     }
-                    copy_properties(&mut props, &state.props, offset);
-                    offset += state.len();
                 }
-                _ => visit_sequence(arg, |value| {
-                    extend_encoded(&mut bytes, character_code(value)?, multibyte)?;
-                    offset += 1;
-                    Ok(())
-                })?,
-            }
-        }
-        debug_assert_eq!(bytes.len(), nbytes);
-        debug_assert_eq!(offset, characters);
-        props.retain(|span| span.start < span.end && !span.props.is_empty());
-        props.sort_by_key(|span| (span.start, span.end));
-        let mut merged: Vec<StringPropertySpan> = Vec::new();
-        for span in props {
-            if let Some(last) = merged.last_mut()
-                && last.end == span.start
-                && crate::buffer::text_property_plists_eq(&last.props, &span.props)
-            {
-                last.end = span.end;
-            } else {
-                merged.push(span);
-            }
-        }
-        Ok(Self::from_encoded(bytes, characters, multibyte, merged))
+                assert_eq!(bytes.filled, nbytes);
+                debug_assert_eq!(offset, characters);
+                props.retain(|span| span.start < span.end && !span.props.is_empty());
+                props.sort_by_key(|span| (span.start, span.end));
+                let mut merged: Vec<StringPropertySpan> = Vec::new();
+                for span in props {
+                    if let Some(last) = merged.last_mut()
+                        && last.end == span.start
+                        && crate::buffer::text_property_plists_eq(&last.props, &span.props)
+                    {
+                        last.end = span.end;
+                    } else {
+                        merged.push(span);
+                    }
+                }
+                merged
+            },
+        )
     }
 }

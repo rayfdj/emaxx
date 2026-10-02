@@ -32,14 +32,13 @@ fn dump(interp: &mut Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
 
 #[test]
 fn string_images_preserve_empty_roots_distinct_headers_and_restored_mutability() {
-    use crate::lisp::types::{Env, SharedStringState};
+    use crate::lisp::types::{Env, StringObjectRef};
     let mut source = Interpreter::new();
     let mut environment = Env::new();
     source.define_special_variable("purify-flag", Value::T);
-    let unibyte =
-        crate::lisp::types::string_object_value(SharedStringState::from_unibyte(Vec::new()));
-    let multibyte = crate::lisp::types::string_object_value(
-        SharedStringState::from_storage(Vec::new(), 0, true).expect("empty multibyte"),
+    let unibyte = Value::StringObject(StringObjectRef::from_unibyte(Vec::new()));
+    let multibyte = Value::StringObject(
+        StringObjectRef::from_storage(Vec::new(), 0, true).expect("empty multibyte"),
     );
     let ordinary = Value::string("mutable after dump");
     let mut slots = vec![unibyte, multibyte];

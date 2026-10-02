@@ -1,5 +1,5 @@
 use super::types::{
-    Kind, LispError, ReaderClosureKind, ReaderForm, SharedStringState, StringPropertySpan, Value,
+    Kind, LispError, ReaderClosureKind, ReaderForm, StringObjectRef, StringPropertySpan, Value,
     make_uninterned_symbol_name,
 };
 mod input;
@@ -560,14 +560,12 @@ impl<'a> Reader<'a> {
                     // when a quoted list is traversed or macro-expanded.
                     // GNU's reader allocates the object once, so repeated
                     // evaluation of the same literal returns that object.
-                    return Ok(Some(crate::lisp::types::string_object_value(
-                        SharedStringState::new(
-                            s,
-                            Vec::new(),
-                            has_explicit_multibyte || has_invalid_unicode,
-                            extended_chars,
-                        ),
-                    )));
+                    return Ok(Some(Value::StringObject(StringObjectRef::from_text(
+                        s,
+                        Vec::new(),
+                        has_explicit_multibyte || has_invalid_unicode,
+                        extended_chars,
+                    ))));
                 }
                 Some(b'\\') => {
                     self.advance()?;
@@ -1682,9 +1680,12 @@ impl<'a> Reader<'a> {
             });
             index += 3;
         }
-        Ok(Some(crate::lisp::types::string_object_value(
-            SharedStringState::new(text, props, multibyte, extended_chars),
-        )))
+        Ok(Some(Value::StringObject(StringObjectRef::from_text(
+            text,
+            props,
+            multibyte,
+            extended_chars,
+        ))))
     }
 
     fn read_atom(&mut self) -> Result<Option<Value>, LispError> {

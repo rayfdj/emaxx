@@ -1,6 +1,25 @@
 use super::*;
 use crate::lisp::types::Kind;
 
+/// alloc.c:memory_full signals with the existing Vmemory_signal_data. Rust
+/// storage builders have no interpreter, so resolve their typed failure at
+/// the primitive body, including generated direct and native dispatch.
+pub(crate) fn string_storage_error(
+    interp: &Interpreter,
+    env: &Env,
+    error: crate::lisp::types::string_data::StringError,
+) -> LispError {
+    use crate::lisp::types::string_data::StringError;
+    match error {
+        StringError::Condition(error) => error,
+        StringError::AllocationFailed => LispError::SignalValue(
+            interp
+                .lookup_var("memory-signal-data", env)
+                .unwrap_or(Value::Nil),
+        ),
+    }
+}
+
 /// fns.c:validate_subarray checks both index types before their joint range.
 fn validate_subarray(
     array: Value,
@@ -47,11 +66,7 @@ pub(crate) fn substring_value(
                 let (from, to) = validate_subarray(array, from, to, state.len())?;
                 state.substring(from, to, properties)
             };
-            if result.len() == 0 && !result.is_multibyte() {
-                Ok(Value::String("".into()))
-            } else {
-                Ok(crate::lisp::types::string_object_value(result))
-            }
+            Ok(Value::StringObject(result))
         }
         _ => Err(LispError::WrongTypeArgument(
             if properties { "arrayp" } else { "stringp" }.into(),
@@ -653,16 +668,16 @@ pub(crate) fn aset_string_value(
     target: &Value,
     index: usize,
     new_value: &Value,
-) -> Result<Value, LispError> {
+) -> Result<Value, crate::lisp::types::string_data::StringError> {
     let Kind::StringObject(state) = target.kind() else {
-        return Err(LispError::WrongTypeArgument("stringp".into(), *target));
+        return Err(LispError::WrongTypeArgument("stringp".into(), *target).into());
     };
     state.check_impure()?;
     let mut state = state.borrow_mut();
     // data.c:Faset checks the existing index before NEWELT.
     if index >= state.len() {
         drop(state);
-        return Err(args_out_of_range_for_aset(target, index));
+        return Err(args_out_of_range_for_aset(target, index).into());
     }
     let code = crate::lisp::types::string_data::character_code(*new_value)?;
     if !state.store_character(index, code)? {
@@ -671,7 +686,8 @@ pub(crate) fn aset_string_value(
             Value::symbol("args-out-of-range"),
             *target,
             *new_value,
-        ])));
+        ]))
+        .into());
     }
     Ok(*target)
 }
@@ -701,7 +717,7 @@ pub(crate) fn make_shared_string_value_with_extended_chars(
     multibyte: bool,
     extended_chars: Vec<(usize, u32)>,
 ) -> Value {
-    crate::lisp::types::string_object_value(SharedStringState::new(
+    Value::StringObject(StringObjectRef::from_text(
         text,
         shared_string_props(&props),
         multibyte,

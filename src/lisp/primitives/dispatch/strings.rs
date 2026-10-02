@@ -20,12 +20,13 @@ define_dispatch!(
                     _ => return Err(wrong_type_argument("wholenump", args[0])),
                 };
                 let init = character_code(args[1])?;
-                Ok(crate::lisp::types::string_object_value(
-                    SharedStringState::repeated_character(
+                Ok(Value::StringObject(
+                    StringObjectRef::repeated_character(
                         init,
                         length,
                         args.get(2).is_some_and(Value::is_truthy),
-                    )?,
+                    )
+                    .map_err(|error| string_storage_error(interp, env, error))?,
                 ))
             }
             "make-temp-name" => {
@@ -124,12 +125,9 @@ define_dispatch!(
 
             // ── String operations ──
             "concat" => {
-                let result = SharedStringState::concatenate(args)?;
-                if result.len() == 0 && !result.is_multibyte() {
-                    // alloc.c returns the existing empty unibyte string.
-                    return Ok(Value::String("".into()));
-                }
-                Ok(crate::lisp::types::string_object_value(result))
+                let result = StringObjectRef::concatenate(args)
+                    .map_err(|error| string_storage_error(interp, env, error))?;
+                Ok(Value::StringObject(result))
             }
             "string-match" => regexp::string_match_impl(interp, args, env, true),
 
@@ -180,8 +178,9 @@ define_dispatch!(
                 };
                 Ok(Value::Integer(width as i64))
             }
-            "string" => Ok(crate::lisp::types::string_object_value(
-                SharedStringState::from_characters(args)?,
+            "string" => Ok(Value::StringObject(
+                StringObjectRef::from_characters(args)
+                    .map_err(|error| string_storage_error(interp, env, error))?,
             )),
             "substring" | "substring-no-properties" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -675,8 +674,9 @@ define_dispatch!(
             }
             "char-to-string" => {
                 need_args(name, args, 1)?;
-                Ok(crate::lisp::types::string_object_value(
-                    SharedStringState::from_characters(args)?,
+                Ok(Value::StringObject(
+                    StringObjectRef::from_characters(args)
+                        .map_err(|error| string_storage_error(interp, env, error))?,
                 ))
             }
             "base64-encode-region" => {

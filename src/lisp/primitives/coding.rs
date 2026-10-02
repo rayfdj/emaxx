@@ -774,8 +774,8 @@ pub(crate) fn shared_string_copy(value: &Value) -> Result<Value, LispError> {
     let Kind::StringObject(object) = value.kind() else {
         return Err(LispError::WrongTypeArgument("stringp".into(), *value));
     };
-    let copy = object.borrow().clone();
-    Ok(crate::lisp::types::string_object_value(copy))
+    let copy = object.borrow().copy_with_properties();
+    Ok(Value::StringObject(copy))
 }
 
 /// The character a unibyte Lisp string stores for one byte: ASCII stays
@@ -798,7 +798,7 @@ pub(crate) fn bytes_to_unibyte_value(bytes: &[u8]) -> Value {
 }
 
 pub(crate) fn bytes_to_shared_unibyte_value(bytes: &[u8]) -> Value {
-    crate::lisp::types::string_object_value(SharedStringState::from_unibyte(bytes.to_vec()))
+    Value::StringObject(StringObjectRef::from_unibyte(bytes.to_vec()))
 }
 
 /// gen_tempname's random segment: exactly six characters from

@@ -177,10 +177,11 @@ fn purecopy_inner(
     let copied = match value.kind() {
         Kind::BigInteger(integer) => Value::big_integer((*integer).clone()),
         Kind::Float(number) => Value::Float(number),
-        Kind::StringObject(state) => {
-            let copy = state.borrow().clone_without_properties();
-            Value::StringObject(crate::lisp::alloc::allocate_string(copy, true))
-        }
+        Kind::StringObject(state) => Value::StringObject(
+            state
+                .borrow()
+                .copy_without_properties(crate::lisp::alloc::StringAllocation::Pure),
+        ),
         Kind::Vector(_) => return purecopy_vector(interp, value, env),
         Kind::Cons(_) if is_vector_value(value) => {
             return purecopy_vector(interp, value, env);

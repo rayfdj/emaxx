@@ -237,16 +237,7 @@ impl SharedText {
             && text.chars().any(|ch| {
                 !crate::lisp::primitives::is_raw_byte_regex_char(ch) && u32::from(ch) > 127
             });
-        let value = string_object_value(SharedStringState::new(
-            text,
-            Vec::new(),
-            multibyte,
-            Vec::new(),
-        ));
-        let Kind::StringObject(state) = value.kind() else {
-            unreachable!("string constructor")
-        };
-        state
+        StringObjectRef::from_text(text, Vec::new(), multibyte, Vec::new())
     }
 
     pub fn into_string(self) -> String {
@@ -1195,24 +1186,6 @@ pub(crate) fn note_string_allocation(bytes: usize) {
         .div_ceil(8)
         .saturating_mul(8);
     crate::lisp::native_comp::note_lisp_allocation(32_usize.saturating_add(sdata));
-}
-
-/// A string object with its own GNU-layout header and canonical bytes.
-pub(crate) fn string_object_value(state: SharedStringState) -> Value {
-    let bytes = state.storage_bytes();
-    string_object_value_with_storage_bytes(state, bytes)
-}
-
-/// `string_object_value' for a string whose storage size is already
-/// known (the image records it).
-pub(crate) fn string_object_value_with_storage_bytes(
-    state: SharedStringState,
-    bytes: usize,
-) -> Value {
-    if state.len() != 0 {
-        note_string_allocation(bytes);
-    }
-    Value::StringObject(crate::lisp::alloc::allocate_string(state, false))
 }
 
 #[derive(Default)]
@@ -3164,9 +3137,9 @@ pub(crate) fn bounded_error_debug(error: &LispError) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnvFrame, Kind, LispError, SharedCons, SharedStringState, SymbolName, Value, assq_binding,
+        EnvFrame, Kind, LispError, SharedCons, StringObjectRef, SymbolName, Value, assq_binding,
         census_live_conses, census_live_floats, census_live_vectors, environment_declares_special,
-        make_uninterned_symbol_name, string_object_value,
+        make_uninterned_symbol_name,
     };
 
     #[test]
@@ -3346,14 +3319,14 @@ mod tests {
     #[test]
     fn string_value_equality_uses_bytes_and_character_counts() {
         let from_char = |code| {
-            string_object_value(
-                SharedStringState::from_characters(&[Value::Integer(code)])
+            Value::StringObject(
+                StringObjectRef::from_characters(&[Value::Integer(code)])
                     .expect("valid Lisp character"),
             )
         };
         // These are the storage distinctions in the ordinary GNU string
         // comparison fixture. The Rust Value API must preserve them too.
-        let unibyte = string_object_value(SharedStringState::from_unibyte(vec![0x80]));
+        let unibyte = Value::StringObject(StringObjectRef::from_unibyte(vec![0x80]));
         let byte8 = from_char(0x3fff80);
         let private_use = from_char(0xe080);
         assert_ne!(unibyte, byte8);
@@ -3362,12 +3335,12 @@ mod tests {
 
         // The bytes alone are insufficient: these same two bytes represent
         // two unibyte characters or one multibyte character (GNU SCHARS).
-        let two_characters = string_object_value(SharedStringState::from_unibyte(vec![0xc2, 0x80]));
+        let two_characters = Value::StringObject(StringObjectRef::from_unibyte(vec![0xc2, 0x80]));
         assert_ne!(two_characters, from_char(0x80));
 
         let ascii = Value::string("x");
-        let multibyte_ascii = string_object_value(
-            SharedStringState::repeated_character(u32::from(b'x'), 1, true)
+        let multibyte_ascii = Value::StringObject(
+            StringObjectRef::repeated_character(u32::from(b'x'), 1, true)
                 .expect("valid ASCII character"),
         );
         assert_eq!(ascii, multibyte_ascii);

@@ -1116,9 +1116,9 @@ pub(crate) mod tests {
         // U+0089/U+0087 text instead constructs a multibyte Lisp string.
         let mut slots = [
             Value::Integer(257),
-            crate::lisp::types::string_object_value(
-                crate::lisp::types::SharedStringState::from_unibyte(vec![0o211, 0o207]),
-            ),
+            Value::StringObject(crate::lisp::types::StringObjectRef::from_unibyte(vec![
+                0o211, 0o207,
+            ])),
             Value::list([Value::symbol("vector-literal")]),
             Value::Integer(3),
         ];

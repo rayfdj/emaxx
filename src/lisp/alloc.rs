@@ -30,9 +30,11 @@ mod symbols;
 pub(crate) use finalizers::FinalizerList;
 pub use finalizers::{FinalizerRef, FinalizerState};
 pub use strings::StringObjectRef;
+#[cfg(test)]
+pub(crate) use strings::string_data_census;
 pub(crate) use strings::{
-    allocate_restored_string, allocate_string, borrowed_string_roots, live_string_object_census,
-    sweep_strings,
+    PendingStringData, StringAllocation, allocate_string, borrowed_string_roots,
+    live_string_object_census, retire_string_data, string_data_size, sweep_strings,
 };
 pub(crate) mod vectors;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};

@@ -7242,9 +7242,9 @@ mod tests {
         // GNU byte code for one mandatory argument: dup, add1, return.
         let function = Value::allocated_closure(&[
             Value::Integer(257),
-            crate::lisp::types::string_object_value(
-                crate::lisp::types::SharedStringState::from_unibyte(vec![0o211, 0o124, 0o207]),
-            ),
+            Value::StringObject(crate::lisp::types::StringObjectRef::from_unibyte(vec![
+                0o211, 0o124, 0o207,
+            ])),
             Value::list([Value::symbol("vector-literal")]),
             Value::Integer(3),
         ]);
@@ -11689,11 +11689,9 @@ mod tests {
             );
         }
         for multibyte in [false, true] {
-            let object = crate::lisp::alloc::allocate_string(
-                crate::lisp::types::SharedStringState::from_storage(Vec::new(), 0, multibyte)
-                    .expect("empty string"),
-                false,
-            );
+            let object =
+                crate::lisp::types::StringObjectRef::from_storage(Vec::new(), 0, multibyte)
+                    .expect("empty string");
             let guard = object.borrow_mut();
             rejected_collection(
                 &mut heap,
@@ -11706,18 +11704,236 @@ mod tests {
     }
 
     #[test]
+    fn string_sdata_allocation_failure_keeps_header_and_block_census() {
+        use crate::lisp::types::StringObjectRef;
+        let _interpreter = Interpreter::new();
+        for code in [97, 128, 0x20_0000] {
+            let headers = crate::lisp::alloc::live_string_object_census();
+            let blocks = crate::lisp::alloc::string_data_census();
+            let error = StringObjectRef::repeated_character(code, 1usize << 58, false)
+                .expect_err("an impossible address-space request must be recoverable");
+            assert_eq!(error.to_string(), "Memory exhausted");
+            assert_eq!(crate::lisp::alloc::live_string_object_census(), headers);
+            assert_eq!(crate::lisp::alloc::string_data_census(), blocks);
+            let small = StringObjectRef::repeated_character(code, 3, false)
+                .expect("allocation still works after the error");
+            assert_eq!(small.borrow().len(), 3);
+            assert_eq!(small.borrow().character_at(2), Some(i64::from(code)));
+        }
+    }
+
+    #[test]
+    fn string_allocation_failure_uses_bound_signal_and_native_exit() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let payload = Value::list([Value::symbol("error"), Value::string("allocation-probe-47")]);
+        interpreter.set_variable("memory-signal-data", payload, &mut environment);
+        interpreter.set_variable("memory-full", Value::Nil, &mut environment);
+        for code in [97, 128, 0x20_0000] {
+            let args = [Value::Integer(1_i64 << 58), Value::Integer(code)];
+            let error = crate::lisp::primitives::call(
+                &mut interpreter,
+                "make-string",
+                &args,
+                &mut environment,
+            )
+            .expect_err("ordinary primitive allocation failure");
+            assert!(crate::lisp::eval::error_condition_value(&error).eq_value(payload));
+            let error = runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    call_funcall_two as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[Value::symbol("make-string"), args[0], args[1]],
+                )
+                .expect_err("native nonlocal exit carries the same Lisp condition");
+            assert!(crate::lisp::eval::error_condition_value(&error).eq_value(payload));
+            assert_eq!(
+                interpreter.lookup_var("memory-full", &environment),
+                Some(Value::Nil)
+            );
+        }
+    }
+
+    #[test]
+    fn string_size_bound_is_gnu_fixnum_maximum() {
+        use crate::lisp::types::StringObjectRef;
+        let _interpreter = Interpreter::new();
+        for code in [128, 0x20_0000] {
+            let error =
+                StringObjectRef::repeated_character(code, MOST_POSITIVE_FIXNUM as usize, false)
+                    .expect_err(
+                        "GNU rejects a byte count beyond its fixnum bound before allocating",
+                    );
+            assert_eq!(error.to_string(), "Maximum string size exceeded");
+        }
+    }
+
+    #[test]
+    fn string_sblocks_compact_unborrowed_data_and_hold_borrowed_blocks() {
+        use crate::lisp::types::StringObjectRef;
+        #[inline(never)]
+        fn make_strings() -> (Vec<Value>, Vec<Vec<u8>>) {
+            let mut roots = Vec::new();
+            let mut expected = Vec::new();
+            for index in 0..768 {
+                let length = if index % 41 == 0 { 1025 } else { 37 };
+                let code = (index % 26 + usize::from(b'a')) as u32;
+                let object = StringObjectRef::repeated_character(code, length, false)
+                    .expect("valid string pool input");
+                if index % 47 == 31 {
+                    roots.push(Value::StringObject(object));
+                    expected.push(vec![code as u8; length]);
+                }
+            }
+            for length in [1, 7, 8, 15, 16, 511, 1023, 1024, 1025, 8193] {
+                roots.push(Value::StringObject(
+                    StringObjectRef::repeated_character(u32::from(b'z'), length, false)
+                        .expect("valid size-boundary input"),
+                ));
+                expected.push(vec![b'z'; length]);
+            }
+            (roots, expected)
+        }
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeap::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        let (roots, expected) = make_strings();
+        let native_roots: Vec<_> = roots.iter().map(|value| value.word()).collect();
+        let before = crate::lisp::alloc::string_data_census();
+        let pointers: Vec<_> = roots
+            .iter()
+            .map(|value| {
+                let Kind::StringObject(object) = value.kind() else {
+                    panic!("string");
+                };
+                object.borrow().bytes().as_ptr() as usize
+            })
+            .collect();
+        let Kind::StringObject(pinned) = roots[0].kind() else {
+            panic!("string");
+        };
+        let guard = pinned.borrow();
+        let held_bytes = guard.bytes();
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &native_roots,
+            &mut interpreter,
+            &environment,
+        );
+        assert_eq!(held_bytes.as_ptr() as usize, pointers[0]);
+        assert_eq!(held_bytes, expected[0]);
+        let mut relocated = 0;
+        for ((&value, contents), &previous) in roots.iter().zip(&expected).zip(&pointers) {
+            let Kind::StringObject(object) = value.kind() else {
+                panic!("string");
+            };
+            assert_eq!(
+                heap.decode(value.word())
+                    .expect("rooted string remains allocated")
+                    .word(),
+                value.word()
+            );
+            let state = object.borrow();
+            assert_eq!(state.bytes(), contents);
+            let data = state.bytes().as_ptr();
+            assert_eq!(data as usize % 8, 0);
+            // SAFETY: live sdata owns its aligned back-pointer and NUL;
+            // neither access extends beyond this string's allocation.
+            unsafe {
+                assert_eq!(data.sub(8).cast::<usize>().read(), object.identity());
+                assert_eq!(data.add(contents.len()).read(), 0);
+            }
+            relocated += usize::from(data as usize != previous);
+        }
+        assert!(relocated > 0, "unborrowed live storage was compacted");
+        let after = crate::lisp::alloc::string_data_census();
+        assert!(
+            after.0 < before.0 && after.1 < before.1,
+            "actual data blocks and requested bytes are released"
+        );
+        drop(guard);
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &native_roots,
+            &mut interpreter,
+            &environment,
+        );
+        assert_ne!(
+            pinned.borrow().bytes().as_ptr() as usize,
+            pointers[0],
+            "the released borrow no longer pins its sparse block"
+        );
+        assert_eq!(pinned.borrow().bytes(), expected[0]);
+    }
+
+    #[test]
+    fn string_sdata_resize_reuses_alignment_slop_and_preserves_contents() {
+        use crate::lisp::types::StringObjectRef;
+        let _interpreter = Interpreter::new();
+        let object = StringObjectRef::repeated_character(u32::from(b'a'), 6, true)
+            .expect("valid multibyte resize input");
+        let original = object.borrow().bytes().as_ptr() as usize;
+        {
+            let mut state = object.borrow_mut();
+            assert!(state.store_character(2, 0x80).expect("two-byte character"));
+            assert_eq!(state.bytes(), b"aa\xc2\x80aaa");
+            assert_eq!(state.bytes().as_ptr() as usize, original);
+            assert_eq!(state.len(), 6);
+            assert!(
+                state
+                    .store_character(2, 0x20_0000)
+                    .expect("five-byte character")
+            );
+            assert_ne!(state.bytes().as_ptr() as usize, original);
+            assert_eq!(state.len(), 6);
+            assert_eq!(state.character_at(2), Some(0x20_0000));
+            assert_eq!(&state.bytes()[..2], b"aa");
+            assert_eq!(&state.bytes()[7..], b"aaa");
+            // SAFETY: the allocation includes its initialized trailing NUL.
+            unsafe {
+                assert_eq!(state.bytes().as_ptr().add(state.storage_bytes()).read(), 0);
+            }
+            assert!(
+                state
+                    .store_character(2, u32::from(b'a'))
+                    .expect("ASCII replacement")
+            );
+            assert_eq!(state.bytes(), b"aaaaaa");
+        }
+    }
+
+    #[test]
     fn pure_string_headers_survive_unrooted_gc_outside_the_ordinary_census() {
         #[inline(never)]
         fn make_pure_strings() -> [usize; 3] {
-            use crate::lisp::types::SharedStringState;
+            use crate::lisp::types::StringObjectRef;
             let before = crate::lisp::alloc::live_string_object_census();
             let hidden = [
-                SharedStringState::from_unibyte(Vec::new()),
-                SharedStringState::from_storage(Vec::new(), 0, true).expect("empty multibyte"),
-                SharedStringState::from_unibyte(b"pure bytes".to_vec()),
+                (Vec::new(), false),
+                (Vec::new(), true),
+                (b"pure bytes".to_vec(), false),
             ]
-            .map(|state| {
-                Value::StringObject(crate::lisp::alloc::allocate_string(state, true)).word() ^ HIDE
+            .map(|(bytes, multibyte)| {
+                let characters = bytes.len();
+                Value::StringObject(
+                    StringObjectRef::from_storage_kind(
+                        bytes,
+                        characters,
+                        multibyte,
+                        crate::lisp::alloc::StringAllocation::Pure,
+                    )
+                    .expect("pure string storage"),
+                )
+                .word()
+                    ^ HIDE
             });
             assert_eq!(crate::lisp::alloc::live_string_object_census(), before);
             hidden

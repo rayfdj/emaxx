@@ -5,8 +5,11 @@
 //! Rust text and its non-Unicode side list are transient consumer views;
 //! neither is retained beside the authoritative bytes.
 
-use super::{Kind, LispError, StringPropertySpan, Value};
-use std::ptr::NonNull;
+use super::{Kind, LispError, StringObjectRef, StringPropertySpan, Value};
+use crate::lisp::alloc::{
+    PendingStringData, StringAllocation, retire_string_data, string_data_size,
+};
+use std::ptr::{self, NonNull};
 
 mod concat;
 mod properties;
@@ -33,17 +36,6 @@ const _: () = {
 
 static EMPTY_DATA: u8 = 0;
 
-impl Clone for SharedStringState {
-    fn clone(&self) -> Self {
-        Self::from_encoded(
-            self.bytes().to_vec(),
-            self.len(),
-            self.is_multibyte(),
-            self.props.to_vec(),
-        )
-    }
-}
-
 impl std::fmt::Debug for SharedStringState {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -67,78 +59,135 @@ impl PartialEq for SharedStringState {
 
 impl Drop for SharedStringState {
     fn drop(&mut self) {
-        let nbytes = self.storage_bytes();
-        if nbytes != 0 {
-            // SAFETY: from_encoded transfers one exact boxed allocation,
-            // including its NUL, to this unique owner. Cloning copies bytes.
-            unsafe {
-                drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
-                    self.data.as_ptr(),
-                    nbytes + 1,
-                )));
-            }
+        let bytes = self.storage_bytes();
+        if bytes != 0 {
+            // SAFETY: the swept header exclusively owns its sdata entry;
+            // no guard survives reclamation. Block freeing follows sweep.
+            unsafe { retire_string_data(self.data, bytes) };
         }
     }
 }
 
-impl SharedStringState {
+/// Storage construction is independent of an interpreter. Carry allocation
+/// failure without allocating a replacement message; the primitive resolves
+/// it to the current, preallocated `memory-signal-data` only on error.
+#[derive(Debug)]
+pub(crate) enum StringError {
+    Condition(LispError),
+    AllocationFailed,
+}
+
+impl From<LispError> for StringError {
+    fn from(error: LispError) -> Self {
+        Self::Condition(error)
+    }
+}
+
+impl std::fmt::Display for StringError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Condition(error) => error.fmt(f),
+            Self::AllocationFailed => f.write_str("Memory exhausted"),
+        }
+    }
+}
+
+impl StringObjectRef {
+    fn from_data(
+        nbytes: usize,
+        characters: usize,
+        multibyte: bool,
+        kind: StringAllocation,
+        initialize: impl FnOnce(*mut u8) -> Vec<StringPropertySpan>,
+    ) -> Result<Self, StringError> {
+        validate_size(nbytes)?;
+        crate::lisp::alloc::allocate_string(characters, multibyte, kind, |state| {
+            assert!(nbytes < isize::MAX as usize - 16 && (multibyte || characters == nbytes));
+            if nbytes == 0 {
+                state.props = initialize(state.data.as_ptr()).into();
+                return Ok(());
+            }
+            // SAFETY: STATE is exclusively borrowed at its final address.
+            let data =
+                unsafe { PendingStringData::new(state, nbytes, kind == StringAllocation::Pure) }?;
+            let props = initialize(data.as_ptr());
+            state.size = characters;
+            state.size_byte = if multibyte { nbytes as isize } else { -1 };
+            state.data = data.install();
+            state.props = props.into();
+            Ok(())
+        })
+    }
+
     fn from_encoded(
-        mut bytes: Vec<u8>,
+        bytes: Vec<u8>,
         characters: usize,
         multibyte: bool,
         props: Vec<StringPropertySpan>,
     ) -> Self {
-        let nbytes = bytes.len();
-        assert!(nbytes < isize::MAX as usize && (multibyte || characters == nbytes));
-        let data = if nbytes == 0 {
-            NonNull::from(&EMPTY_DATA)
-        } else {
-            bytes.push(0);
-            NonNull::new(Box::into_raw(bytes.into_boxed_slice()).cast::<u8>())
-                .expect("boxed string allocation")
-        };
-        Self {
-            size: characters,
-            size_byte: if multibyte { nbytes as isize } else { -1 },
-            props: props.into(),
-            data,
-        }
+        Self::from_slice(
+            &bytes,
+            characters,
+            multibyte,
+            props,
+            StringAllocation::Ordinary,
+        )
     }
 
-    fn bytes_mut(&mut self) -> &mut [u8] {
-        let nbytes = self.storage_bytes();
-        if nbytes == 0 {
-            return &mut [];
-        }
-        // SAFETY: the unique mutable header borrow covers its owned bytes;
-        // the trailing NUL remains outside the mutable contents slice.
-        unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr(), nbytes) }
+    fn from_slice(
+        bytes: &[u8],
+        characters: usize,
+        multibyte: bool,
+        props: Vec<StringPropertySpan>,
+        kind: StringAllocation,
+    ) -> Self {
+        Self::try_from_slice(bytes, characters, multibyte, props, kind)
+            .expect("infallible string copy allocation")
     }
 
-    fn replace_storage(&mut self, bytes: Vec<u8>, characters: usize, multibyte: bool) {
-        let mut replacement = Self::from_encoded(bytes, characters, multibyte, Vec::new());
-        std::mem::swap(&mut replacement.props, &mut self.props);
-        *self = replacement;
+    fn try_from_slice(
+        bytes: &[u8],
+        characters: usize,
+        multibyte: bool,
+        props: Vec<StringPropertySpan>,
+        kind: StringAllocation,
+    ) -> Result<Self, StringError> {
+        Self::from_data(bytes.len(), characters, multibyte, kind, |data| {
+            if !bytes.is_empty() {
+                // SAFETY: the fresh output contains BYTES.len() writable bytes.
+                unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), data, bytes.len()) };
+            }
+            props
+        })
     }
+
     /// character.c:Fstring validates all characters before allocating the
     /// payload. Only an entirely ASCII result has one byte per character.
-    pub(crate) fn from_characters(characters: &[Value]) -> Result<Self, LispError> {
+    pub(crate) fn from_characters(characters: &[Value]) -> Result<Self, StringError> {
         let mut nbytes = 0usize;
         for &character in characters {
             let (_, width) = encode_character(character_code(character)?)?;
             nbytes = nbytes.checked_add(width).ok_or_else(string_overflow)?;
         }
-        let mut bytes = allocate_bytes(nbytes)?;
-        for &character in characters {
-            let (encoded, width) = encode_character(character_code(character)?)?;
-            bytes.extend_from_slice(&encoded[..width]);
-        }
-        Ok(Self::from_encoded(
-            bytes,
+        validate_size(nbytes)?;
+        Self::from_data(
+            nbytes,
             characters.len(),
             nbytes != characters.len(),
-            Vec::new(),
-        ))
+            StringAllocation::Ordinary,
+            |data| {
+                let mut offset = 0;
+                for &character in characters {
+                    let (encoded, width) =
+                        encode_character(character_code(character).expect("validated character"))
+                            .expect("validated code");
+                    // SAFETY: validation summed these exact encoded widths.
+                    unsafe { ptr::copy_nonoverlapping(encoded.as_ptr(), data.add(offset), width) };
+                    offset += width;
+                }
+                Vec::new()
+            },
+        )
     }
 
     /// alloc.c:Fmake_string encodes INIT once, then repeats its actual bytes.
@@ -146,25 +195,34 @@ impl SharedStringState {
         code: u32,
         length: usize,
         force_multibyte: bool,
-    ) -> Result<Self, LispError> {
+    ) -> Result<Self, StringError> {
         let (encoded, width) = encode_character(code)?;
         let nbytes = length.checked_mul(width).ok_or_else(string_overflow)?;
-        let mut bytes = allocate_bytes(nbytes)?;
-        if width == 1 {
-            bytes.resize(nbytes, encoded[0]);
-        } else if nbytes != 0 {
-            bytes.extend_from_slice(&encoded[..width]);
-            while bytes.len() < nbytes {
-                let count = bytes.len().min(nbytes - bytes.len());
-                bytes.extend_from_within(..count);
-            }
-        }
-        Ok(Self::from_encoded(
-            bytes,
+        validate_size(nbytes)?;
+        Self::from_data(
+            nbytes,
             length,
             force_multibyte || width != 1,
-            Vec::new(),
-        ))
+            StringAllocation::Ordinary,
+            |data| {
+                // SAFETY: all writes remain inside the validated output extent;
+                // doubling copies only already initialized, disjoint bytes.
+                unsafe {
+                    if width == 1 && nbytes != 0 {
+                        ptr::write_bytes(data, encoded[0], nbytes);
+                    } else if nbytes != 0 {
+                        ptr::copy_nonoverlapping(encoded.as_ptr(), data, width);
+                        let mut filled = width;
+                        while filled < nbytes {
+                            let count = filled.min(nbytes - filled);
+                            ptr::copy_nonoverlapping(data, data.add(filled), count);
+                            filled += count;
+                        }
+                    }
+                }
+                Vec::new()
+            },
+        )
     }
 
     pub(crate) fn from_unibyte(bytes: Vec<u8>) -> Self {
@@ -176,7 +234,21 @@ impl SharedStringState {
         bytes: Vec<u8>,
         characters: usize,
         multibyte: bool,
-    ) -> Result<Self, LispError> {
+    ) -> Result<Self, StringError> {
+        Self::from_storage_kind(
+            bytes,
+            characters,
+            multibyte,
+            crate::lisp::alloc::StringAllocation::Ordinary,
+        )
+    }
+
+    pub(crate) fn from_storage_kind(
+        bytes: Vec<u8>,
+        characters: usize,
+        multibyte: bool,
+        kind: crate::lisp::alloc::StringAllocation,
+    ) -> Result<Self, StringError> {
         let mut count = 0;
         let mut offset = 0;
         while offset < bytes.len() {
@@ -190,12 +262,13 @@ impl SharedStringState {
         if count != characters {
             return Err(LispError::Signal(
                 "String character count does not match its bytes".into(),
-            ));
+            )
+            .into());
         }
-        Ok(Self::from_encoded(bytes, characters, multibyte, Vec::new()))
+        Self::try_from_slice(&bytes, characters, multibyte, Vec::new(), kind)
     }
 
-    pub(crate) fn new(
+    pub(crate) fn from_text(
         text: String,
         props: Vec<StringPropertySpan>,
         multibyte: bool,
@@ -204,6 +277,65 @@ impl SharedStringState {
         let bytes = encode_text(&text, multibyte, &extended_chars)
             .expect("string constructor must supply valid Lisp characters");
         Self::from_encoded(bytes, text.chars().count(), multibyte, props)
+    }
+}
+
+impl SharedStringState {
+    pub(crate) fn empty(multibyte: bool) -> Self {
+        Self {
+            size: 0,
+            size_byte: if multibyte { 0 } else { -1 },
+            props: StringProperties::default(),
+            data: NonNull::from(&EMPTY_DATA),
+        }
+    }
+
+    /// The caller has excluded all borrows before relocating this header's
+    /// data during collection. Properties and the Lisp identity do not move.
+    pub(crate) fn relocate_data(&mut self, data: NonNull<u8>) {
+        self.data = data;
+    }
+
+    fn bytes_mut(&mut self) -> &mut [u8] {
+        let nbytes = self.storage_bytes();
+        if nbytes == 0 {
+            return &mut [];
+        }
+        // SAFETY: the unique mutable header borrow covers its owned bytes;
+        // the trailing NUL remains outside the mutable contents slice.
+        unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr(), nbytes) }
+    }
+
+    fn replace_storage(&mut self, bytes: Vec<u8>, characters: usize, multibyte: bool) {
+        let nbytes = bytes.len();
+        assert!(nbytes < isize::MAX as usize - 16 && (multibyte || characters == nbytes));
+        let old_bytes = self.storage_bytes();
+        if nbytes != 0 && old_bytes != 0 && string_data_size(nbytes) == string_data_size(old_bytes)
+        {
+            // SAFETY: allocation alignment slop covers the new bytes and NUL.
+            unsafe {
+                ptr::copy_nonoverlapping(bytes.as_ptr(), self.data.as_ptr(), nbytes);
+                self.data.as_ptr().add(nbytes).write(0);
+            }
+        } else {
+            let data = if nbytes == 0 {
+                NonNull::from(&EMPTY_DATA)
+            } else {
+                // SAFETY: this exclusive borrow names a stable, impure header.
+                let allocation = unsafe { PendingStringData::new(self, nbytes, false) }
+                    .expect("infallible string replacement allocation");
+                unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), allocation.as_ptr(), nbytes) };
+                crate::lisp::native_comp::note_lisp_allocation(string_data_size(nbytes));
+                allocation.install()
+            };
+            if old_bytes != 0 {
+                // SAFETY: replacement invalidates the exclusively owned data.
+                unsafe { retire_string_data(self.data, old_bytes) };
+            }
+            self.data = data;
+        }
+        self.size = characters;
+        self.size_byte = if multibyte { nbytes as isize } else { -1 };
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
@@ -315,18 +447,32 @@ impl SharedStringState {
         self.text_parts().0
     }
 
-    pub(crate) fn clone_without_properties(&self) -> Self {
-        Self::from_encoded(
-            self.bytes().to_vec(),
+    pub(crate) fn copy_with_properties(&self) -> StringObjectRef {
+        StringObjectRef::from_slice(
+            self.bytes(),
+            self.len(),
+            self.is_multibyte(),
+            self.props.to_vec(),
+            StringAllocation::Ordinary,
+        )
+    }
+
+    pub(crate) fn copy_without_properties(
+        &self,
+        kind: crate::lisp::alloc::StringAllocation,
+    ) -> StringObjectRef {
+        StringObjectRef::from_slice(
+            self.bytes(),
             self.len(),
             self.is_multibyte(),
             Vec::new(),
+            kind,
         )
     }
 
     /// fns.c:Fsubstring copies the actual byte range and preserves encoding.
     /// The primitive validates both character bounds before reaching here.
-    pub(crate) fn substring(&self, from: usize, to: usize, properties: bool) -> Self {
+    pub(crate) fn substring(&self, from: usize, to: usize, properties: bool) -> StringObjectRef {
         assert!(from <= to && to <= self.len());
         let offset = |index| {
             if index == self.len() {
@@ -335,7 +481,7 @@ impl SharedStringState {
                 self.byte_offset(index).expect("validated character bound")
             }
         };
-        let bytes = self.bytes()[offset(from)..offset(to)].to_vec();
+        let bytes = &self.bytes()[offset(from)..offset(to)];
         let props = if properties {
             self.props
                 .iter()
@@ -353,7 +499,13 @@ impl SharedStringState {
         } else {
             Vec::new()
         };
-        Self::from_encoded(bytes, to - from, self.is_multibyte(), props)
+        StringObjectRef::from_slice(
+            bytes,
+            to - from,
+            self.is_multibyte(),
+            props,
+            StringAllocation::Ordinary,
+        )
     }
 
     pub(crate) fn character_at(&self, index: usize) -> Option<i64> {
@@ -396,7 +548,7 @@ impl SharedStringState {
 
     /// data.c:Faset. The caller checks the index and character first.
     /// False means a non-ASCII unibyte string cannot be promoted in place.
-    pub(crate) fn store_character(&mut self, index: usize, code: u32) -> Result<bool, LispError> {
+    pub(crate) fn store_character(&mut self, index: usize, code: u32) -> Result<bool, StringError> {
         assert!(index < self.len() && code <= 0x3f_ffff);
         if !self.is_multibyte() && code <= 255 {
             self.bytes_mut()[index] = code as u8;
@@ -426,11 +578,40 @@ impl SharedStringState {
                 .checked_add(width)
                 .and_then(|length| length.checked_sub(old_width))
                 .ok_or_else(string_overflow)?;
-            let mut bytes = allocate_bytes(nbytes)?;
-            bytes.extend_from_slice(&self.bytes()[..offset]);
-            bytes.extend_from_slice(&encoded[..width]);
-            bytes.extend_from_slice(&self.bytes()[offset + old_width..]);
-            self.replace_storage(bytes, self.len(), true);
+            validate_size(nbytes)?;
+            let old_bytes = self.storage_bytes();
+            let tail = old_bytes - offset - old_width;
+            if string_data_size(nbytes) == string_data_size(old_bytes) {
+                // alloc.c:resize_string_data reuses alignment slop, and moves
+                // the old tail including its NUL with overlap allowed.
+                unsafe {
+                    let data = self.data.as_ptr();
+                    ptr::copy(
+                        data.add(offset + old_width),
+                        data.add(offset + width),
+                        tail + 1,
+                    );
+                    ptr::copy_nonoverlapping(encoded.as_ptr(), data.add(offset), width);
+                }
+            } else {
+                // SAFETY: all three disjoint output ranges are initialized;
+                // the pending entry supplies the final NUL and stable owner.
+                let allocation = unsafe { PendingStringData::new(self, nbytes, false) }?;
+                unsafe {
+                    let data = allocation.as_ptr();
+                    ptr::copy_nonoverlapping(self.data.as_ptr(), data, offset);
+                    ptr::copy_nonoverlapping(encoded.as_ptr(), data.add(offset), width);
+                    ptr::copy_nonoverlapping(
+                        self.data.as_ptr().add(offset + old_width),
+                        data.add(offset + width),
+                        tail,
+                    );
+                    retire_string_data(self.data, old_bytes);
+                }
+                self.data = allocation.install();
+                crate::lisp::native_comp::note_lisp_allocation(string_data_size(nbytes));
+            }
+            self.size_byte = nbytes as isize;
         }
         Ok(true)
     }
@@ -498,15 +679,13 @@ fn string_overflow() -> LispError {
     LispError::Signal("Maximum string size exceeded".into())
 }
 
-fn allocate_bytes(length: usize) -> Result<Vec<u8>, LispError> {
-    if length >= isize::MAX as usize {
+fn validate_size(length: usize) -> Result<(), LispError> {
+    // lisp.h:STRING_BYTES_BOUND and alloc.c:STRING_BYTES_MAX. On the
+    // supported 64-bit targets the 61-bit fixnum bound is the tightest.
+    if length > (1usize << 61) - 1 {
         return Err(string_overflow());
     }
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(length + 1)
-        .map_err(|_| LispError::Signal("Memory exhausted".into()))?;
-    Ok(bytes)
+    Ok(())
 }
 
 pub(crate) fn encode_text(

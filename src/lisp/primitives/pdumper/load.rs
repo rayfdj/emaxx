@@ -1056,15 +1056,20 @@ impl Loader<'_> {
             .ok_or_else(|| {
                 LoadError::Error(format!("string data at {data} is outside the image"))
             })?;
-        let state = SharedStringState::from_storage(bytes.to_vec(), size, multibyte)
+        let mode = if kind == DumpType::EmptyString {
+            crate::lisp::alloc::StringAllocation::Ordinary
+        } else {
+            crate::lisp::alloc::StringAllocation::Restored
+        };
+        let state = StringObjectRef::from_storage_kind(bytes.to_vec(), size, multibyte, mode)
             .map_err(|error| LoadError::Error(error.to_string()))?;
         let value = if kind == DumpType::EmptyString {
             if size != 0 || nbytes != 0 || intervals != 0 {
                 return Err(LoadError::Error("nonempty static empty string".into()));
             }
-            crate::lisp::types::string_object_value(state)
+            Value::StringObject(state)
         } else {
-            Value::StringObject(crate::lisp::alloc::allocate_restored_string(state))
+            Value::StringObject(state)
         };
         Ok((value, (intervals != 0).then_some(intervals)))
     }

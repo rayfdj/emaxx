@@ -3,8 +3,15 @@
 //!
 //! Rust borrows still need dynamic exclusivity checks. The sixteen bytes after
 //! each header hold that check, the GC epoch and the pure allocation flag; they
-//! are allocator overhead, not part of Lisp_String. Data currently has a
-//! separate exact allocation, including its NUL. GNU sblocks remain unfinished.
+//! are allocator overhead, not part of Lisp_String. Data uses GNU sblocks;
+//! borrowed data blocks remain stationary until their Rust guards end.
+
+mod data;
+pub(crate) use data::{PendingStringData, retire_string_data, string_data_size};
+#[cfg(test)]
+pub(crate) fn string_data_census() -> (usize, usize, usize) {
+    data::census()
+}
 
 use super::super::types::{LispError, MarkBit, SharedStringState, Value};
 use super::{BlockKind, FREE_MARK, blocks_of, new_block, release_block};
@@ -113,7 +120,7 @@ impl StringObjectRef {
     /// Collection cannot run while this guard is alive: tracing would alias
     /// its exclusive access to the string state. The collector checks this
     /// before starting a mark epoch or reclaiming any object.
-    pub fn borrow_mut(&self) -> StringBorrowMut<'_> {
+    pub(crate) fn borrow_mut(&self) -> StringBorrowMut<'_> {
         let cell = self.cell();
         assert!(!cell.pure, "pure string cannot be mutably borrowed");
         assert_eq!(cell.borrows.get(), 0, "string already borrowed");
@@ -197,8 +204,7 @@ fn empty_string(multibyte: bool) -> StringObjectRef {
         &EMPTY_UNIBYTE
     };
     let address = *slot.get_or_init(|| {
-        let state = SharedStringState::from_storage(Vec::new(), 0, multibyte)
-            .expect("empty string storage");
+        let state = SharedStringState::empty(multibyte);
         // Dumped empty strings retain their singleton identities, but are not
         // PURE_P at runtime: the first purecopy must allocate a new header.
         let mut cell = StringCell::new(state, false);
@@ -216,35 +222,45 @@ static LIVE_STRINGS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static LIVE_SPANS: AtomicUsize = AtomicUsize::new(0);
 
-pub(crate) fn allocate_string(state: SharedStringState, pure: bool) -> StringObjectRef {
-    if !pure && state.len() == 0 {
-        return empty_string(state.is_multibyte());
+/// Ordinary constructors canonicalize empties; restoration and purecopy
+/// allocate distinct headers, as their GNU C paths require.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StringAllocation {
+    Ordinary,
+    Restored,
+    Pure,
+}
+
+/// Return an incompletely constructed header to the arena on an allocation
+/// error or unwind. The content guard is dropped first, so no reference to
+/// the cell remains when its first word becomes a free-list link.
+struct StringConstruction(*mut StringCell);
+
+impl Drop for StringConstruction {
+    fn drop(&mut self) {
+        // SAFETY: the initializer has released its exclusive guard. The
+        // initialized state owns either empty data or a complete sdata entry.
+        unsafe {
+            let cell = self.0;
+            std::ptr::drop_in_place((*cell).state.get());
+            (*cell).mark.set_raw(FREE_MARK);
+            cell.cast::<*mut StringCell>()
+                .write(FREE_LIST.load(Ordering::Relaxed));
+            FREE_LIST.store(cell, Ordering::Relaxed);
+        }
     }
-    allocate_string_cell(state, pure)
 }
 
-/// Dump relocation reconstructs each recorded header separately. Only the two
-/// explicitly identified empty roots use the ordinary singleton constructor.
-pub(crate) fn allocate_restored_string(state: SharedStringState) -> StringObjectRef {
-    super::super::types::note_string_allocation(state.storage_bytes());
-    allocate_string_cell(state, false)
-}
-
-fn allocate_string_cell(state: SharedStringState, pure: bool) -> StringObjectRef {
-    assert!(
-        !pure || state.props.is_empty(),
-        "pure strings have no intervals"
-    );
-    if !pure {
-        LIVE_STRINGS.store(LIVE_STRINGS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
-        LIVE_BYTES.store(
-            LIVE_BYTES.load(Ordering::Relaxed) + state.storage_bytes(),
-            Ordering::Relaxed,
-        );
-        LIVE_SPANS.store(
-            LIVE_SPANS.load(Ordering::Relaxed) + state.props.len(),
-            Ordering::Relaxed,
-        );
+/// Allocate the stable header before constructing its data. The initializer
+/// sees the final header address and cannot move its state into host storage.
+pub(crate) fn allocate_string<E>(
+    characters: usize,
+    multibyte: bool,
+    kind: StringAllocation,
+    initialize: impl FnOnce(&mut SharedStringState) -> Result<(), E>,
+) -> Result<StringObjectRef, E> {
+    if kind == StringAllocation::Ordinary && characters == 0 {
+        return Ok(empty_string(multibyte));
     }
     let head = FREE_LIST.load(Ordering::Relaxed);
     let cell = if head.is_null() {
@@ -269,11 +285,38 @@ fn allocate_string_cell(state: SharedStringState, pure: bool) -> StringObjectRef
         );
         head
     };
-    // SAFETY: free storage is fully initialized before publishing its handle.
-    unsafe {
-        cell.write(StringCell::new(state, pure));
+    // SAFETY: initialize a valid empty header before exposing its final
+    // address. The construction guard also rejects reentrant collection.
+    unsafe { cell.write(StringCell::new(SharedStringState::empty(multibyte), false)) };
+    let construction = StringConstruction(cell);
+    let handle = unsafe {
+        (*cell).borrows.set(-1);
+        let mut guard = StringBorrowMut(&*cell);
+        initialize(&mut guard)?;
+        drop(guard);
+        (*cell).pure = kind == StringAllocation::Pure;
         StringObjectRef::from_raw(cell)
+    };
+    let state = handle.borrow();
+    assert_eq!(state.len(), characters);
+    assert_eq!(state.is_multibyte(), multibyte);
+    if kind == StringAllocation::Pure {
+        assert!(state.props.is_empty(), "pure strings have no intervals");
+    } else {
+        super::super::types::note_string_allocation(state.storage_bytes());
+        LIVE_STRINGS.store(LIVE_STRINGS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+        LIVE_BYTES.store(
+            LIVE_BYTES.load(Ordering::Relaxed) + state.storage_bytes(),
+            Ordering::Relaxed,
+        );
+        LIVE_SPANS.store(
+            LIVE_SPANS.load(Ordering::Relaxed) + state.props.len(),
+            Ordering::Relaxed,
+        );
     }
+    drop(state);
+    std::mem::forget(construction);
+    Ok(handle)
 }
 
 /// # Safety
@@ -395,6 +438,7 @@ pub(crate) fn sweep_strings(epoch: u32) {
     for start in released {
         release_block(start, BlockKind::String);
     }
+    data::sweep();
     LIVE_STRINGS.store(strings, Ordering::Relaxed);
     LIVE_BYTES.store(bytes, Ordering::Relaxed);
     LIVE_SPANS.store(spans, Ordering::Relaxed);

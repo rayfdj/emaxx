@@ -825,7 +825,8 @@ define_dispatch!(
                         Ok(args[2])
                     }
                     Kind::StringObject(_) => {
-                        aset_string_value(&args[0], idx, &args[2])?;
+                        aset_string_value(&args[0], idx, &args[2])
+                            .map_err(|error| string_storage_error(interp, env, error))?;
                         Ok(args[2])
                     }
                     Kind::LispRecord(record) => {

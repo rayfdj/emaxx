@@ -2941,9 +2941,11 @@ impl ImageGraphCopier {
                 if let Some(copied) = self.strings.get(&key) {
                     return *copied;
                 }
-                let copied = Value::StringObject(crate::lisp::alloc::allocate_restored_string(
-                    state.borrow().clone_without_properties(),
-                ));
+                let copied = Value::StringObject(
+                    state
+                        .borrow()
+                        .copy_without_properties(crate::lisp::alloc::StringAllocation::Restored),
+                );
                 self.strings.insert(key, copied);
                 let props = state.borrow().props.to_vec();
                 let copied_props: Vec<crate::lisp::types::StringPropertySpan> = props

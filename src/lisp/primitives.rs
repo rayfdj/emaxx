@@ -1,9 +1,7 @@
 use super::eval::{BufferDisposition, Interpreter, RunningProcess};
 use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
 use super::sqlite;
-use super::types::{
-    EmacsTermination, Env, LispError, SharedStringState, StringPropertySpan, Value,
-};
+use super::types::{EmacsTermination, Env, LispError, StringObjectRef, StringPropertySpan, Value};
 use crate::buffer::TextPropertySpan;
 use crate::file_system as fs;
 use chrono::{Datelike, FixedOffset, Local, TimeZone, Timelike, Utc};
