@@ -3,7 +3,9 @@
 Latest continuation: [source279 string allocation recovery](runtime-representation-string-allocation-recovery.md).
 The applied runtime is source279 (`d64040a7`), with 511 verified inputs. Both profiles
 pass 211 focused controls/two existing ignores and all 1,067 affected controls;
-37 ordinary outputs match GNU exactly. Full macOS and Linux validation are running.
+37 ordinary outputs match GNU exactly. Full Rust now passes 3,126 macOS / 3,138 Linux
+tests with two existing ignores each; full Linux frozen matches all 7,928 outcomes,
+including the completed Eglot case. MacOS frozen/terminal continue separately.
 The additional generated probe remains failed on 53/198 rows, exposing an older
 extended-character printer defect; source270 has 58 wrong rows on the identical
 input, with no change in the first 192 rows. No printer repair is applied.
@@ -12,6 +14,13 @@ identical actual final buffer bytes. The prior Linux timeout remains recorded.
 The source276 GC-census mismatch remains unresolved, and source270 terminal
 validation now matches every original scenario/comparison. The linked document
 records raw evidence and its limits.
+
+The latest [source281 canonical-printer draft](runtime-representation-printer-draft.md)
+is isolated and unapplied. It repairs all 198 ordinary generated output rows, but
+a new native-constant probe still returns corrupted characters during reload.
+Its selected queue was withdrawn after sandbox socket denials; identical permitted
+socket replays pass, without closing the incomplete suites. The portable draft
+preserves all failures, exact patches and the next reader-boundary work.
 
 The [full goal](runtime-representation-goal.md) is active and incomplete. The
 user's latest question challenges the correctness regression. Current work follows GNU C and keeps new architectural drafts isolated until their

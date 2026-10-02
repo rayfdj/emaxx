@@ -13,12 +13,19 @@ Main remains `21d20f0e`.
 
 The latest continuation is the [source279 allocation-error repair](runtime-representation-string-allocation-recovery.md).
 Both profiles pass 211 focused tests with two existing ignores and all 1,067 affected
-controls; all 37 ordinary GNU comparisons match. Full validation runs on `d64040a7`.
+controls; all 37 ordinary GNU comparisons match. Full Rust validation now passes
+3,126 macOS / 3,138 Linux tests with two existing ignores each, and full Linux
+frozen matches all 7,928 outcomes on `d64040a7`. MacOS frozen/terminal continue.
 An additional generated probe exposes 53 wrong output rows caused by a pre-existing
 extended-character printer defect; it remains failed. The bounded macOS Eglot
 retry completes with identical actual buffer output in both editors. Source276's
 original broader Emaxx census failure remains open; the historical waiting-state
 description below is superseded by that recovery document.
+
+Read the [unfinished source281 printer continuation](runtime-representation-printer-draft.md)
+before editing. Its ordinary output now matches all 198 generated rows, but native
+constant reload still corrupts extended codes. It is isolated and unapplied;
+its closed partial selected failures and permitted socket replays remain separate.
 
 ## Preceding isolated storage continuation: source276
 

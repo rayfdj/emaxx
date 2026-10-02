@@ -4,8 +4,11 @@ The latest [string allocation recovery](runtime-representation-string-allocation
 supersedes the source276 queue state below. Source279 is applied and pushed as
 `d64040a7`, with 511 verified inputs, zero-warning strict checks, 211 focused passes /
 two existing ignores and all 1,067 affected passes in each profile, plus 37 ordinary
-exact GNU comparisons. Supervisor72187 has exited. Full macOS77583 and Linux
-Rust36950663403/frozen36950667238 validate that exact source; outcomes remain pending.
+exact GNU comparisons. Supervisor72187 has exited. The [complete Rust audits](handover/2026-09-30-shared-reader-draft/source279-complete-rust-platforms-manifest.json)
+pass 3,126 macOS / 3,138 Linux tests, with two existing ignores each. The
+[complete Linux frozen audit](handover/2026-09-30-shared-reader-draft/source279-complete-linux-frozen-manifest.json)
+matches all 7,928 outcomes across 519 files, including the completed Eglot case.
+MacOS supervisor77583 continues frozen/terminal validation on that exact source.
 The additional generated probe remains failed:53/198 output rows differ, against
 58/198 on retained source270. The first 192 rows are identical across those two
 Emaxx revisions; the allocator improves the last six error rows, while the older
@@ -16,6 +19,14 @@ the recovery document. Source276's original affected suite has 1,063 passes / on
 first-vector census difference, not a GNU failure; it remains unresolved.
 Source270 terminal validation is now complete: 226 scenarios / 686 exact
 comparisons. Main remains unchanged.
+
+The [latest source281 printer draft](runtime-representation-printer-draft.md) is
+isolated and unapplied. Its strict checks, new stream control, 37 previous ordinary
+comparisons and all 198 generated rows pass. A separate native-literal probe still
+corrupts extended characters during reload. Its selected supervisor was withdrawn
+after sandbox socket denials; five identical permitted controls pass separately,
+while the original partial failures remain. Release never started. Both280/281
+replay all 514 inputs; preserve their immutable drafts and continue in a successor.
 
 The preceding runtime **source272** (`eb286e23`) has 510 verified inputs and
 [closed borrow-root repair evidence](handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json):

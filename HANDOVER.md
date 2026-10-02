@@ -23,8 +23,23 @@ before continuing. **Source279 is applied and pushed as `d64040a7`, with 511
 verified inputs.** Its [closed selected evidence](docs/handover/2026-09-30-shared-reader-draft/source279-string-allocation-selected-manifest.json)
 records zero-warning strict checks, 211 focused passes / two existing ignores and
 all 1,067 affected passes in each profile, plus 37 byte-for-byte ordinary GNU
-comparisons. Supervisor72187 has exited. Full macOS supervisor77583 and Linux
-Rust36950663403/frozen36950667238 validate that exact commit; launches are not passes.
+comparisons. Supervisor72187 has exited. The [complete Rust audits](docs/handover/2026-09-30-shared-reader-draft/source279-complete-rust-platforms-manifest.json)
+now verify **3,126 macOS / 3,138 Linux passes**, with two existing ignores each,
+all library names and native artifact identity. The [complete Linux frozen audit](docs/handover/2026-09-30-shared-reader-draft/source279-complete-linux-frozen-manifest.json)
+verifies **519 files / 7,928 matching outcomes / 1,038 successful processes** on
+that exact commit. The Eglot case completes and passes in both editors. Earlier
+timeouts and census failures remain separate. Full macOS supervisor77583 continues
+frozen/terminal validation; do not infer those results from the Rust pass.
+
+Read the latest [unfinished canonical-printer continuation](docs/runtime-representation-printer-draft.md)
+before editing. **Source281 is isolated and unapplied**, with 514 replayed inputs.
+Its strict checks, stream control, 37 prior ordinary comparisons and all 198
+generated output rows pass; a new native-literal comparison still fails because
+the loader decodes GNU internal bytes as UTF-8. Supervisor85186 was withdrawn after
+sandbox socket failures; its partial results and five permitted passing replays
+are retained. Release never started. Preserve source280/281 and their executed
+helpers; continue in a successor and repair the actual reader boundary before
+applying the printer change. Main and runtime279 remain unchanged.
 
 The [additional generated failure and Eglot retry](docs/handover/2026-09-30-shared-reader-draft/source279-varied-output-and-eglot-retry-manifest.json)
 preserve **53 wrong output rows among 198**. The identical probe has 58 wrong rows

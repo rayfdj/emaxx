@@ -14,6 +14,12 @@ must be read with that passing selected result: **53 of 198 generated output
 rows still differ from GNU**. This is an incremental allocator checkpoint,
 not a complete correctness certificate.
 
+The latest [canonical-printer continuation](runtime-representation-printer-draft.md)
+packages an isolated source281 repair. All 198 generated ordinary rows now match
+there, but a new native-literal comparison still fails during reload. It remains
+unapplied; source279's original failure is unchanged. The linked continuation
+preserves its partial selected run, sandbox socket failures and permitted replays.
+
 ## Recoverable allocation errors
 
 Source276's new sdata allocator calls `handle_alloc_error` on allocation failure,
@@ -73,7 +79,14 @@ unchanged. Full macOS supervisor **77583** runs in the clean exact-commit checko
 Linux [Rust36950663403](https://github.com/rayfdj/emaxx/actions/runs/36950663403) and
 [frozen36950667238](https://github.com/rayfdj/emaxx/actions/runs/36950667238)
 are launched on that exact commit. Read `source279-full-*` and `source279-linux-*`
-for their actual state; a launch does not certify a result.
+for their actual state. Their [closed Rust audit](handover/2026-09-30-shared-reader-draft/source279-complete-rust-platforms-manifest.json)
+now verifies **3,126 macOS / 3,138 Linux passes**, two existing ignores each,
+all library names, native artifact identity and retained actual inputs. The
+[closed Linux frozen audit](handover/2026-09-30-shared-reader-draft/source279-complete-linux-frozen-manifest.json)
+verifies **519 files / 7,928 matching outcomes / 1,038 successful processes**.
+The original Eglot case completes and passes in both editors in this fresh full run.
+Prior timeouts/census failures remain separate. MacOS supervisor77583 continues
+frozen/terminal validation; the full Rust pass does not certify those stages.
 
 ## Additional adversarial output failure
 
