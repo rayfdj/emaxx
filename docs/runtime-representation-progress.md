@@ -1,5 +1,14 @@
 # Current goal status — 2 October 2026
 
+The latest [string allocation recovery](runtime-representation-string-allocation-recovery.md)
+supersedes the source276 queue state below. Unapplied source279 passes the three
+original allocation-abort controls, zero-warning strict checks and 211 focused
+gate tests / two existing ignores, plus all 1,067 affected gate tests. Its
+release/ordinary supervisor72187 continues. Source276's original affected suite has 1,063 passes / one **Emaxx**
+first-vector census difference, not a GNU failure; it remains unresolved.
+Source270 terminal validation is now complete: 226 scenarios / 686 exact
+comparisons. Main and the applied source272 runtime remain unchanged.
+
 The current runtime is **source272** (`eb286e23`), with 510 verified inputs and
 [closed borrow-root repair evidence](handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json):
 zero-warning strict checks, **206 focused passes / two existing ignores** and
@@ -22,16 +31,16 @@ replays all 511 inputs, passes zero-warning strict checks and seven allocator/bo
 controls. Stable headers own pooled GNU-style sdata; GC compacts unborrowed data,
 reclaims blocks and preserves live Rust references. Main construction/copy/concat
 and resize paths fill final storage directly. Pure bytes are separate and permanent.
-The necessary borrowed-block retention/scan cost is unmeasured. Queue67370 waits for
-source270 terminal validation, then runs all 210 focused / 1,064 affected controls
-in both profiles. No selected, full-platform or performance result is claimed.
+The necessary borrowed-block retention/scan cost is unmeasured. Queue67370 has
+exited: 208 focused passes / two existing ignores and 1,063 affected passes / one
+Emaxx census failure; release never ran. Source279 continues as described above.
 The original compiler/Clippy preparation failures remain retained.
 
 The [closed source270 full Rust audits](handover/2026-09-30-shared-reader-draft/source270-complete-rust-platforms-manifest.json)
 verify 3,118 macOS / 3,130 Linux passes and two existing ignores each. Its
 [closed frozen audits](handover/2026-09-30-shared-reader-draft/source270-complete-frozen-platforms-manifest.json)
 verify 7,928 Linux matches and 7,915 macOS matches / six strict feature-diagnostic
-differences. Terminal validation continues. Main remains 21d20f0e, PR79 is draft,
+differences. Terminal validation matches 226 scenarios / 686 comparisons. Main remains 21d20f0e, PR79 is draft,
 and the full goal—including final sblock validation, real intervals, symbol authority,
 physical accounting, ownership, VM profiling and the locked 16-workload 3% ceiling—
 remains active. [HANDOVER.md](../HANDOVER.md) has live continuation details.

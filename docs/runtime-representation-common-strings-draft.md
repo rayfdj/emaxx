@@ -10,7 +10,14 @@ The source256/source261 development record below preserves its original failures
 and bounded results. Use HANDOVER.md for current execution/publication state.
 Main remains `21d20f0e`.
 
-## Current isolated storage continuation: source276
+The latest isolated continuation is the [source279 allocation-error repair](runtime-representation-string-allocation-recovery.md).
+Its three original source278 aborts become passing controls, and 211 focused gate
+tests pass with two existing ignores; all 1,067 affected gate controls pass.
+Release and ordinary validation continue. Source276's
+original broader Emaxx census failure remains open; the historical waiting-state
+description below is superseded by that recovery document.
+
+## Preceding isolated storage continuation: source276
 
 The [source276 package](handover/2026-09-30-shared-reader-draft/source276-string-sblocks-draft-manifest.json)
 contains exact 511-input incremental/main patches, GNU C mappings, immutable helpers,
@@ -47,13 +54,12 @@ borrow test changes only its empty constructor call, preserving every assertion.
 The first freeze auditor correctly rejected an overbroad byte-identity claim;
 its failure and the exact checked constructor migration remain retained.
 
-Queue67370 waits for source270 terminal/full supervisor3079, then runs every prior
-selected test plus the two new controls: 210 focused and 1,064 affected tests per
-profile, with only the two existing ignores. Source272 macOS supervisor27731 was
+Queue67370 has exited: 208 focused passes / two existing ignores and 1,063 affected
+passes / one Emaxx census failure. Release never ran. Source272 macOS supervisor27731 was
 withdrawn before any stage to prioritize this successor; its original state and
-withdrawal are packaged. Read `source276-selected-*` and HANDOVER.md for live state.
-No broader/release, ordinary GNU, full-platform or performance result follows from
-the seven controls. Keep the frozen candidate and executed helpers unchanged.
+withdrawal are packaged. The source279 recovery retains the failed broader result
+and current validation state. No release, ordinary GNU, full-platform or performance
+result follows from the seven initial controls. Keep frozen inputs and helpers intact.
 
 ## Earlier common-string migration
 

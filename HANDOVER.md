@@ -18,6 +18,19 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 
 ## Current correctness recovery
 
+Read the latest [string allocation recovery](docs/runtime-representation-string-allocation-recovery.md)
+before continuing. **Source279 is the current isolated draft; the applied runtime
+remains source272.** Three unchanged controls that abort in source278 now pass,
+and strict checks, 211 focused gate tests and all 1,067 affected gate tests pass,
+with two existing focused ignores. Supervisor72187 continues release and ordinary
+GNU comparisons. Source276's
+broader **1,063 passes / one Emaxx GC-census failure** remains unresolved; its
+release never ran. Source270 terminal validation is now audited complete:
+**226 scenarios / 686 exact comparisons**, none missing. The linked recovery
+preserves raw failures, exact patches, the active queue and bounded Eglot review.
+Current user steering welcomes Emaxx being faster and requires equal answers and
+honest work; a GNU timeout must not be copied into Emaxx behavior.
+
 The task runtime is **source272**, pushed as **`eb286e23`**, with **510 verified inputs**. Its
 [closed borrow-root repair evidence](docs/handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json)
 verifies zero-warning strict checks, **206 focused passes / two existing ignores**
@@ -80,12 +93,11 @@ Rust borrowing constraint and its unmeasured scan/retained-slack cost are record
 there is no new per-read lookup or registry. Real intervals, unified pure storage,
 physical accounting, public ownership, symbol authority and VM work remain open.
 
-**Queue67370** waits for source270 full/terminal supervisor3079 to exit, then runs
-all **210 focused selectors / 1,064 affected controls in each profile**. Every
-preceding selector and expected byte remains; the two existing ignores remain.
-Read `source276-selected-*` for live state. No broader, release, ordinary GNU,
-full-platform or performance result is inferred yet. Keep source276 and its
-executed helpers unchanged. Source273's two test argument-type errors and
+**Queue67370 has exited.** It records 208 focused passes / two existing ignores
+and 1,063 affected passes / one Emaxx first-vector census failure. Release never
+starts. The [source279 recovery](docs/runtime-representation-string-allocation-recovery.md)
+preserves that failure and repairs a separate allocation abort found by new
+controls. Keep source276 and its executed helpers unchanged. Source273's two test argument-type errors and
 source274/275's strict Clippy failures remain in their original checkouts and
 portable patches; no runtime tests ran on those failed predecessors.
 
@@ -118,9 +130,10 @@ verify all 519 files and 1,038 successful processes per platform. Linux has
 build-feature skip-diagnostic differences**, which remain failures. Raw inventories,
 paired outcomes, execution hashes and actual GNU inputs are checked; all 177
 compiler tests pass in both editors. Expected failures and skips are not passes.
-Supervisor **3079** continues complete terminal validation in the unchanged clean
-checkout `target/runtime-goal/recovered-2026-09-30/string-storage-full/emaxx`.
-Read `source270-full-*` for live state. Its results do not certify source272 or
+Supervisor **3079 has exited**. Its audited terminal result matches all 226
+scenarios and 686 original comparisons in the unchanged clean checkout
+`target/runtime-goal/recovered-2026-09-30/string-storage-full/emaxx`.
+Read the latest recovery archive for the closed audit. These results do not certify source272 or
 source276, memory or performance. The source271 borrow-root negative remains
 preserved and is repaired separately in source272.
 

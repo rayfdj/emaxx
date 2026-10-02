@@ -1,5 +1,12 @@
 # Correctness recovery — 1 October 2026
 
+Latest continuation: [source279 string allocation recovery](runtime-representation-string-allocation-recovery.md).
+The applied runtime remains source272. The source276 allocator abort is repaired
+in an isolated successor with unchanged negative controls, while its separate
+broader Emaxx GC-census mismatch remains unresolved. Source270 terminal validation
+now matches every original scenario/comparison. The linked document records
+current validation state and the bounded Eglot review.
+
 The [full goal](runtime-representation-goal.md) is active and incomplete. The
 user's latest question challenges the correctness regression. Current work follows GNU C and keeps new architectural drafts isolated until their
 required correctness checks close. The task branch did regress after the fully matching source207 Linux
