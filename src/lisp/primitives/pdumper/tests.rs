@@ -31,6 +31,106 @@ fn dump(interp: &mut Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
 }
 
 #[test]
+fn string_images_preserve_empty_roots_distinct_headers_and_restored_mutability() {
+    use crate::lisp::types::{Env, StringObjectRef};
+    let mut source = Interpreter::new();
+    let mut environment = Env::new();
+    source.define_special_variable("purify-flag", Value::T);
+    let unibyte = Value::StringObject(StringObjectRef::from_unibyte(Vec::new()));
+    let multibyte = Value::StringObject(
+        StringObjectRef::from_storage(Vec::new(), 0, true).expect("empty multibyte"),
+    );
+    let ordinary = Value::string("mutable after dump");
+    let mut slots = vec![unibyte, multibyte];
+    for value in [unibyte, multibyte, ordinary] {
+        slots.push(
+            crate::lisp::primitives::purecopy_value(&mut source, &value, &mut environment)
+                .expect("pure copy"),
+        );
+    }
+    slots.push(slots[4]);
+    assert!(!slots[0].eq_value(slots[2]));
+    assert!(!slots[1].eq_value(slots[3]));
+    let graph = Value::vector(slots);
+    source.set_global_binding("string-image-root", graph);
+    let cloned = source.deep_clone_image();
+    let Kind::Vector(cloned_graph) = cloned
+        .lookup_var("string-image-root", &Env::new())
+        .expect("cloned graph")
+        .kind()
+    else {
+        panic!("cloned vector")
+    };
+    for index in 2..=4 {
+        let Kind::StringObject(state) = cloned_graph.get(index).expect("cloned pure string").kind()
+        else {
+            panic!("cloned string")
+        };
+        assert!(
+            state.is_pure(),
+            "image cloning preserves read-only allocation state"
+        );
+    }
+    let bytes = dump(&mut source, vec![(RootSlot::LoadPath, graph)]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("restore string graph");
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .expect("string graph root")
+        .1;
+    let Kind::Vector(vector) = loaded.kind() else {
+        panic!("string graph vector")
+    };
+    let restored = vector.slots().collect::<Vec<_>>();
+    assert!(restored[0].eq_value(unibyte));
+    assert!(restored[1].eq_value(multibyte));
+    assert!(!restored[0].eq_value(restored[2]));
+    assert!(!restored[1].eq_value(restored[3]));
+    assert!(restored[4].eq_value(restored[5]));
+    target.set_global_binding("string-image-root", loaded);
+    let cloned = target.deep_clone_image();
+    let Kind::Vector(cloned_graph) = cloned
+        .lookup_var("string-image-root", &Env::new())
+        .expect("cloned restored graph")
+        .kind()
+    else {
+        panic!("cloned restored vector")
+    };
+    assert!(
+        !cloned_graph
+            .get(0)
+            .expect("empty root")
+            .eq_value(cloned_graph.get(2).expect("distinct empty"))
+    );
+    assert!(
+        !cloned_graph
+            .get(1)
+            .expect("multibyte empty root")
+            .eq_value(cloned_graph.get(3).expect("distinct multibyte empty"))
+    );
+    for &value in &restored {
+        let Kind::StringObject(state) = value.kind() else {
+            panic!("restored string")
+        };
+        // GNU's dumped headers are outside PURE_P's active pure space.
+        assert!(!state.is_pure());
+    }
+    crate::lisp::primitives::call(
+        &mut target,
+        "aset",
+        &[restored[4], Value::Integer(0), Value::Integer(90)],
+        &mut Env::new(),
+    )
+    .expect("write restored formerly-pure string");
+    assert_eq!(
+        restored[5].as_string().expect("shared restored bytes"),
+        "Zutable after dump"
+    );
+}
+
+#[test]
 fn captured_menu_case_table_is_an_independent_image_root() {
     use crate::lisp::primitives::{restore_unicode_menu_case_table, unicode_menu_case_table};
     struct Restore(Value);
@@ -201,7 +301,7 @@ fn graph_matches(
         (Kind::Integer(x), Kind::Integer(y)) if x == y => Ok(()),
         (Kind::BigInteger(x), Kind::BigInteger(y)) if *x == *y => Ok(()),
         (Kind::Float(x), Kind::Float(y)) if x.to_bits() == y.to_bits() => Ok(()),
-        (Kind::String(_), Kind::String(_)) | (Kind::StringObject(_), Kind::StringObject(_)) => {
+        (Kind::StringObject(_), Kind::StringObject(_)) => {
             let x = string_like(a).expect("a string");
             let y = string_like(b).expect("a string");
             if x.text != y.text
@@ -248,7 +348,7 @@ fn graph_matches(
         (Kind::BuiltinFunc(x), Kind::BuiltinFunc(y)) if x.as_str() == y.as_str() => Ok(()),
         // Identity-bearing kinds compared by the tests through the
         // interpreters that own them.
-        (Kind::Lambda(left), Kind::Lambda(right)) => {
+        (Kind::Closure(left), Kind::Closure(right)) => {
             if left.public_len() != right.public_len() {
                 return Err("closure length differs".into());
             }
@@ -547,9 +647,27 @@ fn supported_image_starts_in_a_fresh_process_with_new_process_values() {
         let mut interpreter = Interpreter::new();
         let record = super::load_pdump_at_startup(&mut interpreter, None)
             .expect("the copied executable discovers its actual sibling image");
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("executing-kbd-macro")
+                .expect("saved macro array"),
+            Value::string("saved macro")
+        );
         interpreter
             .init_after_pdump_load()
             .expect("initialize loaded process");
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("executing-kbd-macro")
+                .expect("new process macro state"),
+            Value::Nil
+        );
+        assert_eq!(
+            interpreter
+                .symbol_value_cell("executing-kbd-macro-index")
+                .expect("saved macro index"),
+            Value::Integer(3)
+        );
         assert_eq!(
             interpreter
                 .symbol_value_cell("zz-builder-pid")
@@ -604,6 +722,8 @@ fn supported_image_starts_in_a_fresh_process_with_new_process_values() {
         "zz-builder-pid",
         Value::Integer(i64::from(std::process::id())),
     );
+    interpreter.set_global_binding("executing-kbd-macro", Value::string("saved macro"));
+    interpreter.set_global_binding("executing-kbd-macro-index", Value::Integer(3));
     interpreter.set_buffer_local_value(
         interpreter.current_buffer_id(),
         "default-directory",
@@ -729,7 +849,7 @@ fn image_round_trips_closures_char_tables_records_and_bool_vectors() {
     // Two closures over one environment: the frame is shared, and calling
     // them in the restored interpreter mutates the shared binding.
     let closures = slots[0].to_vec().expect("closure list");
-    let (Kind::Lambda(first), Kind::Lambda(second)) = (closures[0].kind(), closures[1].kind())
+    let (Kind::Closure(first), Kind::Closure(second)) = (closures[0].kind(), closures[1].kind())
     else {
         panic!("closures")
     };
@@ -846,6 +966,7 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
     let program = r#"
         (let ((eq-table (make-hash-table :test 'eq))
               (equal-table (make-hash-table :test 'equal :size 100))
+              (byte-table (make-hash-table :test 'equal))
               (weak (make-hash-table :weakness 'key))
               (empty (make-hash-table))
               (shared (list 1 2)))
@@ -855,8 +976,11 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
           (puthash "k2" 2 equal-table)
           (remhash "k1" equal-table)
           (puthash "k3" 3 equal-table)
+          (puthash (unibyte-string #x80) 10 byte-table)
+          (puthash (string #x3fff80) 20 byte-table)
+          (puthash (string #xe080) 30 byte-table)
           (puthash 'w 'x weak)
-          (vector eq-table equal-table weak empty shared))"#;
+          (vector eq-table equal-table weak empty shared byte-table))"#;
     let form = crate::lisp::reader::Reader::new(program)
         .read()
         .expect("setup parses")
@@ -881,6 +1005,24 @@ fn image_freezes_and_thaws_hash_tables_as_pdumper_c_does() {
     let weak = slots[2];
     let empty = slots[3];
     let shared = slots[4];
+    let byte_table = slots[5];
+    assert_eq!(
+        call_in(&mut target, "hash-table-count", &[byte_table]),
+        Value::Integer(3)
+    );
+    // The image stores key/value pairs and thaw recomputes their hashes
+    // after relocation. Storage distinctions must survive the new index.
+    for (constructor, code, expected) in [
+        ("unibyte-string", 0x80, 10),
+        ("string", 0x3fff80, 20),
+        ("string", 0xe080, 30),
+    ] {
+        let key = call_in(&mut target, constructor, &[Value::Integer(code)]);
+        assert_eq!(
+            call_in(&mut target, "gethash", &[key, byte_table]),
+            Value::Integer(expected)
+        );
+    }
     assert_eq!(
         call_in(
             &mut target,

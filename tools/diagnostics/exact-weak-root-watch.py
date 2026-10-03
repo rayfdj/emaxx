@@ -1,6 +1,9 @@
-"""GDB-only hardware watchpoints for the retained source166 Linux executable.
+"""GDB-only hardware watchpoints for the inspected source166/source198 binaries.
 
-The driver checks its exact SHA-256 before using these inspected ABI offsets.
+The driver checks an exact SHA-256 before using these inspected ABI offsets.
+Both binaries use the same three entry symbols and argument registers, 0x48
+native stack-bottom offset, rbx root cursor, and cons metadata layout. These
+are specific inspected binaries, not assumptions about arbitrary Rust builds.
 No inferior function is called and no runtime source or heap value is changed.
 """
 
@@ -22,6 +25,7 @@ watched_keys = []
 collection_sources = []
 collection_frames = []
 native_values = (0, 0)
+unreadable_weak_key_names = {}
 
 
 def read_words(start, length):
@@ -159,7 +163,15 @@ class WeakInsertion(gdb.Breakpoint):
             name = bytes(gdb.selected_inferior().read_memory(word(text + 16), length))
             if name.decode('utf-8', errors='replace') != os.environ['EMAXX_WATCH_KEY_HEAD']:
                 return False
-        except gdb.MemoryError:
+        except (gdb.MemoryError, OverflowError) as error:
+            # A cons key's car need not be a readable allocated symbol.
+            # Preserve these rejected candidates instead of letting GDB lose
+            # the callback with an unreported Python exception.
+            kind = type(error).__name__
+            unreadable_weak_key_names[kind] = unreadable_weak_key_names.get(kind, 0) + 1
+            if unreadable_weak_key_names[kind] == 1:
+                emit({'event': 'unreadable weak-key name', 'key': hex(key),
+                      'table': hex(table), 'kind': kind, 'error': str(error)})
             return False
         emit({'event': 'weak insertion', 'key': hex(key), 'table': hex(table),
               'head': name.decode('utf-8')})
@@ -175,8 +187,10 @@ gdb.execute('set pagination off')
 gdb.execute('set print thread-events off')
 gdb.execute('set disable-randomization off')
 gdb.execute('set language c')
+gdb.execute('set python print-stack full')
 WeakInsertion()
 CollectionEntry()
 ReachabilityEntry()
 gdb.execute('run')
-emit({'event': 'inferior finished'})
+emit({'event': 'inferior finished',
+      'unreadable_weak_key_names': unreadable_weak_key_names})

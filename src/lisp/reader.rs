@@ -1,5 +1,5 @@
 use super::types::{
-    Kind, LispError, ReaderClosureKind, ReaderForm, SharedStringState, StringPropertySpan, Value,
+    Kind, LispError, ReaderClosureKind, ReaderForm, StringObjectRef, StringPropertySpan, Value,
     make_uninterned_symbol_name,
 };
 mod input;
@@ -246,6 +246,20 @@ impl<'a> Reader<'a> {
         reader
     }
 
+    pub(crate) fn from_encoded(
+        bytes: &'a [u8],
+        multibyte: bool,
+        symbol_shorthands: Vec<(String, String)>,
+    ) -> Self {
+        let mut reader = Self::with_symbol_shorthands("", symbol_shorthands);
+        reader.input = Input::Encoded { bytes, multibyte };
+        reader
+    }
+
+    pub(crate) fn characters_consumed(&mut self) -> usize {
+        (self.character_position() - self.position_base) as usize
+    }
+
     pub(crate) fn finish_stream(&mut self) -> Result<(), LispError> {
         self.input.unread_lookahead()
     }
@@ -306,6 +320,15 @@ impl<'a> Reader<'a> {
     }
 
     fn peek_char(&mut self) -> Result<Option<char>, LispError> {
+        if matches!(self.input, Input::Encoded { .. }) {
+            return Ok(self.input.encoded_character(self.pos)?.map(|(code, _)| {
+                if (0x3fff80..=0x3fffff).contains(&code) {
+                    encode_raw_byte(code as u8)
+                } else {
+                    char::from_u32(code).unwrap_or(INVALID_UNICODE_SENTINEL)
+                }
+            }));
+        }
         let Some(first) = self.peek()? else {
             return Ok(None);
         };
@@ -334,7 +357,11 @@ impl<'a> Reader<'a> {
     fn advance_char(&mut self) -> Result<Option<char>, LispError> {
         let character = self.peek_char()?;
         if let Some(character) = character {
-            self.advance_bytes(character.len_utf8())?;
+            let width = self
+                .input
+                .encoded_character(self.pos)?
+                .map_or(character.len_utf8(), |(_, width)| width);
+            self.advance_bytes(width)?;
         }
         Ok(character)
     }
@@ -560,14 +587,12 @@ impl<'a> Reader<'a> {
                     // when a quoted list is traversed or macro-expanded.
                     // GNU's reader allocates the object once, so repeated
                     // evaluation of the same literal returns that object.
-                    return Ok(Some(crate::lisp::types::string_object_value(
-                        SharedStringState {
-                            text: s,
-                            props: Vec::new(),
-                            multibyte: has_explicit_multibyte || has_invalid_unicode,
-                            extended_chars,
-                        },
-                    )));
+                    return Ok(Some(Value::StringObject(StringObjectRef::from_text(
+                        s,
+                        Vec::new(),
+                        has_explicit_multibyte || has_invalid_unicode,
+                        extended_chars,
+                    ))));
                 }
                 Some(b'\\') => {
                     self.advance()?;
@@ -641,16 +666,18 @@ impl<'a> Reader<'a> {
                         }
                         Some(b'x') => {
                             // Emacs reads as many contiguous hex digits as it can here.
+                            let start = self.position();
                             let hex = self.read_hex_digits(usize::MAX)?;
+                            let digits = self.position() - start;
                             if hex <= 0x7F {
                                 s.push(char::from_u32(hex).unwrap_or(char::REPLACEMENT_CHARACTER));
-                            } else if hex <= 0xFF {
+                            } else if hex <= 0xFF && digits < 3 {
                                 has_raw_bytes = true;
                                 s.push(encode_raw_byte(hex as u8));
-                            } else if (0x3F_FF00..=0x3F_FFFF).contains(&hex) {
+                            } else if (0x3F_FF80..=0x3F_FFFF).contains(&hex) {
                                 // Emacs eight-bit (raw byte) codepoints
-                                // #x3FFF00..#x3FFFFF map to the internal
-                                // raw-byte marker.
+                                // start at #x3FFF80. The preceding values
+                                // are ordinary five-byte characters.
                                 has_raw_bytes = true;
                                 s.push(encode_raw_byte((hex - 0x3F_FF00) as u8));
                             } else if valid_unicode_scalar(hex) {
@@ -765,11 +792,18 @@ impl<'a> Reader<'a> {
         invalid_unicode: &mut bool,
         extended: &mut Vec<(usize, u32)>,
     ) -> Result<(), LispError> {
-        let code = self.input.function_code()?;
+        let code = self
+            .input
+            .encoded_character(self.pos)?
+            .map(|(code, _)| i64::from(code))
+            .or(self.input.function_code()?);
         let character = self
             .read_utf8_char()?
             .ok_or_else(|| LispError::ReadError("invalid UTF-8 in string".into()))?;
-        if raw_byte_from_source_char(character).is_some() {
+        if code.map_or_else(
+            || raw_byte_from_source_char(character).is_some(),
+            |code| (0x3fff80..=0x3fffff).contains(&code),
+        ) {
             *raw_bytes = true;
         } else if let Some(code) =
             code.filter(|code| u32::try_from(*code).ok().and_then(char::from_u32).is_none())
@@ -778,6 +812,11 @@ impl<'a> Reader<'a> {
             extended.push((text.chars().count(), code as u32));
         } else {
             *multibyte = true;
+            // Genuine private-use scalars must not be reinterpreted as
+            // the host adapter's raw-byte sentinels during construction.
+            if raw_byte_from_source_char(character).is_some() {
+                extended.push((text.chars().count(), character as u32));
+            }
         }
         text.push(character);
         Ok(())
@@ -1078,7 +1117,12 @@ impl<'a> Reader<'a> {
     }
 
     fn read_literal_character_code(&mut self) -> Result<i64, LispError> {
-        if let Some(code) = self.input.function_code()? {
+        if let Some(code) = self
+            .input
+            .encoded_character(self.pos)?
+            .map(|(code, _)| i64::from(code))
+            .or(self.input.function_code()?)
+        {
             self.advance_char()?;
             return Ok(if (0x3fff80..=0x3fffff).contains(&code) {
                 code & 0xff
@@ -1124,7 +1168,7 @@ impl<'a> Reader<'a> {
             }
         }
         if self.peek()?.is_some_and(|ch| ch >= 0x80) {
-            if matches!(self.input, Input::Function(_)) {
+            if matches!(self.input, Input::Function(_) | Input::Encoded { .. }) {
                 return self.read_literal_character_code();
             }
             return self.read_utf8_char()?.map_or_else(
@@ -1413,8 +1457,7 @@ impl<'a> Reader<'a> {
                     return Err(LispError::ReadError("missing bool vector length".into()));
                 }
                 let bytes = match (self.read()?.ok_or(LispError::EndOfInput())?).kind() {
-                    Kind::String(text) => text,
-                    Kind::StringObject(state) => state.borrow().text.clone().into(),
+                    Kind::StringObject(state) => state.borrow().text(),
                     other => {
                         return Err(LispError::ReadError(format!(
                             "invalid bool vector literal bytes: expected string, got {}",
@@ -1649,14 +1692,13 @@ impl<'a> Reader<'a> {
             return Ok(None);
         };
         let (text, mut props, multibyte, extended_chars) = match first.kind() {
-            Kind::String(text) => (text.to_string(), Vec::new(), false, Vec::new()),
             Kind::StringObject(state) => {
                 let state = state.borrow();
                 (
-                    state.text.clone(),
-                    state.props.clone(),
-                    state.multibyte,
-                    state.extended_chars.clone(),
+                    state.text(),
+                    state.props.to_vec(),
+                    state.is_multibyte(),
+                    state.text_parts().1,
                 )
             }
             _ => return Ok(None),
@@ -1682,14 +1724,12 @@ impl<'a> Reader<'a> {
             });
             index += 3;
         }
-        Ok(Some(crate::lisp::types::string_object_value(
-            SharedStringState {
-                text,
-                props,
-                multibyte,
-                extended_chars,
-            },
-        )))
+        Ok(Some(Value::StringObject(StringObjectRef::from_text(
+            text,
+            props,
+            multibyte,
+            extended_chars,
+        ))))
     }
 
     fn read_atom(&mut self) -> Result<Option<Value>, LispError> {
@@ -1701,6 +1741,18 @@ impl<'a> Reader<'a> {
     fn character_position(&mut self) -> i64 {
         if let Some(position) = self.input.function_position() {
             return self.position_base + position;
+        }
+        if matches!(self.input, Input::Encoded { .. }) {
+            while self.position_cursor_byte < self.pos {
+                let (_, width) = self
+                    .input
+                    .encoded_character(self.position_cursor_byte)
+                    .expect("already consumed valid character")
+                    .expect("position within the source");
+                self.position_cursor_byte += width;
+                self.position_cursor_char += 1;
+            }
+            return self.position_base + self.position_cursor_char;
         }
         let Input::Text(bytes) = &self.input else {
             unreachable!()
@@ -2269,8 +2321,8 @@ mod tests {
             panic!("expected a string object");
         };
         let state = state.borrow();
-        assert_eq!(state.text, "❄");
-        assert!(state.multibyte);
+        assert_eq!(state.text(), "❄");
+        assert!(state.is_multibyte());
     }
 
     #[test]
@@ -2385,9 +2437,9 @@ mod tests {
             panic!("expected a string object");
         };
         let state = state.borrow();
-        assert_eq!(state.text, "abc");
+        assert_eq!(state.text(), "abc");
         assert_eq!(
-            state.props,
+            state.props.to_vec(),
             vec![StringPropertySpan {
                 start: 0,
                 end: 1,
@@ -2637,7 +2689,7 @@ mod tests {
         let Kind::StringObject(state) = read_one(r#""\x110000""#).kind() else {
             panic!("expected a string object");
         };
-        assert_eq!(state.borrow().text, INVALID_UNICODE_SENTINEL.to_string());
+        assert_eq!(state.borrow().text(), INVALID_UNICODE_SENTINEL.to_string());
     }
 
     #[test]

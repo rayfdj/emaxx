@@ -1,0 +1,152 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "30 focused passes; added bare-interpreter fixture setup fails",
+    "passed": 30,
+    "failed": 1,
+    "ignored": 0,
+    "failures": [
+      "lisp::eval::tests::eval_02::quoted_bytecode_reader_forms_are_materialized_as_records"
+    ],
+    "binary_sha256": "63e6ade3cc0f246b6a58eec609cb787e1a0f389e117515ed7bbe8aef223c5617",
+    "qualification": "All three canonical substring controls and every preceding string/bytecode/completion control pass. The original quoted-reader macro and new closure-kind assertions execute before the added normal-GNU fixture fails because Interpreter::new has not loaded Lisp cadr. The fixture and GNU output remain unchanged. Proposed source231 supplies the normal batch preload only for that added contract; it is unexecuted. The 937-test broader run and fresh ordinary build/comparisons remain active; no broad, release or full-platform pass is assigned."
+  },
+  "archive": {
+    "path": "source230-focused-failure-and-proposal.tar.gz",
+    "bytes": 132657,
+    "sha256": "41084a9d7b7baaff11fee82c0c85e6f1ad754fe995f29623ee31d6246291742c"
+  },
+  "files": [
+    {
+      "path": "audit-shared-reader196-fresh-selected.py",
+      "bytes": 4819,
+      "sha256": "caf9923118da1572509baa64a90fc1099ed1be3b2332bc2ef0232ceb41977ccc"
+    },
+    {
+      "path": "build-string230.py",
+      "bytes": 2438,
+      "sha256": "01c22e7a9a26d3693cf48a04621cd828c72bcb1cdc21bbb023a0d9e7464f1160"
+    },
+    {
+      "path": "compare-source230-fixtures.py",
+      "bytes": 3930,
+      "sha256": "f26f4360d8a11a89c6376e512d70e039dde7f9b782e64e281717290c75b66bb3"
+    },
+    {
+      "path": "diagnose-source229-quote-state.py",
+      "bytes": 2927,
+      "sha256": "8282201ecf1fc242cbea2501b12da4684233c699ab4e5bcf15ba15b04f54c124"
+    },
+    {
+      "path": "package-source230-focused-failure.py",
+      "bytes": 2993,
+      "sha256": "cd93aca734179e7a47d2fe1654700ce0850f2d1328c43ec5190af20123c55f5f"
+    },
+    {
+      "path": "run-source230-build-and-ordinary.py",
+      "bytes": 1078,
+      "sha256": "862cf9bf9cf4d2db5c85901d8dfd7ead93f0a2a9e3805f8c0680297ceb486d67"
+    },
+    {
+      "path": "run-source230-ordinary.py",
+      "bytes": 2432,
+      "sha256": "73661bfd2ef3ba6d18df144590c37b56aa9a0287e9b56e273abaf7e9ca54efc9"
+    },
+    {
+      "path": "source229-quote-state-emaxx-command.json",
+      "bytes": 4637,
+      "sha256": "78721dd2abda2a53bd5a15fc94f3160eaf4b158df6c1eb786c544902b4c05e3f"
+    },
+    {
+      "path": "source229-quote-state-emaxx-result.json",
+      "bytes": 1179,
+      "sha256": "a7bd7f4b8b0b4671f7eeb87b5b1a48a4e5d560c88866b04bcaf60f08a58dcf5e"
+    },
+    {
+      "path": "source229-quote-state-emaxx.el",
+      "bytes": 202,
+      "sha256": "a2d2338a87fb9526f161c7908f07b9a0bf7b2fc4564f1b42eba4fdaf1fbbad98"
+    },
+    {
+      "path": "source229-quote-state-gnu-command.json",
+      "bytes": 2501,
+      "sha256": "f88276d7df346d1e0882ede26ec98370e5a80e9d0a09595b1bd2a7ea49927fe6"
+    },
+    {
+      "path": "source229-quote-state-gnu-result.json",
+      "bytes": 761,
+      "sha256": "9f3472f4a63a5e959d491e0a25aeddc0f86124b67f20d0c59b0d07c572e45660"
+    },
+    {
+      "path": "source229-quote-state-gnu.el",
+      "bytes": 202,
+      "sha256": "a2d2338a87fb9526f161c7908f07b9a0bf7b2fc4564f1b42eba4fdaf1fbbad98"
+    },
+    {
+      "path": "source229-quote-state-results.json",
+      "bytes": 2082,
+      "sha256": "e3bc6e41ba52d52c9424d8c43cc003d276617c14ee3f342cb331418f0643d20a"
+    },
+    {
+      "path": "source229-quote-state.dat",
+      "bytes": 23,
+      "sha256": "0196bafcb626db576a80f3b464622515c639674d4a0af80ef8ede540ae3583b6"
+    },
+    {
+      "path": "source230-focused-audit.json",
+      "bytes": 889,
+      "sha256": "09be11d7dcf94315d318af58990af82e39c15652600a7d3a88a8d46ee0b08583"
+    },
+    {
+      "path": "source230-gate-build-command.json",
+      "bytes": 1148,
+      "sha256": "5e8f841f16fcff4db835858fbb1104990568b327d3d4fc1e898d0d1ce671718c"
+    },
+    {
+      "path": "source230-gate-build-result.json",
+      "bytes": 85,
+      "sha256": "2637292c1d4df7f3e33c01db10d39a90dec317b241c8080726f48df1bc82b59f"
+    },
+    {
+      "path": "source230-gate-build.log",
+      "bytes": 218664,
+      "sha256": "67a202a087673358fb66411619b62916eb3d4cee6c01168cb928ee9d6930b167"
+    },
+    {
+      "path": "source230-gate-controls-command.json",
+      "bytes": 7074,
+      "sha256": "bba5ead147355b08ef9e59bc3a432837cac9d6c4411d0c43d87dfab59cea5d46"
+    },
+    {
+      "path": "source230-gate-controls-result.json",
+      "bytes": 92,
+      "sha256": "51b7e4e64fa682e1a29e125b0e0d1e8fb98d6926cb5c96856aa4e1d897445613"
+    },
+    {
+      "path": "source230-gate-controls.log",
+      "bytes": 3795,
+      "sha256": "ea683250acb0ac9c6d89c077203370c7a037fbdfb0b939523c0921e658fdc173"
+    },
+    {
+      "path": "source230-gate-inventory.txt",
+      "bytes": 262968,
+      "sha256": "afa0a63bda1fd4d731b86fbc836fdbc2c02e0b080845cfecae0565a640d53c59"
+    },
+    {
+      "path": "source230-ordinary-launch.json",
+      "bytes": 683,
+      "sha256": "8b5d9b0119d3416348211ff8d500a53f2fe1e293db9a6f8f381692132c3d38b0"
+    },
+    {
+      "path": "source231-proposal.json",
+      "bytes": 578,
+      "sha256": "031f5f6116a735976c88895540b20be47911d04d061dcfc43a906ea668f00844"
+    },
+    {
+      "path": "source231-proposed/src/lisp/eval/tests/eval_02.rs",
+      "bytes": 328641,
+      "sha256": "bdd6a60d14c2ea0ccce40839729b40cf8451efe9b6463bc2c6891334ca9f09ba"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

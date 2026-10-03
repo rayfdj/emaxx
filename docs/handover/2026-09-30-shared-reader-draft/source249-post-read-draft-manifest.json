@@ -1,0 +1,482 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "c_reference": {
+      "status": "GNU source and unchanged negative controls verified",
+      "gnu_revision": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+      "coding_c_sha256": "9095235dccfe94fd7a44d39ee086beef173262297893ef1335216e9feca19984",
+      "inputs_verified": 476,
+      "root_runtime": "unchanged source248",
+      "controls": [
+        {
+          "fixture": "coding-post-read-character-count",
+          "fixture_sha256": "892c2b4eeb2a9058cde45284b66b92a8e01abd216970a7006eac94b35e636360",
+          "gnu_output_sha256": "a79f6cc6739f45ecf0f43513c366c4abce0e75070f841678a7cd6759fcb489f8",
+          "source248_output_sha256": "81f41b9dc4da751544575243d3fbe0dee30c6e23f3bc1e225d1e20220756ece2",
+          "reproduced_unchanged_on": [
+            "source174",
+            "source207"
+          ]
+        },
+        {
+          "fixture": "coding-post-read-fast-path",
+          "fixture_sha256": "fc62ad8144a0f2d7d3d28b7d9c0c2e3ddf49d827999a9c38f9776bff655bc62e",
+          "gnu_output_sha256": "a33001a53d28d166ce3a91d7bedae3f7c4d833c11f3d251fb8bec2e36b9d07a7",
+          "source248_output_sha256": "3452f8424c24dbb60f5cd109baa1663ee9a4ce31443e5d6c6ac0149611881865",
+          "reproduced_unchanged_on": [
+            "source174",
+            "source207"
+          ]
+        }
+      ],
+      "mapping": [
+        {
+          "gnu": "coding.c:decode_coding_object:8193-8205",
+          "rust": "coding.rs:run_coding_conversion",
+          "change": "Pass the decoded temporary-buffer character count as produced_char, instead of Rust string bytes."
+        },
+        {
+          "gnu": "coding.c:code_convert_string:9624-9644",
+          "rust": "coding.rs:decode_coding_text / dispatch/search_coding.rs:decode-coding-string",
+          "change": "Return from the ASCII string fast path before hooks; preserve NOCOPY object identity or produce a fresh unpropertized multibyte string. Region and buffer conversions still execute their hooks."
+        }
+      ],
+      "qualification": "Both exact negative fixtures also fail identically on retained source174/main and source207. This identifies these particular defects as pre-existing, not a denial of documented migration regressions. No new representation, cache, registry, changed upstream expectation or performance claim. General translation tables, broader hook/destination semantics, final pinned Darwin validation and the full architecture/performance goal remain open. Source249 runtime validation is queued separately."
+    },
+    "frozen": {
+      "inputs": 476,
+      "patches": {
+        "incremental": {
+          "base": "9738501054a694a38191465b473c1e9b58b67ef4",
+          "sha256": "18b86ffbac957e614ed8dbd87e447488c8d25a5ad54f62e2958a91e604206a65",
+          "bytes": 9638
+        },
+        "complete": {
+          "base": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199",
+          "sha256": "5de16f5b251c32606cdf0ef6e5578483ac7276087ffe75f196813cba705dc3d5",
+          "bytes": 711039
+        }
+      },
+      "candidate": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/coding-post-read/emaxx",
+      "goal_complete": false,
+      "qualification": "Isolated GNU C post-read repair: use the decoded temporary-buffer character count and implement code_convert_string ASCII early return with original identity/copy semantics. Buffer destinations and source regions continue through conversion. The two original same-input negative fixtures and GNU output bytes are unchanged. Source248 remains frozen and its terminal retry is untouched. General coding translations and broader hook/destination contracts remain open; no passing runtime result is implied by freezing."
+    },
+    "queue_snapshot": {
+      "status": "waiting for source248 full terminal retry to exit",
+      "prior_pid": 14540,
+      "source_manifest": "source249-manifest.json",
+      "helper_sha256": {
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/check-source249.py": "473da78efba875cbf53d6a73d852f8a99aab744097cdca79d8d07f37af89adfb",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/static-source249.py": "66e3782641e0b2aaacc8042a4ca1999c280be7737a77eb6178ad100cddd883a8",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/test-source249-controls.py": "0e2e933b6051560bf2ad4aec8db491deb58cf820cfc2966607359a7dccbba6b9",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/build-source249.py": "37a5e224611f2d8ac2fe0085885c10b845c00e41021d89d8fe75af94b70e9bfb",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/compare-source230-fixtures.py": "f26f4360d8a11a89c6376e512d70e039dde7f9b782e64e281717290c75b66bb3",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/test-source249-broad.py": "87494c85f8e3bd3cc02aad40cc6702fe1bb34914ea396544ab74a43840de89af"
+      },
+      "stages": [
+        [
+          "check-source249.py",
+          "249"
+        ],
+        [
+          "static-source249.py",
+          "249"
+        ],
+        [
+          "test-source249-controls.py",
+          "249",
+          "gate"
+        ],
+        [
+          "build-source249.py",
+          "249"
+        ],
+        [
+          "compare-source230-fixtures.py",
+          "source249",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/coding-post-read/emaxx",
+          "coding-post-read-character-count",
+          "coding-post-read-fast-path",
+          "overriding-property-identity",
+          "coding-candidate-symbol-properties",
+          "coding-candidate-translation",
+          "coding-candidate-character-identities",
+          "coding-candidate-inventory",
+          "file-write-coding-selection",
+          "new-file-coding-lifecycle",
+          "file-write-order",
+          "canonical-coding-character-storage",
+          "canonical-coding-identity-storage",
+          "canonical-coding-conversion-storage",
+          "copied-canonical-string-storage",
+          "coding-error-object-storage"
+        ],
+        [
+          "test-source249-broad.py",
+          "249",
+          "gate"
+        ],
+        [
+          "test-source249-controls.py",
+          "249",
+          "release"
+        ],
+        [
+          "test-source249-broad.py",
+          "249",
+          "release"
+        ]
+      ],
+      "goal_complete": false
+    },
+    "qualification": "Unapplied source249 draft with both exact negative fixtures, GNU output bytes, original-location source174/main and source207 reproductions, C mappings and replayable patches. Queue15814 waits for terminal14540 before strict checks, gate/release selected validation and fifteen ordinary comparisons. Mutable/live logs are excluded. Build and runtime validation have not started in this snapshot; prepared auditors are not passing evidence. Root source248 and all prior failures remain unchanged. General translation-table, hook/destination, architecture, ownership, accounting, pinned Darwin and performance requirements remain open."
+  },
+  "archive": {
+    "path": "source249-post-read-draft.tar.gz",
+    "bytes": 202961,
+    "sha256": "9cb3189862df7758a3ce8d7dcc72608a81b40daa9fd36e869f621dbe571bf445"
+  },
+  "files": [
+    {
+      "path": "audit-source238-release.py",
+      "bytes": 6600,
+      "sha256": "a88af9f455dd1646cf700decd651b977a525af8dc4a7eea81ed76f1812ff182f"
+    },
+    {
+      "path": "audit-source249-c-reference.py",
+      "bytes": 3883,
+      "sha256": "101d4068fb56b8a93ebc84020974caafd94ed20d308b5da3559c60e1b8ad83b2"
+    },
+    {
+      "path": "audit-source249-focused.py",
+      "bytes": 3526,
+      "sha256": "bd7c13cdb68ca349b38bb38daac33b3ad9d6ad2a9909f65804e0e98405c9f1ff"
+    },
+    {
+      "path": "audit-source249-patches.py",
+      "bytes": 2941,
+      "sha256": "4613f1fccb305a01f2c359f8180b9e1be6fb8d85580f0f88acd74592c790f54b"
+    },
+    {
+      "path": "audit-source249-selected.py",
+      "bytes": 4925,
+      "sha256": "15b694d5185b9687778868ee63a5b26165cc8b7a0dc2defa53572d4e76913ec9"
+    },
+    {
+      "path": "build-source249.py",
+      "bytes": 2450,
+      "sha256": "37a5e224611f2d8ac2fe0085885c10b845c00e41021d89d8fe75af94b70e9bfb"
+    },
+    {
+      "path": "check-source249.py",
+      "bytes": 2032,
+      "sha256": "473da78efba875cbf53d6a73d852f8a99aab744097cdca79d8d07f37af89adfb"
+    },
+    {
+      "path": "coding-post-read-character-count.el",
+      "bytes": 1458,
+      "sha256": "892c2b4eeb2a9058cde45284b66b92a8e01abd216970a7006eac94b35e636360"
+    },
+    {
+      "path": "coding-post-read-count-history-original-location-audit.json",
+      "bytes": 1151,
+      "sha256": "a3deb211e79c6ffad66d7cdc8850a134c978795a711ee7db789497674120bba2"
+    },
+    {
+      "path": "coding-post-read-fast-history-original-location-audit.json",
+      "bytes": 1159,
+      "sha256": "41e7c0f9ea5a81b47d02f6c569b38b8f0caab401e614b902a56f4bf963c4ab51"
+    },
+    {
+      "path": "coding-post-read-fast-path.el",
+      "bytes": 1501,
+      "sha256": "fc62ad8144a0f2d7d3d28b7d9c0c2e3ddf49d827999a9c38f9776bff655bc62e"
+    },
+    {
+      "path": "compare-source230-fixtures.py",
+      "bytes": 3930,
+      "sha256": "f26f4360d8a11a89c6376e512d70e039dde7f9b782e64e281717290c75b66bb3"
+    },
+    {
+      "path": "freeze-source249.py",
+      "bytes": 2567,
+      "sha256": "4f105f90768a1fd6c20695c5d7fd7f150c2b68e87d60cae7c7739ad26cdf583f"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source249-post-read-draft.py",
+      "bytes": 3299,
+      "sha256": "3ca5878432eb2e5cd33f0ff17c99cd4749ea97cc0d2894e7b589782b74cf2db2"
+    },
+    {
+      "path": "probe-coding-post-read-count-history.py",
+      "bytes": 3431,
+      "sha256": "7179064ef86d2f046356c7d597a9ee25977709bc067624338ebc6a72d3091dc2"
+    },
+    {
+      "path": "probe-coding-post-read-fast-history.py",
+      "bytes": 3420,
+      "sha256": "b2f88601930a0653f1a22f7f8763786e9d4e666322b70d2c9d6d0bea8ce0fc56"
+    },
+    {
+      "path": "probe-source248-post-read-count.py",
+      "bytes": 2790,
+      "sha256": "59fd08d13dfc2e7830c5ffd82607baf22ccd83a00898bfd102ace99c1da9db70"
+    },
+    {
+      "path": "probe-source248-post-read-fast.py",
+      "bytes": 2782,
+      "sha256": "b8b789019476cd4f421d67205f0e5a46b0e509fd5b82f853293519768939e7f4"
+    },
+    {
+      "path": "queue-source249-validation.py",
+      "bytes": 4506,
+      "sha256": "99c4272a0ec24a1db4f558d5b157108440da3bb6489616e21f17e0572f0fc0e2"
+    },
+    {
+      "path": "source174-ordinary-artifacts.json",
+      "bytes": 736,
+      "sha256": "792c48f6f5dc1c66d901a8bfdc4412e88f421dd7230104dc9b347e00c8416d4a"
+    },
+    {
+      "path": "source174-post-read-count-original-location-command.json",
+      "bytes": 2866,
+      "sha256": "f1bfa39492cbce3a44b8467508d391d033f11dbb10a15ff49bc7ec152243355c"
+    },
+    {
+      "path": "source174-post-read-count-original-location-result.json",
+      "bytes": 334,
+      "sha256": "cfb01f78a812398850e5c45d5dee72ea1573266a152cc693a7c09b7b0047ef27"
+    },
+    {
+      "path": "source174-post-read-count-original-location.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source174-post-read-count-original-location.stdout",
+      "bytes": 212,
+      "sha256": "81f41b9dc4da751544575243d3fbe0dee30c6e23f3bc1e225d1e20220756ece2"
+    },
+    {
+      "path": "source174-post-read-fast-original-location-command.json",
+      "bytes": 2901,
+      "sha256": "6529f1a1c68dca8151e7508b1656f57b91f8bb221e49549343df8fac27f9a6b3"
+    },
+    {
+      "path": "source174-post-read-fast-original-location-result.json",
+      "bytes": 342,
+      "sha256": "1d4ad70c281599642e2ae1202812b4b99ec646fa6b5f0328870731b6200763b6"
+    },
+    {
+      "path": "source174-post-read-fast-original-location.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source174-post-read-fast-original-location.stdout",
+      "bytes": 107,
+      "sha256": "3452f8424c24dbb60f5cd109baa1663ee9a4ce31443e5d6c6ac0149611881865"
+    },
+    {
+      "path": "source207-ordinary-artifacts.json",
+      "bytes": 742,
+      "sha256": "9d1faaf5f38a7740356a8cd6c70dab1e808f6c334ab467ce311be144893ce4d6"
+    },
+    {
+      "path": "source207-post-read-count-original-location-command.json",
+      "bytes": 2875,
+      "sha256": "3f14a75dd14b3052d8b311135399eed8baba09b64fad76daa2aa3796faeb1606"
+    },
+    {
+      "path": "source207-post-read-count-original-location-result.json",
+      "bytes": 342,
+      "sha256": "701aa455336ac7cb2b3e4f9844406b07595cbf02e80d8ae2cd5594deea1efd3a"
+    },
+    {
+      "path": "source207-post-read-count-original-location.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source207-post-read-count-original-location.stdout",
+      "bytes": 212,
+      "sha256": "81f41b9dc4da751544575243d3fbe0dee30c6e23f3bc1e225d1e20220756ece2"
+    },
+    {
+      "path": "source207-post-read-fast-original-location-command.json",
+      "bytes": 2910,
+      "sha256": "b847d29422a83b1eff52c8ec46ac61d3a2f44b6979c2fc281336deaf9f611b09"
+    },
+    {
+      "path": "source207-post-read-fast-original-location-result.json",
+      "bytes": 342,
+      "sha256": "e8127398e776f5c1b12d9e081af156445b5915777b00d184d8058f4583138577"
+    },
+    {
+      "path": "source207-post-read-fast-original-location.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source207-post-read-fast-original-location.stdout",
+      "bytes": 107,
+      "sha256": "3452f8424c24dbb60f5cd109baa1663ee9a4ce31443e5d6c6ac0149611881865"
+    },
+    {
+      "path": "source248-post-read-count-emaxx-command.json",
+      "bytes": 2681,
+      "sha256": "fa831cf952c00b31b17f5a9ab85f3ecebae3227d54d3ec03c5388b7ea389988c"
+    },
+    {
+      "path": "source248-post-read-count-emaxx-result.json",
+      "bytes": 284,
+      "sha256": "48a21cb742501f42f084b6ffe05628f7964b2a309b2669f069ebce16d4a11766"
+    },
+    {
+      "path": "source248-post-read-count-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-post-read-count-emaxx.stdout",
+      "bytes": 212,
+      "sha256": "81f41b9dc4da751544575243d3fbe0dee30c6e23f3bc1e225d1e20220756ece2"
+    },
+    {
+      "path": "source248-post-read-count-gnu-command.json",
+      "bytes": 2531,
+      "sha256": "17c22da68b91c9fe34f98720a2516b77bb310ed3e248fd79ffc9d2f8beecde60"
+    },
+    {
+      "path": "source248-post-read-count-gnu-result.json",
+      "bytes": 284,
+      "sha256": "79066613c7a46c7d77d2c3ad72de12a44369e1756fba68160acd0975198250f8"
+    },
+    {
+      "path": "source248-post-read-count-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-post-read-count-gnu.stdout",
+      "bytes": 184,
+      "sha256": "a79f6cc6739f45ecf0f43513c366c4abce0e75070f841678a7cd6759fcb489f8"
+    },
+    {
+      "path": "source248-post-read-count-negative-audit.json",
+      "bytes": 1081,
+      "sha256": "655b966b4ee26eca4b0dc377f592f4aed08bef906abf778a51350996db3598e9"
+    },
+    {
+      "path": "source248-post-read-fast-emaxx-command.json",
+      "bytes": 2716,
+      "sha256": "435519379340de87baa08edb41c70dd1670107313efcf5ae2e7f0846fd50f2d8"
+    },
+    {
+      "path": "source248-post-read-fast-emaxx-result.json",
+      "bytes": 292,
+      "sha256": "a8bf79d3b56d2e26a4a25000d1b32da12537b1c0eb45661b7b4f6b83803b8de5"
+    },
+    {
+      "path": "source248-post-read-fast-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-post-read-fast-emaxx.stdout",
+      "bytes": 107,
+      "sha256": "3452f8424c24dbb60f5cd109baa1663ee9a4ce31443e5d6c6ac0149611881865"
+    },
+    {
+      "path": "source248-post-read-fast-gnu-command.json",
+      "bytes": 2566,
+      "sha256": "03769ba378bc4906e1308e986dea6add00a9417269d1b1e61f0adfb217b0ccc5"
+    },
+    {
+      "path": "source248-post-read-fast-gnu-result.json",
+      "bytes": 292,
+      "sha256": "0cde805dc8b366eec0e0301f530cf9faeed1cd3258f0be704c1fe70e9539238d"
+    },
+    {
+      "path": "source248-post-read-fast-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-post-read-fast-gnu.stdout",
+      "bytes": 94,
+      "sha256": "a33001a53d28d166ce3a91d7bedae3f7c4d833c11f3d251fb8bec2e36b9d07a7"
+    },
+    {
+      "path": "source248-post-read-fast-negative-audit.json",
+      "bytes": 1097,
+      "sha256": "54fda57b713268d0549c80c918a24fdb91300e533022ec0663b02b21504c4261"
+    },
+    {
+      "path": "source249-c-reference-review.json",
+      "bytes": 2320,
+      "sha256": "b31ba96fc8c35fc0c7f3b315c91f9d2bb3aa106d426a10a45b02f67b7f2743b3"
+    },
+    {
+      "path": "source249-complete.patch",
+      "bytes": 711039,
+      "sha256": "5de16f5b251c32606cdf0ef6e5578483ac7276087ffe75f196813cba705dc3d5"
+    },
+    {
+      "path": "source249-freeze.json",
+      "bytes": 1095,
+      "sha256": "3dc4cd076a3a4d3c9f2743ef7841e605fc5113734b6a5e23ae62d0392f8e607a"
+    },
+    {
+      "path": "source249-incremental.patch",
+      "bytes": 9638,
+      "sha256": "18b86ffbac957e614ed8dbd87e447488c8d25a5ad54f62e2958a91e604206a65"
+    },
+    {
+      "path": "source249-manifest.json",
+      "bytes": 54595,
+      "sha256": "9055fe6d69d95ee12aaa55a76bf4d075a929cb778d9f9545e3438ea2a6be9daa"
+    },
+    {
+      "path": "source249-original-fixtures.json",
+      "bytes": 1241,
+      "sha256": "03e04ace64d1d5a3d22e23b1de48bad2b70e165e5086b454507d695fad7e1c92"
+    },
+    {
+      "path": "source249-patch-replay-audit.json",
+      "bytes": 882,
+      "sha256": "75d7843d0c573f61e3a12cd884af541b1fda6d00a631eff37ea8161036acfaf1"
+    },
+    {
+      "path": "source249-queued-state-snapshot.json",
+      "bytes": 2439,
+      "sha256": "9538947630d822bee747fcfb5f7c4a20d16d017becd0c3c63e5a4b21b2448d03"
+    },
+    {
+      "path": "source249-validation-launch.json",
+      "bytes": 605,
+      "sha256": "99a89b808dac56852474b5b31e783e3a1111f7f122930e41c05c27af0fa244e0"
+    },
+    {
+      "path": "static-source249.py",
+      "bytes": 1557,
+      "sha256": "66e3782641e0b2aaacc8042a4ca1999c280be7737a77eb6178ad100cddd883a8"
+    },
+    {
+      "path": "test-source249-broad.py",
+      "bytes": 3094,
+      "sha256": "87494c85f8e3bd3cc02aad40cc6702fe1bb34914ea396544ab74a43840de89af"
+    },
+    {
+      "path": "test-source249-controls.py",
+      "bytes": 7238,
+      "sha256": "0e2e933b6051560bf2ad4aec8db491deb58cf820cfc2966607359a7dccbba6b9"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

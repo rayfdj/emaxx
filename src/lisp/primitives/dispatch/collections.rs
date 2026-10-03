@@ -2,7 +2,7 @@ use super::*;
 use crate::lisp::types::CharTableRef;
 use crate::lisp::types::Kind;
 
-fn fixnum_index_arg(value: &Value) -> Result<i64, LispError> {
+pub(super) fn fixnum_index_arg(value: &Value) -> Result<i64, LispError> {
     match value.kind() {
         Kind::Integer(index) => Ok(index),
         other => Err(wrong_type_argument("fixnump", other.value())),
@@ -603,7 +603,7 @@ define_dispatch!(
                             set_random_seed(nondeterministic_random_seed());
                             Ok(Value::Integer(random_fixnum()))
                         }
-                        Kind::String(_) | Kind::StringObject(_) => {
+                        Kind::StringObject(_) => {
                             let seed = string_like(&args[0])
                                 .expect("string variants should be string-like")
                                 .text;
@@ -712,15 +712,14 @@ define_dispatch!(
                 let readable_record = matches!(args[0].kind(), Kind::Record(id)
                 if interp.find_record(id).is_some_and(|record| matches!(
                     record.kind,
-                    crate::lisp::eval::RecordKind::Closure
-                        | crate::lisp::eval::RecordKind::BoolVector
+                    crate::lisp::eval::RecordKind::BoolVector
                 )));
                 if literal.is_none()
                     && !args[0].is_string()
                     && !is_vector_value(&args[0])
                     && !matches!(
                         args[0].kind(),
-                        Kind::Lambda(_) | Kind::CharTable(_) | Kind::LispRecord(_)
+                        Kind::Closure(_) | Kind::CharTable(_) | Kind::LispRecord(_)
                     )
                     && !readable_record
                 {
@@ -740,7 +739,7 @@ define_dispatch!(
                     return record_literal_aref(&args[0], &items, idx, &args[1]);
                 }
                 match args[0].kind() {
-                    Kind::String(_) | Kind::StringObject(_) => {
+                    Kind::StringObject(_) => {
                         match crate::lisp::primitives::strings::string_char_code_at_in_place(
                             &args[0], idx,
                         ) {
@@ -748,7 +747,7 @@ define_dispatch!(
                             None => Err(args_out_of_range(&args[0], &args[1])),
                         }
                     }
-                    Kind::Lambda(lambda) => lambda
+                    Kind::Closure(lambda) => lambda
                         .get(idx)
                         .ok_or_else(|| args_out_of_range(&args[0], &args[1])),
                     Kind::CharTable(id) => {
@@ -769,18 +768,7 @@ define_dispatch!(
                                 .cloned()
                                 .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
                         }
-                        if record.kind == crate::lisp::eval::RecordKind::Closure {
-                            // GNU data.c:Faref exposes every Lisp_Closure slot
-                            // verbatim.  In particular, CLOSURE_ARGLIST is
-                            // already either the packed bytecode descriptor or
-                            // the legacy dynamic-binding argument list.
-                            return record
-                                .slots
-                                .get(idx)
-                                .cloned()
-                                .ok_or_else(|| args_out_of_range(&args[0], &args[1]));
-                        }
-                        unreachable!("array check admitted only closure and bool-vector adapters")
+                        unreachable!("array check admitted only a bool-vector adapter")
                     }
                     _ => {
                         if is_vector_value(&args[0]) {
@@ -814,6 +802,9 @@ define_dispatch!(
                 {
                     return Err(LispError::WrongTypeArgument("characterp".into(), args[1]));
                 }
+                if let Kind::StringObject(state) = args[0].kind() {
+                    state.check_impure()?;
+                }
                 if raw_idx < 0 {
                     return Err(args_out_of_range(&args[0], &args[1]));
                 }
@@ -833,8 +824,9 @@ define_dispatch!(
                         set_bool_vector_bit(interp, &value.value(), idx, args[2].is_truthy())?;
                         Ok(args[2])
                     }
-                    Kind::String(_) | Kind::StringObject(_) => {
-                        aset_string_value(&args[0], idx, &args[2])?;
+                    Kind::StringObject(_) => {
+                        aset_string_value(&args[0], idx, &args[2])
+                            .map_err(|error| string_storage_error(interp, env, error))?;
                         Ok(args[2])
                     }
                     Kind::LispRecord(record) => {
@@ -867,31 +859,14 @@ define_dispatch!(
                         Ok(args[0])
                     }
                     Kind::StringObject(state) => {
-                        let mut state = state.borrow_mut();
-                        let len = state.text.chars().count();
-                        let fill_code = args[1].as_integer()?;
-                        let fill_char = if state.multibyte {
-                            char::from_u32(fill_code as u32)
-                                .ok_or_else(|| LispError::Signal("Invalid character".into()))?
-                        } else if !(0..=255).contains(&fill_code) {
-                            return Err(LispError::Signal("Invalid character".into()));
-                        } else if fill_code <= 0x7F {
-                            char::from(fill_code as u8)
-                        } else {
-                            raw_byte_regex_char(fill_code as u8)
-                        };
-                        state.text = std::iter::repeat_n(fill_char, len).collect();
-                        state.props.clear();
-                        Ok(args[0])
-                    }
-                    Kind::String(text) => {
-                        let len = text.chars().count();
-                        let fill_code = args[1].as_integer()?;
-                        if !(0..=0x7F).contains(&fill_code) {
-                            return Err(LispError::Signal("Invalid character".into()));
+                        // fns.c validates ITEM before the empty fast path and
+                        // before CHECK_IMPURE on a nonempty string.
+                        crate::lisp::types::string_data::character_code(args[1])?;
+                        if state.borrow().len() != 0 {
+                            state.check_impure()?;
+                            state.borrow_mut().fill(args[1])?;
                         }
-                        let fill_char = char::from(fill_code as u8);
-                        Ok(Value::String(std::iter::repeat_n(fill_char, len).collect()))
+                        Ok(args[0])
                     }
                     value if is_bool_vector_value(interp, &value.value()) => {
                         let len = bool_vector_bits(interp, &value.value())?.len();
@@ -1021,14 +996,16 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 match args[0].kind() {
                     Kind::StringObject(state) => {
-                        let mut state = state.borrow_mut();
-                        let len = state.text.len();
-                        state.text = "\0".repeat(len);
-                        state.props.clear();
-                        state.multibyte = false;
+                        let needs_clear = {
+                            let contents = state.borrow();
+                            contents.storage_bytes() != 0 || contents.is_multibyte()
+                        };
+                        if needs_clear {
+                            state.check_impure()?;
+                            state.borrow_mut().clear();
+                        }
                         Ok(Value::Nil)
                     }
-                    Kind::String(_) => Ok(Value::Nil),
                     other => Err(LispError::WrongTypeArgument(
                         "stringp".into(),
                         other.value(),
@@ -1040,18 +1017,17 @@ define_dispatch!(
                 if args.is_empty() || args.len().is_multiple_of(2) {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
+                let len = match args[0].kind() {
+                    Kind::StringObject(state) => state.borrow().len(),
+                    _ => return Err(LispError::WrongTypeArgument("stringp".into(), args[0])),
+                };
+                // editfns.c:Fpropertize starts with Fcopy_sequence, sharing
+                // property values while copying the string's real bytes.
+                let value = shared_string_copy(&args[0])?;
                 let props = args[1..]
                     .chunks(2)
                     .map(|pair| Ok((pair[0].as_symbol()?.to_string(), pair[1])))
                     .collect::<Result<Vec<_>, LispError>>()?;
-                let len = string.text.chars().count();
-                let value = make_shared_string_value_with_multibyte(
-                    string.text,
-                    string.props,
-                    string.multibyte,
-                );
                 modify_shared_string_properties(&value, 0, len, |mut current| {
                     for (name, value) in &props {
                         if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name)

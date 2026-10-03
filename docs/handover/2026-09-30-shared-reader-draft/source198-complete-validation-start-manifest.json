@@ -1,0 +1,66 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "source": 198,
+    "inputs": 405,
+    "qualification": "Selected strict/gate542/release542/ordinary28 passed and audited before full Rust launch. Terminal runs are queued after source196 terminal completion, then full terminal follows the selected audit. Running logs are excluded. Root task worktree is verified identical; no complete validation or performance claim."
+  },
+  "archive": {
+    "path": "source198-complete-validation-start.tar.gz",
+    "bytes": 6362,
+    "sha256": "30b2fa45d4aaed40bec852465c425e9d78cd16a2113d166e2390a1c70ca700b4"
+  },
+  "files": [
+    {
+      "path": "audit-source198-macos-names.py",
+      "bytes": 1679,
+      "sha256": "234a5a217345ad209ad23d6a3f431bb1162d0fe720b2f75c9576354558918e54"
+    },
+    {
+      "path": "audit-source198-selected-tty.py",
+      "bytes": 1929,
+      "sha256": "66b2456f5bf5d02fee6d0cb24141bb7cdaa35fee7c32f99bfb97f3e695d554af"
+    },
+    {
+      "path": "queue-source198-full-validation.py",
+      "bytes": 3734,
+      "sha256": "7f91a3083ba702ddac5a9293da25c2e611ac53121a8d279747ae32e2d6bc9b37"
+    },
+    {
+      "path": "run-source198-full-gate.py",
+      "bytes": 3195,
+      "sha256": "cdadfcc90abdd97d899a303899d86ec03352284a2dd7ba0bb004eb00cf09efc7"
+    },
+    {
+      "path": "run-source198-full-tty.py",
+      "bytes": 3308,
+      "sha256": "b97b64cb4e929a713f06d733581201c717136b507008e4fa17bb5a325a9a60ee"
+    },
+    {
+      "path": "run-source198-selected-tty.py",
+      "bytes": 3204,
+      "sha256": "29a97aeb461141177338003c8525b6a246665d4e8903c8446ae172d6cb89c9cb"
+    },
+    {
+      "path": "source198-full-gate-command.json",
+      "bytes": 1412,
+      "sha256": "b935d1aa484d4c446c2aa67744f56d299acd8198fd84150f5a0c51b389095da4"
+    },
+    {
+      "path": "source198-full-gate-launch.json",
+      "bytes": 324,
+      "sha256": "f71ba7a0d90eb5301e9918b0c14b14f3b30f88a6e615de6127f79d1625f3c838"
+    },
+    {
+      "path": "source198-full-local-supervisor.json",
+      "bytes": 293,
+      "sha256": "152db6791096744b44b9e1aa58ead48e7f187a7e6fd716c030b756974e6160ba"
+    },
+    {
+      "path": "source198-task-worktree-applied.json",
+      "bytes": 719,
+      "sha256": "8a7643cf0353221ff35cd7d6adda6a19199b5851d0ed74cf999c7879b91de516"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

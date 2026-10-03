@@ -13,7 +13,7 @@ use super::super::*;
 use super::context::*;
 use super::image::*;
 use crate::lisp::eval::RecordKind;
-use crate::lisp::types::{CharTableRef, Kind, SharedText, SubCharTableRef, SymbolName};
+use crate::lisp::types::{CharTableRef, Kind, SubCharTableRef, SymbolName};
 
 /// pdumper.c:pdumper_load_result.
 #[derive(Debug, PartialEq, Eq)]
@@ -361,7 +361,7 @@ impl Loader<'_> {
         let mut string_props: Vec<(u32, u32)> = Vec::new();
         for &(offset, kind) in &object_starts {
             match kind {
-                DumpType::String | DumpType::StringObject => {
+                DumpType::String | DumpType::StringObject | DumpType::EmptyString => {
                     let (value, props) = self.load_string(offset, kind)?;
                     if let Some(props) = props {
                         string_props.push((offset, props));
@@ -418,15 +418,17 @@ impl Loader<'_> {
                 }
                 DumpType::Closure => {
                     let size = self.reader.word(offset)? as usize;
-                    if !(3..=6).contains(&size) {
+                    if !(3..=0xfff).contains(&size) {
                         return Err(LoadError::Error(format!(
                             "invalid closure size at {offset}"
                         )));
                     }
                     // Publish every identity before relocating any field.
                     // Any closure slot can participate in an object cycle.
-                    self.objects
-                        .insert(offset, Value::allocated_lambda(&[Value::Nil; 6][..size]));
+                    self.objects.insert(
+                        offset,
+                        Value::Closure(crate::lisp::types::ClosureRef::filled(size, Value::Nil)),
+                    );
                 }
                 DumpType::Vector => {
                     let size = self.reader.word(offset)? as usize;
@@ -619,16 +621,16 @@ impl Loader<'_> {
                     cell.cdr.set(cdr);
                 }
                 DumpType::Closure => {
-                    let Kind::Lambda(closure) = self.objects[&offset].kind() else {
+                    let Kind::Closure(closure) = self.objects[&offset].kind() else {
                         unreachable!()
                     };
                     for index in 0..closure.public_len() {
                         let value = self.value_at(offset + 8 * (index as u32 + 1))?;
                         closure.initialize_slot(index, value);
                     }
-                    if !matches!(closure.body().kind(), Kind::Cons(_)) {
+                    if !closure.is_bytecode() && !matches!(closure.body().kind(), Kind::Cons(_)) {
                         return Err(LoadError::Error(format!(
-                            "invalid interpreted closure body at {offset}"
+                            "invalid closure code at {offset}"
                         )));
                     }
                 }
@@ -710,7 +712,7 @@ impl Loader<'_> {
             let spans = self.load_text_properties(props_offset)?;
             match self.objects[&string_offset].kind() {
                 Kind::StringObject(state) => {
-                    state.borrow_mut().props = spans;
+                    state.borrow_mut().props = spans.into();
                 }
                 other => {
                     return Err(LoadError::Error(format!(
@@ -1006,14 +1008,9 @@ impl Loader<'_> {
         name: Value,
     ) -> Result<SymbolName, LoadError> {
         let interned = (flags >> SYMBOL_INTERNED_SHIFT) & 3;
-        let name_text: std::borrow::Cow<'_, str> = match name.kind() {
-            Kind::String(text) => std::borrow::Cow::Borrowed(text.as_str()),
-            other => std::borrow::Cow::Owned(
-                string_like(&other.value())
-                    .map(|string| string.text)
-                    .ok_or_else(|| LoadError::Error("symbol name is not a string".into()))?,
-            ),
-        };
+        let name_text = name
+            .as_string()
+            .map_err(|_| LoadError::Error("symbol name is not a string".into()))?;
         if interned == SYMBOL_UNINTERNED && flags & FLAG_UNINTERNED_FROM_OBARRAY == 0 {
             return Ok(SymbolName::make_uninterned(
                 name,
@@ -1038,10 +1035,7 @@ impl Loader<'_> {
             }
             return Ok(SymbolName::intern_with_lisp_name(internal, Some(name)));
         }
-        Ok(SymbolName::intern_with_lisp_name(
-            name_text.into_owned(),
-            Some(name),
-        ))
+        Ok(SymbolName::intern_with_lisp_name(name_text, Some(name)))
     }
 
     fn load_string(
@@ -1062,19 +1056,20 @@ impl Loader<'_> {
             .ok_or_else(|| {
                 LoadError::Error(format!("string data at {data} is outside the image"))
             })?;
-        let (text, extended_chars) = decode_internal_bytes(bytes, multibyte)?;
-        // The record's `size' and `size_byte' are the string's character
-        // count and storage size; pdumper.c takes them as they are, so
-        // the loader counts nothing (a unibyte string stores one byte a
-        // character).
-        let value = match kind {
-            DumpType::String => Value::String(SharedText::with_storage_bytes(text, nbytes)),
-            _ => crate::lisp::primitives::strings::make_loaded_string_object_value(
-                text,
-                multibyte,
-                extended_chars,
-                nbytes,
-            ),
+        let mode = if kind == DumpType::EmptyString {
+            crate::lisp::alloc::StringAllocation::Ordinary
+        } else {
+            crate::lisp::alloc::StringAllocation::Restored
+        };
+        let state = StringObjectRef::from_storage_kind(bytes.to_vec(), size, multibyte, mode)
+            .map_err(|error| LoadError::Error(error.to_string()))?;
+        let value = if kind == DumpType::EmptyString {
+            if size != 0 || nbytes != 0 || intervals != 0 {
+                return Err(LoadError::Error("nonempty static empty string".into()));
+            }
+            Value::StringObject(state)
+        } else {
+            Value::StringObject(state)
         };
         Ok((value, (intervals != 0).then_some(intervals)))
     }

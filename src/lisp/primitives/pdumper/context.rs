@@ -26,7 +26,6 @@ pub(crate) const WEIGHT_STRONG: LinkWeight = LinkWeight(1200);
 pub(crate) enum ObjectKey {
     Cons(usize),
     String(usize),
-    StringObject(usize),
     Symbol(u32),
     SymbolWithPos(usize),
     Vector(usize),
@@ -56,8 +55,7 @@ pub(crate) enum ObjectKey {
 pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
     Some(match value.kind() {
         Kind::Cons(cell) => ObjectKey::Cons(ConsCell::identity(&cell)),
-        Kind::String(text) => ObjectKey::String(text.identity_ptr()),
-        Kind::StringObject(state) => ObjectKey::StringObject(state.identity()),
+        Kind::StringObject(state) => ObjectKey::String(state.identity()),
         Kind::Symbol(name) => {
             if name == "nil" || name == "t" {
                 return None;
@@ -78,7 +76,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Kind::Nil | Kind::T | Kind::Unbound => return None,
         // dump_object_needs_dumping_p: everything but a fixnum is queued,
         // and dump_object refuses what it cannot write.
-        Kind::Lambda(lambda) => ObjectKey::Lambda(lambda.identity()),
+        Kind::Closure(lambda) => ObjectKey::Lambda(lambda.identity()),
         Kind::Buffer(buffer) => ObjectKey::Buffer(buffer.id),
         Kind::Marker(marker) => ObjectKey::Marker(marker.identity()),
         Kind::Overlay(overlay) => ObjectKey::Overlay(overlay.identity()),
@@ -113,7 +111,6 @@ pub(crate) fn self_representing_word(value: &Value) -> Option<u64> {
 pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
     match kind {
         RecordKind::BoolVector => 2,
-        RecordKind::Closure => 3,
         RecordKind::Font => 4,
         RecordKind::Process => 6,
         RecordKind::Obarray => 8,
@@ -138,7 +135,7 @@ pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
     Some(match code {
         // Former generic record code 1 used a detached host payload.
         2 => RecordKind::BoolVector,
-        3 => RecordKind::Closure,
+        // Former detached byte-code record code 3 is unsupported.
         4 => RecordKind::Font,
         // Former positioned-symbol records are not a supported dump object.
         6 => RecordKind::Process,
@@ -538,15 +535,15 @@ impl DumpContext {
         }
         match value.kind() {
             Kind::Cons(_) => DumpType::Cons,
-            Kind::String(_) => DumpType::String,
-            Kind::StringObject(_) => DumpType::StringObject,
+            Kind::StringObject(state) if state.is_empty_singleton() => DumpType::EmptyString,
+            Kind::StringObject(_) => DumpType::String,
             Kind::Symbol(_) => DumpType::Symbol,
             Kind::Vector(_) => DumpType::Vector,
             Kind::LispRecord(_) => DumpType::LispRecord,
             Kind::Float(_) => DumpType::Float,
             Kind::BigInteger(_) | Kind::Integer(_) => DumpType::Bignum,
             Kind::BuiltinFunc(_) => DumpType::Subr,
-            Kind::Lambda(_) => DumpType::Closure,
+            Kind::Closure(_) => DumpType::Closure,
             Kind::CharTable(_) => DumpType::CharTable,
             Kind::HashTable(_) => DumpType::HashTable,
             Kind::SubCharTable(_) => DumpType::SubCharTable,
@@ -1040,14 +1037,14 @@ impl DumpContext {
         // Object needs to be dumped.
         self.set_referrer(*object);
         let (offset, kind) = match object.kind() {
-            Kind::String(_) | Kind::StringObject(_) => self.dump_string(interp, object)?,
+            Kind::StringObject(_) => self.dump_string(interp, object)?,
             Kind::Vector(vector) => (self.dump_vector(&vector)?, DumpType::Vector),
             Kind::Symbol(_) => (self.dump_symbol(interp, object)?, DumpType::Symbol),
             Kind::Cons(cell) => (self.dump_cons(&cell)?, DumpType::Cons),
             Kind::Float(float) => (self.dump_float(*float)?, DumpType::Float),
             Kind::BigInteger(_) | Kind::Integer(_) => (self.dump_bignum(object)?, DumpType::Bignum),
             Kind::BuiltinFunc(name) => (self.dump_subr(&name)?, DumpType::Subr),
-            Kind::Lambda(lambda) => (self.dump_closure(&lambda)?, DumpType::Closure),
+            Kind::Closure(lambda) => (self.dump_closure(&lambda)?, DumpType::Closure),
             Kind::CharTable(table) => (self.dump_char_table(table)?, DumpType::CharTable),
             Kind::HashTable(table) => (self.dump_hash_table(table, object)?, DumpType::HashTable),
             Kind::SubCharTable(table) => (self.dump_sub_char_table(table)?, DumpType::SubCharTable),
@@ -1105,25 +1102,33 @@ impl DumpContext {
         interp: &Interpreter,
         object: &Value,
     ) -> Result<(u32, DumpType), DumpError> {
-        let string = string_like(object).expect("a string");
-        let kind = match object.kind() {
-            Kind::String(_) => DumpType::String,
-            _ => DumpType::StringObject,
+        let Kind::StringObject(state) = object.kind() else {
+            unreachable!("dumping a string")
         };
-        let size = string.text.chars().count() as u64;
-        let size_byte = if string.multibyte {
-            crate::lisp::primitives::strings::lisp_string_byte_len(
-                &string.text,
-                true,
-                &string.extended_chars,
-            )? as u64
-        } else {
-            // -1: a unibyte string.
-            u64::MAX
+        let (size, size_byte, props) = {
+            let string = state.borrow();
+            let props = string
+                .props
+                .iter()
+                .map(|span| TextPropertySpan {
+                    start: span.start,
+                    end: span.end,
+                    props: span.props.clone(),
+                })
+                .collect::<Vec<_>>();
+            (
+                string.len() as u64,
+                if string.is_multibyte() {
+                    string.storage_bytes() as u64
+                } else {
+                    u64::MAX
+                },
+                props,
+            )
         };
         self.object_start()?;
         let mut words = [size, size_byte, 0, 0];
-        let has_props = !string.props.is_empty();
+        let has_props = !props.is_empty();
         if has_props {
             words[2] = FIXUP_PLACEHOLDER;
         }
@@ -1131,10 +1136,17 @@ impl DumpContext {
         self.remember_cold_op(ColdOp::String(*object));
         let offset = self.object_finish(&words)?;
         if has_props {
-            let properties = self.dump_text_properties(interp, &string.props)?;
+            let properties = self.dump_text_properties(interp, &props)?;
             self.remember_fixup_ptr_raw(offset + 16, properties);
         }
-        Ok((offset, kind))
+        Ok((
+            offset,
+            if state.is_empty_singleton() {
+                DumpType::EmptyString
+            } else {
+                DumpType::String
+            },
+        ))
     }
 
     /// The string's property spans: count, then (start, end, nprops,
@@ -1304,7 +1316,7 @@ impl DumpContext {
         let type_tag = record.type_tag;
         let slots = record.slots.clone();
         match kind {
-            RecordKind::Closure | RecordKind::Font => {
+            RecordKind::Font => {
                 let offset = self.dump_record_slots(id, kind, &type_tag, &slots, false)?;
                 Ok((offset, DumpType::Record))
             }
@@ -1517,7 +1529,7 @@ impl DumpContext {
     /// carry their exact Lisp objects; the parameter and body vectors and
     /// the environment are shared objects dumped through raw-pointer
     /// fixups, as intervals are.
-    fn dump_closure(&mut self, lambda: &crate::lisp::types::LambdaRef) -> Result<u32, DumpError> {
+    fn dump_closure(&mut self, lambda: &crate::lisp::types::ClosureRef) -> Result<u32, DumpError> {
         let start = self.object_start()?;
         let mut words = vec![0; lambda.public_len() + 1];
         words[0] = lambda.public_len() as u64;
@@ -2352,6 +2364,10 @@ pub(crate) fn record_state_for_load(
 /// The string's bytes as GNU stores them: the internal multibyte form for
 /// a multibyte string, the raw octets for a unibyte one.
 pub(crate) fn internal_string_bytes(object: &Value) -> Result<Vec<u8>, DumpError> {
+    if let Kind::StringObject(state) = object.kind() {
+        return Ok(state.borrow().bytes().to_vec());
+    }
+
     let string = string_like(object).expect("a string");
     internal_codes_bytes(string.character_codes(), string.multibyte, &string.text)
 }

@@ -1,9 +1,7 @@
 use super::eval::{BufferDisposition, Interpreter, RunningProcess};
 use super::json::{self, JsonArrayType, JsonObjectType, JsonParseOptions};
 use super::sqlite;
-use super::types::{
-    ConsSlot, EmacsTermination, Env, LispError, SharedStringState, StringPropertySpan, Value,
-};
+use super::types::{EmacsTermination, Env, LispError, StringObjectRef, StringPropertySpan, Value};
 use crate::buffer::TextPropertySpan;
 use crate::file_system as fs;
 use chrono::{Datelike, FixedOffset, Local, TimeZone, Timelike, Utc};
@@ -19,7 +17,7 @@ use sha1::{Digest, Sha1};
 use sha2::{Sha224, Sha256, Sha384, Sha512};
 use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 #[cfg(unix)]
 use std::ffi::CString;
 use std::io::ErrorKind;

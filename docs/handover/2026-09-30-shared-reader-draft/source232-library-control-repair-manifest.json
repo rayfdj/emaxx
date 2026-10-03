@@ -1,0 +1,498 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "selected gate and release validation passes",
+    "goal_complete": false,
+    "source_inputs_verified": 440,
+    "changed_from_source231": [
+      "src/lisp/alloc/vectors/tests.rs",
+      "src/lisp/eval/dump_roots.rs",
+      "src/lisp/mod.rs"
+    ],
+    "strict_checks": "zero warnings",
+    "groups": [
+      {
+        "profile": "gate",
+        "group": "controls",
+        "passed": 31,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "profile": "gate",
+        "group": "lightweight",
+        "passed": 545,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "profile": "release",
+        "group": "controls",
+        "passed": 31,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "profile": "release",
+        "group": "lightweight",
+        "passed": 544,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "retained_files": [
+      {
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source232-gate-libtest",
+        "sha256": "aa1a499330f567514cc8b72cf7eec7783508a355c9748becd8d920f6e8cc6e10",
+        "bytes": 29527568
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source232/loadup-aa1a4993-44409a21.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source232-selected-retained-inputs/loadup-aa1a4993-44409a21.pdmp",
+        "sha256": "caf6cf7e45f2fedc2f06e7b68bb37c52d5cdeeaa1de25f343f29954a945ddfb2",
+        "bytes": 22346840
+      },
+      {
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source232-release-libtest",
+        "sha256": "15b620edc9dc2fda05438e12b8ebd00d8708b916925e6539a5365599693ba19f",
+        "bytes": 22295152
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source232/loadup-15b620ed-44409a21.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source232-selected-retained-inputs/loadup-15b620ed-44409a21.pdmp",
+        "sha256": "2b68bb6765fced54953fe4beb72e7b1b66b145397b0cb496135ae17d3fefffd8",
+        "bytes": 22346840
+      }
+    ],
+    "qualification": "All original five failed controls pass in the unchanged complete lightweight-group selectors in both profiles. All 31 focused bytecode/string controls also pass per profile. No runtime semantics are changed; root metadata and two local controls are repaired against GNU evidence while preserving their contracts. Post-run images are retained without a per-test image-use claim. Full macOS, Linux, terminal and performance requirements remain open. Earlier failed diagnosis wrappers, including a presence-based template flag and malformed Lisp quoting, remain preserved alongside their separate corrected probes. Source232 first full run and fresh-image rerun are separate evidence.",
+    "reader_gnu_probe": {
+      "exit_code": 0,
+      "stdout": "(t nil 5 t nil)",
+      "stderr": "",
+      "elapsed_seconds": 0.20897808399999995,
+      "source_unchanged": true,
+      "inputs_unchanged": true
+    },
+    "reader_emaxx_probe": {
+      "exit_code": 0,
+      "stdout": "(t nil 5 t nil)",
+      "stderr": "",
+      "elapsed_seconds": 0.263692792,
+      "source_unchanged": true,
+      "inputs_unchanged": true
+    }
+  },
+  "archive": {
+    "path": "source232-library-control-repair.tar.gz",
+    "bytes": 370391,
+    "sha256": "a4a76b909e54be5ca06e5d257920f9cd79491e3791f86c5272d31a96b6ccf0c5"
+  },
+  "files": [
+    {
+      "path": "audit-shared-reader196-fresh-selected.py",
+      "bytes": 4819,
+      "sha256": "caf9923118da1572509baa64a90fc1099ed1be3b2332bc2ef0232ceb41977ccc"
+    },
+    {
+      "path": "audit-source232-patches.py",
+      "bytes": 2787,
+      "sha256": "ae7d9b46d4fe17c21790d18612d3f09c0a338232278224dd4ebf35242e1e74e0"
+    },
+    {
+      "path": "audit-source232-selected.py",
+      "bytes": 5062,
+      "sha256": "a49f5404d24d1c60a86ff785f7934c78a91e1d16f19f9eee44ee3dd8dacebd72"
+    },
+    {
+      "path": "check-string230.py",
+      "bytes": 2020,
+      "sha256": "7eb91c41a71bc719e88d2f526ade847ca639d4e8f5dde57ec0ffac9fd542e81a"
+    },
+    {
+      "path": "diagnose-source231-full-failures-no-template.py",
+      "bytes": 2019,
+      "sha256": "d9d1c979ee7ffd0370565c8ba21a19c324c7e749dadc3af13b217ef1cff03195"
+    },
+    {
+      "path": "diagnose-source231-full-failures.py",
+      "bytes": 1727,
+      "sha256": "c49c1318a2d9b400d72661be1666150db3e62f03afd5d72b67e348b0ecddccad"
+    },
+    {
+      "path": "diagnose-source231-reader-slot-data-v2.py",
+      "bytes": 2268,
+      "sha256": "6eebd67cf282d9aad57d7d7e32376546e2d43e0aff62f5bac8dc4cc4ead3a419"
+    },
+    {
+      "path": "diagnose-source231-reader-slot-data-v3.py",
+      "bytes": 2273,
+      "sha256": "45564088b6f01242c186d1888fd4cda6317061041aec2e80f418ff5365d0568d"
+    },
+    {
+      "path": "diagnose-source231-reader-slot-data.py",
+      "bytes": 2152,
+      "sha256": "bcc6cace6bc3e604f3abdd8ecc963528f20751e3aa4cd5af1466c4224cd76472"
+    },
+    {
+      "path": "package-source232-and234-drafts.py",
+      "bytes": 6476,
+      "sha256": "c82d39ada0993f8ee38ec9f5509b4a9656c3e9f3f329ef1fb44fa5b349f82e66"
+    },
+    {
+      "path": "run-source232-validation.py",
+      "bytes": 1206,
+      "sha256": "a698560a4b658781289c7967524a29d5584ccde8d95c972a67aed00a84386d39"
+    },
+    {
+      "path": "source231-diagnosis-lightweight-repeat-command.json",
+      "bytes": 1599,
+      "sha256": "51ad89d099d0de24ed2efbd459dfae0f3f6619cd0cecd82b157ff8cb3b94b9af"
+    },
+    {
+      "path": "source231-diagnosis-lightweight-repeat-result.json",
+      "bytes": 113,
+      "sha256": "2e460b64c6ba25c398d4bf4fe5bc0a0c6eac182bab72dd338789b77b4f7da1cd"
+    },
+    {
+      "path": "source231-diagnosis-lightweight-repeat.log",
+      "bytes": 54917,
+      "sha256": "9d14ccd751395d98c78e6c5efb35befbb29a8a2d4372e957f919202ba464c598"
+    },
+    {
+      "path": "source231-diagnosis-no-template-lightweight-repeat-command.json",
+      "bytes": 1856,
+      "sha256": "86ab8d2896dfee6b1e53123b7f61a5ca83fa4b3e2456e63380246eabdff5fd5d"
+    },
+    {
+      "path": "source231-diagnosis-no-template-lightweight-repeat-result.json",
+      "bytes": 113,
+      "sha256": "4a99331a08127ef5aa086c136772e302ef23e6eda8b94714caeda0db16dc346e"
+    },
+    {
+      "path": "source231-diagnosis-no-template-lightweight-repeat.log",
+      "bytes": 54917,
+      "sha256": "c82c132851fb7a0852d82f346e868ca591f0bc4d65be62bdb90ca2eccd74c331"
+    },
+    {
+      "path": "source231-diagnosis-no-template-vector-isolated-command.json",
+      "bytes": 1548,
+      "sha256": "44265acf09616a85bf0a828e33094c769811e1bd30aeeba0eeeb853f30f4fda9"
+    },
+    {
+      "path": "source231-diagnosis-no-template-vector-isolated-result.json",
+      "bytes": 118,
+      "sha256": "a04d86c2b4911f3f9f887151d9f4b91f3cf9e4ee7a41f8b7363aab94d2a4bd26"
+    },
+    {
+      "path": "source231-diagnosis-no-template-vector-isolated.log",
+      "bytes": 207,
+      "sha256": "f5f0d2279bb3d88b4f01d2774e81507ccbebae01fe55b3fcd898c5c84aceaf5b"
+    },
+    {
+      "path": "source231-diagnosis-vector-isolated-command.json",
+      "bytes": 1291,
+      "sha256": "619d2344dd24c13c5dee4e3f348dbe892a688aab1c821e0cba38d0a479dd0005"
+    },
+    {
+      "path": "source231-diagnosis-vector-isolated-result.json",
+      "bytes": 110,
+      "sha256": "25d4bc5a69ac54f8e18b5f9735afd882ed6d400efdffa90ee672ee53791ce696"
+    },
+    {
+      "path": "source231-diagnosis-vector-isolated.log",
+      "bytes": 207,
+      "sha256": "f5f0d2279bb3d88b4f01d2774e81507ccbebae01fe55b3fcd898c5c84aceaf5b"
+    },
+    {
+      "path": "source231-reader-slot-data-gnu-command.json",
+      "bytes": 1078,
+      "sha256": "3bc1def8964527afe61284d55bbbd36a51d624a7b808c09a3eb18a02a32df3ee"
+    },
+    {
+      "path": "source231-reader-slot-data-gnu-result.json",
+      "bytes": 2121,
+      "sha256": "f28c4b568c58235f94807f1f73b99bb6cb123b34dc61c6318c3b375d74c16846"
+    },
+    {
+      "path": "source231-reader-slot-data-gnu.stderr",
+      "bytes": 35,
+      "sha256": "b4640e293391645e0c453ee12c2d7151c18eb2811e6742d20369d9d6393f2cda"
+    },
+    {
+      "path": "source231-reader-slot-data-gnu.stdout",
+      "bytes": 1891,
+      "sha256": "15ec2e93b9fe7ef6868ca9ecb9790fcbe8a79f0bb052616bad9617b676f02cfd"
+    },
+    {
+      "path": "source231-reader-slot-data-setup-failure.json",
+      "bytes": 318,
+      "sha256": "4dae928a4ae9108cfb9ee5ed7a1f0ebdf693f90716f9f64f0275a3eb5ccc6d44"
+    },
+    {
+      "path": "source231-reader-slot-data-v3-emaxx-command.json",
+      "bytes": 1199,
+      "sha256": "300b0555b2797ef75888882fdc5b95726ae71b88922259747426f8c27b8c9dcc"
+    },
+    {
+      "path": "source231-reader-slot-data-v3-emaxx-result.json",
+      "bytes": 157,
+      "sha256": "d6120575b9b272c17f57428762321eed05ca93e773613cdf4d947222cc1e2640"
+    },
+    {
+      "path": "source231-reader-slot-data-v3-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source231-reader-slot-data-v3-emaxx.stdout",
+      "bytes": 15,
+      "sha256": "0b41a437e2df56dec60dcc8391119640bc3b8b7b5d8919dd697d49ea20ded418"
+    },
+    {
+      "path": "source231-reader-slot-data-v3-gnu-command.json",
+      "bytes": 1082,
+      "sha256": "f6ca3fb820b80ae51b54545a6aa2cb7768fa4043b5aa4a3e02368d437e22738c"
+    },
+    {
+      "path": "source231-reader-slot-data-v3-gnu-result.json",
+      "bytes": 165,
+      "sha256": "76634b6ea65deb7870adc43035b868e6a7801dbc293878f116abec0c32bb1791"
+    },
+    {
+      "path": "source231-reader-slot-data-v3-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source231-reader-slot-data-v3-gnu.stdout",
+      "bytes": 15,
+      "sha256": "0b41a437e2df56dec60dcc8391119640bc3b8b7b5d8919dd697d49ea20ded418"
+    },
+    {
+      "path": "source232-applied-to-task-worktree.json",
+      "bytes": 311,
+      "sha256": "f0ee73d3d97223c4fd9b4c2cbf864c206ecf8cc48c211adc9051b5c26705c32d"
+    },
+    {
+      "path": "source232-base.json",
+      "bytes": 5387,
+      "sha256": "7cc760e7443c4987846693a8b65d81f92cba944ee1a6ff3dbd341cf5af9b652a"
+    },
+    {
+      "path": "source232-check-command.json",
+      "bytes": 473,
+      "sha256": "869a043b68ccaf6384b8809920f4598be94bad65ff857475815137ed708baaca"
+    },
+    {
+      "path": "source232-check-result.json",
+      "bytes": 82,
+      "sha256": "ae30a15a2143a40794c316c886744b98c00b5c0c3834fc006328b8fd8748b2d3"
+    },
+    {
+      "path": "source232-check.log",
+      "bytes": 191,
+      "sha256": "4e32c8f3bb02e2966ef5dd9ace9d90e5fe1654c9cf8627e553b70d7d58d85ace"
+    },
+    {
+      "path": "source232-clippy-command.json",
+      "bytes": 461,
+      "sha256": "cd785ec5b32ed1749daa373e34ff5acebcbbbbb32ef72a2ed2622a9abb963a75"
+    },
+    {
+      "path": "source232-clippy-result.json",
+      "bytes": 89,
+      "sha256": "cf53ded6502c4c7fa442f7b5dd0e9be7c53bab629b29cbb3428b671312e13c49"
+    },
+    {
+      "path": "source232-clippy.log",
+      "bytes": 192,
+      "sha256": "3ba95f932f0051b9ac4d5aac0865e19cc80fb1fc60ff89a0086c9200dd89b721"
+    },
+    {
+      "path": "source232-complete.patch",
+      "bytes": 542112,
+      "sha256": "4ecf5d8bc59e267be8954a66b427a3777bfbf1b5cd09b94224800c50454e9b9e"
+    },
+    {
+      "path": "source232-diff-command.json",
+      "bytes": 377,
+      "sha256": "3675709fc316fb4558b380b9c81e411dea0e8aef143852569696884a414741a2"
+    },
+    {
+      "path": "source232-diff-result.json",
+      "bytes": 89,
+      "sha256": "02ab84e47c530e077699112ea081600bae2fe668d62ca257a127548b388923cc"
+    },
+    {
+      "path": "source232-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source232-driver.log",
+      "bytes": 11263,
+      "sha256": "088d254aedcbe0f60114ddb6518232fe67bb6f83e51310e99cc4cbd2db7d8c82"
+    },
+    {
+      "path": "source232-fmt-command.json",
+      "bytes": 401,
+      "sha256": "6b71bc9e812cdaf7ffed3064ece55dea6ca1583e26b7996b4fee1111c7d5b866"
+    },
+    {
+      "path": "source232-fmt-result.json",
+      "bytes": 82,
+      "sha256": "44c5f48d9fa54f5553eea87b851820d9924741e841413f2198e38da5c3ba5db5"
+    },
+    {
+      "path": "source232-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source232-full-gate-fresh-launch.json",
+      "bytes": 366,
+      "sha256": "51aedcfef54f51ff5c041f92f26ff44f1f3194e9bced179f0abf46d1db04b7d8"
+    },
+    {
+      "path": "source232-gate-build-command.json",
+      "bytes": 1148,
+      "sha256": "37e416cfba3653dde015df3ce7f69939137934d976ba4e6516ebcce0f391a7f1"
+    },
+    {
+      "path": "source232-gate-build-result.json",
+      "bytes": 85,
+      "sha256": "b6f6f63d68d9837999ce3259927cb4902e935d1ef4cf78049976ef4edfbadbfd"
+    },
+    {
+      "path": "source232-gate-build.log",
+      "bytes": 213529,
+      "sha256": "4bc7632510f32d1c4a473ab32e6fa3361d15f12c61c5884899338bf89b6067a0"
+    },
+    {
+      "path": "source232-gate-controls-command.json",
+      "bytes": 7074,
+      "sha256": "0a3d4c4ee433732be797947eb36e375f702d489777b10903ed72791de283a18b"
+    },
+    {
+      "path": "source232-gate-controls-result.json",
+      "bytes": 90,
+      "sha256": "8c31c40255cf8ff29711a7ae7ccc64de74f2b800d55d8df3c6da1782badeac87"
+    },
+    {
+      "path": "source232-gate-controls.log",
+      "bytes": 3184,
+      "sha256": "c1ec328ee47ee22dd8630d951743bfc6e68985ab7215c0179156ecb550360bcf"
+    },
+    {
+      "path": "source232-gate-inventory.txt",
+      "bytes": 262968,
+      "sha256": "afa0a63bda1fd4d731b86fbc836fdbc2c02e0b080845cfecae0565a640d53c59"
+    },
+    {
+      "path": "source232-gate-lightweight-command.json",
+      "bytes": 50201,
+      "sha256": "c024ccd167e0833750dd9fd4580c5695737fd3bb7b96e81786eb734a3dfe704e"
+    },
+    {
+      "path": "source232-gate-lightweight-result.json",
+      "bytes": 108,
+      "sha256": "cf5d54044ef9d7730ac2e7371dfc87534574a3e8f49e5f4b68d9600337d2ff63"
+    },
+    {
+      "path": "source232-gate-lightweight.log",
+      "bytes": 51060,
+      "sha256": "2594313ae460167db397d1a037ebe28e8cd08bc858f40824f1afa53eab12769f"
+    },
+    {
+      "path": "source232-launch.json",
+      "bytes": 361,
+      "sha256": "f1037c13c92cd8da76b413da0ec6d1165aa732de5d376443cc823690d3f010cd"
+    },
+    {
+      "path": "source232-manifest.json",
+      "bytes": 50132,
+      "sha256": "24a893704013fb2031816a06035bac105d719619044d1b6f7c20282c05b49021"
+    },
+    {
+      "path": "source232-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "93afda2a933718a023f7bae122dcc8bc29be575c98802c14cddb9d1c32da2f87"
+    },
+    {
+      "path": "source232-release-build-command.json",
+      "bytes": 1151,
+      "sha256": "3ae923ed68f472c91a14a6e48caed6a9a1ee772305a69fba5fe1358c30c1ae88"
+    },
+    {
+      "path": "source232-release-build-result.json",
+      "bytes": 85,
+      "sha256": "05d86fdd277f96f4cc36bbf7477f38d31ec2c82a2ece2693059ef989cf018417"
+    },
+    {
+      "path": "source232-release-build.log",
+      "bytes": 215218,
+      "sha256": "f38dbf2c43b340e2c745e8a2009013ae30b122a8d7b577f62e92d0166528c686"
+    },
+    {
+      "path": "source232-release-controls-command.json",
+      "bytes": 7077,
+      "sha256": "ee0775adea0313bc9694882b6f9551f1f4a6d632d1fa7f5f27f6c61fb48e8e68"
+    },
+    {
+      "path": "source232-release-controls-result.json",
+      "bytes": 90,
+      "sha256": "db08726d5c3ef49ea0b7336c6986288b9e61f7893e49193d3ad8dd9d3c00e96b"
+    },
+    {
+      "path": "source232-release-controls.log",
+      "bytes": 3184,
+      "sha256": "b65532ed89574f5c7d95958f2d25ce834cbe35512cd175872c208a327255d10d"
+    },
+    {
+      "path": "source232-release-inventory.txt",
+      "bytes": 262879,
+      "sha256": "6d0d8524c0c09ccb56bf78c61dddb5585c6264c38cd531c1999a0512c51b4e00"
+    },
+    {
+      "path": "source232-release-lightweight-command.json",
+      "bytes": 50114,
+      "sha256": "39280e9ab18d8d86afb392516649e35c23724a6a731c3e85432b5f93621d3e76"
+    },
+    {
+      "path": "source232-release-lightweight-result.json",
+      "bytes": 111,
+      "sha256": "1697a16f54ca5265c54558f2efe6c2bc5833e92681c6f1e506283cd563364c60"
+    },
+    {
+      "path": "source232-release-lightweight.log",
+      "bytes": 50965,
+      "sha256": "2c686bbd7c70bb1ac39ac7c1062e56b233941f98b9ecfa5062ec002698b36f68"
+    },
+    {
+      "path": "source232-selected-audit.json",
+      "bytes": 2627,
+      "sha256": "f9724f8d059d50f08ca7f6a339837c34116f449e89d0047e7d9994486ec1698d"
+    },
+    {
+      "path": "source232-validation-result.json",
+      "bytes": 1574,
+      "sha256": "495ea0b6a0c209ad483a6e56a040090543669cf556499bd121464d92bd874dea"
+    },
+    {
+      "path": "static-string230.py",
+      "bytes": 1545,
+      "sha256": "1bc35a44b3e4339e52b19f735f03034ac3dc9d4aea5dcb7e7ca2e408c63709bc"
+    },
+    {
+      "path": "test-source232-lightweight.py",
+      "bytes": 2749,
+      "sha256": "3334458ea7be50ad652907de605b0575c12b4f1944a96a606e75c88eeb11eefe"
+    },
+    {
+      "path": "test-string-controls230.py",
+      "bytes": 5113,
+      "sha256": "08c424650559611c676aa900eb0e2cf69c0042cc867c05ec1467db196e17210e"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

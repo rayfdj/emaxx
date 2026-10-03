@@ -1,0 +1,389 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "both original failures reproduced with complete observer",
+    "run": 36772475709,
+    "source_revision": "d186d40bf014ca53d0a2652b4e2f2d921c5cb009",
+    "compiled_inputs_verified": 403,
+    "binary_sha256": "6ea03c1ac6c36eea7cdbdbd8a32369954b5a079b266d4950dd4e1a942aa663bc",
+    "image_sha256": "85ebb975393d794a1b8fdb1a27ba835161ab7b99484f4cae70c217298c52827e",
+    "selected": {
+      "passed": 0,
+      "failed": 2
+    },
+    "debugger": {
+      "passed": 0,
+      "failed": 2
+    },
+    "trace_events": 133,
+    "observations": [
+      {
+        "test": "lisp::primitives::tests::native_pseudovector_census_matches_gnu_word_layout",
+        "second_sweep": [
+          {
+            "header": "0x7f7bc28f1c30",
+            "size": "0x29",
+            "tag": 0,
+            "slots": 41,
+            "payload": [
+              "0x7f7bc1c2bca3",
+              "0x7f7bc00b52a8",
+              "0x7f7bc0084050",
+              "0x7f7bc168b320",
+              "0x7f7bc00c30a0",
+              "0x7f7bc1c33000",
+              "0x7f7bc1c1d1b8",
+              "0x7f7bc03782a8",
+              "0x7f7bc030d2a8",
+              "0x7f7bc02580f0",
+              "0x30",
+              "0x7f7bc0256320",
+              "0x7f7bc02562d0",
+              "0x7f7bc060f334",
+              "0x7f7bc01282f8",
+              "0x7f7bc0f56304",
+              "0x7f7bc012c078",
+              "0x7f7bc0080258",
+              "0x7f7bc0230280",
+              "0x7f7bc1c33050",
+              "0x7f7bc1c33028",
+              "0x7f7bc0321190",
+              "0x7f7bc1c35280",
+              "0x7f7bc0260140",
+              "0x7f7bc15f72f8",
+              "0x7f7bc007e1b8",
+              "0x7f7bc0294280",
+              "0x7f7bc1c352f8",
+              "0x7f7bc1c35320",
+              "0x0",
+              "0x7f7bc00d52f8",
+              "0x7f7bc0274118",
+              "0x7f7bc1c352a8",
+              "0x7f7bc02f11e0",
+              "0x7f7bc01d3000",
+              "0x7f7bc1c352d0",
+              "0x7f7bc1c252d0",
+              "0x7f7bc1c35258",
+              "0x7f7bc00392a8",
+              "0x7f7bc00801e0",
+              "0x7f7bc007e2f8"
+            ],
+            "direct_root_matches": []
+          },
+          {
+            "header": "0x7f7bc28f1d80",
+            "size": "0x4000000022006000",
+            "tag": 34,
+            "slots": 6,
+            "payload": [
+              "0x4",
+              "0x7f7bc23d8fd0",
+              "0x4",
+              "0x32b9c",
+              "0x7f7bc022a320",
+              "0x7f0100000001"
+            ],
+            "direct_root_matches": [],
+            "record_fields": [
+              "0x2",
+              "0x7f7bc0f56334",
+              "0x7f7bc28f1c35",
+              "0x1a"
+            ]
+          }
+        ],
+        "retaining_word": {
+          "collection": 1,
+          "kind": "host conservative stack",
+          "object": "0x7f7bc28f1d80",
+          "word": "0x7f7bc28f1d85",
+          "address": "0x7f7bccffc1f8",
+          "frame": {
+            "function": "<emaxx::lisp::eval::Interpreter>::eval",
+            "pc": "0x5601792a4bc9",
+            "sp": "0x7f7bccffc1f0"
+          },
+          "offset": 8
+        },
+        "logical_vector_slots": 47
+      },
+      {
+        "test": "lisp::primitives::tests::native_vector_and_closure_census_matches_gnu_word_layout",
+        "second_sweep": [
+          {
+            "header": "0x7f7bc3ac7c30",
+            "size": "0x29",
+            "tag": 0,
+            "slots": 41,
+            "payload": [
+              "0x7f7bc3b12573",
+              "0x7f7bc00b52a8",
+              "0x7f7bc0084050",
+              "0x7f7bc168b320",
+              "0x7f7bc00c30a0",
+              "0x7f7bc1c33000",
+              "0x7f7bc1c1d1b8",
+              "0x7f7bc03782a8",
+              "0x7f7bc030d2a8",
+              "0x7f7bc02580f0",
+              "0x30",
+              "0x7f7bc0256320",
+              "0x7f7bc02562d0",
+              "0x7f7bc07ed124",
+              "0x7f7bc01282f8",
+              "0x7f7bb9bed244",
+              "0x7f7bc012c078",
+              "0x7f7bc0080258",
+              "0x7f7bc0230280",
+              "0x7f7bc1c33050",
+              "0x7f7bc1c33028",
+              "0x7f7bc0321190",
+              "0x7f7bc1c35280",
+              "0x7f7bc0260140",
+              "0x7f7bc15f72f8",
+              "0x7f7bc007e1b8",
+              "0x7f7bc0294280",
+              "0x7f7bc1c352f8",
+              "0x7f7bc1c35320",
+              "0x0",
+              "0x7f7bc00d52f8",
+              "0x7f7bc0274118",
+              "0x7f7bc1c352a8",
+              "0x7f7bc02f11e0",
+              "0x7f7bc01d3000",
+              "0x7f7bc1c352d0",
+              "0x7f7bc1c252d0",
+              "0x7f7bc1c35258",
+              "0x7f7bc00392a8",
+              "0x7f7bc00801e0",
+              "0x7f7bc007e2f8"
+            ],
+            "direct_root_matches": []
+          },
+          {
+            "header": "0x7f7bc3ac7d80",
+            "size": "0x4000000022006000",
+            "tag": 34,
+            "slots": 6,
+            "payload": [
+              "0x4",
+              "0x7f7bb1692800",
+              "0x4",
+              "0x32b9c",
+              "0x7f7bc022a320",
+              "0x7f0100000002"
+            ],
+            "direct_root_matches": [],
+            "record_fields": [
+              "0x2",
+              "0x7f7bb9bed274",
+              "0x7f7bc3ac7c35",
+              "0x1a"
+            ]
+          }
+        ],
+        "retaining_word": {
+          "collection": 1,
+          "kind": "host conservative stack",
+          "object": "0x7f7bc3ac7d80",
+          "word": "0x7f7bc3ac7d85",
+          "address": "0x7f7bccffc1f8",
+          "frame": {
+            "function": "<emaxx::lisp::eval::Interpreter>::eval",
+            "pc": "0x5601792a4bc9",
+            "sp": "0x7f7bccffc1f0"
+          },
+          "offset": 8
+        },
+        "logical_vector_slots": 47
+      }
+    ],
+    "raw_hashes": {
+      "summary.json": "da99efc15cd5cab9ea11276296c2462191cf55fd4b2d00d1eadac635773e7a6c",
+      "selected.log": "62b381986770ebcd7414d64ec5fffe3f4eaacc22521f18de9def0b61010dd8e4",
+      "debugger.log": "38dab57341e3e4ae5771d9efbd4bbfb355d47e3707668dd9a10a22a62f9bd04f",
+      "source-before.json": "752c08304add489256cc31be3991e704a30298c6bf1496ab1f7bd9f1fabfe6f7",
+      "trace-events.json": "2410081615f195fd08a7849ebeb3201e9edceae0bd92502836992abaa3730d6b"
+    },
+    "disassembly_sha256": "d3e7e561cad2e373c5d001257a0f9125798179c8570f5daf66a55087c2950f6f",
+    "qualification": "Both first collections have one direct captured root of the later-reclaimed closure: the tagged object word at eval stack offset 8. Its actual constants slot names the 41-element vector, giving the reported 47-slot drop. Both second collections lack that root. The original binary disassembly assigns that unused stack area to error-string construction. This is root/layout evidence, not a passing repair, total physical byte accounting, or timing. Unrecorded inherited CI environment remains a replay limitation."
+  },
+  "archive": {
+    "path": "source204-exact-census-root.tar.gz",
+    "bytes": 2572873,
+    "sha256": "bef124ea1ecdca5b36b7677444224e9fb278be4ca5a5c2d1105d57d8a2a29f3a"
+  },
+  "files": [
+    {
+      "path": "audit-source204-exact-census-v2.py",
+      "bytes": 6273,
+      "sha256": "442bd4f2e39425d6d176bc0a577060afd026705adae321bcb25b1bf9c79573c5"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/metadata/oracle.txt",
+      "bytes": 449,
+      "sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/debugger.log",
+      "bytes": 4606275,
+      "sha256": "38dab57341e3e4ae5771d9efbd4bbfb355d47e3707668dd9a10a22a62f9bd04f"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/metadata/oracle.txt",
+      "bytes": 449,
+      "sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/build.log",
+      "bytes": 174752,
+      "sha256": "696bbe5eb7d577e971643af0683ca89fdcce83053856d2f1ae032c3ce3f4fa62"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/ignored-inventory.txt",
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/inventory.txt",
+      "bytes": 261850,
+      "sha256": "a2c11f0d881c50ad3cf91eb6b15b76813d9b795e631ad71bf278edef2cad436f"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_01.json",
+      "bytes": 453,
+      "sha256": "b82f09db93e8a43061b51ec6ac4e14def9f3df26e1d30ca8e7f27e55f651c2ee"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_01.log",
+      "bytes": 36578,
+      "sha256": "cfae0f531fc30c1cd079775790a9f89e80c856eddaef631081eb9b8361dc18bc"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_02.json",
+      "bytes": 458,
+      "sha256": "82d53af485b70f4d498a7cee552085cf4129d691a2a44493b3c40eb7ce5844c7"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_02.log",
+      "bytes": 66512,
+      "sha256": "924113b6a34f592b1602aab2d4adeecf7e6ac02d3f4f86369fb0fd5fd2d30447"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_03.json",
+      "bytes": 458,
+      "sha256": "3d67cf40b5eb7d682cb92210950f553f11c33c3a04c448a3c0b98bb9c60acaf3"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_03.log",
+      "bytes": 30494,
+      "sha256": "25075a34db668dcdd51b74b9b47e3254928ee6dacd3719db1436eeab733a73e4"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_04.json",
+      "bytes": 457,
+      "sha256": "92d0b80edb2527a785c9727ef86e1fd2e2497c49c339d9a59c35ca27c1df717f"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_04.log",
+      "bytes": 24397,
+      "sha256": "3c498c06d28f81e3a50c95ce6642cbc46118532ee52541d7a1160333e8a58dc6"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_05.json",
+      "bytes": 453,
+      "sha256": "e5d695389e53eef69ab1f3069deb8f720d72ad03ef1ef99edc99d73051fbf72a"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_05.log",
+      "bytes": 69335,
+      "sha256": "5c486fad4924e3400d281ad38593ee4144f828ccd8d8a03c648f94f8c6eb7ebb"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-primitives.json",
+      "bytes": 463,
+      "sha256": "4ec9a2fa63427eae03c4a92b25ffccbed16dddc8400e31e037252c1d1f345b19"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-primitives.log",
+      "bytes": 63513,
+      "sha256": "631fca261048ade23fe54230d4737dc8ac763bc07c7b60361d33f70725c9d3c3"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/retained-inputs/manifest.json",
+      "bytes": 769,
+      "sha256": "74bf8db81b534d8230c840357fcf8a2506adf7358cb99ae8ecba5451bbd1aae4"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/original/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/summary.json",
+      "bytes": 1952,
+      "sha256": "c58e9f00fac7dbe7a43fba973c776355a228610a1329f74ebecd8c77f9d6348a"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/selected.log",
+      "bytes": 3001,
+      "sha256": "62b381986770ebcd7414d64ec5fffe3f4eaacc22521f18de9def0b61010dd8e4"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/source-before.json",
+      "bytes": 45727,
+      "sha256": "752c08304add489256cc31be3991e704a30298c6bf1496ab1f7bd9f1fabfe6f7"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/summary.json",
+      "bytes": 3437,
+      "sha256": "da99efc15cd5cab9ea11276296c2462191cf55fd4b2d00d1eadac635773e7a6c"
+    },
+    {
+      "path": "linux-source204-census-v2-artifacts/ordinary-linux-770d9cbd7be8e306926bea2e948d7d011dd62056/rust-exact-census/trace-events.json",
+      "bytes": 7175915,
+      "sha256": "2410081615f195fd08a7849ebeb3201e9edceae0bd92502836992abaa3730d6b"
+    },
+    {
+      "path": "package-source204-census-v2-and207-draft.py",
+      "bytes": 2414,
+      "sha256": "66431efc66f5e7aca59129fa1bcf509498bd8c2397bee9d5ce17e7aaa2aac553"
+    },
+    {
+      "path": "source204-census-diagnosis-local-checks-v4.json",
+      "bytes": 823,
+      "sha256": "4e6526ae008f16e5b788799346f506819cec4f6a8f9a2b232a1b0b46fa3e7625"
+    },
+    {
+      "path": "source204-census-diagnosis-v2-ci.log",
+      "bytes": 228440,
+      "sha256": "19a66bc5a17301dbe60f47e893af3073d864d97420f494712d626cdd5dddad01"
+    },
+    {
+      "path": "source204-census-diagnosis-v2-dispatch.json",
+      "bytes": 6118,
+      "sha256": "85fe2ec93f83e1ceceb0bbe8df129ab96e14f398835af6cce4eb9ac09e4a167a"
+    },
+    {
+      "path": "source204-census-diagnosis-v2-download.json",
+      "bytes": 290,
+      "sha256": "014a5736867c05cca518c732d421cc213279bcb502fe57f45accb9fe2e91e867"
+    },
+    {
+      "path": "source204-census-diagnosis-v2-final-state.json",
+      "bytes": 4075,
+      "sha256": "1a5033515b9404532aebb28565b101c0eeaae5e0dbd733c92ba0d1b9cb353b98"
+    },
+    {
+      "path": "source204-census-eval-disassembly.txt",
+      "bytes": 92077,
+      "sha256": "d3e7e561cad2e373c5d001257a0f9125798179c8570f5daf66a55087c2950f6f"
+    },
+    {
+      "path": "source204-census-inspected-abi-v4.txt",
+      "bytes": 6048954,
+      "sha256": "7d5bfa7381944b026870c1844ff23aa36c68ee85d8bdfd26f9b37622b1951e62"
+    },
+    {
+      "path": "source204-exact-census-v2-audit.json",
+      "bytes": 6580,
+      "sha256": "de32fd4b5f8b9e80925a1416d128f3d999c3e4e40679218b0d47a4f3baee9629"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

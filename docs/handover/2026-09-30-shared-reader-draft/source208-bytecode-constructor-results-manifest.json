@@ -1,0 +1,175 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "partial constructor repair; four original controls still fail",
+    "inputs_verified": 418,
+    "binary_sha256": "327bada4bba655b8fe6a63a5e4c2e4c12df8b0c9ab65733887f3983049ce3239",
+    "strict_checks": "passed with zero warnings",
+    "passed": 2,
+    "failed": 4,
+    "ignored": 0,
+    "passing_names": [
+      "lisp::primitives::tests::bytecode_closure_constants_and_clone_share_gnu_slots",
+      "lisp::primitives::tests::bytecode_constructor_preserves_gnu_field_validation_and_sharing"
+    ],
+    "failing_names": [
+      "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_allocation_is_header_and_actual_lisp_slots",
+      "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_header_and_words_are_the_native_payload",
+      "lisp::primitives::tests::bytecode_code_mutation_between_calls_matches_gnu",
+      "lisp::primitives::tests::bytecode_code_mutation_during_active_call_matches_gnu"
+    ],
+    "raw_libtest_exit_code": 101,
+    "supervisor_exit_code": 1,
+    "footer_error": "After preserving all six raw results, the helper tried to print the old baseline log filename. Its FileNotFoundError changes the wrapper exit to 1; the actual libtest exit is 101. No test is omitted or rerun.",
+    "raw_hashes": {
+      "source208-gate-controls.log": "f2b8773433c73509132cb4b28a4787c0a9746025f706aae6bcdf6590f07487f1",
+      "source208-gate-controls-command.json": "94f756fab7402ae8efe63946d50bf80780cb5b1102feb5ec313769b61e289747",
+      "source208-gate-controls-result.json": "f51f82784b65c0a032a821ca8ee7117f79e5b55fcf1c60fd9e3eb2f084c175bd",
+      "source208-controls-driver.log": "0d442a86d12a6ae7ec9612a10183eda51d9e069796f0c038113550148cee26bb"
+    },
+    "qualification": "GNU constructor field validation, slot sharing, valid cyclic/dotted descriptors and extra slots pass. Both layout and both live-code mutation assertions remain failed. No complete bytecode representation, full-gate or performance claim. This separate draft is not the published runtime."
+  },
+  "archive": {
+    "path": "source208-bytecode-constructor-results.tar.gz",
+    "bytes": 76954,
+    "sha256": "1ad80b7580d67e132e3ac393ffaff51df84ccad168fb96416b2ccd4dea2a1860"
+  },
+  "files": [
+    {
+      "path": "audit-source208-controls.py",
+      "bytes": 3494,
+      "sha256": "ae6f7dc2bdedb0517db801bc518c5c924de1ad4c633319950120d6665bf19bdd"
+    },
+    {
+      "path": "package-source207-selected-and208-controls.py",
+      "bytes": 2362,
+      "sha256": "f06dc17fa7c62b74e057be41e51428a4046095d54a2491c5021262c98e270274"
+    },
+    {
+      "path": "source208-check-command.json",
+      "bytes": 485,
+      "sha256": "a299fca107fb9997d8bb75e9a1c66cecd17990fd0cc1dd3200eab95469355522"
+    },
+    {
+      "path": "source208-check-result.json",
+      "bytes": 84,
+      "sha256": "1f09eed30d23eee9145bec2df57e058ea41592d77692c4d305e6a1dae8af5de1"
+    },
+    {
+      "path": "source208-check.log",
+      "bytes": 198,
+      "sha256": "2310b2931e871a54da9f86ed571a3e8a7ff94b6e56bc19752ad6d6188c8d71cf"
+    },
+    {
+      "path": "source208-clippy-command.json",
+      "bytes": 473,
+      "sha256": "fd1254f0df216029401661d7511e604446940b8c66f61f884e4380608ce50ae9"
+    },
+    {
+      "path": "source208-clippy-result.json",
+      "bytes": 83,
+      "sha256": "84cf5e82403b122b40427fe96a23e397c301d504f4fcd326e93b37ede864fca8"
+    },
+    {
+      "path": "source208-clippy.log",
+      "bytes": 198,
+      "sha256": "f24e3e9485653165b6af285ea9bb594d1cb8ef69f2131ee7090e3000f6287787"
+    },
+    {
+      "path": "source208-controls-audit.json",
+      "bytes": 1967,
+      "sha256": "4b26526d628d3332cec86ae813ff4b683f0a6c6ad0f8dd2e4f2f539f582cc8b1"
+    },
+    {
+      "path": "source208-controls-driver.log",
+      "bytes": 1518,
+      "sha256": "0d442a86d12a6ae7ec9612a10183eda51d9e069796f0c038113550148cee26bb"
+    },
+    {
+      "path": "source208-controls-launch.json",
+      "bytes": 509,
+      "sha256": "28aba71938a8887de7af8b157facecea9f48fb5d0b93e2af1094b2d7d964391e"
+    },
+    {
+      "path": "source208-controls-result.json",
+      "bytes": 851,
+      "sha256": "36006a72ef9e218c66db89105954176f60561e234f8daf15353beb1d2d109abf"
+    },
+    {
+      "path": "source208-diff-command.json",
+      "bytes": 389,
+      "sha256": "8e12ba95de9237b67a0360121a78d50eaab8439188cf4d7ae6c08a9dd95d8c14"
+    },
+    {
+      "path": "source208-diff-result.json",
+      "bytes": 90,
+      "sha256": "973c06dcc6717dbd9c22d31c36af99578ef451303766a4f9e5af27eaf5e5a907"
+    },
+    {
+      "path": "source208-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source208-fmt-command.json",
+      "bytes": 413,
+      "sha256": "3be74bb423b96bf9306218701e12aae1716b358f6cea724e045b77dc2e7b3178"
+    },
+    {
+      "path": "source208-fmt-result.json",
+      "bytes": 89,
+      "sha256": "4978418eae7fe362f6c84f9499d48e757cbf90fcb1b3d3b4da94e934b7ad50b6"
+    },
+    {
+      "path": "source208-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source208-gate-build-command.json",
+      "bytes": 1124,
+      "sha256": "2ff4e9d1f4531289216e0e9a6040f38ad32704f825bbc82a8a30e736443d9ac4"
+    },
+    {
+      "path": "source208-gate-build-result.json",
+      "bytes": 85,
+      "sha256": "d623a4dde6184981dbbf307ea33e8eb3518ac673e53c67d1972d0738793857c8"
+    },
+    {
+      "path": "source208-gate-build.log",
+      "bytes": 216115,
+      "sha256": "5f60650a5ea4a00c0d071a0d09e215af8f658b3630ba203e75df487d234ea6e0"
+    },
+    {
+      "path": "source208-gate-controls-command.json",
+      "bytes": 2384,
+      "sha256": "94f756fab7402ae8efe63946d50bf80780cb5b1102feb5ec313769b61e289747"
+    },
+    {
+      "path": "source208-gate-controls-result.json",
+      "bytes": 82,
+      "sha256": "f51f82784b65c0a032a821ca8ee7117f79e5b55fcf1c60fd9e3eb2f084c175bd"
+    },
+    {
+      "path": "source208-gate-controls.log",
+      "bytes": 2296,
+      "sha256": "f2b8773433c73509132cb4b28a4787c0a9746025f706aae6bcdf6590f07487f1"
+    },
+    {
+      "path": "source208-gate-inventory.txt",
+      "bytes": 261732,
+      "sha256": "c67ee4b21b54d221eae21b46c8e0154478fd1a95f6a67d7dae04055e4c2281ec"
+    },
+    {
+      "path": "test-bytecode-controls-next.py",
+      "bytes": 3555,
+      "sha256": "415c6266b290b59431de4fe59f2ffdb1492333fbb8855380b142affda03c7863"
+    },
+    {
+      "path": "test-bytecode-controls208.py",
+      "bytes": 3555,
+      "sha256": "84f93c8ca74be74084cbb67d323e3995467ca19b210cbae731889511a5f970c8"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

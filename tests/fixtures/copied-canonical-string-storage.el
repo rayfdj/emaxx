@@ -1,0 +1,18 @@
+(mapcar
+ (lambda (code)
+   (let* ((source (string code 65))
+          (leaf (cons 'shared 'leaf)))
+     (put-text-property 0 1 'kept leaf source)
+     (let ((copy (copy-sequence source))
+           (decorated (propertize source 'added leaf))
+           (plain-copy (propertize source)))
+       (aset source 0 66)
+       (garbage-collect)
+       (list code
+             (mapcar (lambda (value)
+                       (list (eq source value) (string-to-list value)
+                             (multibyte-string-p value)
+                             (eq leaf (get-text-property 0 'kept value))
+                             (eq leaf (get-text-property 0 'added value))))
+                     (list source copy decorated plain-copy))))))
+ '(65 128 55296 63743 983168 1114112 4194175 4194176))

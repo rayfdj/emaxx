@@ -231,7 +231,7 @@ impl Interpreter {
     pub fn set_buffer_local_value(&mut self, buffer_id: u64, name: &str, value: Value) {
         if self.has_native_text_conversion_style(name) {
             if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
-                buffer.text_conversion_style = Self::stored_value(value);
+                buffer.text_conversion_style = value;
                 buffer.text_conversion_style_is_local = true;
             }
             return;
@@ -240,7 +240,7 @@ impl Interpreter {
         let value = if matches!(value.kind(), Kind::Unbound) {
             value
         } else {
-            let value = Self::stored_value(self.normalize_forwarded_eval_cell(name, value));
+            let value = self.normalize_forwarded_eval_cell(name, value);
             if buffer_id == self.current_buffer_id() {
                 self.update_forwarded_eval_cell(name, &value);
             }
@@ -271,14 +271,13 @@ impl Interpreter {
         let value = if matches!(value.kind(), Kind::Unbound) {
             value
         } else if self.has_c_slot_symbol(symbol) {
-            let value =
-                Self::stored_value(self.normalize_forwarded_eval_cell(symbol.as_str(), value));
+            let value = self.normalize_forwarded_eval_cell(symbol.as_str(), value);
             if buffer_id == self.current_buffer_id() {
                 self.update_forwarded_eval_cell(symbol.as_str(), &value);
             }
             value
         } else {
-            Self::stored_value(value)
+            value
         };
         self.buffer_locals
             .entry(buffer_id)
@@ -740,7 +739,6 @@ impl Interpreter {
     }
 
     pub fn put_symbol_property(&mut self, name: &str, property: &str, value: Value) {
-        let value = Self::stored_value(value);
         if let Some(index) = self.symbol_property_index(name) {
             let plist = self.symbol_properties[index].1;
             let mut tail = plist;
@@ -921,6 +919,9 @@ impl Interpreter {
                 Ok(Value::Vector(vector))
             }
             Kind::StringObject(state) => {
+                if state.borrow().props.is_empty() {
+                    return Ok(Value::StringObject(state));
+                }
                 let mut borrowed = state.borrow_mut();
                 for span in &mut borrowed.props {
                     for (_, property_value) in &mut span.props {
@@ -999,11 +1000,10 @@ impl Interpreter {
                 self.note_obarray_removal();
             }
         } else if let Some(existing) = self.symbol_property_index(name) {
-            self.symbol_properties[existing].1 = Self::stored_value(plist);
+            self.symbol_properties[existing].1 = plist;
         } else {
             let index = self.symbol_properties.len();
-            self.symbol_properties
-                .push((name.to_string(), Self::stored_value(plist)));
+            self.symbol_properties.push((name.to_string(), plist));
             self.symbol_properties_index.insert(name.to_string(), index);
             self.note_symbol_plist_added(name, index);
         }
@@ -1552,7 +1552,7 @@ impl Interpreter {
     /// the buffer-local and global cells are read and written by id.
     pub(crate) fn set_global_binding_resolved(&mut self, symbol: &SymbolName, value: Value) {
         let name = symbol.as_str();
-        let value = Self::stored_value(self.normalize_forwarded_eval_cell(name, value));
+        let value = self.normalize_forwarded_eval_cell(name, value);
         if self.has_native_text_conversion_style(name) {
             // data.c:set_default_internal updates every live buffer whose
             // independent local flag is clear, including earlier C stores.
@@ -1752,7 +1752,7 @@ impl Interpreter {
         }) else {
             return false;
         };
-        self.active_special_restores[index].previous = value.map(Self::stored_value);
+        self.active_special_restores[index].previous = value;
         true
     }
 
@@ -2080,7 +2080,7 @@ impl Interpreter {
         }
         match self.globals.value_mut(symbol) {
             Some(existing) => {
-                *existing = Self::stored_value(value);
+                *existing = value;
                 true
             }
             None => false,
@@ -2156,7 +2156,7 @@ impl Interpreter {
             let binding_id = self.next_special_binding_id;
             self.next_special_binding_id += 1;
             let previous = self.globals.value(symbol).cloned();
-            let value = Self::stored_value(value);
+
             match self.globals.value_mut(symbol) {
                 Some(existing) => *existing = value,
                 None => {
@@ -2452,15 +2452,12 @@ impl Interpreter {
             && self.globals.plain_store(&restore.name)
         {
             match restore.previous {
-                Some(value) => {
-                    let value = Self::stored_value(value);
-                    match self.globals.value_mut(&restore.name) {
-                        Some(existing) => *existing = value,
-                        None => {
-                            self.globals.insert(&restore.name, value);
-                        }
+                Some(value) => match self.globals.value_mut(&restore.name) {
+                    Some(existing) => *existing = value,
+                    None => {
+                        self.globals.insert(&restore.name, value);
                     }
-                }
+                },
                 None => self.remove_global_binding_symbol(&restore.name),
             }
             return Ok(());

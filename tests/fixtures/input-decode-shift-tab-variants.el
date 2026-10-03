@@ -1,0 +1,7 @@
+(let ((map (make-sparse-keymap)) (trace nil))
+  (define-key map [backtab] (lambda () (interactive) (push 'backtab trace)))
+  (define-key map "\t" (lambda () (interactive) (push 'tab trace)))
+  (use-local-map map)
+  (execute-kbd-macro (kbd "S-TAB"))
+  (execute-kbd-macro (kbd "S-<tab>"))
+  (list (kbd "S-TAB") (kbd "S-<tab>") (nreverse trace)))

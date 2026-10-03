@@ -797,13 +797,7 @@ define_dispatch!(
                     };
                 }
                 Ok(match function.kind() {
-                    Kind::Lambda(lambda) => lambda.command_modes().unwrap_or(Value::Nil),
-                    Kind::Record(id) => interp
-                        .find_record(id)
-                        .filter(|record| record.kind == crate::lisp::eval::RecordKind::Closure)
-                        .and_then(|record| record.slots.get(5))
-                        .and_then(crate::lisp::types::LambdaValue::command_modes_from_slot)
-                        .unwrap_or(Value::Nil),
+                    Kind::Closure(lambda) => lambda.command_modes().unwrap_or(Value::Nil),
                     _ => Value::Nil,
                 })
             }
@@ -1727,7 +1721,13 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                find_coding_systems_region_internal_value(interp, &args[0], &args[1], args.get(2))
+                find_coding_systems_region_internal_value(
+                    interp,
+                    &args[0],
+                    &args[1],
+                    args.get(2),
+                    env,
+                )
             }
             "decode-sjis-char" => {
                 // coding.c Fdecode_sjis_char, converting through the

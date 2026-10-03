@@ -1,0 +1,140 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "terminal": {
+      "status": "passed",
+      "goal_complete": false,
+      "inputs_verified": 476,
+      "execution_inputs_verified": 10,
+      "fully_matching_scenarios": 226,
+      "matching_comparisons": 686,
+      "matching_screen_comparisons": 658,
+      "matching_filesystem_comparisons": 28,
+      "divergent_labels": [],
+      "partial_scenarios": [],
+      "unstarted_scenarios": [],
+      "unexecuted_comparisons": 0,
+      "log_sha256": "52942150f73feec1b80c0bfb786e4085dcf94335d4c4f1526e77c8631eb14e1c",
+      "gate_artifacts": {
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emaxx/target/compat-subject/gate/emaxx": {
+          "sha256": "2c7243a3689b82c7f50e171ffd26e9f340d78fad37e9d853f0352f4fd1b5f080",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source249-rebuilt-frozen-subject-inputs/emaxx"
+        },
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emaxx/target/compat-subject/gate/emaxx.pdmp": {
+          "sha256": "f9e37727a5a24e6208958dd6b7e4e2822a6e9dd011f24450e9de38110b8a33b3",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source249-rebuilt-frozen-subject-inputs/emaxx.pdmp"
+        }
+      },
+      "qualification": "Complete source249 terminal run after local Rust exited, using the exact gate executable/image from its full rebuilt-GNU frozen comparison. Harness, actions, fixtures, timeouts and comparison rules match source248. Every raw comparison is checked against all original 226 scenarios/686 labels; ten execution inputs are unchanged. Source249 release selected validation remains separate. The six known macOS frozen skip-diagnostic failures and all earlier failed runs remain preserved. No performance or full-goal completion claim."
+    },
+    "qualification": "Complete rebuilt-GNU source249 terminal validation: 226 scenarios, 658 screen and 28 filesystem comparisons all match, ten execution inputs and 476 source inputs unchanged. Supervisor12347 has exited. The exact gate executable/image also produced the separately retained macOS frozen result with six skip-diagnostic mismatches; those remain failures. This archive does not certify either later common-string draft or full-goal/performance completion."
+  },
+  "archive": {
+    "path": "source249-complete-rebuilt-terminal.tar.gz",
+    "bytes": 117595,
+    "sha256": "45580099be9c459d53e8c76125ad99e826ad3ad411ef8b286decd6469b351e96"
+  },
+  "files": [
+    {
+      "path": "audit-source249-rebuilt-terminal.py",
+      "bytes": 5735,
+      "sha256": "7ca0ad8f2ec656638aead9894b8740e5fe3a0d103d632f015ed28fe4797cc97c"
+    },
+    {
+      "path": "execution-source/tools/fixtures/fake_lsp_server.py",
+      "bytes": 8468,
+      "sha256": "a434019f518c8928911be60801c5813a005e83cec43220a8323ce47309362251"
+    },
+    {
+      "path": "execution-source/tools/fixtures/fieldnotes.org",
+      "bytes": 24328,
+      "sha256": "d53f935cbe8595f666e79a98af84d2d18c5aa75c24df2f4dfeb4f6ba40d3c45b"
+    },
+    {
+      "path": "execution-source/tools/ttydiff.py",
+      "bytes": 195505,
+      "sha256": "5a99cb326aa7d4b658d0a78a177eed4342cfa03bd92c374da69649050eb76aaa"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source249-complete-rebuilt-terminal.py",
+      "bytes": 2305,
+      "sha256": "b09249776e662c27a26577d4439e8dee714ec4f25533d2402f10cb031c30eba9"
+    },
+    {
+      "path": "queue-source249-rebuilt-full-tty.py",
+      "bytes": 4823,
+      "sha256": "4ea7d44a3f773eb4dce572634bdcd03a771675341c294d1158b34166c135f749"
+    },
+    {
+      "path": "source248-full-ttydiff-retry-command.json",
+      "bytes": 9201,
+      "sha256": "247ff4780a46dec41b0bf2e5d6e4762efc2ea734282c4cde0a8522bd50c82ccd"
+    },
+    {
+      "path": "source248-manifest.json",
+      "bytes": 54099,
+      "sha256": "686003776613cdc0825d9575e630e7b39fdbe0674dcdeea893f9f3620caef92f"
+    },
+    {
+      "path": "source249-manifest.json",
+      "bytes": 54595,
+      "sha256": "9055fe6d69d95ee12aaa55a76bf4d075a929cb778d9f9545e3438ea2a6be9daa"
+    },
+    {
+      "path": "source249-rebuilt-frozen-audit.json",
+      "bytes": 7327,
+      "sha256": "4ce25ed1978ae3e60ef9781ddda34d76fba8fc26266d8638bdb087901d46f7cd"
+    },
+    {
+      "path": "source249-rebuilt-full-tty-command.json",
+      "bytes": 9167,
+      "sha256": "87f587076666a7e600da7b8e0715052cd54bc3f44ed9baeef653f23b6b45f72e"
+    },
+    {
+      "path": "source249-rebuilt-full-tty-driver.log",
+      "bytes": 790,
+      "sha256": "5d8f04cf0ea352a2cc288e6de6f2671f73f7577be9bcc6d0bf2938b66f0d5e3b"
+    },
+    {
+      "path": "source249-rebuilt-full-tty-launch.json",
+      "bytes": 262,
+      "sha256": "791ce8ad7cc56e46abf6088c091bd2d2061a463a9ca0da8ff390ecf12dcde285"
+    },
+    {
+      "path": "source249-rebuilt-full-tty-queue-result.json",
+      "bytes": 857,
+      "sha256": "55e6968a2304b59bd60393bde81d2fa3810d402b2cc6e623b40e54b3cb5cd73e"
+    },
+    {
+      "path": "source249-rebuilt-full-tty-queue-state-snapshot-20261001T1606Z.json",
+      "bytes": 585,
+      "sha256": "4adb27ef343f72267f86d39f76f003697c5e31f46574eb9586528f7350dcf8be"
+    },
+    {
+      "path": "source249-rebuilt-full-tty-queue-state.json",
+      "bytes": 858,
+      "sha256": "b2b92b6f2b957ea20deba7760f4e45ec680163ac31dd2e2300cf7001d4e26afa"
+    },
+    {
+      "path": "source249-rebuilt-full-tty-result.json",
+      "bytes": 271,
+      "sha256": "581c11f616134b449d93408a7fb03a8f752f5dd68142ac6519ba365a4e8979a1"
+    },
+    {
+      "path": "source249-rebuilt-full-tty.log",
+      "bytes": 62615,
+      "sha256": "52942150f73feec1b80c0bfb786e4085dcf94335d4c4f1526e77c8631eb14e1c"
+    },
+    {
+      "path": "source249-rebuilt-terminal-audit.json",
+      "bytes": 1733,
+      "sha256": "f1a34242a8145abd47413cca7532da45a4b2f885fe97aaeaad6a252f68476a3c"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

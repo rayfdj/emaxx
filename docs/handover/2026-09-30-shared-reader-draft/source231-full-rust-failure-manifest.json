@@ -1,0 +1,274 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "complete library inventory failed; Cargo stages unexecuted",
+    "goal_complete": false,
+    "source_inputs_verified": 440,
+    "raw_names_verified": 2981,
+    "passed": 2974,
+    "failed": 5,
+    "ignored": 2,
+    "groups": [
+      {
+        "group": "eval_01",
+        "passed": 386,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "group": "eval_02",
+        "passed": 295,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "group": "eval_03",
+        "passed": 321,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "group": "eval_04",
+        "passed": 254,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "group": "eval_05",
+        "passed": 352,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "group": "primitives",
+        "passed": 632,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "group": "compat_runtime",
+        "passed": 86,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "group": "tty",
+        "passed": 58,
+        "failed": 0,
+        "ignored": 2
+      },
+      {
+        "group": "batch",
+        "passed": 50,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "group": "lightweight",
+        "passed": 540,
+        "failed": 5,
+        "ignored": 0
+      }
+    ],
+    "failed_tests": [
+      "anti_cheat::gate_tests::interpreter_fields_are_carried_or_documented",
+      "anti_cheat::gate_tests::interpreter_roots_are_dumped_or_documented",
+      "lisp::alloc::vectors::tests::vector_word_offsets_survive_mark_bitmap_boundaries",
+      "lisp::eval::dump_roots::tests::every_reset_root_is_a_mark_phase_root",
+      "lisp::tests::closure_reader_materialization_never_evaluates_slot_data"
+    ],
+    "unexecuted": [
+      "binary Cargo stage",
+      "integration Cargo stage"
+    ],
+    "retained_files": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source231-full-gate-libtest",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source231-full-failure-inputs/source231-full-gate-libtest",
+        "sha256": "fc91edf09a69a0413b38792f0dd26f090ed4687e8959eca8370ed56f49c39a3a",
+        "bytes": 29465472
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-ops/emaxx/target/grouped-gate/fixture-images/loadup-fc91edf0-44409a21.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source231-full-failure-inputs/loadup-fc91edf0-44409a21.pdmp",
+        "sha256": "bb9964b2ff29610e5ecb37867e7f5d3c99f0efdfa80e3719813f19008c030c73",
+        "bytes": 22342040
+      }
+    ],
+    "summary_sha256": "ad3da9115ea3a822de7c5cf03907466fda1de4a03c63530fda8e783fef317b7e",
+    "diagnosis": "Three failures concern stale bytecode root inventory metadata (bc_functions versus bc_live_programs); one reader assertion still requires a host record instead of the shared closure; one vector test reaches only three of four bitmap words and needs investigation without weakening coverage. No fixes or complete-pass claims follow from this audit."
+  },
+  "archive": {
+    "path": "source231-full-rust-failure.tar.gz",
+    "bytes": 168768,
+    "sha256": "ec60c78e5f58c52cac70a2ee679767668d42b8fddf99d2f481e41a04d2f68273"
+  },
+  "files": [
+    {
+      "path": "audit-source231-full-failure.py",
+      "bytes": 5221,
+      "sha256": "88c79f2d45619950ee6667e7e7ec41b596ed3dd63a340d848158dbd13830cbf9"
+    },
+    {
+      "path": "full-gate-source231/build.log",
+      "bytes": 213430,
+      "sha256": "775b69aa436a431fc0dc29f78f30905207ffd30e0af6c9f264793a4e9059d194"
+    },
+    {
+      "path": "full-gate-source231/ignored-inventory.txt",
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    {
+      "path": "full-gate-source231/inventory.txt",
+      "bytes": 262968,
+      "sha256": "afa0a63bda1fd4d731b86fbc836fdbc2c02e0b080845cfecae0565a640d53c59"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-batch.json",
+      "bytes": 542,
+      "sha256": "a97f81300cd1f5712f84bbe0944f856cf23d433c82a440b0a9036c90f13a8e85"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-batch.log",
+      "bytes": 4237,
+      "sha256": "f7f7fa969605b698d57f2ce975e5a7f752fe81eb6fd9e297aa0d823877a307a0"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-compat_runtime.json",
+      "bytes": 586,
+      "sha256": "5eda9f34f34bb713f60c5be47b377a6784713c94baf6f5b5607085393a38785e"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-compat_runtime.log",
+      "bytes": 10202,
+      "sha256": "806b5b56ccd997b6c8c0d361c8b79846ec9a05ba8a5ee66ba80c2a3f7fa1c33b"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-eval_01.json",
+      "bytes": 556,
+      "sha256": "42e74730ecce3cec27a6a800390ff9c47a1167416ee9146a01f60f403b179ca0"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-eval_01.log",
+      "bytes": 36578,
+      "sha256": "aff3799db38863984c7d53f1358d54fa88bc9e6f7e3341a00c07017b744c5915"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-eval_02.json",
+      "bytes": 560,
+      "sha256": "3cbdf1dacda9ddc2fcb8124ecf1a80ff782d217312cd546dbeaf3c2774420c74"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-eval_02.log",
+      "bytes": 69468,
+      "sha256": "d462ccd8a900a59e822b2b33a775577cef4904ca3898454bd68ab6640f6781f3"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-eval_03.json",
+      "bytes": 556,
+      "sha256": "2715c8c7ab9fda3ab50192c34039fd77b3249b001a1bead7f2d5919f39088166"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-eval_03.log",
+      "bytes": 30516,
+      "sha256": "c196772f6dad6902113af1eacaa94c3e6db4f6e42fb202cb739036fe65d0a0ce"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-eval_04.json",
+      "bytes": 561,
+      "sha256": "0bd73e8a765397a96643a232009245168aed31324a19a42ceda6adac87ea2e8b"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-eval_04.log",
+      "bytes": 24662,
+      "sha256": "4cb3a6aa3435a09f324bc9b999848b5680b96b56fad544ff228e96f67897f3ce"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-eval_05.json",
+      "bytes": 560,
+      "sha256": "680930e25da704aae538dd0bda8e8d8b43f032914f2417c30b2298ce0d1c1a46"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-eval_05.log",
+      "bytes": 78999,
+      "sha256": "9ae68a0709c9717b61486294e8d67a79f9a254373ea58a967c8eca992126d7a2"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-lightweight.json",
+      "bytes": 957,
+      "sha256": "3fc961bd79ed087892f71bb919d376d70271f9563683b54639a27f94314aced0"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-lightweight.log",
+      "bytes": 54916,
+      "sha256": "4382da09171c0e5767ee1c844812e600d67d08aa6c8fc9ec2f330c049293ec6f"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-primitives.json",
+      "bytes": 563,
+      "sha256": "73d755ff1f0f873788df50298c9e6cfd3c3b6f9a76adb1778150357e36e4875c"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-primitives.log",
+      "bytes": 61561,
+      "sha256": "3b7c3a1633ce40451714c660921983aafae45fb44753c5d35470e01ec6d7f4cf"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-tty.json",
+      "bytes": 528,
+      "sha256": "3ccd3e329b9d65a324f506ee97659499c90c0aa79aaa4b21dc99666eea705003"
+    },
+    {
+      "path": "full-gate-source231/repeat-01-tty.log",
+      "bytes": 4788,
+      "sha256": "e5c176612c623cccef821a9101f16501e4d072b3e80b8fdd09c6341ca4ec75a7"
+    },
+    {
+      "path": "full-gate-source231/summary.json",
+      "bytes": 2106,
+      "sha256": "ad3da9115ea3a822de7c5cf03907466fda1de4a03c63530fda8e783fef317b7e"
+    },
+    {
+      "path": "package-source231-full-failure.py",
+      "bytes": 1191,
+      "sha256": "e77683041280410247843ee49fc5f692c4f638be4825dc2036c2d787c1f78325"
+    },
+    {
+      "path": "run-source231-full-gate.py",
+      "bytes": 3777,
+      "sha256": "768661a4d4fe5e21dbad3078b9bb3589a32d8f708aea204e716ed93a8b0fea41"
+    },
+    {
+      "path": "source231-full-failure-audit.json",
+      "bytes": 3028,
+      "sha256": "b9eb9ec2b3146d08018318e807e80661ce0325a5062cef86e85fd2a8f1c43ced"
+    },
+    {
+      "path": "source231-full-gate-command.json",
+      "bytes": 1804,
+      "sha256": "ce1434ea9faff8d9f8a044e649b4506d8949da90c5fb9d4c19343deadc281900"
+    },
+    {
+      "path": "source231-full-gate-launch.json",
+      "bytes": 577,
+      "sha256": "c150bb5ddb198d27cb8442fa2228a3c6186435f1d187c0cd59378c36a58d0d4b"
+    },
+    {
+      "path": "source231-full-gate-result.json",
+      "bytes": 2595,
+      "sha256": "ed06243f20ad1a62ddf5d8d8c6e69dc121188bb327a96efa6802b94fabc44ee9"
+    },
+    {
+      "path": "source231-full-gate.log",
+      "bytes": 930,
+      "sha256": "465561324724fc05791a11a1e81dee3f1005474e75bca580093c0b82fc2bcf7c"
+    },
+    {
+      "path": "source231-manifest.json",
+      "bytes": 50132,
+      "sha256": "eabdb6baebd5aff3e86d3037e680c768beb310bcb037684ece86053120d25684"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

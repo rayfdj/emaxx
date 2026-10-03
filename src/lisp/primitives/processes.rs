@@ -1054,14 +1054,7 @@ pub(crate) fn getenv_in_environment(
     };
     let mut cursor = environment;
     while let Some((item, rest)) = cursor.cons_values() {
-        let owned;
-        let entry = match item.as_string() {
-            Ok(text) => text,
-            Err(_) => {
-                owned = string_text(&item)?;
-                owned.as_str()
-            }
-        };
+        let entry = item.as_string()?;
         if let Some(value) = entry
             .strip_prefix(variable)
             .and_then(|rest| rest.strip_prefix('='))
@@ -1757,7 +1750,7 @@ pub(crate) fn make_network_process(
                     // `:service t' asks the OS to pick a free port.
                     Kind::T => Some(0),
                     Kind::Integer(port) => Some(port),
-                    Kind::String(_) | Kind::StringObject(_) => {
+                    Kind::StringObject(_) => {
                         let text = string_text(value)?;
                         // `:family local' names a socket file, not a port.
                         service_path = Some(text.clone());

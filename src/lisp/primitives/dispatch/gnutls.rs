@@ -545,7 +545,7 @@ fn plist_integer(plist: &Value, property: &str) -> Option<i64> {
 fn digest_spec(method: &Value) -> Option<&'static DigestSpec> {
     let id = match method.kind() {
         Kind::Integer(id) => Some(id),
-        Kind::String(_) | Kind::StringObject(_) => {
+        Kind::StringObject(_) => {
             let name = string_text(method).ok()?;
             return DIGESTS.iter().find(|spec| spec.name == name);
         }
@@ -681,7 +681,7 @@ fn invalid_mac_method(method: &Value) -> LispError {
 
 fn mac_method_id(method: &Value, library: &GnuTlsLibrary) -> Result<c_int, LispError> {
     let normalized = match method.kind() {
-        Kind::String(_) | Kind::StringObject(_) => Value::symbol(&string_text(method)?),
+        Kind::StringObject(_) => Value::symbol(&string_text(method)?),
         method => method.value(),
     };
     let id = match normalized.kind() {
@@ -714,7 +714,7 @@ fn invalid_cipher_method(method: &Value) -> LispError {
 
 fn cipher_method_id(method: &Value, library: &GnuTlsLibrary) -> Result<c_int, LispError> {
     let normalized = match method.kind() {
-        Kind::String(_) | Kind::StringObject(_) => Value::symbol(&string_text(method)?),
+        Kind::StringObject(_) => Value::symbol(&string_text(method)?),
         method => method.value(),
     };
     let id = match normalized.kind() {
@@ -755,9 +755,7 @@ fn clear_crypto_key(value: &Value) {
     };
     if let Kind::StringObject(state) = source.kind() {
         let mut state = state.borrow_mut();
-        state.text = "\0".repeat(state.text.len());
-        state.props.clear();
-        state.multibyte = false;
+        state.clear();
     }
 }
 

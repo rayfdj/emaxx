@@ -1,0 +1,42 @@
+(list
+ (mapcar
+  (lambda (code)
+    (let* ((source (make-string 2 code))
+           (separator (char-to-string code))
+           (leaf (vector code))
+           (calls 0))
+      (put-text-property 0 2 'payload leaf source)
+      (let ((result
+             (mapconcat (lambda (part)
+                          (setq calls (1+ calls))
+                          (garbage-collect)
+                          part)
+                        (list source (vector code) (list code)) separator)))
+        (list (append result nil) (string-bytes result)
+              (multibyte-string-p result) calls
+              (eq (get-text-property 1 'payload result) leaf)
+              (progn (aset result 0 65) (= (aref source 0) code))))))
+  '(0 127 128 55296 1114112 4194048 4194175 4194176 4194303))
+ (mapcar
+  (lambda (separator)
+    (let ((result (mapconcat #'identity '("ab" [67] (68 69)) separator)))
+      (list (append result nil) (multibyte-string-p result))))
+  (list nil "" [] (list 955) (vector 4194175) (string 55296)))
+ (mapcar
+  (lambda (form)
+    (condition-case error
+        (let ((result (eval form t))) (list 'ok (append result nil)))
+      (error (list (car error) (cadr error)))))
+  '((mapconcat #'identity nil 'unused)
+    (mapconcat #'identity '("x") 'unused)
+    (mapconcat #'identity '("x" "y") 'invalid)
+    (mapconcat #'identity '("x" [4194304]) nil)
+    (mapconcat #'identity '("x" [65]) [66])
+    (mapconcat #'identity '(nil [] "") nil)))
+ (let ((source (string 955)) (calls 0))
+   (let ((result (mapconcat (lambda (_)
+                             (setq calls (1+ calls))
+                             (when (= calls 2) (aset source 0 1114112))
+                             source)
+                           '(a b) ":")))
+     (list calls (append result nil) (append source nil)))))

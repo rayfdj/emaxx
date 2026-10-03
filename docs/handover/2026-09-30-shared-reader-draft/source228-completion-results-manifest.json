@@ -1,0 +1,237 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "gate completion repair retains one concat character-loss failure",
+    "inputs_verified": 429,
+    "strict_checks": "passed with zero warnings",
+    "groups": [
+      {
+        "profile": "gate",
+        "stage": "controls",
+        "passed": 24,
+        "failed": 1,
+        "ignored": 0,
+        "inventory_verified": 25
+      },
+      {
+        "profile": "gate",
+        "stage": "broad",
+        "passed": 932,
+        "failed": 1,
+        "ignored": 0,
+        "inventory_verified": 933
+      }
+    ],
+    "retained_files": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source228-gate-libtest",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source228-retained-inputs/source228-gate-libtest",
+        "sha256": "4548ffa1f6d40ad0d964e0eb5a92c94f115d2b2d66e30cfc8e32526760645692",
+        "bytes": 29435568
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source228/loadup-4548ffa1-44409a21.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source228-retained-inputs/loadup-4548ffa1-44409a21.pdmp",
+        "sha256": "0bec0cd8073e0520147fff1e841a6dc0d86e0be90b07052ac2ce6ab86081580e",
+        "bytes": 22345760
+      }
+    ],
+    "failing_names": [
+      "lisp::primitives::tests::completion_results_preserve_gnu_encoding_properties_and_identity"
+    ],
+    "qualification": "The original Tramp test now passes, along with all 20 previous string/bytecode controls. The new unchanged GNU fixture fails because concat turns surrogate and beyond-Unicode characters into U+F8FF before completion sees them. Both original assertion values and the full 933-test broader inventory remain preserved. These are gate-profile results; release, complete validation and performance remain unverified."
+  },
+  "archive": {
+    "path": "source228-completion-results.tar.gz",
+    "bytes": 275398,
+    "sha256": "0852bbae39d6705ae28f2b5291627c6e08da0500ccf0bae7ebac494cb9070f03"
+  },
+  "files": [
+    {
+      "path": "audit-shared-reader196-fresh-selected.py",
+      "bytes": 4819,
+      "sha256": "caf9923118da1572509baa64a90fc1099ed1be3b2332bc2ef0232ceb41977ccc"
+    },
+    {
+      "path": "audit-source228-results.py",
+      "bytes": 3543,
+      "sha256": "41006bed5aae16b6380dc5e572a8d438d97b271be957d4698073eff8c287616c"
+    },
+    {
+      "path": "check-string217.py",
+      "bytes": 2024,
+      "sha256": "f508eb3f78b007ca73ab063f4fab0c4ddd06e3dbc4c2a19a232619fdbe0e0135"
+    },
+    {
+      "path": "package-source228-results-and229-draft.py",
+      "bytes": 3425,
+      "sha256": "66eaff61d9276d6c8b19d4a95638558ee8e1002cd52aadd0a9ee62084e779b85"
+    },
+    {
+      "path": "run-string-validation228.py",
+      "bytes": 1342,
+      "sha256": "17a824c2ba939a6b1e4bdaf6f1f99fe5a15bf8857e1757ef63c25ffe08ca5afe"
+    },
+    {
+      "path": "source228-base.json",
+      "bytes": 1566,
+      "sha256": "76ffbc0907e56753789caf42c915bdd591e0c8bf2f4db5d19d8d7aacc3680253"
+    },
+    {
+      "path": "source228-check-command.json",
+      "bytes": 477,
+      "sha256": "4058f2c746dea12bc17bb160e2e26b8690173691b3488f90b4201ec9a2fa0100"
+    },
+    {
+      "path": "source228-check-result.json",
+      "bytes": 83,
+      "sha256": "21465634a7a84410ae1b277d8e0820bb362953218bf2db0c60ad817775a780e9"
+    },
+    {
+      "path": "source228-check.log",
+      "bytes": 193,
+      "sha256": "be09fbf1eeb908b693d1c64d8ca47f9c2204953a2f2ae43c580ab9978a67c841"
+    },
+    {
+      "path": "source228-clippy-command.json",
+      "bytes": 465,
+      "sha256": "42d09a5e2cca256288e038159f6b55aa238ba14b30d8dc45b1efc3d7785b14d7"
+    },
+    {
+      "path": "source228-clippy-result.json",
+      "bytes": 89,
+      "sha256": "428e81b9d57ad413424390f8ff60caa8046f884850cd61a9fd938241845ba7cd"
+    },
+    {
+      "path": "source228-clippy.log",
+      "bytes": 194,
+      "sha256": "cc9da5d623d500a00019222bc67f2fc88a595bb3dfc272f1980510a9f4256844"
+    },
+    {
+      "path": "source228-complete.patch",
+      "bytes": 501056,
+      "sha256": "5cd7fdf496d5e808047fbcad101be27bfbdee174c9a7122215cb7b587ad9522e"
+    },
+    {
+      "path": "source228-diff-command.json",
+      "bytes": 381,
+      "sha256": "223ae55eadbea5a539bc0b40e4a6d7fa10009e64def8b32d68f5fc8768200b12"
+    },
+    {
+      "path": "source228-diff-result.json",
+      "bytes": 90,
+      "sha256": "20cef468a8ff69bf240e71b208b2fbbe570bca332d5ab177efcf900518fb5e23"
+    },
+    {
+      "path": "source228-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source228-driver.log",
+      "bytes": 21557,
+      "sha256": "d49ebf57c8005c5c68f111241447beea1fc2e7e419239906c049eecac21123ce"
+    },
+    {
+      "path": "source228-fmt-command.json",
+      "bytes": 405,
+      "sha256": "5fec881cb2e3be2d5a527c5898f09c46e186895d971897b4353c29213a431a2d"
+    },
+    {
+      "path": "source228-fmt-result.json",
+      "bytes": 82,
+      "sha256": "d56ea1fb1ee2b9409b370217cbb1b5935ea18dc14a7b9af150d25872d1112473"
+    },
+    {
+      "path": "source228-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source228-gate-broad-command.json",
+      "bytes": 169900,
+      "sha256": "aa2000e872457af277c57d580d3f552df9ca68b45eeba2a2ec8b6699deb68c83"
+    },
+    {
+      "path": "source228-gate-broad-result.json",
+      "bytes": 92,
+      "sha256": "d5c7a701fd6b120f97c88adb5da34c622dd8a3d59a2646ad2d5034e5b5dc0997"
+    },
+    {
+      "path": "source228-gate-broad.log",
+      "bytes": 94872,
+      "sha256": "450fd0609fd444486c2b769eeca1e16aaf7f0d09021e11f4f0995df2ea679ade"
+    },
+    {
+      "path": "source228-gate-build-command.json",
+      "bytes": 1152,
+      "sha256": "f5dcc19c138dc0997d1dc16ce554e0c61464077640c70727e6fdc5d511eb5158"
+    },
+    {
+      "path": "source228-gate-build-result.json",
+      "bytes": 85,
+      "sha256": "904d715c0447846c3fae8ca6ef23d53ebccf472546d265d35caca147a4a7de21"
+    },
+    {
+      "path": "source228-gate-build.log",
+      "bytes": 214391,
+      "sha256": "7fa3872bf1aaad66fd4518351fbf2ddb2c4c69f1ec7f3b104e6e935b6cc48cfe"
+    },
+    {
+      "path": "source228-gate-controls-command.json",
+      "bytes": 5982,
+      "sha256": "79a8477af6912670f6358f74e05784a8965ef28703864a63b12a45c8aca607d6"
+    },
+    {
+      "path": "source228-gate-controls-result.json",
+      "bytes": 92,
+      "sha256": "b745efe80ea2370f03ccab277f6d0a57bbf539434af9c6bcf5498eab839c1b95"
+    },
+    {
+      "path": "source228-gate-controls.log",
+      "bytes": 3971,
+      "sha256": "1a649edbfcff457fceee39c49662f4f02b9b5348ce07c4f4c3f1e3bc36f93827"
+    },
+    {
+      "path": "source228-gate-inventory.txt",
+      "bytes": 262603,
+      "sha256": "47263edef832970bba389022a85343ec54620d202c50896e51889ce57f3fe8d0"
+    },
+    {
+      "path": "source228-launch.json",
+      "bytes": 513,
+      "sha256": "fe9e63a2d250368aa062733181e099ae88ccc5b4325a23c329d7c22bea6dd70c"
+    },
+    {
+      "path": "source228-manifest.json",
+      "bytes": 48802,
+      "sha256": "8607e31176e78cc9ef8bb8eda43445f794304ef0c35fc3832355feebacbb25ab"
+    },
+    {
+      "path": "source228-results-audit.json",
+      "bytes": 1855,
+      "sha256": "efff7642ef9fcaf7f08b319015a4cdefaaa4109e808d6c0d6341e94c08878ccd"
+    },
+    {
+      "path": "source228-validation-result.json",
+      "bytes": 1016,
+      "sha256": "4d50b71d0456dbc7b1c7ea08bc3ac8be5b38ce8b6e6b86c5040537d8fd3e0af9"
+    },
+    {
+      "path": "static-string217.py",
+      "bytes": 1549,
+      "sha256": "d1fd52e8b1f26df4d80d171548d045ac06549dc0b2298e0ecde6405479bb0488"
+    },
+    {
+      "path": "test-string-broad219.py",
+      "bytes": 3059,
+      "sha256": "cb4be313f99f997d571bdc0aa77f964ab5475ba9d6477127471c9d59c3b7154f"
+    },
+    {
+      "path": "test-string-controls228.py",
+      "bytes": 4740,
+      "sha256": "eda9d2f4ff0cea22466d08a57859a2b0b1c7c22f08c848705ea668a6089835d3"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

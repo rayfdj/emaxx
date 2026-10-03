@@ -1,0 +1,643 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "display_units": {
+      "status": "strict and TTY unit gate pass",
+      "inputs": 442,
+      "passed": 62,
+      "ignored": [
+        "tty::tty_differential_end_to_end",
+        "tty::tty_smoke_end_to_end"
+      ],
+      "names": [
+        "tty::tests::active_minibuffer_only_owns_cursor_while_its_window_is_selected",
+        "tty::tests::align_to_display_specs_lay_out_as_blank_columns",
+        "tty::tests::canonical_t_invisibility_spec_hides_true_overlay_regions",
+        "tty::tests::command_cycle_reselects_the_selected_windows_displayed_buffer",
+        "tty::tests::command_reader_retains_prefix_across_events_and_collecting_filters",
+        "tty::tests::control_characters_use_ascii_codes",
+        "tty::tests::display_columns_match_tab_expansion",
+        "tty::tests::display_glyph_codes_validate_both_representations_and_full_character_bits",
+        "tty::tests::display_string_cursor_property_selects_its_first_non_nil_cell",
+        "tty::tests::display_tables_select_one_valid_window_buffer_or_standard_table",
+        "tty::tests::display_tables_translate_echo_before_clipping_and_remap_minibuffer_point",
+        "tty::tests::display_vectors_remap_positions_and_faces_without_recursive_translation",
+        "tty::tests::embedded_display_newlines_are_hard_row_boundaries",
+        "tty::tests::function_keys_encode_as_symbols",
+        "tty::tests::glyphless_methods_follow_text_terminal_cons_and_width_rules",
+        "tty::tests::glyphless_wrap_restarts_a_split_display_element_like_gnu",
+        "tty::tests::graphical_fringe_overlay_strings_have_no_tty_text_glyph",
+        "tty::tests::hscroll_marker_precedes_the_requested_source_column",
+        "tty::tests::hscrolled_hidden_point_uses_the_last_line_number_gutter_cell",
+        "tty::tests::interactive_execution_inserts_through_lisp",
+        "tty::tests::interactive_startup_initializes_scratch_and_messages_buffers",
+        "tty::tests::invisible_properties_on_overlay_strings_remove_their_tty_cells",
+        "tty::tests::invisible_same_row_motion_defers_mode_line_point_until_input",
+        "tty::tests::isearch_dispatches_through_the_overriding_map_and_exits_on_other_keys",
+        "tty::tests::key_descriptions_follow_gnu_spellings",
+        "tty::tests::key_resolution_distinguishes_prefixes_commands_and_undefined",
+        "tty::tests::long_lines_wrap_exactly_like_a_gnu_tty",
+        "tty::tests::margin_default_foreground_preserves_an_extending_background",
+        "tty::tests::merged_attrs_keep_the_base_where_the_overlay_is_silent",
+        "tty::tests::meta_becomes_the_escape_prefix",
+        "tty::tests::minibuffer_before_string_inherits_its_prompt_anchor_face",
+        "tty::tests::minibuffer_cursor_follows_echo_wrapping",
+        "tty::tests::non_selected_windows_render_from_their_start_without_recentering",
+        "tty::tests::overlay_display_string_replaces_its_covered_buffer_range",
+        "tty::tests::paint_rows_compare_by_text_and_attribute",
+        "tty::tests::plain_characters_encode_as_their_codes",
+        "tty::tests::point_at_hidden_run_start_stays_before_the_ellipsis",
+        "tty::tests::point_max_overlay_before_string_contributes_hard_display_rows",
+        "tty::tests::point_precedes_a_point_max_overlay_after_string",
+        "tty::tests::prefix_echo_accumulates_like_gnu",
+        "tty::tests::propertized_string_display_specs_replace_the_covered_text",
+        "tty::tests::rendered_lines_expand_tabs_to_eight_column_stops",
+        "tty::tests::segment_counts_follow_the_wrap_geometry",
+        "tty::tests::selected_windows_recenter_around_an_off_window_point",
+        "tty::tests::sgr_sequences_reset_then_select_each_attribute",
+        "tty::tests::tabulated_list_glyphless_table_uses_tty_sort_indicators",
+        "tty::tests::terminal_editing_keys_use_gnu_codes",
+        "tty::tests::terminal_glyphless_expansion_tracks_coding_faces_and_point_columns",
+        "tty::tests::text_only_blits_preserve_an_extending_base_face",
+        "tty::tests::transient_printed_value_takes_precedence_over_an_active_minibuffer",
+        "tty::tests::truncated_rows_carry_the_dollar_marker_in_the_last_column",
+        "tty::tests::truncating_windows_keep_one_row_per_logical_line",
+        "tty::tests::tty_lisp_readers_preserve_mouse_events_and_keyboard_order",
+        "tty::tests::tty_redisplay_runs_the_lisp_pre_redisplay_coordinator_for_all_windows",
+        "tty::tests::universal_argument_prefixes_dispatch_through_simple_el",
+        "tty::tests::visual_row_positions_follow_wrap_geometry",
+        "tty::tests::width_display_specs_use_tty_cells_and_collapse_equal_runs",
+        "tty::tests::window_end_stops_before_a_wholly_invisible_buffer_tail",
+        "tty::tests::window_margin_display_strings_do_not_enter_the_text_body",
+        "tty::tests::window_overlay_after_strings_splice_before_hidden_newlines_with_faces",
+        "tty::tests::wrapped_echo_preserves_a_faced_trailing_space",
+        "tty::tests::wrapped_echo_trailing_newline_does_not_allocate_an_empty_row",
+        "tty::tty_differential_end_to_end",
+        "tty::tty_smoke_end_to_end"
+      ],
+      "gate_binary_sha256": "e0fa572906fbd4e49518fb113f9d3e95039653b26842e63f837ca0e2bd3b71ab",
+      "qualification": "Original 60-test TTY inventory plus four new display-table controls. Existing two end-to-end ignores remain separate. First audit attempted a no-ignores auditor and rejected the valid two-ignore summary; this verifies every raw verdict explicitly. An attempted terminal launch before the helper existed exited without executing tests; its log is retained. No complete or terminal pass claimed."
+    },
+    "display_terminal": {
+      "status": "all selected terminal comparisons match",
+      "inputs_verified": 442,
+      "scenarios": [
+        "hscroll-disabled",
+        "help-key-then-quit",
+        "help-function-then-quit",
+        "buffer-switch-scratch",
+        "minibuffer-edit-abort",
+        "kill-buffer-confirm",
+        "kill-buffer-cancel-save",
+        "glyphless-unencodable-motion",
+        "glyphless-unencodable-wrap",
+        "glyphless-unencodable-hscroll",
+        "glyphless-unencodable-hscroll-line-numbers"
+      ],
+      "matching_comparisons": 39,
+      "original_divergences_repaired": [
+        "hscroll-disabled",
+        "help-key-then-quit::1:describe-forward-char-key",
+        "help-function-then-quit::1:describe-forward-word",
+        "buffer-switch-scratch::1:switch-to-scratch",
+        "minibuffer-edit-abort::9:execute-command",
+        "kill-buffer-confirm::4:kill-without-saving",
+        "kill-buffer-cancel-save::9:kill-saved-buffer"
+      ],
+      "log_sha256": "9eb64a6751d1aa9924f123c923a4b78cc9440bbc8c6b59f20f5b9ec1b593bb6c",
+      "qualification": "Seven original failing scenarios and all four original glyphless scenarios pass with unchanged actions, timeouts and comparison logic. GNU source/native ABI matches, but this is not the pinned Darwin binary or the complete 226-scenario inventory. No general display-table completeness or performance claim."
+    },
+    "source238": "Separate 446-input combined candidate contains the source237 renderer and reader/mapconcat repairs. Only strict checks are complete; 103 selected gate controls, ordinary build and upstream rx tests are active. No source238 runtime repair claim.",
+    "earlier_failures": "Source235 has five compile errors. Source236 corrects API usage but fails three unwrap Clippy lints. Source237 replaces those with explained expects and passes strict/unit/selected terminal validation. The first TTY audit used a zero-ignore auditor and rejected existing ignores; an attempted helper launch before its file existed ran no tests. All retained; no weakening of assertions.",
+    "remaining_display_review": "Full 226-scenario terminal inventory and further display-table edge cases remain required: newline translation, generated stretch spaces/alignment, special extra-slot glyphs, control glyphs, non-Unicode glyph output and face precedence with no-font fallback are not fully differentially certified.",
+    "goal_complete": false
+  },
+  "archive": {
+    "path": "source237-display-validation-and238-rx-draft.tar.gz",
+    "bytes": 736655,
+    "sha256": "6f59c988656889603fa8298a93483422ebcb775a2022d4363c611c94104dce6f"
+  },
+  "files": [
+    {
+      "path": "audit-source237-selected-terminal.py",
+      "bytes": 3208,
+      "sha256": "447dde18c8a5eb5108a417c46cd26e21ee28e5d950830021ec185ece453b0322"
+    },
+    {
+      "path": "audit-source237-tty-units.py",
+      "bytes": 2377,
+      "sha256": "21c3d4f8b145eabc8ecfea2ff7b2b6461bed6822fd0d6f5188ed9bcfafdd6e84"
+    },
+    {
+      "path": "build-source235.py",
+      "bytes": 2438,
+      "sha256": "ec679e454e559223e294c2ff51c28053f02a9b6cc8c5f6d003c914cd9ba7ac14"
+    },
+    {
+      "path": "build-source238.py",
+      "bytes": 2436,
+      "sha256": "d05b3cbe824dd4b871f3181ac4801e49f8e54695ed7dda288ac6c6f02a4bf73d"
+    },
+    {
+      "path": "check-source235.py",
+      "bytes": 2020,
+      "sha256": "df917bc814f40e2062721b21f927f81da81e9f5fb2e645f6e2a10abd742d03a6"
+    },
+    {
+      "path": "check-source238.py",
+      "bytes": 2018,
+      "sha256": "e9bfeb29d76d62fef05ff1c0d56c61b0c46a81cd7042e26d3d47610ba8a4738a"
+    },
+    {
+      "path": "package-source234-results-and238-draft.py",
+      "bytes": 4519,
+      "sha256": "db35aac06490ecaf2bd8babcefb7183dd94b53736715f5861d7019059d36e6b3"
+    },
+    {
+      "path": "run-source235-strict.py",
+      "bytes": 620,
+      "sha256": "168115b2333a12ed292730f8e2bcff294df4f9a091f00d99798dbf0cca35c8c0"
+    },
+    {
+      "path": "run-source236-selected.py",
+      "bytes": 802,
+      "sha256": "3eba1f556312eee3d1865c87fbc8d6536da9663d1db05cd2ccf05bfde4b4b58c"
+    },
+    {
+      "path": "run-source236-strict.py",
+      "bytes": 620,
+      "sha256": "8020c60804bf6a99f9eca52da4fcb6305dcbbaf6d1bf83a52bde821ff7cd0980"
+    },
+    {
+      "path": "run-source237-selected-tty.py",
+      "bytes": 3884,
+      "sha256": "6dd62bd23e6cbd1e56f5eb9f8030d73ff16cd0135c8f29f187fab073689ded54"
+    },
+    {
+      "path": "run-source237-selected.py",
+      "bytes": 802,
+      "sha256": "815710a96ca68980ca8aabc59eceaac31341b019b6b297a6acb53fa672656727"
+    },
+    {
+      "path": "run-source237-strict.py",
+      "bytes": 621,
+      "sha256": "3eddeb2e7a1717d31c71c9933bdec54902f210f7a458ea172f57d58047f9b2bc"
+    },
+    {
+      "path": "run-source237-validation.py",
+      "bytes": 616,
+      "sha256": "adc3d0692262462345accfebfea149d50b940ff3c3b18e222bdbfa24544bb29e"
+    },
+    {
+      "path": "run-source238-validation.py",
+      "bytes": 780,
+      "sha256": "4a21f41cdf543c35491ca8192111c2247ed4d153bb33e2690ab0f0e864bd3b4c"
+    },
+    {
+      "path": "source235-check-command.json",
+      "bytes": 473,
+      "sha256": "9c1b67504cda58aa4ff30130a4492bf8d7723246763f1f2d77851e20e7a9ed4f"
+    },
+    {
+      "path": "source235-check-result.json",
+      "bytes": 91,
+      "sha256": "5e4115cf5cff4fe43842b42fc5116b279529b8f2676f39f67284e98b223556e4"
+    },
+    {
+      "path": "source235-check.log",
+      "bytes": 8483,
+      "sha256": "4ff8ebac58871906fc50f84e8c6b41c780a1b7edbd0cadbd9960f5c8c7672b06"
+    },
+    {
+      "path": "source235-complete.patch",
+      "bytes": 594124,
+      "sha256": "1c92e8e137220140346429412f4ecb7aaeb4ab684d598efc9853c7b5d96a320b"
+    },
+    {
+      "path": "source235-incremental.patch",
+      "bytes": 47771,
+      "sha256": "bcfb42ef6b84cc26985312440fe3cd5c224b79de953bee0f53267ccff1ea3c54"
+    },
+    {
+      "path": "source235-manifest.json",
+      "bytes": 50386,
+      "sha256": "ca0dfab8c38ae8d7b8b6d19ec94058dc74b8df0956a506f752009b388c8ad1c6"
+    },
+    {
+      "path": "source235-strict-driver-result.json",
+      "bytes": 264,
+      "sha256": "3f5c4065b210a63821d1454b07853b2a237cf73881e767150c6adcfcf2d0ec4b"
+    },
+    {
+      "path": "source235-strict-driver.log",
+      "bytes": 83,
+      "sha256": "5e9b0dfa95554c84a5feed47224c1ce03243662c93facdbc0ad3c666add9fc91"
+    },
+    {
+      "path": "source235-strict-launch.json",
+      "bytes": 57,
+      "sha256": "377485d469929ff14b663feaf4915f22532d2868db2147e2cf98b709e93c2a50"
+    },
+    {
+      "path": "source236-check-command.json",
+      "bytes": 473,
+      "sha256": "47ba5a418d98719aa5a7ed51a9ae8cf51d472aa743b2a3e2b95b0dda853cb7a8"
+    },
+    {
+      "path": "source236-check-result.json",
+      "bytes": 84,
+      "sha256": "e20d14cfb9b44fcc18ba3e41cd3adb876d3c3d68e2f3cca3c6d54dc9fcbfed9e"
+    },
+    {
+      "path": "source236-check.log",
+      "bytes": 230,
+      "sha256": "bcd43597d060e91ddbeca274170f885080401e066e8e06d9201dbd3737ed2425"
+    },
+    {
+      "path": "source236-clippy-command.json",
+      "bytes": 461,
+      "sha256": "9fb06600d9a2fd8cb8393cfc6bc84875e6768f02986b29c4f9ce915d94ce16b0"
+    },
+    {
+      "path": "source236-clippy-result.json",
+      "bytes": 85,
+      "sha256": "2aba845491fd485e94188458d75ec9857ac1086cbb2a6a420149bcc8fc99c8fa"
+    },
+    {
+      "path": "source236-clippy.log",
+      "bytes": 2036,
+      "sha256": "02c8772df594a6200bd90a79b9ee28f8bb9f0f0e2bc2c73ea0dded7f30d4ceb0"
+    },
+    {
+      "path": "source236-complete.patch",
+      "bytes": 594361,
+      "sha256": "e4d016427d46a26b4f9288263a651beb1c938596c16b2af9ea5470b2ce1b6243"
+    },
+    {
+      "path": "source236-diff-command.json",
+      "bytes": 377,
+      "sha256": "889e4e208ee0aa18d6175a63f3c1080152e788a113db8f11059f7baa93c73408"
+    },
+    {
+      "path": "source236-diff-result.json",
+      "bytes": 90,
+      "sha256": "e23b4035429a3fceab2adb897b7c1c80e5288177a12ae6625f756a80d876ea9f"
+    },
+    {
+      "path": "source236-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source236-fmt-command.json",
+      "bytes": 401,
+      "sha256": "64cb946c3226c0770e68783a28c4708f7bcebb4ee3f3dd42adec224b3cd9ca11"
+    },
+    {
+      "path": "source236-fmt-result.json",
+      "bytes": 89,
+      "sha256": "138a5a50dceeca2416a1192c1d3952a310828fb4a84751805177ca3b5f7cfba5"
+    },
+    {
+      "path": "source236-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source236-manifest.json",
+      "bytes": 50386,
+      "sha256": "d3456347f31235259da88870d1e0aff54bf817f7e07ac5d4364e8a555e0b4e11"
+    },
+    {
+      "path": "source236-strict-driver-result.json",
+      "bytes": 529,
+      "sha256": "b270a9b0e34eeb1220341649b01506a3b04de7bbba39934ea26a5305733e3d61"
+    },
+    {
+      "path": "source236-strict-driver.log",
+      "bytes": 873,
+      "sha256": "c9ae6343d08a4a43bbb28398a6f4a232f6d1ffc6b8ac8a5759f17603b9292c26"
+    },
+    {
+      "path": "source236-strict-launch.json",
+      "bytes": 57,
+      "sha256": "b6d3c1fe064879c5094e60be709b4562a65b3583db7d2b8ec5a04da474fbc994"
+    },
+    {
+      "path": "source237-check-command.json",
+      "bytes": 473,
+      "sha256": "fbc467afd72aa778818f2047ba20094dc7a56ffe38b302184f6b164900468a4f"
+    },
+    {
+      "path": "source237-check-result.json",
+      "bytes": 89,
+      "sha256": "009a8bafbb397d93fc3c239b3781392970c62219b5c3818b7e5c52c4789f36f5"
+    },
+    {
+      "path": "source237-check.log",
+      "bytes": 191,
+      "sha256": "3d41899d396e33e9994a351deb40b33c7744271be590aa127b82644013ffb03a"
+    },
+    {
+      "path": "source237-clippy-command.json",
+      "bytes": 461,
+      "sha256": "9fb06600d9a2fd8cb8393cfc6bc84875e6768f02986b29c4f9ce915d94ce16b0"
+    },
+    {
+      "path": "source237-clippy-result.json",
+      "bytes": 82,
+      "sha256": "b5fc7abb19e29e83fed1e0a1b966247bc288de1ce8feb9bc24e6c5cee585b1eb"
+    },
+    {
+      "path": "source237-clippy.log",
+      "bytes": 192,
+      "sha256": "d0399f153aace3dc7d432713ff085eae8595784cc0585c614c8c7f2961654cae"
+    },
+    {
+      "path": "source237-complete.patch",
+      "bytes": 594444,
+      "sha256": "0f239d3f43feed030e1ac6ab89b0655b6eb1a2562707e5cfef2a45f6526e3f88"
+    },
+    {
+      "path": "source237-diff-command.json",
+      "bytes": 377,
+      "sha256": "889e4e208ee0aa18d6175a63f3c1080152e788a113db8f11059f7baa93c73408"
+    },
+    {
+      "path": "source237-diff-result.json",
+      "bytes": 90,
+      "sha256": "85bdc2726d45a388140f6c5dde96eb02a9d62ddb59f56d485e8ff776c32b0ce3"
+    },
+    {
+      "path": "source237-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source237-fmt-command.json",
+      "bytes": 401,
+      "sha256": "64cb946c3226c0770e68783a28c4708f7bcebb4ee3f3dd42adec224b3cd9ca11"
+    },
+    {
+      "path": "source237-fmt-result.json",
+      "bytes": 89,
+      "sha256": "55ae641a73859f724885008ebedfb6a96bc47228cec85621e102f4b0c6008829"
+    },
+    {
+      "path": "source237-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source237-gate-build-command.json",
+      "bytes": 1148,
+      "sha256": "ef6ec37ca1d364aa5fd989c4e2e1e5b4599d33733cbd0594db78dbbb3d2098b0"
+    },
+    {
+      "path": "source237-gate-build-result.json",
+      "bytes": 85,
+      "sha256": "ef92f3d8d8281643f6d61f35ccf3ffc729a2689a48948aa7b2dfdfe569148254"
+    },
+    {
+      "path": "source237-gate-build.log",
+      "bytes": 218664,
+      "sha256": "fa5292ffbcf48613bdb54360ac9cd08f3f75500fc5f9244d9fc93b4c9477e196"
+    },
+    {
+      "path": "source237-gate-controls-command.json",
+      "bytes": 10472,
+      "sha256": "1cb3dcaf5c7351b95d66eceb50dd9bc49d844fb1f9f69e41cb36d8cc34225203"
+    },
+    {
+      "path": "source237-gate-controls-result.json",
+      "bytes": 90,
+      "sha256": "428e16a6dc2027179661791525da85c8444501ab64257fb004040734fe3ddff9"
+    },
+    {
+      "path": "source237-gate-controls.log",
+      "bytes": 5168,
+      "sha256": "e196be44368c23a593463c12b1571bf4a2685ecfc1f1bc9ba3d4ae74d057183a"
+    },
+    {
+      "path": "source237-gate-inventory.txt",
+      "bytes": 263408,
+      "sha256": "fc00ab215e8115da4c0ae186f02e3364aad82ed2cc1ae96fbb0c5d9915d0509f"
+    },
+    {
+      "path": "source237-manifest.json",
+      "bytes": 50386,
+      "sha256": "55dd6f9150b658dfc854878e8329fc4bfb8891cfd90c843d3166d4cf8e66f687"
+    },
+    {
+      "path": "source237-ordinary-artifacts.json",
+      "bytes": 740,
+      "sha256": "9dc6184386a8dda56534fd3f79713e385cbca991c0a3cea5db2c6fd064e3756f"
+    },
+    {
+      "path": "source237-ordinary-build-command.json",
+      "bytes": 995,
+      "sha256": "ba3d7c23a5b3161409568156bb2ce8ce6165b7908d5e92b12dea73a1bf3c0d86"
+    },
+    {
+      "path": "source237-ordinary-build-result.json",
+      "bytes": 82,
+      "sha256": "2b234802a119899a708661831126bcaafd3b5ddbca966f084e2feb28e8bb3554"
+    },
+    {
+      "path": "source237-ordinary-build.log",
+      "bytes": 5070,
+      "sha256": "d49180e122da0b0271b2d5c0a007a2c630cde3d5b6f56d386f004807d23967ea"
+    },
+    {
+      "path": "source237-ordinary-image-command.json",
+      "bytes": 1019,
+      "sha256": "87db4097a25661115e37ce2f12c0f593a8a9abc13600b467c8bb3b1afb340c48"
+    },
+    {
+      "path": "source237-ordinary-image-result.json",
+      "bytes": 88,
+      "sha256": "c5682992b3e91404d70b64e17ce4b0f15b7cbc607951075e40667da0a09cd5db"
+    },
+    {
+      "path": "source237-ordinary-image.log",
+      "bytes": 6630,
+      "sha256": "4b05a17b38b821dd165d299333ffebd10d23e86c83f2430205edccc70e710f5e"
+    },
+    {
+      "path": "source237-selected-driver-result.json",
+      "bytes": 541,
+      "sha256": "648bb3afc420a1d214b7ef338c67b750bb263ba3bf3be9fd48b2eb4270fa480b"
+    },
+    {
+      "path": "source237-selected-terminal-audit.json",
+      "bytes": 1277,
+      "sha256": "0c36a55fc0cc344b8442d5abb6a6a2e29557a6ed663a198728cd75e825314309"
+    },
+    {
+      "path": "source237-selected-tty-driver.log",
+      "bytes": 208,
+      "sha256": "1358a6629277af92bba8ba5359ea988c3d4a07c026d67fa0650eaa4a25c9746f"
+    },
+    {
+      "path": "source237-selected-tty-launch.json",
+      "bytes": 63,
+      "sha256": "72a1952a83dd75e7928915bb859b757a7d5a2cbeb6d69980cb430685aa8044fe"
+    },
+    {
+      "path": "source237-selected-tty-retry-driver.log",
+      "bytes": 239,
+      "sha256": "b8692d1f901639645954f078c1e838abc5b3716dc0938bf283974f4d3831943e"
+    },
+    {
+      "path": "source237-selected-tty-retry-launch.json",
+      "bytes": 133,
+      "sha256": "7326e054cd9f89253c3e732cab73e288628558b7cbb5bc1d9757ed377eb81b7f"
+    },
+    {
+      "path": "source237-selected-ttydiff-command.json",
+      "bytes": 3494,
+      "sha256": "386fa3b7f90d89888618d58510db3716206cc7e25d61060ff04eb33cb2aa81fc"
+    },
+    {
+      "path": "source237-selected-ttydiff-result.json",
+      "bytes": 264,
+      "sha256": "2ba1826c2c88fa99ea708057b9b7c8f1caf461bc1d9b214ad82909138e17ded3"
+    },
+    {
+      "path": "source237-selected-ttydiff.log",
+      "bytes": 3748,
+      "sha256": "9eb64a6751d1aa9924f123c923a4b78cc9440bbc8c6b59f20f5b9ec1b593bb6c"
+    },
+    {
+      "path": "source237-strict-driver-result.json",
+      "bytes": 528,
+      "sha256": "19969657d893e02a709f8cc69399602d29e97b315f59364d8264de7663716c54"
+    },
+    {
+      "path": "source237-tty-unit-audit.json",
+      "bytes": 5306,
+      "sha256": "56bb37e7964e66effb0b3393821b8a32a1974ca530605435709a68146708cdca"
+    },
+    {
+      "path": "source237-validation-launch.json",
+      "bytes": 61,
+      "sha256": "9e006a9f2c8ec094316f8c15193274b47604d8f46dddc82ab22ccfb8b14e50ec"
+    },
+    {
+      "path": "source237-validation-result.json",
+      "bytes": 513,
+      "sha256": "12f2984dfd3a000993adee7eaefcc971cd2d23325dee41a17e3f6e7bd29ea0a5"
+    },
+    {
+      "path": "source237-validation.log",
+      "bytes": 5876,
+      "sha256": "6387da41eee00eb8138d78e31ce126ffdc58de6d070cbaccbc5d02f1a6ec2bf4"
+    },
+    {
+      "path": "source238-check-command.json",
+      "bytes": 471,
+      "sha256": "4ecaadc9f33c8382986fe364d3863fc99353bfe3fbf67646e60e2fa8a8ba23fc"
+    },
+    {
+      "path": "source238-check-result.json",
+      "bytes": 84,
+      "sha256": "46ea6da0aff92d9d61b3ad7fe1abb3efb7bf28830e16bd17f45981e9c3b305e4"
+    },
+    {
+      "path": "source238-check.log",
+      "bytes": 5117,
+      "sha256": "965a4efa8482bce15dc320918b433406455e6e362fd5ca240f055a3c84edce72"
+    },
+    {
+      "path": "source238-clippy-command.json",
+      "bytes": 459,
+      "sha256": "e4014c5ffc53c6896a3730bc418f2d2170898a2de02e72798daed10341564479"
+    },
+    {
+      "path": "source238-clippy-result.json",
+      "bytes": 80,
+      "sha256": "774c347b7fb21901ec38085ad36e0242c4d62e19d8d6dd58cc362f3b827746ae"
+    },
+    {
+      "path": "source238-clippy.log",
+      "bytes": 191,
+      "sha256": "fbebac6d667ebaff4639d027a5b2ab3a8915be599eb48410a08299dd7504337a"
+    },
+    {
+      "path": "source238-complete.patch",
+      "bytes": 604183,
+      "sha256": "6d2083b04d8afdd8f25548da389e76c2b3251c46585883b48514c400c663c90a"
+    },
+    {
+      "path": "source238-diff-command.json",
+      "bytes": 375,
+      "sha256": "92cd5ae38a661985808948cb630cad8a957a18de12725bca1a8649816732f0ee"
+    },
+    {
+      "path": "source238-diff-result.json",
+      "bytes": 89,
+      "sha256": "3460fc31514bbe3974640c6cb195da587b60d58e778fa49a6da6dd2e506f6a54"
+    },
+    {
+      "path": "source238-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source238-fmt-command.json",
+      "bytes": 399,
+      "sha256": "edfdc5d586dc001811a239d24235432ef06eaf454569c64f656adcdd3c283b46"
+    },
+    {
+      "path": "source238-fmt-result.json",
+      "bytes": 89,
+      "sha256": "7f31b7cba7ca8ee486b9e6c465e3a6fb76d8529c5ecb9f8350b22fc1e211ef45"
+    },
+    {
+      "path": "source238-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source238-incremental.patch",
+      "bytes": 58583,
+      "sha256": "57c0595bed2252b686bd8eaee67bc01952253d135f540bcb1515bf94db1be43b"
+    },
+    {
+      "path": "source238-manifest.json",
+      "bytes": 50868,
+      "sha256": "3b8baf1193a1cad6c628a867da383810ac958ed88084fce1d57e9fe60564fd4b"
+    },
+    {
+      "path": "source238-validation-launch.json",
+      "bytes": 131,
+      "sha256": "f9542ef57ebc1d7970d9e22ed11437b7f4d6e38f522fadfaebefcbce4ab2d9c8"
+    },
+    {
+      "path": "static-source235.py",
+      "bytes": 1545,
+      "sha256": "82afd1de43b44bb56b61b6e1e25f46906aaf707d3aedb1d7f240252773f731d7"
+    },
+    {
+      "path": "static-source238.py",
+      "bytes": 1543,
+      "sha256": "afd15164b9a63fdbfc50b7b589427a4243846b1c3c3031277e63fb9e0ada9829"
+    },
+    {
+      "path": "test-source236-tty.py",
+      "bytes": 3215,
+      "sha256": "4a6b9e130db4eb4ea5266679d12d08d6c066d3b140c90f061dce760b4c031b11"
+    },
+    {
+      "path": "test-source238-controls.py",
+      "bytes": 5977,
+      "sha256": "4d812ea89ed1b568320cb8e302b52d109565dbc9802d8043f9a8db5b2fed2d94"
+    },
+    {
+      "path": "validate-source238-rx.py",
+      "bytes": 2297,
+      "sha256": "5133d34b524cbca2b361bdf3eb229eda176d1c3675239a3513233e69c9e0a77c"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

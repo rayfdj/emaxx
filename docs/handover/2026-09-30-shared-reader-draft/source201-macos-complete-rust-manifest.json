@@ -1,0 +1,240 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "passed",
+    "source_commit": "320d0a2e379540db60201c0a486f37d11f77b8a1",
+    "validation_checkout": {
+      "dirty": true,
+      "head": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199"
+    },
+    "verified_source_equivalent_inputs": 410,
+    "library_passed": 2957,
+    "library_ignored": 2,
+    "cargo_passed": {
+      "bins": 60,
+      "integration": 39
+    },
+    "total_passed": 3056,
+    "native_artifact_identity": "passed",
+    "native_identity_raw_lines": [
+      "test unchanged_gnu_sources_produce_identical_native_artifacts ... ok"
+    ],
+    "retained_files_verified": 5,
+    "test_binary_sha256": "79304f1d532bfaae38ca4b921c745b16fede073b84ff92dea645d358e132dc7e",
+    "summary_sha256": "b61e82f7d1a66471270df015a4c8402f99c7ed2962d84253e98b9172fe453ee2",
+    "qualification": "Complete group and Cargo result summaries cross-checked with raw logs and unchanged inventory counts. Post-run retained images do not establish which individual test used each file. Frozen and terminal runs are separate."
+  },
+  "archive": {
+    "path": "source201-macos-complete-rust.tar.gz",
+    "bytes": 226924,
+    "sha256": "2844ddbdb8b97bbcccc09292d04bb8c7d4e109deb59a40f8fef0eca5db33076f"
+  },
+  "files": [
+    {
+      "path": "audit-source201-macos-names.py",
+      "bytes": 1679,
+      "sha256": "71b85a1f98eebef1a85046fd129c93a268dacf688f6a90725726e4f18d649bf2"
+    },
+    {
+      "path": "full-gate-source201/bins.log",
+      "bytes": 5547,
+      "sha256": "53ed3a2f396ff5663f8672b0845038d816f2d410cf7dfc5e613eed7b9da0378a"
+    },
+    {
+      "path": "full-gate-source201/build.log",
+      "bytes": 214290,
+      "sha256": "389ffa2063941a2354df9eeac5c837dec102463d8e6ebbaa2e80819e86446ae1"
+    },
+    {
+      "path": "full-gate-source201/ignored-inventory.txt",
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    {
+      "path": "full-gate-source201/integration.log",
+      "bytes": 4918,
+      "sha256": "fa97034dcdb180cb7667849db41852540dbb3e867c6e5ad6d32e4df4d679be55"
+    },
+    {
+      "path": "full-gate-source201/inventory.txt",
+      "bytes": 260864,
+      "sha256": "efec32717fafb636aee5a4893bb0f5dac58f6d803f0cc07d5b555f2324b68d35"
+    },
+    {
+      "path": "full-gate-source201/metadata.log",
+      "bytes": 15032,
+      "sha256": "83f69c9d849cfad21351339f8f6d7ad53d55211deca4a8892cb2862bb2303c54"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-batch.json",
+      "bytes": 545,
+      "sha256": "5e23c7c89bc46ddcdc8ae55151d555a1f38e4bf4c4c603a1a50df3884cdcb82d"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-batch.log",
+      "bytes": 4237,
+      "sha256": "0b9aeac3eaad525ad90718fec0b6d6fe5362b2a3faad84195d90824b9378d34f"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-compat_runtime.json",
+      "bytes": 588,
+      "sha256": "f5f860173771fabb17deb240bb21f8f20b169f757e869f8e2ddf2f5ba9e96685"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-compat_runtime.log",
+      "bytes": 10202,
+      "sha256": "a358dad2762809187187828cb2a3a2cd485b2bbe19bee4825b650f1250500470"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-eval_01.json",
+      "bytes": 563,
+      "sha256": "1be594695ce589235b00164b54769029d40789c4616360fcd304be39ca5b2581"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-eval_01.log",
+      "bytes": 36578,
+      "sha256": "0ec9b3e29775a12493a9fef87f6aa17a30d49d59542787440cbb875a768ee041"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-eval_02.json",
+      "bytes": 563,
+      "sha256": "f7f3b137d1ac969af329ce346114d8dc210dc09177fc27f474ede524b479dbda"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-eval_02.log",
+      "bytes": 69468,
+      "sha256": "316f664fb7a99fa8bf83ed382f626dd986473495ea3aed6894d00cae44975adf"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-eval_03.json",
+      "bytes": 554,
+      "sha256": "e31f5bad91d4c5b0b1bd0d99607921243e210b679d5c6d80d29b368b7eb4f64f"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-eval_03.log",
+      "bytes": 30516,
+      "sha256": "5059a01d9c9683b738534b58843b328daa2ef06e812cf09f1731af0d01a15172"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-eval_04.json",
+      "bytes": 563,
+      "sha256": "d903224f9842de7f0bc2f960868e1e251ebf2c3cd5183c739468ccd53d1e56b6"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-eval_04.log",
+      "bytes": 24662,
+      "sha256": "16310afab7c92ae7ff549fd2f56de9ceae5a92c6232529751a278c52ae3e2154"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-eval_05.json",
+      "bytes": 563,
+      "sha256": "5e1e96ea0d009f33e023d7af85aa2374bdd543da61cf7b0891883df0d67885fa"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-eval_05.log",
+      "bytes": 79263,
+      "sha256": "dbb62570fcd1c4f6269fde7d93fcd9c83a2a467807c3f2b3287c4888acb5336e"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-lightweight.json",
+      "bytes": 957,
+      "sha256": "f30c54abadc13f77f839a148d0b00f08d51bb6f87131eabc03cc915574ddab53"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-lightweight.log",
+      "bytes": 50188,
+      "sha256": "229b0c96a9f3e31cd5fa8ffd9251199a0cf088cc8411f1261b3e09f5df2e7bef"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-primitives.json",
+      "bytes": 566,
+      "sha256": "f7eb180fb4808555d88801210fc17f82df30fa12121f3c16b67598e39c302c78"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-primitives.log",
+      "bytes": 60196,
+      "sha256": "5185c10223c9d275dca6fcb9638faa581a2b6298328df092c5a3fc860a45b730"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-tty.json",
+      "bytes": 530,
+      "sha256": "b80833678aea7d1f5d86a56d0aa66254b60232ca9238f5bd55e6cf83f031a17a"
+    },
+    {
+      "path": "full-gate-source201/repeat-01-tty.log",
+      "bytes": 4788,
+      "sha256": "87567e72d416fc173fd93726c32650f53da7cf7763058820c7c2d669f94309d7"
+    },
+    {
+      "path": "full-gate-source201/retained-inputs/manifest.json",
+      "bytes": 2029,
+      "sha256": "7f13c852e7206da43293f7238c6a359fe4623d9a117be9d47537b0dc4bf56889"
+    },
+    {
+      "path": "full-gate-source201/summary.json",
+      "bytes": 15612,
+      "sha256": "b61e82f7d1a66471270df015a4c8402f99c7ed2962d84253e98b9172fe453ee2"
+    },
+    {
+      "path": "run-source201-full-gate.py",
+      "bytes": 3170,
+      "sha256": "2855122a8ea89bfd28c74861fa6ea577c2ae803077c752b51b8fbd09ba040b68"
+    },
+    {
+      "path": "source201-complete.patch",
+      "bytes": 245226,
+      "sha256": "ca4c45b3a9ec12308ab14348b3077e1850a99123809c5581bd183cc6c0f59e43"
+    },
+    {
+      "path": "source201-full-gate-command.json",
+      "bytes": 1382,
+      "sha256": "fd868141a8486ed82cbe23a8cba84cc34aa1911607a0bd345b68d3dfca8f4026"
+    },
+    {
+      "path": "source201-full-gate-driver.log",
+      "bytes": 287,
+      "sha256": "aacd3fdeb1b4ea5bd9e979246d7069936f84045f19d51ce41b7796f4ff0d6d70"
+    },
+    {
+      "path": "source201-full-gate-launch.json",
+      "bytes": 588,
+      "sha256": "2d50841b7c25c7c48d4198ff7cec911b169683fb3fa27f9423e4b1700d3e2ff9"
+    },
+    {
+      "path": "source201-full-gate-result.json",
+      "bytes": 16989,
+      "sha256": "d38e0600fb89478dc897af4b9e6f246c51665dc97747ff159f801aed4a6e020b"
+    },
+    {
+      "path": "source201-full-gate.log",
+      "bytes": 867,
+      "sha256": "0415b723b3f3ee2d076f43f99b1dbe2454f66470c2b440409a0b395976f1b83a"
+    },
+    {
+      "path": "source201-macos-rust-complete-audit.json",
+      "bytes": 983,
+      "sha256": "c032dad543c36be05f6ce42f85e490ab8124ba46d5483195020918209d96af1b"
+    },
+    {
+      "path": "source201-macos-rust-name-audit.json",
+      "bytes": 414,
+      "sha256": "46e7dd84bdb090b85394ce029cc777651c73010abcd23bbb6b694fa56ac641e5"
+    },
+    {
+      "path": "source201-manifest.json",
+      "bytes": 46477,
+      "sha256": "dfdf209571867a9de9ab0ad6ca001c145f5b86d2124420155deda34ec919d20a"
+    },
+    {
+      "path": "tools/retain_rust_gate_artifacts.py",
+      "bytes": 2907,
+      "sha256": "7a013b168d8aeab72ffae44b81ec1331597a24a03bc0fd29471c037646fa3c88"
+    },
+    {
+      "path": "verify-source201-macos-rust.py",
+      "bytes": 4072,
+      "sha256": "69a840733396857177ed002d0f3cc9a2bf5271d32a5c5920e6f3559813fb40a3"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

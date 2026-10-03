@@ -1,0 +1,156 @@
+{
+  "status": "Same ordinary program in source/ABI-matched GNU and retained source195 passes normal and forced-error macro survival/reclamation.",
+  "qualification": "The saved-state patch remains uncompiled and unvalidated. This bundle preserves three probe versions, including the invalid premise and image relocation failures; only v3 supports both normal and error-path reclamation.",
+  "archive": {
+    "path": "macro-saved-state-reclamation.tar.gz",
+    "bytes": 4339,
+    "sha256": "c014298103b4565bc4526f7e649263cd9d2beca6b06010d8ab0ac6cc320172d9"
+  },
+  "files": [
+    {
+      "path": "input-decode-macro-reclamation-v2.el",
+      "bytes": 1402,
+      "sha256": "2800786646313782729a88bfea0473f1fa5cf6a0bd1657f03a1d4a6c1cfbf7e5"
+    },
+    {
+      "path": "input-decode-macro-reclamation-v3.el",
+      "bytes": 1478,
+      "sha256": "c78c9cd916de12c64e9a3f3e313dca88703452ce2feea803374331e4c323c20f"
+    },
+    {
+      "path": "input-decode-macro-reclamation-v3.expected",
+      "bytes": 111,
+      "sha256": "7e4322ec5491e8816938addff1e9739539048b607d8668eb0248f4c9b925bdaf"
+    },
+    {
+      "path": "input-decode-macro-reclamation.el",
+      "bytes": 1349,
+      "sha256": "1dba95b013803a86059a7a0a907e9d15c1f87911bf3876339e03087f9726b239"
+    },
+    {
+      "path": "macro-reclamation-initial-gnu.command.json",
+      "bytes": 2454,
+      "sha256": "4a63775fba7d37d52939ccee0a3062f4afd515c29866ded1d3ef38758d031d4f"
+    },
+    {
+      "path": "macro-reclamation-initial-gnu.result.json",
+      "bytes": 278,
+      "sha256": "735aed04d0cab7c050928cc201fd37a2f99965b16d61b8c8402bc26d100816df"
+    },
+    {
+      "path": "macro-reclamation-initial-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "macro-reclamation-initial-gnu.stdout",
+      "bytes": 81,
+      "sha256": "fbd0ebd1f66864a53b6c489a99badf10812a9031070bae57e8fb3fb3809292d6"
+    },
+    {
+      "path": "macro-reclamation-initial-source195.command.json",
+      "bytes": 2472,
+      "sha256": "61a274a4353ef8e760a93b95b61cceca8c9b9f19929242efb907df01bebe0858"
+    },
+    {
+      "path": "macro-reclamation-initial-source195.result.json",
+      "bytes": 274,
+      "sha256": "aff1b2386fd8261920ad95d47b9919944c00124cf16a72c803c26330197be70f"
+    },
+    {
+      "path": "macro-reclamation-initial-source195.stderr",
+      "bytes": 988,
+      "sha256": "a95c19ed3d19790b4da2b96cfdf51de612bcf767bc5d36eb3a337cbae44644d0"
+    },
+    {
+      "path": "macro-reclamation-initial-source195.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "macro-reclamation-v2-gnu.command.json",
+      "bytes": 2571,
+      "sha256": "5edfab4f3d825737046576dc536b6d0426162f5325dc70f11f381f4683d59459"
+    },
+    {
+      "path": "macro-reclamation-v2-gnu.result.json",
+      "bytes": 286,
+      "sha256": "50865ebbbe6979463b3e1c60b513bc23127bbb3ea3028b009194eb390b7d0274"
+    },
+    {
+      "path": "macro-reclamation-v2-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "macro-reclamation-v2-gnu.stdout",
+      "bytes": 67,
+      "sha256": "139d88bbb0bf8792acd3c7d1c3216fcde208b43c814c47099ae170ea10d4de06"
+    },
+    {
+      "path": "macro-reclamation-v2-source195.command.json",
+      "bytes": 2730,
+      "sha256": "d4c6050bc6eaf962ee216a86ec0fc1a5b4151c61ea65b69222f0445e6027ce0f"
+    },
+    {
+      "path": "macro-reclamation-v2-source195.result.json",
+      "bytes": 276,
+      "sha256": "ecc99fb24a61594d93ab98be1840943b300f483aeef86c49eea808bbd1024c9e"
+    },
+    {
+      "path": "macro-reclamation-v2-source195.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "macro-reclamation-v2-source195.stdout",
+      "bytes": 67,
+      "sha256": "139d88bbb0bf8792acd3c7d1c3216fcde208b43c814c47099ae170ea10d4de06"
+    },
+    {
+      "path": "macro-reclamation-v3-gnu.command.json",
+      "bytes": 2612,
+      "sha256": "44e810da7c683c9591b779c78d9a2f00aa17bc336421045ae498b203f511b1e3"
+    },
+    {
+      "path": "macro-reclamation-v3-gnu.result.json",
+      "bytes": 278,
+      "sha256": "9db77b7d3b325c09400a1777ddf5323e755d382dbfbed6005df1fc5decbe52fd"
+    },
+    {
+      "path": "macro-reclamation-v3-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "macro-reclamation-v3-gnu.stdout",
+      "bytes": 110,
+      "sha256": "1ad4832cdb8a1a57b1e3ddaaa9cc17c51d13b4245c3fd5dd2fec1805af40fbfe"
+    },
+    {
+      "path": "macro-reclamation-v3-source195.command.json",
+      "bytes": 2771,
+      "sha256": "0cea60b485d8779aef405fdd1f8ac60795bf629872d44b2c2dd7cf2b0d0355e3"
+    },
+    {
+      "path": "macro-reclamation-v3-source195.result.json",
+      "bytes": 286,
+      "sha256": "f0f716ac1fbdd470260321bf0f1441500663b1e12cca9b587aa6f2b8e225f2c5"
+    },
+    {
+      "path": "macro-reclamation-v3-source195.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "macro-reclamation-v3-source195.stdout",
+      "bytes": 110,
+      "sha256": "1ad4832cdb8a1a57b1e3ddaaa9cc17c51d13b4245c3fd5dd2fec1805af40fbfe"
+    },
+    {
+      "path": "macro-saved-state-reclamation-evidence.json",
+      "bytes": 1680,
+      "sha256": "c009ce68417120e64362b927d70c53b1bb450d181699c1cedc25a2705c91d2c3"
+    }
+  ]
+}

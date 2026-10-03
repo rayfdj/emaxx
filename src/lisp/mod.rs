@@ -1153,8 +1153,7 @@ fn extract_file_local_variable(source: &str, variable: &str) -> Option<String> {
 
 fn parse_shorthand_string(value: &types::Value) -> Result<String, types::LispError> {
     match value.kind() {
-        types::Kind::String(text) => Ok(text.to_string()),
-        types::Kind::StringObject(state) => Ok(state.borrow().text.clone()),
+        types::Kind::StringObject(state) => Ok(state.borrow().text()),
         other => Err(types::LispError::WrongTypeArgument(
             "stringp".into(),
             other.value(),
@@ -1986,12 +1985,13 @@ mod tests {
         let materialized = interp
             .materialize_read_object_literals(literal, &mut env)
             .expect("reader construction must treat every closure slot as data");
-        let super::types::Kind::Record(record_id) = materialized.kind() else {
+        let super::types::Kind::Closure(closure) = materialized.kind() else {
             panic!("byte-code reader form must become a closure pseudovector");
         };
-        let record = interp
-            .find_record(record_id)
-            .expect("materialized closure record");
-        assert_eq!(record.slots[4], callable_looking_data);
+        // lread.c:bytecode_from_rev_list constructs PVEC_CLOSURE and keeps
+        // this slot as data. Ordinary GNU confirms the five-slot object
+        // without invoking the callable-looking documentation form.
+        assert_eq!(closure.public_len(), 5);
+        assert_eq!(closure.get(4), Some(callable_looking_data));
     }
 }

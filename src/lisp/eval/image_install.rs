@@ -114,6 +114,10 @@ impl Interpreter {
     /// a load the image's dump-time values have replaced them, and this
     /// is the second application GNU makes in an initialized process.
     pub(crate) fn init_after_pdump_load(&mut self) -> Result<(), LispError> {
+        // emacs.c:main calls macros.c:init_macros in the new process.
+        // A saved Lisp array remains in the image, but execution does not
+        // resume merely because it was the active macro at dump time.
+        self.set_global_binding("executing-kbd-macro", Value::Nil);
         // emacs.c:main computes this after load_pdump, from this process's
         // locale rather than the locale under which the image was built.
         self.set_global_binding(

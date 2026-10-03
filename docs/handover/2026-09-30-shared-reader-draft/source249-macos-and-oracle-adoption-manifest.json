@@ -1,0 +1,388 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "macos_rust": {
+      "status": "passed",
+      "source_commit": "99e61fca563a8c2f597b20fc56a539cdd1c2f575",
+      "published_source_equivalent_commit": "99e61fca563a8c2f597b20fc56a539cdd1c2f575",
+      "validation_commit_with_proposed_oracle_pin": "1c0898fc58f1f7e2fffc5a245a1f8ff7894832a0",
+      "source_manifest": "source249-manifest.json",
+      "complete_patch_sha256": "5de16f5b251c32606cdf0ef6e5578483ac7276087ffe75f196813cba705dc3d5",
+      "validation_checkout": {
+        "dirty": false,
+        "head": "1c0898fc58f1f7e2fffc5a245a1f8ff7894832a0"
+      },
+      "verified_source_equivalent_inputs": 476,
+      "library_passed": 3001,
+      "library_ignored": 2,
+      "cargo_passed": {
+        "bins": 60,
+        "integration": 39
+      },
+      "total_passed": 3100,
+      "native_artifact_identity": "passed",
+      "native_identity_raw_lines": [
+        "test unchanged_gnu_sources_produce_identical_native_artifacts ... ok"
+      ],
+      "retained_files_verified": 4,
+      "test_binary_sha256": "e06fa42bd32fc279741582f25de36d4acf7de65beac933cc3caee08f5a079beb",
+      "summary_sha256": "c51dd84a67d300e80d892e90635436d6bf6918a14b2d915d790b36fcd3641531",
+      "qualification": "Complete group and Cargo result summaries cross-checked with raw logs and unchanged inventory counts. Post-run retained images do not establish which individual test used each file. Frozen and terminal runs are separate."
+    },
+    "oracle_adoption": {
+      "status": "replacement Darwin reference adopted",
+      "source_revision": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+      "old_binary_sha256": "591acf7b5da3582dca93367b6a69935dbff9c69a9310f05a1927fa230b428f8d",
+      "replacement_binary_sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+      "old_lock_sha256": "6bbb6816a16cd32112e4d5fb512e87510ed9fed1d78aafcac183b1137172b0e7",
+      "replacement_lock_sha256": "bef5fc6f7291e4a5389fb59f71cc6bc99554998f5e5f3f0c441c3cbe2333c72d",
+      "changed_lock_fields": [
+        "emacs_binary_sha256"
+      ],
+      "runtime_inputs_unchanged": 476,
+      "canonical_inventory_sha256": "a1f87443aad516a128001595d7c69fbbaace40b420d8cd1e9e5ec178aa2fd615",
+      "inventory_files": 519,
+      "inventory_outcomes": 7921,
+      "inventory_method": "Exact list-format rendering of fresh GNU reports from all 519 files in the completed ordinary full frozen run, byte-identical to the committed canonical inventory. No separate list invocation or selector change.",
+      "complete_macos_rust_passes": 3100,
+      "macos_frozen_matching": 7915,
+      "macos_frozen_mismatching": 6,
+      "actual_gnu_inputs_verified": [
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+          "artifact": "emacs",
+          "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+          "bytes": 9600848
+        },
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+          "artifact": "emacs.pdmp",
+          "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+          "bytes": 22954264
+        },
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/config.h",
+          "artifact": "config.h",
+          "sha256": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+          "bytes": 116675
+        },
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/Makefile",
+          "artifact": "Makefile",
+          "sha256": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778",
+          "bytes": 38033
+        }
+      ],
+      "goal_complete": false,
+      "qualification": "Requested rebuild is an explicit baseline migration: same pristine revision, configure/capability contract, Apple libxml2 and byte-identical generated native ABI/C manifests. The previous pin remains preserved. Six existing build-feature skip diagnostics remain strict comparison failures; skips/expected failures are not passes. Main, Linux pin, runtime source249 and all inventories/selectors/timeouts remain unchanged. Final-source validation and performance remain open."
+    },
+    "terminal_launch": {
+      "pid": 12347,
+      "command": [
+        "python3",
+        "-B",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-source249-rebuilt-full-tty.py"
+      ],
+      "helper_sha256": "4ea7d44a3f773eb4dce572634bdcd03a771675341c294d1158b34166c135f749"
+    },
+    "qualification": "Closed complete source249 macOS Rust: 3100 passes, two existing ignores, native artifact identity, every raw library name and four retained executable/image inputs verified. The requested rebuilt GNU reference is explicitly adopted with the old pin/configuration preserved. Fresh GNU inventory from all 519 full-run reports is byte-identical to the unchanged committed inventory. Six macOS frozen diagnostic differences remain failures. Terminal12347 is active and its included auditor is prepared, not a passing result. The separate common-string draft and final architecture/performance goal remain unfinished."
+  },
+  "archive": {
+    "path": "source249-macos-and-oracle-adoption.tar.gz",
+    "bytes": 245615,
+    "sha256": "ce3aeab4fcb5962a8cf5daa88b49c45ae613e16ed38d5aa10aa34c545cc1ac0f"
+  },
+  "files": [
+    {
+      "path": "adopt-rebuilt-gnu-macos-reference.py",
+      "bytes": 5134,
+      "sha256": "48d8cb74f9a8121777f898c6e9e323f47696ca70a81f584e3acfcbfe9846a69b"
+    },
+    {
+      "path": "audit-source249-rebuilt-macos-names.py",
+      "bytes": 1695,
+      "sha256": "99b36bfcf571f207885be25c541c334091fd0bc754e770cc9e547efbeeb0d047"
+    },
+    {
+      "path": "audit-source249-rebuilt-terminal.py",
+      "bytes": 5735,
+      "sha256": "7ca0ad8f2ec656638aead9894b8740e5fe3a0d103d632f015ed28fe4797cc97c"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/bins.log",
+      "bytes": 5536,
+      "sha256": "6c3798b4c1c0d3a9706868a69f14b5a746de11af35c8894b465cb3df6378f750"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/build.log",
+      "bytes": 208369,
+      "sha256": "396656815008427d5a4eaca180f75b92a13dbc3a339e3f905bfd3460f4993957"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/ignored-inventory.txt",
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/integration.log",
+      "bytes": 4910,
+      "sha256": "b6f16dcd0953015a0c19ba1429501f6babf94d9af3a9b4b24796a5dc4551eae7"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/inventory.txt",
+      "bytes": 265059,
+      "sha256": "2214f4ab453f8e736385ab4a20716b7be398b1e9a4da9351548839006dbd5f0e"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/metadata.log",
+      "bytes": 14734,
+      "sha256": "e335db1938000926d1b09cee77849944e54c9551e08722e5bafe2e1568611786"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-batch.json",
+      "bytes": 538,
+      "sha256": "1264a4bb3361163579a2e937a8ddfcc2538806b2682ed8253fb8669a44df9351"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-batch.log",
+      "bytes": 4237,
+      "sha256": "16fe5c3a579c050070e996478dec41fe02b28c94fa275b090ec4efec097fc66a"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-compat_runtime.json",
+      "bytes": 582,
+      "sha256": "d1eba72cc2a74a9a3529eb2b4638ed4910f41918e8c3e49d2a2c97e2ca877a08"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-compat_runtime.log",
+      "bytes": 10202,
+      "sha256": "b55da66d9767fa1c07a689b82c9730180a3a9dc751461ebbc43c6b06d9e49c06"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-eval_01.json",
+      "bytes": 552,
+      "sha256": "66fe1bd1a4219b7de84da595adbd95c17b924de05eafac4ddc6331612a11181a"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-eval_01.log",
+      "bytes": 36578,
+      "sha256": "7f2bdf0a5224659517d275cc0c88de3d9b408173588ccec8da5f5f8807d50aaf"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-eval_02.json",
+      "bytes": 557,
+      "sha256": "24bfcda65e0199623cfee15dbb664a6fe12dbe633dfbee85c165fd760334ab27"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-eval_02.log",
+      "bytes": 69162,
+      "sha256": "b52e7a064e106da97e8c62bc8d849c0ea63b83cbc9cb787155c9ad8dc1bda3df"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-eval_03.json",
+      "bytes": 557,
+      "sha256": "a12b0b79c1edb88310689577c97e747525f45ab970f6c1eea80b2487e702c4d3"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-eval_03.log",
+      "bytes": 30516,
+      "sha256": "04550a605142806f29bb699c384be2001e4ef087f1df3c625c790b8e3c5217b9"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-eval_04.json",
+      "bytes": 557,
+      "sha256": "223a7eb46459dd58578c3f366779fa7b2937f9b58d23e641d63c65cc53191f1f"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-eval_04.log",
+      "bytes": 24662,
+      "sha256": "31999c502b45e4b014e6b1a48570b856c3c4d5e9a76e001c0de5a2f853fac30d"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-eval_05.json",
+      "bytes": 557,
+      "sha256": "518916fb25ff6d5fef58d3161bcd4f73de6359b226164b95261218262a0ab117"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-eval_05.log",
+      "bytes": 77275,
+      "sha256": "3d0fd9db67ea208285ec9e908a05568154964859fcfdc050418c98e7c2f0fda7"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-lightweight.json",
+      "bytes": 951,
+      "sha256": "074623c074c42bdde72d224274e92509ebd5322c90ecc4ad3d340183824f3580"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-lightweight.log",
+      "bytes": 51059,
+      "sha256": "fdf88d4df4a8cd4f63dc517350d5dd5b4f30fbac26d4028e7d208898b87b38e7"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-primitives.json",
+      "bytes": 553,
+      "sha256": "d8c40e815ca919482b09fa6e9661877059c4802e63753d8025074aeadba2862c"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-primitives.log",
+      "bytes": 63405,
+      "sha256": "974a8e327b533d4d71c10b3fb8089646d4c9960f94f61f9894ff3d18550aa520"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-tty.json",
+      "bytes": 524,
+      "sha256": "5e67f6f41fec4468eaac994795747632f8f9bb39c37736fdda921aba8a367332"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/repeat-01-tty.log",
+      "bytes": 5167,
+      "sha256": "855415b63224a10bd6fbf66234e143dd0c4bba5b530e96c074919d564561682b"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/retained-inputs/manifest.json",
+      "bytes": 1605,
+      "sha256": "9c5d64086c39c418408e47ce1e49f830a82199123c12e823519f73f88bb552d8"
+    },
+    {
+      "path": "full-gate-source249-rebuilt/summary.json",
+      "bytes": 15541,
+      "sha256": "c51dd84a67d300e80d892e90635436d6bf6918a14b2d915d790b36fcd3641531"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source249-macos-and-oracle-adoption.py",
+      "bytes": 2837,
+      "sha256": "38561e3efc50dc2429e5e4f9b06b980da89da8588e75fe654636dbde4b705418"
+    },
+    {
+      "path": "queue-source249-rebuilt-full-gate.py",
+      "bytes": 4573,
+      "sha256": "e253cf2f7b57aa3149ad01ec130b2c3568101868597ab1c9cc4c10c8dcfe4939"
+    },
+    {
+      "path": "queue-source249-rebuilt-full-tty.py",
+      "bytes": 4823,
+      "sha256": "4ea7d44a3f773eb4dce572634bdcd03a771675341c294d1158b34166c135f749"
+    },
+    {
+      "path": "rebuilt-gnu-adoption-previous-local-config.json",
+      "bytes": 139,
+      "sha256": "50908cb7f7ea338ac3eee0b81bf1672bec9522b0a1fb88111f11ce3898959602"
+    },
+    {
+      "path": "rebuilt-gnu-adoption-previous-lock.json",
+      "bytes": 774,
+      "sha256": "6bbb6816a16cd32112e4d5fb512e87510ed9fed1d78aafcac183b1137172b0e7"
+    },
+    {
+      "path": "rebuilt-gnu-adoption-replacement-local-config.json",
+      "bytes": 229,
+      "sha256": "7f93cfacb6a7a7d25737069874747f128703c365a268e988e95cc719d4b93a25"
+    },
+    {
+      "path": "rebuilt-gnu-adoption-replacement-lock.json",
+      "bytes": 774,
+      "sha256": "bef5fc6f7291e4a5389fb59f71cc6bc99554998f5e5f3f0c441c3cbe2333c72d"
+    },
+    {
+      "path": "rebuilt-gnu-adoption-result.json",
+      "bytes": 2686,
+      "sha256": "4d34adf5ec1e2d170f636c37748a53dc3e9bfed3f29eb244d1ae7e3560fbb4f1"
+    },
+    {
+      "path": "rebuilt-gnu-canonical-inventory-from-full-run.txt",
+      "bytes": 323622,
+      "sha256": "a1f87443aad516a128001595d7c69fbbaace40b420d8cd1e9e5ec178aa2fd615"
+    },
+    {
+      "path": "source249-manifest.json",
+      "bytes": 54595,
+      "sha256": "9055fe6d69d95ee12aaa55a76bf4d075a929cb778d9f9545e3438ea2a6be9daa"
+    },
+    {
+      "path": "source249-rebuilt-full-gate-command.json",
+      "bytes": 1364,
+      "sha256": "82c5fb6300b259493c2383564b05ae7991037558c1a3be0b92b0e7b346082458"
+    },
+    {
+      "path": "source249-rebuilt-full-gate-driver.log",
+      "bytes": 436,
+      "sha256": "35fef45430bb6a81ef48d74aa4e9697cb8eaea40993330bd3bd86bb99e83275b"
+    },
+    {
+      "path": "source249-rebuilt-full-gate-launch.json",
+      "bytes": 403,
+      "sha256": "e199ada76cf6ed9962a0f9c3147aa6f45a0eef69aa29848e9322d167fca78af9"
+    },
+    {
+      "path": "source249-rebuilt-full-gate-queue-result.json",
+      "bytes": 479,
+      "sha256": "ea3eaca8e0ca73f4d2f6c6a0de0bbef7f3898ce88d87b5e6963e4a9212b16e15"
+    },
+    {
+      "path": "source249-rebuilt-full-gate-queue-state-snapshot-20261001T1606Z.json",
+      "bytes": 479,
+      "sha256": "ea3eaca8e0ca73f4d2f6c6a0de0bbef7f3898ce88d87b5e6963e4a9212b16e15"
+    },
+    {
+      "path": "source249-rebuilt-full-gate-queue-state.json",
+      "bytes": 480,
+      "sha256": "14536d68d6f9e02ff2bad3a2e316320bc51ad3b7ff31b1550553999a59722b2e"
+    },
+    {
+      "path": "source249-rebuilt-full-gate-result.json",
+      "bytes": 16929,
+      "sha256": "fcac97ecaf29c8a1ef6802574d1d2dc6739aa42b2dd86f6ae0a86b7193798205"
+    },
+    {
+      "path": "source249-rebuilt-full-gate.log",
+      "bytes": 882,
+      "sha256": "26af094184ef7d39789683e8d45dfaf9e138f9d125c920df38a6ddd10273a4f1"
+    },
+    {
+      "path": "source249-rebuilt-full-tty-command.json",
+      "bytes": 9167,
+      "sha256": "87f587076666a7e600da7b8e0715052cd54bc3f44ed9baeef653f23b6b45f72e"
+    },
+    {
+      "path": "source249-rebuilt-full-tty-launch.json",
+      "bytes": 262,
+      "sha256": "791ce8ad7cc56e46abf6088c091bd2d2061a463a9ca0da8ff390ecf12dcde285"
+    },
+    {
+      "path": "source249-rebuilt-full-tty-queue-state-snapshot-20261001T1606Z.json",
+      "bytes": 585,
+      "sha256": "4adb27ef343f72267f86d39f76f003697c5e31f46574eb9586528f7350dcf8be"
+    },
+    {
+      "path": "source249-rebuilt-macos-retention-command.json",
+      "bytes": 404,
+      "sha256": "b8324108c16ae38493152b168fe51ac70fa4985af10398e992cbfbd1c63b4804"
+    },
+    {
+      "path": "source249-rebuilt-macos-retention-result.json",
+      "bytes": 20,
+      "sha256": "8f0c1c520d4343f54805dcdaa74287fb690f4d610186020a9343b1407654bdbd"
+    },
+    {
+      "path": "source249-rebuilt-macos-rust-audit.json",
+      "bytes": 1303,
+      "sha256": "c8f89278bbf5b73f58b97fd53c7f6df717fa46009947f914254c0902de540446"
+    },
+    {
+      "path": "source249-rebuilt-macos-rust-name-audit.json",
+      "bytes": 414,
+      "sha256": "f75a82af9bbd33e911e16aae2d40924554ae63cc8d37f3c0f8dd6f3e4759334a"
+    },
+    {
+      "path": "verify-source249-rebuilt-macos-rust.py",
+      "bytes": 4414,
+      "sha256": "c1cfd52f67d2ddd61923b741cc52745efa7c74ee346469c33a1829ecd9170c9f"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

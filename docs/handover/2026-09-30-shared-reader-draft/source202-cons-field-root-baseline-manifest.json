@@ -1,0 +1,129 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "two expected architectural failures",
+    "changed_inputs": [
+      "src/lisp/native_comp/runtime.rs",
+      "src/lisp/types.rs"
+    ],
+    "failures": [
+      "lisp::native_comp::runtime::tests::conservative_cons_roots_accept_only_gnu_field_and_tag_offsets",
+      "lisp::types::tests::retained_cons_fields_use_one_word_and_preserve_slot_identity"
+    ],
+    "binary_sha256": "9252cfcbc66b1adfca142c94606483cb0641eb296ff9e4275f79346e15959f3a",
+    "qualification": "Unchanged source201 runtime; only two new tests differ. Compiler artifact is fresh after package clean. Full patch replay separately verifies all source bytes."
+  },
+  "archive": {
+    "path": "source202-cons-field-root-baseline.tar.gz",
+    "bytes": 150017,
+    "sha256": "0e966ea052e6c6dac904fc45e459e4227c306d92a8b61323e4a023244b0a042c"
+  },
+  "files": [
+    {
+      "path": "audit-source202-patch.py",
+      "bytes": 2787,
+      "sha256": "b1dc36fe3fdcfdd90b5518d299cbba6fb25f72685cff2be6d6d8378d3363370a"
+    },
+    {
+      "path": "freeze-cons-candidate.py",
+      "bytes": 2063,
+      "sha256": "18911cbf4e2cd6722c28405a5cf3528ed3f5891514e2a2fc5c3d36c7e580990c"
+    },
+    {
+      "path": "run-source202-baseline.py",
+      "bytes": 933,
+      "sha256": "2964310e1f0670dd829600e99f1cd9ecb4f4c7438c41e13786172e6d06dc4d19"
+    },
+    {
+      "path": "source202-base.json",
+      "bytes": 358,
+      "sha256": "aa9ab0954fcbf186cf1d0af61a2ab7f3c16c00db3c61392b5e334a643b0ec69e"
+    },
+    {
+      "path": "source202-baseline-audit.json",
+      "bytes": 624,
+      "sha256": "e3afd6f7fea60dd5700b04fa223920ec068987521fce165e68159569868a3328"
+    },
+    {
+      "path": "source202-baseline-driver.log",
+      "bytes": 186,
+      "sha256": "cebc863bef872f9936369e01e2a1f20ce4ed451c58e719ac5b44f94a9c819bd5"
+    },
+    {
+      "path": "source202-baseline-launch.json",
+      "bytes": 204,
+      "sha256": "c81de38d2dae59f5107ca4c91206e8e68dc6e036738d60960ea5634f1b92cd66"
+    },
+    {
+      "path": "source202-baseline-result.json",
+      "bytes": 200,
+      "sha256": "23c1644e5b4990d265b0d5eca0cb3bf26286d52663dd4a67ae0ff223ae4c02b4"
+    },
+    {
+      "path": "source202-build-cache-copy.json",
+      "bytes": 502,
+      "sha256": "097bb6ee80ad53e92ee2e92cea56885d1ad904e865864e24aaf80dff84a212aa"
+    },
+    {
+      "path": "source202-clean-result.json",
+      "bytes": 189,
+      "sha256": "6d7863a5b4187a33a9e057bd8591d5a7004b6b2d7a16a12c13ad61fcd6148039"
+    },
+    {
+      "path": "source202-complete.patch",
+      "bytes": 248213,
+      "sha256": "6fc899dc0e6f39d167cbb7883285f38f3a113542c3fb3f5d54b75d6410dc6779"
+    },
+    {
+      "path": "source202-gate-build-command.json",
+      "bytes": 1112,
+      "sha256": "0f4d45146ac94fe0455cc2fbaf99343e216a87291be8346e1259e29fe3e44cac"
+    },
+    {
+      "path": "source202-gate-build-result.json",
+      "bytes": 85,
+      "sha256": "b4f97cd43397cf7a1541faad997c38a69900cb5f70ac0bc5ff24a5585b5484e0"
+    },
+    {
+      "path": "source202-gate-build.log",
+      "bytes": 213530,
+      "sha256": "d06002293cd884ac533f1318ed1975f7d08ec7e35bfb15d4ffa536022545b0e0"
+    },
+    {
+      "path": "source202-gate-focused-command.json",
+      "bytes": 1602,
+      "sha256": "3be2f89e13064a2e87550d49ca8739cb1b17a2aba213ae7049d95bc9bc6074ef"
+    },
+    {
+      "path": "source202-gate-focused-result.json",
+      "bytes": 93,
+      "sha256": "8140de2d9d73b5da1460abe99507992e515027841063378a650e912a883c1f51"
+    },
+    {
+      "path": "source202-gate-focused.log",
+      "bytes": 1083,
+      "sha256": "fa3cd9c870949d33865c01d6371c28dabf33ee765d04a06b836e0eea40993a42"
+    },
+    {
+      "path": "source202-gate-inventory.txt",
+      "bytes": 261054,
+      "sha256": "1f1471c3706f1cdf84e8664a0a44a1b30aef1722616ceda1bc015b423e5043fe"
+    },
+    {
+      "path": "source202-manifest.json",
+      "bytes": 46477,
+      "sha256": "89efff312608b144db9a837bb660b98ba7098b83bab9fb2a9d4c28b38736085d"
+    },
+    {
+      "path": "source202-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "97fe14ddfbdc700e39ce84fa0113faeb88d47d9ee1e68358ad77e84372b7c445"
+    },
+    {
+      "path": "test-cons202.py",
+      "bytes": 4657,
+      "sha256": "5e72e562b1a94bea6a9082122ce353738f26967b189e3f725c3842319025c7ee"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

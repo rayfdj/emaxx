@@ -1,0 +1,222 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "verified failed gate",
+    "source_commit": "d186d40bf014ca53d0a2652b4e2f2d921c5cb009",
+    "total_inventory": 2970,
+    "groups": [
+      {
+        "group": "eval_01",
+        "passed": 386,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "group": "eval_02",
+        "passed": 295,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "group": "eval_03",
+        "passed": 321,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "group": "eval_04",
+        "passed": 254,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "group": "eval_05",
+        "passed": 352,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "group": "primitives",
+        "passed": 624,
+        "failed": 2,
+        "failures": [
+          "lisp::primitives::tests::native_pseudovector_census_matches_gnu_word_layout",
+          "lisp::primitives::tests::native_vector_and_closure_census_matches_gnu_word_layout"
+        ]
+      }
+    ],
+    "raw_passed": 2232,
+    "raw_failed": 2,
+    "original_reclamation_assertions_passed": [
+      "threads_retain_lexical_caller_roots_across_separate_callee_environments",
+      "suspended_bytecode_retains_operand_and_unwind_roots"
+    ],
+    "unexecuted": {
+      "compat_runtime": 86,
+      "tty": 60,
+      "batch": 50,
+      "lightweight": 540
+    },
+    "cargo_stages_unexecuted": [
+      "bins",
+      "integration"
+    ],
+    "retained_binary": {
+      "original": "/home/runner/work/emaxx/emaxx/emaxx/target/gate/deps/emaxx-dc7c11a9a28e5fda",
+      "artifact": "libtest",
+      "sha256": "6ea03c1ac6c36eea7cdbdbd8a32369954b5a079b266d4950dd4e1a942aa663bc",
+      "bytes": 34434304
+    },
+    "retained_image": {
+      "original": "target/grouped-gate/fixture-images/loadup-6ea03c1a-988ea42f.pdmp",
+      "artifact": "fixture-images/loadup-6ea03c1a-988ea42f.pdmp",
+      "sha256": "85ebb975393d794a1b8fdb1a27ba835161ab7b99484f4cae70c217298c52827e",
+      "bytes": 22496224
+    },
+    "summary_sha256": "c58e9f00fac7dbe7a43fba973c776355a228610a1329f74ebecd8c77f9d6348a",
+    "qualification": "Both first deltas are 47 vector slots below expected. Later deltas match. No cause or repair established; no new cons lightweight controls ran in this failed gate."
+  },
+  "archive": {
+    "path": "source204-linux-rust-failure.tar.gz",
+    "bytes": 884636,
+    "sha256": "2dd9137630d4507e58e3dff0d8738bf514a50441ae0023b3cf6e8475a51ea365"
+  },
+  "files": [
+    {
+      "path": "audit-source204-linux-failure.py",
+      "bytes": 2767,
+      "sha256": "9b44decc63c9d5d8373c544841a96e5cb0d5b8a75c8fe9261da5fd897719baf5"
+    },
+    {
+      "path": "check-source204-census-diagnosis.py",
+      "bytes": 3980,
+      "sha256": "ebbb5bbc7b3fa59889d7b2a99cc57dbca001611c6cc04d0933545de7d8d910ea"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/metadata/oracle.txt",
+      "bytes": 449,
+      "sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/build.log",
+      "bytes": 174752,
+      "sha256": "696bbe5eb7d577e971643af0683ca89fdcce83053856d2f1ae032c3ce3f4fa62"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/ignored-inventory.txt",
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/inventory.txt",
+      "bytes": 261850,
+      "sha256": "a2c11f0d881c50ad3cf91eb6b15b76813d9b795e631ad71bf278edef2cad436f"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_01.json",
+      "bytes": 453,
+      "sha256": "b82f09db93e8a43061b51ec6ac4e14def9f3df26e1d30ca8e7f27e55f651c2ee"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_01.log",
+      "bytes": 36578,
+      "sha256": "cfae0f531fc30c1cd079775790a9f89e80c856eddaef631081eb9b8361dc18bc"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_02.json",
+      "bytes": 458,
+      "sha256": "82d53af485b70f4d498a7cee552085cf4129d691a2a44493b3c40eb7ce5844c7"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_02.log",
+      "bytes": 66512,
+      "sha256": "924113b6a34f592b1602aab2d4adeecf7e6ac02d3f4f86369fb0fd5fd2d30447"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_03.json",
+      "bytes": 458,
+      "sha256": "3d67cf40b5eb7d682cb92210950f553f11c33c3a04c448a3c0b98bb9c60acaf3"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_03.log",
+      "bytes": 30494,
+      "sha256": "25075a34db668dcdd51b74b9b47e3254928ee6dacd3719db1436eeab733a73e4"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_04.json",
+      "bytes": 457,
+      "sha256": "92d0b80edb2527a785c9727ef86e1fd2e2497c49c339d9a59c35ca27c1df717f"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_04.log",
+      "bytes": 24397,
+      "sha256": "3c498c06d28f81e3a50c95ce6642cbc46118532ee52541d7a1160333e8a58dc6"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_05.json",
+      "bytes": 453,
+      "sha256": "e5d695389e53eef69ab1f3069deb8f720d72ad03ef1ef99edc99d73051fbf72a"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-eval_05.log",
+      "bytes": 69335,
+      "sha256": "5c486fad4924e3400d281ad38593ee4144f828ccd8d8a03c648f94f8c6eb7ebb"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-primitives.json",
+      "bytes": 463,
+      "sha256": "4ec9a2fa63427eae03c4a92b25ffccbed16dddc8400e31e037252c1d1f345b19"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/repeat-01-primitives.log",
+      "bytes": 63513,
+      "sha256": "631fca261048ade23fe54230d4737dc8ac763bc07c7b60361d33f70725c9d3c3"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/retained-inputs/manifest.json",
+      "bytes": 769,
+      "sha256": "74bf8db81b534d8230c840357fcf8a2506adf7358cb99ae8ecba5451bbd1aae4"
+    },
+    {
+      "path": "linux/ordinary-linux-d186d40bf014ca53d0a2652b4e2f2d921c5cb009/rust/summary.json",
+      "bytes": 1952,
+      "sha256": "c58e9f00fac7dbe7a43fba973c776355a228610a1329f74ebecd8c77f9d6348a"
+    },
+    {
+      "path": "package-source204-results-and205-baseline.py",
+      "bytes": 3013,
+      "sha256": "b778f84daf0d241f4b7ee45d1c461073df4fd2c592204828cf62a25ebcba9b76"
+    },
+    {
+      "path": "source204-census-diagnosis-local-checks.json",
+      "bytes": 823,
+      "sha256": "816948aba81be5ad3a85bc1655ae9178c4e2d95768d7598eeb8abf2639f6c3db"
+    },
+    {
+      "path": "source204-census-inspected-abi.txt",
+      "bytes": 6039485,
+      "sha256": "20691d8781f55fd61cd67514b514049a02be3b5bbab5ee5e7c263b84a5b917f3"
+    },
+    {
+      "path": "source204-linux-rust-ci.log",
+      "bytes": 228172,
+      "sha256": "b358eebfee6331115616bb63b394bdecdfe43085745bc284b3aad594e3acfefc"
+    },
+    {
+      "path": "source204-linux-rust-download.json",
+      "bytes": 321,
+      "sha256": "5128317f4e6f890ff7c332c8f080821fc3ab7add87413a44488d0b8557151510"
+    },
+    {
+      "path": "source204-linux-rust-failure-audit.json",
+      "bytes": 2142,
+      "sha256": "7de733fc57c0adca13009c01a067107781e458e2f021f8d4dc47992c113fe6dc"
+    },
+    {
+      "path": "source204-linux-rust-final-state.json",
+      "bytes": 4100,
+      "sha256": "ee170606532692a05d1732afad2a23d7c5f09810bd9c6dd89b63a7584207870d"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

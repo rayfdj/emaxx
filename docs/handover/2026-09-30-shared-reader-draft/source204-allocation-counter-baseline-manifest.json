@@ -1,0 +1,87 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "source_head": "d186d40bf014ca53d0a2652b4e2f2d921c5cb009",
+    "ordinary_comparison": "mismatch",
+    "sizes": [
+      1,
+      17,
+      257
+    ],
+    "observed_gap": "All seven exposed counters lack real updates; memory-use-counts signals unsupported. GNU allocates and reports actual objects/element lengths.",
+    "qualification": "Preserved negative baseline, no repair or accounting certification. Counter values must come from actual allocations, not requested loop sizes. Symbol authority, text-property representation, physical byte charges and forwarded variable semantics require completion."
+  },
+  "archive": {
+    "path": "source204-allocation-counter-baseline.tar.gz",
+    "bytes": 5510,
+    "sha256": "d5917c4f9e106281a1da37ce343ba0b1508f83aee6860a9f5b3159959e38d4a8"
+  },
+  "files": [
+    {
+      "path": "allocation-counter-baseline.el",
+      "bytes": 1530,
+      "sha256": "ae95b85a5576e506706eba363302c1f16f036553897f628aaecee4cdc8cfbd63"
+    },
+    {
+      "path": "package-source204-publication-and-accounting.py",
+      "bytes": 3856,
+      "sha256": "22c6c6e0b1d6bb354289dc32d59a6a124f93da9c9544bc76bf800bf882426aeb"
+    },
+    {
+      "path": "probe-allocation-counter-baseline.py",
+      "bytes": 2926,
+      "sha256": "7fb2bb9308325171ff808be323387bd3ca5189536231aa8caeb0533c02c0e66e"
+    },
+    {
+      "path": "source204-allocation-accounting-review-inputs.json",
+      "bytes": 1682,
+      "sha256": "1003ebd8a4551114626331d302669fb023d7afc80c29514bbacb2a98fd19b862"
+    },
+    {
+      "path": "source204-allocation-counter-baseline-comparison.json",
+      "bytes": 1098,
+      "sha256": "8ed402cd7490d1f70fe25f58e14aa94eb5b9a30ba84ede3848e36e6aab9b23cb"
+    },
+    {
+      "path": "source204-allocation-counter-baseline-emaxx-command.json",
+      "bytes": 2908,
+      "sha256": "85d323ae3ccc355425c6a39d7a05c02b4b825dfd5085c49ceb22fc8b067a5535"
+    },
+    {
+      "path": "source204-allocation-counter-baseline-emaxx-result.json",
+      "bytes": 306,
+      "sha256": "ff55d07d8f5030defdaf4a62c8b27d7e9c787a3d2121ff99cc42b0035367d297"
+    },
+    {
+      "path": "source204-allocation-counter-baseline-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source204-allocation-counter-baseline-emaxx.stdout",
+      "bytes": 332,
+      "sha256": "57fe0285b8f5da26f70538c75690411fb604db12a67e49e050549beeb0604315"
+    },
+    {
+      "path": "source204-allocation-counter-baseline-gnu-command.json",
+      "bytes": 2791,
+      "sha256": "31e81d9ba2ca7bbe4781dfb95c6752daceef35deecd5d21e9603d6355b67213a"
+    },
+    {
+      "path": "source204-allocation-counter-baseline-gnu-result.json",
+      "bytes": 306,
+      "sha256": "4c34b9b91d1cdd95ec245db8733958659108c24dc0fcc6236d2d45fee935ed3d"
+    },
+    {
+      "path": "source204-allocation-counter-baseline-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source204-allocation-counter-baseline-gnu.stdout",
+      "bytes": 272,
+      "sha256": "7f5e3d804d44b5c8b2e367ad10e760fb73f29bdf93fd133b55b5f584c4cdead2"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

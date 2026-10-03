@@ -1,0 +1,11 @@
+{
+  "status": "Uncompiled draft only; not applied to the source196 worktree or frozen validation checkout.",
+  "base_source": "source196",
+  "source_manifest": "source196-manifest.json",
+  "path": "src/lisp/primitives/dispatch/lists.rs",
+  "original_sha256": "f703688143e4395e2e3cde954677c147159ac4ffe99324f96a386c1a1b47c6c2",
+  "draft_sha256": "bca7f4a311ec3d16832e0fbdac39345224adf3852ada61f409d05f920e908c39",
+  "patch_sha256": "4d51644d8164829caf2a9c2dd77f888cb98f73ff6820af696742e9d6cc71dcb1",
+  "change": "Replace the five-word host RootedVec and its mutex-protected registration with GNU macro saved-state cons pairs plus the existing borrowed stack-root scope. Ordinary cons allocation supplies the actual GC charge.",
+  "required_evidence": "Compile, strict checks, nested and collecting macro controls, explicit weak reclamation after macro completion/replacement, ordinary same-input GNU allocation evidence, release paths, complete final-source validation and measured costs. No performance gain or allocation-accounting completion claimed."
+}

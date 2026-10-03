@@ -1,0 +1,71 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "passed",
+    "scenarios": 226,
+    "verified_checkpoints": 686,
+    "screen_comparisons": 658,
+    "filesystem_comparisons": 28,
+    "log_sha256": "2619d796a06942ca54f563a17b2c37558522743e0ec7e1f61ccf46c9c528bfe2",
+    "inputs_rehashed": 8,
+    "qualification": "Complete unchanged default scenario, screen and filesystem inventories match raw reports in order. Source/ABI-matched Darwin GNU is not the frozen executable. No performance certification."
+  },
+  "archive": {
+    "path": "source207-complete-terminal.tar.gz",
+    "bytes": 90146,
+    "sha256": "778700a97e51fff54d8cbfb28bab78afde0943195b07769e503c4663bddfa010"
+  },
+  "files": [
+    {
+      "path": "package-source207-terminal.py",
+      "bytes": 949,
+      "sha256": "d91417b7a2bc670d3051f1268449165c6de817ef40b15406e6302801a4377c3b"
+    },
+    {
+      "path": "run-source207-full-tty.py",
+      "bytes": 3393,
+      "sha256": "b77866cd7046b75a3b12a1e53754e5fff50f89903644c6da36194e44d164a200"
+    },
+    {
+      "path": "source207-base.json",
+      "bytes": 390,
+      "sha256": "6aba527499ff8a637c4934d62a14f00cdaf3a7c408d38ee4bf71ab17decb08ad"
+    },
+    {
+      "path": "source207-complete-terminal-audit.json",
+      "bytes": 456,
+      "sha256": "9ecfd3921f9a323904655a54affeb01b0c2987fa2b33c2d3df4349479892b099"
+    },
+    {
+      "path": "source207-complete.patch",
+      "bytes": 258475,
+      "sha256": "04ccf6c3ba2119b1b4a503e34bd339a5ea55da2352648b1570bebb8127549daa"
+    },
+    {
+      "path": "source207-full-ttydiff-command.json",
+      "bytes": 8914,
+      "sha256": "0a418bc32cf8701c96fad6360fea67d61bd934a4da8a22acb3488d7e6fee0040"
+    },
+    {
+      "path": "source207-full-ttydiff-result.json",
+      "bytes": 267,
+      "sha256": "8487f5309946f92909f3942341798c7ea7c01d5505c3de7683dd0253b4eed708"
+    },
+    {
+      "path": "source207-full-ttydiff.log",
+      "bytes": 62615,
+      "sha256": "2619d796a06942ca54f563a17b2c37558522743e0ec7e1f61ccf46c9c528bfe2"
+    },
+    {
+      "path": "source207-manifest.json",
+      "bytes": 46477,
+      "sha256": "f00e33bb215b8812e39a1772a140106649eeffdc94200f57cec4b69e21a1f7a0"
+    },
+    {
+      "path": "verify-complete-reader-terminal-receipts.py",
+      "bytes": 3084,
+      "sha256": "1ff488145e6a473e30eda7d944b74f7b0999f4f45776f710b6988067d5c7d446"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

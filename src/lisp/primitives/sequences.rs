@@ -6,12 +6,8 @@ pub(crate) fn copy_sequence_value(
     interp: &mut Interpreter,
     value: &Value,
 ) -> Result<Value, LispError> {
-    if let Some(string) = string_like(value) {
-        return Ok(make_shared_string_value_with_multibyte(
-            string.text,
-            string.props,
-            string.multibyte,
-        ));
+    if matches!(value.kind(), Kind::StringObject(_)) {
+        return shared_string_copy(value);
     }
 
     if is_vector_value(value) {

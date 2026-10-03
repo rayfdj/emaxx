@@ -1,0 +1,55 @@
+{
+  "status": "launched; results require later audit",
+  "launches": {
+    "source284-full-checkout.json": {
+      "candidate": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-03/reader-characters-full/emaxx",
+      "validation_commit": "9c5b535614c5237dbd8e2e47f1dbe258bf7316be",
+      "source_inputs_verified": 520,
+      "source_manifest": "source284-manifest.json",
+      "gnu_source": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs",
+      "goal_complete": false,
+      "qualification": "Fresh clean exact-runtime-commit checkout for full macOS Rust,frozen and terminal validation. Selected source284 remains frozen. Target cache is cloned only by the supervisor after its selected predecessor exits."
+    },
+    "source284-full-launch.json": {
+      "pid": 48303,
+      "command": [
+        "/Library/Developer/CommandLineTools/usr/bin/python3",
+        "-B",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-source284-full-macos.py"
+      ],
+      "helper_sha256": "1742b78bbd6e379ac580fa963398996f2ac94c4b5b90c3c8bafe46f1c301d03b",
+      "validation_commit": "9c5b535614c5237dbd8e2e47f1dbe258bf7316be",
+      "launched_at_unix": 1790996499.5227149,
+      "stdin": "DEVNULL",
+      "start_new_session": true,
+      "goal_complete": false,
+      "qualification": "Full macOS validation launched on a clean exact-source284 commit; no outcome inferred."
+    },
+    "source284-linux-rust-launch.json": {
+      "run_id": 37091391964,
+      "state": {
+        "conclusion": "",
+        "headSha": "9c5b535614c5237dbd8e2e47f1dbe258bf7316be",
+        "status": "queued",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/37091391964"
+      },
+      "source_commit": "9c5b535614c5237dbd8e2e47f1dbe258bf7316be",
+      "runtime_source": "source284",
+      "qualification": "Exact pushed source284 canonical printer/reader checkpoint. Requires audited520 inputs, zero-warning strict checks, six targeted contracts in both profiles and42 ordinary GNU comparisons. Source282217/1073 selected passes are predecessor evidence, and this full run must validate final source284. Repairs the actual native constant wrong-output negative; retains original missing-path/helper failures and all earlier negatives, including the unresolved source276 census failure. No full-platform, process-wide OOM, ownership/accounting or performance completion is inferred from dispatch."
+    },
+    "source284-linux-frozen-launch.json": {
+      "run_id": 37091394500,
+      "state": {
+        "conclusion": "",
+        "headSha": "9c5b535614c5237dbd8e2e47f1dbe258bf7316be",
+        "status": "queued",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/37091394500"
+      },
+      "source_commit": "9c5b535614c5237dbd8e2e47f1dbe258bf7316be",
+      "runtime_source": "source284",
+      "qualification": "Exact pushed source284 canonical printer/reader checkpoint. Requires audited520 inputs, zero-warning strict checks, six targeted contracts in both profiles and42 ordinary GNU comparisons. Source282217/1073 selected passes are predecessor evidence, and this full run must validate final source284. Repairs the actual native constant wrong-output negative; retains original missing-path/helper failures and all earlier negatives, including the unresolved source276 census failure. No full-platform, process-wide OOM, ownership/accounting or performance completion is inferred from dispatch."
+    }
+  },
+  "qualification": "All runs select runtime commit9c5b5356. The local pilot and profiles finished before macOS supervisor48303 launched. Launches and selected predecessor tests do not certify full-platform outcomes.",
+  "goal_complete": false
+}

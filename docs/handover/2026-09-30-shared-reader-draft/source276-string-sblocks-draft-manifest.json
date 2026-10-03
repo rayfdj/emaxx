@@ -1,0 +1,901 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "probe": {
+      "status": "passed",
+      "source_inputs_verified": 511,
+      "strict_checks": "zero-warning pass",
+      "full_library_inventory": 3026,
+      "prior3024_names_preserved": true,
+      "raw_verdicts": {
+        "lisp::native_comp::runtime::tests::borrowed_string_properties_survive_off_stack_guards_and_are_reclaimed_after_release": "ok",
+        "lisp::native_comp::runtime::tests::exclusive_string_borrows_reject_gc_before_marking_or_sweeping": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_traces_string_properties_and_reclaims_string_cycles": "ok",
+        "lisp::native_comp::runtime::tests::off_stack_string_borrows_enter_the_weak_table_fixed_point": "ok",
+        "lisp::native_comp::runtime::tests::pure_string_headers_survive_unrooted_gc_outside_the_ordinary_census": "ok",
+        "lisp::native_comp::runtime::tests::string_sblocks_compact_unborrowed_data_and_hold_borrowed_blocks": "ok",
+        "lisp::native_comp::runtime::tests::string_sdata_resize_reuses_alignment_slop_and_preserves_contents": "ok"
+      },
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "binary": {
+        "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source276-gate-libtest",
+        "sha256": "04bf006cd886ddd3c67aa998e7a416e6ec8a31d5e131de29af8692a36876995b",
+        "built_artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-data-pools/emaxx/target/string-sblock-validation/gate/deps/emaxx-2172bc5d2c1706ff"
+      },
+      "patches": {
+        "source": "source276",
+        "inputs": 511,
+        "changed_files": [
+          "src/lisp/alloc.rs",
+          "src/lisp/alloc/strings.rs",
+          "src/lisp/alloc/strings/data.rs",
+          "src/lisp/bytecode.rs",
+          "src/lisp/eval.rs",
+          "src/lisp/native_comp/runtime.rs",
+          "src/lisp/primitives.rs",
+          "src/lisp/primitives/coding.rs",
+          "src/lisp/primitives/dispatch/strings.rs",
+          "src/lisp/primitives/pdumper/load.rs",
+          "src/lisp/primitives/pdumper/tests.rs",
+          "src/lisp/primitives/purecopy.rs",
+          "src/lisp/primitives/strings.rs",
+          "src/lisp/reader.rs",
+          "src/lisp/types.rs",
+          "src/lisp/types/string_data.rs",
+          "src/lisp/types/string_data/concat.rs"
+        ],
+        "patches": {
+          "portable-incremental": {
+            "base": "b5a1558c6b88804cecdbee04a9bdbfab34209ac8",
+            "sha256": "8829cad2dcc9fc6b017433e34c6f129db69801fa6c8378afd1b48e7d469b819d",
+            "bytes": 69136
+          },
+          "portable-complete": {
+            "base": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199",
+            "sha256": "45e01eeb131a712ec823c5f5b661f9987dd6574da48b687c9c370b94cd58dd78",
+            "bytes": 1130595
+          }
+        },
+        "replays": [
+          {
+            "patch": "source273-sblocks.patch",
+            "base": "b5a1558c6b88804cecdbee04a9bdbfab34209ac8",
+            "inputs": 511,
+            "sha256": "782d88fc061e474ea576f2313d8f6f50eaad9ce5bd9e395f28248fb6060b4f70",
+            "bytes_and_modes": "exact"
+          },
+          {
+            "patch": "source274-sblocks.patch",
+            "base": "b5a1558c6b88804cecdbee04a9bdbfab34209ac8",
+            "inputs": 511,
+            "sha256": "76a5224c0b63f508a52f30b86a2c236158a57b04c1dc7f9ed1312d65f4398bb2",
+            "bytes_and_modes": "exact"
+          },
+          {
+            "patch": "source275-sblocks.patch",
+            "base": "b5a1558c6b88804cecdbee04a9bdbfab34209ac8",
+            "inputs": 511,
+            "sha256": "b9da22d6307e8118348fc381a02175a25b4c5c8e2e637af1b351c1c9a109ae2e",
+            "bytes_and_modes": "exact"
+          },
+          {
+            "patch": "source276-portable-incremental.patch",
+            "base": "b5a1558c6b88804cecdbee04a9bdbfab34209ac8",
+            "inputs": 511,
+            "sha256": "8829cad2dcc9fc6b017433e34c6f129db69801fa6c8378afd1b48e7d469b819d",
+            "bytes_and_modes": "exact"
+          },
+          {
+            "patch": "source276-portable-complete.patch",
+            "base": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199",
+            "inputs": 511,
+            "sha256": "45e01eeb131a712ec823c5f5b661f9987dd6574da48b687c9c370b94cd58dd78",
+            "bytes_and_modes": "exact"
+          }
+        ],
+        "source272_borrow_controls": "Two byte-identical; the exclusive-borrow test differs only by the exact stable empty-constructor API migration checked here. Every assertion remains identical.",
+        "goal_complete": false
+      },
+      "goal_complete": false,
+      "qualification": "Seven gate-profile controls only. Three expected and caught exclusive-borrow panics remain visible in the passing control. Real pooling/relocation/reclamation/pointer-stability and aligned-resize assertions execute; the original property-root/weak/final-release controls remain. All source273 compiler and source274/275 Clippy failures remain failed. No broader/release/platform/performance or full-goal completion result is inferred."
+    },
+    "mechanisms": {
+      "gnu_revision": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+      "gnu_inputs": {
+        "src/alloc.c": "0f777658357fa650edb63771682a7b30d86aafc90912e5785a5565974fd36711",
+        "src/lisp.h": "2b3adec8837ab75b3b075cffa37fad65f9f294617f06d423fe23c8bbb90a2a87",
+        "src/character.c": "0487f30896c4989d3a26b88c6db5f78f23fd1fa98d0dbe8946276b208e0aeceb",
+        "src/fns.c": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00"
+      },
+      "mechanisms": [
+        "alloc.c:string header allocation before sdata creation",
+        "alloc.c:allocate_string_data: aligned sdata with owner back-pointer and NUL;8184-byte small blocks;individual blocks above1024 bytes",
+        "alloc.c:resize_string_data: reuse equal aligned extents, otherwise copy and retire old sdata",
+        "alloc.c:sweep_strings/free_large_strings/compact_small_strings: dead entry sizes, live owner relocation, block reclamation",
+        "alloc.c:Fmake_string and character.c:Fstring: validate size/characters, initialize final storage",
+        "fns.c:concat_to_string: validate then fill final storage without an intermediate byte vector"
+      ],
+      "rust_constraint": "Live Rust shared borrows cannot have data moved or their borrowed header mutated. Their complete small blocks are temporarily removed from compaction, then made eligible on the next collection after guard release. No per-read lookup, registry or string pin allocation is added. Extra collection scanning/retained block slack is unmeasured.",
+      "pure_storage": "Pure string bytes are packed in separate permanent immovable block chains. This is not a unified pure arena for every Lisp object. Headers retain the previous permanent/pure flags.",
+      "remaining": [
+        "actual text-property intervals",
+        "ordinary header and block metadata physical accounting, real counters and retained-memory reporting",
+        "public allocator/runtime ownership and serialization",
+        "GNU pin_string/raw VM stack and call profiling",
+        "transient host-text adapters, symbols and complete object authority",
+        "complete selected/platform/native/module/dump/startup/thread/GC/integration validation and final adversarial audit",
+        "locked16-workload performance criterion, unchanged3% ceiling"
+      ],
+      "qualification": "Architectural draft only. Original source273 compiler and source274 Clippy failures remain recorded. Source275 strict/runtime outcomes are separate; no memory/time improvement or full-goal completion is claimed.",
+      "goal_complete": false
+    },
+    "launch": {
+      "pid": 67370,
+      "command": [
+        "/Library/Developer/CommandLineTools/usr/bin/python3",
+        "-B",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-source276-pools-selected.py"
+      ],
+      "candidate": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-data-pools/emaxx",
+      "source_manifest": "source276-manifest.json",
+      "helper_sha256": "60beddfa01d4b668592a7d4740950fefaefed7e5f2c28a1b8121239e885985d5",
+      "waits_for_pid": 3079,
+      "preflight_focused_selectors": 210,
+      "preflight_broad_selectors": 1064,
+      "qualification": "Launch only: waits for source270 full/terminal supervisor exit, then gate focused/broad and release focused/broad with all inherited controls and strict auditors. All source276 inputs remain frozen. No selected pass or full-goal completion claim.",
+      "goal_complete": false
+    },
+    "selected_at_packaging": {
+      "status": "waiting for source270 terminal/full macOS supervisor3079",
+      "source_manifest": "source276-manifest.json",
+      "helpers": {
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/run-string-pools-focused.py": "2acf986b8649bb7818ced8827a3db79fd61f64f4df55570dd5e81767a5e3fd71",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/audit-string-pools-focused.py": "1c69292fcaac9d6b140a83fc4ae67eec1ad1573a2d5575202b8fba56d1d0c9c7",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/test-string-pools-broad.py": "4af7b8125d82f316642807d1ba66af1ccd1301b1c57c25da18471ef29c98bb10",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/run-string-pools-release.py": "0e3bed573f73b7d34a1709d3549a5209f15b0126c818ba9df61ab7ac062e551e",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/audit-string-pools-release.py": "9a6c638230f2b76de4b61025ad4536c5f05df81343a2b4e833870b53beaf087f"
+      },
+      "stages": [
+        [
+          "run-string-pools-focused.py",
+          "276"
+        ],
+        [
+          "audit-string-pools-focused.py",
+          "276"
+        ],
+        [
+          "test-string-pools-broad.py",
+          "276",
+          "gate"
+        ],
+        [
+          "run-string-pools-release.py",
+          "276"
+        ],
+        [
+          "audit-string-pools-release.py",
+          "276"
+        ],
+        [
+          "test-string-pools-broad.py",
+          "276",
+          "release"
+        ]
+      ],
+      "results": [],
+      "goal_complete": false
+    },
+    "withdrawn_older_mac_queue": {
+      "status": "withdrawn while waiting; no validation stage executed",
+      "pid": 27731,
+      "original_command": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python -B /Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-source272-full-macos.py",
+      "original_state_sha256": "98ba297330b22b814dc0feef559bf036225962280d388bddeb9e2c1cbd1c07f4",
+      "helper_sha256": "e036ea247d19670893ecea2a0c4384f2c2d313b87f438e628e2bcbdba90e517c",
+      "reason": "Prioritize source276 allocator gate/release validation after source270 terminal validation. Source276 includes the source272 borrow repair and passes strict checks plus seven allocator/borrow controls. Full validation remains required on the final selected source. No old failure or incomplete run is relabeled as passing.",
+      "source272_mac_stages_executed": 0,
+      "goal_complete": false
+    },
+    "qualification": "Unapplied source276 architectural draft; exact511-input complete/incremental patches and three preserved failed predecessors. Zero-warning strict checks and seven gate controls pass. Source272 borrow controls are preserved, with only the checked stable-constructor API migration in the exclusive-borrow test. Broader gate/release validation is queued after source270 terminal/full supervisor3079. No broader/platform/ordinary/performance or ownership/accounting/interval/VM completion result is claimed. Root runtime remains source272, main21d20f0e, and the full goal remains active."
+  },
+  "archive": {
+    "path": "source276-string-sblocks-draft.tar.gz",
+    "bytes": 1073435,
+    "sha256": "3d9a5dd9d4596aadc31976aec1041147b22893f4d3d3fabbe6966c5385188c43"
+  },
+  "files": [
+    {
+      "path": "audit-source276-sblock-probe.py",
+      "bytes": 3233,
+      "sha256": "e3bdba51ef918113603f84265b185aac4deb8d3b1164c05efe0094e62ce73e88"
+    },
+    {
+      "path": "audit-string-pools-focused.py",
+      "bytes": 3819,
+      "sha256": "1c69292fcaac9d6b140a83fc4ae67eec1ad1573a2d5575202b8fba56d1d0c9c7"
+    },
+    {
+      "path": "audit-string-pools-release.py",
+      "bytes": 4668,
+      "sha256": "9a6c638230f2b76de4b61025ad4536c5f05df81343a2b4e833870b53beaf087f"
+    },
+    {
+      "path": "draft-stable-string-constructors.py",
+      "bytes": 13926,
+      "sha256": "d5bbf61aa5f9fa405acecfe0a4741dbbae7de596aad78f3736819da0f0e15e4c"
+    },
+    {
+      "path": "draft-string-sblock-concat.py",
+      "bytes": 3076,
+      "sha256": "03edf9ecbfcea42151435acd96eec9ffca628c743f4aad9e8d42de93ea8a6974"
+    },
+    {
+      "path": "draft-string-sblock-controls.py",
+      "bytes": 5443,
+      "sha256": "6b8731432fee417069e7f5dd8ab4736fbce7782a5f028a013b10f3274b7b52c0"
+    },
+    {
+      "path": "draft-string-sblock-storage.py",
+      "bytes": 10924,
+      "sha256": "08d22aded97ddd2ebf1b759fa963463e86dcf4cba3b931e106d6c91457e0ee7c"
+    },
+    {
+      "path": "freeze-source275-sblock-patches.py",
+      "bytes": 6083,
+      "sha256": "e4d175a51a4fa64dbaca3f842f3acebc25c1131268964be480e415b70bfe9127"
+    },
+    {
+      "path": "freeze-source276-sblock-patches.py",
+      "bytes": 6891,
+      "sha256": "0194a7de1b80a6b373aeb0057020328deca2a8fae251576f5a426f8b7f57f582"
+    },
+    {
+      "path": "launch-source276-selected.py",
+      "bytes": 2336,
+      "sha256": "480d08d718ef355b8fd4cc29515e54250edb7b8a57cc76a0fc28c4aacc69efce"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source276-sblock-draft.py",
+      "bytes": 4022,
+      "sha256": "354d503a55341fdb50f838b91e6f456e70862aae56675a25fb8d0ae9a9c7734e"
+    },
+    {
+      "path": "prepare-source273-validation.py",
+      "bytes": 2136,
+      "sha256": "48299bc167951a9218fb11ee14d922b23ab63b42817f60b0171290e1030e9aea"
+    },
+    {
+      "path": "prepare-source274-sblocks.py",
+      "bytes": 2995,
+      "sha256": "f74c89fe051268891a23f5d1cb33370688cf0de24fcb7e4e3cc69bb067a91410"
+    },
+    {
+      "path": "prepare-source275-sblocks.py",
+      "bytes": 2836,
+      "sha256": "7f092f2c09f0e35766408420481a5d88e35b0a51ffec973d3981592efca99359"
+    },
+    {
+      "path": "prepare-source276-freeze.py",
+      "bytes": 1596,
+      "sha256": "5fab32fd5ec619e19b69a00c5978141e59037266aec3d6ed5af165b608c32b38"
+    },
+    {
+      "path": "prepare-source276-sblocks.py",
+      "bytes": 3825,
+      "sha256": "9d8517f2a5705cb72e1401213507cf5e975ab374bbc4d913d372b15a19b8200c"
+    },
+    {
+      "path": "prepare-source276-selected.py",
+      "bytes": 3694,
+      "sha256": "e540e616f6b64c36b9ea9d4008511ed0ae46229a7ba3d72084663e63d4900290"
+    },
+    {
+      "path": "prepare-string-sblocks.py",
+      "bytes": 2956,
+      "sha256": "b5252849f835c129362f203235943d524a61af9f4934edb51d4bfcdf9ab9a81c"
+    },
+    {
+      "path": "queue-source276-pools-selected.py",
+      "bytes": 3291,
+      "sha256": "60beddfa01d4b668592a7d4740950fefaefed7e5f2c28a1b8121239e885985d5"
+    },
+    {
+      "path": "run-source273-sblocks.py",
+      "bytes": 6611,
+      "sha256": "a01d1d74de6fef919ae347568bb688dca76384ca044b7df7fa6e1fcf53ec85d8"
+    },
+    {
+      "path": "run-source274-sblocks.py",
+      "bytes": 6621,
+      "sha256": "5b2a8a76cc8296a5e2938d229e276079f4542c83df66fcc290212a971e8b9894"
+    },
+    {
+      "path": "run-source275-sblocks.py",
+      "bytes": 6617,
+      "sha256": "8f6e90116e288c0b5db2f71448a30363cf7ec903b1b18ab186ce2f1745df0b7e"
+    },
+    {
+      "path": "run-source276-sblocks.py",
+      "bytes": 6614,
+      "sha256": "6397a21c4f8888212d31e30e3c1eb7fae5f2f973fffc352a7e6b182d392de81c"
+    },
+    {
+      "path": "run-string-pools-focused.py",
+      "bytes": 6900,
+      "sha256": "2acf986b8649bb7818ced8827a3db79fd61f64f4df55570dd5e81767a5e3fd71"
+    },
+    {
+      "path": "run-string-pools-release.py",
+      "bytes": 7437,
+      "sha256": "0e3bed573f73b7d34a1709d3549a5209f15b0126c818ba9df61ab7ac062e551e"
+    },
+    {
+      "path": "source249-gate-broad-command.json",
+      "bytes": 174181,
+      "sha256": "821e1305e17695b7eee9550c3de51800735059e7c6aca160760d9830935e274a"
+    },
+    {
+      "path": "source249-gate-controls-command.json",
+      "bytes": 31106,
+      "sha256": "c3a9d0ff5919a4d45ba64c87351ff600d23fc5b84e186ba736ea2cc5cb6ab768"
+    },
+    {
+      "path": "source249-release-broad-command.json",
+      "bytes": 174184,
+      "sha256": "85e3ac7f11b4564aa82e6764ac49f84520e46adcf74d29fc5ac5bb475c2efed8"
+    },
+    {
+      "path": "source255-gate-controls-command.json",
+      "bytes": 32961,
+      "sha256": "9fc56add548abc30c45366241bdac8e50b6b6062fe85e61531f3b55f1f60b809"
+    },
+    {
+      "path": "source255-gate-inventory.log",
+      "bytes": 265251,
+      "sha256": "b6b275b9d7114a9a0034f6ea109f324362c37e3906340c029c2e19a3bb2fbee3"
+    },
+    {
+      "path": "source261-gate-broad-command.json",
+      "bytes": 175730,
+      "sha256": "7adbd58e55a5a6b05c9dd28c5bfbe533c0f44b29277cb386c7cce251cefa24f2"
+    },
+    {
+      "path": "source261-release-broad-command.json",
+      "bytes": 175733,
+      "sha256": "c2750e75f52ebeaa290732068ea967b02bae255df5667d7b8159de5aa3b36985"
+    },
+    {
+      "path": "source263-gate-broad-command.json",
+      "bytes": 195634,
+      "sha256": "6ff0cda4824794d5de8ed3528b4489f71b1c920e24dae06cb848b53069bcffe4"
+    },
+    {
+      "path": "source270-gate-broad-command.json",
+      "bytes": 196783,
+      "sha256": "7fdff01296da1f1a84d1efdfadb32af22adda2ec0ab993b4a07165f2608b5133"
+    },
+    {
+      "path": "source270-release-broad-command.json",
+      "bytes": 196786,
+      "sha256": "eb3a568d1135616fd32c21063698972baeb7d9e747a271cb14c55dca5023cf52"
+    },
+    {
+      "path": "source272-full-withdrawal.json",
+      "bytes": 928,
+      "sha256": "2b7cda0647c31f32455fe69e4b806708a3ebae049b1a9489ea4bbc1f9200412b"
+    },
+    {
+      "path": "source272-full-withdrawn-state.json",
+      "bytes": 1781,
+      "sha256": "98ba297330b22b814dc0feef559bf036225962280d388bddeb9e2c1cbd1c07f4"
+    },
+    {
+      "path": "source272-gate-broad-command.json",
+      "bytes": 197327,
+      "sha256": "6725930b5aeeb29d4b0c5b47acf8ebbbba15e6512b9252ed1422f9036c935286"
+    },
+    {
+      "path": "source272-gate-controls-command.json",
+      "bytes": 37651,
+      "sha256": "8d8a63b116e5bf289a11861f807d7d6f02af67ad1dd94098cd4fba756c64421c"
+    },
+    {
+      "path": "source272-gate-inventory.log",
+      "bytes": 267089,
+      "sha256": "9579039eddf823116e863864d3ccb9ad16d95ac246997a1009e1b233152504b3"
+    },
+    {
+      "path": "source272-manifest.json",
+      "bytes": 58772,
+      "sha256": "619584248a7dd3cfd461f2bf3383cd8515f0cf17bf66419124a6dcdbe783bed7"
+    },
+    {
+      "path": "source272-release-broad-command.json",
+      "bytes": 197330,
+      "sha256": "4d2b65b43b2d15462cf38e1ee65fa008c49fa33b5a7bc0cf03615bcf89dd377a"
+    },
+    {
+      "path": "source273-check-command.json",
+      "bytes": 1046,
+      "sha256": "8b4b7defbd50f63d76bf8c2cf0c237bfac491a168311287043013eba18fb53fc"
+    },
+    {
+      "path": "source273-check-result.json",
+      "bytes": 142,
+      "sha256": "c5b806f940553aa829c6100e419210fe365bbf0b1a5ea08f671dc3f047306bfe"
+    },
+    {
+      "path": "source273-check.log",
+      "bytes": 1610,
+      "sha256": "c9b76127c1e220c5e00cbbcf17a07878edd99ca1354726e7c60c5a51b92ce96e"
+    },
+    {
+      "path": "source273-fmt-command.json",
+      "bytes": 1013,
+      "sha256": "858786f59756997b0c68cbe7622854610a7966e797559293a082131d9a775669"
+    },
+    {
+      "path": "source273-fmt-result.json",
+      "bytes": 145,
+      "sha256": "a300790bc941e5eca171b29f4b698cc0e2a29438ae030272963cd192c44a7777"
+    },
+    {
+      "path": "source273-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source273-format.json",
+      "bytes": 76,
+      "sha256": "20d3cf911cd71a5d140db1bb5de760d5b683be0d8ce6fce6d6424e01ad2b4e05"
+    },
+    {
+      "path": "source273-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source273-manifest.json",
+      "bytes": 58876,
+      "sha256": "c1d4609836ac9653cb87a948e46a829a203d4d0135664b516899c757bcb584ea"
+    },
+    {
+      "path": "source273-probe-result.json",
+      "bytes": 607,
+      "sha256": "6c5f3507bf5e9ba1f17031408308f9169b2eb23e45c73d39bfba6bde8da16dda"
+    },
+    {
+      "path": "source273-probe-state.json",
+      "bytes": 608,
+      "sha256": "5a6edca0c724ff90213d3882ea5d3ea47083f3b4364a48d1f33911d07d6121f5"
+    },
+    {
+      "path": "source273-sblocks.patch",
+      "bytes": 68434,
+      "sha256": "782d88fc061e474ea576f2313d8f6f50eaad9ce5bd9e395f28248fb6060b4f70"
+    },
+    {
+      "path": "source273-unformatted.patch",
+      "bytes": 63328,
+      "sha256": "9bd0e1cfa02fb621760f1546be62448a96fb20588020e13f644ac40968f85aec"
+    },
+    {
+      "path": "source274-cache-clone.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source274-check-command.json",
+      "bytes": 1066,
+      "sha256": "344db54eb09a79e9ade44cfcf7c4fa45106afec66040df8b65e07ebcd3fd6d30"
+    },
+    {
+      "path": "source274-check-result.json",
+      "bytes": 147,
+      "sha256": "e1720a458cd345a52b654ed3bdf547aeb2d3ea337bb33a3cbd69492f2d51c790"
+    },
+    {
+      "path": "source274-check.log",
+      "bytes": 206,
+      "sha256": "4a6f038785a73e53d3b14fd898b80c1eddac18e0d2c1a1a5f145a03f0c68214c"
+    },
+    {
+      "path": "source274-clippy-command.json",
+      "bytes": 1103,
+      "sha256": "0297514112b78d8f84b0dfd74892fbc117740ec0ae88ada3818763ab3f4498e0"
+    },
+    {
+      "path": "source274-clippy-result.json",
+      "bytes": 143,
+      "sha256": "af5750a29304b33dee1fb36252b3548c6c5296f023e3a2bab6d59e2a7668d828"
+    },
+    {
+      "path": "source274-clippy.log",
+      "bytes": 1361,
+      "sha256": "a9811daf644d122d023de5990a5891775b34c7c985515f3f11c1918262f3d501"
+    },
+    {
+      "path": "source274-fmt-command.json",
+      "bytes": 1033,
+      "sha256": "c6bc6fc7b2b79d7f7a6576e65428c314e3c36ed019c67ad6e9b39f15519737ae"
+    },
+    {
+      "path": "source274-fmt-result.json",
+      "bytes": 145,
+      "sha256": "fbd8679f4718e411beb273287e14ed9794267ac4cd2337a8511838ad34c9b600"
+    },
+    {
+      "path": "source274-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source274-format.json",
+      "bytes": 76,
+      "sha256": "20d3cf911cd71a5d140db1bb5de760d5b683be0d8ce6fce6d6424e01ad2b4e05"
+    },
+    {
+      "path": "source274-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source274-manifest.json",
+      "bytes": 58876,
+      "sha256": "53c31b3345eb829f9f7a2933f1380b95c857b91673d093a9d6bd662ce186390c"
+    },
+    {
+      "path": "source274-preparation.json",
+      "bytes": 2943,
+      "sha256": "8617c837cfddfb1956a7efd03eba91d355fc98eabe3b3662fbce73946183960f"
+    },
+    {
+      "path": "source274-probe-result.json",
+      "bytes": 822,
+      "sha256": "2dd0c7ec6a78bee7434c3d17028e14fda97b0852a9a080edd836c45f50f32c39"
+    },
+    {
+      "path": "source274-probe-state.json",
+      "bytes": 823,
+      "sha256": "4acd1646cdcb8ab4b62d5cdf60cb73a82300e245540cc6144772deb93d762559"
+    },
+    {
+      "path": "source274-sblocks.patch",
+      "bytes": 68534,
+      "sha256": "76a5224c0b63f508a52f30b86a2c236158a57b04c1dc7f9ed1312d65f4398bb2"
+    },
+    {
+      "path": "source274-unformatted.patch",
+      "bytes": 68534,
+      "sha256": "76a5224c0b63f508a52f30b86a2c236158a57b04c1dc7f9ed1312d65f4398bb2"
+    },
+    {
+      "path": "source275-cache-clone.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source275-check-command.json",
+      "bytes": 1058,
+      "sha256": "52cc16d1ea41471f1a1310f72bc028eae6aa55cebf09968e40db2acf552e17f4"
+    },
+    {
+      "path": "source275-check-result.json",
+      "bytes": 147,
+      "sha256": "93866dbe7b1f6dafa3d40261c34be41ed379b3944346c462d6b6587411ab5eb2"
+    },
+    {
+      "path": "source275-check.log",
+      "bytes": 202,
+      "sha256": "3a2ae3cd71ceb7d3fce6d13acc5cef19255d25c288a175421a3e7d2946dcf0d5"
+    },
+    {
+      "path": "source275-clippy-command.json",
+      "bytes": 1095,
+      "sha256": "651302cfbc1999d31033b7fb8c2277a25bd3177a733981ff4748e77e9b97fbec"
+    },
+    {
+      "path": "source275-clippy-result.json",
+      "bytes": 150,
+      "sha256": "95f54be1175a7be28a5a193ae151f4bc9fe7a4a9c1c462341df915054c411d24"
+    },
+    {
+      "path": "source275-clippy.log",
+      "bytes": 4067,
+      "sha256": "0e6bb71ba1a2066c54b4594c42b7c40673a0409cfc5eeaa4d592b13fe222d1db"
+    },
+    {
+      "path": "source275-fmt-command.json",
+      "bytes": 1025,
+      "sha256": "92c94e8ed8d059932248e98c7d46a66f7fb10c4aa71ef39ea163bb168d4b1c47"
+    },
+    {
+      "path": "source275-fmt-result.json",
+      "bytes": 145,
+      "sha256": "fa9665b10348b95cb6c09823cc39d164ccde15a2a4ff96550e87495078e06542"
+    },
+    {
+      "path": "source275-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source275-format.json",
+      "bytes": 76,
+      "sha256": "20d3cf911cd71a5d140db1bb5de760d5b683be0d8ce6fce6d6424e01ad2b4e05"
+    },
+    {
+      "path": "source275-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source275-freeze-preparation-failure.json",
+      "bytes": 355,
+      "sha256": "395e6d0cf8974de6dc058b93e06f98b9377d1f96865d816ae7fa834b4ce6fb9d"
+    },
+    {
+      "path": "source275-manifest.json",
+      "bytes": 58876,
+      "sha256": "ee61055493b3b9f38286e71838a19c6879552ef14d432929ad9b3f9d24cae260"
+    },
+    {
+      "path": "source275-preparation.json",
+      "bytes": 2942,
+      "sha256": "d8f122f0a070eb88e3d40b67f3180332b4b738b344a8b0890393869705524350"
+    },
+    {
+      "path": "source275-probe-result.json",
+      "bytes": 829,
+      "sha256": "5d8cac1b23b631a17309e93b7d6421c7f816bb6c2170a3013489fa87b8e769c2"
+    },
+    {
+      "path": "source275-probe-state.json",
+      "bytes": 830,
+      "sha256": "43acb771b9e8a8415b8bdbfc1bb32e5d6c554ce0ffbb04183e85aed9e57c5dbf"
+    },
+    {
+      "path": "source275-sblocks.patch",
+      "bytes": 68654,
+      "sha256": "b9da22d6307e8118348fc381a02175a25b4c5c8e2e637af1b351c1c9a109ae2e"
+    },
+    {
+      "path": "source275-unformatted.patch",
+      "bytes": 68592,
+      "sha256": "89938fde1b07ea7ef049f677233123732d023291bb556b2c1ee9a7ffe3b6031a"
+    },
+    {
+      "path": "source276-binary.json",
+      "bytes": 373,
+      "sha256": "ebb742084a20af9cd1332fb55eaaccf683bf2734dcd89c8a06498afa6e0771b2"
+    },
+    {
+      "path": "source276-cache-clone.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source276-check-command.json",
+      "bytes": 1052,
+      "sha256": "b23419dee73507297eef55fd79ecc9d11ebd839c37bc239df8c428766c37d786"
+    },
+    {
+      "path": "source276-check-result.json",
+      "bytes": 147,
+      "sha256": "9c8acbdfdcc238723736ba9d9909f198f3a1168866082122c54e17b835bbd783"
+    },
+    {
+      "path": "source276-check.log",
+      "bytes": 199,
+      "sha256": "30b75a1cd34862a359d1f89c6b0cac90cfafaaaa6b996a364fbbfecdf83143ec"
+    },
+    {
+      "path": "source276-clippy-command.json",
+      "bytes": 1089,
+      "sha256": "2aa16f4b4a2508eb82b8b35e026eba38b40b0623b6237680d2a64460a0b51db8"
+    },
+    {
+      "path": "source276-clippy-result.json",
+      "bytes": 142,
+      "sha256": "6f317e78e2088845ca7390b028052c8a47408f7e0fb98075310594c4bb757f48"
+    },
+    {
+      "path": "source276-clippy.log",
+      "bytes": 199,
+      "sha256": "0f75d836234975933301cf1c1095106d6e88060050c67cdb8bf3e13e49d84f61"
+    },
+    {
+      "path": "source276-diff-command.json",
+      "bytes": 1005,
+      "sha256": "65ed39281265acacb2b95c6e894a476bbb57d7d5d62c0b574ca56350b7bc1b7c"
+    },
+    {
+      "path": "source276-diff-result.json",
+      "bytes": 146,
+      "sha256": "011fa7f10559fcf2cc004f519386dc41e04bf7a8e799e0f5bb8ad838eeba4511"
+    },
+    {
+      "path": "source276-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source276-fmt-command.json",
+      "bytes": 1019,
+      "sha256": "9a4f31366f3a35daa0d56a8ab48ba21acf0cdb39973b0f52ca8d759e67034e64"
+    },
+    {
+      "path": "source276-fmt-result.json",
+      "bytes": 145,
+      "sha256": "721995780c1bab086ebe0adafd3218c39d7887133b65e402340d8aef77918697"
+    },
+    {
+      "path": "source276-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source276-format.json",
+      "bytes": 76,
+      "sha256": "20d3cf911cd71a5d140db1bb5de760d5b683be0d8ce6fce6d6424e01ad2b4e05"
+    },
+    {
+      "path": "source276-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source276-freeze.json",
+      "bytes": 2601,
+      "sha256": "4c3b7eb10a77b7dde662d1b9c8fd1735d35e89367868f3b19bba7d18d852c9de"
+    },
+    {
+      "path": "source276-gate-build-command.json",
+      "bytes": 1136,
+      "sha256": "b94e8c76f0400306e65862c906bc259d68e0fd4b92ac625333485b3286f71a0d"
+    },
+    {
+      "path": "source276-gate-build-result.json",
+      "bytes": 147,
+      "sha256": "21a7ee2cbe829b128dda1ae66251d58161578a016803ccb3bd7a36ca29fd6ae6"
+    },
+    {
+      "path": "source276-gate-build.log",
+      "bytes": 219929,
+      "sha256": "e1624110aa615924dd6e33501566f0eb685845d0ac2c55d4393a2ecb37460c67"
+    },
+    {
+      "path": "source276-gate-inventory-command.json",
+      "bytes": 1110,
+      "sha256": "167645b79674a33d4819b551bee27525f5ff844db7125aa409caa880fd842f12"
+    },
+    {
+      "path": "source276-gate-inventory-result.json",
+      "bytes": 156,
+      "sha256": "f0d367165c11240bf164293facd76e441b2fad0266cb5ad583a4fb2a28b73c54"
+    },
+    {
+      "path": "source276-gate-inventory.log",
+      "bytes": 267300,
+      "sha256": "c5e37eefe3cae1433e2b656df60a2f85060487ea1bc8c0b197ebb076c992ef90"
+    },
+    {
+      "path": "source276-gate-probe-command.json",
+      "bytes": 1882,
+      "sha256": "31f6f88142c93230ee323a7674299dcfdb898f950797cba88dd1b315bf98354a"
+    },
+    {
+      "path": "source276-gate-probe-result.json",
+      "bytes": 153,
+      "sha256": "9f1de30b6bed34eca01e96833f1ae562e80751cca6834e86daa1a710c720e2db"
+    },
+    {
+      "path": "source276-gate-probe.log",
+      "bytes": 1625,
+      "sha256": "441ad1f0b1c64175f20d18453fcd807955b8cbd0b810e399963dced8142488f6"
+    },
+    {
+      "path": "source276-gnu-mechanisms.json",
+      "bytes": 2464,
+      "sha256": "188a7ff1d33714a7312f1834d646447f6851b079e25ff0184424de457d826398"
+    },
+    {
+      "path": "source276-manifest.json",
+      "bytes": 58876,
+      "sha256": "072775494efdf4b5ee10f5e496b515f599b5a825f48663b6ad303434800574dd"
+    },
+    {
+      "path": "source276-portable-complete.patch",
+      "bytes": 1130595,
+      "sha256": "45e01eeb131a712ec823c5f5b661f9987dd6574da48b687c9c370b94cd58dd78"
+    },
+    {
+      "path": "source276-portable-incremental.patch",
+      "bytes": 69136,
+      "sha256": "8829cad2dcc9fc6b017433e34c6f129db69801fa6c8378afd1b48e7d469b819d"
+    },
+    {
+      "path": "source276-preparation.json",
+      "bytes": 2918,
+      "sha256": "0155b2dbaaa624a4d21f989ae35e862a323095e5f6300912961474d86028cc5d"
+    },
+    {
+      "path": "source276-probe-result.json",
+      "bytes": 2334,
+      "sha256": "b82e499f943bc450effdc39586e91764b7e2eeab5465a7b94cd462853dd97fd5"
+    },
+    {
+      "path": "source276-probe-state.json",
+      "bytes": 2335,
+      "sha256": "e4ec4e5fe447417a5578a8e9781297dd7c7f1aa833b666325e0666c535af5ca9"
+    },
+    {
+      "path": "source276-sblock-probe-audit.json",
+      "bytes": 4677,
+      "sha256": "9a745a7b6a71fd38f29a2397bf3db3ed8e57247616a8e1fe28381edeb7e2ff6d"
+    },
+    {
+      "path": "source276-sblocks.patch",
+      "bytes": 69136,
+      "sha256": "8829cad2dcc9fc6b017433e34c6f129db69801fa6c8378afd1b48e7d469b819d"
+    },
+    {
+      "path": "source276-selected-at-draft-packaging.json",
+      "bytes": 1475,
+      "sha256": "33ab23c4e23e70b4352024db245c11cb7be85c437b82470e572c7dc53e2a858b"
+    },
+    {
+      "path": "source276-selected-launch.json",
+      "bytes": 862,
+      "sha256": "870384cb9434a04996f6ee13b301c4f62e9028299d783122b8bf3097efa2e48c"
+    },
+    {
+      "path": "source276-selected-preparation.json",
+      "bytes": 1523,
+      "sha256": "a153205e539e7d165397f146bac55cbf40349629b67bb48a9c65cba622c082bb"
+    },
+    {
+      "path": "source276-unformatted.patch",
+      "bytes": 68829,
+      "sha256": "19cda877484593618eef8f2146be5b92de62502d0c2bbe99ce53d18c21cde8ba"
+    },
+    {
+      "path": "string-sblocks-cache-clone.json",
+      "bytes": 515,
+      "sha256": "d52aa0e8c2b7038be8682af70fed91d67a4a2c9a8e3f530b3acc0676e5c30210"
+    },
+    {
+      "path": "string-sblocks-cache-clone.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "string-sblocks-checkout-command.json",
+      "bytes": 2111,
+      "sha256": "a5904abdf10f22d5d432d319e38e24a3c297652f837d57a4d70b34878b816f91"
+    },
+    {
+      "path": "string-sblocks-checkout.json",
+      "bytes": 771,
+      "sha256": "f758f776ccfef0523046cbf3911c47ca6fac4406667ffa2fdf29aff83466570d"
+    },
+    {
+      "path": "test-string-pools-broad.py",
+      "bytes": 4365,
+      "sha256": "4af7b8125d82f316642807d1ba66af1ccd1301b1c57c25da18471ef29c98bb10"
+    },
+    {
+      "path": "withdraw-source272-waiting-macos.py",
+      "bytes": 1806,
+      "sha256": "5fbd38e76374a176754a0e20069052aed8fe290e6ce1ac7d5fd02a29d6705791"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

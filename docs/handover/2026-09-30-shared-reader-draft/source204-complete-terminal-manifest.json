@@ -1,0 +1,61 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "passed",
+    "scenarios": 226,
+    "verified_checkpoints": 686,
+    "screen_comparisons": 658,
+    "filesystem_comparisons": 28,
+    "log_sha256": "2619d796a06942ca54f563a17b2c37558522743e0ec7e1f61ccf46c9c528bfe2",
+    "inputs_rehashed": 8,
+    "qualification": "Complete unchanged default scenario, screen and filesystem inventories match raw reports in order. Source/ABI-matched Darwin GNU is not the frozen executable. No performance certification."
+  },
+  "archive": {
+    "path": "source204-complete-terminal.tar.gz",
+    "bytes": 34492,
+    "sha256": "5308f377071b0145ef02339d9b71bb9ff88a64e704ab376859e092e15db74bc5"
+  },
+  "files": [
+    {
+      "path": "package-source206-and204-terminal.py",
+      "bytes": 2150,
+      "sha256": "73d84cfecfebea03ac96670c929b3d73688ae2af5cb7da778ce0c9c2936101df"
+    },
+    {
+      "path": "run-source204-full-tty.py",
+      "bytes": 3344,
+      "sha256": "0763914c210ff1005c6fbafd21e99b549f23da5407e1d68e2a7f88617b542941"
+    },
+    {
+      "path": "source204-complete-terminal-audit.json",
+      "bytes": 456,
+      "sha256": "9ecfd3921f9a323904655a54affeb01b0c2987fa2b33c2d3df4349479892b099"
+    },
+    {
+      "path": "source204-full-ttydiff-command.json",
+      "bytes": 8859,
+      "sha256": "7a1aa45ce34c63414148013abca96138369bd8e38d907b9de019d4663cd469e5"
+    },
+    {
+      "path": "source204-full-ttydiff-result.json",
+      "bytes": 267,
+      "sha256": "21f37cf00318ef9d309a71bb107769a2de86133627a224c9cb2a4378f659c765"
+    },
+    {
+      "path": "source204-full-ttydiff.log",
+      "bytes": 62615,
+      "sha256": "2619d796a06942ca54f563a17b2c37558522743e0ec7e1f61ccf46c9c528bfe2"
+    },
+    {
+      "path": "source204-manifest.json",
+      "bytes": 46477,
+      "sha256": "3703327bef6ff1f287a91fc505e8ae8439902e00381af8061357a5963f62050c"
+    },
+    {
+      "path": "verify-complete-reader-terminal-receipts.py",
+      "bytes": 3084,
+      "sha256": "1ff488145e6a473e30eda7d944b74f7b0999f4f45776f710b6988067d5c7d446"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

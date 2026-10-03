@@ -1,0 +1,66 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "head": "7e45db47438a39e97658bddaceba903e0e41c186",
+    "pr": 79,
+    "qualification": "Published validated405-input candidate and exact-head Linux dispatches. Full local Rust is running; selected terminal has launched after source196 terminal completion. Running logs are excluded; no complete-source or performance claim."
+  },
+  "archive": {
+    "path": "source198-publication.tar.gz",
+    "bytes": 3175,
+    "sha256": "f320a5a38d9129bf47b2a0059401b890f89e2fe94d86d95517b5d991bcbcc7fd"
+  },
+  "files": [
+    {
+      "path": "source198-linux-frozen-dispatch.json",
+      "bytes": 424,
+      "sha256": "d13abb124c4bbb9ff9db760545383c014827c2cdb54b1fc4817cdb2d8e882fa2"
+    },
+    {
+      "path": "source198-linux-frozen-initial-state.json",
+      "bytes": 217,
+      "sha256": "e7e2696e26b29fbd3d40d55228bf1594a01dfe955e6c30927838fbdd9a96a27d"
+    },
+    {
+      "path": "source198-linux-rust-dispatch.json",
+      "bytes": 423,
+      "sha256": "a901ffba99338b37f14bba5b23d23699f29f504950938ba03f397d363dab2147"
+    },
+    {
+      "path": "source198-linux-rust-initial-state.json",
+      "bytes": 217,
+      "sha256": "8b54add1abe161148681c02f03f5ec8ddee4d22d9ade155425e1dd14a29469fb"
+    },
+    {
+      "path": "source198-pr-body.md",
+      "bytes": 2288,
+      "sha256": "d1b1b608a00ea9e0cb898acdb734ba6eeb2396fe021114a2aecb93d17349240d"
+    },
+    {
+      "path": "source198-pr-state.json",
+      "bytes": 2589,
+      "sha256": "398ba9e8c68dd70637650b87d3cc14cd94ee0489838bce1cb9e2dc868e241870"
+    },
+    {
+      "path": "source198-published-head.json",
+      "bytes": 210,
+      "sha256": "75dd1091ffb49997584ff0c3ae38719588c38830dc0b3e3f3198cb526b6f194a"
+    },
+    {
+      "path": "source198-push-result.json",
+      "bytes": 357,
+      "sha256": "3797b44114323061dd4182cd4c61e3cce512990cf4314ff57fbc92f94e2111b7"
+    },
+    {
+      "path": "source198-selected-tty-command.json",
+      "bytes": 3419,
+      "sha256": "57e0f07327be27cf79316c044c5da946c07a35c74957a4d20743fa9067b09f56"
+    },
+    {
+      "path": "source198-selected-tty-supervisor.json",
+      "bytes": 327,
+      "sha256": "0c8b02b16fca0ae308a2701695c1850a62d60fde674fc89850f7b44e1e985c9d"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

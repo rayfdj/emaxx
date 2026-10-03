@@ -1,0 +1,111 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "strict_checks": "passed",
+    "focused_gate": 3,
+    "qualification": "The original ten keyboard-input assertions, live binding control and macro reclamation control pass. Broader gate/release, ordinary and complete validation remain unclaimed. Runtime source is unchanged from source197; no performance claim."
+  },
+  "archive": {
+    "path": "source198-focused.tar.gz",
+    "bytes": 18014,
+    "sha256": "a731b63c556d21e970532c6b82eea0855de14d8dc45a41d7ce2ba96d270647f4"
+  },
+  "files": [
+    {
+      "path": "package-source196-linux-failure-and198-focused.py",
+      "bytes": 4891,
+      "sha256": "c124dafba74826ac8043a079d688932bd83677256d95c4158e58c7c7b9a91fa7"
+    },
+    {
+      "path": "source198-check-command.json",
+      "bytes": 487,
+      "sha256": "8c585b9d61fbd3bc14f7622fbff0eb633c434a36bbf9de097669d1ae8d8b9c0d"
+    },
+    {
+      "path": "source198-check-result.json",
+      "bytes": 90,
+      "sha256": "166d915167f5988e98885cd78078cda2ed0af17c74a60a658dfb598037d88c4a"
+    },
+    {
+      "path": "source198-check.log",
+      "bytes": 198,
+      "sha256": "95e560f8e51f0f27d991e738de5a911ef5e18da3adf1a046dbdca87bcbc067f0"
+    },
+    {
+      "path": "source198-clippy-command.json",
+      "bytes": 475,
+      "sha256": "6ecc922bcb253b24e83eaca14d1c2518e95e9ecf8187e575fa9a3f88f126aa1d"
+    },
+    {
+      "path": "source198-clippy-result.json",
+      "bytes": 88,
+      "sha256": "36f0e80c09a93ebb29099f687cd625a3306394620f426aed24625cc69754f991"
+    },
+    {
+      "path": "source198-clippy.log",
+      "bytes": 198,
+      "sha256": "d5800333dd9dca7e5937bf9227ec2891e62737cbdd4417e8731184fcceadf9af"
+    },
+    {
+      "path": "source198-diff-command.json",
+      "bytes": 391,
+      "sha256": "dabffa14af01cdf7e26b3c2d035ef8a530f3bee606fb2c168e508e7c724ce9cd"
+    },
+    {
+      "path": "source198-diff-result.json",
+      "bytes": 89,
+      "sha256": "161f79cbb5b0274813dc46cd901530ce000c394275ae7ce0077ada19c73548d5"
+    },
+    {
+      "path": "source198-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source198-fmt-command.json",
+      "bytes": 415,
+      "sha256": "9b63c4d3424bfd9028abcd2bd3e44b278185ecf4f13b8d1c4f87f09dd7bb0e43"
+    },
+    {
+      "path": "source198-fmt-result.json",
+      "bytes": 82,
+      "sha256": "ad9986976209397de016408a3ec745678b77fbfb983de4b238056b8a51e4a6ad"
+    },
+    {
+      "path": "source198-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source198-gate-build-command.json",
+      "bytes": 1126,
+      "sha256": "38910f8c8170f274e5e96640c7880d40ab6e3b2cb8270ff601b8a78f6292169b"
+    },
+    {
+      "path": "source198-gate-build-result.json",
+      "bytes": 85,
+      "sha256": "2e5bfdb1fd343d4dde57d0768c7069e56caaec01e2ed63bef7eadd751d9b8712"
+    },
+    {
+      "path": "source198-gate-build.log",
+      "bytes": 216546,
+      "sha256": "5dea095b5ff2858fa676735a1978a4443d632efa970a5cb64c73f9b526171deb"
+    },
+    {
+      "path": "source198-gate-focused-command.json",
+      "bytes": 1834,
+      "sha256": "6359227bee94c2ef013d766421ed45952fe01589274497148fadc43fd8165d5c"
+    },
+    {
+      "path": "source198-gate-focused-result.json",
+      "bytes": 90,
+      "sha256": "64ba9b0aee749f74d6340631847db9daddba3214fb6a4cffb9882be6452f5c93"
+    },
+    {
+      "path": "source198-gate-focused.log",
+      "bytes": 459,
+      "sha256": "54defae1d7eafd0d47b0617c3885837bd1b49abf453d808f29cb436de619d014"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

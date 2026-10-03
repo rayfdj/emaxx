@@ -1,0 +1,153 @@
+{
+  "base_commit": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199",
+  "previous_source": "source195",
+  "inputs": 401,
+  "changed_from_previous": [
+    "src/lisp/primitives/interactive.rs",
+    "src/lisp/primitives/tests.rs",
+    "tests/fixtures/input-decode-unread-wrapper.el",
+    "tests/fixtures/input-decode-unread-wrapper.expected"
+  ],
+  "status": "Unvalidated working-tree follow-up. Reuse the existing t-prefixed unread-event unwrapping in the common pending reader. Add the ordinary GNU wrapper fixture and a Rust control with a terminal poller installed. Source195 selected terminal validation remains running on its unchanged checkout.",
+  "captured_unix": 1790781422.968881,
+  "complete_patch": "source195-unread-followup-complete.patch",
+  "source_manifest": "source195-unread-followup-manifest.json",
+  "archive": {
+    "path": "source195-unread-followup.tar.gz",
+    "bytes": 71433,
+    "sha256": "dcec450d97a298bf05c3de24e3792db649315784e99b6f3236d3d6390cf452c2"
+  },
+  "files": [
+    {
+      "path": "input-decode-unread-wrapper.el",
+      "bytes": 343,
+      "sha256": "77fbc393d8b092310ed584126321b7ae5ee9403f185e1b62cfdd8a1e777e90d8"
+    },
+    {
+      "path": "queue-source195-full-validation.py",
+      "bytes": 2673,
+      "sha256": "4417ca5ae1aaa093048cd8786df88e8ab971809ab3d3657fc60b0dcca0af2f3a"
+    },
+    {
+      "path": "snapshot-reader-candidate.py",
+      "bytes": 5181,
+      "sha256": "b261f4ead9d842772baca12a5d775972c2a1d70cf029f444a91e4552837af305"
+    },
+    {
+      "path": "source185-ordinary-input-decode-unread-wrapper-comparison.json",
+      "bytes": 705,
+      "sha256": "00e8a95b47e657e4d24a75e9f7ed3d96444f8d856ef5a6ce9be6780a8f4f72bb"
+    },
+    {
+      "path": "source185-ordinary-input-decode-unread-wrapper-emaxx.command.json",
+      "bytes": 1545,
+      "sha256": "de041f0f382e5dad3634f7a29df3902f8aeb86f4242f45927322fbdbf342c2fe"
+    },
+    {
+      "path": "source185-ordinary-input-decode-unread-wrapper-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "18ae51bd26019e10e3ce33d960a46a778a531c3ab471c8e3a514c0dfe3ba08e2"
+    },
+    {
+      "path": "source185-ordinary-input-decode-unread-wrapper-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source185-ordinary-input-decode-unread-wrapper-emaxx.stdout",
+      "bytes": 169,
+      "sha256": "60e48ec814aa8c99ddbbf024c1cedccb819c561c056d6bfe81db6326d7bd1a07"
+    },
+    {
+      "path": "source185-ordinary-input-decode-unread-wrapper-gnu.command.json",
+      "bytes": 1413,
+      "sha256": "9f592c266f08d1b04003d2ff72541c9bedb4d4d4ca1b0686340fe502ff76777a"
+    },
+    {
+      "path": "source185-ordinary-input-decode-unread-wrapper-gnu.result.json",
+      "bytes": 266,
+      "sha256": "93f66ad4b8011ad04b58be1aec409e0594529049e35cdf87c747c86b743a863b"
+    },
+    {
+      "path": "source185-ordinary-input-decode-unread-wrapper-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source185-ordinary-input-decode-unread-wrapper-gnu.stdout",
+      "bytes": 171,
+      "sha256": "388f86a41bf248d48fc54b502dab37db25ba8667449f1ce2866652c5cf8b13ac"
+    },
+    {
+      "path": "source195-full-local-supervisor-result.json",
+      "bytes": 376,
+      "sha256": "7302c0c58924b0bc05bdca47566f4a4b284b9da3bb631c32755b6535f9251848"
+    },
+    {
+      "path": "source195-full-local-supervisor.json",
+      "bytes": 595,
+      "sha256": "71708f60b02b825bdf07ab405e86da82c98715047ae9f35954f006e46c0fe58b"
+    },
+    {
+      "path": "source195-ordinary-input-decode-unread-wrapper-comparison.json",
+      "bytes": 697,
+      "sha256": "792798085a6564140266c9b3c557ad92e151e813ed215246b15c63d1a05e504d"
+    },
+    {
+      "path": "source195-ordinary-input-decode-unread-wrapper-emaxx.command.json",
+      "bytes": 1536,
+      "sha256": "92892d0ab8ffc61ae1d04f593111cd9af51529258a3d6997da3563ccb5ad5ab6"
+    },
+    {
+      "path": "source195-ordinary-input-decode-unread-wrapper-emaxx.result.json",
+      "bytes": 266,
+      "sha256": "29e1ff6e9d9fb9660e6707a562693310155791bb637839f733131e999502dcd7"
+    },
+    {
+      "path": "source195-ordinary-input-decode-unread-wrapper-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source195-ordinary-input-decode-unread-wrapper-emaxx.stdout",
+      "bytes": 169,
+      "sha256": "60e48ec814aa8c99ddbbf024c1cedccb819c561c056d6bfe81db6326d7bd1a07"
+    },
+    {
+      "path": "source195-ordinary-input-decode-unread-wrapper-gnu.command.json",
+      "bytes": 1413,
+      "sha256": "9f592c266f08d1b04003d2ff72541c9bedb4d4d4ca1b0686340fe502ff76777a"
+    },
+    {
+      "path": "source195-ordinary-input-decode-unread-wrapper-gnu.result.json",
+      "bytes": 266,
+      "sha256": "4559f383aa7fc3bdd9af8df2b0a7eec6e6e66c9e9cd8669b0dbb930d4651e8f8"
+    },
+    {
+      "path": "source195-ordinary-input-decode-unread-wrapper-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source195-ordinary-input-decode-unread-wrapper-gnu.stdout",
+      "bytes": 171,
+      "sha256": "388f86a41bf248d48fc54b502dab37db25ba8667449f1ce2866652c5cf8b13ac"
+    },
+    {
+      "path": "source195-unread-followup-base.json",
+      "bytes": 683,
+      "sha256": "0606ef6fb923c81a16440cd3dda0291ea18010cd92c52dadbef3d6d0e8a5f348"
+    },
+    {
+      "path": "source195-unread-followup-complete.patch",
+      "bytes": 217384,
+      "sha256": "efb539be2717cc66f5511724cf10bf01f3b07efe03a4692e19442be0cd7c95b8"
+    },
+    {
+      "path": "source195-unread-followup-manifest.json",
+      "bytes": 45370,
+      "sha256": "e77fa7396195d18d86ac902c27e7ade2d9a0bd4679524dbc7434a61e21cf3f8b"
+    }
+  ],
+  "qualification": "No compiler/runtime pass claimed for this follow-up. Preserves the same failing ordinary wrapper comparison on source185 and source195; no full source195 runs were launched. The complete goal remains open."
+}

@@ -1,0 +1,3025 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "selected": {
+      "status": "passed",
+      "source_inputs_verified": 488,
+      "profiles": {
+        "gate": {
+          "focused_passes": 189,
+          "existing_ignores": [
+            "tty::tty_differential_end_to_end",
+            "tty::tty_smoke_end_to_end"
+          ],
+          "affected_passes": 962,
+          "complete_library_inventory": 3010,
+          "binary_sha256": "d61b14f757e479bd86856172cda997cf6d57a598b13ad09d8016b0894de1f33c"
+        },
+        "release": {
+          "focused_passes": 189,
+          "existing_ignores": [
+            "tty::tty_differential_end_to_end",
+            "tty::tty_smoke_end_to_end"
+          ],
+          "affected_passes": 962,
+          "complete_library_inventory": 3009,
+          "binary_sha256": "3bf78bf1f812f87af2841cb004fb9716243f2ccb06ddeb1a65158cdd614217d6"
+        }
+      },
+      "ordinary_comparisons": 22,
+      "ordinary_expected_sha256": {
+        "coding-post-read-character-count": "a79f6cc6739f45ecf0f43513c366c4abce0e75070f841678a7cd6759fcb489f8",
+        "coding-post-read-fast-path": "a33001a53d28d166ce3a91d7bedae3f7c4d833c11f3d251fb8bec2e36b9d07a7",
+        "overriding-property-identity": "d05e136e33712add8eeb12996c63f69e240ee72bf0678297a2883d4ef2e9e9c7",
+        "coding-candidate-symbol-properties": "7d68fe3ce60a5530f4f702135b54780c870ffe8edb89f18e49c68608b5db60ff",
+        "coding-candidate-translation": "c7d002fcd69e6973181eae09787e9bc7e16022ef8ee8b8e2851fb82fd726bcc1",
+        "coding-candidate-character-identities": "81680543363749d43c6df7569491d400595e3d184ae2e99c783540bce82ce258",
+        "coding-candidate-inventory": "ba03236be4a3414ccdd6d8ab42e757735ef0d7e6e99b367318cb1e02966b1631",
+        "file-write-coding-selection": "3a0fa0482339c22ff4f63cab77f9623006f50870a0764eb5c0f61afeed4c5bcb",
+        "new-file-coding-lifecycle": "43dee18598cb9aa720f8f5b65fb7433f91f82f039971f885d2184f6b9be4c8c5",
+        "file-write-order": "360beee0b778cbce3eddfdb9f8e9b9ccf7d8751a2a91a0fcc0201f829406483f",
+        "canonical-coding-character-storage": "8d0203f55bb5cc649336b089bb326a897dfea2491f1ac834a78042f1117fb445",
+        "canonical-coding-identity-storage": "410ac62c8f094e66c8b869a388c8424741f9c7c11a0d09364d6ff61e71b91178",
+        "canonical-coding-conversion-storage": "1d2863adc2140a37a1500d6a0756a26c2f30c139559f749fb898511cee653cf8",
+        "copied-canonical-string-storage": "7895e3546afb4a0af177d49982a23e16094880686750d350375c821e246e7e38",
+        "coding-error-object-storage": "3e8026d10d484f745ae1f67e7ed8bb6c37d8bbe59c42bec79303da567aac035f",
+        "host-string-mutation": "cc44c4f5ad79ad32660157ceb56c4f71bdb0687fc1df72f2b5ca285db43773e6",
+        "host-string-vector-mutation": "9e13ff2c0ced1f79cba53b0d7df16f248c8165d1e2e6979e5cf6192d3d1fa5cd",
+        "string-equality-storage": "f48d4b84fba66d8cb43689f90c158cac77de0dad8caacf38f773220d1d035d3f",
+        "string-equality-symbol-names-positioned": "b60c9a57f76e7c083b05f4a939871a599531d1f28b438b5fad02d45c41fcacd2",
+        "string-equality-property-values": "35278d93295a4164d454aaaa0b4f061f89d037ea88b7bef2f66385411fa8f4a7",
+        "string-equality-property-hashes": "7e9e41fdb5259f7e6fe049e233671a019664f3aaa9220811c7c560acdaccbd07",
+        "native-bytecode-unibyte-constructor": "7f5d168f3df0fe1a3012aef506abe76bbd8e533819701153d31a7858379e921c"
+      },
+      "ordinary_artifacts": {
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-comparisons/emaxx/target/string-comparison-validation/release/emaxx": {
+          "sha256": "332e1aaaf04e0534096f5719b1bc7ed76cbac59409fe2e59c54187da7a4a7a36",
+          "immutable_copy": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source261-ordinary-emaxx",
+          "bytes": 13377216
+        },
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-comparisons/emaxx/target/string-comparison-validation/release/emaxx.pdmp": {
+          "sha256": "f2200c7191c029ec78f74aad8195f3ac5f6b23515667cf9a2d60b362dfa3b2db",
+          "immutable_copy": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source261-ordinary-emaxx.pdmp",
+          "bytes": 22350464
+        }
+      },
+      "added_test_names": [
+        "lisp::primitives::tests::host_created_strings_preserve_mutation_properties_and_fill_errors",
+        "lisp::primitives::tests::string_equality_compares_actual_storage_with_and_without_properties",
+        "lisp::primitives::tests::string_equality_uses_lisp_symbol_names_and_positioned_symbol_policy",
+        "lisp::primitives::tests::string_property_hashes_follow_equal_through_nested_mutation_and_lookup",
+        "lisp::primitives::tests::string_property_values_use_equal_across_mutation_gc_and_interval_boundaries",
+        "lisp::primitives::tests::vector_held_host_strings_preserve_binding_identity_and_mutation",
+        "lisp::types::tests::string_value_equality_uses_bytes_and_character_counts"
+      ],
+      "original_failures_preserved": true,
+      "goal_complete": false,
+      "qualification": "Selected gate/release and 22 ordinary same-input GNU comparisons only. All source249 controls and existing ignores remain. Full macOS/Linux Rust, frozen and terminal runs are separate. No performance, memory, ownership or architecture completion is inferred."
+    },
+    "source259_broad_failure": {
+      "status": "failed",
+      "counts": {
+        "ok": 961,
+        "FAILED": 1,
+        "ignored": 0
+      },
+      "failed_tests": [
+        "lisp::native_comp::runtime::tests::native_funcall_dispatches_bytecode_like_eval_c"
+      ],
+      "raw_verdicts": {
+        "lisp::bytecode::tests::argspec_unpacks_gnu_template": "ok",
+        "lisp::bytecode::tests::bytecode_shape_checks_do_not_read_or_copy_payloads": "ok",
+        "lisp::bytecode::tests::classifies_elc_headers": "ok",
+        "lisp::bytecode::tests::decodes_discardn_preserve_tos_flag": "ok",
+        "lisp::bytecode::tests::decodes_handler_targets": "ok",
+        "lisp::bytecode::tests::decodes_one_and_two_byte_operands": "ok",
+        "lisp::bytecode::tests::decodes_operand_in_opcode_families": "ok",
+        "lisp::bytecode::tests::from_slots_ignores_emaxx_facade_objects": "ok",
+        "lisp::bytecode::tests::from_slots_parses_genuine_object": "ok",
+        "lisp::bytecode::tests::from_slots_rejects_corrupt_code": "ok",
+        "lisp::bytecode::tests::loader_executes_genuine_elc_without_sibling_source": "ok",
+        "lisp::bytecode::tests::oracle_elc_fixture_decodes_cleanly": "ok",
+        "lisp::bytecode::tests::rejects_constant_out_of_range": "ok",
+        "lisp::bytecode::tests::rejects_jump_out_of_range_and_mid_instruction": "ok",
+        "lisp::bytecode::tests::rejects_truncated_operands": "ok",
+        "lisp::bytecode::tests::rejects_undefined_opcodes": "ok",
+        "lisp::bytecode::vm::canonical_bytecode_entry_borrows_the_actual_bytes_without_predecoding": "ok",
+        "lisp::bytecode::vm::native_surface_tests::byte_code_argument_prologue_preserves_string_identity": "ok",
+        "lisp::bytecode::vm::native_surface_tests::byte_code_direct_string_arguments_are_mutable_lisp_objects": "ok",
+        "lisp::bytecode::vm::native_surface_tests::byte_code_primitive_executes_program": "ok",
+        "lisp::bytecode::vm::native_surface_tests::bytecode_constant_storage_does_not_retain_removed_values": "ok",
+        "lisp::bytecode::vm::native_surface_tests::bytecode_reads_original_constants_after_vector_mutation": "ok",
+        "lisp::bytecode::vm::native_surface_tests::bytecode_reads_original_constants_during_vector_mutation": "ok",
+        "lisp::bytecode::vm::native_surface_tests::make_byte_code_object_is_callable": "ok",
+        "lisp::bytecode::vm::phase_c_tests::executes_buffer_ops_fixture": "ok",
+        "lisp::bytecode::vm::phase_c_tests::executes_dynamic_binding_fixture": "ok",
+        "lisp::bytecode::vm::phase_c_tests::executes_legacy_dynamic_argspec_fixture": "ok",
+        "lisp::bytecode::vm::phase_c_tests::executes_save_excursion_fixture": "ok",
+        "lisp::bytecode::vm::phase_c_tests::executes_switch_fixture": "ok",
+        "lisp::bytecode::vm::phase_c_tests::executes_unwind_protect_fixture": "ok",
+        "lisp::bytecode::vm::phase_c_tests::executes_unwind_protect_through_throw": "ok",
+        "lisp::bytecode::vm::taken_bytecode_branch_outside_storage_errors_without_leaking_a_frame": "ok",
+        "lisp::bytecode::vm::tests::executes_arithmetic_fixture": "ok",
+        "lisp::bytecode::vm::tests::executes_branching_fixture": "ok",
+        "lisp::bytecode::vm::tests::executes_condition_case_fixture": "ok",
+        "lisp::bytecode::vm::tests::executes_loop_fixture": "ok",
+        "lisp::bytecode::vm::tests::executes_rest_args_fixture": "ok",
+        "lisp::bytecode::vm::tests::materializes_bytecode_records_nested_in_list_constants": "ok",
+        "lisp::bytecode::vm::tests::materializes_reader_labels_shared_across_nested_closures": "ok",
+        "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_allocation_is_header_and_actual_lisp_slots": "ok",
+        "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_copy_counts_both_actual_allocations": "ok",
+        "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_header_and_words_are_the_native_payload": "ok",
+        "lisp::native_comp::runtime::record_layout_tests::generic_record_census_includes_header_and_physical_rounding": "ok",
+        "lisp::native_comp::runtime::record_layout_tests::generic_record_slots_are_the_public_native_payload_and_gc_edges": "ok",
+        "lisp::native_comp::runtime::suspension::tests::spill_callback_preserves_values_and_propagates_panics_outside_the_c_frame": "ok",
+        "lisp::native_comp::runtime::tests::allocated_frame_census_counts_its_actual_rounded_payload": "ok",
+        "lisp::native_comp::runtime::tests::cached_native_list_tail_is_visible_after_return": "ok",
+        "lisp::native_comp::runtime::tests::canonical_markers_are_reclaimed_after_their_last_root_is_removed": "ok",
+        "lisp::native_comp::runtime::tests::canonical_nil_and_t_keep_their_obarray_owned_names_through_gc": "ok",
+        "lisp::native_comp::runtime::tests::cons_interior_pointers_root_the_cell_but_are_not_valid_lisp_words": "ok",
+        "lisp::native_comp::runtime::tests::cons_payload_is_exactly_two_lisp_words": "ok",
+        "lisp::native_comp::runtime::tests::cons_weak_snapshots_reject_reused_slots_with_identical_fields": "ok",
+        "lisp::native_comp::runtime::tests::conservative_cons_roots_accept_only_gnu_field_and_tag_offsets": "ok",
+        "lisp::native_comp::runtime::tests::conses_share_one_word_across_live_native_heaps": "ok",
+        "lisp::native_comp::runtime::tests::deleted_terminal_parameters_survive_until_the_object_is_unreachable": "ok",
+        "lisp::native_comp::runtime::tests::direct_native_cons_mutation_updates_the_interpreter_value": "ok",
+        "lisp::native_comp::runtime::tests::direct_word_subrs_use_the_gnu_c_fast_and_error_paths": "ok",
+        "lisp::native_comp::runtime::tests::dump_writer_observes_native_constant_writes_after_return": "ok",
+        "lisp::native_comp::runtime::tests::escaped_frame_graph_survives_its_owner_and_is_then_reclaimed": "ok",
+        "lisp::native_comp::runtime::tests::eval_sub_runs_maybe_gc_before_form_dispatch": "ok",
+        "lisp::native_comp::runtime::tests::finalizer_allocations_report_their_four_vector_words": "ok",
+        "lisp::native_comp::runtime::tests::garbage_collect_maybe_matches_gnu_factor_boundary": "ok",
+        "lisp::native_comp::runtime::tests::image_clones_copy_finalizer_callback_cycles_without_sharing_list_state": "ok",
+        "lisp::native_comp::runtime::tests::image_clones_copy_frame_window_terminal_and_parameter_cycles": "ok",
+        "lisp::native_comp::runtime::tests::indirect_interpreter_cons_mutation_updates_the_native_mirror": "ok",
+        "lisp::native_comp::runtime::tests::intermediate_decode_does_not_hide_later_native_mutation": "ok",
+        "lisp::native_comp::runtime::tests::interpreted_closure_allocation_charges_its_gnu_lisp_words": "ok",
+        "lisp::native_comp::runtime::tests::killed_buffer_releases_editing_roots_before_its_object_is_reclaimed": "ok",
+        "lisp::native_comp::runtime::tests::live_native_handle_decode_follows_the_gnu_tagged_pointer_path": "ok",
+        "lisp::native_comp::runtime::tests::live_symbol_access_follows_xsymbol_without_reverse_lookup": "ok",
+        "lisp::native_comp::runtime::tests::native_and_ordinary_eq_preserve_allocated_bignum_identity": "ok",
+        "lisp::native_comp::runtime::tests::native_and_ordinary_position_flag_readers_ignore_lexical_and_detached_cells": "ok",
+        "lisp::native_comp::runtime::tests::native_apply_spreads_the_final_list_into_funcall_words": "ok",
+        "lisp::native_comp::runtime::tests::native_assq_preserves_uninterned_lexical_binding_identity": "ok",
+        "lisp::native_comp::runtime::tests::native_assq_uses_the_fns_c_cons_walk": "ok",
+        "lisp::native_comp::runtime::tests::native_buffer_words_preserve_lisp_buffer_identity": "ok",
+        "lisp::native_comp::runtime::tests::native_builtins_use_their_own_words_and_subr_fields": "ok",
+        "lisp::native_comp::runtime::tests::native_byte_code_function_p_checks_closure_and_code_tags": "ok",
+        "lisp::native_comp::runtime::tests::native_cache_guards_do_not_refresh_unrelated_conses": "ok",
+        "lisp::native_comp::runtime::tests::native_call_trampoline_returns_values_and_lisp_errors_through_rust": "ok",
+        "lisp::native_comp::runtime::tests::native_caught_signal_releases_the_signaling_arguments": "ok",
+        "lisp::native_comp::runtime::tests::native_char_table_gc_traces_inline_slots_and_reclaims_detached_graphs": "ok",
+        "lisp::native_comp::runtime::tests::native_char_table_stores_invalidate_warm_regexp_syntax_caches": "ok",
+        "lisp::native_comp::runtime::tests::native_char_tables_share_words_and_expose_gnu_inline_fields": "ok",
+        "lisp::native_comp::runtime::tests::native_cl_type_of_uses_object_tags_not_fixnum_variable_cells": "ok",
+        "lisp::native_comp::runtime::tests::native_cons_can_change_heaps_only_after_its_owner_detaches": "ok",
+        "lisp::native_comp::runtime::tests::native_cons_uses_one_two_word_body": "ok",
+        "lisp::native_comp::runtime::tests::native_constant_write_survives_heap_move_and_teardown": "ok",
+        "lisp::native_comp::runtime::tests::native_created_cons_keeps_direct_writes_across_calls": "ok",
+        "lisp::native_comp::runtime::tests::native_decoding_deep_shared_and_cyclic_conses_uses_bounded_stack": "ok",
+        "lisp::native_comp::runtime::tests::native_encoding_deep_shared_and_cyclic_conses_uses_bounded_stack": "ok",
+        "lisp::native_comp::runtime::tests::native_eq_does_not_materialize_unrelated_cons_fields": "ok",
+        "lisp::native_comp::runtime::tests::native_eq_observes_position_flag_disabled_inside_native_call": "ok",
+        "lisp::native_comp::runtime::tests::native_eq_observes_position_flag_enabled_inside_native_call": "ok",
+        "lisp::native_comp::runtime::tests::native_eq_observes_position_flag_set_inside_native_call": "ok",
+        "lisp::native_comp::runtime::tests::native_eq_unwraps_only_positioned_symbols_and_preserves_identity": "ok",
+        "lisp::native_comp::runtime::tests::native_execution_lock_survives_non_lifo_activation_returns": "ok",
+        "lisp::native_comp::runtime::tests::native_finalizer_words_reach_the_lisp_marker_without_bridge_handles": "ok",
+        "lisp::native_comp::runtime::tests::native_finalizers_use_their_own_words_and_callback_slot": "ok",
+        "lisp::native_comp::runtime::tests::native_floats_share_the_interpreter_word_and_gnu_payload": "ok",
+        "lisp::native_comp::runtime::tests::native_frame_name_store_is_visible_to_both_parameter_readers": "ok",
+        "lisp::native_comp::runtime::tests::native_frame_words_are_authoritative_objects_across_owners": "ok",
+        "lisp::native_comp::runtime::tests::native_funcall_atan_accepts_an_omitted_or_nil_x": "ok",
+        "lisp::native_comp::runtime::tests::native_funcall_builtin_error_unwinds_its_call_frame": "ok",
+        "lisp::native_comp::runtime::tests::native_funcall_builtin_preserves_arithmetic_error": "ok",
+        "lisp::native_comp::runtime::tests::native_funcall_dispatches_builtin_on_the_word_abi": "ok",
+        "lisp::native_comp::runtime::tests::native_funcall_dispatches_bytecode_like_eval_c": "FAILED",
+        "lisp::native_comp::runtime::tests::native_funcall_falls_back_for_alias_lambda_and_invalid_function": "ok",
+        "lisp::native_comp::runtime::tests::native_funcall_finite_max_above_eight_matches_gnu_many_dispatch": "ok",
+        "lisp::native_comp::runtime::tests::native_funcall_fixed_optional_nil_matches_the_c_abi": "ok",
+        "lisp::native_comp::runtime::tests::native_funcall_honors_gnu_debug_on_exit_frame_flag": "ok",
+        "lisp::native_comp::runtime::tests::native_funcall_log_accepts_an_omitted_or_nil_base": "ok",
+        "lisp::native_comp::runtime::tests::native_funcall_many_and_unevalled_follow_funcall_subr": "ok",
+        "lisp::native_comp::runtime::tests::native_funcall_wrong_arity_reports_the_resolved_subr": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_detaches_externally_owned_rust_cons_graphs_without_losing_writes": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_discards_cons_views_swept_by_another_heap": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_finalizers_trace_callbacks_across_collectors_and_reclaim": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_finishes_weak_table_marking_before_sweeping": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_keeps_cons_arrays_across_blocks_and_reclaims_them": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_keeps_float_arrays_across_blocks_and_collection_epochs": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_keeps_static_builtins_with_remaining_bridge_handles": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_marks_current_cons_fields_car_first": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_marks_reachable_generated_conses_and_frees_the_rest": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_matches_gnu_percentage_type_and_saturation_rules": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_matches_gnu_threshold_boundary_and_half_live_adjustment": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_ordinary_subr_route_preserves_vector_element_identity": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_owns_primitive_returned_rust_cons_until_it_is_unreachable": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_preserves_roots_on_registered_alternate_stack": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_publishes_native_only_handles_to_lisp_reachability": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_retains_buffer_fields_in_reachable_cons_views": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_retains_pending_unwind_cleanup_and_reclaims_it_after_execution": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_retains_the_exact_buffer_reference_owned_by_a_live_bridge": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_sweeps_unreachable_reference_counted_handles": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_traces_and_reclaims_record_reader_and_bignum_graphs": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_traces_canonical_floats_and_reclaims_unreachable_floats": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_traces_canonical_symbols_and_reclaims_unreachable_symbols": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_traces_direct_vector_closure_cycles_and_reclaims_them": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_traces_interpreter_roots_and_current_native_fields": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_traces_string_properties_and_reclaims_string_cycles": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_traces_unencoded_vectors_and_native_cycles": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_traces_vector_contents_before_sweeping_cons_storage": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_uninterned_symbols_are_weak_across_collectors": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_weak_tables_reach_a_fixed_point_before_sweeping": "ok",
+        "lisp::native_comp::runtime::tests::native_get_follows_fns_c_word_path": "ok",
+        "lisp::native_comp::runtime::tests::native_handle_cache_keys_use_gnu_object_identity_words": "ok",
+        "lisp::native_comp::runtime::tests::native_hash_descriptors_call_captured_functions_and_restore_mutability": "ok",
+        "lisp::native_comp::runtime::tests::native_hash_tables_expose_the_authoritative_gnu_entry_array": "ok",
+        "lisp::native_comp::runtime::tests::native_hot_path_probe": "ok",
+        "lisp::native_comp::runtime::tests::native_keymap_arguments_are_lists_and_direct_mutation_updates_rust_lookup_state": "ok",
+        "lisp::native_comp::runtime::tests::native_length_uses_fns_c_list_traversal": "ok",
+        "lisp::native_comp::runtime::tests::native_list_is_the_alloc_c_reverse_cons_loop": "ok",
+        "lisp::native_comp::runtime::tests::native_make_closure_follows_alloc_c_copy_contract": "ok",
+        "lisp::native_comp::runtime::tests::native_mapcar_follows_fns_c_list_branch": "ok",
+        "lisp::native_comp::runtime::tests::native_maphash_calls_each_live_slot_through_funcall": "ok",
+        "lisp::native_comp::runtime::tests::native_markers_share_fields_with_buffer_marks_and_bytecode": "ok",
+        "lisp::native_comp::runtime::tests::native_maybe_quit_follows_eval_c_process_quit_flag": "ok",
+        "lisp::native_comp::runtime::tests::native_memq_uses_the_fns_c_cons_walk": "ok",
+        "lisp::native_comp::runtime::tests::native_nreverse_follows_fns_c_list_branch": "ok",
+        "lisp::native_comp::runtime::tests::native_numeric_comparisons_follow_data_c_fixnum_path": "ok",
+        "lisp::native_comp::runtime::tests::native_overlay_roots_retain_plists_without_retaining_buffers_or_dead_cycles": "ok",
+        "lisp::native_comp::runtime::tests::native_overlays_share_plist_and_interval_fields_with_bytecode": "ok",
+        "lisp::native_comp::runtime::tests::native_plist_member_follows_fns_c_pair_traversal": "ok",
+        "lisp::native_comp::runtime::tests::native_reads_cons_fields_reached_through_canonical_vector_slots": "ok",
+        "lisp::native_comp::runtime::tests::native_reconciliation_of_deep_interpreter_mutations_uses_bounded_stack": "ok",
+        "lisp::native_comp::runtime::tests::native_record_bignum_and_reader_words_preserve_identity_across_owners": "ok",
+        "lisp::native_comp::runtime::tests::native_relocation_roots_survive_collection_between_generated_calls": "ok",
+        "lisp::native_comp::runtime::tests::native_remaining_object_kinds_use_their_ordinary_words_across_heaps": "ok",
+        "lisp::native_comp::runtime::tests::native_shell_transfer_preserves_heap_and_keeps_call_frames_local": "ok",
+        "lisp::native_comp::runtime::tests::native_string_type_predicates_do_not_read_payloads": "ok",
+        "lisp::native_comp::runtime::tests::native_string_type_predicates_follow_gnu_array_and_character_classes": "ok",
+        "lisp::native_comp::runtime::tests::native_string_type_predicates_reject_vector_spoofing": "ok",
+        "lisp::native_comp::runtime::tests::native_stringp_is_a_tag_test_without_an_active_runtime": "ok",
+        "lisp::native_comp::runtime::tests::native_strings_share_object_words_for_both_storage_forms": "ok",
+        "lisp::native_comp::runtime::tests::native_symbol_value_and_type_of_follow_data_c": "ok",
+        "lisp::native_comp::runtime::tests::native_symbol_value_checks_symbol_before_reading_the_cell": "ok",
+        "lisp::native_comp::runtime::tests::native_symbol_value_errors_preserve_the_original_symbol": "ok",
+        "lisp::native_comp::runtime::tests::native_symbols_and_immediates_share_the_interpreter_word_across_heaps": "ok",
+        "lisp::native_comp::runtime::tests::native_tail_write_invalidates_cached_source_arguments": "ok",
+        "lisp::native_comp::runtime::tests::native_terminals_share_words_and_the_authoritative_parameter_slot": "ok",
+        "lisp::native_comp::runtime::tests::native_type_of_leaves_old_struct_policy_to_elisp_advice": "ok",
+        "lisp::native_comp::runtime::tests::native_unwind_cleanup_publishes_captured_cons_mutation_before_resuming": "ok",
+        "lisp::native_comp::runtime::tests::native_vector_arguments_use_gnu_vectorlike_tag_not_internal_cons_storage": "ok",
+        "lisp::native_comp::runtime::tests::native_vectors_and_interpreted_closures_share_words_across_heaps": "ok",
+        "lisp::native_comp::runtime::tests::native_write_is_visible_to_file_name_handler_lookup": "ok",
+        "lisp::native_comp::runtime::tests::nested_calls_share_one_cons_tracking_entry": "ok",
+        "lisp::native_comp::runtime::tests::nested_native_return_publishes_writes_and_keeps_tracking": "ok",
+        "lisp::native_comp::runtime::tests::ordinary_buffer_references_use_one_object_word": "ok",
+        "lisp::native_comp::runtime::tests::positioned_symbol_fields_use_the_public_native_word_without_preparation": "ok",
+        "lisp::native_comp::runtime::tests::positioned_symbol_graph_copy_preserves_sharing_with_distinct_storage": "ok",
+        "lisp::native_comp::runtime::tests::positioned_symbol_native_helper_checks_the_object_tag": "ok",
+        "lisp::native_comp::runtime::tests::positioned_symbol_native_helper_returns_the_actual_allocation": "ok",
+        "lisp::native_comp::runtime::tests::positioned_symbol_native_roots_keep_only_reachable_objects_and_names": "ok",
+        "lisp::native_comp::runtime::tests::positioned_symbol_raw_stores_are_visible_to_lisp_and_native_readers": "ok",
+        "lisp::native_comp::runtime::tests::queued_interpreter_mutation_is_published_on_the_next_native_call": "ok",
+        "lisp::native_comp::runtime::tests::raw_cons_store_changes_a_warmed_macro_verdict": "ok",
+        "lisp::native_comp::runtime::tests::raw_cons_store_changes_keymap_parent_and_char_table_readers": "ok",
+        "lisp::native_comp::runtime::tests::retained_cons_field_addresses_survive_collection_and_then_reclaim": "ok",
+        "lisp::native_comp::runtime::tests::rooted_owning_and_drain_iterators_keep_only_remaining_elements_alive": "ok",
+        "lisp::native_comp::runtime::tests::runtime_layout_matches_the_generated_handler_and_thread_types": "ok",
+        "lisp::native_comp::runtime::tests::runtime_link_table_has_exact_helper_prefix_and_subr_tail": "ok",
+        "lisp::native_comp::runtime::tests::rust_primitive_observes_direct_native_cons_write_reached_through_a_record": "ok",
+        "lisp::native_comp::runtime::tests::terminal_allocations_report_their_actual_vector_footprint": "ok",
+        "lisp::native_comp::runtime::tests::terminal_deletion_retires_frames_after_the_device_is_closed": "ok",
+        "lisp::native_comp::runtime::tests::unprepared_cons_fields_share_native_and_interpreter_stores": "ok",
+        "lisp::primitives::pdumper::image::tests::fixnum_words_follow_lisp_h_tagging": "ok",
+        "lisp::primitives::pdumper::image::tests::header_round_trips_through_its_hundred_bytes": "ok",
+        "lisp::primitives::pdumper::image::tests::relocation_kinds_round_trip": "ok",
+        "lisp::primitives::pdumper::image::tests::the_executable_holds_the_default_fingerprint_once": "ok",
+        "lisp::primitives::pdumper::tests::captured_menu_case_table_is_an_independent_image_root": "ok",
+        "lisp::primitives::pdumper::tests::closure_slot_graphs_survive_interpreter_cloning_and_dump_restoration": "ok",
+        "lisp::primitives::pdumper::tests::image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots": "ok",
+        "lisp::primitives::pdumper::tests::image_freezes_and_thaws_hash_tables_as_pdumper_c_does": "ok",
+        "lisp::primitives::pdumper::tests::image_keeps_a_private_obarray_symbol_apart_from_its_namesake": "ok",
+        "lisp::primitives::pdumper::tests::image_nilled_frames_preserve_address_identity_and_shared_references": "ok",
+        "lisp::primitives::pdumper::tests::image_records_symbol_cells_from_the_interpreter": "ok",
+        "lisp::primitives::pdumper::tests::image_refuses_buffers_with_overlays_as_gnu_does": "ok",
+        "lisp::primitives::pdumper::tests::image_refuses_hash_tables_with_user_defined_tests_as_gnu_does": "ok",
+        "lisp::primitives::pdumper::tests::image_refuses_pending_transient_state_it_cannot_carry": "ok",
+        "lisp::primitives::pdumper::tests::image_round_trips_buffers_markers_finalizers_and_nilled_frames": "ok",
+        "lisp::primitives::pdumper::tests::image_round_trips_closures_char_tables_records_and_bool_vectors": "ok",
+        "lisp::primitives::pdumper::tests::image_round_trips_sharing_cycles_and_every_supported_object_kind": "ok",
+        "lisp::primitives::pdumper::tests::inline_record_type_and_data_cycles_survive_clone_and_dump": "ok",
+        "lisp::primitives::pdumper::tests::load_refuses_what_pdumper_load_refuses": "ok",
+        "lisp::primitives::pdumper::tests::positioned_symbols_are_rejected_as_in_gnu_dump_vectorlike": "ok",
+        "lisp::primitives::pdumper::tests::queue_order_writes_referents_after_their_referrer_and_each_object_once": "ok",
+        "lisp::primitives::pdumper::tests::supported_image_starts_in_a_fresh_process_with_new_process_values": "ok",
+        "lisp::primitives::pdumper::tests::text_conversion_buffer_fields_preserve_flags_sharing_and_cycles_in_images": "ok",
+        "lisp::primitives::pdumper::tests::voided_builtin_cells_and_saved_subrs_survive_image_cloning_and_restoration": "ok",
+        "lisp::primitives::tests::a_failing_finalizer_is_logged_not_signalled": "ok",
+        "lisp::primitives::tests::accept_process_output_does_not_count_an_outputless_exit_as_delivery": "ok",
+        "lisp::primitives::tests::accept_process_output_honors_seconds_with_no_millis_argument": "ok",
+        "lisp::primitives::tests::accept_process_output_ignores_distractor_output_until_target_delivers": "ok",
+        "lisp::primitives::tests::accept_process_output_just_this_one_suspends_distractor_filters_like_emacs": "ok",
+        "lisp::primitives::tests::accept_process_output_with_a_timeout_returns_once_the_process_has_exited": "ok",
+        "lisp::primitives::tests::accept_process_output_without_timeout_waits_for_requested_process": "ok",
+        "lisp::primitives::tests::active_minibuffer_selected_window_tracks_entry_across_nested_reads": "ok",
+        "lisp::primitives::tests::add_face_text_property_preserves_other_string_properties": "ok",
+        "lisp::primitives::tests::all_completions_preserves_propertized_string_candidate_identity": "ok",
+        "lisp::primitives::tests::anonymous_keymaps_survive_while_reachable_and_are_reclaimed_after_return": "ok",
+        "lisp::primitives::tests::apply_follows_eval_c_proper_list_contract": "ok",
+        "lisp::primitives::tests::ascii_file_detection_records_undecided": "ok",
+        "lisp::primitives::tests::ash_with_a_bignum_count_follows_data_c": "ok",
+        "lisp::primitives::tests::atan_treats_an_explicit_nil_second_argument_as_omitted_like_gnu": "ok",
+        "lisp::primitives::tests::backquote_shorthand_prints_only_the_reader_s_symbols_within_a_backquote": "ok",
+        "lisp::primitives::tests::backtrace_frame_internal_honors_depth_relative_to_base": "ok",
+        "lisp::primitives::tests::backward_regexp_search_takes_the_latest_start_as_gnu_does": "ok",
+        "lisp::primitives::tests::batch_recenter_cycling_matches_the_oracle": "ok",
+        "lisp::primitives::tests::batch_scroll_semantics_match_the_oracle": "ok",
+        "lisp::primitives::tests::batch_startup_image_round_trip_or_explicit_native_image_limit": "ok",
+        "lisp::primitives::tests::bidi_override_positions_match_upstream_cases": "ok",
+        "lisp::primitives::tests::big5_conversion_follows_the_oracle_contract": "ok",
+        "lisp::primitives::tests::blocking_tty_event_read_redraws_after_a_due_timer": "ok",
+        "lisp::primitives::tests::blocking_tty_event_read_redraws_after_process_output": "ok",
+        "lisp::primitives::tests::bootstrap_coding_plists_expose_gnu_display_and_keyboard_metadata": "ok",
+        "lisp::primitives::tests::buffer_file_name_primitive_observes_current_buffer_dynamic_binding": "ok",
+        "lisp::primitives::tests::buffer_local_cells_follow_data_c": "ok",
+        "lisp::primitives::tests::buffer_lookup_preserves_object_identity_after_rename_or_kill": "ok",
+        "lisp::primitives::tests::buffer_multibyte_non_t_flags_preserve_ascii_and_convert_eight_bit_bytes": "ok",
+        "lisp::primitives::tests::buffer_searches_convert_offsets_through_the_rope": "ok",
+        "lisp::primitives::tests::buffer_substring_accepts_reversed_bounds": "ok",
+        "lisp::primitives::tests::buffer_substring_preserves_properties_with_reversed_bounds": "ok",
+        "lisp::primitives::tests::buffer_undo_list_assignment_preserves_cons_identity": "ok",
+        "lisp::primitives::tests::builtin_metadata_covers_the_whole_c_manifest_without_lisp_string_leakage": "ok",
+        "lisp::primitives::tests::bytecode_closure_aref_and_func_arity_preserve_gnu_argument_descriptors": "ok",
+        "lisp::primitives::tests::bytecode_closure_constants_and_clone_share_gnu_slots": "ok",
+        "lisp::primitives::tests::bytecode_code_mutation_between_calls_matches_gnu": "ok",
+        "lisp::primitives::tests::bytecode_code_mutation_during_active_call_matches_gnu": "ok",
+        "lisp::primitives::tests::bytecode_constructor_preserves_gnu_field_validation_and_sharing": "ok",
+        "lisp::primitives::tests::bytecode_live_fetch_preserves_changed_widths_operands_and_suspended_callers": "ok",
+        "lisp::primitives::tests::call_process_reports_signal_termination_in_both_entry_points": "ok",
+        "lisp::primitives::tests::canonical_combining_classes_come_from_complete_unicode_data": "ok",
+        "lisp::primitives::tests::canonical_string_bytes_preserve_gnu_characters_mutation_and_clear": "ok",
+        "lisp::primitives::tests::capitalize_uses_current_syntax_table_word_boundaries": "ok",
+        "lisp::primitives::tests::case_class_regexps_follow_table_selection_and_mutation_without_case_folding": "ok",
+        "lisp::primitives::tests::case_folded_try_completion_preserves_unextended_input_spelling": "ok",
+        "lisp::primitives::tests::case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_regions": "ok",
+        "lisp::primitives::tests::case_tables_apply_explicit_byte8_mappings_to_raw_unibyte_strings": "ok",
+        "lisp::primitives::tests::case_tables_preserve_gnu_unset_mappings_and_special_casing": "ok",
+        "lisp::primitives::tests::change_hook_nonlocal_exits_clear_the_active_hook_value": "ok",
+        "lisp::primitives::tests::char_charset_family_follows_charset_c": "ok",
+        "lisp::primitives::tests::char_charset_restriction_narrows_to_charset_list_or_coding_system": "ok",
+        "lisp::primitives::tests::char_property_primitives_accept_windows_and_filter_window_overlays": "ok",
+        "lisp::primitives::tests::char_table_casing_preserves_gnu_modifier_and_integer_semantics": "ok",
+        "lisp::primitives::tests::char_table_compressed_unicode_slots_decode_into_the_canonical_tree": "ok",
+        "lisp::primitives::tests::char_table_cons_range_uses_local_contents_without_parent_or_ascii_cache": "ok",
+        "lisp::primitives::tests::char_table_cons_ranges_expand_compressed_neighbors_until_values_differ": "ok",
+        "lisp::primitives::tests::char_table_identity_callbacks_and_specialized_values_follow_gnu": "ok",
+        "lisp::primitives::tests::char_table_keymap_callbacks_see_live_slots_and_keep_distinct_ranges": "ok",
+        "lisp::primitives::tests::char_table_keymap_enumerators_read_live_slots_and_preserve_binding_identity": "ok",
+        "lisp::primitives::tests::char_table_keymap_events_preserve_numeric_identity_and_normalize_symbols": "ok",
+        "lisp::primitives::tests::char_table_keymap_public_tail_survives_api_writes_and_live_callbacks": "ok",
+        "lisp::primitives::tests::char_table_keymap_range_removal_preserves_sparse_storage_and_inheritance": "ok",
+        "lisp::primitives::tests::char_table_keymap_ranges_validate_character_bounds": "ok",
+        "lisp::primitives::tests::char_table_keymap_traversal_preserves_aliases_parents_and_meta_order": "ok",
+        "lisp::primitives::tests::char_table_keymaps_convert_lucid_lists_before_ranges_and_lookup": "ok",
+        "lisp::primitives::tests::char_table_keymaps_keep_modified_events_out_of_character_slots": "ok",
+        "lisp::primitives::tests::char_table_keymaps_preserve_meta_escape_and_event_boundaries": "ok",
+        "lisp::primitives::tests::char_table_parameterized_key_events_keep_physical_slots_without_a_dump": "ok",
+        "lisp::primitives::tests::char_tables_follow_gnu_defaults_inheritance_and_reclaim_overwritten_values": "ok",
+        "lisp::primitives::tests::character_table_literal_materializes_nested_bytecode_decoder": "ok",
+        "lisp::primitives::tests::charset_decoders_annotate_like_produce_charset_and_emacs_mule_encodes_like_coding_c": "ok",
+        "lisp::primitives::tests::charset_helpers_cover_ascii_unicode_and_priority_mutation": "ok",
+        "lisp::primitives::tests::closure_body_identity_and_text_property_identity_match_gnu": "ok",
+        "lisp::primitives::tests::coding_candidates_apply_live_translation_tables_and_registration_lists": "ok",
+        "lisp::primitives::tests::coding_candidates_preserve_private_use_characters_and_symbol_identity": "ok",
+        "lisp::primitives::tests::coding_candidates_resolve_translation_symbols_through_live_properties": "ok",
+        "lisp::primitives::tests::coding_candidates_use_all_registered_bases_and_actual_charsets": "ok",
+        "lisp::primitives::tests::coding_conversions_preserve_extended_characters_regions_and_eol": "ok",
+        "lisp::primitives::tests::coding_detection_follows_detect_coding_system": "ok",
+        "lisp::primitives::tests::coding_encoders_preserve_full_character_codes_and_file_bytes": "ok",
+        "lisp::primitives::tests::coding_encoders_preserve_gnu_identity_properties_and_byte_results": "ok",
+        "lisp::primitives::tests::coding_errors_preserve_the_offending_symbol_object": "ok",
+        "lisp::primitives::tests::coding_post_read_ascii_shortcut_preserves_identity_and_hook_order": "ok",
+        "lisp::primitives::tests::coding_post_read_conversion_receives_character_counts": "ok",
+        "lisp::primitives::tests::coding_system_eol_type_exposes_base_variant_vectors": "ok",
+        "lisp::primitives::tests::coding_system_mnemonics_match_the_oracle": "ok",
+        "lisp::primitives::tests::combine_change_calls_coalesces_hooks_and_tracks_the_updated_end": "ok",
+        "lisp::primitives::tests::command_error_echo_accepts_mutable_error_message_strings": "ok",
+        "lisp::primitives::tests::command_remapping_finds_fresh_remap_bindings": "ok",
+        "lisp::primitives::tests::commandp_follows_fcommandp_order_and_property_error": "ok",
+        "lisp::primitives::tests::compare_buffer_substrings_accepts_current_buffer_and_bounds_as_nil": "ok",
+        "lisp::primitives::tests::compare_buffer_substrings_uses_dynamic_case_folding_and_the_canonical_table": "ok",
+        "lisp::primitives::tests::compiled_regexp_introspection_preserves_the_real_backend_boundary": "ok",
+        "lisp::primitives::tests::compiled_time_string_results_keep_text_property_mutation": "ok",
+        "lisp::primitives::tests::compiled_variable_references_and_sets_follow_bytecode_c": "ok",
+        "lisp::primitives::tests::completion_predicates_preserve_string_list_membership": "ok",
+        "lisp::primitives::tests::completion_results_accept_text_properties": "ok",
+        "lisp::primitives::tests::completion_results_preserve_gnu_encoding_properties_and_identity": "ok",
+        "lisp::primitives::tests::composition_gstring_uses_the_effective_terminal_coding_system": "ok",
+        "lisp::primitives::tests::concat_preserves_canonical_bytes_properties_and_sequence_characters": "ok",
+        "lisp::primitives::tests::cons_mutation_reads_current_macro_keymap_and_shared_graph_fields": "ok",
+        "lisp::primitives::tests::copied_and_propertized_strings_preserve_canonical_bytes_and_properties": "ok",
+        "lisp::primitives::tests::copy_family_native_path_uses_handler_expanded_names": "ok",
+        "lisp::primitives::tests::copy_keymap_copies_a_list_keymap_like_keymap_c": "ok",
+        "lisp::primitives::tests::copy_overlay_clones_region_and_properties_with_new_identity": "ok",
+        "lisp::primitives::tests::core_libraries_are_not_shadowed_by_cedet_subdirectories": "ok",
+        "lisp::primitives::tests::current_cpu_time_returns_a_readable_tick_pair_in_both_time_modes": "ok",
+        "lisp::primitives::tests::current_time_and_a_nil_time_convert_form_follow_current_time_list": "ok",
+        "lisp::primitives::tests::dead_thread_results_are_rooted_only_through_reachable_thread_objects": "ok",
+        "lisp::primitives::tests::default_file_modes_is_the_process_umask_and_temp_files_are_private": "ok",
+        "lisp::primitives::tests::define_key_creates_a_local_prefix_over_an_inherited_non_prefix_binding": "ok",
+        "lisp::primitives::tests::define_key_creates_a_specific_prefix_over_a_default_binding": "ok",
+        "lisp::primitives::tests::define_key_preserves_raw_space_events_in_shared_prefixes": "ok",
+        "lisp::primitives::tests::defvar_and_defconst_use_gnu_check_symbol_for_positioned_names": "ok",
+        "lisp::primitives::tests::defvar_bool_stores_coerce_and_makunbound_detaches": "ok",
+        "lisp::primitives::tests::defvaralias_follows_eval_c": "ok",
+        "lisp::primitives::tests::defvaralias_records_the_alias_in_load_history": "ok",
+        "lisp::primitives::tests::delayed_tty_timer_uses_the_native_clock_when_float_time_is_redefined": "ok",
+        "lisp::primitives::tests::delete_and_extract_region_preserves_text_properties": "ok",
+        "lisp::primitives::tests::delete_line_removes_the_current_line": "ok",
+        "lisp::primitives::tests::deleted_process_is_not_returned_for_buffer": "ok",
+        "lisp::primitives::tests::describe_vector_groups_equal_ranges_and_shares_standard_output_with_describers": "ok",
+        "lisp::primitives::tests::directory_files_returns_mutable_sorted_names_with_dot_entries": "ok",
+        "lisp::primitives::tests::dropping_an_interpreter_terminates_and_reaps_its_child": "ok",
+        "lisp::primitives::tests::dump_emacs_portable_prelude_follows_pdumper_c": "ok",
+        "lisp::primitives::tests::dump_emacs_portable_restores_context_and_reports_native_image_limit": "ok",
+        "lisp::primitives::tests::dumped_default_bindings_resolve_for_the_terminal_frontend": "ok",
+        "lisp::primitives::tests::dumped_directory_family_ignores_the_test_harness_variable": "ok",
+        "lisp::primitives::tests::dynamic_buffer_undo_list_binding_restores_native_history": "ok",
+        "lisp::primitives::tests::eager_load_expansion_invokes_the_lisp_owner_for_both_phases": "ok",
+        "lisp::primitives::tests::embedded_native_compilation_builds_uncached_advice_trampolines": "ok",
+        "lisp::primitives::tests::eql_uses_position_aware_eq_for_non_numbers": "ok",
+        "lisp::primitives::tests::equal_hash_table_answers_survive_removals_and_slot_reuse": "ok",
+        "lisp::primitives::tests::equal_string_hash_tables_scale_without_losing_public_semantics": "ok",
+        "lisp::primitives::tests::equal_structured_hash_tables_use_structural_buckets": "ok",
+        "lisp::primitives::tests::error_message_strings_match_the_oracle": "ok",
+        "lisp::primitives::tests::error_message_strings_use_gnu_condition_specific_data_quoting": "ok",
+        "lisp::primitives::tests::euc_jp_codec_follows_the_oracle_contract": "ok",
+        "lisp::primitives::tests::eval_buffer_binds_lexical_binding_from_the_first_line_cookie": "ok",
+        "lisp::primitives::tests::eval_region_delegates_to_load_read_function_without_reinterning": "ok",
+        "lisp::primitives::tests::eval_region_preserves_point_and_uses_the_supplied_reader": "ok",
+        "lisp::primitives::tests::every_claimed_gnu_c_primitive_mirror_has_an_exact_native_surface_contract": "ok",
+        "lisp::primitives::tests::every_literal_native_dispatch_arm_is_owned_by_gnu_c": "ok",
+        "lisp::primitives::tests::exec_failure_follows_emacs_spawn": "ok",
+        "lisp::primitives::tests::explicit_process_filter_uses_and_restores_the_callers_current_buffer": "ok",
+        "lisp::primitives::tests::failed_deletions_report_as_fileio_c_does": "ok",
+        "lisp::primitives::tests::failed_search_with_move_noerror_moves_to_bound": "ok",
+        "lisp::primitives::tests::file_attributes_nil_matches_gnu_missing_file_contract": "ok",
+        "lisp::primitives::tests::file_name_case_insensitivity_is_asked_of_the_filesystem": "ok",
+        "lisp::primitives::tests::file_name_path_helpers_match_core_unix_cases": "ok",
+        "lisp::primitives::tests::file_notification_primitives_follow_the_host_contract": "ok",
+        "lisp::primitives::tests::file_reads_consult_the_coding_alist_and_name_like_the_oracle": "ok",
+        "lisp::primitives::tests::file_write_coding_selection_preserves_lisp_policy_callbacks_and_restrictions": "ok",
+        "lisp::primitives::tests::file_write_coding_selection_preserves_overwrite_order_and_exclusive_creation": "ok",
+        "lisp::primitives::tests::finalizers_follow_alloc_c": "ok",
+        "lisp::primitives::tests::find_composition_reports_the_automatic_composition_for_a_displayed_buffer": "ok",
+        "lisp::primitives::tests::fixture_image_directory_dumps_once_and_starts_every_later_boot_from_it": "ok",
+        "lisp::primitives::tests::float_time_rounds_as_frac_to_double": "ok",
+        "lisp::primitives::tests::font_lock_mode_declines_to_enable_in_a_batch_session": "ok",
+        "lisp::primitives::tests::font_lock_text_property_helpers_keep_anonymous_faces_atomic": "ok",
+        "lisp::primitives::tests::fontp_matches_the_gnu_font_record_contract": "ok",
+        "lisp::primitives::tests::format_message_quotes_only_format_literals_with_the_effective_text_style": "ok",
+        "lisp::primitives::tests::format_mode_line_renders_the_dumped_spec_interactively": "ok",
+        "lisp::primitives::tests::forwarded_c_variables_follow_store_symval_forwarding": "ok",
+        "lisp::primitives::tests::func_arity_uses_gnu_symbolp_for_positioned_symbols": "ok",
+        "lisp::primitives::tests::garbage_collect_maybe_reads_the_counters_the_last_collection_left": "ok",
+        "lisp::primitives::tests::garbage_collect_reports_the_live_census": "ok",
+        "lisp::primitives::tests::generated_rust_manifests_never_contain_trailing_whitespace": "ok",
+        "lisp::primitives::tests::generic_record_argument_errors_match_gnu_without_large_allocation": "ok",
+        "lisp::primitives::tests::generic_record_constructors_reader_and_purecopy_match_gnu": "ok",
+        "lisp::primitives::tests::generic_record_property_values_preserve_eq_boundaries": "ok",
+        "lisp::primitives::tests::generic_record_purecopy_message_preserves_coding_and_log_state": "ok",
+        "lisp::primitives::tests::generic_record_sharing_cycles_and_copying_match_gnu": "ok",
+        "lisp::primitives::tests::generic_record_size_limits_include_the_type_slot": "ok",
+        "lisp::primitives::tests::get_text_property_inherits_from_category_symbol": "ok",
+        "lisp::primitives::tests::get_unused_iso_final_char_scans_the_registered_charsets": "ok",
+        "lisp::primitives::tests::get_walks_the_plist_as_plist_get_does": "ok",
+        "lisp::primitives::tests::glass_mode_line_honors_font_lock_face_string_properties": "ok",
+        "lisp::primitives::tests::glass_mode_line_pads_min_width_spans_like_the_display_engine": "ok",
+        "lisp::primitives::tests::gnu_c_bool_variables_match_fresh_grep": "ok",
+        "lisp::primitives::tests::gnutls_digests_are_queried_from_the_library": "ok",
+        "lisp::primitives::tests::handler_bind_handlers_run_once_with_the_signaling_frame_innermost": "ok",
+        "lisp::primitives::tests::hash_buckets_preserve_identity_matching_and_empty_clear_slot_order": "ok",
+        "lisp::primitives::tests::hash_captured_functions_survive_redefinition_copy_and_gc": "ok",
+        "lisp::primitives::tests::hash_captured_symbols_keep_dynamic_function_resolution": "ok",
+        "lisp::primitives::tests::hash_constructor_preserves_keyword_positions_and_error_precedence": "ok",
+        "lisp::primitives::tests::hash_copy_preserves_stored_codes_after_key_mutation": "ok",
+        "lisp::primitives::tests::hash_descriptors_capture_the_first_eq_function_pair": "ok",
+        "lisp::primitives::tests::hash_purecopy_preserves_stored_codes_without_calling_hash_functions": "ok",
+        "lisp::primitives::tests::headless_input_mode_family_matches_the_upstream_batch_terminal": "ok",
+        "lisp::primitives::tests::headless_terminal_queries_match_the_upstream_batch_terminal": "ok",
+        "lisp::primitives::tests::host_created_strings_preserve_mutation_properties_and_fill_errors": "ok",
+        "lisp::primitives::tests::indent_rigidly_shifts_each_line_in_region": "ok",
+        "lisp::primitives::tests::indirect_buffers_share_text_properties_with_their_base": "ok",
+        "lisp::primitives::tests::inhibit_read_only_allows_buffer_read_only_edits": "ok",
+        "lisp::primitives::tests::init_editfns_computes_the_user_names_once_per_process": "ok",
+        "lisp::primitives::tests::input_decode_autoloaded_prefix_collects_before_the_next_input_event": "ok",
+        "lisp::primitives::tests::input_decode_case_state_matches_gnu": "ok",
+        "lisp::primitives::tests::input_decode_command_reader_preserves_reached_prefix_and_live_remapping": "ok",
+        "lisp::primitives::tests::input_decode_default_function_map_supplies_shifted_tab_translation": "ok",
+        "lisp::primitives::tests::input_decode_down_events_follow_live_bindings_without_bootstrap_fallbacks": "ok",
+        "lisp::primitives::tests::input_decode_extra_matches_gnu": "ok",
+        "lisp::primitives::tests::input_decode_function_keys_consult_live_undefined_command_remapping": "ok",
+        "lisp::primitives::tests::input_decode_general_matches_gnu": "ok",
+        "lisp::primitives::tests::input_decode_initial_maps_keep_identity_and_the_shared_function_parent": "ok",
+        "lisp::primitives::tests::input_decode_keyboard_macro_uses_the_same_live_translation_pipeline": "ok",
+        "lisp::primitives::tests::input_decode_macro_nested_state_survives_collecting_commands_and_errors": "ok",
+        "lisp::primitives::tests::input_decode_macro_raw_readers_observe_directly_bound_arrays": "ok",
+        "lisp::primitives::tests::input_decode_macro_reads_the_live_array_and_stops_on_t": "ok",
+        "lisp::primitives::tests::input_decode_macro_roots_survive_callbacks_then_release_completed_arrays": "ok",
+        "lisp::primitives::tests::input_decode_macro_timed_reads_preserve_queue_order_and_errors": "ok",
+        "lisp::primitives::tests::input_decode_minibuffer_preserves_live_queue_mutation_and_return_binding": "ok",
+        "lisp::primitives::tests::input_decode_minibuffer_shares_macro_and_unread_translation_state": "ok",
+        "lisp::primitives::tests::input_decode_mouse_menu_uses_unchanged_lisp_translation": "ok",
+        "lisp::primitives::tests::input_decode_mouse_translation_preserves_raw_spine_and_live_event_kind": "ok",
+        "lisp::primitives::tests::input_decode_non_mouse_menu_events_mark_the_shared_position": "ok",
+        "lisp::primitives::tests::input_decode_pipeline_matches_gnu": "ok",
+        "lisp::primitives::tests::input_decode_positions_follow_display_motion_without_moving_point": "ok",
+        "lisp::primitives::tests::input_decode_raw_reads_unwrap_pending_events_before_terminal_polling": "ok",
+        "lisp::primitives::tests::input_decode_reader_contract_matches_gnu": "ok",
+        "lisp::primitives::tests::input_decode_restarts_after_an_unbound_prefix_loses_all_translations": "ok",
+        "lisp::primitives::tests::input_decode_shifted_tab_character_and_function_key_follow_distinct_maps": "ok",
+        "lisp::primitives::tests::input_pending_check_timers_dispatches_an_already_due_timer": "ok",
+        "lisp::primitives::tests::insert_file_contents_replace_collapses_point_in_the_differing_middle": "ok",
+        "lisp::primitives::tests::insert_file_contents_reports_missing_input_as_file_missing": "ok",
+        "lisp::primitives::tests::insert_signals_buffer_read_only_unless_inhibited": "ok",
+        "lisp::primitives::tests::interactive_closures_use_the_gnu_metadata_environment": "ok",
+        "lisp::primitives::tests::interactive_form_prefers_the_property_over_advice_and_walks_aliases": "ok",
+        "lisp::primitives::tests::interactive_form_strips_command_modes_like_gnu": "ok",
+        "lisp::primitives::tests::interactive_recenter_uses_the_live_shrunken_window_height": "ok",
+        "lisp::primitives::tests::interactive_spec_i_passes_nil_without_reading_anything": "ok",
+        "lisp::primitives::tests::interactive_undo_restores_the_unmodified_state": "ok",
+        "lisp::primitives::tests::interactive_vertical_motion_honors_the_cons_goal_column": "ok",
+        "lisp::primitives::tests::intern_retains_the_supplied_name_and_does_not_replace_it_on_a_hit": "ok",
+        "lisp::primitives::tests::intern_uses_gnu_name_copy_and_type_check_boundaries": "ok",
+        "lisp::primitives::tests::internal_buffer_completion_preserves_hidden_filtering_metadata_and_predicate_values": "ok",
+        "lisp::primitives::tests::internal_char_font_accepts_gnu_characters_and_checks_position_first": "ok",
+        "lisp::primitives::tests::internal_char_font_matches_the_headless_gnu_font_boundary": "ok",
+        "lisp::primitives::tests::interning_after_unintern_makes_a_fresh_symbol_in_a_private_obarray": "ok",
+        "lisp::primitives::tests::interpreted_closure_bodies_survive_only_while_reachable": "ok",
+        "lisp::primitives::tests::interpreted_closure_reader_preserves_gnu_slot_and_record_types": "ok",
+        "lisp::primitives::tests::interpreted_closures_keep_their_argument_body_and_environment_objects": "ok",
+        "lisp::primitives::tests::interpreter_drop_releases_a_pty_child_that_ignores_hangup_and_never_blocks": "ok",
+        "lisp::primitives::tests::iso_2022_and_raw_text_encoders_follow_coding_c": "ok",
+        "lisp::primitives::tests::iso_2022_decoder_annotates_charsets_and_detection_reaches_regions_and_files": "ok",
+        "lisp::primitives::tests::json_serialize_treats_a_vector_as_an_array": "ok",
+        "lisp::primitives::tests::key_binding_and_remapping_preserve_live_filters_and_nonlocal_exits": "ok",
+        "lisp::primitives::tests::key_binding_macro_dispatch_uses_actual_bindings_once": "ok",
+        "lisp::primitives::tests::key_description_formats_follow_prefix_defaults": "ok",
+        "lisp::primitives::tests::key_description_matches_upstream_string_and_vector_cases": "ok",
+        "lisp::primitives::tests::key_sequence_binding_parts_preserve_control_prefixes": "ok",
+        "lisp::primitives::tests::keyboard_macro_records_input_read_inside_a_command": "ok",
+        "lisp::primitives::tests::keyboard_macro_records_minibuffer_command_events_exactly_once": "ok",
+        "lisp::primitives::tests::keymap_bindings_accept_t_vector_events": "ok",
+        "lisp::primitives::tests::keymap_character_contracts_share_gnu_control_and_full_map_storage": "ok",
+        "lisp::primitives::tests::keymap_descriptions_use_the_source_buffer_and_gnu_map_tree_formatter": "ok",
+        "lisp::primitives::tests::keymap_lookup_composes_prefixes_with_gnu_precedence_and_nil_shadowing": "ok",
+        "lisp::primitives::tests::keymap_lookup_preserves_menu_filter_effects_and_nonlocal_exits": "ok",
+        "lisp::primitives::tests::keymap_lookup_reads_live_vectors_strings_and_translated_sequences": "ok",
+        "lisp::primitives::tests::keymap_lookup_requires_a_string_or_vector_before_checking_length": "ok",
+        "lisp::primitives::tests::keymap_lookup_runs_each_prefix_filter_once_before_advancing": "ok",
+        "lisp::primitives::tests::keymap_lookup_uses_the_event_head_of_a_character_range": "ok",
+        "lisp::primitives::tests::keymap_lookup_validates_the_map_before_the_key_and_resolves_symbols": "ok",
+        "lisp::primitives::tests::keymap_menu_case_tables_preserve_unicode_priority_and_captured_roots": "ok",
+        "lisp::primitives::tests::keymap_menu_lookup_preserves_exact_bindings_and_gnu_case_fallback": "ok",
+        "lisp::primitives::tests::keymap_parent_primitives_keep_constructor_object_identity": "ok",
+        "lisp::primitives::tests::keymap_parent_replacement_keeps_lookup_and_mutation_shared": "ok",
+        "lisp::primitives::tests::keymap_parent_resolves_symbol_function_cells_before_installing": "ok",
+        "lisp::primitives::tests::keymap_set_where_is_internal_preserves_control_prefixes": "ok",
+        "lisp::primitives::tests::keymap_symbol_stores_follow_alias_redefinition_ranges_and_autoload": "ok",
+        "lisp::primitives::tests::keymap_translated_sequences_keep_gnu_type_and_empty_checks": "ok",
+        "lisp::primitives::tests::keymap_views_hand_out_their_own_cells": "ok",
+        "lisp::primitives::tests::keymap_walkers_follow_prefix_command_symbols_and_run_leaf_menu_filters": "ok",
+        "lisp::primitives::tests::keymaps_nest_multi_event_bindings_and_report_full_map_ranges": "ok",
+        "lisp::primitives::tests::kill_buffer_queries_before_the_interactive_modified_prompt": "ok",
+        "lisp::primitives::tests::kill_buffer_restores_the_current_buffer_when_a_query_signals": "ok",
+        "lisp::primitives::tests::kqueue_directory_watch_reports_external_child_creation": "ok",
+        "lisp::primitives::tests::labeled_restriction_bounds_survive_a_collection": "ok",
+        "lisp::primitives::tests::large_bounded_repeats_over_a_bracket_expression_become_counted_loops": "ok",
+        "lisp::primitives::tests::let_binding_lists_must_be_lists": "ok",
+        "lisp::primitives::tests::let_initializers_precede_name_validation_and_binding_names_are_reread": "ok",
+        "lisp::primitives::tests::lisp_eval_depth_counts_ffuncall_entries_like_eval_c": "ok",
+        "lisp::primitives::tests::live_minibuffer_recursive_commands_restore_the_outer_command_identity": "ok",
+        "lisp::primitives::tests::live_read_string_records_an_accepted_default_in_history": "ok",
+        "lisp::primitives::tests::load_history_lists_a_repeated_definition_twice_as_gnu_does": "ok",
+        "lisp::primitives::tests::load_warns_about_unescaped_character_literals_on_the_eval_buffer_path": "ok",
+        "lisp::primitives::tests::local_network_process_rejects_overlong_service_before_host_bind": "ok",
+        "lisp::primitives::tests::localhost_family_fallback_opens_without_polluting_the_process_buffer": "ok",
+        "lisp::primitives::tests::lock_file_ignores_a_lock_it_cannot_create": "ok",
+        "lisp::primitives::tests::log_nil_base_uses_the_natural_logarithm": "ok",
+        "lisp::primitives::tests::looking_at_does_not_create_or_assign_unrelated_lisp_variables": "ok",
+        "lisp::primitives::tests::looking_at_p_preserves_existing_match_data": "ok",
+        "lisp::primitives::tests::looking_back_matches_text_before_point_with_limit": "ok",
+        "lisp::primitives::tests::make_button_signals_on_an_incomplete_range": "ok",
+        "lisp::primitives::tests::make_char_uses_charset_positions_in_interpreted_and_native_calls": "ok",
+        "lisp::primitives::tests::make_network_process_coding_precedence_matches_gnu": "ok",
+        "lisp::primitives::tests::make_network_process_ipv4_family_prefers_an_ipv4_listener": "ok",
+        "lisp::primitives::tests::make_network_process_ipv6_family_uses_an_ipv6_listener": "ok",
+        "lisp::primitives::tests::make_network_process_nowait_opens_on_the_next_event_pump": "ok",
+        "lisp::primitives::tests::make_network_process_requires_the_gnu_name_contract": "ok",
+        "lisp::primitives::tests::make_process_accepts_nil_coding_like_emacs": "ok",
+        "lisp::primitives::tests::make_process_honors_split_pipe_and_pty_connection_types": "ok",
+        "lisp::primitives::tests::make_process_nil_or_omitted_connection_type_uses_the_dynamic_default": "ok",
+        "lisp::primitives::tests::make_string_and_aset_share_the_internal_character_encoding": "ok",
+        "lisp::primitives::tests::make_string_follows_alloc_c_for_the_multibyte_flag": "ok",
+        "lisp::primitives::tests::make_symbol_creates_distinct_symbols_with_stable_visible_names": "ok",
+        "lisp::primitives::tests::make_temp_file_internal_reports_a_failed_creation_as_a_file_error": "ok",
+        "lisp::primitives::tests::map_char_table_exposes_public_syntax_descriptors": "ok",
+        "lisp::primitives::tests::map_keymap_internal_visits_only_direct_bindings_and_returns_the_parent": "ok",
+        "lisp::primitives::tests::map_keymap_visits_runtime_keymap_bindings": "ok",
+        "lisp::primitives::tests::mapatoms_honors_dynamic_obarrays_legacy_conversion_and_function_cells": "ok",
+        "lisp::primitives::tests::mapatoms_walks_the_standard_obarray_in_place": "ok",
+        "lisp::primitives::tests::mapcar_iterates_runtime_keymaps_as_lisp_keymap_lists": "ok",
+        "lisp::primitives::tests::mapconcat_preserves_canonical_bytes_and_character_sequences": "ok",
+        "lisp::primitives::tests::mapconcat_result_preserves_gnu_mutable_string_identity": "ok",
+        "lisp::primitives::tests::marker_adjustments_stay_adjacent_to_their_deletion_in_the_undo_list": "ok",
+        "lisp::primitives::tests::markers_preserve_identity_positions_and_weak_buffer_ownership": "ok",
+        "lisp::primitives::tests::markers_the_collector_reaches_survive_and_the_rest_are_unchained": "ok",
+        "lisp::primitives::tests::match_data_preserves_gnu_source_reuse_reseat_and_elision_contracts": "ok",
+        "lisp::primitives::tests::max_char_distinguishes_the_internal_and_unicode_character_spaces": "ok",
+        "lisp::primitives::tests::max_lisp_eval_depth_is_honoured_dynamically": "ok",
+        "lisp::primitives::tests::md5_coding_endpoints_and_noerror_follow_gnu_in_native_calls": "ok",
+        "lisp::primitives::tests::memory_use_counts_exposes_the_allocation_telemetry_boundary_honestly": "ok",
+        "lisp::primitives::tests::message_callback_bindings_are_special_before_and_after_disconnection": "ok",
+        "lisp::primitives::tests::message_log_disables_undo_in_the_messages_buffer": "ok",
+        "lisp::primitives::tests::minibuffer_prompt_carries_its_face_through_the_read": "ok",
+        "lisp::primitives::tests::minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window": "ok",
+        "lisp::primitives::tests::minibuffer_reads_under_a_keyboard_macro_follow_read_minibuf": "ok",
+        "lisp::primitives::tests::minor_mode_keymap_consumers_share_gnu_order_replacement_and_default_rules": "ok",
+        "lisp::primitives::tests::mode_line_line_number_is_relative_to_the_accessible_region": "ok",
+        "lisp::primitives::tests::modify_syntax_entry_nil_table_uses_the_current_buffer": "ok",
+        "lisp::primitives::tests::module_load_validates_and_initializes_real_libraries": "ok",
+        "lisp::primitives::tests::native_buffer_lookup_preserves_object_identity_after_rename_or_kill": "ok",
+        "lisp::primitives::tests::native_cleanup_can_exit_to_a_handler_inside_the_original_target": "ok",
+        "lisp::primitives::tests::native_cleanup_retires_popped_handlers_before_interpreted_calls": "ok",
+        "lisp::primitives::tests::native_combined_after_change_merges_ranges_before_running_hooks": "ok",
+        "lisp::primitives::tests::native_command_and_variable_readers_normalize_defaults_and_intern_results": "ok",
+        "lisp::primitives::tests::native_comp_context_and_loader_entry_points_follow_comp_c": "ok",
+        "lisp::primitives::tests::native_comp_pure_introspection_family_matches_gnu_and_the_backend_boundary": "ok",
+        "lisp::primitives::tests::native_comp_source_names_hash_canonical_paths_and_real_contents": "ok",
+        "lisp::primitives::tests::native_composite_c_family_and_text_property_identity_match_gnu": "ok",
+        "lisp::primitives::tests::native_condition_wait_releases_and_restores_recursive_mutex_ownership": "ok",
+        "lisp::primitives::tests::native_conditional_gc_and_memory_info_match_the_host_contract": "ok",
+        "lisp::primitives::tests::native_connection_control_and_pid_signals_follow_gnu_process_c": "ok",
+        "lisp::primitives::tests::native_datagram_addresses_track_udp_peer_state_and_contact_metadata": "ok",
+        "lisp::primitives::tests::native_delete_terminal_tracks_liveness_and_runs_its_hook_before_removal": "ok",
+        "lisp::primitives::tests::native_dispatch_fails_closed_at_the_gnu_c_boundary": "ok",
+        "lisp::primitives::tests::native_display_connection_management_stops_at_the_headless_backend": "ok",
+        "lisp::primitives::tests::native_dispnew_family_tracks_menu_state_and_headless_redisplay_contracts": "ok",
+        "lisp::primitives::tests::native_doc_c_family_uses_one_doc_file_index_and_resolution_contract": "ok",
+        "lisp::primitives::tests::native_file_lock_primitives_share_the_buffer_lock_state_machine": "ok",
+        "lisp::primitives::tests::native_fixed_pseudovectors_use_gnu_full_vector_footprints": "ok",
+        "lisp::primitives::tests::native_font_at_and_info_match_the_headless_gnu_boundary": "ok",
+        "lisp::primitives::tests::native_font_backend_boundary_and_glyph_validation_match_gnu": "ok",
+        "lisp::primitives::tests::native_font_spec_state_and_headless_lookup_family_matches_gnu": "ok",
+        "lisp::primitives::tests::native_font_spec_validation_and_name_normalization_match_gnu": "ok",
+        "lisp::primitives::tests::native_fontset_registry_family_matches_gnu": "ok",
+        "lisp::primitives::tests::native_frame_focus_mouse_geometry_and_headless_errors_match_gnu": "ok",
+        "lisp::primitives::tests::native_frame_geometry_parameters_and_state_flags_match_gnu": "ok",
+        "lisp::primitives::tests::native_frame_identity_and_single_tty_traversal_match_gnu": "ok",
+        "lisp::primitives::tests::native_frame_terminal_and_buffer_owners_contribute_to_vector_census": "ok",
+        "lisp::primitives::tests::native_fringe_bitmap_registry_family_matches_gnu": "ok",
+        "lisp::primitives::tests::native_gnutls_advertises_loaded_host_capabilities": "ok",
+        "lisp::primitives::tests::native_gnutls_boot_and_bye_preserve_gnu_validation_contracts": "ok",
+        "lisp::primitives::tests::native_gnutls_catalogs_and_error_diagnostics_use_the_host_library": "ok",
+        "lisp::primitives::tests::native_gnutls_digest_catalog_and_hashing_use_rustcrypto": "ok",
+        "lisp::primitives::tests::native_gnutls_formats_x509_certificates_with_the_host_library": "ok",
+        "lisp::primitives::tests::native_gnutls_mac_uses_the_host_crypto_and_zeroizes_keys": "ok",
+        "lisp::primitives::tests::native_gnutls_pre_session_state_warnings_and_error_predicate_match_gnu": "ok",
+        "lisp::primitives::tests::native_gnutls_session_encrypts_process_io_and_closes_the_same_transport": "ok",
+        "lisp::primitives::tests::native_gnutls_symmetric_crypto_round_trips_block_and_aead_ciphers": "ok",
+        "lisp::primitives::tests::native_gnutls_x509_verifies_explicit_trust_and_rejects_hostname_mismatch": "ok",
+        "lisp::primitives::tests::native_gui_creation_tip_and_chooser_boundary_matches_gnu": "ok",
+        "lisp::primitives::tests::native_headless_menu_and_drag_actions_preserve_gnu_boundaries": "ok",
+        "lisp::primitives::tests::native_headless_window_geometry_and_hscroll_match_gnu_c_contracts": "ok",
+        "lisp::primitives::tests::native_image_cache_family_matches_the_headless_frame_contract": "ok",
+        "lisp::primitives::tests::native_image_variables_match_the_gnu_image_c_contract": "ok",
+        "lisp::primitives::tests::native_imagep_validates_the_shared_image_specification_shape": "ok",
+        "lisp::primitives::tests::native_indent_c_motion_and_line_number_width_family_matches_gnu": "ok",
+        "lisp::primitives::tests::native_internal_lisp_face_p_is_a_total_predicate": "ok",
+        "lisp::primitives::tests::native_invocation_queries_copy_host_values_and_daemon_finalization_rejects_batch": "ok",
+        "lisp::primitives::tests::native_keyboard_input_family_matches_gnu_kboard_contracts": "ok",
+        "lisp::primitives::tests::native_keyboard_macro_family_matches_gnu_recording_and_execution_contracts": "ok",
+        "lisp::primitives::tests::native_keyboard_macro_family_publishes_gnu_status_messages": "ok",
+        "lisp::primitives::tests::native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping": "ok",
+        "lisp::primitives::tests::native_libxml_family_uses_strict_xml_and_tolerant_html_dom_contracts": "ok",
+        "lisp::primitives::tests::native_loader_interns_symbols_inside_relocation_vectors": "ok",
+        "lisp::primitives::tests::native_mapatoms_preserves_collection_redefinition_and_nonlocal_exit": "ok",
+        "lisp::primitives::tests::native_menu_activity_predicate_is_false_without_a_graphical_menu": "ok",
+        "lisp::primitives::tests::native_message_dialog_fallbacks_share_the_headless_message_contract": "ok",
+        "lisp::primitives::tests::native_minibuffer_runs_initial_post_command_hook_before_input": "ok",
+        "lisp::primitives::tests::native_minibuffer_stack_queries_match_gnu_minibuf_c": "ok",
+        "lisp::primitives::tests::native_mutex_name_reads_the_shared_mutex_state": "ok",
+        "lisp::primitives::tests::native_network_accept_preserves_binary_bytes_without_listener_buffer": "ok",
+        "lisp::primitives::tests::native_network_interface_list_reports_the_ipv4_loopback_subnet": "ok",
+        "lisp::primitives::tests::native_network_lookup_delegates_numeric_syntax_to_the_host_resolver": "ok",
+        "lisp::primitives::tests::native_network_lookup_uses_platform_address_vectors_and_gnu_validation": "ok",
+        "lisp::primitives::tests::native_network_process_resolves_named_services_from_the_services_database": "ok",
+        "lisp::primitives::tests::native_network_socket_errors_preserve_gnu_file_conditions": "ok",
+        "lisp::primitives::tests::native_numeric_predicates_and_sorting_recognize_all_bignums": "ok",
+        "lisp::primitives::tests::native_open_dribble_file_creates_and_closes_a_private_file_like_gnu": "ok",
+        "lisp::primitives::tests::native_overlay_and_char_table_census_uses_gnu_layouts": "ok",
+        "lisp::primitives::tests::native_posix_buffer_search_and_search_state_helpers_match_gnu_contracts": "ok",
+        "lisp::primitives::tests::native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model": "ok",
+        "lisp::primitives::tests::native_process_thread_ownership_matches_gnu_descriptor_locking": "ok",
+        "lisp::primitives::tests::native_process_window_and_foreground_queries_follow_pty_ownership": "ok",
+        "lisp::primitives::tests::native_pseudovector_census_matches_gnu_word_layout": "ok",
+        "lisp::primitives::tests::native_read_expression_history_matches_gnu_minibuf_c_value_cell": "ok",
+        "lisp::primitives::tests::native_record_and_pseudovector_type_names_match_gnu_data_c": "ok",
+        "lisp::primitives::tests::native_serial_process_pumps_and_sends_bytes_over_a_real_pty": "ok",
+        "lisp::primitives::tests::native_serial_process_surface_and_configuration_match_gnu": "ok",
+        "lisp::primitives::tests::native_serial_process_validation_matches_gnu_process_c": "ok",
+        "lisp::primitives::tests::native_serial_speed_nil_preserves_the_unconfigured_gnu_contract": "ok",
+        "lisp::primitives::tests::native_signal_names_share_the_platform_codec_used_by_signal_process": "ok",
+        "lisp::primitives::tests::native_sqlite_columns_uses_the_live_result_set_schema": "ok",
+        "lisp::primitives::tests::native_sqlite_errors_publish_the_gnu_condition_hierarchy": "ok",
+        "lisp::primitives::tests::native_stores_into_a_keymaps_public_view_reach_its_record": "ok",
+        "lisp::primitives::tests::native_string_words_preserve_mutation_and_cycles_across_execution_modes": "ok",
+        "lisp::primitives::tests::native_subprocess_job_control_uses_child_groups_and_reaps_signal_states": "ok",
+        "lisp::primitives::tests::native_syntax_description_decodes_the_shared_descriptor_bits": "ok",
+        "lisp::primitives::tests::native_system_process_inventory_and_attributes_share_the_host_snapshot": "ok",
+        "lisp::primitives::tests::native_system_process_inventory_matches_oracle_availability": "ok",
+        "lisp::primitives::tests::native_terminal_identity_is_opaque_and_shared_with_the_frame": "ok",
+        "lisp::primitives::tests::native_terminal_state_and_tty_controls_share_the_gnu_headless_contract": "ok",
+        "lisp::primitives::tests::native_thread_and_synchronization_handles_compare_by_identity": "ok",
+        "lisp::primitives::tests::native_treesit_parser_lifecycle_and_real_json_nodes_use_official_runtime": "ok",
+        "lisp::primitives::tests::native_treesit_queries_and_traversal_use_official_runtime": "ok",
+        "lisp::primitives::tests::native_treesit_runtime_capabilities_and_query_predicates_match_gnu": "ok",
+        "lisp::primitives::tests::native_udp_event_pump_preserves_datagrams_and_updates_the_reply_peer": "ok",
+        "lisp::primitives::tests::native_units_and_functions_round_trip_through_the_image": "ok",
+        "lisp::primitives::tests::native_unwind_preserves_pending_values_and_error_payloads_across_cleanup_gc": "ok",
+        "lisp::primitives::tests::native_user_ptr_predicate_is_exhaustive_over_the_module_free_value_model": "ok",
+        "lisp::primitives::tests::native_vector_and_closure_census_matches_gnu_word_layout": "ok",
+        "lisp::primitives::tests::native_vector_words_preserve_mixed_elements_and_cyclic_closures": "ok",
+        "lisp::primitives::tests::native_window_change_state_hooks_and_minibuffer_resize_match_gnu": "ok",
+        "lisp::primitives::tests::native_x_display_queries_observe_the_headless_backend_boundary": "ok",
+        "lisp::primitives::tests::native_xdisp_headless_query_family_matches_gnu": "ok",
+        "lisp::primitives::tests::native_xfaces_frame_table_and_resource_boundary_match_gnu": "ok",
+        "lisp::primitives::tests::native_xfaces_lisp_face_registry_family_matches_gnu": "ok",
+        "lisp::primitives::tests::native_xfaces_set_attribute_frame_and_creation_contract_matches_gnu": "ok",
+        "lisp::primitives::tests::network_interface_info_reports_the_real_interface": "ok",
+        "lisp::primitives::tests::new_file_coding_lifecycle_matches_gnu_after_save_and_revisit": "ok",
+        "lisp::primitives::tests::next_read_file_uses_dialog_p_follows_the_oracle_toolkit": "ok",
+        "lisp::primitives::tests::next_single_property_change_returns_nil_for_uniform_string_property": "ok",
+        "lisp::primitives::tests::next_single_property_change_uses_string_positions": "ok",
+        "lisp::primitives::tests::nil_coding_system_queries_match_the_gnu_primitive_contract": "ok",
+        "lisp::primitives::tests::noninteractive_kill_buffer_does_not_prompt_for_a_modified_file": "ok",
+        "lisp::primitives::tests::opaque_native_objects_reject_array_access_without_exposing_storage": "ok",
+        "lisp::primitives::tests::operating_system_release_is_wired_to_the_uname_syscall": "ok",
+        "lisp::primitives::tests::ordinary_memq_skips_symbol_with_position_mode_resolution": "ok",
+        "lisp::primitives::tests::overlay_get_inherits_from_category_symbol": "ok",
+        "lisp::primitives::tests::overlay_objects_follow_gnu_geometry_ownership_and_hook_mutation": "ok",
+        "lisp::primitives::tests::overlay_priority_sorting_handles_crossing_intervals_without_a_total_order": "ok",
+        "lisp::primitives::tests::overlay_properties_accept_nil_keys_and_accessible_endpoints": "ok",
+        "lisp::primitives::tests::overlay_property_keys_use_lisp_identity": "ok",
+        "lisp::primitives::tests::overlay_property_lists_preserve_gnu_order_eq_keys_and_sharing": "ok",
+        "lisp::primitives::tests::overriding_keymaps_follow_the_oracle_contract": "ok",
+        "lisp::primitives::tests::paging_keys_carry_the_gnu_bindings": "ok",
+        "lisp::primitives::tests::parse_font_names_matches_core_upstream_cases": "ok",
+        "lisp::primitives::tests::plain_regexp_cache_hits_skip_syntax_table_rendering": "ok",
+        "lisp::primitives::tests::portable_dump_introspection_and_backend_boundary_are_honest": "ok",
+        "lisp::primitives::tests::positioned_reader_keeps_uninterned_names_and_source_positions": "ok",
+        "lisp::primitives::tests::positioned_reader_preserves_cycles_shorthands_and_private_identity": "ok",
+        "lisp::primitives::tests::positioned_reader_resolves_private_nil_and_t_before_wrapping": "ok",
+        "lisp::primitives::tests::positioned_symbol_fields_survive_interpreted_bytecode_and_native_calls": "ok",
+        "lisp::primitives::tests::preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior": "ok",
+        "lisp::primitives::tests::primitive_minimum_arities_match_gnu": "ok",
+        "lisp::primitives::tests::primitive_undo_consumes_marker_adjustments_with_their_deletion": "ok",
+        "lisp::primitives::tests::print_prunes_charset_properties_like_print_prune_string_charset": "ok",
+        "lisp::primitives::tests::process_command_reports_child_argv_and_nil_for_connection_records": "ok",
+        "lisp::primitives::tests::process_filter_t_holds_os_output_until_the_default_filter_is_restored": "ok",
+        "lisp::primitives::tests::process_filters_can_observe_that_read_event_is_waiting_for_user_input": "ok",
+        "lisp::primitives::tests::process_lines_uses_default_directory_as_subprocess_cwd": "ok",
+        "lisp::primitives::tests::process_list_is_newest_first_and_excludes_deleted_processes": "ok",
+        "lisp::primitives::tests::process_send_eof_keeps_a_split_input_pty_alive_until_the_child_reads_eof": "ok",
+        "lisp::primitives::tests::process_send_eof_uses_the_pty_eof_character_and_drains_final_output": "ok",
+        "lisp::primitives::tests::process_send_string_and_region_route_output_to_the_process_buffer": "ok",
+        "lisp::primitives::tests::process_sentinel_can_delete_its_own_process_exactly_once": "ok",
+        "lisp::primitives::tests::process_tls_peer_reports_are_independent_values_from_the_live_session": "ok",
+        "lisp::primitives::tests::process_tls_state_survives_collection_before_and_after_async_handshake": "ok",
+        "lisp::primitives::tests::process_tty_name_rejects_unknown_streams": "ok",
+        "lisp::primitives::tests::prog1_preserves_the_saved_object_when_its_variable_is_rebound": "ok",
+        "lisp::primitives::tests::program_search_follows_openp_over_exec_path": "ok",
+        "lisp::primitives::tests::project_does_not_ship_lisp_compatibility_facades": "ok",
+        "lisp::primitives::tests::propertize_preserves_existing_string_properties": "ok",
+        "lisp::primitives::tests::property_change_helpers_accept_markers": "ok",
+        "lisp::primitives::tests::punct_class_beyond_ascii_follows_buffer_syntax": "ok",
+        "lisp::primitives::tests::purecopy_callbacks_observe_current_purify_flag": "ok",
+        "lisp::primitives::tests::purecopy_callbacks_preserve_vector_and_record_source_snapshots": "ok",
+        "lisp::primitives::tests::purecopy_callbacks_retain_copied_fields_in_five_sequence_kinds": "ok",
+        "lisp::primitives::tests::push_mark_separates_marker_motion_from_transient_region_activation": "ok",
+        "lisp::primitives::tests::put_text_property_preserves_string_identity_and_mutation": "ok",
+        "lisp::primitives::tests::quoted_objects_survive_only_while_reachable": "ok",
+        "lisp::primitives::tests::quoting_style_reaches_message_error_text_and_display_table": "ok",
+        "lisp::primitives::tests::random_default_and_reseeded_values_follow_the_gnu_fixnum_contract": "ok",
+        "lisp::primitives::tests::read_coding_system_matches_the_gnu_coding_primitive_contract": "ok",
+        "lisp::primitives::tests::read_positioning_symbols_positions_the_symbols_inside_vectors": "ok",
+        "lisp::primitives::tests::read_string_history_keeps_the_minibuffer_map_and_initial_properties": "ok",
+        "lisp::primitives::tests::read_string_nil_default_returns_empty_input_like_gnu": "ok",
+        "lisp::primitives::tests::reader_byte_printing_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_consumption_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_dots_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_encoding_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_errors_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_execution_modes_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_gc_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_lifetime_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_obarray_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_redefinition_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_streams_match_gnu": "ok",
+        "lisp::primitives::tests::reader_callable_syntax_match_gnu": "ok",
+        "lisp::primitives::tests::reader_distinguishes_unibyte_string_characters_from_byte8_sources": "ok",
+        "lisp::primitives::tests::reader_entrypoints_preserve_cyclic_object_identity_through_gc": "ok",
+        "lisp::primitives::tests::reader_hex_escapes_preserve_the_raw_byte_boundary_and_digit_count": "ok",
+        "lisp::primitives::tests::reader_interns_symbols_inside_shared_and_circular_vectors": "ok",
+        "lisp::primitives::tests::reader_interns_vector_symbols_in_the_dynamic_obarray": "ok",
+        "lisp::primitives::tests::reader_printer_bindings_match_gnu": "ok",
+        "lisp::primitives::tests::reader_stream_entrypoints_match_gnu": "ok",
+        "lisp::primitives::tests::reader_stream_positions_match_gnu": "ok",
+        "lisp::primitives::tests::recenter_uses_the_published_window_height_for_negative_lines": "ok",
+        "lisp::primitives::tests::record_literal_detection_does_not_traverse_vector_storage": "ok",
+        "lisp::primitives::tests::redisplay_defaults_match_native_terminal_and_input_state": "ok",
+        "lisp::primitives::tests::redisplay_dispatches_an_already_due_timer": "ok",
+        "lisp::primitives::tests::regex_resource_helper_patterns_compile": "ok",
+        "lisp::primitives::tests::regexp_table_cache_observes_shared_leaf_mutation_and_replaced_edges_after_gc": "ok",
+        "lisp::primitives::tests::registered_subrs_never_request_function_cell_overrides": "ok",
+        "lisp::primitives::tests::replace_match_grafts_replacement_string_properties": "ok",
+        "lisp::primitives::tests::replace_match_on_a_string_returns_concat3_multibyteness": "ok",
+        "lisp::primitives::tests::reused_minibuffer_discards_overlays_from_the_previous_read": "ok",
+        "lisp::primitives::tests::run_at_time_callbacks_fire_on_accept_process_output": "ok",
+        "lisp::primitives::tests::run_with_timer_callbacks_fire_on_accept_process_output": "ok",
+        "lisp::primitives::tests::selected_global_keymap_is_distinct_from_the_global_map_variable": "ok",
+        "lisp::primitives::tests::seq_uniq_preserves_first_occurrence_order": "ok",
+        "lisp::primitives::tests::set_buffer_redisplay_is_a_callable_variable_watcher": "ok",
+        "lisp::primitives::tests::set_file_times_keeps_the_whole_timestamp": "ok",
+        "lisp::primitives::tests::set_minibuffer_window_validates_and_updates_the_shared_window_state": "ok",
+        "lisp::primitives::tests::set_network_process_option_applies_the_option_or_refuses": "ok",
+        "lisp::primitives::tests::set_text_properties_replaces_existing_properties": "ok",
+        "lisp::primitives::tests::shared_string_bytes_are_the_authoritative_unibyte_payload": "ok",
+        "lisp::primitives::tests::signal_process_preserves_os_signal_status_and_sentinel_event": "ok",
+        "lisp::primitives::tests::single_key_description_matches_symbol_cases": "ok",
+        "lisp::primitives::tests::sjis_conversion_follows_the_oracle_contract": "ok",
+        "lisp::primitives::tests::skip_chars_word_class_includes_ascii_digits": "ok",
+        "lisp::primitives::tests::sleep_for_zero_returns_without_waiting_or_running_timers": "ok",
+        "lisp::primitives::tests::sort_calls_the_numeric_lambda_with_its_arguments_bound": "ok",
+        "lisp::primitives::tests::special_event_maps_use_live_lookup_through_collecting_filters": "ok",
+        "lisp::primitives::tests::sqlite_extension_loading_executes_real_code_and_rejects_invalid_files": "ok",
+        "lisp::primitives::tests::sqlite_values_are_a_list_or_a_vector": "ok",
+        "lisp::primitives::tests::string_byte_conversions_use_the_internal_encoding": "ok",
+        "lisp::primitives::tests::string_case_conversion_preserves_properties_until_character_count_changes": "ok",
+        "lisp::primitives::tests::string_constructors_preserve_gnu_full_character_range_and_errors": "ok",
+        "lisp::primitives::tests::string_decode_names_last_coding_system_used_like_the_oracle": "ok",
+        "lisp::primitives::tests::string_equality_compares_actual_storage_with_and_without_properties": "ok",
+        "lisp::primitives::tests::string_equality_uses_lisp_symbol_names_and_positioned_symbol_policy": "ok",
+        "lisp::primitives::tests::string_limit_supports_end_flag": "ok",
+        "lisp::primitives::tests::string_make_multibyte_preserves_identity_or_converts_raw_bytes_without_properties": "ok",
+        "lisp::primitives::tests::string_property_hashes_follow_equal_through_nested_mutation_and_lookup": "ok",
+        "lisp::primitives::tests::string_property_values_use_equal_across_mutation_gc_and_interval_boundaries": "ok",
+        "lisp::primitives::tests::string_to_syntax_encodes_classes_flags_and_matching_characters": "ok",
+        "lisp::primitives::tests::subprocess_cwd_uses_native_unhandled_directory_mechanism": "ok",
+        "lisp::primitives::tests::subr_frontier_aset_promotes_ascii_unibyte_strings_like_gnu": "ok",
+        "lisp::primitives::tests::subr_frontier_backquote_folds_the_constant_suffix_like_gnu": "ok",
+        "lisp::primitives::tests::subr_frontier_buffer_local_value_signals_when_no_binding_exists": "ok",
+        "lisp::primitives::tests::subr_frontier_compare_strings_uses_gnu_simple_upcase_canonicalization": "ok",
+        "lisp::primitives::tests::subr_frontier_delete_reuses_retained_cons_cells_and_copies_other_sequences": "ok",
+        "lisp::primitives::tests::subr_frontier_direct_vector_evaluation_materializes_nested_record_literals": "ok",
+        "lisp::primitives::tests::subr_frontier_fundamental_mode_is_not_a_stored_derived_parent": "ok",
+        "lisp::primitives::tests::subr_frontier_hook_execution_uses_elisp_owned_local_value_cells": "ok",
+        "lisp::primitives::tests::subr_frontier_mapbacktrace_with_an_absent_base_is_an_empty_traversal": "ok",
+        "lisp::primitives::tests::subr_frontier_reader_decodes_the_complete_classic_string_escape_table": "ok",
+        "lisp::primitives::tests::subr_frontier_recordp_does_not_expose_hash_table_runtime_storage": "ok",
+        "lisp::primitives::tests::subr_frontier_replace_match_applies_gnu_case_adaptation": "ok",
+        "lisp::primitives::tests::subr_frontier_replace_match_distinguishes_string_and_buffer_escapes": "ok",
+        "lisp::primitives::tests::subregexp_context_rejects_classes_bounds_and_trailing_escape": "ok",
+        "lisp::primitives::tests::substitute_command_keys_uses_explicit_keymaps": "ok",
+        "lisp::primitives::tests::substitute_in_file_name_expands_shell_style_env_vars": "ok",
+        "lisp::primitives::tests::substring_copies_canonical_bytes_properties_and_vector_fields": "ok",
+        "lisp::primitives::tests::substring_of_completion_result_accepts_text_properties": "ok",
+        "lisp::primitives::tests::substring_reversed_bounds_signal_without_host_panics": "ok",
+        "lisp::primitives::tests::substring_validates_gnu_array_types_and_index_error_order": "ok",
+        "lisp::primitives::tests::suspended_bytecode_observes_live_constant_vector_mutation": "ok",
+        "lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots": "ok",
+        "lisp::primitives::tests::symbol_fast_paths_preserve_nil_and_t_identity": "ok",
+        "lisp::primitives::tests::symbol_properties_preserve_override_order_and_identity": "ok",
+        "lisp::primitives::tests::syntax_class_rendering_survives_writes_to_tables_outside_its_chain": "ok",
+        "lisp::primitives::tests::syntax_property_searches_after_random_edits_match_the_oracle": "ok",
+        "lisp::primitives::tests::syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation": "ok",
+        "lisp::primitives::tests::system_move_file_to_trash_preserves_gnu_missing_file_contract": "ok",
+        "lisp::primitives::tests::terminal_command_loop_records_keyboard_macro_events_and_nonmenu_event": "ok",
+        "lisp::primitives::tests::terminal_frames_follow_gnu_device_window_and_deletion_lifecycle": "ok",
+        "lisp::primitives::tests::terminal_frames_isolate_faces_keyboards_and_saved_configurations": "ok",
+        "lisp::primitives::tests::terminal_frames_preserve_other_frames_when_windows_change": "ok",
+        "lisp::primitives::tests::terminal_parameters_preserve_identity_through_bytecode_and_gc": "ok",
+        "lisp::primitives::tests::text_conversion_alias_and_indirect_buffer_state_matches_gnu": "ok",
+        "lisp::primitives::tests::text_conversion_c_store_does_not_localize_or_duplicate_the_field": "ok",
+        "lisp::primitives::tests::text_conversion_detached_state_matches_gnu": "ok",
+        "lisp::primitives::tests::text_conversion_variable_state_matches_gnu": "ok",
+        "lisp::primitives::tests::text_conversion_void_default_let_matches_gnu": "ok",
+        "lisp::primitives::tests::text_property_copies_follow_add_text_properties_order": "ok",
+        "lisp::primitives::tests::text_property_search_helpers_find_matches_and_gaps": "ok",
+        "lisp::primitives::tests::text_property_writes_touch_only_the_spans_they_cover": "ok",
+        "lisp::primitives::tests::text_quoting_default_is_derived_from_the_process_locale": "ok",
+        "lisp::primitives::tests::text_quoting_policy_is_shared_by_the_query_and_substitution_primitives": "ok",
+        "lisp::primitives::tests::text_quoting_style_follows_the_locale_flag_only_for_a_nil_setting": "ok",
+        "lisp::primitives::tests::thread_join_leaves_unrelated_timers_pending": "ok",
+        "lisp::primitives::tests::thread_signal_queues_a_thread_event_for_the_main_thread": "ok",
+        "lisp::primitives::tests::threads_get_their_own_bindings_handlers_and_join_semantics": "ok",
+        "lisp::primitives::tests::threads_retain_lexical_caller_roots_across_separate_callee_environments": "ok",
+        "lisp::primitives::tests::time_values_follow_timefns_c": "ok",
+        "lisp::primitives::tests::timed_tty_event_read_pumps_process_output_and_deferred_callbacks": "ok",
+        "lisp::primitives::tests::timers_run_inside_a_child_threads_sleep_with_its_bindings": "ok",
+        "lisp::primitives::tests::tmm_nested_menu_keeps_the_completions_window_at_its_first_line": "ok",
+        "lisp::primitives::tests::translate_elisp_regex_elides_repeated_empty_shy_groups": "ok",
+        "lisp::primitives::tests::translate_elisp_regex_handles_rx_generated_hyphen_classes": "ok",
+        "lisp::primitives::tests::tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it": "ok",
+        "lisp::primitives::tests::tty_color_primitives_follow_xfaces_c": "ok",
+        "lisp::primitives::tests::tty_completing_read_completes_with_tab": "ok",
+        "lisp::primitives::tests::tty_event_reader_does_not_preempt_queued_events": "ok",
+        "lisp::primitives::tests::tty_event_reader_feeds_interactive_event_reads": "ok",
+        "lisp::primitives::tests::tty_event_reader_quit_signals_gnu_quit": "ok",
+        "lisp::primitives::tests::tty_events_answer_interactive_minibuffer_prompts": "ok",
+        "lisp::primitives::tests::tty_frame_size_shapes_the_root_and_minibuffer_windows": "ok",
+        "lisp::primitives::tests::tty_menu_key_hints_follow_preferred_binding_and_live_removal": "ok",
+        "lisp::primitives::tests::tty_minibuffer_edits_complete_and_recall_history": "ok",
+        "lisp::primitives::tests::tty_minibuffer_history_recall_submits_the_recalled_entry": "ok",
+        "lisp::primitives::tests::tty_minibuffer_quit_signals_gnu_quit": "ok",
+        "lisp::primitives::tests::tty_read_buffer_formats_a_buffer_default_into_the_prompt": "ok",
+        "lisp::primitives::tests::tty_real_minibuffer_history_recalls_through_simple_el": "ok",
+        "lisp::primitives::tests::tty_real_minibuffer_loop_runs_the_lisp_minibuffer_commands": "ok",
+        "lisp::primitives::tests::undecided_decode_detects_shift_jis_like_coding_c": "ok",
+        "lisp::primitives::tests::undo_file_marker_records_the_visited_modtime": "ok",
+        "lisp::primitives::tests::undo_host_records_match_gnu_save_point_property_and_multibyte_contracts": "ok",
+        "lisp::primitives::tests::unicode_char_property_helpers_cover_names_and_general_categories": "ok",
+        "lisp::primitives::tests::unicode_property_internal_encoders_follow_gnu_decision_table": "ok",
+        "lisp::primitives::tests::unicode_property_tables_are_stable_and_preserve_overrides": "ok",
+        "lisp::primitives::tests::unify_charset_validates_and_deunifies_like_charset_c": "ok",
+        "lisp::primitives::tests::uninterned_symbols_are_reached_by_object_not_by_name": "ok",
+        "lisp::primitives::tests::unreached_markers_leave_their_buffers_edit_walk": "ok",
+        "lisp::primitives::tests::unused_bytecode_destinations_follow_actual_control_flow": "ok",
+        "lisp::primitives::tests::unwind_payload_roots_release_after_interpreted_bytecode_and_native_handlers": "ok",
+        "lisp::primitives::tests::unwind_protect_preserves_pending_values_and_error_payloads_across_cleanup_gc": "ok",
+        "lisp::primitives::tests::url_retrieve_synchronously_matches_gnu_over_a_real_local_http_connection": "ok",
+        "lisp::primitives::tests::variable_cells_follow_data_c": "ok",
+        "lisp::primitives::tests::vector_held_host_strings_preserve_binding_identity_and_mutation": "ok",
+        "lisp::primitives::tests::where_is_internal_runs_menu_item_filters_only_for_verified_matches": "ok",
+        "lisp::primitives::tests::window_configuration_restore_keeps_the_current_frame_size_like_gnu": "ok",
+        "lisp::primitives::tests::window_cycling_follows_tree_order_from_the_selected_window": "ok",
+        "lisp::primitives::tests::window_end_and_posn_follow_published_interactive_geometry": "ok",
+        "lisp::primitives::tests::window_mode_lines_render_in_each_windows_own_context": "ok",
+        "lisp::primitives::tests::window_render_layout_reports_split_geometry_in_tree_order": "ok",
+        "lisp::primitives::tests::window_resize_apply_commits_staged_pixel_sizes": "ok",
+        "lisp::primitives::tests::window_text_pixel_size_measures_the_window_buffer_with_mode_lines": "ok",
+        "lisp::primitives::tests::write_region_mustbenew_uses_gnu_short_answer_and_preserves_remaining_events": "ok",
+        "lisp::primitives::tests::zero_duration_sleep_does_not_dispatch_ready_process_output_like_emacs": "ok",
+        "lisp::reader::tests::atoms": "ok",
+        "lisp::reader::tests::backquote_dot_comma_reads_as_dotted_comma_tail": "ok",
+        "lisp::reader::tests::bare_radix_shaped_tokens_remain_symbols": "ok",
+        "lisp::reader::tests::bare_vector_syntax": "ok",
+        "lisp::reader::tests::characters": "ok",
+        "lisp::reader::tests::characters_with_modifiers": "ok",
+        "lisp::reader::tests::circular_label_numbers_can_be_reused_within_one_top_level_form": "ok",
+        "lisp::reader::tests::circular_syntax_scan_handles_already_materialized_cycles": "ok",
+        "lisp::reader::tests::comments_skipped": "ok",
+        "lisp::reader::tests::dotted_pair": "ok",
+        "lisp::reader::tests::dotted_pair_with_modified_character_literal_cdr": "ok",
+        "lisp::reader::tests::emitted_reader_forms_says_whether_the_result_needs_resolution": "ok",
+        "lisp::reader::tests::empty_integer_literals_preserve_gnu_invalid_syntax_data": "ok",
+        "lisp::reader::tests::ert_deftest_structure": "ok",
+        "lisp::reader::tests::escaped_backslash_character_does_not_consume_following_delimiter": "ok",
+        "lisp::reader::tests::escaped_multibyte_character_literal_consumes_full_scalar": "ok",
+        "lisp::reader::tests::expands_symbol_shorthands_while_reading_atoms": "ok",
+        "lisp::reader::tests::form_feed_is_treated_as_whitespace": "ok",
+        "lisp::reader::tests::hash_dispatch_edge_cases": "ok",
+        "lisp::reader::tests::invalid_character_escapes_signal_errors": "ok",
+        "lisp::reader::tests::lists": "ok",
+        "lisp::reader::tests::named_character_errors_preserve_gnu_invalid_syntax_data": "ok",
+        "lisp::reader::tests::nested_lists": "ok",
+        "lisp::reader::tests::nonbreaking_space_counts_as_whitespace_after_dot": "ok",
+        "lisp::reader::tests::positioning_reader_returns_final_native_words_without_materialization": "ok",
+        "lisp::reader::tests::quoted": "ok",
+        "lisp::reader::tests::read_multiple": "ok",
+        "lisp::reader::tests::reader_tracks_only_actual_unescaped_character_literals": "ok",
+        "lisp::reader::tests::reads_and_validates_character_table_literals": "ok",
+        "lisp::reader::tests::reads_bool_vector_literals": "ok",
+        "lisp::reader::tests::reads_control_escape_string_literals": "ok",
+        "lisp::reader::tests::reads_escape_character_string_literals": "ok",
+        "lisp::reader::tests::reads_hash_radix_integers": "ok",
+        "lisp::reader::tests::reads_hash_table_structure_syntax_as_self_evaluating_literal": "ok",
+        "lisp::reader::tests::reads_long_hex_string_escapes": "ok",
+        "lisp::reader::tests::reads_named_unicode_character_escapes": "ok",
+        "lisp::reader::tests::reads_named_unicode_string_escapes": "ok",
+        "lisp::reader::tests::reads_reader_labels_as_circular_syntax_forms": "ok",
+        "lisp::reader::tests::reads_record_structure_syntax_as_record_literal_form": "ok",
+        "lisp::reader::tests::reads_strings_with_text_properties_from_hash_syntax": "ok",
+        "lisp::reader::tests::reads_three_field_interpreted_closure_syntax": "ok",
+        "lisp::reader::tests::strings": "ok",
+        "lisp::reader::tests::symbol_shorthands_preserve_punctuation_only_symbols": "ok",
+        "lisp::reader::tests::trailing_dot_decimals_read_as_integers": "ok",
+        "lisp::reader::tests::uninterned_symbols": "ok",
+        "lisp::types::ownership_tests::symbol_sweep_on_another_host_thread_clears_the_creators_weak_book": "ok",
+        "lisp::types::ownership_tests::uninterned_symbol_lookup_crosses_serialized_host_threads": "ok",
+        "lisp::types::tests::cloning_big_integer_reuses_the_integer_allocation": "ok",
+        "lisp::types::tests::cloning_buffer_reuses_the_buffer_descriptor": "ok",
+        "lisp::types::tests::cloning_lambda_shares_argument_and_body_lists": "ok",
+        "lisp::types::tests::cloning_string_reuses_the_text_allocation": "ok",
+        "lisp::types::tests::cons_fields_share_one_cell_and_mutate_independently": "ok",
+        "lisp::types::tests::cons_mutation_bloom_collisions_only_probe_the_authoritative_watcher_map": "ok",
+        "lisp::types::tests::cons_mutation_bloom_resets_after_the_last_dead_watcher_is_drained": "ok",
+        "lisp::types::tests::cons_mutation_snapshot_ignores_unrelated_cells_and_tracks_dependencies": "ok",
+        "lisp::types::tests::deep_cons_chains_allocate_and_release_on_a_small_stack": "ok",
+        "lisp::types::tests::environment_frames_are_the_alist_head_flet_conses": "ok",
+        "lisp::types::tests::every_cons_field_mutation_advances_the_shared_epoch": "ok",
+        "lisp::types::tests::float_values_preserve_lisp_object_identity": "ok",
+        "lisp::types::tests::integral_floats_print_with_one_fractional_digit": "ok",
+        "lisp::types::tests::interned_symbol_names_reuse_one_text_allocation": "ok",
+        "lisp::types::tests::live_census_counts_bignums_and_interpreted_closures_as_gnu_vectors": "ok",
+        "lisp::types::tests::live_census_counts_float_allocations_once_across_clones": "ok",
+        "lisp::types::tests::live_census_counts_one_gnu_vector_without_representation_conses": "ok",
+        "lisp::types::tests::nil_and_t_count_as_symbols": "ok",
+        "lisp::types::tests::result_of_value_is_two_machine_words": "ok",
+        "lisp::types::tests::retained_cons_fields_use_one_word_and_preserve_slot_identity": "ok",
+        "lisp::types::tests::shared_text_equality_covers_shared_and_distinct_equal_allocations": "ok",
+        "lisp::types::tests::signaled_string_messages_print_without_lisp_quotes": "ok",
+        "lisp::types::tests::string_value_equality_uses_bytes_and_character_counts": "ok",
+        "lisp::types::tests::tree_mutation_snapshot_tracks_nested_cons_fields": "ok",
+        "lisp::types::tests::uninterned_symbol_keeps_its_supplied_lisp_name": "ok",
+        "lisp::types::tests::uninterned_symbol_names_remain_reclaimable": "ok",
+        "lisp::types::tests::value_is_one_machine_word": "ok",
+        "lisp::types::tests::vector_gnu_payload_offsets_survive_collection_and_direct_stores": "ok",
+        "lisp::types::tests::vector_slots_observe_lisp_mutation_and_gc_during_iteration": "ok",
+        "lisp::types::tests::void_function_errors_print_function_symbols_readably": "ok",
+        "lisp::types::tests::watcher_compaction_preserves_live_mutation_subscriptions": "ok"
+      },
+      "source_inputs_verified": 488,
+      "prior_selectors_preserved": 955,
+      "selected": 962,
+      "retained_inputs": [
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source259-gate-libtest",
+          "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source259-focused-retained-inputs/source259-gate-libtest",
+          "sha256": "5691d44fe7f2ed94dca79945dbf42a1f0659dd78804ea8df7026b079e99652bd",
+          "bytes": 29491792
+        },
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source259/loadup-5691d44f-d44829be.pdmp",
+          "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source259-focused-retained-inputs/loadup-5691d44f-d44829be.pdmp",
+          "sha256": "12fd4e1b78cd2034c0ce6145aa45790fd7ac4f16051e837c22aa993a6b133af9",
+          "bytes": 22362432
+        }
+      ],
+      "unexecuted_stages": [
+        [
+          "run-string-comparison-hashes-release.py",
+          "259"
+        ],
+        [
+          "audit-string-comparison-hashes-release.py",
+          "259"
+        ],
+        [
+          "test-string-comparison-hashes-broad.py",
+          "259",
+          "release"
+        ],
+        [
+          "build-string-comparison-ordinary.py",
+          "259"
+        ],
+        [
+          "compare-string-comparison-fixtures.py",
+          "source259",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-comparisons/emaxx",
+          "coding-post-read-character-count",
+          "coding-post-read-fast-path",
+          "overriding-property-identity",
+          "coding-candidate-symbol-properties",
+          "coding-candidate-translation",
+          "coding-candidate-character-identities",
+          "coding-candidate-inventory",
+          "file-write-coding-selection",
+          "new-file-coding-lifecycle",
+          "file-write-order",
+          "canonical-coding-character-storage",
+          "canonical-coding-identity-storage",
+          "canonical-coding-conversion-storage",
+          "copied-canonical-string-storage",
+          "coding-error-object-storage",
+          "host-string-mutation",
+          "host-string-vector-mutation",
+          "string-equality-storage",
+          "string-equality-symbol-names-positioned",
+          "string-equality-property-values",
+          "string-equality-property-hashes"
+        ]
+      ],
+      "gnu_constructor": {
+        "exit_code": 0,
+        "elapsed_seconds": 0.206807958,
+        "inputs_unchanged": true,
+        "stdout_sha256": "7f5d168f3df0fe1a3012aef506abe76bbd8e533819701153d31a7858379e921c",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "qualification": "Ordinary rebuilt GNU reference. alloc.c:Fmake_byte_code requires an unibyte code string and retains that string. Distinct bytecode.c:Fbyte_code handles old multibyte byte-code primitive inputs. No runtime expectation, selector or timeout was changed."
+      },
+      "raw_log_sha256": "2668157ca0cd54b9a506431bfebdaa6aa710aa818ecde26c0dd16b2131c215ac",
+      "diagnosis": "The Rust native-call test constructs intended opcode bytes 137/84/135 as Unicode U+0089/U+0054/U+0087. Canonical string construction correctly stores that as multibyte text (three characters/five bytes). Ordinary GNU make-byte-code accepts the three unibyte octets, retains their identity and funcall returns42; it rejects the Unicode form. The existing native dispatch/result/backtrace/depth assertions must be kept while correcting the fixture to explicit bytes.",
+      "qualification": "Every broad raw name/verdict and retained executable/image verified. This full affected group remains failed; source259 release and ordinary stages did not run. No runtime repair or later source success is inferred.",
+      "goal_complete": false
+    },
+    "full_validation_launch": {
+      "pid": 31023,
+      "command": [
+        "/Library/Developer/CommandLineTools/usr/bin/python3",
+        "-B",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-source261-full-macos.py"
+      ],
+      "helper_sha256": "4bd52eccf2121b87596228dae4300677c9b02c49e5346e2b4969f3ccbc00debb",
+      "selected_auditor_sha256": "7da2a04f116ec711e1940acfa249b59b226e674c9d7fdb5a09bcc22e479d91c3",
+      "started_at_unix": 1790877335.796404,
+      "source_manifest": "source261-manifest.json",
+      "qualification": "Waits for the selected continuation, verifies its raw results, then runs complete unchanged macOS Rust, frozen and terminal gates in a clean checkout. A queued command is not a pass."
+    },
+    "publication": {
+      "commit": "eddfe78223ea404714d859a9d63a9048f89a9cff",
+      "runtime_source": "source261",
+      "source_inputs_verified": 488,
+      "selected_audit_sha256": "b5bce4a724360d049f6b2b6bf0b5dff19ab7556005449a9bb1c9bded182afd2d",
+      "method": "Fast-forward to the clean full-validation commit; existing handover edits preserved.",
+      "goal_complete": false
+    },
+    "linux_launches": [
+      {
+        "run_id": 36904097575,
+        "state": {
+          "conclusion": "",
+          "headSha": "eddfe78223ea404714d859a9d63a9048f89a9cff",
+          "status": "queued",
+          "url": "https://github.com/rayfdj/emaxx/actions/runs/36904097575"
+        },
+        "source_commit": "eddfe78223ea404714d859a9d63a9048f89a9cff",
+        "runtime_source": "source261",
+        "qualification": "Full existing Linux validation of the exact pushed 488-input source261 repair. Strict zero-warning checks, 189 focused passes/two existing ignores and 962 affected passes in each profile, plus twenty-two ordinary GNU comparisons are audited locally. Complete source249 passes are historical. No passing verdict is inferred from dispatch; the exact 488-input Darwin candidate remains under its own full Rust/frozen/terminal validation."
+      },
+      {
+        "run_id": 36904105841,
+        "state": {
+          "conclusion": "",
+          "headSha": "eddfe78223ea404714d859a9d63a9048f89a9cff",
+          "status": "queued",
+          "url": "https://github.com/rayfdj/emaxx/actions/runs/36904105841"
+        },
+        "source_commit": "eddfe78223ea404714d859a9d63a9048f89a9cff",
+        "runtime_source": "source261",
+        "qualification": "Full existing Linux validation of the exact pushed 488-input source261 repair. Strict zero-warning checks, 189 focused passes/two existing ignores and 962 affected passes in each profile, plus twenty-two ordinary GNU comparisons are audited locally. Complete source249 passes are historical. No passing verdict is inferred from dispatch; the exact 488-input Darwin candidate remains under its own full Rust/frozen/terminal validation."
+      }
+    ],
+    "qualification": "Source261 has zero-warning strict checks, 189 focused passes/two unchanged ignores and 962 affected passes in each profile, plus 22 ordinary exact GNU matches. All original native assertions remain. Source259 broad failure, source260 new-test lint failure and source261 retention-auditor failure are preserved. The corrected release auditor verifies its own executable/image and the extra earlier gate image. Both portable patches reproduce all 488 inputs. Commit eddfe782 is pushed to the task branch and exact-head Linux Rust/frozen runs are dispatched. Full macOS validation runs separately at that same clean commit; active logs and full-run verdicts are excluded. No Linux result, complete platform pass, physical accounting, ownership, memory saving, performance or full-goal claim."
+  },
+  "archive": {
+    "path": "source261-common-string-selected.tar.gz",
+    "bytes": 1412632,
+    "sha256": "64efd1f45fd4daff2f0093e0e11053633080f3b660db5d17b729643d19e47be8"
+  },
+  "files": [
+    {
+      "path": "audit-native-code-fixture-focused.py",
+      "bytes": 3806,
+      "sha256": "5b5d707f519ec1b79650e4e6c8213cd16c852f6a77a4ab94a1e28313bf0709f7"
+    },
+    {
+      "path": "audit-native-code-fixture-release-retained-cache.py",
+      "bytes": 4589,
+      "sha256": "705fde8ecdee4cc37b50a5f74aa614e33a72f0871639fd4a9b9fdb3026068b05"
+    },
+    {
+      "path": "audit-native-code-fixture-release.py",
+      "bytes": 3834,
+      "sha256": "49d33563dadf5d9a82a5402e7662fff5bb45dce2724030b0bb40a1f1d2cd0ef0"
+    },
+    {
+      "path": "audit-native-code-fixture261.py",
+      "bytes": 5384,
+      "sha256": "8787c602c9c4149df676a25cd73953e2e9b66261ed5750bf93dcde6a275372c6"
+    },
+    {
+      "path": "audit-source238-release.py",
+      "bytes": 6600,
+      "sha256": "a88af9f455dd1646cf700decd651b977a525af8dc4a7eea81ed76f1812ff182f"
+    },
+    {
+      "path": "audit-source256-broad-failure.py",
+      "bytes": 4276,
+      "sha256": "12a9dfab1d3573e63b443d0f175401253ccb89a2cc3d39a5540d987654e5b14d"
+    },
+    {
+      "path": "audit-source259-broad-failure.py",
+      "bytes": 4409,
+      "sha256": "ee2145ebbf9c7c8b0f5749f8dca45daa7eaa3803eb7bb264602deb166fd1bd72"
+    },
+    {
+      "path": "audit-source260-source261-patches.py",
+      "bytes": 3094,
+      "sha256": "d882c1b6d2a591b502547deed07c984a1bb09eb173a718c9837d082c52b8c328"
+    },
+    {
+      "path": "audit-source261-selected.py",
+      "bytes": 7822,
+      "sha256": "7da2a04f116ec711e1940acfa249b59b226e674c9d7fdb5a09bcc22e479d91c3"
+    },
+    {
+      "path": "build-string-comparison-ordinary.py",
+      "bytes": 2485,
+      "sha256": "37faae1a7fa6636717487e8e6382fa9851929b157e9ca34b2c8b8b66bbfdffd3"
+    },
+    {
+      "path": "check-string-comparison-hashes-draft.py",
+      "bytes": 2801,
+      "sha256": "01ed44701a14bb1d8f6c85343ce3c22ca5f076c85f8509b5f6b96b9dbc91715a"
+    },
+    {
+      "path": "compare-string-comparison-fixtures.py",
+      "bytes": 4042,
+      "sha256": "83aa0082ddc2899bff6cd216682a27e3dc7d2ee245ffb1ac80f9a130080b3bfe"
+    },
+    {
+      "path": "continue-source261-after-retention-audit.py",
+      "bytes": 4045,
+      "sha256": "4cbc3b5f999f06fc6231081953cac401ac2c36bb0689385a56ca3fac678a91b4"
+    },
+    {
+      "path": "dispatch-source261-linux.py",
+      "bytes": 1979,
+      "sha256": "c7d6f85f2264558a306ef34f545697150cacdec0ed166a3f8609a3e173ccf08f"
+    },
+    {
+      "path": "freeze-string-comparison-hashes.py",
+      "bytes": 2756,
+      "sha256": "4dccc51f2cfd733f53a7ddb213ee6923cec6e480ddd332c96eab6da8393252da"
+    },
+    {
+      "path": "native-bytecode-unibyte-constructor.el",
+      "bytes": 613,
+      "sha256": "9e69c3fa4a18c4280635c47e7af3a29189fa2615842f85dd1e83820e79946718"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source261-selected.py",
+      "bytes": 6056,
+      "sha256": "22070fbf2df82195afaa5134f4a18a76210801b6144232d6e696230473f545e1"
+    },
+    {
+      "path": "probe-native-bytecode-unibyte-constructor.py",
+      "bytes": 1949,
+      "sha256": "4177a9c2e1f5161db69f38e221745cc0ebcaa31f18a22dc04ff4afe1f9a1d821"
+    },
+    {
+      "path": "queue-native-code-fixture260-validation.py",
+      "bytes": 5083,
+      "sha256": "caab34195611bb6f046168a6283e2152020f24677ada62aba85183d33874f71e"
+    },
+    {
+      "path": "queue-native-code-fixture261-validation.py",
+      "bytes": 5083,
+      "sha256": "22f2be8ff40a753847e76242cb155bcc65609777e15d3cc21a1c73b98c2ddbd6"
+    },
+    {
+      "path": "queue-source261-full-macos.py",
+      "bytes": 10465,
+      "sha256": "4bd52eccf2121b87596228dae4300677c9b02c49e5346e2b4969f3ccbc00debb"
+    },
+    {
+      "path": "run-native-code-fixture-focused.py",
+      "bytes": 6081,
+      "sha256": "a2e4e79642ad0617a7608a6e6199aa595303556cb5fea9fb27e157a20c7c6e30"
+    },
+    {
+      "path": "run-native-code-fixture-release.py",
+      "bytes": 6126,
+      "sha256": "9fbfd7284ee117b2622b1e876ecdfd790393b270d9320ee46dca996a5623df71"
+    },
+    {
+      "path": "source249-gate-broad-command.json",
+      "bytes": 174181,
+      "sha256": "821e1305e17695b7eee9550c3de51800735059e7c6aca160760d9830935e274a"
+    },
+    {
+      "path": "source249-gate-controls-command.json",
+      "bytes": 31106,
+      "sha256": "c3a9d0ff5919a4d45ba64c87351ff600d23fc5b84e186ba736ea2cc5cb6ab768"
+    },
+    {
+      "path": "source249-gate-inventory.txt",
+      "bytes": 265059,
+      "sha256": "2214f4ab453f8e736385ab4a20716b7be398b1e9a4da9351548839006dbd5f0e"
+    },
+    {
+      "path": "source249-release-broad-command.json",
+      "bytes": 174184,
+      "sha256": "85e3ac7f11b4564aa82e6764ac49f84520e46adcf74d29fc5ac5bb475c2efed8"
+    },
+    {
+      "path": "source249-release-inventory.txt",
+      "bytes": 264970,
+      "sha256": "0a410e5e03979cf87c54d506099dcd8836e3d0b734e51ad058d7a73769751837"
+    },
+    {
+      "path": "source249-setup-continuation-result.json",
+      "bytes": 4977,
+      "sha256": "a8b2426e87fe8e5f2b6cea9523c1a6874ea29ab35093289daaab8c17a46d6f79"
+    },
+    {
+      "path": "source255-gate-controls-command.json",
+      "bytes": 32961,
+      "sha256": "9fc56add548abc30c45366241bdac8e50b6b6062fe85e61531f3b55f1f60b809"
+    },
+    {
+      "path": "source255-gate-inventory.log",
+      "bytes": 265251,
+      "sha256": "b6b275b9d7114a9a0034f6ea109f324362c37e3906340c029c2e19a3bb2fbee3"
+    },
+    {
+      "path": "source256-gate-broad-command.json",
+      "bytes": 174576,
+      "sha256": "96f211ae3abfcfee465c64e0e5896ddc515ffa0539fe8e5ae55869bab88387f3"
+    },
+    {
+      "path": "source256-manifest.json",
+      "bytes": 55069,
+      "sha256": "2fd88741a0ac36f71742be4baa88a99b3a9a7f85960e0d29165b1899e7242731"
+    },
+    {
+      "path": "source256-native-bytecode-constructor-gnu-command.json",
+      "bytes": 2368,
+      "sha256": "d1acef00d8be4b98e9d3d8e05892a9a3a06119adfa95e5cc8c4c0081e6d252a2"
+    },
+    {
+      "path": "source256-native-bytecode-constructor-gnu-result.json",
+      "bytes": 529,
+      "sha256": "578c42767f41d4c8f7ff823d27a9d877b55a185dcf88d1b31693af852fadf03c"
+    },
+    {
+      "path": "source256-native-bytecode-constructor-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source256-native-bytecode-constructor-gnu.stdout",
+      "bytes": 76,
+      "sha256": "7f5d168f3df0fe1a3012aef506abe76bbd8e533819701153d31a7858379e921c"
+    },
+    {
+      "path": "source259-broad-failure-audit.json",
+      "bytes": 96692,
+      "sha256": "aa1fac4be6c867ea1885e71717cb18562e82bbeaa2875670ec21d2f807b024b1"
+    },
+    {
+      "path": "source259-focused-audit.json",
+      "bytes": 18835,
+      "sha256": "7660b9010a8b1542796c25020807bbb27a34e2655c68e86248b5de687e97b64f"
+    },
+    {
+      "path": "source259-focused-retained-inputs.json",
+      "bytes": 971,
+      "sha256": "98aab08de32a1fabf5fbdfd49efaad634b3c2ab2aff1f0cba0efa8a9c96082b2"
+    },
+    {
+      "path": "source259-freeze.json",
+      "bytes": 1241,
+      "sha256": "118bae0a20aa054f02489ae6efea31c54cfc63b2233483e7d7b162d25084ac36"
+    },
+    {
+      "path": "source259-gate-broad-command.json",
+      "bytes": 175730,
+      "sha256": "6f7d2fc554e7151b92e0021bf817cdd670c9bdb3ce3e41ef8997e713fed30901"
+    },
+    {
+      "path": "source259-gate-broad-result.json",
+      "bytes": 87,
+      "sha256": "fdbcf65c56887dc2d057aa31d5ad6cd8f99ba61a61a7de290890410a15ef1f38"
+    },
+    {
+      "path": "source259-gate-broad.log",
+      "bytes": 96894,
+      "sha256": "2668157ca0cd54b9a506431bfebdaa6aa710aa818ecde26c0dd16b2131c215ac"
+    },
+    {
+      "path": "source259-manifest.json",
+      "bytes": 56077,
+      "sha256": "0eeb6189d9110fb073457fd6d2a343604b680d94b814b7469cbda208f66de86b"
+    },
+    {
+      "path": "source259-validation-driver.log",
+      "bytes": 5937,
+      "sha256": "d4724508aa8484e75853c84a0d9a642a082242b38d3cef25683e6a2604f0b48d"
+    },
+    {
+      "path": "source259-validation-queue-state.json",
+      "bytes": 4780,
+      "sha256": "c177ce90f2caf9daaaeb90ee005d9e97e242395896b59c0bfe67f5040a4985a2"
+    },
+    {
+      "path": "source259-validation-result.json",
+      "bytes": 4779,
+      "sha256": "7b3503ede3289fe254e64bf7159bf5a4b21f5c65fd923f4bcc7534ae99130a21"
+    },
+    {
+      "path": "source260-check-command.json",
+      "bytes": 566,
+      "sha256": "0ca0336a782f40386be69e3bcb2ed08e3c0f4f64a0e6fd1bd9b1190275832714"
+    },
+    {
+      "path": "source260-check-result.json",
+      "bytes": 88,
+      "sha256": "7cf0c081921d0078da9d7eb9738f86d0cfa1b4a14f523201aae5b6243540e377"
+    },
+    {
+      "path": "source260-check.log",
+      "bytes": 199,
+      "sha256": "0ac3e2207bcb392550204a10e121e06abeda50d07d68d07f09460c592bdce4fe"
+    },
+    {
+      "path": "source260-clippy-command.json",
+      "bytes": 603,
+      "sha256": "49d69a884e0ebd9802265d31fcf0f3d6e330943225035fe923244da413125a1b"
+    },
+    {
+      "path": "source260-clippy-result.json",
+      "bytes": 91,
+      "sha256": "5a620a94fe1ba5ce6475eaa230de8f71cd1cf9abe4df239a8f52dce9c5580e8b"
+    },
+    {
+      "path": "source260-clippy.log",
+      "bytes": 1064,
+      "sha256": "46e951aeec6f67eab4dba8184d4faa1b5f515094492d64ad2ce25269799f91ae"
+    },
+    {
+      "path": "source260-fmt-command.json",
+      "bytes": 543,
+      "sha256": "be54c16553deb2f3dd11f5c194f011af954fb16a79631c1f7af0956d40056d1e"
+    },
+    {
+      "path": "source260-fmt-result.json",
+      "bytes": 89,
+      "sha256": "74f2228f9d976daf2a382cf6a38e2b8a12d9ede35c2c42a2c3ae9e885247dbc1"
+    },
+    {
+      "path": "source260-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source260-format-result.json",
+      "bytes": 20,
+      "sha256": "8f0c1c520d4343f54805dcdaa74287fb690f4d610186020a9343b1407654bdbd"
+    },
+    {
+      "path": "source260-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source260-freeze.json",
+      "bytes": 1241,
+      "sha256": "a2abfd73d4d2dcafa22c87e754df25c1d327daee322ad28cbe8dfa09feac3673"
+    },
+    {
+      "path": "source260-incremental.patch",
+      "bytes": 154423,
+      "sha256": "3e9c107a7900aad7fb4b8fa57e579b18a2965304eb35a8e0b52438b03855a846"
+    },
+    {
+      "path": "source260-manifest.json",
+      "bytes": 56077,
+      "sha256": "e17e92b5c00395f1ebce0e2168a148210e1f0688375dfea547913c76df502042"
+    },
+    {
+      "path": "source260-native-bytecode-fixture-application.json",
+      "bytes": 521,
+      "sha256": "238a61d2fe3701a006caf4659822af1f038704738169c5d857110732354d9db4"
+    },
+    {
+      "path": "source260-native-bytecode-fixture-prepared.json",
+      "bytes": 635,
+      "sha256": "c4ae201ed33c30c42b88742b3eb79c2911d8ea7c2263b7965f81fb5c66f1855a"
+    },
+    {
+      "path": "source260-native-bytecode-fixture-prepared.patch",
+      "bytes": 1302,
+      "sha256": "06d3b75310c2b25b5040da250a32ad5869283a7b99a68637bc15a022d73f7b36"
+    },
+    {
+      "path": "source260-portable-complete.patch",
+      "bytes": 860481,
+      "sha256": "2c6ac1f2dfd5177b935366be249fd7c1d2a00e8dd314c209694a156bfce58bad"
+    },
+    {
+      "path": "source260-portable-incremental.patch",
+      "bytes": 196399,
+      "sha256": "2887239f5d622f1b7d74050c5f4b4e0bd6e678d45b76487827b8279ab129dc60"
+    },
+    {
+      "path": "source260-strict-driver.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source260-strict-launch.json",
+      "bytes": 403,
+      "sha256": "3af43b3e00b234ff6813295bf21ec4db366cc2ee22abd3a47f3af614aa25640f"
+    },
+    {
+      "path": "source260-unformatted.patch",
+      "bytes": 154423,
+      "sha256": "3e9c107a7900aad7fb4b8fa57e579b18a2965304eb35a8e0b52438b03855a846"
+    },
+    {
+      "path": "source261-applied-commit.json",
+      "bytes": 345,
+      "sha256": "d6bbe5fdfc681b3a21e569f1bf20c9d35ff8c15a4d602961825df7afd7b63cbb"
+    },
+    {
+      "path": "source261-applied-push.json",
+      "bytes": 299,
+      "sha256": "03b0945f72e1fa97dd451702a67100f351bfc94e627a7fc4288ebada953926db"
+    },
+    {
+      "path": "source261-check-command.json",
+      "bytes": 566,
+      "sha256": "d3e40a1f02a80c1f0fe3f53135db63f4d5db7c5f6e39e439591194765cf7ee2a"
+    },
+    {
+      "path": "source261-check-result.json",
+      "bytes": 88,
+      "sha256": "84ec03230b9fee05c725e3d3479e6fa55852c6dcd5d9424afc4fb093379149c8"
+    },
+    {
+      "path": "source261-check.log",
+      "bytes": 199,
+      "sha256": "e16be2b399b142c35d6cae9a30b0b1a736a96c23e19fc515c8d9824f26437cfd"
+    },
+    {
+      "path": "source261-clippy-command.json",
+      "bytes": 603,
+      "sha256": "ccabd022723ff55c283444e377382a18852517146fded1a5930908d405036e0d"
+    },
+    {
+      "path": "source261-clippy-result.json",
+      "bytes": 83,
+      "sha256": "526178bde731590805ab5277030570d9d86e95358242dc9d4aaec841761656ad"
+    },
+    {
+      "path": "source261-clippy.log",
+      "bytes": 200,
+      "sha256": "7e472b8027383b38868fcb1db967e008e2c19533c0c0d56046bc9317d82f5ccf"
+    },
+    {
+      "path": "source261-diff-command.json",
+      "bytes": 519,
+      "sha256": "ba6a75323e12f8fa8b4bdaba2de1a6e6b463df12b3db55b327c593c7747adb6e"
+    },
+    {
+      "path": "source261-diff-result.json",
+      "bytes": 89,
+      "sha256": "667ad66992ef768bf428892fb0a20e581fdc63c66b7cf1a8d69547bba3b114d4"
+    },
+    {
+      "path": "source261-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-fmt-command.json",
+      "bytes": 543,
+      "sha256": "cfd39d01abb262b0257f1d7aa045a9bf298b5f273c5a0dfde972acf9d9c8bc1a"
+    },
+    {
+      "path": "source261-fmt-result.json",
+      "bytes": 89,
+      "sha256": "841e66f3f8fa5f38199c7453468b9165376e7e5493befdfd67555b61be028a0e"
+    },
+    {
+      "path": "source261-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-focused-audit.json",
+      "bytes": 18930,
+      "sha256": "9de1e5123c8e1d32d0888e67d14028a1c66a2e3b879d3cadaea2b9108f14d879"
+    },
+    {
+      "path": "source261-focused-inventory.json",
+      "bytes": 16657,
+      "sha256": "0f160c0d543dd624818e33903f086311e34bb3d6920f61de6b6ec59cff7098c2"
+    },
+    {
+      "path": "source261-focused-retained-inputs.json",
+      "bytes": 971,
+      "sha256": "383a351cf5399b7cad5442e05fd5cc9d054fb2787fd097a41ddeb7863db44b21"
+    },
+    {
+      "path": "source261-format-result.json",
+      "bytes": 20,
+      "sha256": "8f0c1c520d4343f54805dcdaa74287fb690f4d610186020a9343b1407654bdbd"
+    },
+    {
+      "path": "source261-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-freeze.json",
+      "bytes": 1241,
+      "sha256": "041efece9400870bc8c7deb81e2eec1b43f6d8a4279836b5491e22188d7c2893"
+    },
+    {
+      "path": "source261-full-cache-clone-command.json",
+      "bytes": 622,
+      "sha256": "753dfeb8ab490497e8c416bda6df9acb2a892bb065baf4c1dcaff19732f57115"
+    },
+    {
+      "path": "source261-full-cache-clone-result.json",
+      "bytes": 208,
+      "sha256": "e16d19a8b9ec6326ff46de069d9e30808022a5fb573a847b3b1d9e18589b5297"
+    },
+    {
+      "path": "source261-full-checkout.json",
+      "bytes": 599,
+      "sha256": "1a50dfe8a9314085f770612a0be9c075c0ddb5f881c60184df21449f27a54de6"
+    },
+    {
+      "path": "source261-full-fresh-gate-crate-command.json",
+      "bytes": 997,
+      "sha256": "c7c0af9d84b58db290523b553be9622d25ca5ea2fa1a4ed4118d7e46c97d0f39"
+    },
+    {
+      "path": "source261-full-fresh-gate-crate-result.json",
+      "bytes": 214,
+      "sha256": "5c89496ac88018e1e97035b8866c116e100a7dfc22f8c65b9831d411019d3891"
+    },
+    {
+      "path": "source261-full-launch.json",
+      "bytes": 690,
+      "sha256": "85b3c076f73cfe08f0e6d8849d087c5488f4361f715cd7999d7a68cf404219d2"
+    },
+    {
+      "path": "source261-full-oracle-capture-command.json",
+      "bytes": 1254,
+      "sha256": "ec8caf5efd0a563709ef8a3e6417aca21c5e01ef36e0a8b12a59a54399bd6a99"
+    },
+    {
+      "path": "source261-full-oracle-capture-result.json",
+      "bytes": 212,
+      "sha256": "2183db0bb66adfd04c5a0c4df129c8e0fe786fa326e6b9af3767a9eb7b5e22fa"
+    },
+    {
+      "path": "source261-full-selected-audit-command.json",
+      "bytes": 491,
+      "sha256": "c94fb1949e8970fd9f8d7817898426f5528c055941a294d6ef910e5ca86b62c7"
+    },
+    {
+      "path": "source261-full-selected-audit-result.json",
+      "bytes": 211,
+      "sha256": "627f28115762419a353c05e9adfe500108d222782408153ce3c6bc1ba14faf5f"
+    },
+    {
+      "path": "source261-gate-broad-command.json",
+      "bytes": 175730,
+      "sha256": "7adbd58e55a5a6b05c9dd28c5bfbe533c0f44b29277cb386c7cce251cefa24f2"
+    },
+    {
+      "path": "source261-gate-broad-result.json",
+      "bytes": 85,
+      "sha256": "67c60a25f6544d15a25d86316bbdf83ba7ea344e67dd7abae6f0e5681c4f55a0"
+    },
+    {
+      "path": "source261-gate-broad.log",
+      "bytes": 96539,
+      "sha256": "1741e7871329955d588ccabb5ed907f6272929ed8fdcec3f2c02032d406c1a10"
+    },
+    {
+      "path": "source261-gate-build-command.json",
+      "bytes": 1304,
+      "sha256": "b90308c596004bad3c8ea60dd598b8b9607caa6ca88320ad02dd3e18e34fb26d"
+    },
+    {
+      "path": "source261-gate-build-result.json",
+      "bytes": 84,
+      "sha256": "cd07390c76c8b3d1db99fff55ec090d216e3b7cff2a6c13aadeed285986bb226"
+    },
+    {
+      "path": "source261-gate-build.log",
+      "bytes": 222051,
+      "sha256": "85af56e1b01e82e879da0e4f9ec0d05b712651cecf50db8a4dfd86ae650cafe6"
+    },
+    {
+      "path": "source261-gate-controls-command.json",
+      "bytes": 34325,
+      "sha256": "2a63acac530ba1993598ffa4ea9754048c7e447a4ecc6245503d85612010db9f"
+    },
+    {
+      "path": "source261-gate-controls-result.json",
+      "bytes": 89,
+      "sha256": "5e1642059cf982175cb585e07409400cab13977ecb7cfc094c1f702028a12401"
+    },
+    {
+      "path": "source261-gate-controls.log",
+      "bytes": 19033,
+      "sha256": "edf0d73d91de6d7118ee911292e8d1e94b14e29ebb034e3e1ecffe266fae5b09"
+    },
+    {
+      "path": "source261-gate-inventory-command.json",
+      "bytes": 1278,
+      "sha256": "b2731d0f826c4f240d94f7fbd3f3f9d57202b7e43cc2e950cd80c231cfc8c807"
+    },
+    {
+      "path": "source261-gate-inventory-result.json",
+      "bytes": 88,
+      "sha256": "8baa1ce3a4c5ebf6b7d2c92f677b36ee12e051c86865cbb21adcc8e4b8c5a371"
+    },
+    {
+      "path": "source261-gate-inventory.log",
+      "bytes": 265738,
+      "sha256": "3f8d046dff66e5018d76aa4e6354c0d259270f8bf5ff206a9c0128ce2b0840e6"
+    },
+    {
+      "path": "source261-incremental.patch",
+      "bytes": 154470,
+      "sha256": "d6d8aea410ca09640e89953d1a2eabfdfd6d7592f10e55bfddcae1f1beb0de6c"
+    },
+    {
+      "path": "source261-linux-frozen-dispatch.json",
+      "bytes": 353,
+      "sha256": "cc51b21b1f67fd09e422e1072b44897845e1b805e749169b900e6ff7acedc974"
+    },
+    {
+      "path": "source261-linux-frozen-launch.json",
+      "bytes": 773,
+      "sha256": "49d70bca5717070bc302311139b40eb91cfa6da7124dc61abfdbeb8dace6d834"
+    },
+    {
+      "path": "source261-linux-rust-dispatch.json",
+      "bytes": 351,
+      "sha256": "aa55b643b3e11da139deafeec66085f7bb8b6024842ec622f9364bf42243795e"
+    },
+    {
+      "path": "source261-linux-rust-launch.json",
+      "bytes": 773,
+      "sha256": "e58ad5c1f8da420ea3226f0de438c346bf9240a44cc481f61b46ee318bb61dea"
+    },
+    {
+      "path": "source261-manifest.json",
+      "bytes": 56077,
+      "sha256": "784c94f223f69f48250a2439c0981c2e8f38b667dfc7609f2058087f0f80eda1"
+    },
+    {
+      "path": "source261-native-bytecode-fixture-audit.json",
+      "bytes": 2129,
+      "sha256": "848c3c38939e7bbaac4dfe2a6847859c2ebd570e365ae78d0f840647722981f7"
+    },
+    {
+      "path": "source261-ordinary-artifacts.json",
+      "bytes": 780,
+      "sha256": "62b3fc6baa8d99ab0871071843067f1b8e6e1905029194b8f8ff832d7bb40668"
+    },
+    {
+      "path": "source261-ordinary-build-command.json",
+      "bytes": 1017,
+      "sha256": "1221dea22f3e6b98ccbe2947de79872275e490dccb59590b6018f98f2ffef455"
+    },
+    {
+      "path": "source261-ordinary-build-result.json",
+      "bytes": 82,
+      "sha256": "e06271843f31f5accd5e02570c9c0e1cf196d4c7058f75bbf66959215d4b54d3"
+    },
+    {
+      "path": "source261-ordinary-build.log",
+      "bytes": 190,
+      "sha256": "558f9a4f699d1dc970ab3bca2d3f89c5d08cd72f626e05c62314f854981ca8b7"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-character-storage-comparison.json",
+      "bytes": 710,
+      "sha256": "fdc3ade4efcc4c22719eb9c8331e12f3b802949293af66d6bd455875db34b9e9"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-character-storage-emaxx.command.json",
+      "bytes": 2955,
+      "sha256": "b5ce27009158544cdc510829b1282dba09e09cbfc8b975d7ef24d0908b7bf890"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-character-storage-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "4039e1bde4f794ef89be87f6b1f1c467134cc7ba964f1d6d8c368594a3a65b7b"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-character-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-character-storage-emaxx.stdout",
+      "bytes": 1339,
+      "sha256": "8d0203f55bb5cc649336b089bb326a897dfea2491f1ac834a78042f1117fb445"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-character-storage-gnu.command.json",
+      "bytes": 2772,
+      "sha256": "8be3ee181731665f8e73241fb94ca4c0e4302ef407633d1bed312e50da4f083c"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-character-storage-gnu.result.json",
+      "bytes": 273,
+      "sha256": "e0313108acf741a757baab2db015cece34616953f72bc862505f47e683dfc2a5"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-character-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-character-storage-gnu.stdout",
+      "bytes": 1339,
+      "sha256": "8d0203f55bb5cc649336b089bb326a897dfea2491f1ac834a78042f1117fb445"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-conversion-storage-comparison.json",
+      "bytes": 711,
+      "sha256": "20aa7c411070b36a68d306ccb8d09d2b73715f29d0cde8c11ec51b2c59f1b3eb"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-conversion-storage-emaxx.command.json",
+      "bytes": 4078,
+      "sha256": "a842ea99f4ed3aa7abfe5a89d2dede1fcf884001b6f66a06187963f13ea88959"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-conversion-storage-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "fc86da8a76883ac3897f137bc0af63ff47bdd0c6e27d4db668a2e28897e0d545"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-conversion-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-conversion-storage-emaxx.stdout",
+      "bytes": 652,
+      "sha256": "1d2863adc2140a37a1500d6a0756a26c2f30c139559f749fb898511cee653cf8"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-conversion-storage-gnu.command.json",
+      "bytes": 3895,
+      "sha256": "262c92bff9c7d86f808371be146d4d29900ff9ce6237fc091d931c35122fc658"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-conversion-storage-gnu.result.json",
+      "bytes": 274,
+      "sha256": "e738190036851b0134b9f4b36f4268f1bd5719d79ff3a6b479235dc1cf27c188"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-conversion-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-conversion-storage-gnu.stdout",
+      "bytes": 652,
+      "sha256": "1d2863adc2140a37a1500d6a0756a26c2f30c139559f749fb898511cee653cf8"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-identity-storage-comparison.json",
+      "bytes": 711,
+      "sha256": "9e65f463c88a5e3096f434de7015415e08d16e6de1512b412185f0cf92c252a7"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-identity-storage-emaxx.command.json",
+      "bytes": 2892,
+      "sha256": "ae781ec195af494fde5d6a7fdf32287f032eb14feebb00d0e1e71b9b1f9c0451"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-identity-storage-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "f020e7f8b5dd8de23d2dd0438bf5ce4ab6332ff8fc03f17002f9880b39d6ad0e"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-identity-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-identity-storage-emaxx.stdout",
+      "bytes": 3086,
+      "sha256": "410ac62c8f094e66c8b869a388c8424741f9c7c11a0d09364d6ff61e71b91178"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-identity-storage-gnu.command.json",
+      "bytes": 2709,
+      "sha256": "481235e62344c34ca97f2a1fefba3076062b66fd06548d0477a8e4e1230f2c8e"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-identity-storage-gnu.result.json",
+      "bytes": 274,
+      "sha256": "9b570ffc019e42da666ab5321124584409fd7f036265e64a099369b0d013354a"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-identity-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-canonical-coding-identity-storage-gnu.stdout",
+      "bytes": 3086,
+      "sha256": "410ac62c8f094e66c8b869a388c8424741f9c7c11a0d09364d6ff61e71b91178"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-character-identities-comparison.json",
+      "bytes": 711,
+      "sha256": "554b23182e7e4bd9a63a9514abd977b90d039d6504ce1fc83b63ab05c35b93d0"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-character-identities-emaxx.command.json",
+      "bytes": 2803,
+      "sha256": "26a7d360c353217c2aac8f779016b782199bb6ef5c33694f1f17e68541e79a62"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-character-identities-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "423d25c0c097e92fc5d93da978632f51cc405fad10dc156d1a4d56d439b09189"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-character-identities-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-character-identities-emaxx.stdout",
+      "bytes": 385,
+      "sha256": "81680543363749d43c6df7569491d400595e3d184ae2e99c783540bce82ce258"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-character-identities-gnu.command.json",
+      "bytes": 2620,
+      "sha256": "4b90bb0b9540375333c41863667fb2394c7d38aba910f53af805bee052bd50b0"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-character-identities-gnu.result.json",
+      "bytes": 274,
+      "sha256": "4f123932ca4d2b9c43f5ae051d1bfd5d4aa884886d6337e53afa88ec43a94c0e"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-character-identities-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-character-identities-gnu.stdout",
+      "bytes": 385,
+      "sha256": "81680543363749d43c6df7569491d400595e3d184ae2e99c783540bce82ce258"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-inventory-comparison.json",
+      "bytes": 710,
+      "sha256": "104537c0bbe3a95c56316c6aab89788fbb2617d2b7d1fe3dcbb29a40b6bfbaed"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-inventory-emaxx.command.json",
+      "bytes": 4297,
+      "sha256": "614e17e8ead2537bc1cda38a6326526fe3c660fa322d4d4e1a425b75dbea7b28"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-inventory-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "50d299bb9bb1e98b77836af47657435281272dd5bef57562bfdf23d9731e1f88"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-inventory-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-inventory-emaxx.stdout",
+      "bytes": 411,
+      "sha256": "ba03236be4a3414ccdd6d8ab42e757735ef0d7e6e99b367318cb1e02966b1631"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-inventory-gnu.command.json",
+      "bytes": 4114,
+      "sha256": "b4b0bcc0b6dc1734580641a22a533f49905684eb04dba4e553f2620817b7fa22"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-inventory-gnu.result.json",
+      "bytes": 273,
+      "sha256": "0d7d31d9a0c531ac284e1aad938194e7316016467ea355ee087bfeccc5621f30"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-inventory-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-inventory-gnu.stdout",
+      "bytes": 411,
+      "sha256": "ba03236be4a3414ccdd6d8ab42e757735ef0d7e6e99b367318cb1e02966b1631"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-symbol-properties-comparison.json",
+      "bytes": 711,
+      "sha256": "4c8d15031d1218a910a86ee8ccb38b43117b7fa0e5f70bd2c79dab190cff46d2"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-symbol-properties-emaxx.command.json",
+      "bytes": 4141,
+      "sha256": "b458263fe7fc068ebdd6cefdf0d0bf76aa4e37030e01c98af1f2c15afbe61222"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-symbol-properties-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "3d16f9362c7d6d63feefe65b9113a69debf72a14519f77cf5265e4fa9ac56f43"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-symbol-properties-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-symbol-properties-emaxx.stdout",
+      "bytes": 59,
+      "sha256": "7d68fe3ce60a5530f4f702135b54780c870ffe8edb89f18e49c68608b5db60ff"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-symbol-properties-gnu.command.json",
+      "bytes": 3958,
+      "sha256": "4f4dc8b696baa1350e11474957a49cb6824902a5043bffc0fec393e91c0d308c"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-symbol-properties-gnu.result.json",
+      "bytes": 274,
+      "sha256": "8c1898138e5fbeebee436fd391d4a5be710501c98d20b626c0cff15ad7000be0"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-symbol-properties-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-symbol-properties-gnu.stdout",
+      "bytes": 59,
+      "sha256": "7d68fe3ce60a5530f4f702135b54780c870ffe8edb89f18e49c68608b5db60ff"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-translation-comparison.json",
+      "bytes": 702,
+      "sha256": "35fa96678b532d70c7ed49833f42d0dfc5f9cba16d9c505d3e092d77373bf0da"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-translation-emaxx.command.json",
+      "bytes": 4632,
+      "sha256": "20068ef52236f4295b0e0f76cd0f039147cee04ca5a887c3ce97f3db8bdd34e6"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-translation-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "79eda2127add55c2387ac349517c59088eac3d88f003173252adc1e66841c31a"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-translation-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-translation-emaxx.stdout",
+      "bytes": 274,
+      "sha256": "c7d002fcd69e6973181eae09787e9bc7e16022ef8ee8b8e2851fb82fd726bcc1"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-translation-gnu.command.json",
+      "bytes": 4449,
+      "sha256": "abf6d2256abd6a0dc653d7a97fddd1d2468b38b92adf55c4205c324a71c4bcb9"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-translation-gnu.result.json",
+      "bytes": 266,
+      "sha256": "9444b18e6c3e5ef9d472ecb478f7f106e076e95ecf17d9f2d3235fb21398f3f2"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-translation-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-coding-candidate-translation-gnu.stdout",
+      "bytes": 274,
+      "sha256": "c7d002fcd69e6973181eae09787e9bc7e16022ef8ee8b8e2851fb82fd726bcc1"
+    },
+    {
+      "path": "source261-ordinary-coding-error-object-storage-comparison.json",
+      "bytes": 702,
+      "sha256": "4fa8c75b2d2c1266011ca8c01421a8074136964a07bd6a86a3db4cd4c0b8f597"
+    },
+    {
+      "path": "source261-ordinary-coding-error-object-storage-emaxx.command.json",
+      "bytes": 2263,
+      "sha256": "003ec5dbdee2eb3c4cc409cc2658070e36c62fbcdba28b93c32df49e333922bc"
+    },
+    {
+      "path": "source261-ordinary-coding-error-object-storage-emaxx.result.json",
+      "bytes": 266,
+      "sha256": "7baa614a63560827352b6d9af176ba8f7f2920c43a59d88b495528fd336fe65f"
+    },
+    {
+      "path": "source261-ordinary-coding-error-object-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-coding-error-object-storage-emaxx.stdout",
+      "bytes": 149,
+      "sha256": "3e8026d10d484f745ae1f67e7ed8bb6c37d8bbe59c42bec79303da567aac035f"
+    },
+    {
+      "path": "source261-ordinary-coding-error-object-storage-gnu.command.json",
+      "bytes": 2080,
+      "sha256": "cd028f99f6601af78b3cf2f79d776b034601d6bfed101e5bc50a75fcf68aa918"
+    },
+    {
+      "path": "source261-ordinary-coding-error-object-storage-gnu.result.json",
+      "bytes": 273,
+      "sha256": "1d017cb60fd30701acbaf642b269b3a9387ea2924a5fc7576a71c5dacd50ee14"
+    },
+    {
+      "path": "source261-ordinary-coding-error-object-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-coding-error-object-storage-gnu.stdout",
+      "bytes": 149,
+      "sha256": "3e8026d10d484f745ae1f67e7ed8bb6c37d8bbe59c42bec79303da567aac035f"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-character-count-comparison.json",
+      "bytes": 692,
+      "sha256": "a71014e93d5d96df80db01d9521986814db66d256100d9d66f5d3c2a05651ee7"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-character-count-emaxx.command.json",
+      "bytes": 3344,
+      "sha256": "009760e9ebe86924cd628fe8ecfab49762b82a3bb88f4f74d9e546992150449b"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-character-count-emaxx.result.json",
+      "bytes": 266,
+      "sha256": "b42258e547d3a2fae5472423d2425f407c2554de960a8497f061c33d546bd7a3"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-character-count-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-character-count-emaxx.stdout",
+      "bytes": 184,
+      "sha256": "a79f6cc6739f45ecf0f43513c366c4abce0e75070f841678a7cd6759fcb489f8"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-character-count-gnu.command.json",
+      "bytes": 3161,
+      "sha256": "ab8cdc87f3bd482b8b846e7ffe54291ead7879ddafc040124928a22c4e2cccc1"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-character-count-gnu.result.json",
+      "bytes": 263,
+      "sha256": "a0624d08f36c65aabdac39b53738c7e13dae390d33cc0009730cd9d0720db544"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-character-count-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-character-count-gnu.stdout",
+      "bytes": 184,
+      "sha256": "a79f6cc6739f45ecf0f43513c366c4abce0e75070f841678a7cd6759fcb489f8"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-fast-path-comparison.json",
+      "bytes": 709,
+      "sha256": "2d78db34d9b2298790d6f232d28af02b043eedddd4bec35f1cee239cadebe9ba"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-fast-path-emaxx.command.json",
+      "bytes": 3374,
+      "sha256": "121206dbdf80a492ae98e7d5592eab68638a5d2363a391f7cd027e86d366939e"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-fast-path-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "4134804173e31981f4add93e8de2f49573aee6d50eef3ce49f4ee85cff15164b"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-fast-path-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-fast-path-emaxx.stdout",
+      "bytes": 94,
+      "sha256": "a33001a53d28d166ce3a91d7bedae3f7c4d833c11f3d251fb8bec2e36b9d07a7"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-fast-path-gnu.command.json",
+      "bytes": 3191,
+      "sha256": "ba5bcc586a4681092a0f5df0ff95bd115d5ca4eced76499bfef3faf65c04faed"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-fast-path-gnu.result.json",
+      "bytes": 273,
+      "sha256": "7e414037a0fc95c4d44ba5197af7f096876e8366021e71d0117a97d6e6e9b864"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-fast-path-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-coding-post-read-fast-path-gnu.stdout",
+      "bytes": 94,
+      "sha256": "a33001a53d28d166ce3a91d7bedae3f7c4d833c11f3d251fb8bec2e36b9d07a7"
+    },
+    {
+      "path": "source261-ordinary-copied-canonical-string-storage-comparison.json",
+      "bytes": 710,
+      "sha256": "fa7e1e8dd64027dfc573ff62e51fbef70d912e46733e79fb1fc695aa796413ea"
+    },
+    {
+      "path": "source261-ordinary-copied-canonical-string-storage-emaxx.command.json",
+      "bytes": 2655,
+      "sha256": "bd9cc3259cc910595eb3b7eba336a337b41de1655b3c20bde8b2554c4ac6c7cb"
+    },
+    {
+      "path": "source261-ordinary-copied-canonical-string-storage-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "2b3fc77d91dbf6d38d26c0686e127b847ca336a2b1bea08bce74377afb918a93"
+    },
+    {
+      "path": "source261-ordinary-copied-canonical-string-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-copied-canonical-string-storage-emaxx.stdout",
+      "bytes": 841,
+      "sha256": "7895e3546afb4a0af177d49982a23e16094880686750d350375c821e246e7e38"
+    },
+    {
+      "path": "source261-ordinary-copied-canonical-string-storage-gnu.command.json",
+      "bytes": 2472,
+      "sha256": "031c0513932d24ca3880a0739f9acecfcad6673f12da3af5c68e5ba3483e3c1c"
+    },
+    {
+      "path": "source261-ordinary-copied-canonical-string-storage-gnu.result.json",
+      "bytes": 274,
+      "sha256": "cf2e733fb49c110d81fc98329cb08fffcf33e0e74c69d4865ae7081178a36242"
+    },
+    {
+      "path": "source261-ordinary-copied-canonical-string-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-copied-canonical-string-storage-gnu.stdout",
+      "bytes": 841,
+      "sha256": "7895e3546afb4a0af177d49982a23e16094880686750d350375c821e246e7e38"
+    },
+    {
+      "path": "source261-ordinary-file-write-coding-selection-comparison.json",
+      "bytes": 710,
+      "sha256": "e281ebe80feef658707a3ffd4adb76ac840f09dfaa7ef1cba3911094884ead0d"
+    },
+    {
+      "path": "source261-ordinary-file-write-coding-selection-emaxx.command.json",
+      "bytes": 7252,
+      "sha256": "cde2c1e119044df2a2e86be82d33fafa718edb72fb2b9a8bd328198f78df8332"
+    },
+    {
+      "path": "source261-ordinary-file-write-coding-selection-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "2709548f5fcf93dd5af952c148ab346e9a0240915ec642416d8db552d2a558df"
+    },
+    {
+      "path": "source261-ordinary-file-write-coding-selection-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-file-write-coding-selection-emaxx.stdout",
+      "bytes": 1900,
+      "sha256": "3a0fa0482339c22ff4f63cab77f9623006f50870a0764eb5c0f61afeed4c5bcb"
+    },
+    {
+      "path": "source261-ordinary-file-write-coding-selection-gnu.command.json",
+      "bytes": 7069,
+      "sha256": "1cad39b5678ce7e3ba2a2bcb32b4453bc107c4ecfa7af633730b557fe3199e94"
+    },
+    {
+      "path": "source261-ordinary-file-write-coding-selection-gnu.result.json",
+      "bytes": 274,
+      "sha256": "ee0f5e52f02fc73b7694d799cb82f4c55375d206137abe36f00234fbbb4562e6"
+    },
+    {
+      "path": "source261-ordinary-file-write-coding-selection-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-file-write-coding-selection-gnu.stdout",
+      "bytes": 1900,
+      "sha256": "3a0fa0482339c22ff4f63cab77f9623006f50870a0764eb5c0f61afeed4c5bcb"
+    },
+    {
+      "path": "source261-ordinary-file-write-order-comparison.json",
+      "bytes": 703,
+      "sha256": "2f9d4c7e26b035396f3347f92d8012d5fcdc762ab893431e63580d1ecccb9f64"
+    },
+    {
+      "path": "source261-ordinary-file-write-order-emaxx.command.json",
+      "bytes": 4485,
+      "sha256": "6c5b270186d357ea2939c88264dc050702602b34117ae62587a4a15ea6618afc"
+    },
+    {
+      "path": "source261-ordinary-file-write-order-emaxx.result.json",
+      "bytes": 266,
+      "sha256": "7e1f2fba5ab963e1455d2f8f4cf968792a6b17cad2b0830eddaf5e38207dcace"
+    },
+    {
+      "path": "source261-ordinary-file-write-order-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-file-write-order-emaxx.stdout",
+      "bytes": 533,
+      "sha256": "360beee0b778cbce3eddfdb9f8e9b9ccf7d8751a2a91a0fcc0201f829406483f"
+    },
+    {
+      "path": "source261-ordinary-file-write-order-gnu.command.json",
+      "bytes": 4302,
+      "sha256": "70fcac7e49a9e69a0b34d0ed0f32bf4432c762cd78cbd594e8849eb583c18af5"
+    },
+    {
+      "path": "source261-ordinary-file-write-order-gnu.result.json",
+      "bytes": 274,
+      "sha256": "3776bf267448e582bcb02cbbf9413d01c2434ecc2780eca423238d75669fea71"
+    },
+    {
+      "path": "source261-ordinary-file-write-order-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-file-write-order-gnu.stdout",
+      "bytes": 533,
+      "sha256": "360beee0b778cbce3eddfdb9f8e9b9ccf7d8751a2a91a0fcc0201f829406483f"
+    },
+    {
+      "path": "source261-ordinary-host-string-mutation-comparison.json",
+      "bytes": 711,
+      "sha256": "c4051972dcb335e8a9414b95558a480884558eb433eb474047c5470467ff9b59"
+    },
+    {
+      "path": "source261-ordinary-host-string-mutation-emaxx.command.json",
+      "bytes": 3138,
+      "sha256": "84f82f12e7ea811eed7e0233156fd765236823283a25f3e47f8dde1056a07d00"
+    },
+    {
+      "path": "source261-ordinary-host-string-mutation-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "b8f8a4e613c8c2c74f9047708463715055caee29bbec9d399680e1141d23e1db"
+    },
+    {
+      "path": "source261-ordinary-host-string-mutation-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-host-string-mutation-emaxx.stdout",
+      "bytes": 855,
+      "sha256": "cc44c4f5ad79ad32660157ceb56c4f71bdb0687fc1df72f2b5ca285db43773e6"
+    },
+    {
+      "path": "source261-ordinary-host-string-mutation-gnu.command.json",
+      "bytes": 2955,
+      "sha256": "fae06415fbb941419d4d3839086c572ca82401dae73813cd523a7a42a40827b9"
+    },
+    {
+      "path": "source261-ordinary-host-string-mutation-gnu.result.json",
+      "bytes": 274,
+      "sha256": "de994e61588393401eae19c1dfafe510255c7706dd5035d67334d8bf71f9d6d4"
+    },
+    {
+      "path": "source261-ordinary-host-string-mutation-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-host-string-mutation-gnu.stdout",
+      "bytes": 855,
+      "sha256": "cc44c4f5ad79ad32660157ceb56c4f71bdb0687fc1df72f2b5ca285db43773e6"
+    },
+    {
+      "path": "source261-ordinary-host-string-vector-mutation-comparison.json",
+      "bytes": 711,
+      "sha256": "493fc77289dde7b5637c0fb6bc29941af49de2deb345224c64987deee8327e9f"
+    },
+    {
+      "path": "source261-ordinary-host-string-vector-mutation-emaxx.command.json",
+      "bytes": 2984,
+      "sha256": "a00c2746a847f667bdde47f445df25e82b07314254648fb7c516a6fc12658f70"
+    },
+    {
+      "path": "source261-ordinary-host-string-vector-mutation-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "c883e76628d8f12e8de0ee68a4f39e7227fc15aad76bc8b3bd47073e17a43515"
+    },
+    {
+      "path": "source261-ordinary-host-string-vector-mutation-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-host-string-vector-mutation-emaxx.stdout",
+      "bytes": 370,
+      "sha256": "9e13ff2c0ced1f79cba53b0d7df16f248c8165d1e2e6979e5cf6192d3d1fa5cd"
+    },
+    {
+      "path": "source261-ordinary-host-string-vector-mutation-gnu.command.json",
+      "bytes": 2801,
+      "sha256": "acf74b19cb0c70e376cc6ba9482b85bf26bb6045398e778297afe502a4b54260"
+    },
+    {
+      "path": "source261-ordinary-host-string-vector-mutation-gnu.result.json",
+      "bytes": 274,
+      "sha256": "d405176776ab2e11436e0f8c778c7bac10e4393d9d52aefe0d59620851b71e07"
+    },
+    {
+      "path": "source261-ordinary-host-string-vector-mutation-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-host-string-vector-mutation-gnu.stdout",
+      "bytes": 370,
+      "sha256": "9e13ff2c0ced1f79cba53b0d7df16f248c8165d1e2e6979e5cf6192d3d1fa5cd"
+    },
+    {
+      "path": "source261-ordinary-image-command.json",
+      "bytes": 1061,
+      "sha256": "e5b94d6dd675ddcd70f279d7c63c880c93d1f2b2d35bdc855f0d53f8d5ed6cbd"
+    },
+    {
+      "path": "source261-ordinary-image-result.json",
+      "bytes": 87,
+      "sha256": "b7d721f166da5a745a012eadfdcd2ef2dd98a15f8d21a1a90e300b1eeffeb089"
+    },
+    {
+      "path": "source261-ordinary-image.log",
+      "bytes": 6628,
+      "sha256": "cbc1ed4fa085a1f8c353706ef179dafbd6e637a7ec38bf80723b206a110cbcef"
+    },
+    {
+      "path": "source261-ordinary-native-bytecode-unibyte-constructor-comparison.json",
+      "bytes": 702,
+      "sha256": "8327455ccd8d9d0f342c2478cf2b19fe50c14e1b2f7cfe5aea3abac394347090"
+    },
+    {
+      "path": "source261-ordinary-native-bytecode-unibyte-constructor-emaxx.command.json",
+      "bytes": 2206,
+      "sha256": "4bb9dd3f866011e07fe509677385d385a782f38b7f1dda8543bde3f3498f913a"
+    },
+    {
+      "path": "source261-ordinary-native-bytecode-unibyte-constructor-emaxx.result.json",
+      "bytes": 265,
+      "sha256": "c629fcb7ebe9ffdf6c23656caec04a7d8c675efa33a6920baea9a35fcae86339"
+    },
+    {
+      "path": "source261-ordinary-native-bytecode-unibyte-constructor-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-native-bytecode-unibyte-constructor-emaxx.stdout",
+      "bytes": 76,
+      "sha256": "7f5d168f3df0fe1a3012aef506abe76bbd8e533819701153d31a7858379e921c"
+    },
+    {
+      "path": "source261-ordinary-native-bytecode-unibyte-constructor-gnu.command.json",
+      "bytes": 2023,
+      "sha256": "f8b579df0d2a8e1cfea8b39e89db6e34dee78b479b8be2a80d7d5e81984b5da9"
+    },
+    {
+      "path": "source261-ordinary-native-bytecode-unibyte-constructor-gnu.result.json",
+      "bytes": 274,
+      "sha256": "ad0e852b5f5165a9f1a1357616b7acabf60684f0cfb7e29d478c36fe282e959e"
+    },
+    {
+      "path": "source261-ordinary-native-bytecode-unibyte-constructor-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-native-bytecode-unibyte-constructor-gnu.stdout",
+      "bytes": 76,
+      "sha256": "7f5d168f3df0fe1a3012aef506abe76bbd8e533819701153d31a7858379e921c"
+    },
+    {
+      "path": "source261-ordinary-new-file-coding-lifecycle-comparison.json",
+      "bytes": 709,
+      "sha256": "08c447f22c76cfd800c1975ce1f18438b612ed0f309073fb1133400aa4314a41"
+    },
+    {
+      "path": "source261-ordinary-new-file-coding-lifecycle-emaxx.command.json",
+      "bytes": 3062,
+      "sha256": "9dc66377ef4ae205b2f0d52afb4b744d1eb1164808df545cc2bb38e8d27220cc"
+    },
+    {
+      "path": "source261-ordinary-new-file-coding-lifecycle-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "426616713d6b92b44cbc91291f57f275744151a054b3f76cd4a41d0dee4cea45"
+    },
+    {
+      "path": "source261-ordinary-new-file-coding-lifecycle-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-new-file-coding-lifecycle-emaxx.stdout",
+      "bytes": 74,
+      "sha256": "43dee18598cb9aa720f8f5b65fb7433f91f82f039971f885d2184f6b9be4c8c5"
+    },
+    {
+      "path": "source261-ordinary-new-file-coding-lifecycle-gnu.command.json",
+      "bytes": 2879,
+      "sha256": "7274d69e695ef9db0c6fba65c391c6f705825944f16f7367e402f6b8cba86e78"
+    },
+    {
+      "path": "source261-ordinary-new-file-coding-lifecycle-gnu.result.json",
+      "bytes": 273,
+      "sha256": "db63c89ff23f3834a5e88bbdca10536569d0b9a33a6c433debe503e8f818f5fa"
+    },
+    {
+      "path": "source261-ordinary-new-file-coding-lifecycle-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-new-file-coding-lifecycle-gnu.stdout",
+      "bytes": 74,
+      "sha256": "43dee18598cb9aa720f8f5b65fb7433f91f82f039971f885d2184f6b9be4c8c5"
+    },
+    {
+      "path": "source261-ordinary-overriding-property-identity-comparison.json",
+      "bytes": 702,
+      "sha256": "fcd5c402c3ca39ec4d0212ef91afdcd1f1e6cc64397de3d03dc54cc8467e2f4c"
+    },
+    {
+      "path": "source261-ordinary-overriding-property-identity-emaxx.command.json",
+      "bytes": 2767,
+      "sha256": "4bea60e7512c6c0256b2ec34f48b0774ae43b7c1886c95d9500c59a5f84a0ece"
+    },
+    {
+      "path": "source261-ordinary-overriding-property-identity-emaxx.result.json",
+      "bytes": 266,
+      "sha256": "a9b5130f59954819ab52c9a933644925772d51e18dce5e3f230a11b8e121737d"
+    },
+    {
+      "path": "source261-ordinary-overriding-property-identity-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-overriding-property-identity-emaxx.stdout",
+      "bytes": 77,
+      "sha256": "d05e136e33712add8eeb12996c63f69e240ee72bf0678297a2883d4ef2e9e9c7"
+    },
+    {
+      "path": "source261-ordinary-overriding-property-identity-gnu.command.json",
+      "bytes": 2584,
+      "sha256": "2d2af18fbb220c8a16673ae63e51c5356365bbd94232ee979f19fe71a33a013f"
+    },
+    {
+      "path": "source261-ordinary-overriding-property-identity-gnu.result.json",
+      "bytes": 273,
+      "sha256": "4a6933c94a5f9d6111ee0487502e8853a0ad4bab93fe1a3667f191752e977f15"
+    },
+    {
+      "path": "source261-ordinary-overriding-property-identity-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-overriding-property-identity-gnu.stdout",
+      "bytes": 77,
+      "sha256": "d05e136e33712add8eeb12996c63f69e240ee72bf0678297a2883d4ef2e9e9c7"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-hashes-comparison.json",
+      "bytes": 711,
+      "sha256": "090607e7b0c51de9165b314e6f13bc6d1b170cb6a46e896c42915fd21e813ff5"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-hashes-emaxx.command.json",
+      "bytes": 4188,
+      "sha256": "e7fea449fb3baeed614ceec2622a1db3cdadef75fd1c5ae1e6eb9cc6402089d9"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-hashes-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "732a675a46d17511ec986c16e8e8e98e5eda2941ca01824eb327879a29b8179b"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-hashes-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-hashes-emaxx.stdout",
+      "bytes": 157,
+      "sha256": "7e9e41fdb5259f7e6fe049e233671a019664f3aaa9220811c7c560acdaccbd07"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-hashes-gnu.command.json",
+      "bytes": 4005,
+      "sha256": "c5f88afb549c655130a8a0968fe2e95286cff271e7f134077e9321b9fa6d33ec"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-hashes-gnu.result.json",
+      "bytes": 274,
+      "sha256": "f93ed38cbb97bcdd127da51a1df1b85baa748a906fb2ca319832edc6dfdbaa41"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-hashes-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-hashes-gnu.stdout",
+      "bytes": 157,
+      "sha256": "7e9e41fdb5259f7e6fe049e233671a019664f3aaa9220811c7c560acdaccbd07"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-values-comparison.json",
+      "bytes": 710,
+      "sha256": "a62933e8c95fbf72e67bb4ab44a2f549d3399f54bbd8baf4d1e32e689ab318e2"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-values-emaxx.command.json",
+      "bytes": 4063,
+      "sha256": "41d9cbda3e4112a423cf3e853015b6334bc447b1880271e9e44161bc25767058"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-values-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "1ba8966375889e6972ccc3721d9c7980862df0fa4b8b39d070c5a67dfc04c5e1"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-values-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-values-emaxx.stdout",
+      "bytes": 2340,
+      "sha256": "35278d93295a4164d454aaaa0b4f061f89d037ea88b7bef2f66385411fa8f4a7"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-values-gnu.command.json",
+      "bytes": 3880,
+      "sha256": "8e4ba0ad665659a411a367a58bfa7471a7710fa5137be657c084c507632fe0bb"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-values-gnu.result.json",
+      "bytes": 274,
+      "sha256": "f398d80f924af6f2e1c1952887cbb15918b6089cec94226eef6222589497b63e"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-values-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-string-equality-property-values-gnu.stdout",
+      "bytes": 2340,
+      "sha256": "35278d93295a4164d454aaaa0b4f061f89d037ea88b7bef2f66385411fa8f4a7"
+    },
+    {
+      "path": "source261-ordinary-string-equality-storage-comparison.json",
+      "bytes": 711,
+      "sha256": "49cc4b67d278294e2ef70b32ad4aba66ead4f340ca4d17575c3ad6fb517dbeb9"
+    },
+    {
+      "path": "source261-ordinary-string-equality-storage-emaxx.command.json",
+      "bytes": 2838,
+      "sha256": "e6ac16b2a7a0a96d6dc18608764f4ab3df6dfafc1edc29aaa91382b263332f02"
+    },
+    {
+      "path": "source261-ordinary-string-equality-storage-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "690df8bdb29369ea27add46245fc49ee87f1c38d81e10f436a1c64f38affda73"
+    },
+    {
+      "path": "source261-ordinary-string-equality-storage-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-string-equality-storage-emaxx.stdout",
+      "bytes": 2469,
+      "sha256": "f48d4b84fba66d8cb43689f90c158cac77de0dad8caacf38f773220d1d035d3f"
+    },
+    {
+      "path": "source261-ordinary-string-equality-storage-gnu.command.json",
+      "bytes": 2655,
+      "sha256": "c0f3ecc58e4c3d139fdcda264597f91db55c9f43fc5a575439b854e9a8f73fb0"
+    },
+    {
+      "path": "source261-ordinary-string-equality-storage-gnu.result.json",
+      "bytes": 274,
+      "sha256": "8e268095ddc9a75511cf8e02a8ad1fb0b5fc620958a46c86aaeb0e4867e1aa94"
+    },
+    {
+      "path": "source261-ordinary-string-equality-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-string-equality-storage-gnu.stdout",
+      "bytes": 2469,
+      "sha256": "f48d4b84fba66d8cb43689f90c158cac77de0dad8caacf38f773220d1d035d3f"
+    },
+    {
+      "path": "source261-ordinary-string-equality-symbol-names-positioned-comparison.json",
+      "bytes": 710,
+      "sha256": "ee3e942fa6149dd7f2c49f33152073f6f5af704c382ec1fb4330377df35a8380"
+    },
+    {
+      "path": "source261-ordinary-string-equality-symbol-names-positioned-emaxx.command.json",
+      "bytes": 3493,
+      "sha256": "32fac975cd2c0813bb5085ba74fdf19f2083cea5fb19c63531ca56856952f086"
+    },
+    {
+      "path": "source261-ordinary-string-equality-symbol-names-positioned-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "077c1449dff1c47dc336c12acdcb469d19fe6c5f5262bad4998272629c3454dc"
+    },
+    {
+      "path": "source261-ordinary-string-equality-symbol-names-positioned-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-string-equality-symbol-names-positioned-emaxx.stdout",
+      "bytes": 23041,
+      "sha256": "b60c9a57f76e7c083b05f4a939871a599531d1f28b438b5fad02d45c41fcacd2"
+    },
+    {
+      "path": "source261-ordinary-string-equality-symbol-names-positioned-gnu.command.json",
+      "bytes": 3310,
+      "sha256": "aa37a170cf0a1e16e4fef549d98c00d95c873b29aabb988d8126e3f25ee4c2cb"
+    },
+    {
+      "path": "source261-ordinary-string-equality-symbol-names-positioned-gnu.result.json",
+      "bytes": 273,
+      "sha256": "7439ca5c17925c23382e0ea0ad7b26678e8dd17996ab6b9d596d13d1754610ed"
+    },
+    {
+      "path": "source261-ordinary-string-equality-symbol-names-positioned-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-ordinary-string-equality-symbol-names-positioned-gnu.stdout",
+      "bytes": 23041,
+      "sha256": "b60c9a57f76e7c083b05f4a939871a599531d1f28b438b5fad02d45c41fcacd2"
+    },
+    {
+      "path": "source261-patch-replay-audit.json",
+      "bytes": 1627,
+      "sha256": "1d3e25ea1e64b2a8dc14e3029ea59fb122b08e4e07a971dc6670f5997f3cfac6"
+    },
+    {
+      "path": "source261-portable-complete.patch",
+      "bytes": 860528,
+      "sha256": "6c85bd155d87d316c898222403892f55233933e2e842b77874a535149d67e4d1"
+    },
+    {
+      "path": "source261-portable-incremental.patch",
+      "bytes": 196446,
+      "sha256": "7a3afc6a0fbc469530f7c5e4a940e054e0905d3b5866139089c0781a95c9988a"
+    },
+    {
+      "path": "source261-release-broad-command.json",
+      "bytes": 175733,
+      "sha256": "c2750e75f52ebeaa290732068ea967b02bae255df5667d7b8159de5aa3b36985"
+    },
+    {
+      "path": "source261-release-broad-result.json",
+      "bytes": 85,
+      "sha256": "ddbda5858ec193ee3b7329cd85a888bb32b5a2e467f8d69415c09ba6dbb57228"
+    },
+    {
+      "path": "source261-release-broad.log",
+      "bytes": 96535,
+      "sha256": "2cbb51e04a2b7d2cfc0aab4d0a0536f1d062c5bf0038a167c64bd6a33057ef6e"
+    },
+    {
+      "path": "source261-release-build-command.json",
+      "bytes": 1307,
+      "sha256": "e6176c5a85cf1e427fcb8590b5f16050247420c02a5e1bf87c0f39359c784fc4"
+    },
+    {
+      "path": "source261-release-build-result.json",
+      "bytes": 89,
+      "sha256": "ac23f625059aaa1343ea50b9cc5230d3e1d87b48135546cf61ba4c11111dd8c4"
+    },
+    {
+      "path": "source261-release-build.log",
+      "bytes": 228875,
+      "sha256": "3d7f09d44493c23de2742173a0639e8137c129b4a8ebc1a0cf660f40c3b5ed98"
+    },
+    {
+      "path": "source261-release-controls-command.json",
+      "bytes": 34328,
+      "sha256": "f6fdbb2a3ec6a6194dcc7fceaa0917cb904a085d516d80c1485f9d77000e6893"
+    },
+    {
+      "path": "source261-release-controls-result.json",
+      "bytes": 83,
+      "sha256": "e770a7a3a469f8efc9ead8c4cee42e64756797de7c5d6a5d2943a5681dbf7e63"
+    },
+    {
+      "path": "source261-release-controls.log",
+      "bytes": 19032,
+      "sha256": "73c232f37fd25b17803d49fa254aa8a1a9e01a829b4c75ed243e0222e5728e46"
+    },
+    {
+      "path": "source261-release-focused-audit-after-retention.json",
+      "bytes": 19509,
+      "sha256": "7f889bc9a3c2de931e745a1458c6c3c2bceede870e3e98380b5ced367c7a1cc4"
+    },
+    {
+      "path": "source261-release-focused-inventory.json",
+      "bytes": 16657,
+      "sha256": "68ca0c2cf9ae4cd5c8db99660300328f2e1aa107562ad77b061930d5adae90d3"
+    },
+    {
+      "path": "source261-release-focused-retained-inputs.json",
+      "bytes": 1423,
+      "sha256": "b8c9992603395a6ee15b5e91e5d3c07d207e92e1b49f9ed9aad545dc1f699082"
+    },
+    {
+      "path": "source261-release-inventory-command.json",
+      "bytes": 1281,
+      "sha256": "da6917cd9f81b0237d25379dc41548ebb0787b5f7d536e26670d69dfc1d87ebe"
+    },
+    {
+      "path": "source261-release-inventory-result.json",
+      "bytes": 89,
+      "sha256": "0c3ad65c94da9fdb6999819729fe9ba7db9c4663ad252c59bee0c780fb97b042"
+    },
+    {
+      "path": "source261-release-inventory.log",
+      "bytes": 265649,
+      "sha256": "680c8531e693395da35996f1c53514e98addccab7a6505c2f819210024c67c7b"
+    },
+    {
+      "path": "source261-retention-continuation-driver.log",
+      "bytes": 15676,
+      "sha256": "5fa07c5507de200169e91dbcb9882000400b2b974dc23cf3fca00dc65274383e"
+    },
+    {
+      "path": "source261-retention-continuation-launch.json",
+      "bytes": 402,
+      "sha256": "0f72e309ce3b1b5ed18e678270263f611a998f07909cd230c56e8413dd7cc862"
+    },
+    {
+      "path": "source261-retention-continuation-result.json",
+      "bytes": 6540,
+      "sha256": "8b65974260be2a673d0139ed5eb32b85044dbbf7cb756f1ab826884064d22219"
+    },
+    {
+      "path": "source261-retention-continuation-state.json",
+      "bytes": 6541,
+      "sha256": "58a2e74930e802b97f6c361fd171f532f53be9496a415fb3c2f237d5fbdf87a3"
+    },
+    {
+      "path": "source261-selected-audit.json",
+      "bytes": 5009,
+      "sha256": "b5bce4a724360d049f6b2b6bf0b5dff19ab7556005449a9bb1c9bded182afd2d"
+    },
+    {
+      "path": "source261-strict-driver.log",
+      "bytes": 33,
+      "sha256": "e72da1fa25231c4f60b122b2f4bccaae7d79fca1d5be57bca675fee5d7f53144"
+    },
+    {
+      "path": "source261-strict-launch.json",
+      "bytes": 489,
+      "sha256": "9c4e4e15fe6f6c9ae2d622b1670ad80ece8f714b7da4760fcbe55f001d456dff"
+    },
+    {
+      "path": "source261-unformatted.patch",
+      "bytes": 154470,
+      "sha256": "d6d8aea410ca09640e89953d1a2eabfdfd6d7592f10e55bfddcae1f1beb0de6c"
+    },
+    {
+      "path": "source261-validation-driver.log",
+      "bytes": 6832,
+      "sha256": "045773747189fbe22519383c7935693df506ea793aa6f43cc602b3aa3e1ac9d6"
+    },
+    {
+      "path": "source261-validation-queue-launch.json",
+      "bytes": 489,
+      "sha256": "e79c3881fea168530cdb1e869921a6d9a1c2a86b412f4b4931ec057aa5ef3ef0"
+    },
+    {
+      "path": "source261-validation-queue-state.json",
+      "bytes": 5547,
+      "sha256": "79b0788b48ee6386a6bd8f73fd748dd131fa605e4c5f756b613ffde788a081cf"
+    },
+    {
+      "path": "source261-validation-result.json",
+      "bytes": 5546,
+      "sha256": "a52e47a154e35e64cfaa0a98ace3c0436c0ebfe17377a1a364b7e528598c3fba"
+    },
+    {
+      "path": "test-string-comparison-hashes-broad.py",
+      "bytes": 3851,
+      "sha256": "4a01fe67a370a1040115d02d956719b6a294711ef2f9379818b4222fb0c4ddea"
+    },
+    {
+      "path": "tests/fixtures/host-string-mutation.el",
+      "bytes": 1280,
+      "sha256": "f426ceda077bf2c3eb4e8fd58d007bbe6165b99292b5771c332ac7cdacf05d57"
+    },
+    {
+      "path": "tests/fixtures/host-string-mutation.expected",
+      "bytes": 855,
+      "sha256": "cc44c4f5ad79ad32660157ceb56c4f71bdb0687fc1df72f2b5ca285db43773e6"
+    },
+    {
+      "path": "tests/fixtures/host-string-vector-mutation.el",
+      "bytes": 1121,
+      "sha256": "883ec3bfaa50a0ab09f610e667ced934f4190bb63af18d6941099bee4cc7a1fd"
+    },
+    {
+      "path": "tests/fixtures/host-string-vector-mutation.expected",
+      "bytes": 370,
+      "sha256": "9e13ff2c0ced1f79cba53b0d7df16f248c8165d1e2e6979e5cf6192d3d1fa5cd"
+    },
+    {
+      "path": "tests/fixtures/string-equality-property-hashes.el",
+      "bytes": 2280,
+      "sha256": "047d25ab3dab3513db4f99838e36a11c556d3659e0eddd209e8f168319a51d6f"
+    },
+    {
+      "path": "tests/fixtures/string-equality-property-hashes.expected",
+      "bytes": 157,
+      "sha256": "7e9e41fdb5259f7e6fe049e233671a019664f3aaa9220811c7c560acdaccbd07"
+    },
+    {
+      "path": "tests/fixtures/string-equality-property-values.el",
+      "bytes": 2147,
+      "sha256": "07e0174f44d2cf66e89b665e80071507b3bc6025395f5493ce386a89cdd4ea01"
+    },
+    {
+      "path": "tests/fixtures/string-equality-property-values.expected",
+      "bytes": 2340,
+      "sha256": "35278d93295a4164d454aaaa0b4f061f89d037ea88b7bef2f66385411fa8f4a7"
+    },
+    {
+      "path": "tests/fixtures/string-equality-storage.el",
+      "bytes": 983,
+      "sha256": "f441bf1aa339cef2f83232616d3f444e3aa694569db9f245e400dd1491e20d93"
+    },
+    {
+      "path": "tests/fixtures/string-equality-storage.expected",
+      "bytes": 2469,
+      "sha256": "f48d4b84fba66d8cb43689f90c158cac77de0dad8caacf38f773220d1d035d3f"
+    },
+    {
+      "path": "tests/fixtures/string-equality-symbol-names-positioned.el",
+      "bytes": 1591,
+      "sha256": "989216ba00f261be2267c141207d6eb146fc32928f2e8fa17dcef5ab06cf2a6c"
+    },
+    {
+      "path": "tests/fixtures/string-equality-symbol-names-positioned.expected",
+      "bytes": 23041,
+      "sha256": "b60c9a57f76e7c083b05f4a939871a599531d1f28b438b5fad02d45c41fcacd2"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

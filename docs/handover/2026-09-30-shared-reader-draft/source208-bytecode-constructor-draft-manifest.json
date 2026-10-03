@@ -1,0 +1,170 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "isolated partial constructor repair; validation running",
+    "inputs": 418,
+    "supervisor": 53789,
+    "negative_baseline": {
+      "status": "same-input constructor mismatch confirmed",
+      "rejected_by_gnu_but_accepted_by_emaxx": 12,
+      "shared_valid_controls": {
+        "descriptors": 7,
+        "closure_lengths": [
+          4,
+          5,
+          6,
+          7,
+          9
+        ],
+        "ascii_conversion_accepted": true
+      },
+      "fixture_sha256": "c6b04e22c6f47f62320ada7fbbb5f289ed5491f0083fd4e3d6867ef77ea88c9b",
+      "expected_sha256": "23000e06b31cc6b86c208524dd912f985729904e1c28a5370f1453378dbcdfc1",
+      "qualification": "Ordinary source204 negative baseline. Both editors exit zero with empty stderr and unchanged recorded inputs. GNU validates field types before allocation, but does not reject a negative fixnum descriptor, dotted/cyclic cons descriptor, extra slots or uninterpreted opcode bytes. ASCII string-make-multibyte returns an accepted string here. No bytecode layout or execution repair is proved."
+    },
+    "qualification": "The patch contains evaluator207 and constructor field validation plus six permanent controls. Bytecode layout and live code-string mutation repairs remain absent. Source206 original failures and this ordinary source204 negative baseline are preserved. No compile/runtime verdict is included in this launch archive."
+  },
+  "archive": {
+    "path": "source208-bytecode-constructor-draft.tar.gz",
+    "bytes": 110635,
+    "sha256": "86ca2f08c7fec62847b5a171b8ab103f488f1f5a5d18543087335c499e2fea99"
+  },
+  "files": [
+    {
+      "path": "audit-bytecode-constructor-baseline.py",
+      "bytes": 2307,
+      "sha256": "678e038c0dee3646b69b560df3d7877d2d8624b70cdc80c7bde91b86a2c0bc5d"
+    },
+    {
+      "path": "audit-source208-patch.py",
+      "bytes": 2787,
+      "sha256": "74f8b085f3850a33152cb6ff2d61dfb470aa87b875a0e38dea898935e601eac9"
+    },
+    {
+      "path": "bytecode-constructor-gnu-fields.el",
+      "bytes": 1943,
+      "sha256": "c6b04e22c6f47f62320ada7fbbb5f289ed5491f0083fd4e3d6867ef77ea88c9b"
+    },
+    {
+      "path": "bytecode-constructor-gnu-fields.expected",
+      "bytes": 551,
+      "sha256": "23000e06b31cc6b86c208524dd912f985729904e1c28a5370f1453378dbcdfc1"
+    },
+    {
+      "path": "check-bytecode208.py",
+      "bytes": 2032,
+      "sha256": "18425e292d0b6c837a2f65577c42970ceb905b178147672c304ff394ba3fe804"
+    },
+    {
+      "path": "compare-recovered-continuation-fixtures.py",
+      "bytes": 3442,
+      "sha256": "dfd6176b76d11a16bde82e3877ede4c424f537098954c49bf11727df3c95de91"
+    },
+    {
+      "path": "freeze-bytecode-candidate.py",
+      "bytes": 2069,
+      "sha256": "4f48745df77abdfa68d2e61109d6028505db4f4e0f09979e2121acb1b28a987d"
+    },
+    {
+      "path": "package-source208-constructor-draft.py",
+      "bytes": 2002,
+      "sha256": "6a4fe162b6e831b41eff52db84c715ced91fe675a44973c108665a1e16eaf827"
+    },
+    {
+      "path": "queue-bytecode208.py",
+      "bytes": 1377,
+      "sha256": "17c54046a3d042bbb19f2ac500955dc56ff19a88d1345f1631390d603358caa6"
+    },
+    {
+      "path": "source204-bytecode-constructor-audit.json",
+      "bytes": 866,
+      "sha256": "8877dccb26fa31a28a7a191ea5eac6af0ceb6f559a95cf2436c0b156ef6375a3"
+    },
+    {
+      "path": "source204-bytecode-constructor-manifest.json",
+      "bytes": 46477,
+      "sha256": "3703327bef6ff1f287a91fc505e8ae8439902e00381af8061357a5963f62050c"
+    },
+    {
+      "path": "source204-bytecode-constructor-ordinary-bytecode-constructor-gnu-fields-comparison.json",
+      "bytes": 705,
+      "sha256": "723f13732b5a346b14e84d2fbb7652adf6cf19a0d06bbd7dbb8442fdc29b64ea"
+    },
+    {
+      "path": "source204-bytecode-constructor-ordinary-bytecode-constructor-gnu-fields-emaxx.command.json",
+      "bytes": 3179,
+      "sha256": "04b4263ed8bc76a19873531ca8db7ec77b857cc4817afaffa940e2a8d45cd3b8"
+    },
+    {
+      "path": "source204-bytecode-constructor-ordinary-bytecode-constructor-gnu-fields-emaxx.result.json",
+      "bytes": 266,
+      "sha256": "9aa530c695db08796bde4a3c5209b1ee0f51174dfa856bdbd1f948037d2e860b"
+    },
+    {
+      "path": "source204-bytecode-constructor-ordinary-bytecode-constructor-gnu-fields-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source204-bytecode-constructor-ordinary-bytecode-constructor-gnu-fields-emaxx.stdout",
+      "bytes": 238,
+      "sha256": "45b7a5cecc748bce1df399aa1a73e998f2730d4ff01dee7391171439382c1597"
+    },
+    {
+      "path": "source204-bytecode-constructor-ordinary-bytecode-constructor-gnu-fields-gnu.command.json",
+      "bytes": 3062,
+      "sha256": "3276877e363e129f2ae2f47bee138ce13a22dcde8b026a6eb76d52b4a32be493"
+    },
+    {
+      "path": "source204-bytecode-constructor-ordinary-bytecode-constructor-gnu-fields-gnu.result.json",
+      "bytes": 274,
+      "sha256": "f193e2063b6a42f4bace1fb7308f3972320574ec629c4556bafff5787abcfb81"
+    },
+    {
+      "path": "source204-bytecode-constructor-ordinary-bytecode-constructor-gnu-fields-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source204-bytecode-constructor-ordinary-bytecode-constructor-gnu-fields-gnu.stdout",
+      "bytes": 550,
+      "sha256": "7f48c0fe3b3c777dd23d5f2c9fafbc44a2d54bc580ef231ec2e907675c82e711"
+    },
+    {
+      "path": "source208-base.json",
+      "bytes": 922,
+      "sha256": "5086063c6ca6bcf330ff372d2d9100d76e922f59cdbd0ecbb96c53887afccefa"
+    },
+    {
+      "path": "source208-complete.patch",
+      "bytes": 272721,
+      "sha256": "aad77ee7c84a3d8aea4836e6b93d60c7ef3d52f911c0cf603081de66d7a4a6dd"
+    },
+    {
+      "path": "source208-controls-launch.json",
+      "bytes": 509,
+      "sha256": "28aba71938a8887de7af8b157facecea9f48fb5d0b93e2af1094b2d7d964391e"
+    },
+    {
+      "path": "source208-manifest.json",
+      "bytes": 47503,
+      "sha256": "f203a9811c3c417e7c913c4666daa6f22b6efaf46d99403a94bb810ec83d66f4"
+    },
+    {
+      "path": "source208-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "b331e4ac02a111b9822693fbd115c3c8385f3644a88f6e0181ad20f3df05357c"
+    },
+    {
+      "path": "static-bytecode208.py",
+      "bytes": 1557,
+      "sha256": "8ba906f2016337491a7971f9b0f2d9e27ff6195726c6f766da7c1bbe1382c230"
+    },
+    {
+      "path": "test-bytecode-controls208.py",
+      "bytes": 3555,
+      "sha256": "84f93c8ca74be74084cbb67d323e3995467ca19b210cbae731889511a5f970c8"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

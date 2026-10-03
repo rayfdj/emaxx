@@ -119,31 +119,12 @@ fn purecopy_record(interp: &mut Interpreter, id: u64, env: &mut Env) -> Result<V
         .find_record(id)
         .cloned()
         .ok_or_else(|| LispError::TypeError("record".into(), format!("record<{id}>")))?;
-    if record.kind != crate::lisp::eval::RecordKind::Closure {
-        return Err(LispError::Signal(format!(
-            "Don't know how to purify: {} ({:?}, {:?})",
-            source.type_name(),
-            record.kind,
-            record.type_tag,
-        )));
-    }
-
-    let mut slots = Vec::with_capacity(record.slots.len());
-    for slot in &record.slots {
-        let copied = interp.with_lisp_stack_roots(&(&record.slots, &slots), |interp| {
-            purecopy_inner(interp, slot, env)
-        })?;
-        slots.push(copied);
-    }
-    let copied = interp.copy_record(id)?;
-    let Kind::Record(copied_id) = copied.kind() else {
-        unreachable!("copy_record preserves the record representation")
-    };
-    interp
-        .find_record_mut(copied_id)
-        .expect("copied record remains live")
-        .slots = slots;
-    Ok(hash_cons_insert(interp, Value::Record(copied_id), env))
+    Err(LispError::Signal(format!(
+        "Don't know how to purify: {} ({:?}, {:?})",
+        source.type_name(),
+        record.kind,
+        record.type_tag,
+    )))
 }
 
 fn purecopy_inner(
@@ -174,6 +155,9 @@ fn purecopy_inner(
         | Kind::Overlay(_) => return Ok(*value),
         _ => {}
     }
+    if matches!(value.kind(), Kind::StringObject(state) if state.is_pure()) {
+        return Ok(*value);
+    }
     if matches!(value.kind(), Kind::StringObject(state) if !state.borrow().props.is_empty()) {
         // A callback may detach this string from the original graph before
         // collecting. The message's formatted string is a different object.
@@ -193,35 +177,25 @@ fn purecopy_inner(
     let copied = match value.kind() {
         Kind::BigInteger(integer) => Value::big_integer((*integer).clone()),
         Kind::Float(number) => Value::Float(number),
-        Kind::String(text) => Value::String(text.to_string().into()),
-        Kind::StringObject(_) => {
-            let string = string_like(value).expect("StringObject is string-like");
-            if string.extended_chars.is_empty() {
-                Value::String(string.text.into())
-            } else {
-                make_shared_string_value_with_extended_chars(
-                    string.text,
-                    Vec::new(),
-                    string.multibyte,
-                    string.extended_chars,
-                )
-            }
-        }
+        Kind::StringObject(state) => Value::StringObject(
+            state
+                .borrow()
+                .copy_without_properties(crate::lisp::alloc::StringAllocation::Pure),
+        ),
         Kind::Vector(_) => return purecopy_vector(interp, value, env),
         Kind::Cons(_) if is_vector_value(value) => {
             return purecopy_vector(interp, value, env);
         }
         Kind::Cons(_) => return purecopy_cons_chain(interp, value, env),
-        Kind::Lambda(lambda) => {
-            let slots = interp.interpreted_closure_slots(&lambda);
-            let mut copied_slots = Vec::with_capacity(slots.len());
-            for slot in &slots {
-                let copied = interp.with_lisp_stack_roots(&(&slots, &copied_slots), |interp| {
-                    purecopy_inner(interp, slot, env)
-                })?;
-                copied_slots.push(copied);
-            }
-            interp.make_interpreted_closure_value(&copied_slots)?
+        Kind::Closure(closure) => {
+            let copy = closure.shallow_copy();
+            let copied = Value::Closure(copy);
+            interp.with_lisp_stack_roots(&copied, |interp| {
+                for (index, field) in copy.slots().enumerate() {
+                    copy.initialize_slot(index, purecopy_inner(interp, &field, env)?);
+                }
+                Ok::<Value, LispError>(copied)
+            })?
         }
         Kind::LispRecord(record) => {
             let copy = record.shallow_copy();

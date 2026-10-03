@@ -1,0 +1,152 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "strict checks and nine focused gate controls pass",
+    "inputs": 410,
+    "binary_sha256": "ed6cebab1e013ef778bcd75d470b5880ec80d1dcf379bc9f39cd0f4fd1366c6f",
+    "passed": 9,
+    "failed": 0,
+    "ignored": 0,
+    "names": [
+      "lisp::primitives::tests::native_pseudovector_census_matches_gnu_word_layout",
+      "lisp::primitives::tests::native_vector_and_closure_census_matches_gnu_word_layout",
+      "lisp::types::tests::retained_cons_fields_use_one_word_and_preserve_slot_identity",
+      "lisp::native_comp::runtime::tests::conservative_cons_roots_accept_only_gnu_field_and_tag_offsets",
+      "lisp::native_comp::runtime::tests::retained_cons_field_addresses_survive_collection_and_then_reclaim",
+      "lisp::native_comp::runtime::tests::cons_interior_pointers_root_the_cell_but_are_not_valid_lisp_words",
+      "lisp::native_comp::runtime::tests::unprepared_cons_fields_share_native_and_interpreter_stores",
+      "lisp::primitives::tests::threads_retain_lexical_caller_roots_across_separate_callee_environments",
+      "lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots"
+    ],
+    "source_unchanged": true,
+    "qualification": "Selected macOS gate evidence only. Source204 passed these local census tests too; Linux repair is not proved. Broader gate/release controls, ordinary build/comparison and full validation remain pending. Static frame/code reduction is not a performance measurement."
+  },
+  "archive": {
+    "path": "source207-eval-focused.tar.gz",
+    "bytes": 95295,
+    "sha256": "04a86901dfecf8031397c623c8376c8352d2e546c42666f63cef2cd9ffe42361"
+  },
+  "files": [
+    {
+      "path": "audit-source207-focused.py",
+      "bytes": 2436,
+      "sha256": "4c08194decb01408a8d1491c475b34c864f484b8960304ce99aaceaf4285b4a1"
+    },
+    {
+      "path": "source204-eval-arm-gate-disassembly.txt",
+      "bytes": 63823,
+      "sha256": "ce38b39343604d8f248b6d3286860a36d1f46ee1fcaab6256b386a5ebade1a44"
+    },
+    {
+      "path": "source207-check-command.json",
+      "bytes": 475,
+      "sha256": "28a875951de362d08ec31c7596dfb20a3a94291a50b9ad53ee86a679ff418631"
+    },
+    {
+      "path": "source207-check-result.json",
+      "bytes": 84,
+      "sha256": "f7d22914e302d4787387dfb90ffb2682a14148bae5765d17b85e16c7f5777016"
+    },
+    {
+      "path": "source207-check.log",
+      "bytes": 193,
+      "sha256": "9a5bbe2c48aabff1b533146254979f00d047e5475bd400c5959c5a88404ef2b2"
+    },
+    {
+      "path": "source207-clippy-command.json",
+      "bytes": 463,
+      "sha256": "145ac5bdfb7a48d04b33d07f7f63a13216f22fe289cd622bb516f1ba67db81dc"
+    },
+    {
+      "path": "source207-clippy-result.json",
+      "bytes": 83,
+      "sha256": "a899224fd41cf16b5d43dc32dcc50806385c711230fae69f99847db9ca17b285"
+    },
+    {
+      "path": "source207-clippy.log",
+      "bytes": 193,
+      "sha256": "efe1953e61a4897ff0aa6517570fe74bdd737da6a0352dcf5713d8aa70c7bdcd"
+    },
+    {
+      "path": "source207-diff-command.json",
+      "bytes": 379,
+      "sha256": "ab11368f9b619d2fde79fa8ee203a504cce3a568874ed54b4cdd3b0fd6952ccd"
+    },
+    {
+      "path": "source207-diff-result.json",
+      "bytes": 89,
+      "sha256": "055649e2aa74f9c845859b433ab1312638343a0ed3815e0f7deb48cfdeb5923c"
+    },
+    {
+      "path": "source207-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source207-eval-arm-gate-disassembly.txt",
+      "bytes": 50887,
+      "sha256": "c0e4e5ce892010f49d0a4c0db3c71cd68b57469904c0caff0b579cf66e702bf2"
+    },
+    {
+      "path": "source207-eval-static-comparison.json",
+      "bytes": 786,
+      "sha256": "34ee571cca70395a3a0046fe918be86e77083165b348e2d29df25e4d58990a01"
+    },
+    {
+      "path": "source207-fmt-command.json",
+      "bytes": 403,
+      "sha256": "f9a702761f22e380afb997f1aacf23dcc7ab44f7f7243baa7e5d9c487388b83f"
+    },
+    {
+      "path": "source207-fmt-result.json",
+      "bytes": 82,
+      "sha256": "5b66a073aad9d938a0907e321f728c7d3639864d0ae7a601b281dbd28aa6800a"
+    },
+    {
+      "path": "source207-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source207-focused-audit.json",
+      "bytes": 1419,
+      "sha256": "2bc11a9bc58fc6f51c90a49eaaaab010b253c1cbc0adacbb3a86647a1e7f744e"
+    },
+    {
+      "path": "source207-gate-build-command.json",
+      "bytes": 1114,
+      "sha256": "4fe2cb5ce14bc011d3cc23b840a316e1152b5102f6ddafd430fcd8f383ad0278"
+    },
+    {
+      "path": "source207-gate-build-result.json",
+      "bytes": 90,
+      "sha256": "d79e31d5e44eaf161bffa5ed55178a6ff9f9b3dc48dd08213d6e7f4b11478ec1"
+    },
+    {
+      "path": "source207-gate-build.log",
+      "bytes": 213961,
+      "sha256": "de505b5c2d68241a418ed30395d8ee9ac3b7e53527e67c57752912d25cc8d3f0"
+    },
+    {
+      "path": "source207-gate-focused-command.json",
+      "bytes": 2958,
+      "sha256": "6e03ecc9f18b8347f811867c379cb1136e4d3b7563832cf872afab545c463b2a"
+    },
+    {
+      "path": "source207-gate-focused-result.json",
+      "bytes": 83,
+      "sha256": "2e96ec2ba4d7cf595e16f37352ef0128714698c2c4fb3703031c1ebf7ac25b5b"
+    },
+    {
+      "path": "source207-gate-focused.log",
+      "bytes": 1030,
+      "sha256": "a0f1208f5ed486f8b0a6ad4ecddca642aa3ea23909ebdededb5cbec5f21c00b2"
+    },
+    {
+      "path": "source207-gate-inventory.txt",
+      "bytes": 261161,
+      "sha256": "3bc2b7da6a9c9b13348f3dfb9c1696466b16a3aed2f78e78583c7d5382ee81d1"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

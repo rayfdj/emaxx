@@ -696,9 +696,8 @@ fn subtable(value: Value) -> Option<SubCharTableRef> {
 
 fn compressed(value: Value) -> bool {
     match value.kind() {
-        Kind::String(text) => matches!(text.as_bytes().first(), Some(1 | 2)),
         Kind::StringObject(string) => {
-            matches!(string.borrow().text.as_bytes().first(), Some(1 | 2))
+            matches!(string.borrow().bytes().first(), Some(1 | 2))
         }
         _ => false,
     }

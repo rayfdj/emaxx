@@ -414,15 +414,6 @@ pub(crate) fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {
     }
 }
 
-pub(crate) fn record_type_name<'a>(interp: &'a Interpreter, value: &Value) -> Option<&'a str> {
-    let Kind::Record(id) = value.kind() else {
-        return None;
-    };
-    interp
-        .find_record(id)
-        .and_then(|record| record.symbol_type_name())
-}
-
 pub(crate) fn is_bool_vector_value(interp: &Interpreter, value: &Value) -> bool {
     let Kind::Record(id) = value.kind() else {
         return false;
@@ -764,14 +755,20 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
         }
         Kind::BigInteger(_) => "bignum",
         Kind::Float(_) => "float",
-        Kind::String(_) | Kind::StringObject(_) => "string",
+        Kind::StringObject(_) => "string",
         Kind::Symbol(_) => "symbol",
         Kind::Vector(_) => "vector",
         Kind::Cons(_) if is_vector_value(value) => "vector",
         Kind::Cons(_) => "cons",
         Kind::BuiltinFunc(name) if is_special_form_name(&name) => "special-form",
         Kind::BuiltinFunc(_) => "primitive-function",
-        Kind::Lambda(_) => "interpreted-function",
+        Kind::Closure(closure) => {
+            if closure.is_bytecode() {
+                "byte-code-function"
+            } else {
+                "interpreted-function"
+            }
+        }
         Kind::Buffer(_) => "buffer",
         Kind::Marker(_) => "marker",
         Kind::Overlay(_) => "overlay",
@@ -796,7 +793,6 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
             };
             let type_name = match record.kind {
                 crate::lisp::eval::RecordKind::BoolVector => "bool-vector",
-                crate::lisp::eval::RecordKind::Closure => "byte-code-function",
                 crate::lisp::eval::RecordKind::Font => match record.symbol_type_name() {
                     Some("font-entity") => "font-entity",
                     Some("font-object") => "font-object",

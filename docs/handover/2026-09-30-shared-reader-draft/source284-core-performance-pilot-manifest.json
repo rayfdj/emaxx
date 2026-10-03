@@ -1,0 +1,2440 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "diagnostic pilot complete; GNU parity not satisfied",
+    "audit": {
+      "status": "all 32 pilot processes and16 paired results/modes verified",
+      "source_commit": "9c5b535614c5237dbd8e2e47f1dbe258bf7316be",
+      "geometric_mean_ratio": 3.0547005775787075,
+      "cases": [
+        {
+          "case": "interpreted-lexical",
+          "ratio": 2.4929174244227292,
+          "oracle": {
+            "seconds": 0.2093651294708252,
+            "result": "1000000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-lexical-loop": "interpreted"
+            },
+            "gc_count": 12,
+            "startup_seconds": 0.18213295936584473,
+            "total_seconds": 0.417885375,
+            "peak_rss_bytes": 56541184,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                5836665,
+                354,
+                1013345,
+                19269,
+                7504362,
+                42,
+                95572
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                7842596,
+                373,
+                1016895,
+                19415,
+                7554002,
+                42,
+                96593
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 0.5219299793243408,
+            "result": "1000000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-lexical-loop": "interpreted"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.27542805671691895,
+            "total_seconds": 0.9566139579999997,
+            "peak_rss_bytes": 146194432,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        },
+        {
+          "case": "interpreted-dynamic",
+          "ratio": 2.1428376980110984,
+          "oracle": {
+            "seconds": 0.18917393684387207,
+            "result": "1500000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-dynamic-loop": "interpreted"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.19885587692260742,
+            "total_seconds": 0.41240504200000005,
+            "peak_rss_bytes": 53379072,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                5836665,
+                354,
+                1013345,
+                19269,
+                7504362,
+                42,
+                95572
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                5842578,
+                361,
+                1016895,
+                19415,
+                7554002,
+                42,
+                96593
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 0.4053690433502197,
+            "result": "1500000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-dynamic-loop": "interpreted"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.2714040279388428,
+            "total_seconds": 0.8404371249999998,
+            "peak_rss_bytes": 144392192,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        },
+        {
+          "case": "interpreted-calls",
+          "ratio": 2.73991742904609,
+          "oracle": {
+            "seconds": 0.28429722785949707,
+            "result": "499999500000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-add": "interpreted",
+              "core-perf-calls": "interpreted"
+            },
+            "gc_count": 24,
+            "startup_seconds": 0.21443390846252441,
+            "total_seconds": 0.5243830000000003,
+            "peak_rss_bytes": 56393728,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                5836677,
+                354,
+                1013345,
+                19269,
+                7504354,
+                42,
+                95572
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                9842620,
+                385,
+                1016895,
+                19415,
+                7553994,
+                42,
+                96593
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 0.7789509296417236,
+            "result": "499999500000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-add": "interpreted",
+              "core-perf-calls": "interpreted"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.2711200714111328,
+            "total_seconds": 1.2221814999999996,
+            "peak_rss_bytes": 146178048,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        },
+        {
+          "case": "bytecode-calls",
+          "ratio": 6.7768533749490345,
+          "oracle": {
+            "seconds": 0.1356639862060547,
+            "result": "71999994000000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-byte-calls": "bytecode",
+              "core-perf-byte-add": "bytecode"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.20810818672180176,
+            "total_seconds": 0.3706097079999999,
+            "peak_rss_bytes": 53297152,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                5837237,
+                354,
+                1013807,
+                19270,
+                7504512,
+                42,
+                95592
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                5843150,
+                361,
+                1017357,
+                19416,
+                7554250,
+                42,
+                96615
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 0.919374942779541,
+            "result": "71999994000000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-byte-calls": "bytecode",
+              "core-perf-byte-add": "bytecode"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.28336286544799805,
+            "total_seconds": 1.3733847500000005,
+            "peak_rss_bytes": 144424960,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        },
+        {
+          "case": "native-execution",
+          "ratio": 3.1951899821607546,
+          "oracle": {
+            "seconds": 0.6161189079284668,
+            "result": "10169952",
+            "modes": {
+              "driver": "interpreted",
+              "comp-tests-fib-f": "native"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.20359206199645996,
+            "total_seconds": 1.358250333,
+            "peak_rss_bytes": 54165504,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                5839933,
+                358,
+                1016686,
+                19483,
+                7555274,
+                43,
+                96067
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                5845916,
+                365,
+                1020236,
+                19629,
+                7604914,
+                43,
+                97088
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 1.9686169624328613,
+            "result": "10169952",
+            "modes": {
+              "driver": "interpreted",
+              "comp-tests-fib-f": "native"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.30843687057495117,
+            "total_seconds": 2.6014714160000008,
+            "peak_rss_bytes": 145129472,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        },
+        {
+          "case": "interpreted-to-native",
+          "ratio": 2.3269753444885075,
+          "oracle": {
+            "seconds": 0.22088193893432617,
+            "result": "2000001000000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-byte-native": "interpreted",
+              "comp-tests-fixnum-1-plus-f": "native"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.20364999771118164,
+            "total_seconds": 0.453291458999999,
+            "peak_rss_bytes": 54181888,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                5839852,
+                358,
+                1016686,
+                19483,
+                7555299,
+                43,
+                96067
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                5845771,
+                365,
+                1020236,
+                19629,
+                7604939,
+                43,
+                97088
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 0.5139868259429932,
+            "result": "2000001000000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-byte-native": "interpreted",
+              "comp-tests-fixnum-1-plus-f": "native"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.27622008323669434,
+            "total_seconds": 0.9623994170000003,
+            "peak_rss_bytes": 145096704,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        },
+        {
+          "case": "bytecode-to-native",
+          "ratio": 9.57510495308495,
+          "oracle": {
+            "seconds": 0.16333293914794922,
+            "result": "128000008000000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-byte-native": "bytecode",
+              "comp-tests-fixnum-1-plus-f": "native"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.2068769931793213,
+            "total_seconds": 0.3991876249999997,
+            "peak_rss_bytes": 54099968,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                5840306,
+                358,
+                1017018,
+                19483,
+                7555418,
+                43,
+                96080
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                5846219,
+                365,
+                1020568,
+                19629,
+                7605107,
+                43,
+                97102
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 1.5639300346374512,
+            "result": "128000008000000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-byte-native": "bytecode",
+              "comp-tests-fixnum-1-plus-f": "native"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.25330591201782227,
+            "total_seconds": 1.9827807919999998,
+            "peak_rss_bytes": 145129472,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        },
+        {
+          "case": "native-to-interpreted",
+          "ratio": 2.8484007511114298,
+          "oracle": {
+            "seconds": 0.212799072265625,
+            "result": "43000000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-callback": "interpreted",
+              "comp-tests-catch-f": "native"
+            },
+            "gc_count": 11,
+            "startup_seconds": 0.19494891166687012,
+            "total_seconds": 0.43449933300000154,
+            "peak_rss_bytes": 56786944,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                5839947,
+                358,
+                1016686,
+                19483,
+                7555299,
+                43,
+                96067
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                7845877,
+                376,
+                1020236,
+                19629,
+                7604939,
+                43,
+                97088
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 0.6061370372772217,
+            "result": "43000000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-callback": "interpreted",
+              "comp-tests-catch-f": "native"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.26041221618652344,
+            "total_seconds": 1.0259701660000005,
+            "peak_rss_bytes": 145801216,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        },
+        {
+          "case": "native-to-bytecode",
+          "ratio": 2.973682299049873,
+          "oracle": {
+            "seconds": 0.2035069465637207,
+            "result": "43000000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-callback": "bytecode",
+              "comp-tests-catch-f": "native"
+            },
+            "gc_count": 11,
+            "startup_seconds": 0.20393013954162598,
+            "total_seconds": 0.4336091670000002,
+            "peak_rss_bytes": 56819712,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                5840032,
+                358,
+                1016809,
+                19483,
+                7555289,
+                43,
+                96068
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                7845962,
+                376,
+                1020359,
+                19629,
+                7604929,
+                43,
+                97089
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 0.6051650047302246,
+            "result": "43000000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-callback": "bytecode",
+              "comp-tests-catch-f": "native"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.25876784324645996,
+            "total_seconds": 1.024542083,
+            "peak_rss_bytes": 145817600,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        },
+        {
+          "case": "cons-allocation",
+          "ratio": 1.8633475739969265,
+          "oracle": {
+            "seconds": 0.19750094413757324,
+            "result": "descending-cons-chain/2000000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-conses": "interpreted"
+            },
+            "gc_count": 3,
+            "startup_seconds": 0.20163774490356445,
+            "total_seconds": 0.6961811659999988,
+            "peak_rss_bytes": 85868544,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                5836769,
+                354,
+                1013345,
+                19269,
+                7504346,
+                42,
+                95572
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                7842691,
+                364,
+                1016895,
+                19415,
+                7553986,
+                42,
+                96593
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 0.3680129051208496,
+            "result": "descending-cons-chain/2000000",
+            "modes": {
+              "driver": "interpreted",
+              "core-perf-conses": "interpreted"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.2594418525695801,
+            "total_seconds": 1.3134064999999993,
+            "peak_rss_bytes": 188661760,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        },
+        {
+          "case": "list-traversal",
+          "ratio": 2.1176883510030247,
+          "oracle": {
+            "seconds": 0.29345202445983887,
+            "result": "247680000",
+            "modes": {
+              "driver": "interpreted",
+              "body": "interpreted"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.1968848705291748,
+            "total_seconds": 0.5140503750000001,
+            "peak_rss_bytes": 55361536,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                5836897,
+                354,
+                1013345,
+                19269,
+                7504340,
+                42,
+                95572
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                5962816,
+                361,
+                1016895,
+                19415,
+                7553980,
+                42,
+                96593
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 0.6214399337768555,
+            "result": "247680000",
+            "modes": {
+              "driver": "interpreted",
+              "body": "interpreted"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.25481295585632324,
+            "total_seconds": 1.0327454580000008,
+            "peak_rss_bytes": 146112512,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        },
+        {
+          "case": "mapcar",
+          "ratio": 2.302710153904157,
+          "oracle": {
+            "seconds": 0.14165306091308594,
+            "result": "ascending-mapcar-chain/100000",
+            "modes": {
+              "driver": "interpreted",
+              "mapcar": "primitive"
+            },
+            "gc_count": 11,
+            "startup_seconds": 0.20368194580078125,
+            "total_seconds": 0.3776742500000019,
+            "peak_rss_bytes": 71155712,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                5936807,
+                355,
+                1013345,
+                19269,
+                7504305,
+                42,
+                95572
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                12342865,
+                373,
+                1016895,
+                19415,
+                7553945,
+                42,
+                96593
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 0.326185941696167,
+            "result": "ascending-mapcar-chain/100000",
+            "modes": {
+              "driver": "interpreted",
+              "mapcar": "primitive"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.2509438991546631,
+            "total_seconds": 0.7515873749999997,
+            "peak_rss_bytes": 157876224,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        },
+        {
+          "case": "explicit-gc",
+          "ratio": 1.0942462690263732,
+          "oracle": {
+            "seconds": 0.16846299171447754,
+            "result": "live-cons-chain/100000",
+            "modes": {
+              "driver": "interpreted",
+              "garbage-collect": "primitive"
+            },
+            "gc_count": 32,
+            "startup_seconds": 0.20310592651367188,
+            "total_seconds": 0.4108769169999995,
+            "peak_rss_bytes": 58097664,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                5936817,
+                355,
+                1013345,
+                19269,
+                7504325,
+                42,
+                95572
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                5944174,
+                394,
+                1016895,
+                19415,
+                7553965,
+                42,
+                96593
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 0.1843400001525879,
+            "result": "live-cons-chain/100000",
+            "modes": {
+              "driver": "interpreted",
+              "garbage-collect": "primitive"
+            },
+            "gc_count": 32,
+            "startup_seconds": 0.25919485092163086,
+            "total_seconds": 0.6375802079999993,
+            "peak_rss_bytes": 151552000,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        },
+        {
+          "case": "upstream-sort",
+          "ratio": 5.207943200953777,
+          "oracle": {
+            "seconds": 0.3345639705657959,
+            "result": "64",
+            "modes": {
+              "driver": "interpreted",
+              "sort-tests--insert-words-sort-and-compare": "interpreted",
+              "sort-lines": "interpreted"
+            },
+            "gc_count": 16,
+            "startup_seconds": 0.1994471549987793,
+            "total_seconds": 0.5745008750000018,
+            "peak_rss_bytes": 60850176,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                5887836,
+                360,
+                1035198,
+                20516,
+                7911180,
+                42,
+                103396
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                10054911,
+                383,
+                1056810,
+                20547,
+                10304602,
+                42,
+                104286
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 1.7423901557922363,
+            "result": "64",
+            "modes": {
+              "driver": "interpreted",
+              "sort-tests--insert-words-sort-and-compare": "interpreted",
+              "sort-lines": "interpreted"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.25979089736938477,
+            "total_seconds": 2.2924934159999992,
+            "peak_rss_bytes": 148881408,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        },
+        {
+          "case": "upstream-undo",
+          "ratio": 5.410322400330727,
+          "oracle": {
+            "seconds": 0.12284016609191895,
+            "result": "passed/4000",
+            "modes": {
+              "driver": "interpreted",
+              "undo-test0": "interpreted",
+              "undo-test1": "interpreted",
+              "undo-test2": "interpreted",
+              "undo-test5": "interpreted",
+              "undo": "bytecode",
+              "undo-more": "bytecode",
+              "primitive-undo": "bytecode"
+            },
+            "gc_count": 5,
+            "startup_seconds": 0.19401288032531738,
+            "total_seconds": 0.3627555409999985,
+            "peak_rss_bytes": 65437696,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                5934127,
+                373,
+                1047223,
+                20733,
+                8150094,
+                42,
+                105142
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                7022375,
+                385,
+                3201475,
+                20793,
+                8691433,
+                16042,
+                159081
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 0.664604902267456,
+            "result": "passed/4000",
+            "modes": {
+              "driver": "interpreted",
+              "undo-test0": "interpreted",
+              "undo-test1": "interpreted",
+              "undo-test2": "interpreted",
+              "undo-test5": "interpreted",
+              "undo": "bytecode",
+              "undo-more": "bytecode",
+              "primitive-undo": "bytecode"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.2542879581451416,
+            "total_seconds": 1.237638540999999,
+            "peak_rss_bytes": 158728192,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        },
+        {
+          "case": "upstream-bindat",
+          "ratio": 3.4301119299230973,
+          "oracle": {
+            "seconds": 0.17234396934509277,
+            "result": "((header (dest-ip . [192 168 1 100]) (src-ip . [192 168 1 101]) (dest-port . 284) (src-port . 5408)) (items . 2) (item ((type . 2) (opcode . 3) (length . 5) (id . \"ABCDEF\") (data . [1 2 3 4 5])) ((type . 1) (opcode . 4) (length . 7) (id . \"BCDEFG\") (data . [6 7 8 9 10 11 12]))))",
+            "modes": {
+              "driver": "interpreted",
+              "bindat-pack": "interpreted",
+              "bindat-unpack": "interpreted"
+            },
+            "gc_count": 8,
+            "startup_seconds": 0.19992399215698242,
+            "total_seconds": 0.42404379100000256,
+            "peak_rss_bytes": 60669952,
+            "allocation_before": {
+              "status": "available",
+              "counts": [
+                6090756,
+                361,
+                1052256,
+                21545,
+                7909578,
+                42,
+                103353
+              ]
+            },
+            "allocation_after": {
+              "status": "available",
+              "counts": [
+                8696927,
+                376,
+                1119484,
+                21574,
+                8145612,
+                42,
+                112857
+              ]
+            }
+          },
+          "emaxx": {
+            "seconds": 0.5911591053009033,
+            "result": "((header (dest-ip . [192 168 1 100]) (src-ip . [192 168 1 101]) (dest-port . 284) (src-port . 5408)) (items . 2) (item ((type . 2) (opcode . 3) (length . 5) (id . \"ABCDEF\") (data . [1 2 3 4 5])) ((type . 1) (opcode . 4) (length . 7) (id . \"BCDEFG\") (data . [6 7 8 9 10 11 12]))))",
+            "modes": {
+              "driver": "interpreted",
+              "bindat-pack": "interpreted",
+              "bindat-unpack": "interpreted"
+            },
+            "gc_count": 0,
+            "startup_seconds": 0.2567610740661621,
+            "total_seconds": 1.2000860419999988,
+            "peak_rss_bytes": 148029440,
+            "allocation_before": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            },
+            "allocation_after": {
+              "status": "unavailable",
+              "error": "(error \"GNU allocation counters are unavailable in the Rust ownership backend\")"
+            }
+          }
+        }
+      ],
+      "evidence_files": {
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-lexical/oracle/stdout.txt": "db5adb8a8346fb55f615891958e7ef8ab507965e8878392218b1ae29e8fbe258",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-lexical/oracle/report.json": "0d6abb2e40e46cd53392c8f449b4bdf2152a0b753ad38ca0220c625ccf8308e6",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-lexical/oracle/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-lexical/oracle/validation.json": "1945700df013f5ea755d16873d7b23e9229dd72385487b949b96310d01d1103a",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-lexical/oracle/process.json": "d82a7e1dcafa7ff775c5f3f327a17acfa12923b2b0272d1700747d723033acce",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-lexical/emaxx/stdout.txt": "072cb5e8016a6a6500bc828f00d07c748b886f070f5ce4afc9cf2b550fd16870",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-lexical/emaxx/report.json": "a6c1ebcaa660e6bfc2ab04cedacddffce76ffe8f3f8c270540062a943725f3f3",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-lexical/emaxx/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-lexical/emaxx/validation.json": "7770ac89b1fb1d94228bdb4f52abdf2881299ed699689c5456e654d508e96903",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-lexical/emaxx/process.json": "d652e08b94eda7ccbb1277d9e6e025de653eaad451dc11f60231490ba5940d48",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-dynamic/oracle/stdout.txt": "f645a4d5c2754933c616015a393661069685cb3e4aaaf08dce09641707c1e95a",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-dynamic/oracle/report.json": "980c9345ba7555bea5a611f8902266cc71126c66da7d8f648631cd64ca3efa16",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-dynamic/oracle/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-dynamic/oracle/validation.json": "8927ff6e3ac01461f4fdb8ef4c7a6ef444cd34c7310247e347731e31b8d459b8",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-dynamic/oracle/process.json": "9979fd6feb13821472e2cb767492c4154eafc07d82dbda8a5efbaab09ca5f18c",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-dynamic/emaxx/stdout.txt": "b1a3ff037dc1e90d1aa77edbe23ba80db5829a49378feac6e0ed8717b3e52710",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-dynamic/emaxx/report.json": "7ea14fcf04043b85edeaa7ed70ebf356ba43de3ddbe3384dcfef9096ed72bfe5",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-dynamic/emaxx/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-dynamic/emaxx/validation.json": "28904f5903a54f8da532518da7b8615c28cb3f96e6423a0155412adc4c0934de",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-dynamic/emaxx/process.json": "6720bbe373ce5923e066f63f9cbd044f98b323fc117a43e8dda65e976d7123ff",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-calls/oracle/stdout.txt": "bbb5986e0e411f08dbb7e5fcc8ce556fee2276d281dbca8010ba0ad08d943df5",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-calls/oracle/report.json": "9603d21a9b3d718ce311d0a880c73583718682ebdc5c0a00d1cd6277bc0df1b6",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-calls/oracle/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-calls/oracle/validation.json": "08407157631142ed425fce8b21319339349d0ef4a06654a026d99352c37a2f5e",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-calls/oracle/process.json": "c6018a09b090c92db71a11d8fbf6a24ecca30b1adbeb027f35adbae04ce4c5d8",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-calls/emaxx/stdout.txt": "324e3890e24c8e07e0e9afa5b303495ca1c1fd1d07a206ff2077255469b46df5",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-calls/emaxx/report.json": "d76fe09ef3d4e2613ce1a3b393fdbebd3dadf1faa5d9f1cdd46d4f0216dc4085",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-calls/emaxx/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-calls/emaxx/validation.json": "0760a1e39d2191e106e1ece06bb906bbcfd53b53a9bc3d865f20f01b9f470c1f",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-calls/emaxx/process.json": "12bbd59ded10a46682566682c048967dd9eb31383d6e40450db2c4ade8c37d84",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-calls/oracle/stdout.txt": "3b628af1a319e61ceba4399ea723fcf5e7fa97883faaab23f07c28f2757bbd1c",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-calls/oracle/report.json": "8bcf528aef398d64184c0ffe5bbd5c624d71302abe1430bfdb3aa554345fed1b",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-calls/oracle/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-calls/oracle/validation.json": "597ac032bfed276a7405ef1eddcdd2bc51da7acc642f522cced9685ce30871cf",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-calls/oracle/process.json": "41caf4ce44fef7b28ef23301a122018b50e94d44ed0fec75bcf959faa1ba9366",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-calls/emaxx/stdout.txt": "38a3c94b1b8aa45bfc0f795f8159442777de70ab6462ce4edb4477d9018e3202",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-calls/emaxx/report.json": "5ef47972d14fe61a368825169cb778a91d4f0aa39126bb30b222e79ca443c95e",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-calls/emaxx/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-calls/emaxx/validation.json": "40062665cb2045ca9ee799f3929f80a55070d59132d4f94399dde6d0e9ddb14d",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-calls/emaxx/process.json": "7ef84b6baf4635d49fb35a43eb016ab36c7fde83dfeea7dbab4ae985730b9550",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-execution/oracle/stdout.txt": "448dedb47c3162905cc4fb25e9199c8429459fa180ce120439513fdfab26a47c",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-execution/oracle/report.json": "173ce1f07fd7134cdf86a5ba9376e5e73091719d3815918bf85ac8f4d0d520a4",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-execution/oracle/stderr.txt": "ec16c7ead86cc09a854c0ee44f5dcb235db66198d05ea037749fbfbaa39c6380",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-execution/oracle/validation.json": "32603d1dbdd456c9ea8dff5b33f0c126bc98e8fd83377577a0c8978991cf01fc",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-execution/oracle/process.json": "c4d3222f06b3c61e8dc12bb9dee1de2237c16ed3f31e09521ccef51ae44f88e7",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-execution/emaxx/stdout.txt": "23595c9ef9c96450124384a3ca48609214a1b83004575150fe6484593ae9cea1",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-execution/emaxx/report.json": "1082a9a69e1004b7cf65ed41e548a7a335ac300b33aaec3638e51c333d210ca4",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-execution/emaxx/stderr.txt": "db6c06a1a0700f7f145d3d21f176cae30cf20e3cfa3d013172c66a54d73b7c53",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-execution/emaxx/validation.json": "c22b4acbd4486c3a4290435f510af25c520c1c99f4f95e58135629f216a103d8",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-execution/emaxx/process.json": "7450e320a06ec22fb4e717763727cdcbf1b4f342251441805ced4701aa2f3ede",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-to-native/oracle/stdout.txt": "5050c02395284a220fec7989fc23154271f890a8cdb9cd9479a407447202f48b",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-to-native/oracle/report.json": "04320569ac7c4ae46289ecdd2b3c157f0ab0448ede3d7cfae300a83a250bafe5",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-to-native/oracle/stderr.txt": "ec16c7ead86cc09a854c0ee44f5dcb235db66198d05ea037749fbfbaa39c6380",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-to-native/oracle/validation.json": "201c37b3c7f3d8ea47ec7cd99d86067fe25d0938fbb0cd5d522af12f58205ef6",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-to-native/oracle/process.json": "91db39d9a7f6a5f91e4015a1b9cb847eb717a31eab94acb50d979580ac7168a9",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-to-native/emaxx/stdout.txt": "3c0ce6befc5bc3b6ea954b3878731fdc95c5149f0466b2e5875e325d92d2d9dd",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-to-native/emaxx/report.json": "c9df0c21c673be7bdb5881f0bbda15f31a3b73da2c4643c8ddde2786755cd376",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-to-native/emaxx/stderr.txt": "db6c06a1a0700f7f145d3d21f176cae30cf20e3cfa3d013172c66a54d73b7c53",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-to-native/emaxx/validation.json": "5256dc98ddc5bc5e1aa4a521625cbefaf4d15b2487811fad3bf373e3c43a42b0",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/interpreted-to-native/emaxx/process.json": "d8115765d60fc2588a525dc7f43ee24a7d6fd8f0ea9c8476c1df15276c224c07",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-to-native/oracle/stdout.txt": "7d16f2c64eb65a6c4b5a43bebff76705c8512b1df2a7e0a97fd128af9367cdcf",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-to-native/oracle/report.json": "fc802bbf3cd515dc37c49cc0306bd719658d0ea2e6472bdd158ffff909103536",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-to-native/oracle/stderr.txt": "ec16c7ead86cc09a854c0ee44f5dcb235db66198d05ea037749fbfbaa39c6380",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-to-native/oracle/validation.json": "f2a9c67dd0b20241dcbff46c5fe91af07b2004c8c727f6f2255548b29155b2b8",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-to-native/oracle/process.json": "c68d1ffebd7bdde7fbc519947b271a48db8f1ed00cd25d51b43504d058d0c921",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-to-native/emaxx/stdout.txt": "ef20c19b8228c0447914a1f8a69587064fd443be3221bd15c1f11c65252bdde7",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-to-native/emaxx/report.json": "f3a0176b18f64f9d75957d481fe7bde667302d7a0877e5f92657324faf9aed54",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-to-native/emaxx/stderr.txt": "db6c06a1a0700f7f145d3d21f176cae30cf20e3cfa3d013172c66a54d73b7c53",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-to-native/emaxx/validation.json": "cdb5c36762ce52ee9ddae9a836942f87ce6713f2d96c1b43450e4fb030b3e707",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/bytecode-to-native/emaxx/process.json": "d815ae7effb633755a80e7e9bc01a84df99dbbff2c467e55a8eb7a0c09c11daa",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-interpreted/oracle/stdout.txt": "6e0357776fd182b31b3b11ae5652cb2b2d116575f38ca571c52ba10c91169fba",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-interpreted/oracle/report.json": "479f69f282719e0f817f4e196202fc1aaac3671eb16cc3503b8f15decdbb260c",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-interpreted/oracle/stderr.txt": "ec16c7ead86cc09a854c0ee44f5dcb235db66198d05ea037749fbfbaa39c6380",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-interpreted/oracle/validation.json": "379c49953316508ba30159e11cefc2fdbb047afc788125b251f2f1bab9307a16",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-interpreted/oracle/process.json": "e54cf8bd7db984fcf071b34e8a15be12ce945064ce37774cb94c408c8a40072b",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-interpreted/emaxx/stdout.txt": "5dca566bd81a884c5a39dd95803347c9ec61696f4ded402130ae0433e78161f2",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-interpreted/emaxx/report.json": "de07187d5f19787001563b1a19ce7f7df7a49762f513197f68ce9363f47e70e0",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-interpreted/emaxx/stderr.txt": "db6c06a1a0700f7f145d3d21f176cae30cf20e3cfa3d013172c66a54d73b7c53",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-interpreted/emaxx/validation.json": "8c60de4a8fe8a9f5d2b7930741abb5d4a0b2b69bf090a6fdac1c4644045eb9c3",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-interpreted/emaxx/process.json": "62817bf4f2d5fa53e681ea64078ce2021a575407a4556f21478c8e9e81e07d78",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-bytecode/oracle/stdout.txt": "140511775d0219db5ea06e44c4f05ce88bb50a6c0aceb5f94a425d83c80b96d7",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-bytecode/oracle/report.json": "df93f7b68949ab16d13fd5341e221a085f061bfd189db2a136717e805738dc98",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-bytecode/oracle/stderr.txt": "ec16c7ead86cc09a854c0ee44f5dcb235db66198d05ea037749fbfbaa39c6380",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-bytecode/oracle/validation.json": "0cbf5591c3a09c81ded3a709144e63c990a04bccf7eb62611406ab550b1d1983",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-bytecode/oracle/process.json": "8c00066c7e9d86010223d6da41b690c4af826c3fe86655cd8f036d8f1d2d1c38",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-bytecode/emaxx/stdout.txt": "0e29f598f07ffd72e14550e57d9dcc2c2b45fc22272f952f32d1a4ae1d7a432d",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-bytecode/emaxx/report.json": "9232790ecc9dff200241e13c750d4d10cc714e2e7dc106ed90bbf6f37f795217",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-bytecode/emaxx/stderr.txt": "db6c06a1a0700f7f145d3d21f176cae30cf20e3cfa3d013172c66a54d73b7c53",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-bytecode/emaxx/validation.json": "b68fa52d7d56df2b7aa91823b8c473099e5b5047e752fd1012c97a5a500fb2cd",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/native-to-bytecode/emaxx/process.json": "f5eae53dc50b3a8b5aab40c5d9104d77d9f1b5acbaf1c951b41c9fb2a46feedd",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/cons-allocation/oracle/stdout.txt": "f666ba7a3b773764eb0048b586b14b06dc8fa1d6797eb024da677c61768927fb",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/cons-allocation/oracle/report.json": "0c5cf42c7d2f2d4581a9cd5c760cc613f10a59744fa5ea567b4b4030e9151edd",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/cons-allocation/oracle/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/cons-allocation/oracle/validation.json": "d705b47fd989bbd84dae1b5203d9bda0ff1d9e8ae6b3ecff183fbd0a5ac82086",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/cons-allocation/oracle/process.json": "f22889f3526716702787710eea6fb49641a7771d3bb0fee74c6f7c16bf2a84c9",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/cons-allocation/emaxx/stdout.txt": "1a75c3fb1b73db6c45a7d941748c2c2dade6e4fc410f3f1edda2a24e345cb52c",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/cons-allocation/emaxx/report.json": "03f022c6ea0f5a8e02d139aa7bb162187e4fade72ef1bca6f86019c3e5296904",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/cons-allocation/emaxx/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/cons-allocation/emaxx/validation.json": "048ccaa752ef234b5b6b0f5b3d60a96783edbbe5b14f6974e33ba70b0c56671a",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/cons-allocation/emaxx/process.json": "40a1d1907a1accaa6bfd77afe5f8bc37bdb29560cdae1c826dd001907b3773a4",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/list-traversal/oracle/stdout.txt": "7add07827d220eceb8e67d5abb8408c7a986e64b56e99e6632956dc1dfa4ea0c",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/list-traversal/oracle/report.json": "942b1ebf5e20160a9af11f5b75aff1be56c7373e52ad0024463a643f50a254c7",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/list-traversal/oracle/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/list-traversal/oracle/validation.json": "950e5febab4d2fb98730d5016a3c37201500dc704191d5ade60a364c828c583c",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/list-traversal/oracle/process.json": "d8133f5a2da36bdf376b8c66236a0dd82b907c96870f434d4b101694f4573b0e",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/list-traversal/emaxx/stdout.txt": "6c4ffb642160e0ab5cda4405e917ee09e438036596cb2093d4f765530b141f71",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/list-traversal/emaxx/report.json": "655281a77a3c2ee2117963789e439d763c8418ca93e42b521f747f98dce7920e",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/list-traversal/emaxx/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/list-traversal/emaxx/validation.json": "e2159aaddd280e913dc5f60fd8754e53aa91421784575472cf81b46130917ec5",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/list-traversal/emaxx/process.json": "8fc42cc970e9dbf173d2079b8309cd55840497c90217eecff2d3efd4998b24d9",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/mapcar/oracle/stdout.txt": "88449fa530c34d1c179563a20a0378c5abfc07ba73da4ff9989e83da32e5f2a5",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/mapcar/oracle/report.json": "0eb874b15ed31c43bba94b9dd618e7f29aa7d21e1b37b7d6f82841d3971e67a1",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/mapcar/oracle/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/mapcar/oracle/validation.json": "29f879d3f9bf92b5c3ff3cee0d5cdc1afa8f03bd4d8a26335c0c28240cd6754f",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/mapcar/oracle/process.json": "2bfad267eb2d2f5a6711fac0a978175aaaa4c67d3788d114dfe3477ca24cfee1",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/mapcar/emaxx/stdout.txt": "e12594085bbbbc0b5a813667aa3bf8ac5c9dbef589d6f5a94c84848fb642f1a7",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/mapcar/emaxx/report.json": "4e7fbd7237c4ec1dac5c2e3f135630b3bcd801bbb1d26bd8215ce469febe2839",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/mapcar/emaxx/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/mapcar/emaxx/validation.json": "4a03adf8455511aabd1d152d165c2c3533b559e755cf155fd3c1f376388f346a",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/mapcar/emaxx/process.json": "cc05130e2e3b1b57ec454b1daf575f85b171d7b59b2ec262122e053b87344317",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/explicit-gc/oracle/stdout.txt": "482d9922edc22f2e2c92f80545f54b3f3eb2594a100ec5eea62d584aff8627c1",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/explicit-gc/oracle/report.json": "ca4c15ae5b4bde5ace64471cf73ca6650be569014a62fe0c941b59d1d3779bab",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/explicit-gc/oracle/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/explicit-gc/oracle/validation.json": "897bfdc8e0550a830bdd725479fa82fcce9c970c87453b87fa17b0a4bccbbe25",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/explicit-gc/oracle/process.json": "60aa8d9b5ffe472176666365b5ef77ae4027c75b546aca7e3390c5240ec5e0c5",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/explicit-gc/emaxx/stdout.txt": "45ea6739789eb87944a3c4639724f4b8cc55ee35c050d1a2b50c2affd773da3f",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/explicit-gc/emaxx/report.json": "885bf168ba8450cd4274e47e431450731e3eec47d23279081df72cd4f2bd1036",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/explicit-gc/emaxx/stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/explicit-gc/emaxx/validation.json": "f27312689c66d408b335399dd18303b841d1ca128d458ff7654c9c5255896b59",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/explicit-gc/emaxx/process.json": "786b9b865b6486d7aacf2a7d47f8928520cbec0a7e63f59c7c1cc8c878bbe024",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-sort/oracle/stdout.txt": "499d6d0a44683af369d95ab0ad1847d167c2b9657533cedad8e69d06442610f9",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-sort/oracle/report.json": "63afc5f6a65c5685e6aae5936926248dbeb47094ec62bf728cfe06adced9ad42",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-sort/oracle/stderr.txt": "b1bd73464f466b74130c8c91cba1d5d26ad21305bdedc96fc5132d02b23966eb",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-sort/oracle/validation.json": "caf89fbe5795a514b6cbe75ac0f3814968b563970dda8c3636a9160780a3a1e1",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-sort/oracle/process.json": "d1473685778320e48f86de9138657141919df2126364d2de3c16ab00de0fff43",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-sort/emaxx/stdout.txt": "ae0e41e075c49ccab7fe47bfaa777ee992784b30e918c2794b3b6764c4b847fe",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-sort/emaxx/report.json": "ed967c268d2ac426d37f6f2c27d321b003e142b5bba80c5c5d0f2bf180992672",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-sort/emaxx/stderr.txt": "b1bd73464f466b74130c8c91cba1d5d26ad21305bdedc96fc5132d02b23966eb",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-sort/emaxx/validation.json": "20c43e77527358d127a0492617295b45a0bb01f786c64f12f05f8772559275b3",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-sort/emaxx/process.json": "e5cca723b486bff576e31568637a3e5a557ec260b416af4187f13e592be983c2",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-undo/oracle/stdout.txt": "c1173061667c764eaeb22c1610aee5d17c6071038cdba5a75ab910c3825697d0",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-undo/oracle/report.json": "dba6c06185702ef2ce5ed4d35b792155ee0419fafa0e5fd67ac5ac0c63300c7f",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-undo/oracle/stderr.txt": "4f75f7d5f05d67f373fcebd3b1004623a4ae30a432d856d72a5ecc39e047a0a0",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-undo/oracle/validation.json": "00665552c2204f26c2c14518c610fec37db4b03fed8cd3eda4e98af06e81fe6a",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-undo/oracle/process.json": "79929a10935bf8c4029bc223028b56a4d7f7c92e2448d7d0ad62f6eb31a6cd4f",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-undo/emaxx/stdout.txt": "2c1d3030f62ea1c400a5da7bb76db73079f7f1b8e80fe60ad924bae1bf07d4c4",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-undo/emaxx/report.json": "3914bb2ccf6127e220d5839bb6731e7a10961c08ef7f33c5af5be17013d00ffe",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-undo/emaxx/stderr.txt": "4f75f7d5f05d67f373fcebd3b1004623a4ae30a432d856d72a5ecc39e047a0a0",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-undo/emaxx/validation.json": "46ae30487cf2a937d0d6cada8b87a7c6dc87ac820dd4a4a3a0dc3c31d8bcf2f7",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-undo/emaxx/process.json": "2460db573f67d4099047c7cecb6e8b803a4112319b87556ccab2661637a8ebbe",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-bindat/oracle/stdout.txt": "d0d3fc4224fe51aa7fef09c5a7a099de5e39b98a00b8b19c372173066f5d6384",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-bindat/oracle/report.json": "dc38967ee6d1b667958fe5f6e92a4614e33ba1c672413fda96c8c8baf2c25df0",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-bindat/oracle/stderr.txt": "d403cbf6ebf9eb14c91d2f65956b8a387eef1181856fb6be67caeebb2173fcb5",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-bindat/oracle/validation.json": "4a3656f729488eedcaae471eea2c2e1b2a380e550a68c6ec5461688ae7f5e774",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-bindat/oracle/process.json": "bdad8e63529393ce574173a90e8d43fa25ac962b911a9d967d2a51b9c6d39c92",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-bindat/emaxx/stdout.txt": "99b760c6ea9f57e1b8f2bc4009890566eaae81b10a8db5bf1bed7f5227751b9d",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-bindat/emaxx/report.json": "63eabad0b7ce5b828f11ee54ecdb7ea5c213607a08bd99ccc4131e1a9fc8f665",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-bindat/emaxx/stderr.txt": "d403cbf6ebf9eb14c91d2f65956b8a387eef1181856fb6be67caeebb2173fcb5",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-bindat/emaxx/validation.json": "6960f0b3f44b073105b7c73669b71fe83aa8b89e1d91d0ed77799c347725e13b",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source284-core-pilot-all/round-00/upstream-bindat/emaxx/process.json": "c99021f409351770b5a7449ca22ca26982ffbe39c93028e7a36e8679ae433659"
+      },
+      "qualification": "One paired sample per locked workload; diagnostic timings, not a confidence interval or parity certification. Every Emaxx result equals the actual GNU result and locked expected value; modes match. GNU identity and all measured inputs match their recorded hashes. All bodies exceed100ms. Emaxx allocation counters explicitly report unavailable; physical accounting remains incomplete. No compiler, local validation or profiling job ran concurrently. Required repeated calibrated measurement and broader correctness/architecture remain open.",
+      "goal_complete": false
+    },
+    "profiles": [
+      {
+        "directory": "source284-call-profiles/bytecode-calls/emaxx",
+        "checked_samples": 20,
+        "result": "71999994000000",
+        "modes": {
+          "driver": "interpreted",
+          "core-perf-byte-calls": "bytecode",
+          "core-perf-byte-add": "bytecode"
+        },
+        "call_graph_populated": true,
+        "sample_sha256": "201cea60d5f5754b9091221a62d3dee7bc34bfa739b4b31eee10f69ea40d2611"
+      },
+      {
+        "directory": "source284-call-profiles/bytecode-calls/oracle",
+        "checked_samples": 20,
+        "result": "71999994000000",
+        "modes": {
+          "driver": "interpreted",
+          "core-perf-byte-calls": "bytecode",
+          "core-perf-byte-add": "bytecode"
+        },
+        "call_graph_populated": true,
+        "sample_sha256": "9d4cd702bf586ca446c07621026561e85c5f5ad09a727ab874a3c6fb14810f79"
+      },
+      {
+        "directory": "source284-call-profiles/bytecode-to-native/emaxx",
+        "checked_samples": 20,
+        "result": "128000008000000",
+        "modes": {
+          "driver": "interpreted",
+          "core-perf-byte-native": "bytecode",
+          "comp-tests-fixnum-1-plus-f": "native"
+        },
+        "call_graph_populated": true,
+        "sample_sha256": "8da9b0dbad379ffb2e7ec1d58d20321d318cfd41c6292f5df9834860b6bcedec"
+      },
+      {
+        "directory": "source284-call-profiles/bytecode-to-native/oracle",
+        "checked_samples": 20,
+        "result": "128000008000000",
+        "modes": {
+          "driver": "interpreted",
+          "core-perf-byte-native": "bytecode",
+          "comp-tests-fixnum-1-plus-f": "native"
+        },
+        "call_graph_populated": false,
+        "sample_sha256": "a1f7aa7a3473602e9818e0d100e58a0ebd3f46b2e85bad508719d0c11a1630f7"
+      },
+      {
+        "directory": "source284-native-gnu-long-profile/bytecode-to-native/oracle",
+        "checked_samples": 80,
+        "result": "128000008000000",
+        "modes": {
+          "driver": "interpreted",
+          "core-perf-byte-native": "bytecode",
+          "comp-tests-fixnum-1-plus-f": "native"
+        },
+        "call_graph_populated": true,
+        "sample_sha256": "35e57a3b2e3b5449f4ab3e8942d12dab07e01f540a2fc311b9bbf2be73b498fd"
+      }
+    ],
+    "dependencies": [
+      "source284-reader-printer-selected"
+    ],
+    "qualification": "All16 locked workloads and32 ordinary processes completed with equal actual results and modes. One sample per editor/workload gives a3.0547 geometric mean Emaxx/GNU time ratio, range1.0942 to9.5751; these are diagnostic samples, not resolved confidence intervals. Emaxx allocation counters report unavailable, not zero. All work sizes, modes, timeout600 and tolerance1.03 are unchanged. Native preparation used identical upstream source bytes and each editor own artifact. Profiling followed timing with no concurrent local validation. Four original20-repeat profile workloads pass, but the first GNU native sample has no stacks despite sampler exit0; it is not usable profile evidence. A GNU-only80-repeat successor captures actual stacks and passes every original result/mode check. Profile durations are excluded from timing evidence. CPU samples identify VM dispatch, closure setup, function lookup/backtrace and native entry bookkeeping as candidate costs, not proof that any can be removed without semantics/ownership work. Full validation, physical counters, calibrated repeated timing, remaining architecture and adversarial review remain open.",
+    "goal_complete": false
+  },
+  "archive": {
+    "path": "source284-core-performance-pilot.tar.gz",
+    "bytes": 1115625,
+    "sha256": "8ddf820d3bf1aa9417daf45fd3dd55814528feaf12e8460e1909a6b82d0f1cc5"
+  },
+  "files": [
+    {
+      "path": "audit-source284-performance-pilot.py",
+      "bytes": 4818,
+      "sha256": "d10f86569f5ca4b41bc770a3ccd68637b1d1b4ecf21fd3f05361dc72d7cc3eba"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source284-performance.py",
+      "bytes": 5108,
+      "sha256": "b4b9cde878026da491a7b8e9af85684f7f93dba3eaf63beb2e524a15dc2e63c7"
+    },
+    {
+      "path": "profile-source284-calls.py",
+      "bytes": 6441,
+      "sha256": "a103d3cf06fd4c86f0a9f6502b392435c9e73fc08557b10d92a7ba8d17884799"
+    },
+    {
+      "path": "profile-source284-native-gnu-long.py",
+      "bytes": 6489,
+      "sha256": "a6690abff79994db3b85bb82832f8887eb8486cef777920920d62a227ab4fce3"
+    },
+    {
+      "path": "run-source284-performance-pilot.py",
+      "bytes": 3501,
+      "sha256": "fbde91e7caebca8dc4b0c487ae417ef19d442ca5b905ad4a752e0132c10185ed"
+    },
+    {
+      "path": "source284-call-profile-result.json",
+      "bytes": 3748,
+      "sha256": "8ff20abea103009edb851691877ba8f9648d69fbbb4859a0c2f43b014d8f5e18"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/emaxx/process.json",
+      "bytes": 1797,
+      "sha256": "2c38e2da2e06869dcbcdf4325c3431445d1d97460208155fd49193a74b9a64c9"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/emaxx/report.json",
+      "bytes": 12158,
+      "sha256": "475362e33a63d5fb622ac99b16e32d6faeb7364734e1278627f1cc7cc1c1a372"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/emaxx/sample.stderr",
+      "bytes": 301,
+      "sha256": "e80eabdb470af7a2a8d17386940653c1ae2edd32d593635706616a4b0d8ec190"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/emaxx/sample.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/emaxx/sample.txt",
+      "bytes": 138111,
+      "sha256": "201cea60d5f5754b9091221a62d3dee7bc34bfa739b4b31eee10f69ea40d2611"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/emaxx/stderr.txt",
+      "bytes": 20,
+      "sha256": "b94f2c456ead40ef7db16f225079f99bc134c5bcbf437ae92bde38da0c8cfb72"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/emaxx/stdout.txt",
+      "bytes": 12163,
+      "sha256": "c9751de99bceac097274d93a407699f665f40e7923e066f7ef955dacdf9372c8"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/emaxx/validation.json",
+      "bytes": 339,
+      "sha256": "926954e27bec4409f07b67674bb0023574ca45e1e0afa6f5f9e667a75beb5d2d"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/oracle/process.json",
+      "bytes": 1738,
+      "sha256": "86eca3d773fcbf824b454d2c3c801e56ac34655fb63b3569defe9e937f8f948d"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/oracle/report.json",
+      "bytes": 10596,
+      "sha256": "7d8a1556afc81b389dffedcc02c64a50ecbb2bd2427008b350b1b7b7e79e6d34"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/oracle/sample.stderr",
+      "bytes": 302,
+      "sha256": "d8b2289d6a2b77db40847f5a0c88da96c94f37d1b0f979b262b162095ab3d38e"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/oracle/sample.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/oracle/sample.txt",
+      "bytes": 136854,
+      "sha256": "9d4cd702bf586ca446c07621026561e85c5f5ad09a727ab874a3c6fb14810f79"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/oracle/stderr.txt",
+      "bytes": 20,
+      "sha256": "b94f2c456ead40ef7db16f225079f99bc134c5bcbf437ae92bde38da0c8cfb72"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/oracle/stdout.txt",
+      "bytes": 10601,
+      "sha256": "eb1317aff9067625a52e4d97e9c69fcc84910afdc17c83ab3fa51413cc67ad2e"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-calls/oracle/validation.json",
+      "bytes": 340,
+      "sha256": "24bd8d9738abd3687ed638f9aaa519835dffd0edba0ce35f3d37f9153baa5bd5"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/emaxx/process.json",
+      "bytes": 1806,
+      "sha256": "fc6aa0bf76b0427f17eca93d0b573ac234dd72bed8a963dba7bc8f6c8251bb65"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/emaxx/report.json",
+      "bytes": 12189,
+      "sha256": "e3a0d325128573aae766f8280ee6aaeb552262502d61a9e2302432a1f0dd9f23"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/emaxx/sample.stderr",
+      "bytes": 305,
+      "sha256": "af0edb26141431ddef016659da5ecbc3fdeed5bbf00e6441596a0320899c3909"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/emaxx/sample.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/emaxx/sample.txt",
+      "bytes": 139116,
+      "sha256": "8da9b0dbad379ffb2e7ec1d58d20321d318cfd41c6292f5df9834860b6bcedec"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/emaxx/stderr.txt",
+      "bytes": 173,
+      "sha256": "69d70a11be26a4ac922a813054792c77f7e6370381e16e405e39bc72c4c09ca0"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/emaxx/stdout.txt",
+      "bytes": 12183,
+      "sha256": "bd6f70245e4450b7fd6ebc46ab130e90dd320e2adb8f988aa82cb6b2339d99f7"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/emaxx/validation.json",
+      "bytes": 351,
+      "sha256": "8049b9c9131f882f1a10f8cc107c0d36c8fe0b3bd7d20126b0e1f52617fd5e9d"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/oracle/process.json",
+      "bytes": 1757,
+      "sha256": "6a8c7b177e6ef3c3a736a641d179d84cefe806cb2ab810fbcc653db2a3689d6b"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/oracle/report.json",
+      "bytes": 10627,
+      "sha256": "a390542a15fde8e99e87069c35201e7ff5173e4fb9b9e185d5e1b475323d531e"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/oracle/sample.stderr",
+      "bytes": 306,
+      "sha256": "35369667b190c6ea693be922575c0a8536b667af6429eda5e4227d872bb09770"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/oracle/sample.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/oracle/sample.txt",
+      "bytes": 121523,
+      "sha256": "a1f7aa7a3473602e9818e0d100e58a0ebd3f46b2e85bad508719d0c11a1630f7"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/oracle/stderr.txt",
+      "bytes": 174,
+      "sha256": "0c5e1ea01ca4c3fdeaa138bf334da87ce9bc065d7b682638d046fbfbfaf86378"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/oracle/stdout.txt",
+      "bytes": 10621,
+      "sha256": "0d6c6e49cb85c16049cd3b18d8a0ca405f519ad287612db4b9ff71a656433f93"
+    },
+    {
+      "path": "source284-call-profiles/bytecode-to-native/oracle/validation.json",
+      "bytes": 352,
+      "sha256": "05e437c0546fd11f6f4b6517975b5df16e7a772fa47c860874ac20d788cce19b"
+    },
+    {
+      "path": "source284-core-native/emaxx/artifact.json",
+      "bytes": 191,
+      "sha256": "bf99512dc1a9c65bfe02172d9e280736e06d8872d59563eb29d6ec4dcec74a2e"
+    },
+    {
+      "path": "source284-core-native/emaxx/compile/process.json",
+      "bytes": 1439,
+      "sha256": "c5d5a2663c20c1ebb42702a9d4df60a78bac847ebfb25814b0ff87099b19a052"
+    },
+    {
+      "path": "source284-core-native/emaxx/compile/stderr.txt",
+      "bytes": 472,
+      "sha256": "22274963094fb1a8d531c0b239237ea9459146b0c15ed7d86cec9ba242734723"
+    },
+    {
+      "path": "source284-core-native/emaxx/compile/stdout.txt",
+      "bytes": 37,
+      "sha256": "c3422ab9e001ab5dc541e76982705923df2251804d19030acf583ef8193f1df1"
+    },
+    {
+      "path": "source284-core-native/measurement-source/core_runtime_perf.el",
+      "bytes": 13471,
+      "sha256": "7506890fe0d969d95429b5bc72c1da1415ad6db019134ab64277c3bd9f3b7bb7"
+    },
+    {
+      "path": "source284-core-native/measurement-source/core_runtime_perf.json",
+      "bytes": 4326,
+      "sha256": "bf8fb35c09ffdb82c0641caf50a932c13bed6447382e4d113cbe5d88194598cd"
+    },
+    {
+      "path": "source284-core-native/measurement-source/core_runtime_perf.py",
+      "bytes": 25428,
+      "sha256": "68cecd39655fb2ca5c4701f9067ccb467721f39e50d424c2bf368df1de6cdb35"
+    },
+    {
+      "path": "source284-core-native/measurement-source/worktree.patch",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "source284-core-native/oracle/artifact.json",
+      "bytes": 191,
+      "sha256": "bf99512dc1a9c65bfe02172d9e280736e06d8872d59563eb29d6ec4dcec74a2e"
+    },
+    {
+      "path": "source284-core-native/oracle/compile/process.json",
+      "bytes": 1384,
+      "sha256": "05d4c36146931b978f9c71a87dc8b9e5d664acdf920c056a473d52e0f8efeb8b"
+    },
+    {
+      "path": "source284-core-native/oracle/compile/stderr.txt",
+      "bytes": 472,
+      "sha256": "2bbcbeab636b88509ed71625e47b7ffa0c716cfc3cb826f9912ce071a2abc755"
+    },
+    {
+      "path": "source284-core-native/oracle/compile/stdout.txt",
+      "bytes": 37,
+      "sha256": "9b6b8d0071b48e93bf491c99448b297218adf131b57b92588e167a457fb88824"
+    },
+    {
+      "path": "source284-core-native/provenance.json",
+      "bytes": 1051879,
+      "sha256": "f582244b5fd8813ec5d2eb50771cb6195b4bc14e8d4c85abd032c3ed2eb18e96"
+    },
+    {
+      "path": "source284-core-native/source/comp-test-funcs.el",
+      "bytes": 18832,
+      "sha256": "582c0cd31abbc97aff9299304d3dff879dfdbe51614b3344d9676831fc553965"
+    },
+    {
+      "path": "source284-core-pilot-all/contract.json",
+      "bytes": 4326,
+      "sha256": "bf8fb35c09ffdb82c0641caf50a932c13bed6447382e4d113cbe5d88194598cd"
+    },
+    {
+      "path": "source284-core-pilot-all/final-inputs.json",
+      "bytes": 1050855,
+      "sha256": "330c03edcf8ee7b3f15efa7ab4245f4472de2b011a32f37e2cf87f8c8d439652"
+    },
+    {
+      "path": "source284-core-pilot-all/measurement-source/core_runtime_perf.el",
+      "bytes": 13471,
+      "sha256": "7506890fe0d969d95429b5bc72c1da1415ad6db019134ab64277c3bd9f3b7bb7"
+    },
+    {
+      "path": "source284-core-pilot-all/measurement-source/core_runtime_perf.json",
+      "bytes": 4326,
+      "sha256": "bf8fb35c09ffdb82c0641caf50a932c13bed6447382e4d113cbe5d88194598cd"
+    },
+    {
+      "path": "source284-core-pilot-all/measurement-source/core_runtime_perf.py",
+      "bytes": 25428,
+      "sha256": "68cecd39655fb2ca5c4701f9067ccb467721f39e50d424c2bf368df1de6cdb35"
+    },
+    {
+      "path": "source284-core-pilot-all/measurement-source/worktree.patch",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "source284-core-pilot-all/provenance.json",
+      "bytes": 1052266,
+      "sha256": "146be078a570619b643799effc0db8afd352846b501ba2a61379c9bd84a907c4"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-calls/emaxx/process.json",
+      "bytes": 1644,
+      "sha256": "7ef84b6baf4635d49fb35a43eb016ab36c7fde83dfeea7dbab4ae985730b9550"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-calls/emaxx/report.json",
+      "bytes": 959,
+      "sha256": "5ef47972d14fe61a368825169cb778a91d4f0aa39126bb30b222e79ca443c95e"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-calls/emaxx/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-calls/emaxx/stdout.txt",
+      "bytes": 642,
+      "sha256": "38a3c94b1b8aa45bfc0f795f8159442777de70ab6462ce4edb4477d9018e3202"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-calls/emaxx/validation.json",
+      "bytes": 2708,
+      "sha256": "40062665cb2045ca9ee799f3929f80a55070d59132d4f94399dde6d0e9ddb14d"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-calls/oracle/process.json",
+      "bytes": 1597,
+      "sha256": "41caf4ce44fef7b28ef23301a122018b50e94d44ed0fec75bcf959faa1ba9366"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-calls/oracle/report.json",
+      "bytes": 880,
+      "sha256": "8bcf528aef398d64184c0ffe5bbd5c624d71302abe1430bfdb3aa554345fed1b"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-calls/oracle/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-calls/oracle/stdout.txt",
+      "bytes": 563,
+      "sha256": "3b628af1a319e61ceba4399ea723fcf5e7fa97883faaab23f07c28f2757bbd1c"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-calls/oracle/validation.json",
+      "bytes": 2755,
+      "sha256": "597ac032bfed276a7405ef1eddcdd2bc51da7acc642f522cced9685ce30871cf"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-to-native/emaxx/process.json",
+      "bytes": 1663,
+      "sha256": "d815ae7effb633755a80e7e9bc01a84df99dbbff2c467e55a8eb7a0c09c11daa"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-to-native/emaxx/report.json",
+      "bytes": 972,
+      "sha256": "f3a0176b18f64f9d75957d481fe7bde667302d7a0877e5f92657324faf9aed54"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-to-native/emaxx/stderr.txt",
+      "bytes": 154,
+      "sha256": "db6c06a1a0700f7f145d3d21f176cae30cf20e3cfa3d013172c66a54d73b7c53"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-to-native/emaxx/stdout.txt",
+      "bytes": 644,
+      "sha256": "ef20c19b8228c0447914a1f8a69587064fd443be3221bd15c1f11c65252bdde7"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-to-native/emaxx/validation.json",
+      "bytes": 2740,
+      "sha256": "cdb5c36762ce52ee9ddae9a836942f87ce6713f2d96c1b43450e4fb030b3e707"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-to-native/oracle/process.json",
+      "bytes": 1602,
+      "sha256": "c68d1ffebd7bdde7fbc519947b271a48db8f1ed00cd25d51b43504d058d0c921"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-to-native/oracle/report.json",
+      "bytes": 894,
+      "sha256": "fc802bbf3cd515dc37c49cc0306bd719658d0ea2e6472bdd158ffff909103536"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-to-native/oracle/stderr.txt",
+      "bytes": 155,
+      "sha256": "ec16c7ead86cc09a854c0ee44f5dcb235db66198d05ea037749fbfbaa39c6380"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-to-native/oracle/stdout.txt",
+      "bytes": 566,
+      "sha256": "7d16f2c64eb65a6c4b5a43bebff76705c8512b1df2a7e0a97fd128af9367cdcf"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/bytecode-to-native/oracle/validation.json",
+      "bytes": 2774,
+      "sha256": "f2a9c67dd0b20241dcbff46c5fe91af07b2004c8c727f6f2255548b29155b2b8"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/cons-allocation/emaxx/process.json",
+      "bytes": 1645,
+      "sha256": "40a1d1907a1accaa6bfd77afe5f8bc37bdb29560cdae1c826dd001907b3773a4"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/cons-allocation/emaxx/report.json",
+      "bytes": 942,
+      "sha256": "03f022c6ea0f5a8e02d139aa7bb162187e4fade72ef1bca6f86019c3e5296904"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/cons-allocation/emaxx/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/cons-allocation/emaxx/stdout.txt",
+      "bytes": 658,
+      "sha256": "1a75c3fb1b73db6c45a7d941748c2c2dade6e4fc410f3f1edda2a24e345cb52c"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/cons-allocation/emaxx/validation.json",
+      "bytes": 2687,
+      "sha256": "048ccaa752ef234b5b6b0f5b3d60a96783edbbe5b14f6974e33ba70b0c56671a"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/cons-allocation/oracle/process.json",
+      "bytes": 1587,
+      "sha256": "f22889f3526716702787710eea6fb49641a7771d3bb0fee74c6f7c16bf2a84c9"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/cons-allocation/oracle/report.json",
+      "bytes": 880,
+      "sha256": "0c5cf42c7d2f2d4581a9cd5c760cc613f10a59744fa5ea567b4b4030e9151edd"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/cons-allocation/oracle/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/cons-allocation/oracle/stdout.txt",
+      "bytes": 596,
+      "sha256": "f666ba7a3b773764eb0048b586b14b06dc8fa1d6797eb024da677c61768927fb"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/cons-allocation/oracle/validation.json",
+      "bytes": 2740,
+      "sha256": "d705b47fd989bbd84dae1b5203d9bda0ff1d9e8ae6b3ecff183fbd0a5ac82086"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/explicit-gc/emaxx/process.json",
+      "bytes": 1631,
+      "sha256": "786b9b865b6486d7aacf2a7d47f8928520cbec0a7e63f59c7c1cc8c878bbe024"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/explicit-gc/emaxx/report.json",
+      "bytes": 940,
+      "sha256": "885bf168ba8450cd4274e47e431450731e3eec47d23279081df72cd4f2bd1036"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/explicit-gc/emaxx/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/explicit-gc/emaxx/stdout.txt",
+      "bytes": 668,
+      "sha256": "45ea6739789eb87944a3c4639724f4b8cc55ee35c050d1a2b50c2affd773da3f"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/explicit-gc/emaxx/validation.json",
+      "bytes": 2676,
+      "sha256": "f27312689c66d408b335399dd18303b841d1ca128d458ff7654c9c5255896b59"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/explicit-gc/oracle/process.json",
+      "bytes": 1572,
+      "sha256": "60aa8d9b5ffe472176666365b5ef77ae4027c75b546aca7e3390c5240ec5e0c5"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/explicit-gc/oracle/report.json",
+      "bytes": 849,
+      "sha256": "ca4c15ae5b4bde5ace64471cf73ca6650be569014a62fe0c941b59d1d3779bab"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/explicit-gc/oracle/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/explicit-gc/oracle/stdout.txt",
+      "bytes": 577,
+      "sha256": "482d9922edc22f2e2c92f80545f54b3f3eb2594a100ec5eea62d584aff8627c1"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/explicit-gc/oracle/validation.json",
+      "bytes": 2699,
+      "sha256": "897bfdc8e0550a830bdd725479fa82fcce9c970c87453b87fa17b0a4bccbbe25"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-calls/emaxx/process.json",
+      "bytes": 1646,
+      "sha256": "12bbd59ded10a46682566682c048967dd9eb31383d6e40450db2c4ade8c37d84"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-calls/emaxx/report.json",
+      "bytes": 956,
+      "sha256": "d76fe09ef3d4e2613ce1a3b393fdbebd3dadf1faa5d9f1cdd46d4f0216dc4085"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-calls/emaxx/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-calls/emaxx/stdout.txt",
+      "bytes": 641,
+      "sha256": "324e3890e24c8e07e0e9afa5b303495ca1c1fd1d07a206ff2077255469b46df5"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-calls/emaxx/validation.json",
+      "bytes": 2708,
+      "sha256": "0760a1e39d2191e106e1ece06bb906bbcfd53b53a9bc3d865f20f01b9f470c1f"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-calls/oracle/process.json",
+      "bytes": 1588,
+      "sha256": "c6018a09b090c92db71a11d8fbf6a24ecca30b1adbeb027f35adbae04ce4c5d8"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-calls/oracle/report.json",
+      "bytes": 883,
+      "sha256": "9603d21a9b3d718ce311d0a880c73583718682ebdc5c0a00d1cd6277bc0df1b6"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-calls/oracle/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-calls/oracle/stdout.txt",
+      "bytes": 568,
+      "sha256": "bbb5986e0e411f08dbb7e5fcc8ce556fee2276d281dbca8010ba0ad08d943df5"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-calls/oracle/validation.json",
+      "bytes": 2750,
+      "sha256": "08407157631142ed425fce8b21319339349d0ef4a06654a026d99352c37a2f5e"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-dynamic/emaxx/process.json",
+      "bytes": 1651,
+      "sha256": "6720bbe373ce5923e066f63f9cbd044f98b323fc117a43e8dda65e976d7123ff"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-dynamic/emaxx/report.json",
+      "bytes": 930,
+      "sha256": "7ea14fcf04043b85edeaa7ed70ebf356ba43de3ddbe3384dcfef9096ed72bfe5"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-dynamic/emaxx/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-dynamic/emaxx/stdout.txt",
+      "bytes": 636,
+      "sha256": "b1a3ff037dc1e90d1aa77edbe23ba80db5829a49378feac6e0ed8717b3e52710"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-dynamic/emaxx/validation.json",
+      "bytes": 2681,
+      "sha256": "28904f5903a54f8da532518da7b8615c28cb3f96e6423a0155412adc4c0934de"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-dynamic/oracle/process.json",
+      "bytes": 1605,
+      "sha256": "9979fd6feb13821472e2cb767492c4154eafc07d82dbda8a5efbaab09ca5f18c"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-dynamic/oracle/report.json",
+      "bytes": 851,
+      "sha256": "980c9345ba7555bea5a611f8902266cc71126c66da7d8f648631cd64ca3efa16"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-dynamic/oracle/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-dynamic/oracle/stdout.txt",
+      "bytes": 557,
+      "sha256": "f645a4d5c2754933c616015a393661069685cb3e4aaaf08dce09641707c1e95a"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-dynamic/oracle/validation.json",
+      "bytes": 2729,
+      "sha256": "8927ff6e3ac01461f4fdb8ef4c7a6ef444cd34c7310247e347731e31b8d459b8"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-lexical/emaxx/process.json",
+      "bytes": 1662,
+      "sha256": "d652e08b94eda7ccbb1277d9e6e025de653eaad451dc11f60231490ba5940d48"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-lexical/emaxx/report.json",
+      "bytes": 930,
+      "sha256": "a6c1ebcaa660e6bfc2ab04cedacddffce76ffe8f3f8c270540062a943725f3f3"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-lexical/emaxx/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-lexical/emaxx/stdout.txt",
+      "bytes": 636,
+      "sha256": "072cb5e8016a6a6500bc828f00d07c748b886f070f5ce4afc9cf2b550fd16870"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-lexical/emaxx/validation.json",
+      "bytes": 2692,
+      "sha256": "7770ac89b1fb1d94228bdb4f52abdf2881299ed699689c5456e654d508e96903"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-lexical/oracle/process.json",
+      "bytes": 1595,
+      "sha256": "d82a7e1dcafa7ff775c5f3f327a17acfa12923b2b0272d1700747d723033acce"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-lexical/oracle/report.json",
+      "bytes": 855,
+      "sha256": "0d6abb2e40e46cd53392c8f449b4bdf2152a0b753ad38ca0220c625ccf8308e6"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-lexical/oracle/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-lexical/oracle/stdout.txt",
+      "bytes": 561,
+      "sha256": "db5adb8a8346fb55f615891958e7ef8ab507965e8878392218b1ae29e8fbe258"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-lexical/oracle/validation.json",
+      "bytes": 2723,
+      "sha256": "1945700df013f5ea755d16873d7b23e9229dd72385487b949b96310d01d1103a"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-to-native/emaxx/process.json",
+      "bytes": 1656,
+      "sha256": "d8115765d60fc2588a525dc7f43ee24a7d6fd8f0ea9c8476c1df15276c224c07"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-to-native/emaxx/report.json",
+      "bytes": 975,
+      "sha256": "c9df0c21c673be7bdb5881f0bbda15f31a3b73da2c4643c8ddde2786755cd376"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-to-native/emaxx/stderr.txt",
+      "bytes": 154,
+      "sha256": "db6c06a1a0700f7f145d3d21f176cae30cf20e3cfa3d013172c66a54d73b7c53"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-to-native/emaxx/stdout.txt",
+      "bytes": 642,
+      "sha256": "3c0ce6befc5bc3b6ea954b3878731fdc95c5149f0466b2e5875e325d92d2d9dd"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-to-native/emaxx/validation.json",
+      "bytes": 2737,
+      "sha256": "5256dc98ddc5bc5e1aa4a521625cbefaf4d15b2487811fad3bf373e3c43a42b0"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-to-native/oracle/process.json",
+      "bytes": 1608,
+      "sha256": "91db39d9a7f6a5f91e4015a1b9cb847eb717a31eab94acb50d979580ac7168a9"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-to-native/oracle/report.json",
+      "bytes": 897,
+      "sha256": "04320569ac7c4ae46289ecdd2b3c157f0ab0448ede3d7cfae300a83a250bafe5"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-to-native/oracle/stderr.txt",
+      "bytes": 155,
+      "sha256": "ec16c7ead86cc09a854c0ee44f5dcb235db66198d05ea037749fbfbaa39c6380"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-to-native/oracle/stdout.txt",
+      "bytes": 564,
+      "sha256": "5050c02395284a220fec7989fc23154271f890a8cdb9cd9479a407447202f48b"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/interpreted-to-native/oracle/validation.json",
+      "bytes": 2784,
+      "sha256": "201c37b3c7f3d8ea47ec7cd99d86067fe25d0938fbb0cd5d522af12f58205ef6"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/list-traversal/emaxx/process.json",
+      "bytes": 1642,
+      "sha256": "8fc42cc970e9dbf173d2079b8309cd55840497c90217eecff2d3efd4998b24d9"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/list-traversal/emaxx/report.json",
+      "bytes": 907,
+      "sha256": "655281a77a3c2ee2117963789e439d763c8418ca93e42b521f747f98dce7920e"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/list-traversal/emaxx/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/list-traversal/emaxx/stdout.txt",
+      "bytes": 638,
+      "sha256": "6c4ffb642160e0ab5cda4405e917ee09e438036596cb2093d4f765530b141f71"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/list-traversal/emaxx/validation.json",
+      "bytes": 2651,
+      "sha256": "e2159aaddd280e913dc5f60fd8754e53aa91421784575472cf81b46130917ec5"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/list-traversal/oracle/process.json",
+      "bytes": 1605,
+      "sha256": "d8133f5a2da36bdf376b8c66236a0dd82b907c96870f434d4b101694f4573b0e"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/list-traversal/oracle/report.json",
+      "bytes": 828,
+      "sha256": "942b1ebf5e20160a9af11f5b75aff1be56c7373e52ad0024463a643f50a254c7"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/list-traversal/oracle/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/list-traversal/oracle/stdout.txt",
+      "bytes": 559,
+      "sha256": "7add07827d220eceb8e67d5abb8408c7a986e64b56e99e6632956dc1dfa4ea0c"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/list-traversal/oracle/validation.json",
+      "bytes": 2708,
+      "sha256": "950e5febab4d2fb98730d5016a3c37201500dc704191d5ade60a364c828c583c"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/mapcar/emaxx/process.json",
+      "bytes": 1643,
+      "sha256": "cc05130e2e3b1b57ec454b1daf575f85b171d7b59b2ec262122e053b87344317"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/mapcar/emaxx/report.json",
+      "bytes": 915,
+      "sha256": "4e7fbd7237c4ec1dac5c2e3f135630b3bcd801bbb1d26bd8215ce469febe2839"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/mapcar/emaxx/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/mapcar/emaxx/stdout.txt",
+      "bytes": 657,
+      "sha256": "e12594085bbbbc0b5a813667aa3bf8ac5c9dbef589d6f5a94c84848fb642f1a7"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/mapcar/emaxx/validation.json",
+      "bytes": 2663,
+      "sha256": "4a03adf8455511aabd1d152d165c2c3533b559e755cf155fd3c1f376388f346a"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/mapcar/oracle/process.json",
+      "bytes": 1562,
+      "sha256": "2bfad267eb2d2f5a6711fac0a978175aaaa4c67d3788d114dfe3477ca24cfee1"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/mapcar/oracle/report.json",
+      "bytes": 843,
+      "sha256": "0eb874b15ed31c43bba94b9dd618e7f29aa7d21e1b37b7d6f82841d3971e67a1"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/mapcar/oracle/stderr.txt",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/mapcar/oracle/stdout.txt",
+      "bytes": 585,
+      "sha256": "88449fa530c34d1c179563a20a0378c5abfc07ba73da4ff9989e83da32e5f2a5"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/mapcar/oracle/validation.json",
+      "bytes": 2683,
+      "sha256": "29f879d3f9bf92b5c3ff3cee0d5cdc1afa8f03bd4d8a26335c0c28240cd6754f"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-execution/emaxx/process.json",
+      "bytes": 1652,
+      "sha256": "7450e320a06ec22fb4e717763727cdcbf1b4f342251441805ced4701aa2f3ede"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-execution/emaxx/report.json",
+      "bytes": 912,
+      "sha256": "1082a9a69e1004b7cf65ed41e548a7a335ac300b33aaec3638e51c333d210ca4"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-execution/emaxx/stderr.txt",
+      "bytes": 154,
+      "sha256": "db6c06a1a0700f7f145d3d21f176cae30cf20e3cfa3d013172c66a54d73b7c53"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-execution/emaxx/stdout.txt",
+      "bytes": 637,
+      "sha256": "23595c9ef9c96450124384a3ca48609214a1b83004575150fe6484593ae9cea1"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-execution/emaxx/validation.json",
+      "bytes": 2669,
+      "sha256": "c22b4acbd4486c3a4290435f510af25c520c1c99f4f95e58135629f216a103d8"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-execution/oracle/process.json",
+      "bytes": 1587,
+      "sha256": "c4d3222f06b3c61e8dc12bb9dee1de2237c16ed3f31e09521ccef51ae44f88e7"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-execution/oracle/report.json",
+      "bytes": 833,
+      "sha256": "173ce1f07fd7134cdf86a5ba9376e5e73091719d3815918bf85ac8f4d0d520a4"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-execution/oracle/stderr.txt",
+      "bytes": 155,
+      "sha256": "ec16c7ead86cc09a854c0ee44f5dcb235db66198d05ea037749fbfbaa39c6380"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-execution/oracle/stdout.txt",
+      "bytes": 558,
+      "sha256": "448dedb47c3162905cc4fb25e9199c8429459fa180ce120439513fdfab26a47c"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-execution/oracle/validation.json",
+      "bytes": 2698,
+      "sha256": "32603d1dbdd456c9ea8dff5b33f0c126bc98e8fd83377577a0c8978991cf01fc"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-bytecode/emaxx/process.json",
+      "bytes": 1655,
+      "sha256": "f5eae53dc50b3a8b5aab40c5d9104d77d9f1b5acbaf1c951b41c9fb2a46feedd"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-bytecode/emaxx/report.json",
+      "bytes": 953,
+      "sha256": "9232790ecc9dff200241e13c750d4d10cc714e2e7dc106ed90bbf6f37f795217"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-bytecode/emaxx/stderr.txt",
+      "bytes": 154,
+      "sha256": "db6c06a1a0700f7f145d3d21f176cae30cf20e3cfa3d013172c66a54d73b7c53"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-bytecode/emaxx/stdout.txt",
+      "bytes": 637,
+      "sha256": "0e29f598f07ffd72e14550e57d9dcc2c2b45fc22272f952f32d1a4ae1d7a432d"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-bytecode/emaxx/validation.json",
+      "bytes": 2714,
+      "sha256": "b68fa52d7d56df2b7aa91823b8c473099e5b5047e752fd1012c97a5a500fb2cd"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-bytecode/oracle/process.json",
+      "bytes": 1603,
+      "sha256": "8c00066c7e9d86010223d6da41b690c4af826c3fe86655cd8f036d8f1d2d1c38"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-bytecode/oracle/report.json",
+      "bytes": 879,
+      "sha256": "df93f7b68949ab16d13fd5341e221a085f061bfd189db2a136717e805738dc98"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-bytecode/oracle/stderr.txt",
+      "bytes": 155,
+      "sha256": "ec16c7ead86cc09a854c0ee44f5dcb235db66198d05ea037749fbfbaa39c6380"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-bytecode/oracle/stdout.txt",
+      "bytes": 563,
+      "sha256": "140511775d0219db5ea06e44c4f05ce88bb50a6c0aceb5f94a425d83c80b96d7"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-bytecode/oracle/validation.json",
+      "bytes": 2761,
+      "sha256": "0cbf5591c3a09c81ded3a709144e63c990a04bccf7eb62611406ab550b1d1983"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-interpreted/emaxx/process.json",
+      "bytes": 1656,
+      "sha256": "62817bf4f2d5fa53e681ea64078ce2021a575407a4556f21478c8e9e81e07d78"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-interpreted/emaxx/report.json",
+      "bytes": 959,
+      "sha256": "de07187d5f19787001563b1a19ce7f7df7a49762f513197f68ce9363f47e70e0"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-interpreted/emaxx/stderr.txt",
+      "bytes": 154,
+      "sha256": "db6c06a1a0700f7f145d3d21f176cae30cf20e3cfa3d013172c66a54d73b7c53"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-interpreted/emaxx/stdout.txt",
+      "bytes": 637,
+      "sha256": "5dca566bd81a884c5a39dd95803347c9ec61696f4ded402130ae0433e78161f2"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-interpreted/emaxx/validation.json",
+      "bytes": 2721,
+      "sha256": "8c60de4a8fe8a9f5d2b7930741abb5d4a0b2b69bf090a6fdac1c4644045eb9c3"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-interpreted/oracle/process.json",
+      "bytes": 1621,
+      "sha256": "e54cf8bd7db984fcf071b34e8a15be12ce945064ce37774cb94c408c8a40072b"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-interpreted/oracle/report.json",
+      "bytes": 885,
+      "sha256": "479f69f282719e0f817f4e196202fc1aaac3671eb16cc3503b8f15decdbb260c"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-interpreted/oracle/stderr.txt",
+      "bytes": 155,
+      "sha256": "ec16c7ead86cc09a854c0ee44f5dcb235db66198d05ea037749fbfbaa39c6380"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-interpreted/oracle/stdout.txt",
+      "bytes": 563,
+      "sha256": "6e0357776fd182b31b3b11ae5652cb2b2d116575f38ca571c52ba10c91169fba"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/native-to-interpreted/oracle/validation.json",
+      "bytes": 2785,
+      "sha256": "379c49953316508ba30159e11cefc2fdbb047afc788125b251f2f1bab9307a16"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-bindat/emaxx/process.json",
+      "bytes": 1656,
+      "sha256": "c99021f409351770b5a7449ca22ca26982ffbe39c93028e7a36e8679ae433659"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-bindat/emaxx/report.json",
+      "bytes": 1218,
+      "sha256": "63eabad0b7ce5b828f11ee54ecdb7ea5c213607a08bd99ccc4131e1a9fc8f665"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-bindat/emaxx/stderr.txt",
+      "bytes": 258,
+      "sha256": "d403cbf6ebf9eb14c91d2f65956b8a387eef1181856fb6be67caeebb2173fcb5"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-bindat/emaxx/stdout.txt",
+      "bytes": 912,
+      "sha256": "99b760c6ea9f57e1b8f2bc4009890566eaae81b10a8db5bf1bed7f5227751b9d"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-bindat/emaxx/validation.json",
+      "bytes": 2983,
+      "sha256": "6960f0b3f44b073105b7c73669b71fe83aa8b89e1d91d0ed77799c347725e13b"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-bindat/oracle/process.json",
+      "bytes": 1586,
+      "sha256": "bdad8e63529393ce574173a90e8d43fa25ac962b911a9d967d2a51b9c6d39c92"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-bindat/oracle/report.json",
+      "bytes": 1161,
+      "sha256": "dc38967ee6d1b667958fe5f6e92a4614e33ba1c672413fda96c8c8baf2c25df0"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-bindat/oracle/stderr.txt",
+      "bytes": 258,
+      "sha256": "d403cbf6ebf9eb14c91d2f65956b8a387eef1181856fb6be67caeebb2173fcb5"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-bindat/oracle/stdout.txt",
+      "bytes": 855,
+      "sha256": "d0d3fc4224fe51aa7fef09c5a7a099de5e39b98a00b8b19c372173066f5d6384"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-bindat/oracle/validation.json",
+      "bytes": 3029,
+      "sha256": "4a3656f729488eedcaae471eea2c2e1b2a380e550a68c6ec5461688ae7f5e774"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-sort/emaxx/process.json",
+      "bytes": 1634,
+      "sha256": "e5cca723b486bff576e31568637a3e5a557ec260b416af4187f13e592be983c2"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-sort/emaxx/report.json",
+      "bytes": 960,
+      "sha256": "ed967c268d2ac426d37f6f2c27d321b003e142b5bba80c5c5d0f2bf180992672"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-sort/emaxx/stderr.txt",
+      "bytes": 232,
+      "sha256": "b1bd73464f466b74130c8c91cba1d5d26ad21305bdedc96fc5132d02b23966eb"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-sort/emaxx/stdout.txt",
+      "bytes": 631,
+      "sha256": "ae0e41e075c49ccab7fe47bfaa777ee992784b30e918c2794b3b6764c4b847fe"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-sort/emaxx/validation.json",
+      "bytes": 2705,
+      "sha256": "20c43e77527358d127a0492617295b45a0bb01f786c64f12f05f8772559275b3"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-sort/oracle/process.json",
+      "bytes": 1588,
+      "sha256": "d1473685778320e48f86de9138657141919df2126364d2de3c16ab00de0fff43"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-sort/oracle/report.json",
+      "bytes": 903,
+      "sha256": "63afc5f6a65c5685e6aae5936926248dbeb47094ec62bf728cfe06adced9ad42"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-sort/oracle/stderr.txt",
+      "bytes": 232,
+      "sha256": "b1bd73464f466b74130c8c91cba1d5d26ad21305bdedc96fc5132d02b23966eb"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-sort/oracle/stdout.txt",
+      "bytes": 574,
+      "sha256": "499d6d0a44683af369d95ab0ad1847d167c2b9657533cedad8e69d06442610f9"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-sort/oracle/validation.json",
+      "bytes": 2775,
+      "sha256": "caf89fbe5795a514b6cbe75ac0f3814968b563970dda8c3636a9160780a3a1e1"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-undo/emaxx/process.json",
+      "bytes": 1639,
+      "sha256": "2460db573f67d4099047c7cecb6e8b803a4112319b87556ccab2661637a8ebbe"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-undo/emaxx/report.json",
+      "bytes": 1062,
+      "sha256": "3914bb2ccf6127e220d5839bb6731e7a10961c08ef7f33c5af5be17013d00ffe"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-undo/emaxx/stderr.txt",
+      "bytes": 30225,
+      "sha256": "4f75f7d5f05d67f373fcebd3b1004623a4ae30a432d856d72a5ecc39e047a0a0"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-undo/emaxx/stdout.txt",
+      "bytes": 639,
+      "sha256": "2c1d3030f62ea1c400a5da7bb76db73079f7f1b8e80fe60ad924bae1bf07d4c4"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-undo/emaxx/validation.json",
+      "bytes": 2840,
+      "sha256": "46ae30487cf2a937d0d6cada8b87a7c6dc87ac820dd4a4a3a0dc3c31d8bcf2f7"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-undo/oracle/process.json",
+      "bytes": 1605,
+      "sha256": "79929a10935bf8c4029bc223028b56a4d7f7c92e2448d7d0ad62f6eb31a6cd4f"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-undo/oracle/report.json",
+      "bytes": 998,
+      "sha256": "dba6c06185702ef2ce5ed4d35b792155ee0419fafa0e5fd67ac5ac0c63300c7f"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-undo/oracle/stderr.txt",
+      "bytes": 30225,
+      "sha256": "4f75f7d5f05d67f373fcebd3b1004623a4ae30a432d856d72a5ecc39e047a0a0"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-undo/oracle/stdout.txt",
+      "bytes": 575,
+      "sha256": "c1173061667c764eaeb22c1610aee5d17c6071038cdba5a75ab910c3825697d0"
+    },
+    {
+      "path": "source284-core-pilot-all/round-00/upstream-undo/oracle/validation.json",
+      "bytes": 2915,
+      "sha256": "00665552c2204f26c2c14518c610fec37db4b03fed8cd3eda4e98af06e81fe6a"
+    },
+    {
+      "path": "source284-core-pilot-all/runs.json",
+      "bytes": 92966,
+      "sha256": "02244f59bd8bf24aab747dadb49b63f825d06b6b35201c1755000cdd236fad58"
+    },
+    {
+      "path": "source284-core-pilot-all/summary.json",
+      "bytes": 12554,
+      "sha256": "ed6ecd023659d4d3d98e041ea01ca2b8db94a44ef38d1bdbfd166428c659ddb1"
+    },
+    {
+      "path": "source284-native-gnu-long-profile-result.json",
+      "bytes": 2099,
+      "sha256": "461d478f261c1522f740793f5d3d2b1241fc582a69dc519697409c838c017066"
+    },
+    {
+      "path": "source284-native-gnu-long-profile/bytecode-to-native/oracle/process.json",
+      "bytes": 1796,
+      "sha256": "cff2944c79ee7b3bce1637ec5cd9f60e65081cfe375246534e8671f6bc2615d5"
+    },
+    {
+      "path": "source284-native-gnu-long-profile/bytecode-to-native/oracle/report.json",
+      "bytes": 41426,
+      "sha256": "80336141cffb696fd2edcb713dde8db4fd308ac9502fd1420f76f840aac2fa39"
+    },
+    {
+      "path": "source284-native-gnu-long-profile/bytecode-to-native/oracle/sample.stderr",
+      "bytes": 316,
+      "sha256": "d802ac5b58e27760f6930dcff7d8c0fa431a8f6645d7a98b09c60e38864b2952"
+    },
+    {
+      "path": "source284-native-gnu-long-profile/bytecode-to-native/oracle/sample.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source284-native-gnu-long-profile/bytecode-to-native/oracle/sample.txt",
+      "bytes": 141821,
+      "sha256": "35e57a3b2e3b5449f4ab3e8942d12dab07e01f540a2fc311b9bbf2be73b498fd"
+    },
+    {
+      "path": "source284-native-gnu-long-profile/bytecode-to-native/oracle/stderr.txt",
+      "bytes": 174,
+      "sha256": "0c5e1ea01ca4c3fdeaa138bf334da87ce9bc065d7b682638d046fbfbfaf86378"
+    },
+    {
+      "path": "source284-native-gnu-long-profile/bytecode-to-native/oracle/stdout.txt",
+      "bytes": 42440,
+      "sha256": "d38c3da5b0c83922d8062075323f9d3de8e24092fcbd76647f0b5daab085a657"
+    },
+    {
+      "path": "source284-native-gnu-long-profile/bytecode-to-native/oracle/validation.json",
+      "bytes": 352,
+      "sha256": "90829480f7994f9ff9e30797c3631b8a0197ad55b5d19ae5a42dfd72d98171e1"
+    },
+    {
+      "path": "source284-performance-pilot-audit.json",
+      "bytes": 63164,
+      "sha256": "19e3b99b41565e3fe15403e8f35911fdb7c258f72e5fbd4627d737eeee57c05c"
+    },
+    {
+      "path": "source284-performance-pilot-command.json",
+      "bytes": 1109,
+      "sha256": "6442d90ec0e905a1df1899a771e230efb9602db888fbd0d2fdf3c40d88ad972d"
+    },
+    {
+      "path": "source284-performance-pilot-result.json",
+      "bytes": 143,
+      "sha256": "8c54837859b83c9507e917cacbb10d956e818b286af855dcb78bc2d7aacaba80"
+    },
+    {
+      "path": "source284-performance-pilot.log",
+      "bytes": 1738,
+      "sha256": "d6cea1d412ac851f6d10c992d6aa257e1b8115a121338f223aa58831c2cebe61"
+    },
+    {
+      "path": "source284-performance-prepare-command.json",
+      "bytes": 955,
+      "sha256": "7dda24a9ffe8191b233fba84165c5ddc7f348c0e8e67e7684ecb9faa86a8d7f6"
+    },
+    {
+      "path": "source284-performance-prepare-result.json",
+      "bytes": 144,
+      "sha256": "831a26f52f319b73a16a170d259b2d5a70bfee44c29c1be4057352e21a8e9fee"
+    },
+    {
+      "path": "source284-performance-prepare.log",
+      "bytes": 73,
+      "sha256": "160c3fd389aa7e135619408dc402c13ef475876836a423c917a105471379227c"
+    },
+    {
+      "path": "source284-performance-result.json",
+      "bytes": 1013,
+      "sha256": "23502d55a002d0f20b834b4bb2ad0611aa2a15a517b7993986c1c6cf56b9b683"
+    },
+    {
+      "path": "source284-performance-state.json",
+      "bytes": 1014,
+      "sha256": "1827765f1a0fb6520bfa465d639136062d83e7b3a031202058515a80211daa18"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

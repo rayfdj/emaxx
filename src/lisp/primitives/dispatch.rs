@@ -38,8 +38,8 @@ pub(crate) use display::{
     set_echo_area_message_with_spans,
 };
 pub(crate) use lists::{
-    prepare_kbd_macro_minibuffer_entry, read_minibuffer_text_from_kbd_macro_inner,
-    sync_kbd_macro_execution,
+    next_kbd_macro_event, prepare_kbd_macro_minibuffer_entry,
+    read_minibuffer_text_from_kbd_macro_inner,
 };
 pub(crate) use misc_keymaps::{
     oclosure_type_of, restore_unicode_menu_case_table, unicode_menu_case_table,

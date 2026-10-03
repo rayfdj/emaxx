@@ -2,19 +2,19 @@
 //!
 //! Ports the opcode set and operand encodings of GNU `src/bytecode.c`
 //! (`BYTE_CODES`, `exec_byte_code`) so genuine `.elc` byte-code-function
-//! objects can be decoded, validated, and — in a later phase — executed.
-//! This phase covers decoding only: recognizing genuine objects, walking
-//! their opcode stream, and rejecting unsupported or corrupt bytecode
-//! with precise errors instead of misexecuting it (issue #10).
+//! objects can be decoded, validated, and executed.
+//! Whole-program decoding remains available for diagnostics. Execution
+//! fetches instructions from the original string at its current byte cursor.
 
 pub mod vm;
 
 use super::types::{Kind, Value, VectorRef};
-use std::rc::Rc;
 
 /// Why a byte-code object or its opcode stream was rejected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ByteCodeError {
+    /// Execution reached the end of the actual code string.
+    EndOfCode { offset: usize },
     /// A byte value GNU 30.2 leaves undefined (its exec loop signals
     /// "Invalid byte opcode"), at this offset in the code string.
     UnknownOpcode { offset: usize, byte: u8 },
@@ -26,7 +26,8 @@ pub enum ByteCodeError {
         index: usize,
         constants_len: usize,
     },
-    /// A jump destination lies outside the code string.
+    /// A diagnostic jump destination lies outside the code string.
+    #[cfg(test)]
     JumpOutOfRange {
         offset: usize,
         target: usize,
@@ -35,18 +36,21 @@ pub enum ByteCodeError {
     /// A jump destination lands inside another instruction; the GNU
     /// compiler only ever emits instruction-boundary targets, so this
     /// indicates corruption.
+    #[cfg(test)]
     JumpIntoInstruction { offset: usize, target: usize },
     /// The object's slots do not form a genuine GNU byte-code function
     /// (wrong types or too few slots).
     MalformedObject(String),
-    /// The code string contains a char above U+00FF, so it cannot be a
-    /// unibyte opcode string.
+    /// The code string is multibyte, which `make-byte-code` rejects.
     NonUnibyteCode { char_index: usize },
 }
 
 impl std::fmt::Display for ByteCodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ByteCodeError::EndOfCode { .. } => {
+                write!(f, "byte code ran off the end of its program")
+            }
             ByteCodeError::UnknownOpcode { offset, byte } => {
                 write!(f, "invalid byte opcode: op={byte}, ptr={offset}")
             }
@@ -61,6 +65,7 @@ impl std::fmt::Display for ByteCodeError {
                 f,
                 "constant index {index} out of range (vector length {constants_len}) at {offset}"
             ),
+            #[cfg(test)]
             ByteCodeError::JumpOutOfRange {
                 offset,
                 target,
@@ -69,6 +74,7 @@ impl std::fmt::Display for ByteCodeError {
                 f,
                 "jump target {target} out of range (code length {code_len}) at {offset}"
             ),
+            #[cfg(test)]
             ByteCodeError::JumpIntoInstruction { offset, target } => {
                 write!(
                     f,
@@ -335,7 +341,9 @@ impl OperandReader<'_> {
 /// Decode one instruction starting at `offset`.  `code` is the whole
 /// string so jump validation can happen later against full bounds.
 fn decode_instr(code: &[u8], offset: usize) -> Result<Instr, ByteCodeError> {
-    let byte = code[offset];
+    let byte = *code
+        .get(offset)
+        .ok_or(ByteCodeError::EndOfCode { offset })?;
     let mut reader = OperandReader {
         code,
         cursor: offset + 1,
@@ -508,6 +516,7 @@ fn decode_instr(code: &[u8], offset: usize) -> Result<Instr, ByteCodeError> {
 /// Decode and validate a whole opcode stream against its constants
 /// vector: every opcode known, no truncated operands, constant indices
 /// in range, jump targets at instruction boundaries within the code.
+#[cfg(test)]
 pub fn decode_program(code: &[u8], constants_len: usize) -> Result<Vec<Instr>, ByteCodeError> {
     let mut instrs = Vec::new();
     let mut offset = 0;
@@ -565,7 +574,7 @@ pub fn decode_program(code: &[u8], constants_len: usize) -> Result<Vec<Instr>, B
 }
 
 /// The argument contract of a byte-code function.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ArgSpec {
     /// Lexical-binding packed integer: bits 0..6 = minimum arguments,
     /// bit 7 = &rest present, bits 8..14 = maximum non-rest arguments
@@ -604,129 +613,82 @@ impl ArgSpec {
     }
 }
 
-/// A validated genuine GNU byte-code function: the CLOSURE_* slots of
-/// GNU's `Lisp_Closure` (lisp.h) with the opcode string decoded.
-/// One code string's decoded instructions, shared by every closure made
-/// from the same prototype: `make-closure' copies the prototype's slots,
-/// so the closures share the code string object, and bytecode.c executes
-/// its bytes in place for each of them; decoding the string again for
-/// each new closure (every `mapcar' with a lambda in compiled code) was a
-/// tenth of a macro-expanding loop.
-#[derive(Debug)]
-pub struct DecodedCode {
-    pub instrs: Vec<Instr>,
-    /// Instruction index by byte offset (u32::MAX between instructions).
-    pub offset_index: Vec<u32>,
+/// The original canonical code string, fetched directly at each instruction.
+#[derive(Clone, Copy, Debug)]
+pub struct CodeBytes {
+    original: Value,
 }
 
-impl DecodedCode {
-    fn new(code: &[u8], constants_len: usize) -> Result<Self, ByteCodeError> {
-        let instrs = decode_program(code, constants_len)?;
-        let mut offset_index = vec![u32::MAX; code.len() + 1];
-        for (index, instr) in instrs.iter().enumerate() {
-            offset_index[instr.offset] = index as u32;
+impl CodeBytes {
+    fn new(original: Value) -> Result<Self, ByteCodeError> {
+        let Kind::StringObject(state) = original.kind() else {
+            return Err(ByteCodeError::MalformedObject(
+                "code slot is not a string".into(),
+            ));
+        };
+        if state.borrow().is_multibyte() {
+            return Err(ByteCodeError::NonUnibyteCode { char_index: 0 });
         }
-        Ok(Self {
-            instrs,
-            offset_index,
-        })
+        Ok(Self { original })
     }
-}
 
-const DECODED_CODE_CACHE_LIMIT: usize = 8192;
-
-type DecodedCodeTable = std::collections::HashMap<
-    (usize, usize),
-    (u64, Rc<DecodedCode>),
-    crate::lisp::primitives::FnvBuildHasher,
->;
-
-thread_local! {
-    /// By the code string's identity and the constants vector's length
-    /// (the decoder checks constant indices against it); the string's
-    /// serial is kept so a reused address is not taken for this text.
-    static DECODED_CODE: std::cell::RefCell<DecodedCodeTable> =
-        std::cell::RefCell::new(std::collections::HashMap::default());
-}
-
-/// The decoded program of CODE_SLOT (a string) for CONSTANTS_LEN
-/// constants, shared when the same string object was decoded before.
-fn decoded_code(
-    code_slot: &Value,
-    code: &[u8],
-    constants_len: usize,
-) -> Result<Rc<DecodedCode>, ByteCodeError> {
-    let Kind::String(text) = code_slot.kind() else {
-        // A mutable string object may change: decoded afresh.
-        return Ok(Rc::new(DecodedCode::new(code, constants_len)?));
-    };
-    let key = (text.identity_ptr(), constants_len);
-    let serial = text.serial();
-    if let Some(decoded) = DECODED_CODE.with_borrow(|cache| {
-        cache
-            .get(&key)
-            .filter(|(held, _)| *held == serial)
-            .map(|(_, decoded)| Rc::clone(decoded))
-    }) {
-        return Ok(decoded);
+    pub(crate) fn original(&self) -> Value {
+        self.original
     }
-    let decoded = Rc::new(DecodedCode::new(code, constants_len)?);
-    DECODED_CODE.with_borrow_mut(|cache| {
-        if cache.len() >= DECODED_CODE_CACHE_LIMIT {
-            cache.clear();
-        }
-        cache.insert(key, (serial, Rc::clone(&decoded)));
-    });
-    Ok(decoded)
+
+    /// BODY must not invoke Lisp, collect, or mutate the code string.
+    /// The borrow ends before callbacks and frame changes.
+    #[inline]
+    pub(crate) fn with_bytes<R>(&self, body: impl FnOnce(&[u8]) -> R) -> R {
+        let Kind::StringObject(state) = self.original.kind() else {
+            unreachable!("validated code string")
+        };
+        body(state.borrow().bytes())
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct ByteCodeObject {
     pub argspec: ArgSpec,
-    #[cfg(test)]
-    pub code: Vec<u8>,
-    /// The code decoded, shared with the other closures of its prototype.
-    pub decoded: Rc<DecodedCode>,
+    pub code: CodeBytes,
     /// The original CLOSURE_CONSTANTS object, not a snapshot of its slots.
     pub constants: VectorRef,
     pub stack_depth: usize,
-    pub interactive: Option<Value>,
 }
 
-// The reader stores raw high bytes of unibyte strings (`\200`-style
-// escapes) as private-use chars U+E000+byte (reader.rs
-// RAW_BYTE_REGEX_BASE); decoding must map them back.
-const RAW_BYTE_BASE: u32 = 0xE000;
-
-/// Extract the unibyte bytes of a code string.  Chars are either plain
-/// U+0000..U+00FF or the reader's U+E000+byte raw-byte encoding;
-/// anything else cannot be an opcode byte.
-fn unibyte_bytes(text: &str) -> Result<Vec<u8>, ByteCodeError> {
-    let mut bytes = Vec::with_capacity(text.len());
-    for (char_index, ch) in text.chars().enumerate() {
-        let code_point = u32::from(ch);
-        if code_point <= 0xFF {
-            bytes.push(code_point as u8);
-        } else if (RAW_BYTE_BASE..=RAW_BYTE_BASE + 0xFF).contains(&code_point) {
-            bytes.push((code_point - RAW_BYTE_BASE) as u8);
-        } else {
-            return Err(ByteCodeError::NonUnibyteCode { char_index });
-        }
+/// Decode only the instruction about to execute. Bounds checks protect Rust
+/// indexing; no instruction inventory or offset table survives a callback.
+#[inline]
+fn fetch_instruction(
+    code: &[u8],
+    offset: usize,
+    constants_len: usize,
+) -> Result<Instr, ByteCodeError> {
+    let instr = decode_instr(code, offset)?;
+    if let Op::VarRef(index)
+    | Op::VarSet(index)
+    | Op::VarBind(index)
+    | Op::Constant(index)
+    | Op::Constant2(index) = instr.op
+        && usize::from(index) >= constants_len
+    {
+        return Err(ByteCodeError::ConstantOutOfRange {
+            offset,
+            index: usize::from(index),
+            constants_len,
+        });
     }
-    Ok(bytes)
-}
-
-fn string_text(value: &Value) -> Option<String> {
-    match value.kind() {
-        Kind::String(text) => Some(text.to_string()),
-        Kind::StringObject(state) => Some(state.borrow().text.clone()),
-        _ => None,
-    }
+    // bytecode.c only uses a branch or handler destination when control
+    // transfers there. An untaken branch must not inspect it. The next
+    // decode bounds-checks the actual PC before reading any bytes, so even
+    // an invalid taken branch cannot perform an out-of-bounds Rust access.
+    Ok(instr)
 }
 
 /// Whether record slots look like a GENUINE GNU byte-code function
 /// (argspec, opcode string, constants vector, stack depth) rather than
 /// Emaxx's byte-compile facade (an executable lambda in slot 0).
+#[cfg(test)]
 pub fn slots_are_genuine_bytecode(slots: &[Value]) -> bool {
     slots.len() >= 4
         && matches!(
@@ -750,18 +712,48 @@ impl ByteCodeObject {
     /// slots ([argspec, code, constants, depth, doc?, interactive?]).
     /// Returns `Ok(None)` for Emaxx facade objects, which are executed
     /// through their embedded lambda instead.
+    #[cfg(test)]
     pub fn from_slots(slots: &[Value]) -> Result<Option<ByteCodeObject>, ByteCodeError> {
-        if !slots_are_genuine_bytecode(slots) {
+        let object = Self::from_fields(slots.len(), |index| slots.get(index).copied())?;
+        if let Some(object) = &object {
+            // This public diagnostic parser retains its whole-program
+            // validation contract. Ordinary closure entry skips that pass.
+            object
+                .code
+                .with_bytes(|code| decode_program(code, object.constants.len()))?;
+        }
+        Ok(object)
+    }
+
+    pub(crate) fn from_closure(
+        closure: crate::lisp::types::ClosureRef,
+    ) -> Result<Option<Self>, ByteCodeError> {
+        Self::from_fields(closure.public_len(), |index| closure.get(index))
+    }
+
+    fn from_fields(
+        len: usize,
+        field: impl Fn(usize) -> Option<Value>,
+    ) -> Result<Option<Self>, ByteCodeError> {
+        if len < 4
+            || !matches!(
+                field(0).map(|value| value.kind()),
+                Some(Kind::Integer(_) | Kind::Nil | Kind::Cons(_))
+            )
+            || !field(1).is_some_and(|value| value.is_string())
+            || !matches!(field(2).map(|value| value.kind()), Some(Kind::Vector(_)))
+            || !matches!(field(3).map(|value| value.kind()), Some(Kind::Integer(_)))
+        {
             return Ok(None);
         }
-        let argspec = ArgSpec::from_value(&slots[0])?;
-        let code_text = string_text(&slots[1])
-            .ok_or_else(|| ByteCodeError::MalformedObject("code slot is not a string".into()))?;
-        let code = unibyte_bytes(&code_text)?;
-        let constants = constant_vector(&slots[2]).ok_or_else(|| {
-            ByteCodeError::MalformedObject("constants slot is not a vector".into())
-        })?;
-        let Kind::Integer(depth) = slots[3].kind() else {
+        let argspec = ArgSpec::from_value(&field(0).expect("validated argument slot"))?;
+        let code_slot = field(1).expect("validated code slot");
+        let code = CodeBytes::new(code_slot)?;
+        let constants =
+            constant_vector(&field(2).expect("validated constants slot")).ok_or_else(|| {
+                ByteCodeError::MalformedObject("constants slot is not a vector".into())
+            })?;
+        let Kind::Integer(depth) = field(3).expect("validated depth slot").kind() else {
             return Err(ByteCodeError::MalformedObject(
                 "stack depth slot is not an integer".into(),
             ));
@@ -771,15 +763,11 @@ impl ByteCodeObject {
                 "negative stack depth {depth}"
             )));
         }
-        let decoded = decoded_code(&slots[1], &code, constants.len())?;
         Ok(Some(ByteCodeObject {
             argspec,
-            #[cfg(test)]
             code,
-            decoded,
             constants,
             stack_depth: depth as usize,
-            interactive: slots.get(5).cloned(),
         }))
     }
 }
@@ -1088,7 +1076,10 @@ pub(crate) mod tests {
                 .expect("oracle objects are genuine bytecode");
             assert!(matches!(object.argspec, ArgSpec::Packed { .. }));
             assert!(object.stack_depth > 0);
-            let instrs = decode_program(&object.code, object.constants.len()).unwrap();
+            let instrs = object
+                .code
+                .with_bytes(|code| decode_program(code, object.constants.len()))
+                .unwrap();
             assert!(matches!(
                 instrs.last().map(|instr| instr.op),
                 Some(Op::Return)
@@ -1119,11 +1110,15 @@ pub(crate) mod tests {
 
     #[test]
     fn from_slots_parses_genuine_object() {
-        // #[257 "\211\207" [] 3] — identity: stack-ref1; return... using
+        // #[257 "\211\207" [] 3] — identity: dup; return... using
         // real GNU compiler output shape: argspec 257 = 1 mandatory, 1 max.
-        let slots = [
+        // alloc.c:Fmake_byte_code requires actual unibyte storage. Rust's
+        // U+0089/U+0087 text instead constructs a multibyte Lisp string.
+        let mut slots = [
             Value::Integer(257),
-            Value::String("\u{89}\u{87}".into()),
+            Value::StringObject(crate::lisp::types::StringObjectRef::from_unibyte(vec![
+                0o211, 0o207,
+            ])),
             Value::list([Value::symbol("vector-literal")]),
             Value::Integer(3),
         ];
@@ -1136,8 +1131,15 @@ pub(crate) mod tests {
                 rest: false
             }
         );
-        assert_eq!(object.code, vec![0o211, 0o207]);
+        object
+            .code
+            .with_bytes(|code| assert_eq!(code, &[0o211, 0o207]));
         assert_eq!(object.stack_depth, 3);
+        slots[1] = Value::String("\u{89}\u{87}".into());
+        assert_eq!(
+            ByteCodeObject::from_slots(&slots).unwrap_err(),
+            ByteCodeError::NonUnibyteCode { char_index: 0 }
+        );
     }
 
     #[test]

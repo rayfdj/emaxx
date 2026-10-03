@@ -1,3 +1,585 @@
+# Current goal status — 3 October 2026
+
+The latest [printer/reader checkpoint and performance baseline](runtime-representation-printer-draft.md)
+is **source284, applied and pushed as `9c5b5356`**, with 520 verified inputs.
+Strict checks pass without warnings, six targeted controls pass in each profile,
+and 42 ordinary exact GNU comparisons pass, including native constants, all 198
+generated rows and 679 reader bounds cases. Every prior test and fixture remains.
+Source282's larger selected suites are predecessor evidence; its later bounds
+negative and source283's locale-dependent GNU fixture failure remain recorded.
+Setup mistakes and incomplete runs are preserved, not counted as runtime passes.
+
+The [16-workload pilot](handover/2026-09-30-shared-reader-draft/source284-core-performance-pilot-manifest.json)
+completes all 32 processes with equal actual results and modes. One paired sample
+per workload gives a 3.05× geometric mean Emaxx/GNU body-time ratio, with bytecode
+to native 9.58× and bytecode calls 6.78×. All unfavorable results remain visible.
+Separate profiles identify VM dispatch and call setup for further work. This is
+diagnostic: allocation counters remain unavailable, calibration/repeated timing
+remain required, and the unchanged 3% criterion is not satisfied. The user directs
+this measured performance work without further unrelated correctness expansion.
+
+[Full final-source validation](handover/2026-09-30-shared-reader-draft/source284-full-validation-launch.json)
+selects 9c5b5356. The [closed Linux Rust failure](handover/2026-09-30-shared-reader-draft/source284-complete-linux-rust-failure-manifest.json)
+has 2,284 passes / one GNU first-vector census reference failure (-9 versus zero),
+identical to source272's GNU output. That control stops before Emaxx; the four new
+reader/printer controls pass. The remaining 756 library tests and both Cargo stages
+never run. Linux frozen37091394500 and macOS supervisor48303 remain in progress.
+No selected or performance result certifies the failed full run. Source279's complete Rust passes
+and Linux 7,928-match frozen run remain predecessor evidence. Its [closed macOS run](handover/2026-09-30-shared-reader-draft/source279-macos-frozen-terminal-and-retry-manifest.json)
+has 7,915 matches/six feature-diagnostic differences; terminal stops after 318 exact
+comparisons at a GNU readiness timeout. The separate bounded longer retry gets
+actual equal answers on all three screens; the original run remains incomplete.
+Source276's Emaxx census failure remains unresolved. Main remains 21d20f0e, PR79
+remains draft, and architecture, accounting, ownership, final audit, complete
+validation and the locked performance goal all remain open.
+
+The preceding runtime **source272** (`eb286e23`) has 510 verified inputs and
+[closed borrow-root repair evidence](handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json):
+zero-warning strict checks, **206 focused passes / two existing ignores** and
+**1,062 affected passes in each profile**, retaining all original tests/fixtures.
+An unchanged source271 diagnostic first showed a live off-stack Rust string
+guard losing its property child. Source272 roots shared guards before the
+weak-table fixed point and rejects exclusive guards before any mark/sweep work.
+Survival and reclamation controls pass; the original negative is retained.
+The GC scan's cost remains unmeasured, and broader public ownership is unfinished.
+The [full Linux Rust failure](handover/2026-09-30-shared-reader-draft/source272-complete-linux-rust-failure-manifest.json)
+retains 2,279 passes / two GNU first-GC census assertion failures; 751 library tests
+and both Cargo stages never run. The [full Linux frozen failure](handover/2026-09-30-shared-reader-draft/source272-complete-linux-frozen-failure-manifest.json)
+retains 7,927 matches / one GNU Eglot completion timeout, all 519 files and 1,038
+successful processes. Emaxx has no unexpected frozen outcome. Both runs remain
+failed; their GNU variations remain unexplained. MacOS queue27731 was withdrawn
+before any stage, preserving its state, to prioritize the newer draft below.
+
+The [isolated source276 string-block draft](handover/2026-09-30-shared-reader-draft/source276-string-sblocks-draft-manifest.json)
+replays all 511 inputs, passes zero-warning strict checks and seven allocator/borrow
+controls. Stable headers own pooled GNU-style sdata; GC compacts unborrowed data,
+reclaims blocks and preserves live Rust references. Main construction/copy/concat
+and resize paths fill final storage directly. Pure bytes are separate and permanent.
+The necessary borrowed-block retention/scan cost is unmeasured. Queue67370 has
+exited: 208 focused passes / two existing ignores and 1,063 affected passes / one
+Emaxx census failure; release never ran. Source279 continues as described above.
+The original compiler/Clippy preparation failures remain retained.
+
+The [closed source270 full Rust audits](handover/2026-09-30-shared-reader-draft/source270-complete-rust-platforms-manifest.json)
+verify 3,118 macOS / 3,130 Linux passes and two existing ignores each. Its
+[closed frozen audits](handover/2026-09-30-shared-reader-draft/source270-complete-frozen-platforms-manifest.json)
+verify 7,928 Linux matches and 7,915 macOS matches / six strict feature-diagnostic
+differences. Terminal validation matches 226 scenarios / 686 comparisons. Main remains 21d20f0e, PR79 is draft,
+and the full goal—including final sblock validation, real intervals, symbol authority,
+physical accounting, ownership, VM profiling and the locked 16-workload 3% ceiling—
+remains active. [HANDOVER.md](../HANDOVER.md) has live continuation details.
+
+## Historical storage checkpoint: source270
+
+The preceding storage runtime **source270** was pushed as **`0ecf6e11`**, with **510 verified inputs**.
+The [closed selected evidence and full-validation launches](handover/2026-09-30-shared-reader-draft/source270-string-storage-selected-manifest.json)
+verify zero-warning strict checks, **203 focused passes / two existing ignores**
+and **1,059 affected passes in each profile**, plus **33 ordinary GNU matches**.
+The exact expected bytes and every original selector remain. The eight recorded
+ordering/range/casing/empty/pure matrices now have zero wrong rows; live-table and
+12,600-row prefix controls also match. The overlapping counts are not summed.
+
+Source270 applies the direct 32-byte string header plus 16 bytes of allocator/borrow
+metadata, dedicated cells, packed property spans, GNU empty/pure allocation and
+mutation order, dump/template identities, and C string comparison/casing paths.
+Every preceding failure remains preserved. No memory or performance saving is claimed.
+
+Full macOS supervisor 3079 runs in a clean exact-commit checkout, after selected
+re-audit, idle-cache cloning and GNU capture. Linux
+[Rust 36930970705](https://github.com/rayfdj/emaxx/actions/runs/36930970705) and
+[frozen36930977055](https://github.com/rayfdj/emaxx/actions/runs/36930977055) are launched
+on exact 0ecf6e11. Its complete Rust results are now closed: **3,118 macOS / 3,130 Linux passes**,
+with two existing ignores each. The frozen audits above are now closed; terminal validation remains separate. Main remains 21d20f0e, PR79 stays draft,
+and every architectural/performance completion criterion remains in force.
+
+The preceding runtime **source261** was pushed as `eddfe782`, with **488 verified inputs**.
+Its [closed selected evidence and full-validation launches](handover/2026-09-30-shared-reader-draft/source261-common-string-selected-manifest.json)
+verify zero-warning strict checks, **189 focused passes / two existing ignores**
+and **962 affected passes in each profile**, plus **22 ordinary exact GNU matches**.
+The [complete macOS Rust audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-rust-manifest.json)
+verifies **3,107 passes / two existing ignores**, all 3,010 library names, native
+artifact identity, four retained inputs and unchanged source. Supervisor31023 has
+completed terminal validation in the clean checkout at that same commit, after frozen.
+Linux
+[Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
+[frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are complete
+on exact `eddfe782`. The [closed Linux audit](handover/2026-09-30-shared-reader-draft/source261-complete-linux-manifest.json)
+verifies **3,119 Rust passes / two existing ignores**, all 3,018 library names,
+native artifact identity and **519 frozen files / 7,928 matching outcomes / 1,038
+successful processes**. Raw execution hashes and actual GNU inputs are checked;
+each editor has 7,670 passes, 47 expected failures and 211 skips. The
+[complete macOS frozen audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-frozen-manifest.json)
+retains **7,915 matches / six strict mismatches**, all 519 files and 1,038 successful
+processes. Both editors have 7,623 passes, 46 expected failures and 252 skips, and
+all 177 compiler tests pass. The six build-feature skip diagnostics match the
+preceding source249 differences; they remain failures. All raw evidence and actual
+GNU/Emaxx inputs are verified. The [complete terminal audit](handover/2026-09-30-shared-reader-draft/source261-complete-macos-terminal-manifest.json)
+verifies **226 scenarios / 686 matching comparisons**, all original labels, 488 source
+inputs and ten execution inputs, using the exact frozen-run executable/image.
+No source261 supervisor remains running; main and the full goal are unchanged.
+
+The [unapplied source262 ordering draft](handover/2026-09-30-shared-reader-draft/source262-string-ordering-draft-manifest.json)
+preserves new ordinary negatives: source261 has 154 wrong symbol/storage ordering
+rows out of 1,024, and 56 wrong version rows out of 400. Four ordering regressions
+are bracketed after source207 and by source249, whose entire matrix matches source261.
+The version matrix matches main. Source262 ports the actual GNU `string_cmp` and
+`filenvercmp` paths to canonical string bytes and Lisp symbol names. All 492 inputs
+replay exactly; strict checks pass with zero warnings. Queue38430 was withdrawn
+while still waiting, before any runtime execution, in favor of source263 below.
+The source262 draft, helpers and original queued state are unchanged and retained.
+
+The [unapplied source263 successor](handover/2026-09-30-shared-reader-draft/source263-string-ranges-draft-manifest.json)
+retains the ordering changes and adds canonical-byte `compare-strings` and exact
+numeric case-table lookup. GNU probes preserve 12 wrong range/error results, 134
+wrong character-comparison rows, seven wrong live-table observations and nine wrong
+numeric casing rows. Main reproduces the range/live/numeric results; its full
+character matrix exits255 before comparison and supplies no historical row verdicts.
+All 500 inputs replay exactly and strict checks pass with zero warnings. Queue90568
+has exited with **197 focused passes / two existing ignores**, then **1,053 affected
+passes / one failure**. The original Unicode comparison used bare ASCII case tables
+while expecting dumped Unicode tables; actual GNU C/loadup and an ordinary probe
+constrain the successor's fixture correction. Release and ordinary stages did not run. The
+[additional prefix-boundary baseline](handover/2026-09-30-shared-reader-draft/source263-ordering-boundary-control-manifest.json)
+matches GNU/source261 on all 12,600 rows. Queue90569 stopped before its first stage
+because90568 failed. Source263 remains an unapplied failed candidate; no complete
+selected pass or measured saving is claimed.
+
+The [queue correction](handover/2026-09-30-shared-reader-draft/source263-fixture-queue-repair-manifest.json)
+preserves original queues64601/87187, withdrawn while waiting before runtime
+execution. It restores the original ordering fixture's path in the wrapper and
+verifies all 28 paths. Runtime inputs, expected output, selectors, timeouts and
+comparison rules are unchanged. Read `source263-fixture-validation-*` and
+`source263-boundary-fixtures-*` for their closed failed state.
+
+The [empty/pure string baseline](handover/2026-09-30-shared-reader-draft/source261-string-storage-baseline-manifest.json)
+records six wrong source261 empty-identity rows among12 and57 wrong pure-storage
+rows among96, including28 operation/poststate differences. Seven whole rows newly
+differ from source249 and six improve; the seven regressions concern reuse of the
+ordinary empty unibyte singleton during `purecopy`. Source174/main and207 agree.
+The precise introducing source between249 and261 is unestablished. Earlier pure
+write-protection failures remain, and source263 does not address these storage gaps.
+Both failed probe setups remain excluded; raw and explicit-value fixtures overlap.
+The next storage work must follow GNU's distinct normal/pure allocation, empty
+multibyte singleton, empty clear behavior and pure-write/GC/dump contracts.
+
+The [source264–268 storage preparation](handover/2026-09-30-shared-reader-draft/source268-string-storage-draft-manifest.json)
+and [source269 caller correction](handover/2026-09-30-shared-reader-draft/source269-string-storage-caller-repair-manifest.json)
+retain all failures and exact portable patches. The **510-input** storage
+implementation uses a direct **32-byte string header plus 16 bytes of borrow/allocator metadata**,
+dedicated cells, canonical empty forms, distinct permanent pure allocation and GNU
+write/no-op ordering. Property spans use one packed allocation; dump/template
+identity controls are included. Sblocks and actual interval trees remain open.
+An additional 144-row property baseline has 106 wrong source261 whole rows, including
+84 operation/poststate differences; observations overlap the earlier identity probes.
+Source264/265 compiler and source266 Clippy failures remain. Source268 strict checks
+pass, followed by 199 focused passes/four failures/two existing ignores. The four
+failures are verified trailing-newline mismatches at the GNU precondition, before
+their Emaxx fixture executions. Source269 changes only those four expected-output
+callers, preserving every GNU fixture and the shared comparator. Strict checks pass
+with zero warnings, then 201 focused passes/two failures/two existing ignores.
+The [source270 successor](handover/2026-09-30-shared-reader-draft/source270-string-storage-empty-copy-manifest.json)
+fixes the remaining empty pure-copy allocation (94/96 rows matched in source269) and
+releases test-owned interpreters before independent native-image initialization.
+It preserves every GNU expectation and assertion. Strict checks pass with zero
+warnings. Queue 98240 has completed203 focused passes/two existing ignores and 1059
+affected passes in each profile, plus 33 ordinary exact GNU matches. Source270 is
+now applied as 0ecf6e11; its full platform validation is running as recorded above.
+
+The preceding **source249**, pushed as `99e61fca`, has **476 frozen inputs** and
+[audited selected validation](handover/2026-09-30-shared-reader-draft/source249-selected-and-setup-manifest.json):
+zero-warning strict checks, 172 focused passes / two existing ignores and 955
+affected passes in each profile, plus fifteen ordinary GNU matches. The repair
+passes decoded character counts to post-read hooks and follows GNU's ASCII
+string early return. Its original negatives, failed setup run and unchanged
+executable replay remain preserved. The repair is applied to the root.
+
+The [closed Linux and Darwin frozen audit](handover/2026-09-30-shared-reader-draft/source249-linux-and-darwin-frozen-manifest.json)
+verifies full Linux [Rust36879095484](https://github.com/rayfdj/emaxx/actions/runs/36879095484)
+and [frozen36879103495](https://github.com/rayfdj/emaxx/actions/runs/36879103495)
+on exact `99e61fca`: **3,112 Rust passes / two existing ignores** and **519 files /
+7,928 matching frozen outcomes / 1,038 successful processes**. Each editor has
+7,670 passes, 47 expected failures and 211 skips. Every raw execution hash, paired
+outcome and actual retained GNU input is verified.
+
+The [complete macOS Rust and reference adoption](handover/2026-09-30-shared-reader-draft/source249-macos-and-oracle-adoption-manifest.json)
+closes64326 with **3,100 passes / two existing ignores**, native artifact identity,
+all 3,003 raw library names and four retained artifacts verified. The
+[closed terminal audit](handover/2026-09-30-shared-reader-draft/source249-complete-rebuilt-terminal-manifest.json)
+verifies **226 scenarios / 686 matching comparisons**, comprising 658 screen and
+28 filesystem comparisons. Supervisor12347 has exited; all original labels, 476
+source inputs and ten execution inputs are checked against the exact frozen-run
+gate executable/image. No source249 validation supervisor remains active.
+
+The [requested GNU rebuild](handover/2026-09-30-shared-reader-draft/gnu-macos-rebuild-20261001-manifest.json)
+passes configuration/capability checks and byte comparison of regenerated native
+ABI, C primitive and DEFSYM manifests. Its executable is `29cfb20d…`, built from
+unchanged `636f166c` with the recorded Apple-libxml2 recipe. The task branch now
+adopts the pin tested in local candidate `1c0898fc`, preserving the old lock and
+local configuration. Fresh GNU discovery from all 519 full-run reports renders
+the original inventory byte for byte. MacOS frozen58661 remains a strict failure:
+**7,915 matching / six mismatching outcomes**, all files/processes complete. Both
+editors have 7,623 passes, 46 expected failures and 252 skips. Six skipped seccomp
+diagnostics contain different build-feature text, an existing disclosed platform
+difference. No feature string or comparison rule changes; no failure becomes a pass.
+The first launch failed before tests because its copied build directory lacked
+an ownership marker; that failure and its cache are retained.
+
+The separately packaged [common-string draft](runtime-representation-common-strings-draft.md)
+is **source256**, with 480 exactly replayed inputs and zero-warning strict checks.
+It removes the old string arena, binding conversions and VM text adapter, and
+repairs GNU `fillarray` byte-length/property behavior. Source255's focused run
+has 181 passes, one invalid Unicode bytecode fixture failure and two existing
+ignores; source256 corrects that fixture against an ordinary GNU probe while
+retaining all assertions. The failure remains archived. Queue17749 has exited:
+[focused gate passes](handover/2026-09-30-shared-reader-draft/source256-focused-gate-manifest.json)
+**182 tests / two existing ignores**, with all 184 selectors
+and retained inputs audited. The [broader gate audit](handover/2026-09-30-shared-reader-draft/source256-broad-failure-and259-focused-manifest.json)
+has **956 passes / one invalid native-bytecode fixture failure**, all 957 names
+verified. GNU confirms the intended three opcode bytes must be unibyte; the five-byte
+Unicode form is rejected. Release/ordinary stages did not run. The failure remains.
+
+The subsequent [source259 comparison/hash draft](handover/2026-09-30-shared-reader-draft/source259-string-comparison-draft-manifest.json)
+has 488 replayed inputs and zero-warning strict checks. It uses actual bytes/name
+objects, GNU's positioned-symbol policy and ordinary equality/hash semantics for
+interval values, with four GNU negative fixtures and extended dump coverage.
+Queue22381 has exited: **188 focused passes / two existing ignores** and **961 affected
+passes / one invalid native fixture failure**, with all names and retained inputs
+audited. Release/ordinary stages did not run. Source257's compiler failure and
+source258's withdrawn queue remain explicit.
+
+Source261 changes only that native fixture after source259 exited, preserving all
+native assertions and adding GNU-confirmed Unicode rejection. Source260's new-test
+unwrap lint failure is retained; source261 passes strict checks with zero warnings.
+Both focused profiles pass **189 tests / two existing ignores**; all **962 affected
+gate tests pass**. The first release auditor's retained-input count failure remains
+recorded; its corrected successor verifies both the release image and the preceding
+gate image. Continuation30525 has exited with all 962 affected release tests and
+22 ordinary comparisons passing. Source261 is now applied at `eddfe782`; its complete
+selected audit and full macOS/Linux launches are linked above. The clean full-validation
+checkout has the same 488 inputs. Full runtime validation, physical accounting,
+ownership and measured performance remain unfinished.
+
+The preceding **source248**, pushed as `fa7578ac`, is a correctness-recovery checkpoint
+with **472 frozen inputs**. Its two property repairs follow GNU C, pass the selected
+checks and all 177 original compiler tests in both editors, and are applied to
+the root. Complete macOS/Linux Rust and pinned Linux frozen validation now pass.
+The unchanged full terminal retry now passes all 226 scenarios / 686 comparisons;
+the original GNU startup failure remains preserved. A general conversion-table
+gap is reproduced on source248 and both retained source174/main and source207
+baselines. Continue the remaining architecture from this tested checkpoint.
+The [original isolated source249 draft](handover/2026-09-30-shared-reader-draft/source249-post-read-draft-manifest.json)
+adds a GNU C post-read hook repair, with 476 replayed inputs and unchanged negative
+fixtures also reproduced on both baselines. It was unapplied and unvalidated at
+the archived snapshot. Queue15814 subsequently passed strict checks but stopped
+with ten missing-sibling-GNU setup failures, 162 passes and two existing ignores.
+The same executable and all 174 selectors pass after restoring that checkout link:
+172 passes / two existing ignores. Continuation17624 has exited and its complete
+selected results are audited above. The original failed run and its executable/
+image are retained. Consult current receipts before another launch.
+The preceding **source246**, pushed as `aaf31ce7`, has the closed results below.
+Its [portable selected evidence](handover/2026-09-30-shared-reader-draft/source246-coding-translation-selected-manifest.json)
+verifies 468 inputs/modes, strict zero-warning checks, **168 focused passes / two
+existing ignores**, **951 affected passes**, **eleven ordinary GNU comparisons**
+and **all 177 original compiler tests passing in both editors**. It repairs live
+coding-safety translations and registry bindings/order/duplicates, including a
+confirmed source244 private-use Unicode regression. Source245's compile failure
+and both negative GNU comparisons remain preserved.
+
+The [closed source244 results](handover/2026-09-30-shared-reader-draft/source244-closed-validation-manifest.json)
+verify **3,094 macOS passes / two existing ignores**, native identity, 166 focused
+and 949 affected passes in both profiles, and 66 ordinary matches. Full Linux
+frozen reaches all 519 files / 7928 outcomes: **7927 match; one GNU Eglot JSON-RPC
+timeout differs from an Emaxx pass**. Compiler 177 now passes on Linux too. Linux
+Rust fails two GNU reference census assertions after 2258 passes, leaving 745
+library tests and both Cargo stages unexecuted. Full terminal stops at GNU startup
+on scenario 81, after 80 matching scenarios/comparisons; 606 comparisons never run.
+These failures remain failures; the GNU causes are unresolved.
+
+The [closed source246 release/Linux Rust evidence](handover/2026-09-30-shared-reader-draft/source246-release-and-linux-rust-failure-manifest.json)
+verifies **168 focused / 951 affected release passes**, with two existing ignores.
+[Linux Rust36840211567](https://github.com/rayfdj/emaxx/actions/runs/36840211567)
+fails after **2,260 passes / two GNU reference assertion failures**, before those
+controls reach Emaxx; 745 library tests and both Cargo stages never run. The exact
+GNU inputs are now retained. The [bounded diagnosis](handover/2026-09-30-shared-reader-draft/source247-selected-and246-gnu-diagnosis-manifest.json)
+passes 18 GNU probes and Rust single/group/single (1/654/1) with the same Rust
+executable and all four GNU inputs. This narrows execution-context investigation;
+no cause or full-run repair is established. The [complete source246 results](handover/2026-09-30-shared-reader-draft/source246-complete-frozen-macos-terminal-manifest.json)
+close macOS86467 with **3,096 passes / two existing ignores** and native identity,
+terminal86469 with **226 scenarios / 686 comparisons**, and
+[frozen36840217747](https://github.com/rayfdj/emaxx/actions/runs/36840217747) with
+**all 519 files / 7,928 matching outcomes / 1,038 successful processes**. Raw names,
+verdicts, inventories and retained GNU inputs are audited. Each editor's 47
+expected failures and 211 skips remain distinct from its 7,670 passes.
+The [ordinary audit](handover/2026-09-30-shared-reader-draft/source246-linux-launch-and-ordinary-manifest.json)
+also closes all 57 preceding comparisons, for **68 distinct ordinary matches**.
+The CI retention improvement captures
+GNU executable/dump/configuration/Makefile and checks unchanged bytes without
+altering tests. Real-GNU capture and six synthetic rejection controls pass.
+The [separate property drafts](handover/2026-09-30-shared-reader-draft/source248-property-drafts-manifest.json)
+retain two confirmed source246 negative probes. Source247's 470 inputs share actual
+`get` for nil/t translation symbols and overriding properties: strict checks,
+169 focused passes/two existing ignores, 952 affected passes, twelve ordinary
+matches and the original compiler-file load pass. Supervisor 90626 has exited.
+Source248's 472 inputs add GNU's first-nil-duplicate lookup rule. Its [closed
+selected audit](handover/2026-09-30-shared-reader-draft/source248-selected-validation-manifest.json)
+verifies strict zero-warning checks, 170 focused passes/two existing ignores,
+953 affected passes, thirteen ordinary matches and successful original compiler
+load. Queue94807 has exited. The [compiler audit and full launches](handover/2026-09-30-shared-reader-draft/source248-compiler-and-complete-launch-manifest.json)
+close compiler1840 with all 177 original tests passing in both editors and verify
+root application of all 472 inputs. The [release and ordinary audit](handover/2026-09-30-shared-reader-draft/source248-release-and-linux-launch-manifest.json)
+closes4529: 170 focused passes/two existing ignores, 953 affected passes, and
+57 preceding ordinary matches, for 70 distinct ordinary comparisons with the
+thirteen selected fixtures. Release/gate inventories and retained artifacts are
+verified. The [complete Rust/frozen audit](handover/2026-09-30-shared-reader-draft/source248-complete-rust-frozen-and-terminal-failure-manifest.json)
+closes macOS4528 with 3,098 passes/two existing ignores and Linux
+[Rust36849791338](https://github.com/rayfdj/emaxx/actions/runs/36849791338) with
+3,110 passes/two existing ignores. Native identity, raw names and retained inputs
+are verified. The original GNU census assertions pass in this full run without
+explaining their earlier variation. [Frozen36849797068](https://github.com/rayfdj/emaxx/actions/runs/36849797068)
+passes all 519 files/7,928 matching outcomes/1,038 successful processes on exact
+`fa7578ac`, with every execution hash and actual retained GNU input checked.
+Each editor has 7,670 passes, 47 expected failures and 211 skips; none are relabeled.
+Terminal4530 stops at GNU startup on scenario162: 161 complete matching scenarios,
+295 matching comparisons, zero observed divergences and 391 unexecuted comparisons.
+The unchanged stopped scenario passes all seven comparisons separately. The
+[closed full retry14540](handover/2026-09-30-shared-reader-draft/source248-complete-terminal-retry-manifest.json)
+passes all 226 scenarios / 686 comparisons after the local Rust gate has exited,
+with unchanged actions, timeouts, all eight execution inputs and all 472 source
+inputs verified. Its 658 screen and 28 filesystem comparisons are all audited.
+The earlier failure's cause remains unproven; pinned Darwin remains open.
+The [C-source review](handover/2026-09-30-shared-reader-draft/source248-c-reference-and246-trace-failure-manifest.json)
+maps each fix to unchanged GNU `get_translation_table`, `SYMBOLP`, `plist_get` and
+`Fget`; both negative fixtures and GNU expectations are unchanged.
+The new GNU GC observer has twenty ordinary macOS smoke matches and fifteen
+synthetic decoder checks. Linux diagnosis36848112001 fails: ten ordinary first-fixture
+processes match, then incorrect GDB argument quoting causes GNU end-of-file before
+any GC observation. The second fixture and post-run input verification never run.
+The tool failure is preserved and does not resolve the original Linux Rust failure.
+The [closed corrected GNU trace](handover/2026-09-30-shared-reader-draft/source248-gnu-trace-and-conversion-gap-manifest.json)
+verifies twenty ordinary matches and two GDB executions with exact original argv.
+All sixteen marked inventories sum to GNU's returned census; no previous live
+object drops, so the earlier -7/-9 variation is not explained. All four GNU inputs
+match the failed full run and are verified unchanged afterward.
+The same archive captures current encode/decode operations ignoring live translation
+tables, mutations and standard-table composition. Retained source174/main and
+source207 pairs produce the identical wrong result; this specific gap is pre-existing
+but remains required work. The failed initial relocation probe is preserved separately.
+Main remains `21d20f0e`; complete correctness is the immediate priority. Remaining
+coding behavior, architecture, accounting, ownership, pinned Darwin, final audit
+and the locked 16-workload/3% performance criterion are still open.
+
+## Source238–244 recovery history
+
+The latest [correctness recovery](runtime-representation-correctness-recovery-draft.md)
+records source238's recovered **complete pinned Linux frozen match: 519 files /
+7,928 outcomes / 1,038 successful processes**, exact `a7e12de8`. Raw inventories,
+outcomes and execution hashes are verified. Per editor, 7,670 passes, 47 expected
+failures and 211 skips remain distinct. Complete macOS Rust passes 3,085 tests
+with two existing ignores and native identity. Release passes 101 focused
+controls with two existing ignores and 940 affected tests; 57 ordinary comparisons
+match. Full terminal has 225 wholly matching scenarios, 682 matching comparisons,
+one new-file coding-indicator divergence and three unexecuted comparisons.
+
+Linux Rust retains 2,250 passes and one GNU reference census failure before that
+control reaches Emaxx; 745 library tests and both Cargo stages never run. An
+unchanged selected replay passes with the same Rust executable; the full 643-test
+group reproduces the same GNU failure after 642 passes. The cause remains
+unresolved. The separate 454-input
+[source240 draft](handover/2026-09-30-shared-reader-draft/source240-coding-recovery-draft-manifest.json)
+repairs full-range encoding, canonical string copying and the independently
+reproduced U+F8FF report-writing error. Strict checks, 160 focused gate tests
+(two existing ignores), 944 affected gate tests and four new ordinary comparisons
+pass. The [release and open-failure audit](handover/2026-09-30-shared-reader-draft/source240-release-and-open-failures-manifest.json)
+also verifies 160 focused release passes (two existing ignores), 944 affected
+release passes and all 57 preceding ordinary comparisons: 61 total ordinary
+comparisons. A separate save/revisit probe reproduces the remaining coding-system
+selection mismatch; its file bytes match. The
+[complete macOS audit](handover/2026-09-30-shared-reader-draft/source240-complete-macos-manifest.json)
+verifies 3,089 passes, two existing ignores, native identity, all 2,992 raw library
+names/verdicts and four retained artifacts. Both supervisors have exited.
+The separate file-coding repair preserves source241's strict failure and
+source242's 163 passes / one invalid-coding payload failure / two existing
+ignores. The [462-input source243 checkpoint](handover/2026-09-30-shared-reader-draft/source243-file-coding-recovery-manifest.json)
+corrects the shared error object and passes zero-warning strict checks,
+165 focused tests (two existing ignores), all 948 affected tests, eight ordinary
+GNU comparisons and all 11 original file-lifecycle scenarios / 41 comparisons.
+The original terminal divergence and its three previously unexecuted comparisons
+now match. The actual PTY prompt probe matches too. The
+[subsequent ordinary audit and Linux launches](handover/2026-09-30-shared-reader-draft/source243-linux-launch-and-ordinary-manifest.json)
+verify 57 more ordinary comparisons, **65 in total**, and dispatch full Linux
+Rust36822371375 and frozen36822376061 on exact pushed `8d4fcd39`.
+The [complete release audit](handover/2026-09-30-shared-reader-draft/source243-release-complete-manifest.json)
+closes release55868 with 165 focused passes / two existing ignores and all 948
+affected passes, matching the gate profile. The
+[complete macOS audit](handover/2026-09-30-shared-reader-draft/source243-complete-macos-manifest.json)
+closes 55867: **3,093 passes / two existing ignores**, native identity, all 2,996
+raw library names/verdicts and four retained input hashes verified. The
+[complete Linux Rust audit](handover/2026-09-30-shared-reader-draft/source243-linux-complete-rust-manifest.json)
+closes run36822371375 on exact `8d4fcd39`: **3,105 passes / two existing ignores**,
+native identity, every one of 3,004 raw library names/verdicts and four retained
+input hashes verified. The unchanged original census control passes; the earlier
+GNU reference variation's cause remains unresolved. The
+[closed terminal and frozen-failure evidence](handover/2026-09-30-shared-reader-draft/source243-complete-terminal-and-frozen-failure-manifest.json)
+now verifies **226 terminal scenarios / 686 comparisons match**, but Linux
+frozen36822376061 **fails after 482 matching files / 6,911 outcomes**. Emaxx
+cannot load `test/src/comp-tests.el` because writing a native-compiler temporary
+file unexpectedly prompts for a coding system; 177 selected tests and another
+36 files never run. GNU passes those 177 tests. This is a regression from
+source238's full frozen match, reproduced with an unchanged ordinary compiler
+load. The file-writing repair activated GNU's safe-coding selector and exposed
+the helper's incomplete candidate list; the preceding Rust and selected gates
+did not cover this compiler-file load.
+
+The same archive audits bounded Linux diagnosis36825694384 on `3a35ad00`:
+18 GNU probes and the unchanged Rust single/group/single controls pass
+(1/651/1), with GNU executable/image identity retained. This does not resolve
+the cause of the earlier source238 GNU census variation.
+The preceding runtime **source244**, whose
+[portable selected validation](handover/2026-09-30-shared-reader-draft/source244-coding-candidates-selected-manifest.json)
+repairs that candidate list while retaining GNU's Lisp-owned selection policy.
+All 464 inputs/modes replay from main and the task checkpoint. Zero-warning strict
+checks, **166 focused passes / two existing ignores**, **949 affected passes**,
+**nine ordinary comparisons** and **all 177 original compiler tests in both editors**
+are audited. The new fixture preserves GNU's expected bytes and also covers
+custom coding bases, exclusions, actual characters and narrowed marker bounds.
+The [closed ordinary audit and Linux launches](handover/2026-09-30-shared-reader-draft/source244-linux-launch-and-ordinary-manifest.json)
+verify all 57 preceding comparisons too, for **66 distinct ordinary matches**.
+Source244 is pushed as `578955b3`; complete macOS72034, release72035 and
+terminal72036 are active. Linux [Rust 36830879269](https://github.com/rayfdj/emaxx/actions/runs/36830879269)
+and [frozen 36830884261](https://github.com/rayfdj/emaxx/actions/runs/36830884261)
+target that exact commit; their closed results are reported above. Broader coding behavior, including
+translation-table semantics, is not certified. Main remains source174. Restore
+complete correctness before further architecture work; the full goal and
+performance criterion remain open.
+
+The full objective remains [unchanged](runtime-representation-goal.md). Continue
+from [HANDOVER.md](../HANDOVER.md), the [cons repair](runtime-representation-cons-roots-draft.md)
+and the [allocation accounting review](runtime-representation-accounting-draft.md).
+The older 27 September record below is historical; its then-current sizes and
+failures are not statements about today's source.
+
+## Earlier checkpoints — historical evidence
+
+The source234 checkpoint advances source231 in draft PR #79. Its [portable repair](handover/2026-09-30-shared-reader-draft/source234-interactive-metadata-draft-manifest.json)
+and [focused evidence](handover/2026-09-30-shared-reader-draft/source234-focused-validation-manifest.json)
+verify 442 inputs, zero-warning strict checks and 37 gate passes. It fixes the
+interactive metadata path that interpreted a bytecode constants vector as a lexical
+environment. A same-input GNU/source231 probe establishes the mismatch. Release
+and complete macOS runs are active; Linux must still verify the repair. Source232's
+original lightweight group passes 545 gate / 544 release tests, clearing all five
+old local failures without weakening their contracts. Seven display mismatches,
+remaining architecture/accounting/ownership work and the locked performance
+criterion remain open. The earlier source207 checkpoint
+builds on source204 `d186d40b`. Source204's strict
+checks, 596 gate / 596 release tests, 39 ordinary batch comparisons and one
+ordinary terminal fixture pass. Complete macOS Rust passes 3,059 tests. Linux
+Rust fails two census assertions after 2,232 passes; their exact retained-artifact
+diagnosis reproduces both failures. Its first debugger run hits an observer
+limit; the revised run completes and traces a stale closure pointer in unused
+evaluator error-path stack space. Source207 removes value reconstruction and
+outlines that error construction. Published as `092fef67`, it passes strict
+checks, 596 gate / 596 release controls and 40 ordinary GNU comparisons. Its
+complete macOS/Linux Rust audits now verify **3,059 / 3,071 passes**, two existing
+ignores each, native artifact identity and every library name/verdict. Both
+original census assertions and both original suspended-root survival/reclamation
+controls pass unchanged. Source207's complete terminal audit verifies all 226
+scenarios / 686 comparisons; its pinned Linux frozen audit verifies 519 files /
+7,928 matching outcomes and 1,038 successful processes. Per editor, 7,670 passes,
+47 expected failures and 211 skips remain separate. All source207 supervisors
+have exited. The Darwin oracle is source/ABI-matched, not the pinned executable.
+
+The separate [bytecode draft](runtime-representation-bytecode-draft.md) now
+replaces detached closure storage with inline GNU fields and removes the host
+record/program cache. Source214 passes five of the six original controls,
+including all layout/native-store/tracing cases and code mutation between calls.
+Active-call mutation still fails. Source215 repairs a reviewed missing vector-copy
+census increment and adds twenty census/identity cases; strict checks and six
+of seven controls pass. Its broader run finishes with 839 passes / nine failures.
+Five GNU-output checks pass unchanged after restoring the standard gate locale;
+GNU rejects three old unit-fixture constructors. Source216 preserves its runtime
+and all original assertions while fixing those fixture inputs and the helper
+locale. Strict checks pass, all ten focused controls yield nine passes/one
+failure, and all 848 broader tests yield 847 passes/one failure, with zero ignores.
+Active-call mutation remains failed. The [source220 string-byte draft](runtime-representation-string-bytes-draft.md)
+now stores actual GNU-encoded shared-string bytes and adds differential and
+physical-payload controls. Its 421-input patch replays exactly and strict checks
+pass. Twelve controls yield ten passes/two failures: active-call mutation and
+the old string constructor's surrogate rejection. Its direct payload/store test
+passes. Its later broad audit verifies 925 passes/two failures across all 927
+tests. Source221 repairs constructors with direct full-range encoded bytes;
+all 928 affected tests yield 927 passes/one active-call failure. Source223 now
+uses a direct VM byte cursor, removing decoded caches and heap activations.
+Its strict checks pass with zero warnings, all 425 inputs/modes replay exactly,
+and all seventeen focused controls pass in both profiles, including the two
+original failures. Both 930-test broader runs retain 929 passes and one GNU-invalid
+raw-byte-code fixture failure. Source224 corrects only that fixture and passes
+eighteen focused controls in each profile. Source225's actual-control-flow repair
+and single fetch pass 20 focused/932 affected tests per profile and 48 distinct
+ordinary comparisons, with the original redundant-print wrapper failures retained.
+Full Rust then aborts after 161 passes in the original Tramp test; full terminal
+matches seven scenarios before an Org-startup native panic. Source228 repairs
+completion's forced-unibyte result and GNU candidate selection. Its closed runs
+retain 24/25 focused and 932/933 broader passes; concat still loses extended
+characters. Source229 uses the actual encoded bytes and full-range list/vector
+characters. Strict checks, all 26 focused/934 affected tests per profile and
+fifty ordinary comparisons pass. Full Rust retains 680 passes/one old host-record
+assertion failure, with 2,297 later library tests and both Cargo stages unexecuted.
+Its closed terminal run has 353 matching comparisons and seven quote-display
+divergences, then stops in GNU startup readiness; 54 scenarios never start.
+Three additional substring probes retain character loss, wrong validation and a
+reversed-bounds abort. Separate source230 repairs these and the old internal
+assertion; its 440 inputs replay exactly and strict checks pass. Thirty of 31
+focused tests pass, including all three substring regressions. The added bytecode
+fixture needs GNU's `cadr`, absent in its bare interpreter; an unexecuted setup
+correction is preserved. Its 937 affected tests and 54 ordinary comparisons pass.
+Source231 applies only that setup correction and passes strict checks plus all 31
+focused gate controls. That published checkpoint matches its 440 inputs. Its
+[audited release and ordinary results](handover/2026-09-30-shared-reader-draft/source231-release-and-ordinary-validation-manifest.json)
+pass all 31 focused / 937 affected release tests and 54 exact GNU comparisons.
+Its [complete macOS library run](handover/2026-09-30-shared-reader-draft/source231-full-rust-failure-manifest.json)
+records **2,974 passes / five failures / two existing ignores**, with both later
+Cargo stages unexecuted. Three failures concern stale bytecode-root metadata,
+one the reader's old host-record assertion, and one bitmap-word coverage.
+The later Linux runs abort in Edebug: 1,380 Rust passes precede the abort, while frozen comparison matches 79 files / 1,911 outcomes before the same assertion. Source234 repairs the diagnosed interactive environment selection; its Linux confirmation remains pending. The
+[source229 terminal failure](handover/2026-09-30-shared-reader-draft/source229-terminal-failure-manifest.json)
+remains open and is not certified by the source231 selected passes.
+Plain-string migration, compact headers, complete validation and measured
+performance remain required.
+Main remains the fully validated
+source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
+
+## Full-goal requirements — current
+
+This map reflects runtime source270 (`0ecf6e11`, 510 inputs), including applied
+compact strings and GNU comparison/allocation repairs. Its complete selected
+validation is audited above; full macOS/Linux validation is running. Preceding
+source261 full Rust/frozen/terminal evidence remains historical. Historical
+failures remain in the linked evidence above. A green checkpoint does not close
+the architectural or performance requirements. The [current source review](handover/2026-09-30-shared-reader-draft/source248-current-requirement-review.json)
+records the inspected Rust/GNU hashes and verifies the locked suite is unchanged
+from main. It is source review, not new runtime or timing evidence.
+
+| Full-goal requirement | Current evidence and remaining work |
+| --- | --- |
+| 1. Reproducible starting point | Original and corrected baselines and failures remain archived. Current source, executable, image and validation identities are retained separately. Final corrected-baseline measurement and complete provenance remain required. |
+| 2. GNU architectural reference | Cons fields, shared closure slots, live bytecode, canonical string bytes and correctness repairs have recorded C mappings. Source249 follows actual character-count/ASCII-return paths; source261 follows GNU string allocation, mutation, fill, actual-byte/name equality and ordinary interval-value equality/hashing. Invalid local bytecode storage is corrected against ordinary GNU construction. Final review of the complete implementation and every necessary deviation remains open. |
+| 3. Compact authoritative objects | Values are one word, ordinary cons payloads two words, and four-field closures use 40 inline bytes. Applied source261 removes the separate `TextRef` arena, binding copies and `CodeBytes::legacy`; all strings use canonical bytes, with selected gate/release and 22 ordinary GNU comparisons passing. Applied source270 supplies the 32-byte direct string header plus 16 bytes of metadata, dedicated cells and packed property spans, with selected gate/release and 33 ordinary GNU comparisons passing. Sblocks, actual intervals, allocated-symbol authority and remaining adapters are unfinished. |
+| 4. Allocation, GC and ownership | Original census and suspended-root controls pass in complete source249 macOS/Linux Rust. Earlier GNU reference variations remain preserved and unexplained. Seven category variables still initialize to zero and `memory-use-counts` is unsupported. GNU-shaped charges do not establish physical Rust capacities or retained bytes. Source256 removes a host-key string cell but grows `SymbolCell`, with no measured net memory saving. Non-Send words/native activation locking do not establish ownership of every public entry or borrow lifetime. Real counters, physical accounting, ownership and collection-cost explanations remain required. |
+| 5. VM/function-call work | Direct bytecode fetch and actual shared closure fields remove decoded caches and duplicated mutable slots. The VM still reserves 256K value slots and keeps `BcFrame` storage separately; GNU reserves 512K words including frame headers. Its old comment still describes a two-word Value. Stack layout/capacity/accounting, remaining call bookkeeping and measured profiles after representation completion remain open. |
+| 6. Adversarial audit | Original evaluator, root and reporting controls remain. New repairs use identical-input GNU negatives and unchanged expected outputs; failed runs remain failed. The final audit must examine the actual final code, caches, startup/images, native loading, selection, comparison and reporting, including deliberate evidence corruption. Historical or selected audits do not satisfy that final review. |
+| 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. No current GNU-parity result exists. The requested Darwin rebuild and explicit replacement pin are recorded; actual counters, calibration, interleaved same-host samples, distributions and every per-workload criterion remain unresolved. |
+| 8. Complete validation | Source270 has zero-warning strict checks,203 focused passes/two existing ignores and 1059 affected passes in each profile, and 33 ordinary GNU matches. Full macOS/Linux Rust,frozen and terminal validation is now running on exact 0ecf6e11. Previous source261 has full Rust 3107/3119 passes,two existing ignores each; Linux frozen519 files/7928 matches; macOS frozen7915 matches/six strict skip-diagnostic failures; terminal226 scenarios/686 matches. Those historical results do not certify270. Source263,268,269 failures remain preserved. Final-source platform/release/frozen/terminal validation remains required. |
+| 9. Independently checkable delivery | Portable patches, manifests, commands, raw results, failures and reproduction helpers are retained. Applied source270 is a validated selected checkpoint, with the full goal explicitly unfinished. Final source, final evidence-chain review and satisfaction of every architectural/performance requirement remain outstanding. |
+
+Further architectural work must replace individual string data boxes with sblocks,
+replace property spans with real intervals, and remove remaining symbol-cell
+indirection while preserving the recovered behavior. The runtime ownership boundary
+must constrain compaction and public borrows. Actual allocator accounting and
+profile-based VM/call work remain necessary before performance claims. Additional
+feature repairs or repeated green gates cannot substitute for those requirements.
+
+# Historical record — 27 September 2026
+
 The full objective is retained in [runtime-representation-goal.md](runtime-representation-goal.md).
 This record tracks evidence and outstanding work; no completion is claimed.
 

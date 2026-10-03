@@ -1,0 +1,220 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "published_head": "dca0453ef8c1f7d86a73db0990b7e78ed84aca67",
+    "runtime_source": "d186d40bf014ca53d0a2652b4e2f2d921c5cb009",
+    "run": {
+      "conclusion": "",
+      "headSha": "dca0453ef8c1f7d86a73db0990b7e78ed84aca67",
+      "jobs": [
+        {
+          "completedAt": "0001-01-01T00:00:00Z",
+          "conclusion": "",
+          "databaseId": 110074158570,
+          "name": "linux",
+          "startedAt": "2026-09-30T20:05:15Z",
+          "status": "in_progress",
+          "steps": [
+            {
+              "completedAt": "2026-09-30T20:05:17Z",
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "startedAt": "2026-09-30T20:05:16Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-30T20:05:23Z",
+              "conclusion": "success",
+              "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+              "number": 2,
+              "startedAt": "2026-09-30T20:05:17Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-09-30T20:05:37Z",
+              "conclusion": "success",
+              "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+              "number": 3,
+              "startedAt": "2026-09-30T20:05:23Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Install recorded oracle and language server prerequisites",
+              "number": 4,
+              "startedAt": "2026-09-30T20:05:37Z",
+              "status": "in_progress"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Enable bubblewrap's required user namespaces",
+              "number": 5,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Install process-scoped sampling tools",
+              "number": 6,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Run actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830",
+              "number": 7,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Build GNU with the existing Linux native ABI configuration",
+              "number": 8,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Run actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830",
+              "number": 9,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Verify GNU native ABI and capture its build identity",
+              "number": 10,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Run actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830",
+              "number": 11,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Build current runner and check Rust formatting and lint",
+              "number": 12,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Execute the requested validation or diagnosis",
+              "number": 13,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Run actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830",
+              "number": 14,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Collect only this run's raw compatibility evidence",
+              "number": 15,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Run actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+              "number": 16,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+              "number": 31,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            },
+            {
+              "completedAt": "0001-01-01T00:00:00Z",
+              "conclusion": "",
+              "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+              "number": 32,
+              "startedAt": "0001-01-01T00:00:00Z",
+              "status": "pending"
+            }
+          ],
+          "url": "https://github.com/rayfdj/emaxx/actions/runs/36770142335/job/110074158570"
+        }
+      ],
+      "status": "in_progress",
+      "url": "https://github.com/rayfdj/emaxx/actions/runs/36770142335"
+    },
+    "authorization": "Standing user approval for later validated updates on runtime-char-tables and existing Linux CI",
+    "qualification": "Exact-retained-artifact diagnosis launched on published dca0453e. Runtime inputs remain source204. Six malformed-input controls rejected. No replay or debugger outcome yet."
+  },
+  "archive": {
+    "path": "source204-census-diagnosis-start.tar.gz",
+    "bytes": 16654,
+    "sha256": "afb8a25eff4b915092532ecfcba7c088aa9db6abcca8a304f388867a75a526f6"
+  },
+  "files": [
+    {
+      "path": ".github/workflows/frozen-run.yml",
+      "bytes": 27163,
+      "sha256": "6294b16d004217dca70034f4755546e567041704ec4c0a7b2b445693cb98ae7a"
+    },
+    {
+      "path": "check-source204-census-diagnosis.py",
+      "bytes": 3980,
+      "sha256": "ebbb5bbc7b3fa59889d7b2a99cc57dbca001611c6cc04d0933545de7d8d910ea"
+    },
+    {
+      "path": "package-source206-and204-terminal.py",
+      "bytes": 2150,
+      "sha256": "73d84cfecfebea03ac96670c929b3d73688ae2af5cb7da778ce0c9c2936101df"
+    },
+    {
+      "path": "source204-census-diagnosis-dispatch.json",
+      "bytes": 6089,
+      "sha256": "a721cfda2e3068c1b0f23c3fffcad0221f516c62f6b96a324628551478d8fe02"
+    },
+    {
+      "path": "source204-census-diagnosis-local-checks-v2.json",
+      "bytes": 823,
+      "sha256": "a7f4cdc84359a20a031dde8496c1b1bf663ee7000074aaea1b7951140079202d"
+    },
+    {
+      "path": "source204-results-pr-body.md",
+      "bytes": 3628,
+      "sha256": "5e4cb02f5ab578c2fe29cf05c5546e253474d1e540f0a121a25089aaf570b309"
+    },
+    {
+      "path": "tools/diagnose_exact_census.py",
+      "bytes": 9596,
+      "sha256": "cdebcee7007d07bb609cadf19b9e1ccafc207fd8849bf8a749101378b0d1061d"
+    },
+    {
+      "path": "tools/diagnostics/exact-census-watch.py",
+      "bytes": 5317,
+      "sha256": "97260492283d496ba7a08f0c4a1772e272ae68650b5a74a933df86c666ed0ac6"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

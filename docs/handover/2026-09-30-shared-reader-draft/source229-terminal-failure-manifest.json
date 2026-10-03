@@ -1,0 +1,244 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "failed and incomplete terminal comparison",
+    "goal_complete": false,
+    "inputs_verified": 432,
+    "execution_inputs_verified": 8,
+    "scheduled_scenarios": 226,
+    "started_scenarios": 172,
+    "fully_matching_scenarios": 164,
+    "matching_comparisons": 353,
+    "divergent_comparisons": 7,
+    "matching_screen_comparisons": 351,
+    "matching_filesystem_comparisons": 2,
+    "divergent_labels": [
+      "hscroll-disabled",
+      "help-key-then-quit::1:describe-forward-char-key",
+      "help-function-then-quit::1:describe-forward-word",
+      "buffer-switch-scratch::1:switch-to-scratch",
+      "minibuffer-edit-abort::9:execute-command",
+      "kill-buffer-confirm::4:kill-without-saving",
+      "kill-buffer-cancel-save::9:kill-saved-buffer"
+    ],
+    "partial_scenarios": [
+      {
+        "scenario": "hscroll-disabled",
+        "missing": [],
+        "reason": "returned after divergence"
+      },
+      {
+        "scenario": "help-key-then-quit",
+        "missing": [
+          "help-key-then-quit::2:quit-help"
+        ],
+        "reason": "returned after divergence"
+      },
+      {
+        "scenario": "help-function-then-quit",
+        "missing": [
+          "help-function-then-quit::2:quit-help"
+        ],
+        "reason": "returned after divergence"
+      },
+      {
+        "scenario": "buffer-switch-scratch",
+        "missing": [
+          "buffer-switch-scratch::2:insert-in-scratch",
+          "buffer-switch-scratch::3:switch-back"
+        ],
+        "reason": "returned after divergence"
+      },
+      {
+        "scenario": "minibuffer-edit-abort",
+        "missing": [],
+        "reason": "returned after divergence"
+      },
+      {
+        "scenario": "kill-buffer-confirm",
+        "missing": [],
+        "reason": "returned after divergence"
+      },
+      {
+        "scenario": "kill-buffer-cancel-save",
+        "missing": [],
+        "reason": "returned after divergence"
+      },
+      {
+        "scenario": "dired-batch-delete-files",
+        "missing": [
+          "dired-batch-delete-files::3:center-alpha",
+          "dired-batch-delete-files::4:mark-alpha",
+          "dired-batch-delete-files::5:mark-beta",
+          "dired-batch-delete-files::8:verify-batch-delete",
+          "dired-batch-delete-files::8:verify-batch-delete filesystem"
+        ],
+        "reason": "GNU startup readiness failure before comparison"
+      }
+    ],
+    "unstarted_scenarios": [
+      "dired-batch-copy-mixed-tree",
+      "dired-batch-overwrite-decline",
+      "dired-batch-overwrite-accept",
+      "dired-batch-copy-cancel",
+      "dired-batch-copy-missing-target",
+      "dired-batch-copy-partial-failure",
+      "dired-batch-copy-permission-failure",
+      "dired-refresh-after-external-delete",
+      "package-menu-filter-install-cancel",
+      "package-menu-install-refresh-remove",
+      "eglot-connect-diagnostics-completion-hover",
+      "eglot-xref-rename-edits",
+      "eglot-reconnect-shutdown",
+      "org-fieldnotes-todo-cycle",
+      "org-fieldnotes-priority",
+      "org-fieldnotes-table-motion",
+      "org-fieldnotes-heading-insert",
+      "org-fieldnotes-narrow-widen",
+      "org-fieldnotes-heading-motion",
+      "undo-kill-line-coalescing",
+      "undo-kill-line-boundaries",
+      "undo-word-kill-order",
+      "undo-yank-pop-cycle",
+      "undo-yank-pop-invalid",
+      "undo-redo-divergent",
+      "undo-keyboard-macro-boundaries",
+      "undo-region-limited",
+      "undo-repeat-c-slash",
+      "undo-repeat-c-x-u",
+      "regexp-isearch-forward",
+      "regexp-isearch-backward",
+      "regexp-isearch-edit-fail-wrap",
+      "regexp-isearch-abort",
+      "regexp-isearch-other-key-exit",
+      "regexp-isearch-invalid-recovery",
+      "query-replace-regexp-captures",
+      "query-replace-regexp-choices-undo",
+      "save-some-buffers-selective",
+      "overwrite-decline",
+      "overwrite-accept-revisit",
+      "overwrite-write-failure",
+      "supersession-decline",
+      "supersession-accept-revisit",
+      "find-alternate-file-success",
+      "find-alternate-file-cancel",
+      "find-alternate-file-missing-revisit",
+      "find-alternate-file-modified-decline",
+      "find-alternate-file-modified-accept",
+      "seeded-safe-17",
+      "seeded-safe-2309",
+      "seeded-safe-7595",
+      "reader-live-prefix-filters",
+      "reader-translation-pipeline-raw-keys",
+      "reader-minibuffer-input-translation"
+    ],
+    "unexecuted_comparisons": 326,
+    "log_sha256": "8c8fc944533af87fe0a718a8019cc8a3f5bd739e30a5b93483e5c909c3b9bcce",
+    "ordinary_artifacts": {
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-bytes/emaxx/target/frame-validation/release/emaxx": {
+        "sha256": "ec83aae100b7bbbc7f594075aee7b5d5c452ea8b12ee4765c96cc8cd0d6639eb",
+        "immutable_copy": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source229-ordinary-emaxx",
+        "bytes": 13279456
+      },
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-bytes/emaxx/target/frame-validation/release/emaxx.pdmp": {
+        "sha256": "72f512ceeac64f5bddc4eefa050459c8be585c9c212814ffe51c29a865b95993",
+        "immutable_copy": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source229-ordinary-emaxx.pdmp",
+        "bytes": 22348048
+      }
+    },
+    "qualification": "All seven observed divergences involve quote display, including the echo area and wrap/cursor consequences. The final traceback is GNU startup readiness failure, not an Emaxx crash. No timeouts, selectors or comparison strictness changed. Every observed raw verdict is checked against its unchanged scenario prefix; omitted comparisons and all 54 unstarted scenarios remain unexecuted. This source/ABI-matched GNU is not the frozen Darwin executable. No full terminal, pinned-platform or performance pass."
+  },
+  "archive": {
+    "path": "source229-terminal-failure.tar.gz",
+    "bytes": 37925,
+    "sha256": "65183271e993f312fdfee26d81086e90d5ad51e10a8582273d5f615b1f99782c"
+  },
+  "files": [
+    {
+      "path": "audit-source229-terminal-failure.py",
+      "bytes": 6062,
+      "sha256": "dc29e222adf01116f633e395268955b7aa9f76d502a33813733185b66ba2e7e7"
+    },
+    {
+      "path": "diagnose-source229-quote-state.py",
+      "bytes": 2927,
+      "sha256": "8282201ecf1fc242cbea2501b12da4684233c699ab4e5bcf15ba15b04f54c124"
+    },
+    {
+      "path": "package-source231-release-and229-terminal.py",
+      "bytes": 2988,
+      "sha256": "4bd5e5c2a924fe032c4c720337d4410bb0a801d19350a930711423df6cf796e2"
+    },
+    {
+      "path": "run-source229-full-tty.py",
+      "bytes": 3513,
+      "sha256": "6521d26ae9f98c5763b7dc7b81fe0f3eda31e70622d5dfdebdb179b8de662a2f"
+    },
+    {
+      "path": "source229-full-ttydiff-command.json",
+      "bytes": 8929,
+      "sha256": "1f3b5106607db6685582a2e5ae7df0881d6cb25a3ff9ca9b56c441f4ee3d9c1d"
+    },
+    {
+      "path": "source229-full-ttydiff-result.json",
+      "bytes": 472,
+      "sha256": "8794f36c0a7a38cdeb48a5473dfd6465da0d7375037910d2706869d70c8ad94e"
+    },
+    {
+      "path": "source229-full-ttydiff.log",
+      "bytes": 34146,
+      "sha256": "8c8fc944533af87fe0a718a8019cc8a3f5bd739e30a5b93483e5c909c3b9bcce"
+    },
+    {
+      "path": "source229-manifest.json",
+      "bytes": 49150,
+      "sha256": "962f4a27e58f9ec194391b9ef38dac324789d6d459a7fa178c6930bb1ff9533e"
+    },
+    {
+      "path": "source229-ordinary-artifacts.json",
+      "bytes": 744,
+      "sha256": "b43560192297a7b5cb0bdafed1e6be2fee4e4c50aac0156aad8756e4987a042e"
+    },
+    {
+      "path": "source229-quote-state-emaxx-command.json",
+      "bytes": 4637,
+      "sha256": "78721dd2abda2a53bd5a15fc94f3160eaf4b158df6c1eb786c544902b4c05e3f"
+    },
+    {
+      "path": "source229-quote-state-emaxx-result.json",
+      "bytes": 1179,
+      "sha256": "a7bd7f4b8b0b4671f7eeb87b5b1a48a4e5d560c88866b04bcaf60f08a58dcf5e"
+    },
+    {
+      "path": "source229-quote-state-emaxx.el",
+      "bytes": 202,
+      "sha256": "a2d2338a87fb9526f161c7908f07b9a0bf7b2fc4564f1b42eba4fdaf1fbbad98"
+    },
+    {
+      "path": "source229-quote-state-gnu-command.json",
+      "bytes": 2501,
+      "sha256": "f88276d7df346d1e0882ede26ec98370e5a80e9d0a09595b1bd2a7ea49927fe6"
+    },
+    {
+      "path": "source229-quote-state-gnu-result.json",
+      "bytes": 761,
+      "sha256": "9f3472f4a63a5e959d491e0a25aeddc0f86124b67f20d0c59b0d07c572e45660"
+    },
+    {
+      "path": "source229-quote-state-gnu.el",
+      "bytes": 202,
+      "sha256": "a2d2338a87fb9526f161c7908f07b9a0bf7b2fc4564f1b42eba4fdaf1fbbad98"
+    },
+    {
+      "path": "source229-quote-state-results.json",
+      "bytes": 2082,
+      "sha256": "e3bc6e41ba52d52c9424d8c43cc003d276617c14ee3f342cb331418f0643d20a"
+    },
+    {
+      "path": "source229-terminal-failure-audit.json",
+      "bytes": 5582,
+      "sha256": "dd6626ce6273c8a025f25f770890946f0dcb0ba375e575155d3895e4d5c951b4"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

@@ -1,0 +1,15 @@
+(mapcar
+ (lambda (arguments)
+   (condition-case error
+       (list 'returned (apply (car arguments) (cdr arguments)))
+     (error error)))
+ (list (list 'substring 'bad 'bad 'bad)
+       (list 'substring (bool-vector t nil) 0 1)
+       (list 'substring-no-properties [1 2] 0 1)
+       (list 'substring "abc" 99 'bad)
+       (list 'substring "abc" nil 'bad)
+       (list 'substring "abc" 'bad 99)
+       (list 'substring "abc" 1.5 2)
+       (list 'substring "abc" (1+ most-positive-fixnum) nil)
+       (list 'substring "abc" -4 nil)
+       (list 'substring "abc" nil 4)))

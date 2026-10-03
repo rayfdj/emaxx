@@ -1,0 +1,84 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "published_head": "d186d40bf014ca53d0a2652b4e2f2d921c5cb009",
+    "verified_inputs": 410,
+    "draft_pr": 79,
+    "linux_rust_run": 36764911748,
+    "linux_frozen_run": 36764918696,
+    "qualification": "Runtime publication and exact-head CI launch, not completed full validation. Post-run audit helpers are prepared but have not yet run."
+  },
+  "archive": {
+    "path": "source204-publication.tar.gz",
+    "bytes": 6454,
+    "sha256": "63504252c46f542489480b484b2c629707d763bfd5deb98a4a4fe4eec376b66f"
+  },
+  "files": [
+    {
+      "path": "audit-source204-linux-names.py",
+      "bytes": 1823,
+      "sha256": "29ac2cc5fff0125f50da535482d909a8755f46f27b90a36b9537362b16732cc3"
+    },
+    {
+      "path": "audit-source204-macos-names.py",
+      "bytes": 1679,
+      "sha256": "e2da5b6cad4a08b461cbe983b1010ef7e8f6fa77eff028f9a805916fdfffabab"
+    },
+    {
+      "path": "package-source204-publication-and-accounting.py",
+      "bytes": 3856,
+      "sha256": "22c6c6e0b1d6bb354289dc32d59a6a124f93da9c9544bc76bf800bf882426aeb"
+    },
+    {
+      "path": "source204-linux-frozen-dispatch.json",
+      "bytes": 389,
+      "sha256": "79e6f996bbfd968f3f983fb63a895256ab08db9b7ee1b4d7f170cb036d446c1d"
+    },
+    {
+      "path": "source204-linux-frozen-initial-state.json",
+      "bytes": 430,
+      "sha256": "c5e033f179a8e252dfec9eb8fbdcdd2f3b3e4aab857d535112c855a6554cc6c0"
+    },
+    {
+      "path": "source204-linux-rust-dispatch.json",
+      "bytes": 387,
+      "sha256": "56b19d5d85d95280cabdaf2a6ba6b3245f66815172bf953b3f505777fb37c954"
+    },
+    {
+      "path": "source204-linux-rust-initial-state.json",
+      "bytes": 189,
+      "sha256": "6b6512f332d475344d56955414f3ce6d91560d580c8afb6daed6d107491df5a7"
+    },
+    {
+      "path": "source204-runtime-commit.json",
+      "bytes": 1537,
+      "sha256": "0ecbc00024e29e62d5e239bfef11058dbcd606bb79a2a96ad15d61e79d460f77"
+    },
+    {
+      "path": "source204-runtime-pr-body.md",
+      "bytes": 2685,
+      "sha256": "398e095ffb9b55acad3e402ff7f2b34cc984a4d33e8485cca5ad0b8dfdbe8470"
+    },
+    {
+      "path": "source204-runtime-pr-state.json",
+      "bytes": 2990,
+      "sha256": "1cd57f95c7e1cd14e4aa016a9b76497ce3406d0281f5bf2af640b599f35f13bc"
+    },
+    {
+      "path": "source204-runtime-published-head.json",
+      "bytes": 184,
+      "sha256": "2ba5e4c0c10631683aaaaa6311375357f0a53f41830c5991a7b78c1dfa27e96b"
+    },
+    {
+      "path": "source204-runtime-push.json",
+      "bytes": 371,
+      "sha256": "4dfcd3f4ac731638f36c6a52a2b59b419c72152870b6f1c586a369ee0b219337"
+    },
+    {
+      "path": "verify-source204-macos-rust.py",
+      "bytes": 4070,
+      "sha256": "ab5050286ee4dcbd64e95b4ac0f3be1788ee0f91611c0931cb06f8e1b0c5c775"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

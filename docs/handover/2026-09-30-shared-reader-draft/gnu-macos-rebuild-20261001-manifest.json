@@ -1,0 +1,793 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "build": {
+      "command": [
+        "/Library/Developer/CommandLineTools/usr/bin/python3",
+        "-B",
+        "/Users/nbmhqa186/projects/emaxx/tools/build_macos_oracle.py",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/emacs",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs",
+        "--jobs",
+        "2"
+      ],
+      "exit_code": 0,
+      "build_metadata": {
+        "revision": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+        "source": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/emacs",
+        "destination": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs",
+        "configure_options": "--with-native-compilation=aot --with-xml2 --with-gnutls --with-modules --with-rsvg --with-webp --with-ns --disable-ns-self-contained --with-tree-sitter --without-dbus 'CFLAGS=-DFD_SETSIZE=10000 -DDARWIN_UNLIMITED_SELECT -I/opt/homebrew/opt/sqlite/include -I/opt/homebrew/opt/gcc/include -I/opt/homebrew/opt/libgccjit/include ' 'CPPFLAGS=-I/opt/homebrew/opt/sqlite/include -I/opt/homebrew/opt/gcc/include -I/opt/homebrew/opt/libgccjit/include ' 'LDFLAGS=-L/opt/homebrew/opt/sqlite/lib -L/opt/homebrew/lib/gcc/15 -Wl,-rpath,/opt/homebrew/lib/gcc/15 '",
+        "pkg_config_path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs-pkgconfig:/opt/homebrew/opt/tree-sitter@0.25/lib/pkgconfig:/opt/homebrew/opt/webp/lib/pkgconfig:/opt/homebrew/opt/librsvg/lib/pkgconfig:/opt/homebrew/opt/gnutls/lib/pkgconfig:/opt/homebrew/opt/sqlite/lib/pkgconfig",
+        "system_libxml_version": "2.9.13",
+        "system_libxml_cflags": "-I/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include",
+        "system_libxml_libs": "-L/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib -lxml2 -lz -lpthread -licucore -lm",
+        "binary_sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+        "dependencies": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs:\n\t/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit (compatibility version 45.0.0, current version 2685.60.104)\n\t/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit (compatibility version 1.0.0, current version 275.0.0)\n\t/System/Library/Frameworks/Carbon.framework/Versions/A/Carbon (compatibility version 2.0.0, current version 170.0.0)\n\t/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface (compatibility version 1.0.0, current version 1.0.0)\n\t/System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore (compatibility version 1.2.0, current version 1195.14.4)\n\t/System/Library/Frameworks/UniformTypeIdentifiers.framework/Versions/A/UniformTypeIdentifiers (compatibility version 1.0.0, current version 709.0.0)\n\t/opt/homebrew/opt/libpng/lib/libpng16.16.dylib (compatibility version 75.0.0, current version 75.0.0)\n\t/opt/homebrew/opt/webp/lib/libwebpdemux.2.dylib (compatibility version 3.0.0, current version 3.17.0)\n\t/opt/homebrew/opt/webp/lib/libwebpdecoder.3.dylib (compatibility version 6.0.0, current version 6.0.0)\n\t/opt/homebrew/opt/librsvg/lib/librsvg-2.2.dylib (compatibility version 2.0.0, current version 2.0.0)\n\t/opt/homebrew/opt/gdk-pixbuf/lib/libgdk_pixbuf-2.0.0.dylib (compatibility version 4401.0.0, current version 4401.6.0)\n\t/opt/homebrew/opt/glib/lib/libgio-2.0.0.dylib (compatibility version 8801.0.0, current version 8801.1.0)\n\t/opt/homebrew/opt/cairo/lib/libcairo.2.dylib (compatibility version 2.0.0, current version 2.0.0)\n\t/opt/homebrew/opt/glib/lib/libgobject-2.0.0.dylib (compatibility version 8801.0.0, current version 8801.1.0)\n\t/opt/homebrew/opt/glib/lib/libglib-2.0.0.dylib (compatibility version 8801.0.0, current version 8801.1.0)\n\t/opt/homebrew/opt/gettext/lib/libintl.8.dylib (compatibility version 13.0.0, current version 13.6.0)\n\t/usr/lib/libxml2.2.dylib (compatibility version 10.0.0, current version 10.9.0)\n\t/usr/lib/libz.1.dylib (compatibility version 1.0.0, current version 1.2.12)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)\n\t/usr/lib/libicucore.A.dylib (compatibility version 1.0.0, current version 78.1.0)\n\t/usr/lib/libncurses.5.4.dylib (compatibility version 5.4.0, current version 5.4.0)\n\t/opt/homebrew/opt/gnutls/lib/libgnutls.30.dylib (compatibility version 73.0.0, current version 73.0.0)\n\t/opt/homebrew/opt/little-cms2/lib/liblcms2.2.dylib (compatibility version 3.0.0, current version 3.19.0)\n\t/opt/homebrew/opt/libgccjit/lib/gcc/current/libgccjit.0.dylib (compatibility version 0.0.0, current version 26.0.26)\n\t/opt/homebrew/opt/tree-sitter@0.25/lib/libtree-sitter.0.25.dylib (compatibility version 0.0.0, current version 0.0.0)\n\t/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib (compatibility version 9.0.0, current version 9.6.0)\n\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 5026.5.4)\n\t/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics (compatibility version 64.0.0, current version 1965.5.1)\n\t/System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices (compatibility version 1.0.0, current version 1226.0.0)\n\t/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText (compatibility version 1.0.0, current version 877.4.0)\n\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0, current version 5026.5.4)\n\t/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)",
+        "configuration": "(\"30.2\" \"636f166cfc86aa90d63f592fd99f3fdd9ef95ebd\" \"aarch64-apple-darwin25.6.0\" \"--with-native-compilation=aot --with-xml2 --with-gnutls --with-modules --with-rsvg --with-webp --with-ns --disable-ns-self-contained --with-tree-sitter --without-dbus 'CFLAGS=-DFD_SETSIZE=10000 -DDARWIN_UNLIMITED_SELECT -I/opt/homebrew/opt/sqlite/include -I/opt/homebrew/opt/gcc/include -I/opt/homebrew/opt/libgccjit/include ' 'CPPFLAGS=-I/opt/homebrew/opt/sqlite/include -I/opt/homebrew/opt/gcc/include -I/opt/homebrew/opt/libgccjit/include ' 'LDFLAGS=-L/opt/homebrew/opt/sqlite/lib -L/opt/homebrew/lib/gcc/15 -Wl,-rpath,/opt/homebrew/lib/gcc/15 '\" \"ACL GLIB GNUTLS LCMS2 LIBXML2 MODULES NATIVE_COMP NOTIFY KQUEUE NS PDUMPER PNG RSVG SQLITE3 THREADS TOOLKIT_SCROLL_BARS TREE_SITTER WEBP XIM ZLIB\")"
+      },
+      "output_files": {
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs": {
+          "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+          "bytes": 9600848
+        },
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/config.h": {
+          "sha256": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+          "bytes": 116675
+        },
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/Makefile": {
+          "sha256": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778",
+          "bytes": 38033
+        },
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/bootstrap-emacs.pdmp": {
+          "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+          "bytes": 22954264
+        },
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs-30.2.1.pdmp": {
+          "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+          "bytes": 22954264
+        },
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp": {
+          "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+          "bytes": 22954264
+        }
+      },
+      "elapsed_seconds": 1609.416720416,
+      "input_files_unchanged": true,
+      "source_clean": true
+    },
+    "verification": {
+      "status": "passed build configuration, capabilities and generated ABI/primitive checks",
+      "goal_complete": false,
+      "pin_changed": false,
+      "build_receipt": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/gnu-macos-rebuild-20261001-result.json",
+      "binary_sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+      "historical_pinned_binary_sha256": "591acf7b5da3582dca93367b6a69935dbff9c69a9310f05a1927fa230b428f8d",
+      "capabilities": {
+        "version": "30.2",
+        "revision": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+        "configuration": "aarch64-apple-darwin25.6.0",
+        "options": "--with-native-compilation=aot --with-xml2 --with-gnutls --with-modules --with-rsvg --with-webp --with-ns --disable-ns-self-contained --with-tree-sitter --without-dbus 'CFLAGS=-DFD_SETSIZE=10000 -DDARWIN_UNLIMITED_SELECT -I/opt/homebrew/opt/sqlite/include -I/opt/homebrew/opt/gcc/include -I/opt/homebrew/opt/libgccjit/include ' 'CPPFLAGS=-I/opt/homebrew/opt/sqlite/include -I/opt/homebrew/opt/gcc/include -I/opt/homebrew/opt/libgccjit/include ' 'LDFLAGS=-L/opt/homebrew/opt/sqlite/lib -L/opt/homebrew/lib/gcc/15 -Wl,-rpath,/opt/homebrew/lib/gcc/15 '",
+        "features": "ACL GLIB GNUTLS LCMS2 LIBXML2 MODULES NATIVE_COMP NOTIFY KQUEUE NS PDUMPER PNG RSVG SQLITE3 THREADS TOOLKIT_SCROLL_BARS TREE_SITTER WEBP XIM ZLIB",
+        "native": true,
+        "gnutls": true,
+        "libxml": true,
+        "sqlite": true,
+        "sqlite_extension": true,
+        "modules": true,
+        "treesit": true,
+        "lcms_feature": true,
+        "lcms": true
+      },
+      "same_capabilities_as_retained_source_abi_matched_build": true,
+      "manifests": [
+        {
+          "fresh": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/verification/native-subrs.rs",
+          "committed": "/Users/nbmhqa186/projects/emaxx/src/lisp/native_comp/generated_native_subrs_aarch64_apple_darwin.rs",
+          "fresh_sha256": "dd88305cdd5a0ebd2d0030738d3c15ccf38d7afcef6d862dffc3f13b2c8a0406",
+          "committed_sha256": "dd88305cdd5a0ebd2d0030738d3c15ccf38d7afcef6d862dffc3f13b2c8a0406",
+          "byte_identical": true
+        },
+        {
+          "fresh": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/verification/generated_gnu_c_primitives.rs",
+          "committed": "/Users/nbmhqa186/projects/emaxx/src/lisp/primitives/generated_gnu_c_primitives.rs",
+          "fresh_sha256": "c27e71006be0ccbf633ff1307473162e1f0c669b0fe4bfb026941e853d03902a",
+          "committed_sha256": "c27e71006be0ccbf633ff1307473162e1f0c669b0fe4bfb026941e853d03902a",
+          "byte_identical": true
+        },
+        {
+          "fresh": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/verification/generated_gnu_c_defsyms.rs",
+          "committed": "/Users/nbmhqa186/projects/emaxx/src/lisp/primitives/generated_gnu_c_defsyms.rs",
+          "fresh_sha256": "99ef7462b1af2fc1fa5aacc43ffe7e1d4d00d24453bea3ec523c7e3ca423768d",
+          "committed_sha256": "99ef7462b1af2fc1fa5aacc43ffe7e1d4d00d24453bea3ec523c7e3ca423768d",
+          "byte_identical": true
+        }
+      ],
+      "artifacts_unchanged": true,
+      "commands": [
+        {
+          "name": "rust-toolchain",
+          "exit_code": 0,
+          "elapsed_seconds": 0.15015837499999998,
+          "stdout_sha256": "e794146d99fad54562fdcbd4a7c8b22b0240d2b0312ff6d879d67939b3131850",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "generator-build",
+          "exit_code": 0,
+          "elapsed_seconds": 1.033469417,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "rebuilt-capabilities",
+          "exit_code": 0,
+          "elapsed_seconds": 0.19851995799990618,
+          "stdout_sha256": "f2a9894507fe2a25398370a919032eff3c4c85dd34a3b01e0a6cc48e2acd8424",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "retained-capabilities",
+          "exit_code": 0,
+          "elapsed_seconds": 0.1866186249999373,
+          "stdout_sha256": "f2a9894507fe2a25398370a919032eff3c4c85dd34a3b01e0a6cc48e2acd8424",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "dependencies",
+          "exit_code": 0,
+          "elapsed_seconds": 0.028449666999904366,
+          "stdout_sha256": "5d5176c2e8ce477609cb99ad61d44e9a1f52523072deda29dedc8cd5240f3001",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "native-abi",
+          "exit_code": 0,
+          "elapsed_seconds": 15.930427250000093,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "native-abi-format",
+          "exit_code": 0,
+          "elapsed_seconds": 0.09204387500017219,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "primitives",
+          "exit_code": 0,
+          "elapsed_seconds": 0.403806958000132,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "primitives-format",
+          "exit_code": 0,
+          "elapsed_seconds": 0.05152300000008836,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "defsyms",
+          "exit_code": 0,
+          "elapsed_seconds": 0.4034246250000706,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "gnu-source-clean",
+          "exit_code": 0,
+          "elapsed_seconds": 0.0707924590001312,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ],
+      "input_files": {
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/verify-gnu-macos-rebuild-20261001.py": "e84949bc379c55dfb7695d05f5c50621864eb96dcd43d44f696fef69a70836f4",
+        "/Users/nbmhqa186/projects/emaxx/tools/generate_native_subrs.rs": "83d512c84ee49064019b10b2f86fc39d9777f7db81fa872aa0f32fcffea484be",
+        "/Users/nbmhqa186/projects/emaxx/compat/generate_gnu_c_primitive_manifest.el": "727a46f312d56eba4bfbed4ee837f1eb0e79eb4a99cfae63776a80a462d15efe",
+        "/Users/nbmhqa186/projects/emaxx/compat/generate_gnu_c_defsym_manifest.el": "5d10c93ebef10a5914e3cb62e9901f7587b977113ea7aaf23bf72a0f7393a8ef",
+        "/Users/nbmhqa186/projects/emaxx/src/lisp/native_comp/generated_native_subrs_aarch64_apple_darwin.rs": "dd88305cdd5a0ebd2d0030738d3c15ccf38d7afcef6d862dffc3f13b2c8a0406",
+        "/Users/nbmhqa186/projects/emaxx/src/lisp/primitives/generated_gnu_c_primitives.rs": "c27e71006be0ccbf633ff1307473162e1f0c669b0fe4bfb026941e853d03902a",
+        "/Users/nbmhqa186/projects/emaxx/src/lisp/primitives/generated_gnu_c_defsyms.rs": "99ef7462b1af2fc1fa5aacc43ffe7e1d4d00d24453bea3ec523c7e3ca423768d",
+        "/Users/nbmhqa186/projects/emaxx/compat/oracle.lock.json": "6bbb6816a16cd32112e4d5fb512e87510ed9fed1d78aafcac183b1137172b0e7",
+        "/Users/nbmhqa186/projects/emaxx/compat/oracle_tests_all.txt": "a1f87443aad516a128001595d7c69fbbaace40b420d8cd1e9e5ec178aa2fd615"
+      },
+      "inputs_unchanged": true
+    },
+    "qualification": "The requested rebuild uses pristine GNU revision 636f166c and the recorded Apple-libxml2 recipe. Finished capabilities match the retained source/ABI-matched build, and regenerated native ABI, C primitives and DEFSYM manifests are byte-identical to the committed files. Actual executable/dump/configuration/Makefile identities are retained. This verifies the build, not the frozen compatibility inventory or the full runtime/performance goal. A replacement pin is committed only in isolated candidate 1c0898fc; the original lock is retained. Its first frozen launch exits 2 before tests because a copied Cargo target has no ownership marker. The failed raw launch is preserved, all four GNU inputs remain unchanged, and retry58661 uses the same command with a fresh target. The active retry log and any eventual result are excluded from this snapshot."
+  },
+  "archive": {
+    "path": "gnu-macos-rebuild-20261001.tar.gz",
+    "bytes": 165588,
+    "sha256": "ebfa23849501441e25788e6cbb0a60443861793557cf8448405a4f2f530bcf35"
+  },
+  "files": [
+    {
+      "path": "emacs-build.json",
+      "bytes": 5970,
+      "sha256": "0971bd655aee8344f9a6f263e82881a26da6fd191551fb38213d04f790f8ee88"
+    },
+    {
+      "path": "gnu-macos-rebuild-20261001-build.log",
+      "bytes": 136286,
+      "sha256": "e85ac7fc735c1fb936d8301727dd86e86bab38d0e61a2de543e093bcce3b602a"
+    },
+    {
+      "path": "gnu-macos-rebuild-20261001-command.json",
+      "bytes": 2808,
+      "sha256": "89fd93d9e8137cbf4df9f1c6b0e2999a74fcf4e648534944ef7da3efcd58aa35"
+    },
+    {
+      "path": "gnu-macos-rebuild-20261001-driver.log",
+      "bytes": 105,
+      "sha256": "19c43431bf1b77ff7eb5fd47579b7645b563323c7c0d134a00060102d9964938"
+    },
+    {
+      "path": "gnu-macos-rebuild-20261001-launch.json",
+      "bytes": 301,
+      "sha256": "bc92fe60848f72ac79b085052fc6f3cb3aca23b1567fe70c27c5d505f7080d5a"
+    },
+    {
+      "path": "gnu-macos-rebuild-20261001-result.json",
+      "bytes": 7800,
+      "sha256": "1a2fab82c607c0e5ad1074cafaf452fbc45c749dc459730c7ed5482a970cf19a"
+    },
+    {
+      "path": "gnu-macos-rebuild-20261001-verification-driver.log",
+      "bytes": 201,
+      "sha256": "d37299c837ccf6390d6e2c838cf10463ab861fae7a28f877347a741f7811d908"
+    },
+    {
+      "path": "gnu-macos-rebuild-20261001-verification-launch.json",
+      "bytes": 307,
+      "sha256": "618297cc6d4c3bd4d3e7ef203e7e8e74c69cbb676aa0bb137cdddc9e45f242d1"
+    },
+    {
+      "path": "gnu-macos-rebuild-20261001-verification.json",
+      "bytes": 7722,
+      "sha256": "cb4bd072732c5418ae4cd1f534458b447c116fe515de1cb43285987f7ddfd00d"
+    },
+    {
+      "path": "gnu/src/Makefile",
+      "bytes": 38033,
+      "sha256": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778"
+    },
+    {
+      "path": "gnu/src/config.h",
+      "bytes": 116675,
+      "sha256": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75"
+    },
+    {
+      "path": "package-gnu-macos-rebuild-20261001.py",
+      "bytes": 3762,
+      "sha256": "6a17d87252d1927af865002a0132b2c4a0c5f671a5c59131512d9a1029ae7916"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "prepare-rebuilt-oracle-subject.py",
+      "bytes": 3371,
+      "sha256": "72ab1dae3a1cc8d03ba3747760e5ce8b3ed33bfc34d3a76f726891caacd54d51"
+    },
+    {
+      "path": "rebuild-gnu-macos-20261001.py",
+      "bytes": 2976,
+      "sha256": "55df3216dba6402f438234d3e06fceb299dac607010267220af5999dc5ef72e6"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-candidate-commit.json",
+      "bytes": 2338,
+      "sha256": "e194d799a1a57b44170ef529ec23c5954f90286909f5b66bc6e1b5fbba0762ba"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-capture-command.json",
+      "bytes": 702,
+      "sha256": "85b517ff9a798976cfa8658c5484fafd80a11fe17815b02c09dba0f781b362c9"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-capture-result.json",
+      "bytes": 111,
+      "sha256": "9b3a20ee6b08295e583e1820aa2553ca2c6672233d31bc833f803102d0d0cd36"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-capture.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-commit-command.json",
+      "bytes": 522,
+      "sha256": "45cdc090b8f7e817abdb1e71f8ab2c3c28902b7021c3f0794a953b81766c8e80"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-commit-result.json",
+      "bytes": 110,
+      "sha256": "b24f51819a3f55294e9656ea51fcfded8276af658069ffa03cd400c66d574bd3"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-commit.log",
+      "bytes": 428,
+      "sha256": "569a646ee2a7682be24913fc24d9659dd049f491024ffd4226dae3088643f4b6"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-comparison-command.json",
+      "bytes": 457,
+      "sha256": "0720a384fdfa073a9b19fb0127bc94d898b4f4b6d5e4c631c2bc0d211a59c748"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-comparison-result.json",
+      "bytes": 112,
+      "sha256": "8bdfcafd39ea8b0eab411d1d7c9838cb0d374541dd8ffad10933f5f49dfe0f6d"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-comparison.log",
+      "bytes": 348,
+      "sha256": "a4f614c5c7732ffb18a051905bcbc294286d04ed8e0c7399abc76d178c60972d"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-completed-cache-copy-command.json",
+      "bytes": 549,
+      "sha256": "aa203b82043294d7cd85cb606f5ead3ebf6a07d79b325c996112a0ba697b5668"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-completed-cache-copy-result.json",
+      "bytes": 123,
+      "sha256": "9a595e65cdc099daa7ba7857cdee7311246c217b879f4281e1f1d0303867a06d"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-completed-cache-copy.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-diff-check-command.json",
+      "bytes": 351,
+      "sha256": "c472428ba2dd25a9b0c0c86597c7c743ba7c41a84fd74e8285c3c8cf71676b89"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-diff-check-result.json",
+      "bytes": 114,
+      "sha256": "fdb987a5b4f9f1f07bdfb884fbd74017d0af78d754e7b2ef567caa93b1a296cd"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-diff-check.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-driver.log",
+      "bytes": 203,
+      "sha256": "f50716c3241b2fe52bb5d73cc2598addfd16c7e0a2104f276e35e510faf09ca8"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-empty-target-command.json",
+      "bytes": 457,
+      "sha256": "0720a384fdfa073a9b19fb0127bc94d898b4f4b6d5e4c631c2bc0d211a59c748"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-empty-target-gnu-inputs/manifest.json",
+      "bytes": 1393,
+      "sha256": "df9e4cb69e70d5cb6f7ff6890d31d0bdce29299c1687d956eb547784b4fbbe54"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-empty-target-launch.json",
+      "bytes": 314,
+      "sha256": "a3e03f68e1b692e0610640675829406c5ea0002cdbd1c50476c11f60efd06822"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-empty-target-setup.json",
+      "bytes": 731,
+      "sha256": "0c2af9c12319eb7082e52acf145841c2f71fbd0db682f907c06e6d343df87710"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-gnu-inputs/manifest.json",
+      "bytes": 1393,
+      "sha256": "df9e4cb69e70d5cb6f7ff6890d31d0bdce29299c1687d956eb547784b4fbbe54"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-gnu-inputs/verification.json",
+      "bytes": 254,
+      "sha256": "dac552d599e19c622c38a92c6cf904bc98017bb1765a2f06257d1c4337994f8b"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-launch.json",
+      "bytes": 309,
+      "sha256": "b90c4be2962aecbdf3c65e2e76a81b989b2262688f30baf5ed725e534cab2d85"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-prior-lock.json",
+      "bytes": 774,
+      "sha256": "6bbb6816a16cd32112e4d5fb512e87510ed9fed1d78aafcac183b1137172b0e7"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-propose-pin-command.json",
+      "bytes": 674,
+      "sha256": "c8558ade15013a999ec9148727b99e78c556b7496885292e915820589d8013e4"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-propose-pin-result.json",
+      "bytes": 114,
+      "sha256": "dfc03c7be0a4431ba8fd6cf4da8a4f0690efa9dd1c4c7150c47232ab8ac64632"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-propose-pin.log",
+      "bytes": 282,
+      "sha256": "b2a48598c50e0a83a948f17b05a8eb3538d9c3c85872dc05050f98283ec037ab"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-proposed-lock.json",
+      "bytes": 774,
+      "sha256": "bef5fc6f7291e4a5389fb59f71cc6bc99554998f5e5f3f0c441c3cbe2333c72d"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-result.json",
+      "bytes": 1797,
+      "sha256": "e30b740d4d27509e2c5aa7cadeb03e99ea68f91e55137275a2f82b4cc5c78c89"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-stage-command.json",
+      "bytes": 734,
+      "sha256": "912e15129b00f0d2ae2807870bca9f988ce31a4ce95ac4abe680ed1a9506b03c"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-stage-result.json",
+      "bytes": 109,
+      "sha256": "e63ad37c515f2ae177082d6bd7ab77725ab0068f326b9a38b0f3d4e20874637b"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-stage.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-state.json",
+      "bytes": 1798,
+      "sha256": "5ff90582856267e4cf0c468ce1cd223dea8fc700c4836eecba72cc8c28c4b226"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-verify-gnu-inputs-command.json",
+      "bytes": 594,
+      "sha256": "76ebb10a6151f644fbf0fbe50e635235c832f7d14bc1dbde69aad1e5208690ab"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-verify-gnu-inputs-result.json",
+      "bytes": 121,
+      "sha256": "2b1e972d7d1acba721cb92a35925a92797ce78501ebf4d0c528157e70cca2185"
+    },
+    {
+      "path": "rebuilt-oracle-frozen-verify-gnu-inputs.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "rebuilt-oracle-subject-build-command.json",
+      "bytes": 682,
+      "sha256": "c180b3cf951c5f0f658733a60664574d5c8a3c103d5f672d72860b16ca6eeb06"
+    },
+    {
+      "path": "rebuilt-oracle-subject-build.log",
+      "bytes": 166,
+      "sha256": "0be45c04f9b8f6780d0ed65f8d672a9480ce0bafcfa29bd4525df298f52cf104"
+    },
+    {
+      "path": "rebuilt-oracle-subject-checkout-command.json",
+      "bytes": 322,
+      "sha256": "f49c183fb54a3558204d98d4b9f8f7ac1f16935aa54d875d4708cef031411b38"
+    },
+    {
+      "path": "rebuilt-oracle-subject-checkout.log",
+      "bytes": 2608,
+      "sha256": "363f6dad771a6fda1860e362001d45e5b17157cbf306873eff109f1a17657202"
+    },
+    {
+      "path": "rebuilt-oracle-subject-completed-cache-copy-command.json",
+      "bytes": 398,
+      "sha256": "c90621f3e6425f9550b129ec7d766feb5a673b8f957e7e8c422e5760fea9586c"
+    },
+    {
+      "path": "rebuilt-oracle-subject-completed-cache-copy.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "rebuilt-oracle-subject-patch-check-command.json",
+      "bytes": 325,
+      "sha256": "bcd99efb1b969431a93de218b869a752364fc0a46a77e6b5d4e4454ee7b2e329"
+    },
+    {
+      "path": "rebuilt-oracle-subject-patch-check.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "rebuilt-oracle-subject-patch-command.json",
+      "bytes": 310,
+      "sha256": "0e6039c76f55b7834c4995e4a69630475f0bf68acd4b103c3087430bd82a79d5"
+    },
+    {
+      "path": "rebuilt-oracle-subject-patch.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "rebuilt-oracle-subject-prepare-driver.log",
+      "bytes": 106,
+      "sha256": "50a4545342e6f9979389afadd3b21daa30ecd5024d3f540da6229e58da804e15"
+    },
+    {
+      "path": "rebuilt-oracle-subject-prepare-launch.json",
+      "bytes": 304,
+      "sha256": "7b6e2174c6eafa7a640a6938e43f020d0ff95ef910d3906105b370dd74e34787"
+    },
+    {
+      "path": "rebuilt-oracle-subject-prepare-result.json",
+      "bytes": 1670,
+      "sha256": "0c9874729785b3d497d0ea899fe9d94e7e79f69689d468229a6211d7375baddb"
+    },
+    {
+      "path": "retry-rebuilt-oracle-frozen-empty-target.py",
+      "bytes": 3286,
+      "sha256": "9684771f64c1d20dfe43820251ec345929b3dbd525f58d08fc769120c849b2cf"
+    },
+    {
+      "path": "run-rebuilt-oracle-frozen-candidate.py",
+      "bytes": 6869,
+      "sha256": "3ee27a0c881a0452cab30cb13390c956b6ba9782ef0196a955731599f1753137"
+    },
+    {
+      "path": "tools/build_macos_oracle.py",
+      "bytes": 4544,
+      "sha256": "01c8f3d2d704c33062d519e46177f83e224a4102dec95c3ec296d98700d7001e"
+    },
+    {
+      "path": "tools/generate_native_subrs.rs",
+      "bytes": 27546,
+      "sha256": "83d512c84ee49064019b10b2f86fc39d9777f7db81fa872aa0f32fcffea484be"
+    },
+    {
+      "path": "verification/defsyms-command.json",
+      "bytes": 642,
+      "sha256": "32c1720294784f155b486b78508ca5d70b71e4bed1c8bfad90e1a0666942b0f4"
+    },
+    {
+      "path": "verification/defsyms-result.json",
+      "bytes": 256,
+      "sha256": "102ba7e7ae2e029ee20f4a800240888207fd601f4cff37f9091c0dace4953752"
+    },
+    {
+      "path": "verification/defsyms.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/defsyms.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/dependencies-command.json",
+      "bytes": 290,
+      "sha256": "f43bb44331be647a594b599a3c5c335c9a1c5f8a3e76266b4af116b16ee7fb00"
+    },
+    {
+      "path": "verification/dependencies-result.json",
+      "bytes": 263,
+      "sha256": "c4c84adbfd8c4c7d86efd7af4f98583223cd44b8266e7db4903a49ee14df9144"
+    },
+    {
+      "path": "verification/dependencies.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/dependencies.stdout",
+      "bytes": 3588,
+      "sha256": "5d5176c2e8ce477609cb99ad61d44e9a1f52523072deda29dedc8cd5240f3001"
+    },
+    {
+      "path": "verification/generated_gnu_c_defsyms.rs",
+      "bytes": 131883,
+      "sha256": "99ef7462b1af2fc1fa5aacc43ffe7e1d4d00d24453bea3ec523c7e3ca423768d"
+    },
+    {
+      "path": "verification/generated_gnu_c_primitives.rs",
+      "bytes": 229598,
+      "sha256": "c27e71006be0ccbf633ff1307473162e1f0c669b0fe4bfb026941e853d03902a"
+    },
+    {
+      "path": "verification/generator-build-command.json",
+      "bytes": 444,
+      "sha256": "90e2400e5a9e22212d00b5a8e041660e04de9908cdb57b20db158360ece475cc"
+    },
+    {
+      "path": "verification/generator-build-result.json",
+      "bytes": 257,
+      "sha256": "58f84c9d31420dd562f99cd913b4519838161f952cd749d265533c9c38cb4747"
+    },
+    {
+      "path": "verification/generator-build.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/generator-build.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/gnu-source-clean-command.json",
+      "bytes": 311,
+      "sha256": "3359e035b51f1f1c0d1de942c2135c0814ba6003dd0e38953b72ebc279a65a19"
+    },
+    {
+      "path": "verification/gnu-source-clean-result.json",
+      "bytes": 265,
+      "sha256": "b90a13adc7b39ed6f645469d9222038cfcd052c7dddaecbf396aca0bfeba924b"
+    },
+    {
+      "path": "verification/gnu-source-clean.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/gnu-source-clean.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/native-abi-command.json",
+      "bytes": 575,
+      "sha256": "c9268475b36024e85178327d28fcae08c1f12ec030107b92b9c28ddf16f065f0"
+    },
+    {
+      "path": "verification/native-abi-format-command.json",
+      "bytes": 324,
+      "sha256": "7f7f25ac1cb29274b070b0ab32afec4d47207dc6657c497dc96872ef1e4b2bfc"
+    },
+    {
+      "path": "verification/native-abi-format-result.json",
+      "bytes": 267,
+      "sha256": "f8a0a29eb139119e7a6da6812ee6c61ea9f51a131a778b70d649cd669b55efd1"
+    },
+    {
+      "path": "verification/native-abi-format.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/native-abi-format.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/native-abi-result.json",
+      "bytes": 259,
+      "sha256": "650c1cc79cec5a081a781b0d25d1f905a9e1f3f502da082fdb9f4b8a1391888a"
+    },
+    {
+      "path": "verification/native-abi.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/native-abi.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/native-subrs.rs",
+      "bytes": 507568,
+      "sha256": "dd88305cdd5a0ebd2d0030738d3c15ccf38d7afcef6d862dffc3f13b2c8a0406"
+    },
+    {
+      "path": "verification/primitives-command.json",
+      "bytes": 651,
+      "sha256": "d0309c6e7ecafdc44013938b7912a44a8cdfaa87c16a5828dcf3396c320c4b0e"
+    },
+    {
+      "path": "verification/primitives-format-command.json",
+      "bytes": 338,
+      "sha256": "995990d584a3f6b356c51c24c6d9cf500f218798e7c0295a11d2edc12cecd73d"
+    },
+    {
+      "path": "verification/primitives-format-result.json",
+      "bytes": 267,
+      "sha256": "1e0bdd20d60ca833b277264862000e29997f80ad76fde77cbe30cf69543e31e1"
+    },
+    {
+      "path": "verification/primitives-format.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/primitives-format.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/primitives-result.json",
+      "bytes": 258,
+      "sha256": "5fb7fdf3cae426ebb75b70027fa7dae8fc83aa448584ae331ebb6359f23c20e4"
+    },
+    {
+      "path": "verification/primitives.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/primitives.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/rebuilt-capabilities-command.json",
+      "bytes": 1314,
+      "sha256": "4e4472075e85b80f46314b59ae4b1ed1e1671493c1ef99a0a4c756177b3ecbc7"
+    },
+    {
+      "path": "verification/rebuilt-capabilities-result.json",
+      "bytes": 270,
+      "sha256": "25edfca986e4cdc6d6377ee4ea253cf5d379b38df0e301144e0dcb3a55f89be4"
+    },
+    {
+      "path": "verification/rebuilt-capabilities.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/rebuilt-capabilities.stdout",
+      "bytes": 979,
+      "sha256": "f2a9894507fe2a25398370a919032eff3c4c85dd34a3b01e0a6cc48e2acd8424"
+    },
+    {
+      "path": "verification/retained-capabilities-command.json",
+      "bytes": 1316,
+      "sha256": "332fe792c6034060479e58337dae8103d43d1e1e0d2efd299c5b1fd1fcab4315"
+    },
+    {
+      "path": "verification/retained-capabilities-result.json",
+      "bytes": 270,
+      "sha256": "df60441c1cadbf2e178ae018393a60985b62551e2291abb9255d4639754af254"
+    },
+    {
+      "path": "verification/retained-capabilities.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/retained-capabilities.stdout",
+      "bytes": 979,
+      "sha256": "f2a9894507fe2a25398370a919032eff3c4c85dd34a3b01e0a6cc48e2acd8424"
+    },
+    {
+      "path": "verification/rust-toolchain-command.json",
+      "bytes": 220,
+      "sha256": "a71fcb929fbf611aea047061ccfc33a99977d7c6ae1d68cca7ffee57f045472b"
+    },
+    {
+      "path": "verification/rust-toolchain-result.json",
+      "bytes": 264,
+      "sha256": "285cc1a8520b6f02ca0e7931a0f0d08c4e4fdb5a4706d59e9bc8830a33a854fb"
+    },
+    {
+      "path": "verification/rust-toolchain.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "verification/rust-toolchain.stdout",
+      "bytes": 192,
+      "sha256": "e794146d99fad54562fdcbd4a7c8b22b0240d2b0312ff6d879d67939b3131850"
+    },
+    {
+      "path": "verify-gnu-macos-rebuild-20261001.py",
+      "bytes": 7239,
+      "sha256": "e84949bc379c55dfb7695d05f5c50621864eb96dcd43d44f696fef69a70836f4"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

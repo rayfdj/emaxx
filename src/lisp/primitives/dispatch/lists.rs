@@ -41,19 +41,11 @@ fn execute_kbd_macro(
     } else {
         args[0]
     };
-    let events = if let Some(string) = string_like(&final_macro) {
-        string
-            .text
-            .chars()
-            .map(|ch| Value::Integer(ch as i64))
-            .collect()
-    } else if is_vector_value(&final_macro) {
-        vector_items(&final_macro)?
-    } else {
+    if !final_macro.is_string() && !is_vector_value(&final_macro) {
         return Err(LispError::Signal(
             "Keyboard macros must be strings or vectors".into(),
         ));
-    };
+    }
     let mut repeat = args
         .get(1)
         .map(prefix_numeric_value)
@@ -70,86 +62,93 @@ fn execute_kbd_macro(
     let previous_real_this_command = interp
         .lookup_var("real-this-command", env)
         .unwrap_or(Value::Nil);
+    // macros.c:Fexecute_kbd_macro saves the public state in two ordinary
+    // conses. Use the same allocations, including their normal GC charge,
+    // while a borrowed stack root keeps the final array and loop function
+    // alive across replacement, nested commands and collecting callbacks.
+    let roots = [
+        final_macro,
+        loop_function,
+        Value::cons(
+            previous_macro,
+            Value::cons(previous_index, previous_real_this_command),
+        ),
+    ];
+    interp.with_lisp_stack_roots(&roots.as_slice(), |interp| {
+        // Fexecute_kbd_macro starts each iteration in the selected window's
+        // buffer.  This is observable when Lisp deliberately makes another
+        // buffer current without changing the selected window.
+        interp.set_current_buffer_id(interp.selected_window_buffer_id())?;
 
-    // Fexecute_kbd_macro starts each iteration in the selected window's
-    // buffer.  This is observable when Lisp deliberately makes another
-    // buffer current without changing the selected window.
-    interp.set_current_buffer_id(interp.selected_window_buffer_id())?;
+        let mut result = Ok(());
+        loop {
+            interp.set_variable("executing-kbd-macro", roots[0], env);
+            interp.set_variable("executing-kbd-macro-index", Value::Integer(0), env);
+            interp.set_variable("prefix-arg", Value::Nil, env);
+            interp.set_variable("last-prefix-arg", Value::Nil, env);
 
-    let mut result = Ok(());
-    loop {
-        interp.set_variable("executing-kbd-macro", final_macro, env);
-        interp.set_variable("executing-kbd-macro-index", Value::Integer(0), env);
-        interp.set_variable("prefix-arg", Value::Nil, env);
-        interp.set_variable("last-prefix-arg", Value::Nil, env);
+            if !roots[1].is_nil() {
+                match call_function_value(interp, &roots[1], &[], env) {
+                    Ok(value) if value.is_nil() => break,
+                    Ok(_) => {}
+                    Err(error) => {
+                        result = Err(error);
+                        break;
+                    }
+                }
+            }
 
-        if !loop_function.is_nil() {
-            match call_function_value(interp, &loop_function, &[], env) {
-                Ok(value) if value.is_nil() => break,
-                Ok(_) => {}
-                Err(error) => {
-                    result = Err(error);
+            // Fexecute_kbd_macro's command loop handles only `minibuffer-quit'
+            // (see execute_kbd_macro_resolved_command); register that frame so outer
+            // handler-binds see the same handler landscape GNU's
+            // signal_or_quit does.
+            let handler_start =
+                interp.push_condition_case_handler(vec![Value::Symbol("minibuffer-quit".into())]);
+            let iteration = match run_kbd_macro_events(interp, env).map_err(LispError::into_kind) {
+                // GNU's outermost command loop catches `top-level`, terminating
+                // the keyboard macro without propagating an error.
+                Err(LispErrorKind::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "top-level") => {
+                    Ok(())
+                }
+                other => other,
+            };
+            interp.pop_handler_bindings(handler_start);
+            if let Err(error) = iteration {
+                result = Err(LispError::from(error));
+                break;
+            }
+
+            if repeat != 0 {
+                repeat = repeat.saturating_sub(1);
+                if repeat == 0 {
                     break;
                 }
             }
-        }
-
-        interp
-            .kbd_macro_executions
-            .push(crate::lisp::eval::KbdMacroExecutionState {
-                events: events.clone(),
-                index: 0,
-            });
-        // Fexecute_kbd_macro's command loop handles only `minibuffer-quit'
-        // (see execute_kbd_macro_command); register that frame so outer
-        // handler-binds see the same handler landscape GNU's
-        // signal_or_quit does.
-        let handler_start =
-            interp.push_condition_case_handler(vec![Value::Symbol("minibuffer-quit".into())]);
-        let iteration = match run_kbd_macro_events(interp, env).map_err(LispError::into_kind) {
-            // GNU's outermost command loop catches `top-level`, terminating
-            // the keyboard macro without propagating an error.
-            Err(LispErrorKind::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(symbol) if symbol == "top-level") => {
-                Ok(())
-            }
-            other => other,
-        };
-        interp.pop_handler_bindings(handler_start);
-        interp.kbd_macro_executions.pop();
-        if let Err(error) = iteration {
-            result = Err(LispError::from(error));
-            break;
-        }
-
-        if repeat != 0 {
-            repeat = repeat.saturating_sub(1);
-            if repeat == 0 {
+            let still_executing = interp
+                .lookup_var("executing-kbd-macro", env)
+                .is_some_and(|value| value.is_string() || is_vector_value(&value));
+            if !still_executing {
                 break;
             }
         }
-        let still_executing = interp
-            .lookup_var("executing-kbd-macro", env)
-            .is_some_and(|value| string_like(&value).is_some() || is_vector_value(&value));
-        if !still_executing {
-            break;
+
+        let (previous_macro, tail) = roots[2].cons_values().expect("saved macro pair");
+        let (previous_index, previous_real_this_command) =
+            tail.cons_values().expect("saved macro index and command");
+        interp.set_variable("executing-kbd-macro", previous_macro, env);
+        interp.set_variable("executing-kbd-macro-index", previous_index, env);
+        interp.set_variable("real-this-command", previous_real_this_command, env);
+        interp.set_variable("this-command", Value::Nil, env);
+        // This is an unwind cleanup in GNU: it runs once for normal completion,
+        // loop-function termination, and command errors.
+        let mut result = result.map(|()| Value::Nil);
+        if let Err(hook_error) = interp.with_lisp_stack_roots(&result, |interp| {
+            run_named_hooks(interp, "kbd-macro-termination-hook", env, None)
+        }) {
+            result = Err(hook_error);
         }
-    }
-
-    interp.set_variable("executing-kbd-macro", previous_macro, env);
-    interp.set_variable("executing-kbd-macro-index", previous_index, env);
-    interp.set_variable("real-this-command", previous_real_this_command, env);
-    interp.set_variable("this-command", Value::Nil, env);
-    // This is an unwind cleanup in GNU: it runs once for normal completion,
-    // loop-function termination, and command errors.
-    if let Err(hook_error) = run_named_hooks(interp, "kbd-macro-termination-hook", env, None) {
-        result = Err(hook_error);
-    }
-    result.map(|()| Value::Nil)
-}
-
-fn current_kbd_macro_event(interp: &Interpreter, offset: usize) -> Option<Value> {
-    let state = interp.kbd_macro_executions.last()?;
-    state.events.get(state.index + offset).cloned()
+        result
+    })
 }
 
 fn increment_num_input_keys(interp: &mut Interpreter, env: &mut Env) {
@@ -164,62 +163,38 @@ fn increment_num_input_keys(interp: &mut Interpreter, env: &mut Env) {
     );
 }
 
-pub(crate) fn sync_kbd_macro_execution(
+pub(crate) fn next_kbd_macro_event(
     interp: &mut Interpreter,
-    env: &Env,
-) -> Result<(), LispError> {
-    if interp.kbd_macro_executions.is_empty() {
-        return Ok(());
-    }
-    let events = interp
+    env: &mut Env,
+) -> Result<Option<Value>, LispError> {
+    let array = interp
         .lookup_var("executing-kbd-macro", env)
-        .and_then(|value| {
-            if let Some(string) = string_like(&value) {
-                Some(Ok(string
-                    .text
-                    .chars()
-                    .map(|character| Value::Integer(character as i64))
-                    .collect()))
-            } else if is_vector_value(&value) {
-                Some(vector_items(&value))
-            } else {
-                None
-            }
-        })
-        .transpose()?;
+        .unwrap_or(Value::Nil);
+    // macros.c:at_end_of_macro_p treats t as an explicit stop. There is
+    // no private event queue or cursor to keep consuming after this store.
+    if array.is_nil() || array == Value::T {
+        return Ok(None);
+    }
     let index = interp
         .lookup_var("executing-kbd-macro-index", env)
-        .and_then(|value| value.as_integer().ok())
-        .and_then(|index| usize::try_from(index).ok());
-    if let Some(state) = interp.kbd_macro_executions.last_mut() {
-        if let Some(events) = events {
-            state.events = events;
-        }
-        if let Some(index) = index {
-            state.index = index;
-        }
+        .unwrap_or(Value::Integer(0))
+        .as_integer()?;
+    if index >= sequence_length_value(interp, &array)? {
+        return Ok(None);
     }
-    Ok(())
-}
-
-fn load_autoloaded_prefix_map(
-    interp: &mut Interpreter,
-    binding: &Value,
-    env: &Env,
-) -> Result<(), LispError> {
-    let Kind::Symbol(name) = binding.kind() else {
-        return Ok(());
-    };
-    let Ok(function) = interp.lookup_function(&name, env) else {
-        return Ok(());
-    };
-    if let Some((file, _, Kind::Symbol(kind))) =
-        autoload_parts(&function).map(|(a0, a1, a2)| (a0, a1, a2.kind()))
-        && kind == "keymap"
+    // keyboard.c:read_char reads the live array with Faref. Mutation,
+    // replacement and Lisp assignments to the index are visible directly.
+    let frame = Value::symbol("macro");
+    interp.keyboard_input.internal_last_event_frame = Some(frame);
+    interp.set_variable("last-event-frame", frame, env);
+    let mut event = super::call(interp, "aref", &[array, Value::Integer(index)], env)?;
+    if array.is_string()
+        && let Kind::Integer(code @ 0x80..=0xff) = event.kind()
     {
-        interp.load_autoload_target(&file, env)?;
+        event = Value::Integer(KEY_DESCRIPTION_META_BIT | (code & 0x7f));
     }
-    Ok(())
+    interp.set_variable("executing-kbd-macro-index", Value::Integer(index + 1), env);
+    Ok(Some(event))
 }
 
 // GNU's C command loop runs `pre-command-hook', delegates the command body
@@ -302,13 +277,11 @@ fn read_minibuffer_text_from_kbd_macro(
     // keyboard.c read_char reads from `executing-kbd-macro' whenever it is
     // non-nil, however it came to be bound: a Lisp `let' of the variable
     // (ert-simulate-keys binds it to t) drives the recursive minibuffer
-    // loop just like `execute-kbd-macro'.  A value that is neither a string
-    // nor a vector carries no events, so the loop ends at once and the
-    // read returns the minibuffer's contents, as GNU's command loop does
-    // at the end of a macro.
-    let Some(synthesized) = ensure_kbd_macro_execution_from_variable(interp, env)? else {
+    // loop just like `execute-kbd-macro'. The public array and index are
+    // the same authority in both cases; t carries no macro events.
+    if !executing_kbd_macro_p(interp, env) {
         return Ok(None);
-    };
+    }
     let saved_buffer_id = prepare_kbd_macro_minibuffer_entry(interp, env)?;
     let result = (|| {
         let minibuffer = activate_minibuffer(interp, prompt, initial_value, *local_map, env)?;
@@ -319,59 +292,7 @@ fn read_minibuffer_text_from_kbd_macro(
     if interp.has_buffer_id(saved_buffer_id) {
         let _ = interp.set_current_buffer_id(saved_buffer_id);
     }
-    if synthesized {
-        finish_synthesized_kbd_macro_execution(interp, env);
-    }
     result
-}
-
-/// None when no keyboard macro is executing; otherwise whether an execution
-/// state had to be synthesized from a bare `executing-kbd-macro' binding
-/// (the caller then hands it to `finish_synthesized_kbd_macro_execution').
-fn ensure_kbd_macro_execution_from_variable(
-    interp: &mut Interpreter,
-    env: &Env,
-) -> Result<Option<bool>, LispError> {
-    if !interp.kbd_macro_executions.is_empty() {
-        return Ok(Some(false));
-    }
-    let macro_value = interp
-        .lookup_var("executing-kbd-macro", env)
-        .unwrap_or(Value::Nil);
-    if macro_value.is_nil() {
-        return Ok(None);
-    }
-    let events = if let Some(string) = string_like(&macro_value) {
-        string
-            .text
-            .chars()
-            .map(|character| Value::Integer(character as i64))
-            .collect()
-    } else if is_vector_value(&macro_value) {
-        vector_items(&macro_value)?
-    } else {
-        Vec::new()
-    };
-    let index = interp
-        .lookup_var("executing-kbd-macro-index", env)
-        .and_then(|value| value.as_integer().ok())
-        .and_then(|index| usize::try_from(index).ok())
-        .unwrap_or(0);
-    interp
-        .kbd_macro_executions
-        .push(crate::lisp::eval::KbdMacroExecutionState { events, index });
-    Ok(Some(true))
-}
-
-/// read_char advanced executing_kbd_macro_index as it consumed events.
-fn finish_synthesized_kbd_macro_execution(interp: &mut Interpreter, env: &mut Env) {
-    if let Some(state) = interp.kbd_macro_executions.pop() {
-        interp.set_variable(
-            "executing-kbd-macro-index",
-            Value::Integer(i64::try_from(state.index).unwrap_or(i64::MAX)),
-            env,
-        );
-    }
 }
 
 pub(crate) fn prepare_kbd_macro_minibuffer_entry(
@@ -395,89 +316,48 @@ pub(crate) fn read_minibuffer_text_from_kbd_macro_inner(
     env: &mut Env,
     _initial: &str,
 ) -> Result<Option<String>, LispError> {
-    // The recursive minibuffer command loop, driven by the macro's
-    // remaining events.  Keys resolve through the active keymaps -- the
-    // minibuffer's own local map included -- and dispatch the real
-    // commands; nothing is intercepted by event code.  GNU's read_minibuf
-    // wraps this loop in a `catch \='exit`: `exit-minibuffer' and its
-    // relatives (minibuffer-complete-and-exit, read--expression-try-read)
-    // return the submitted text by throwing to that tag.
-    let mut pending_keys: Vec<String> = Vec::new();
-    let mut pending_events: Vec<Value> = Vec::new();
-    while let Some(event) = current_kbd_macro_event(interp, 0) {
-        // `read-kbd-macro' can retain GNU's modifier bits on character
-        // events, whereas literal macro strings contain resolved control
-        // bytes.  Minibuffer editing must see C-a/C-k identically in both
-        // representations.
-        let mut event = crate::lisp::primitives::reader_key_event_value(event);
-        let code = match event.kind() {
-            Kind::Integer(code) => code,
-            Kind::Symbol(name) => function_key_default_translation(&name).unwrap_or(-1),
-            _ => -1,
+    read_minibuffer_queued_commands(interp, env)
+}
+
+// minibuf.c:read_minibuf runs the ordinary recursive command loop. Both
+// unread input and macro input enter the same incremental key reader;
+// callbacks observe the actual queue spine and the already-advanced index.
+// RET and completion are commands in the active map, never special event
+// codes intercepted by this loop.
+fn read_minibuffer_queued_commands(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<Option<String>, LispError> {
+    let mut reader: Option<KeySequenceReader> = None;
+    while let Some(event) = next_kbd_command_event(interp, env)? {
+        if reader.is_none() {
+            reader = Some(KeySequenceReader::new(interp, Value::Nil, env)?);
+        }
+        let active = reader.as_mut().expect("minibuffer key reader");
+        let command = match active.read_event(interp, event, env)? {
+            KeyResolution::Prefix => continue,
+            KeyResolution::Command(command) => command,
+            KeyResolution::Undefined => Value::Nil,
         };
-        if code < 0 {
-            break;
-        }
-        let key = Value::list([Value::Symbol("vector-literal".into()), event]);
-        let mut event_key = key_sequence_binding_text(&key)?;
-        if matches!(event.kind(), Kind::Symbol(_)) && !event_key.starts_with('<') {
-            event_key = format!("<{event_key}>");
-        }
-        // GNU's local-function-key-map translates unbound function-key
-        // symbols to their ASCII equivalents before lookup.
-        if pending_keys.is_empty()
-            && matches!(event.kind(), Kind::Symbol(_))
-            && key_binding(interp, &event_key, false, false, env)?.is_nil()
-        {
-            event = Value::Integer(code);
-            let translated = Value::list([Value::Symbol("vector-literal".into()), event]);
-            event_key = key_sequence_binding_text(&translated)?;
-        }
-        advance_kbd_macro_index(interp, 1, env);
-        pending_keys.push(event_key);
-        pending_events.push(event);
-        let binding_key = pending_keys.join(" ");
-        let binding = key_binding(interp, &binding_key, false, false, env)?;
-        if key_binding_is_prefix(interp, &binding, env) {
-            load_autoloaded_prefix_map(interp, &binding, env)?;
-            continue;
-        }
-        if !binding.is_nil() {
-            // GNU read_minibuf establishes `catch \='exit` around its
-            // recursive edit; register the tag so the exiting command's
-            // `throw' reaches this boundary instead of failing `no-catch'.
-            interp.push_catch_tag(Value::Symbol("exit".into()));
-            let dispatch = execute_kbd_macro_command(interp, &binding, &pending_events, env);
-            interp.pop_catch_tag();
-            match dispatch.map_err(LispError::into_kind) {
-                Ok(()) => {}
-                Err(LispErrorKind::Throw(tag, _)) if matches!(tag.kind(), Kind::Symbol(name) if name == "exit") =>
-                {
-                    // The exiting command leaves the recursive loop before
-                    // its post-command phase.  The prompting command
-                    // resumes, consumes the submitted text, and only then
-                    // runs its own post-command hook.
-                    sync_kbd_macro_execution(interp, env)?;
-                    return active_minibuffer_text(interp, env).map(Some);
-                }
-                Err(error) => return Err(LispError::from(error)),
+        let original = active.command_binding();
+        let events = reader
+            .take()
+            .expect("completed minibuffer key reader")
+            .finish(interp, false, env);
+        // Register read_minibuf's catch before dispatch so a real
+        // exit-minibuffer (including one invoked by completion) can throw.
+        interp.push_catch_tag(Value::symbol("exit"));
+        let dispatch = execute_kbd_macro_resolved_command(interp, original, command, &events, env);
+        interp.pop_catch_tag();
+        match dispatch.map_err(LispError::into_kind) {
+            Ok(()) => {}
+            Err(LispErrorKind::Throw(tag, _)) if tag.eq_value(Value::symbol("exit")) => {
+                // The submitting command leaves before its post-command
+                // phase; the prompting command resumes that outer cycle.
+                return active_minibuffer_text(interp, env).map(Some);
             }
-            sync_kbd_macro_execution(interp, env)?;
-            pending_keys.clear();
-            pending_events.clear();
-            continue;
+            Err(error) => return Err(LispError::from(error)),
         }
-        if pending_keys.len() == 1
-            && let Some(text) = keyboard_macro_self_insert_text(&event)
-        {
-            execute_kbd_macro_self_insert(interp, &text, &event, env)?;
-            sync_kbd_macro_execution(interp, env)?;
-            pending_keys.clear();
-            pending_events.clear();
-            continue;
-        }
-        pending_keys.clear();
-        pending_events.clear();
     }
     active_minibuffer_text(interp, env).map(Some)
 }
@@ -546,7 +426,10 @@ fn read_minibuffer_text_from_unread_events(
     initial_value: &Value,
     local_map: &Value,
 ) -> Result<Option<String>, LispError> {
-    if crate::lisp::primitives::unread_command_events(interp, env)?.is_empty() {
+    if !interp
+        .lookup_var("unread-command-events", env)
+        .is_some_and(|events| events.is_cons())
+    {
         return Ok(None);
     }
     // A recursive minibuffer command loop has its own prefix state.  Preserve
@@ -576,168 +459,17 @@ fn read_minibuffer_text_from_unread_events_inner(
     env: &mut Env,
     _initial: &str,
 ) -> Result<Option<String>, LispError> {
-    let unread = crate::lisp::primitives::unread_command_events(interp, env)?;
-    if unread.is_empty() {
-        return Ok(None);
-    }
-    let mut events = VecDeque::from(unread);
-    let mut pending_keys = Vec::new();
-    let mut pending_events = Vec::new();
-
-    while let Some(mut event) = events.pop_front() {
-        interp.set_variable(
-            "unread-command-events",
-            Value::list(events.iter().cloned()),
-            env,
-        );
-        let key = Value::list([Value::Symbol("vector-literal".into()), event]);
-        let mut event_key = key_sequence_binding_text(&key)?;
-        if matches!(event.kind(), Kind::Symbol(_)) && !event_key.starts_with('<') {
-            event_key = format!("<{event_key}>");
-        }
-        if pending_keys.is_empty()
-            && let Kind::Symbol(name) = event.kind()
-            && let Some(translated) = function_key_default_translation(&name)
-            && key_binding(interp, &event_key, false, false, env)?.is_nil()
-        {
-            event = Value::Integer(translated);
-            let translated = Value::list([Value::Symbol("vector-literal".into()), event]);
-            event_key = key_sequence_binding_text(&translated)?;
-        }
-        let code = event.as_integer().ok();
-        if pending_keys.is_empty() && matches!(code, Some(10 | 13)) {
-            // GNU dispatches RET through the active completion keymap:
-            // minibuffer-local-must-match-map binds it to
-            // minibuffer-complete-and-exit, which refuses input that
-            // test-completion rejects and keeps reading (ERC's
-            // switch-to-buffer journeys clear the input and retry after
-            // exactly such a refusal).  Blank input falls through: the
-            // default's substitution belongs to completing-read-default.
-            if interp
-                .lookup_var("minibuffer--require-match", env)
-                .is_some_and(|value| value.is_truthy())
-            {
-                // The prompt occupies the buffer front (minibuffer-prompt-end);
-                // the submission validates only the user's input after it.
-                let prompt_length = interp
-                    .minibuffer_prompt_text()
-                    .map(|prompt| prompt.chars().count())
-                    .unwrap_or(0);
-                let contents: Vec<char> = interp
-                    .buffer
-                    .borrow()
-                    .buffer_string()
-                    .chars()
-                    .skip(prompt_length)
-                    .collect();
-                if !contents.is_empty() {
-                    let collection = interp
-                        .lookup_var("minibuffer-completion-table", env)
-                        .unwrap_or(Value::Nil);
-                    let predicate = interp
-                        .lookup_var("minibuffer-completion-predicate", env)
-                        .filter(|value| !value.is_nil());
-                    if crate::lisp::primitives::completion::minibuffer_submission(
-                        interp,
-                        env,
-                        &contents,
-                        &collection,
-                        predicate.as_ref(),
-                        true,
-                        None,
-                    )?
-                    .is_none()
-                    {
-                        continue;
-                    }
-                }
-            }
-            break;
-        }
-        pending_keys.push(event_key);
-        pending_events.push(event);
-        let binding_key = pending_keys.join(" ");
-
-        let binding = key_binding(interp, &binding_key, false, false, env)?;
-        if key_binding_is_prefix(interp, &binding, env) {
-            load_autoloaded_prefix_map(interp, &binding, env)?;
-            continue;
-        }
-
-        if pending_keys.len() == 1
-            && let Some(text) = keyboard_macro_self_insert_text(&event)
-            && (binding.is_nil()
-                || matches!(binding.kind(), Kind::Symbol(command) if command == "self-insert-command"))
-        {
-            let command = Value::Symbol("self-insert-command".into());
-            set_command_key_state(interp, pending_events.clone(), pending_events.clone(), env);
-            interp.set_variable("last-command-event", event, env);
-            interp.set_variable("last-input-event", event, env);
-            interp.set_variable("this-original-command", command, env);
-            interp.set_variable("this-command", command, env);
-            increment_num_input_keys(interp, env);
-            safe_run_named_hooks(
-                interp,
-                "pre-command-hook",
-                env,
-                Some(interp.current_buffer_id()),
-            )?;
-            let dispatched_command = interp
-                .lookup_var("this-command", env)
-                .filter(|command| !command.is_nil())
-                .unwrap_or(command);
-            if dispatched_command == command {
-                prepare_native_kbd_command_body(interp, env)?;
-                let repeat = interp
-                    .lookup_var("current-prefix-arg", env)
-                    .and_then(|prefix| prefix_numeric_value(&prefix).ok())
-                    .and_then(|value| value.as_integer().ok())
-                    .unwrap_or(1)
-                    .max(0) as usize;
-                insert_text_with_hooks(interp, &text.repeat(repeat), &[], &[], false, false, env)?;
-            } else {
-                execute_kbd_command_body(interp, &dispatched_command, env)?;
-            }
-            finish_kbd_macro_command_cycle(interp, command, dispatched_command, env)?;
-            pending_keys.clear();
-            pending_events.clear();
-            continue;
-        }
-        if !binding.is_nil() {
-            execute_kbd_macro_command(interp, &binding, &pending_events, env)?;
-            events = VecDeque::from(crate::lisp::primitives::unread_command_events(interp, env)?);
-            pending_keys.clear();
-            pending_events.clear();
-            continue;
-        }
-
-        pending_keys.clear();
-        pending_events.clear();
-    }
-
-    interp.set_variable("unread-command-events", Value::list(events), env);
-    // With the unread events gone, read_char turns to `executing-kbd-macro'
-    // and the recursive loop continues in this same minibuffer.
-    if let Some(synthesized) = ensure_kbd_macro_execution_from_variable(interp, env)? {
-        let result = read_minibuffer_text_from_kbd_macro_inner(interp, env, _initial);
-        if synthesized {
-            finish_synthesized_kbd_macro_execution(interp, env);
-        }
-        return result;
-    }
-    active_minibuffer_text(interp, env).map(Some)
+    read_minibuffer_queued_commands(interp, env)
 }
 
-fn advance_kbd_macro_index(interp: &mut Interpreter, count: usize, env: &mut Env) {
-    if let Some(state) = interp.kbd_macro_executions.last_mut() {
-        state.index += count;
-        let index = state.index;
-        interp.set_variable(
-            "executing-kbd-macro-index",
-            Value::Integer(index as i64),
-            env,
-        );
+fn next_kbd_command_event(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<Option<Value>, LispError> {
+    if let Some(event) = take_unread_command_event(interp, env) {
+        return Ok(Some(event));
     }
+    next_kbd_macro_event(interp, env)
 }
 
 // Dispatch commands from the innermost keyboard macro until its events run
@@ -759,138 +491,36 @@ fn bare_symbol_type_error(value: &Value) -> LispError {
 }
 
 fn run_kbd_macro_events(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
-    let mut pending_keys: Vec<String> = Vec::new();
-    let mut pending_events = Vec::new();
+    let mut reader: Option<KeySequenceReader> = None;
     loop {
-        let macro_active = interp
+        if !interp
             .lookup_var("executing-kbd-macro", env)
-            .is_some_and(|value| value.is_truthy());
-        if !macro_active {
+            .is_some_and(|value| value.is_truthy())
+        {
             return Ok(());
         }
-        sync_kbd_macro_execution(interp, env)?;
-        // read_char can push a non-digit terminator back onto
-        // `unread-command-events' while rewinding the public macro cursor.
-        // GNU's next command-loop read consumes that unread event before it
-        // returns to the same event in the keyboard macro.
-        let mut unread = crate::lisp::primitives::unread_command_events(interp, env)?;
-        let next_event = if unread.is_empty() {
-            current_kbd_macro_event(interp, 0).map(|event| (event, true))
-        } else {
-            let event = unread.remove(0);
-            interp.set_variable("unread-command-events", Value::list(unread), env);
-            Some((event, false))
-        };
-        let Some((mut event, from_macro)) = next_event else {
-            // read_key_sequence increments this counter before reporting the
-            // end of a keyboard macro to the command loop.
+        let event = next_kbd_command_event(interp, env)?;
+        let Some(event) = event else {
             increment_num_input_keys(interp, env);
-            // command_loop_1 zeroes this_command_key_count after each command,
-            // so the end-of-macro read leaves this-single-command-keys empty.
-            // kmacro-call-macro keys its repeat-map offer on that emptiness;
-            // a stale multi-key sequence here armed a phantom repeat map that
-            // swallowed the first key of the next macro.
             set_command_key_state(interp, Vec::new(), Vec::new(), env);
             return Ok(());
         };
-        let key = Value::list([Value::Symbol("vector-literal".into()), event]);
-        let mut event_key = key_sequence_binding_text(&key)?;
-        // GNU describes function-key symbol events in angle brackets
-        // ("<escape>"), which is also what the string-parsing lookup path
-        // needs to see one named key instead of one key per character.
-        if matches!(event.kind(), Kind::Symbol(_)) && !event_key.starts_with('<') {
-            event_key = format!("<{event_key}>");
+        if reader.is_none() {
+            reader = Some(KeySequenceReader::new(interp, Value::Nil, env)?);
         }
-        // GNU's local-function-key-map translates unbound function-key
-        // symbols to their ASCII equivalents ([escape] a1 ESC dispatches
-        // viper's ESC binding, not an `escape' text insertion).
-        let default_translation = match event.kind() {
-            Kind::Symbol(name) => function_key_default_translation(&name).map(Value::Integer),
-            Kind::Integer(code)
-                if code
-                    == (crate::lisp::primitives::KEY_DESCRIPTION_SHIFT_BIT | i64::from(b'\t')) =>
-            {
-                Some(Value::Symbol("backtab".into()))
-            }
-            _ => None,
+        let active = reader.as_mut().expect("macro key reader");
+        let resolution = active.read_event(interp, event, env)?;
+        let command = match resolution {
+            KeyResolution::Prefix => continue,
+            KeyResolution::Command(command) => command,
+            KeyResolution::Undefined => Value::Nil,
         };
-        if pending_keys.is_empty()
-            && let Some(translated_event) = default_translation
-            && key_binding(interp, &event_key, false, false, env)?.is_nil()
-        {
-            event = translated_event;
-            let translated = Value::list([Value::Symbol("vector-literal".into()), event]);
-            event_key = key_sequence_binding_text(&translated)?;
-            if matches!(event.kind(), Kind::Symbol(_)) && !event_key.starts_with('<') {
-                event_key = format!("<{event_key}>");
-            }
-        }
-        pending_keys.push(event_key);
-        pending_events.push(event);
-        let binding_key = pending_keys.join(" ");
-        let binding = key_binding(interp, &binding_key, false, false, env)?;
-        if key_binding_is_prefix(interp, &binding, env) {
-            load_autoloaded_prefix_map(interp, &binding, env)?;
-            if from_macro {
-                advance_kbd_macro_index(interp, 1, env);
-            }
-            continue;
-        }
-        if !binding.is_nil() {
-            if from_macro {
-                advance_kbd_macro_index(interp, 1, env);
-            }
-            execute_kbd_macro_command(interp, &binding, &pending_events, env)?;
-            pending_keys.clear();
-            pending_events.clear();
-            continue;
-        }
-        if pending_keys.len() == 1
-            && let Some(text) = keyboard_macro_self_insert_text(&event)
-        {
-            if from_macro {
-                advance_kbd_macro_index(interp, 1, env);
-            }
-            execute_kbd_macro_self_insert(interp, &text, &event, env)?;
-            pending_keys.clear();
-            pending_events.clear();
-            continue;
-        }
-        pending_keys.clear();
-        pending_events.clear();
-        if from_macro {
-            advance_kbd_macro_index(interp, 1, env);
-        }
-        increment_num_input_keys(interp, env);
-        set_command_key_state(interp, vec![event], vec![event], env);
-        interp.set_variable("last-command-event", event, env);
-        interp.set_variable("last-input-event", event, env);
-        interp.set_variable("this-original-command", Value::Nil, env);
-        interp.set_variable("this-command", Value::Nil, env);
-        safe_run_named_hooks(
-            interp,
-            "pre-command-hook",
-            env,
-            Some(interp.current_buffer_id()),
-        )?;
-        if let Some(command) = interp
-            .lookup_var("this-command", env)
-            .filter(|command| !command.is_nil())
-        {
-            execute_kbd_command_body(interp, &command, env)?;
-            finish_kbd_macro_command_cycle(interp, Value::Nil, command, env)?;
-            continue;
-        }
-        // The command loop reports an unbound complete sequence and stops
-        // the executing macro.  ERC's keymap tests observe this through
-        // ert-with-message-capture after removing module bindings.
-        call_function_value(
-            interp,
-            &Value::Symbol("message".into()),
-            &[Value::String(format!("{binding_key} is undefined").into())],
-            env,
-        )?;
-        return Ok(());
+        let original = active.command_binding();
+        let events = reader
+            .take()
+            .expect("completed macro key reader")
+            .finish(interp, false, env);
+        execute_kbd_macro_resolved_command(interp, original, command, &events, env)?;
     }
 }
 
@@ -902,7 +532,7 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
     // GNU's command loop runs post-command-hook at the top of each cycle,
     // including right after entering a recursive edit mid-command; the
     // Edebug tests observe their stop points from that hook run.
-    let entry_hooks = if interp.kbd_macro_executions.is_empty() {
+    let entry_hooks = if !executing_kbd_macro_p(interp, env) {
         Ok(())
     } else {
         safe_run_named_hooks(
@@ -984,27 +614,19 @@ fn run_recursive_kbd_command_loop(
     }
 }
 
-fn execute_kbd_macro_command(
+// Both command loops supply the binding already found and remapped,
+// preserving filter effects and translated/raw command-key state.
+fn execute_kbd_macro_resolved_command(
     interp: &mut Interpreter,
-    command: &Value,
+    original_command: Value,
+    command: Value,
     events: &[Value],
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let event = events.last().cloned().unwrap_or(Value::Nil);
-    // The command loop resolves [remap COMMAND] bindings from the active
-    // keymaps before dispatching (erc-fill-wrap remaps erc-bol);
-    // `this-original-command' keeps the pre-remap binding.
-    let original_command = *command;
-    let remapped = crate::lisp::primitives::command_remapping(interp, command, None, env)?;
-    let command = if remapped.is_nil() {
-        original_command
-    } else {
-        remapped
-    };
+    let event = events.last().copied().unwrap_or(Value::Nil);
     // GNU's command loop separates each command into its own undo group
     // (undo-auto--boundaries); viper's undo tests observe that grouping.
     interp.buffer.borrow_mut().push_undo_boundary();
-    set_command_key_state(interp, events.to_vec(), events.to_vec(), env);
     interp.set_variable("deactivate-mark", Value::Nil, env);
     interp.set_variable("last-command-event", event, env);
     interp.set_variable("last-input-event", event, env);
@@ -1017,11 +639,13 @@ fn execute_kbd_macro_command(
         env,
         Some(interp.current_buffer_id()),
     )?;
-    let dispatched_command = interp
-        .lookup_var("this-command", env)
-        .filter(|command| !command.is_nil())
-        .unwrap_or(command);
-    let command_result = if matches!(dispatched_command.kind(), Kind::Symbol(name) if name == "narrow-to-region")
+    let dispatched_command = interp.lookup_var("this-command", env).unwrap_or(Value::Nil);
+    // keyboard.c:command_loop_1 calls the unchanged Lisp `undefined' when
+    // the map (or pre-command-hook) leaves this-command nil. In particular,
+    // an unbound printable event is not an implicit self-insert command.
+    let command_result = if dispatched_command.is_nil() {
+        call_function_value(interp, &Value::symbol("undefined"), &[], env)
+    } else if matches!(dispatched_command.kind(), Kind::Symbol(name) if name == "narrow-to-region")
     {
         prepare_native_kbd_command_body(interp, env)?;
         let mark = interp
@@ -1106,54 +730,6 @@ fn error_matches_condition(interp: &Interpreter, error: &LispError, expected: &s
             })
 }
 
-fn execute_kbd_macro_self_insert(
-    interp: &mut Interpreter,
-    text: &str,
-    event: &Value,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    let command = Value::Symbol("self-insert-command".into());
-    // GNU amalgamates consecutive self-insertions into one undo group;
-    // any other preceding command starts a fresh group.
-    if !matches!(
-        interp.lookup_var("last-command", env).map(|v| v.kind()),
-        Some(Kind::Symbol(last)) if last == "self-insert-command"
-    ) {
-        interp.buffer.borrow_mut().push_undo_boundary();
-    }
-    set_command_key_state(interp, vec![*event], vec![*event], env);
-    interp.set_variable("deactivate-mark", Value::Nil, env);
-    interp.set_variable("last-command-event", *event, env);
-    interp.set_variable("last-input-event", *event, env);
-    interp.set_variable("this-original-command", command, env);
-    interp.set_variable("this-command", command, env);
-    increment_num_input_keys(interp, env);
-    safe_run_named_hooks(
-        interp,
-        "pre-command-hook",
-        env,
-        Some(interp.current_buffer_id()),
-    )?;
-    let dispatched_command = interp
-        .lookup_var("this-command", env)
-        .filter(|command| !command.is_nil())
-        .unwrap_or(command);
-    if dispatched_command == command {
-        prepare_native_kbd_command_body(interp, env)?;
-        let repeat = interp
-            .lookup_var("current-prefix-arg", env)
-            .and_then(|prefix| prefix_numeric_value(&prefix).ok())
-            .and_then(|value| value.as_integer().ok())
-            .unwrap_or(1)
-            .max(0) as usize;
-        insert_text_with_hooks(interp, &text.repeat(repeat), &[], &[], false, false, env)?;
-    } else {
-        execute_kbd_command_body(interp, &dispatched_command, env)?;
-    }
-    finish_kbd_macro_command_cycle(interp, command, dispatched_command, env)?;
-    Ok(())
-}
-
 fn finish_kbd_macro_command(
     interp: &mut Interpreter,
     original_command: Value,
@@ -1182,18 +758,6 @@ fn finish_kbd_macro_command(
     if interp.has_buffer_id(selected_buffer) {
         let _ = interp.set_current_buffer_id(selected_buffer);
     }
-}
-
-fn keyboard_macro_self_insert_text(event: &Value) -> Option<String> {
-    let code = event.as_integer().ok()?;
-    if !(0..=char::MAX as i64).contains(&code) {
-        return None;
-    }
-    let ch = char::from_u32(code as u32)?;
-    if ch.is_control() && ch != '\n' && ch != '\t' {
-        return None;
-    }
-    Some(ch.to_string())
 }
 
 fn nth_list_element(list: &Value, count: &Value) -> Result<Value, LispError> {
@@ -1253,20 +817,9 @@ define_dispatch!(
                     // fns.c concat_to_list: CLOSUREP args flatten to their
                     // slots (edebug-unwrap* rebuilds compiled closures with
                     // `(nthcdr 3 (append fn ()))').
-                    match a.kind() {
-                        Kind::Lambda(lambda) => {
-                            items.extend(interp.interpreted_closure_slots(&lambda));
-                            continue;
-                        }
-                        Kind::Record(id) => {
-                            if let Some(record) = interp.find_record(id)
-                                && record.kind == crate::lisp::eval::RecordKind::Closure
-                            {
-                                items.extend(record.slots.iter().cloned());
-                                continue;
-                            }
-                        }
-                        _ => {}
+                    if let Kind::Closure(lambda) = a.kind() {
+                        items.extend(lambda.slots());
+                        continue;
                     }
                     items.extend(a.to_vec()?);
                 }
@@ -1456,47 +1009,19 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let list = super::call(interp, "mapcar", &args[..2], env)?.to_vec()?;
-                // GNU: a nil SEPARATOR stands for the empty string (subr-x's
-                // string-join passes nil when no separator is given).
-                let sep = if args.len() == 3 && !args[2].is_nil() {
-                    let text = string_text(&args[2])?;
-                    let multibyte = text.chars().any(|ch| (ch as u32) > 0x7F);
-                    string_like(&args[2]).unwrap_or(StringLike {
-                        text,
-                        props: Vec::new(),
-                        multibyte,
-                        extended_chars: Vec::new(),
-                    })
-                } else {
-                    StringLike {
-                        text: String::new(),
-                        props: Vec::new(),
-                        multibyte: false,
-                        extended_chars: Vec::new(),
-                    }
-                };
-                let mut result = String::new();
-                let mut props = Vec::new();
-                for (index, item) in list.iter().enumerate() {
+                // fns.c:Fmapconcat collects all mapped values before
+                // Fconcat validates them. Keep the actual Lisp sequences:
+                // projecting strings through Rust text loses extended
+                // characters, encoding and shared property values.
+                let separator = args.get(2).copied().unwrap_or(Value::Nil);
+                let mut parts = Vec::with_capacity(list.len().saturating_mul(2).saturating_sub(1));
+                for (index, item) in list.into_iter().enumerate() {
                     if index > 0 {
-                        let offset = result.chars().count();
-                        result.push_str(&sep.text);
-                        props.extend(copied_string_props(&sep.props, offset));
+                        parts.push(separator);
                     }
-                    if let Some(string) = string_like(item) {
-                        let offset = result.chars().count();
-                        result.push_str(&string.text);
-                        props.extend(copied_string_props(&string.props, offset));
-                    } else if item.is_nil() {
-                    } else {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("wrong-type-argument".into()),
-                            Value::Symbol("sequencep".into()),
-                            *item,
-                        ])));
-                    }
+                    parts.push(item);
                 }
-                Ok(string_like_value(result, merge_string_props(props)))
+                super::call(interp, "concat", &parts, env)
             }
             "position-symbol" => {
                 need_args(name, args, 2)?;
@@ -1955,17 +1480,33 @@ define_dispatch!(
 
             "read-key-sequence" | "read-key-sequence-vector" => {
                 need_arg_range(name, args, 1, 6)?;
+                if !args[0].is_nil() && !args[0].is_string() {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                }
                 ensure_interaction_allowed(interp, env)?;
-                let event = read_key_sequence_event(interp, env)?;
-                let events = vec![event];
-                set_command_key_state(interp, events.clone(), events.clone(), env);
+                let events = read_key_sequence_events(
+                    interp,
+                    args[0],
+                    args.get(2).is_some_and(Value::is_truthy),
+                    env,
+                )?;
                 Ok(event_array(&events, name == "read-key-sequence-vector"))
             }
             "read-event" | "read-char" | "read-char-exclusive" => {
+                ensure_interaction_allowed(interp, env)?;
                 let read_event = name == "read-event";
                 let timed_poll = args.len() >= 3 && args[2].is_truthy();
                 if timed_poll {
                     let timeout = wait_duration(std::slice::from_ref(&args[2]))?;
+                    // keyboard.c:read_char consumes unread and live macro
+                    // events before entering the timed keyboard wait.
+                    if let Some(event) = pop_pending_input_event_value(interp, env)? {
+                        return if read_event {
+                            normalize_input_event_value(event)
+                        } else {
+                            Ok(Value::Integer(unread_command_event_char(&event)? as i64))
+                        };
+                    }
                     // A live terminal answers the first event inside the
                     // window, or nil when it elapses (keyboard.c's timed
                     // read); the process pump below is the batch stand-in.
@@ -1988,21 +1529,17 @@ define_dispatch!(
                         wait_pumping_processes(interp, env, Some(timeout), false, None, None, true);
                     interp.set_waiting_for_user_input(previous_wait);
                     wait_result?;
-                    if !interaction_allowed(interp, env) {
-                        return Ok(Value::Nil);
-                    }
-                    return match pop_unread_command_event_value(interp, env) {
-                        Ok(event) => {
+                    return match pop_pending_input_event_value(interp, env)? {
+                        Some(event) => {
                             if read_event {
                                 normalize_input_event_value(event)
                             } else {
                                 Ok(Value::Integer(unread_command_event_char(&event)? as i64))
                             }
                         }
-                        Err(_) => Ok(Value::Nil),
+                        None => Ok(Value::Nil),
                     };
                 }
-                ensure_interaction_allowed(interp, env)?;
                 // GNU's read_char enters redisplay before blocking for
                 // input: window-configuration changes a command made
                 // before reading (rmc's help pop-up, y-or-n-p's prompt

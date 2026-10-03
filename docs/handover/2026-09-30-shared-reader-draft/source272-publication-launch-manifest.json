@@ -1,0 +1,180 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "runtime_commit": "eb286e230b414fc753b37b4008566950b98fc867",
+    "macos_launch": {
+      "pid": 27731,
+      "command": [
+        "/Library/Developer/CommandLineTools/usr/bin/python3",
+        "-B",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-source272-full-macos.py"
+      ],
+      "helper_sha256": "e036ea247d19670893ecea2a0c4384f2c2d313b87f438e628e2bcbdba90e517c",
+      "validation_commit": "eb286e230b414fc753b37b4008566950b98fc867",
+      "launched_at_unix": 1790894760.146137,
+      "stdin": "DEVNULL",
+      "start_new_session": true,
+      "goal_complete": false,
+      "qualification": "Full macOS validation launched on a clean exact-source272 commit; no outcome inferred."
+    },
+    "macos_state": "waiting for the existing source270 full macOS supervisor",
+    "linux": {
+      "rust": {
+        "conclusion": "",
+        "headSha": "eb286e230b414fc753b37b4008566950b98fc867",
+        "status": "in_progress",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/36937044662"
+      },
+      "frozen": {
+        "conclusion": "",
+        "headSha": "eb286e230b414fc753b37b4008566950b98fc867",
+        "status": "in_progress",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/36937049816"
+      }
+    },
+    "qualification": "Validated source272 was committed and pushed with its unchanged negative and complete selected evidence. Full Linux Rust/frozen runs target exact eb286e23. macOS supervisor27731 has a clean exact-commit checkout and waits for the existing source270 full supervisor3079; it has not started full test stages. These launch records infer no outcome. Main and every unfinished goal requirement remain unchanged."
+  },
+  "archive": {
+    "path": "source272-publication-launch.tar.gz",
+    "bytes": 54591,
+    "sha256": "b42d152bc8a0bf4f98d66e46a1d9b47303c6a9a44000530a448a144e2e41931c"
+  },
+  "files": [
+    {
+      "path": "apply-source272-selected.py",
+      "bytes": 12300,
+      "sha256": "bafd9e7b091c7b37e824d7c38696cd456d2ee20ed763ad56d18991cb9ed1d9d6"
+    },
+    {
+      "path": "audit-source272-selected-for-full.py",
+      "bytes": 6247,
+      "sha256": "a0b305ec3d659288cc6e4f73b9de9a13a6371abf532b4bc20549ca3180c97785"
+    },
+    {
+      "path": "commit-source272-selected.py",
+      "bytes": 3206,
+      "sha256": "4bfb98490ab6de4ef2974251984451ecc6daf8755b53f59c9768fc39569f8591"
+    },
+    {
+      "path": "dispatch-source272-linux.py",
+      "bytes": 2081,
+      "sha256": "0ebc2a4af57a5d00e4d78bf94a7487ab72fe7f9374a61bf6db50c599129cf76f"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "prepare-source272-full-validation.py",
+      "bytes": 4936,
+      "sha256": "667de19bb4c592818d492a75526704ded09f3df5e4869e4955c7a76ff637beb9"
+    },
+    {
+      "path": "queue-source272-full-macos.py",
+      "bytes": 11231,
+      "sha256": "e036ea247d19670893ecea2a0c4384f2c2d313b87f438e628e2bcbdba90e517c"
+    },
+    {
+      "path": "setup-source272-full-macos.py",
+      "bytes": 2712,
+      "sha256": "00463d5ff18aa55376c4290e6dc3f45d3317807461ef87b4de08f12bc3bc20e5"
+    },
+    {
+      "path": "source272-applied-commit.json",
+      "bytes": 922,
+      "sha256": "87a185df2ef68df948f50934920e29001ce9912676945c3097caf6b6288f63d7"
+    },
+    {
+      "path": "source272-applied-push.json",
+      "bytes": 299,
+      "sha256": "0d696478d99dba5bc138ddab28cd292802f5a85b1fdf8b26b87136481af6b9f7"
+    },
+    {
+      "path": "source272-applied-review.json",
+      "bytes": 951,
+      "sha256": "d7f6983f6687f7c09d1d6f13c736128fdf0aa3cbfa697bc9a5e337edd8096efd"
+    },
+    {
+      "path": "source272-applied-review.patch",
+      "bytes": 30110,
+      "sha256": "b101973f738098a0233c9b95e04f3648ed651c11ecd6e5ec5c102ac95e4b16e9"
+    },
+    {
+      "path": "source272-borrow-selected-audit.json",
+      "bytes": 3196,
+      "sha256": "90183cc016196977226ab31ea796df90caf5770b2f8b3fe30f8b3d194b2e403d"
+    },
+    {
+      "path": "source272-ci-at-publication.json",
+      "bytes": 398,
+      "sha256": "8b713d84da80befada2f79799d9fb72da0120850152dd6c815e02fc05e160bca"
+    },
+    {
+      "path": "source272-commit-command.json",
+      "bytes": 932,
+      "sha256": "6344308c27444c7468cd88f5924acd9b124abc20d08f9f00fd9e0d2fa17db539"
+    },
+    {
+      "path": "source272-full-checkout-command.json",
+      "bytes": 1971,
+      "sha256": "c1095c85cf00e6958783de744c555ba96df8ad5955000cf27bec1a08c349e31a"
+    },
+    {
+      "path": "source272-full-checkout.json",
+      "bytes": 623,
+      "sha256": "03d02218c755c05c217912a2b57ffb36c4c8f05d924d4dc2fa82f88f3eba528e"
+    },
+    {
+      "path": "source272-full-launch.json",
+      "bytes": 594,
+      "sha256": "1b4beb4f776792bd9834ab5a58162fcaa06721d809a230e4020b708c23ab6fb6"
+    },
+    {
+      "path": "source272-full-queue-at-publication.json",
+      "bytes": 2376,
+      "sha256": "d3d12ec62b3d8e228db6e51e3f831bb203906ac28281ef507a1f82663810dbaa"
+    },
+    {
+      "path": "source272-full-validation-preparation.json",
+      "bytes": 993,
+      "sha256": "e3b29f17131d5ed375045ba5108188446b75a9d43c81a3ec63af6ecc8b76aefa"
+    },
+    {
+      "path": "source272-linux-frozen-dispatch.json",
+      "bytes": 353,
+      "sha256": "76fd78a098335bf2f63c3fb5ddb1e0a6dc97aadfeb965dc3b777c65518b20bd1"
+    },
+    {
+      "path": "source272-linux-frozen-launch.json",
+      "bytes": 875,
+      "sha256": "82da7a1f1c7734e95f910d9a48fcbd2f5c389278fd257ba00f7a3c9a51dde8a3"
+    },
+    {
+      "path": "source272-linux-rust-dispatch.json",
+      "bytes": 351,
+      "sha256": "dba55bb46f1bc0549bd63616a80fb3a6789262c6131d65e47ceb594b22aa5470"
+    },
+    {
+      "path": "source272-linux-rust-launch.json",
+      "bytes": 875,
+      "sha256": "a21a8ff0e209f08872dc9481c489108edb55f379a3419875e8d4287af513781d"
+    },
+    {
+      "path": "source272-manifest.json",
+      "bytes": 58772,
+      "sha256": "619584248a7dd3cfd461f2bf3383cd8515f0cf17bf66419124a6dcdbe783bed7"
+    },
+    {
+      "path": "source272-publication-update.py",
+      "bytes": 13842,
+      "sha256": "d072dbf5b5991051fb90d21c298c4286184a3cb4687dba16f834f19be69b394a"
+    },
+    {
+      "path": "source272-published-head.json",
+      "bytes": 353,
+      "sha256": "f8969074e1a5dc2ec35908ecd678ca7173607e799c7adaac880de473d23e0cb2"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

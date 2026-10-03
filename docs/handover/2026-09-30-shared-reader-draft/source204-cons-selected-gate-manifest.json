@@ -1,0 +1,128 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "passed",
+    "verified_stages": [
+      {
+        "stage": "gate-focused",
+        "passed": 7,
+        "binary_sha256": "9e14329d64ab50220231ece20219015ed7d647e0ec987e876c7d63342bdaf34e"
+      },
+      {
+        "stage": "gate-selected",
+        "passed": 596,
+        "binary_sha256": "9e14329d64ab50220231ece20219015ed7d647e0ec987e876c7d63342bdaf34e"
+      },
+      {
+        "stage": "release-focused",
+        "passed": 7,
+        "binary_sha256": "11730a0671dac65a2d7701092a9b04936256b7ed2ca2941a7375f5226fc87faa"
+      }
+    ],
+    "source_inputs_verified": 410,
+    "qualification": "Broader gate596 and both focused seven-test profiles pass. Broader release and ordinary results remain pending. Original failures remain preserved; no full-source or performance completion claim."
+  },
+  "archive": {
+    "path": "source204-cons-selected-gate.tar.gz",
+    "bytes": 177483,
+    "sha256": "5810cfa4f832482746b32ee325d93472f366214567b029f93acf6aa2e17d70f3"
+  },
+  "files": [
+    {
+      "path": "audit-source201-selected.py",
+      "bytes": 5635,
+      "sha256": "acb2d88ae04f5964a64827ff978845d8eecec59afa2b2ff18f783964df964069"
+    },
+    {
+      "path": "source204-gate-focused-command.json",
+      "bytes": 2612,
+      "sha256": "dd6fd74db80f242995defe80ee78d416c3c35497b10c28b13a00d2dd8c5d0391"
+    },
+    {
+      "path": "source204-gate-focused-result.json",
+      "bytes": 89,
+      "sha256": "084a22eb5016724f447415bf0b5b70192c83db8d904a754360aa26406a10d6ae"
+    },
+    {
+      "path": "source204-gate-focused.log",
+      "bytes": 848,
+      "sha256": "d042ba6abe622cec5c1bd2f20abd7245ac1f5dc9f3ad55878d0bd6a26a95888b"
+    },
+    {
+      "path": "source204-gate-inventory.txt",
+      "bytes": 261161,
+      "sha256": "3bc2b7da6a9c9b13348f3dfb9c1696466b16a3aed2f78e78583c7d5382ee81d1"
+    },
+    {
+      "path": "source204-gate-selected-command.json",
+      "bytes": 56235,
+      "sha256": "24b2dec5085e27696a06952fc8c94949a61b8ee890678a096ce3a75283923210"
+    },
+    {
+      "path": "source204-gate-selected-inventory-check.json",
+      "bytes": 204,
+      "sha256": "eb7a035689b5d8202dc14d5b0c87ba7896582c5a3169842d43b163c716367b26"
+    },
+    {
+      "path": "source204-gate-selected-result.json",
+      "bytes": 90,
+      "sha256": "5901942a95016a26129599a388aa2e3e83a4363521cc89c3e82d0cfa49f9753f"
+    },
+    {
+      "path": "source204-gate-selected.log",
+      "bytes": 61512,
+      "sha256": "0265da29c2ab0ce0d9742cdc29ef4a8e20acb54d2057bedf45885ebd73ad1692"
+    },
+    {
+      "path": "source204-manifest.json",
+      "bytes": 46477,
+      "sha256": "3703327bef6ff1f287a91fc505e8ae8439902e00381af8061357a5963f62050c"
+    },
+    {
+      "path": "source204-release-build-command.json",
+      "bytes": 1115,
+      "sha256": "9f7604766f4bee310d22be336d7a4f44e25d2f3cb6892ae98a88af6929857180"
+    },
+    {
+      "path": "source204-release-build-result.json",
+      "bytes": 85,
+      "sha256": "11b927f4e2ca7c942312bb8000b562c814e267a5486f3548d0b2db17dfbab1f5"
+    },
+    {
+      "path": "source204-release-build.log",
+      "bytes": 215219,
+      "sha256": "6d344e77038f219d4218e010e3d5a4a0f3a12bafac64580438d946f4df75e95b"
+    },
+    {
+      "path": "source204-release-focused-command.json",
+      "bytes": 2615,
+      "sha256": "88607624741e08e494abde08f3048489f2a204ca9ddb5fd9c717a25e1b138d1c"
+    },
+    {
+      "path": "source204-release-focused-result.json",
+      "bytes": 90,
+      "sha256": "395b794449466220dadfdd9e2a75caf13ac32f480ea2b87e4b43585b8e8ffb66"
+    },
+    {
+      "path": "source204-release-focused.log",
+      "bytes": 848,
+      "sha256": "686336c0ffe8569ea5b3e3634de7b0df3ba5c991dcc0af2cce99492eec5024cf"
+    },
+    {
+      "path": "source204-release-inventory.txt",
+      "bytes": 261072,
+      "sha256": "1aa272463fb97ac3c8e99396866925e7e7843a07d2238293e0d133285a9c3794"
+    },
+    {
+      "path": "source204-selected-gate-audit.json",
+      "bytes": 767,
+      "sha256": "5ed2f3f8a48f700458269f91f8aa11fc19c6838418a21ae9c96eb4bd8ae0f13e"
+    },
+    {
+      "path": "test-cons204.py",
+      "bytes": 5266,
+      "sha256": "d0d562376e43e4d134d180b0b3924bdb2aeb0f0c86264f0b331e2190becec6b3"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

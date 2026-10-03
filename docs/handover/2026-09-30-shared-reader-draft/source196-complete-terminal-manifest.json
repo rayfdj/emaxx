@@ -1,0 +1,66 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "passed",
+    "scenarios": 226,
+    "verified_checkpoints": 686,
+    "screen_comparisons": 658,
+    "filesystem_comparisons": 28,
+    "log_sha256": "2619d796a06942ca54f563a17b2c37558522743e0ec7e1f61ccf46c9c528bfe2",
+    "inputs_rehashed": 8,
+    "qualification": "Complete unchanged default scenario, screen and filesystem inventories match raw reports in order. Source/ABI-matched Darwin GNU is not the frozen executable. No performance certification."
+  },
+  "archive": {
+    "path": "source196-complete-terminal.tar.gz",
+    "bytes": 33611,
+    "sha256": "df3ce6456773e5cd13404595ee314d5b5a0494d34e5953262ff166777fa23c9e"
+  },
+  "files": [
+    {
+      "path": "run-source196-fresh-full-tty.py",
+      "bytes": 3351,
+      "sha256": "8e730779a1c83c1140911a97f9abede06443355911dc1df4786d236560a4914d"
+    },
+    {
+      "path": "source196-fresh-complete-terminal-audit.json",
+      "bytes": 456,
+      "sha256": "9ecfd3921f9a323904655a54affeb01b0c2987fa2b33c2d3df4349479892b099"
+    },
+    {
+      "path": "source196-fresh-full-local-supervisor-result.json",
+      "bytes": 327,
+      "sha256": "41722fb343f753523ea86c41cb072e6e2f96b3ec9cf7534131559261c444c996"
+    },
+    {
+      "path": "source196-fresh-full-ttydiff-command.json",
+      "bytes": 8848,
+      "sha256": "47bb2199329301db932cd4f1f679a4750800e24b09b35ff74df4730404488ceb"
+    },
+    {
+      "path": "source196-fresh-full-ttydiff-result.json",
+      "bytes": 267,
+      "sha256": "1ca7c353b4e19d393951801056934ea743c85f34493d78db9e8e4b351beb301a"
+    },
+    {
+      "path": "source196-fresh-full-ttydiff.log",
+      "bytes": 62615,
+      "sha256": "2619d796a06942ca54f563a17b2c37558522743e0ec7e1f61ccf46c9c528bfe2"
+    },
+    {
+      "path": "source196-fresh-manifest.json",
+      "bytes": 45370,
+      "sha256": "e77fa7396195d18d86ac902c27e7ade2d9a0bd4679524dbc7434a61e21cf3f8b"
+    },
+    {
+      "path": "source196-fresh-ordinary-artifacts.json",
+      "bytes": 756,
+      "sha256": "66ec74161aa62e895931c1e99283c5c3e8fcd92126972f8381c55f8892dafd8d"
+    },
+    {
+      "path": "verify-complete-reader-terminal-receipts.py",
+      "bytes": 3084,
+      "sha256": "1ff488145e6a473e30eda7d944b74f7b0999f4f45776f710b6988067d5c7d446"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}
