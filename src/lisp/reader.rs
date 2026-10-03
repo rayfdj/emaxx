@@ -246,6 +246,20 @@ impl<'a> Reader<'a> {
         reader
     }
 
+    pub(crate) fn from_encoded(
+        bytes: &'a [u8],
+        multibyte: bool,
+        symbol_shorthands: Vec<(String, String)>,
+    ) -> Self {
+        let mut reader = Self::with_symbol_shorthands("", symbol_shorthands);
+        reader.input = Input::Encoded { bytes, multibyte };
+        reader
+    }
+
+    pub(crate) fn characters_consumed(&mut self) -> usize {
+        (self.character_position() - self.position_base) as usize
+    }
+
     pub(crate) fn finish_stream(&mut self) -> Result<(), LispError> {
         self.input.unread_lookahead()
     }
@@ -306,6 +320,15 @@ impl<'a> Reader<'a> {
     }
 
     fn peek_char(&mut self) -> Result<Option<char>, LispError> {
+        if matches!(self.input, Input::Encoded { .. }) {
+            return Ok(self.input.encoded_character(self.pos)?.map(|(code, _)| {
+                if (0x3fff80..=0x3fffff).contains(&code) {
+                    encode_raw_byte(code as u8)
+                } else {
+                    char::from_u32(code).unwrap_or(INVALID_UNICODE_SENTINEL)
+                }
+            }));
+        }
         let Some(first) = self.peek()? else {
             return Ok(None);
         };
@@ -334,7 +357,11 @@ impl<'a> Reader<'a> {
     fn advance_char(&mut self) -> Result<Option<char>, LispError> {
         let character = self.peek_char()?;
         if let Some(character) = character {
-            self.advance_bytes(character.len_utf8())?;
+            let width = self
+                .input
+                .encoded_character(self.pos)?
+                .map_or(character.len_utf8(), |(_, width)| width);
+            self.advance_bytes(width)?;
         }
         Ok(character)
     }
@@ -765,11 +792,18 @@ impl<'a> Reader<'a> {
         invalid_unicode: &mut bool,
         extended: &mut Vec<(usize, u32)>,
     ) -> Result<(), LispError> {
-        let code = self.input.function_code()?;
+        let code = self
+            .input
+            .encoded_character(self.pos)?
+            .map(|(code, _)| i64::from(code))
+            .or(self.input.function_code()?);
         let character = self
             .read_utf8_char()?
             .ok_or_else(|| LispError::ReadError("invalid UTF-8 in string".into()))?;
-        if raw_byte_from_source_char(character).is_some() {
+        if code.map_or_else(
+            || raw_byte_from_source_char(character).is_some(),
+            |code| (0x3fff80..=0x3fffff).contains(&code),
+        ) {
             *raw_bytes = true;
         } else if let Some(code) =
             code.filter(|code| u32::try_from(*code).ok().and_then(char::from_u32).is_none())
@@ -778,6 +812,11 @@ impl<'a> Reader<'a> {
             extended.push((text.chars().count(), code as u32));
         } else {
             *multibyte = true;
+            // Genuine private-use scalars must not be reinterpreted as
+            // the host adapter's raw-byte sentinels during construction.
+            if raw_byte_from_source_char(character).is_some() {
+                extended.push((text.chars().count(), character as u32));
+            }
         }
         text.push(character);
         Ok(())
@@ -1078,7 +1117,12 @@ impl<'a> Reader<'a> {
     }
 
     fn read_literal_character_code(&mut self) -> Result<i64, LispError> {
-        if let Some(code) = self.input.function_code()? {
+        if let Some(code) = self
+            .input
+            .encoded_character(self.pos)?
+            .map(|(code, _)| i64::from(code))
+            .or(self.input.function_code()?)
+        {
             self.advance_char()?;
             return Ok(if (0x3fff80..=0x3fffff).contains(&code) {
                 code & 0xff
@@ -1124,7 +1168,7 @@ impl<'a> Reader<'a> {
             }
         }
         if self.peek()?.is_some_and(|ch| ch >= 0x80) {
-            if matches!(self.input, Input::Function(_)) {
+            if matches!(self.input, Input::Function(_) | Input::Encoded { .. }) {
                 return self.read_literal_character_code();
             }
             return self.read_utf8_char()?.map_or_else(
@@ -1697,6 +1741,18 @@ impl<'a> Reader<'a> {
     fn character_position(&mut self) -> i64 {
         if let Some(position) = self.input.function_position() {
             return self.position_base + position;
+        }
+        if matches!(self.input, Input::Encoded { .. }) {
+            while self.position_cursor_byte < self.pos {
+                let (_, width) = self
+                    .input
+                    .encoded_character(self.position_cursor_byte)
+                    .expect("already consumed valid character")
+                    .expect("position within the source");
+                self.position_cursor_byte += width;
+                self.position_cursor_char += 1;
+            }
+            return self.position_base + self.position_cursor_char;
         }
         let Input::Text(bytes) = &self.input else {
             unreachable!()

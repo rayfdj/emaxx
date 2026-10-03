@@ -3075,7 +3075,7 @@ define_dispatch!(
                             .as_ref()
                             .is_some_and(|value| matches!(value.kind(), Kind::T));
                     let at_line_start = if noninteractive_stdout {
-                        interp.batch_standard_output_last_char == Some('\n')
+                        interp.batch_standard_output_last_char == Some(u32::from(b'\n'))
                     } else {
                         printer_stream_at_line_start(interp, stream.as_ref())?
                     };
@@ -3084,7 +3084,7 @@ define_dispatch!(
                     }
                 }
                 write_printer_output(interp, "\n", stream.as_ref(), env)?;
-                record_batch_standard_output_char(interp, stream.as_ref(), env, '\n');
+                record_batch_standard_output_char(interp, stream.as_ref(), env, u32::from(b'\n'));
                 Ok(Value::T)
             }
             "prin1-to-string" => {
@@ -3093,17 +3093,17 @@ define_dispatch!(
                 if args.get(1).is_some_and(|value| value.is_truthy()) {
                     let rendered =
                         with_printer_buffer_escape(interp, env, Some(true), |interp, env| {
-                            render_princ_object(interp, &args[0], env)
+                            render_printer_output(interp, &args[0], env, false, false)
                         })?;
-                    return Ok(Value::String(rendered.into()));
+                    return rendered.into_value(interp, env);
                 }
                 if matches!(args.get(2).map(|v| v.kind()), None | Some(Kind::Nil)) {
-                    return Ok(Value::String(render_prin1(interp, &args[0], env)?.into()));
+                    return render_prin1_output(interp, &args[0], env)?.into_value(interp, env);
                 }
                 let mut print_env = printer_env_with_overrides(env, args.get(2))?;
-                let rendered = render_prin1(interp, &args[0], &mut print_env)?;
+                let rendered = render_prin1_output(interp, &args[0], &mut print_env)?;
                 sync_print_number_table(env, args.get(2), &print_env);
-                Ok(Value::String(rendered.into()))
+                rendered.into_value(interp, env)
             }
             "write-char" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -3111,7 +3111,7 @@ define_dispatch!(
                 let stream = printer_stream_value(interp, env, args.get(1));
                 write_printer_output(interp, &rendered, stream.as_ref(), env)?;
                 if let Some(last) = rendered.chars().last() {
-                    record_batch_standard_output_char(interp, stream.as_ref(), env, last);
+                    record_batch_standard_output_char(interp, stream.as_ref(), env, last as u32);
                 }
                 Ok(args[0])
             }

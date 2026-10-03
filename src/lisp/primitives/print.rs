@@ -1,77 +1,81 @@
+mod output;
+pub(crate) use output::PrintOutput;
+
 use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
 pub(crate) fn render_prin1_string(
     interp: &Interpreter,
-    text: &str,
-    multibyte: bool,
+    state: &crate::lisp::types::SharedStringState,
     env: &Env,
-) -> String {
-    let escape_multibyte = interp
-        .lookup_var("print-escape-multibyte", env)
-        .is_some_and(|value| value.is_truthy());
-    let escape_newlines = interp
-        .lookup_var("print-escape-newlines", env)
-        .is_some_and(|value| value.is_truthy());
-
-    // GNU prin1 escapes only `"' and `\' by default: newlines, tabs and
-    // other control characters print raw unless print-escape-newlines is
-    // non-nil (Rust's {:?} formatting escapes them all, which is wrong).
-    // print.c:1635 escapes exactly `\n'/`\f' under print-escape-newlines,
-    // and octal-escapes control characters under
-    // print-escape-control-characters via octalout, whose width obeys the
-    // following-octal-digit guard.
-    let escape_control = interp
-        .lookup_var("print-escape-control-characters", env)
-        .is_some_and(|value| value.is_truthy());
-    let escape_nonascii = interp
-        .lookup_var("print-escape-nonascii", env)
-        .is_some_and(|value| value.is_truthy());
-    let mut rendered = String::with_capacity(text.len() + 2);
+) -> PrintOutput {
+    let enabled = |name| {
+        interp
+            .lookup_var(name, env)
+            .is_some_and(|value| value.is_truthy())
+    };
+    let escape_multibyte = enabled("print-escape-multibyte");
+    let escape_newlines = enabled("print-escape-newlines");
+    let escape_control = enabled("print-escape-control-characters");
+    let escape_nonascii = enabled("print-escape-nonascii");
+    let multibyte = state.is_multibyte();
+    let mut rendered = PrintOutput::with_capacity(state.bytes().len() + 2);
     rendered.push('"');
-    let mut chars = text.chars().peekable();
+    let mut offset = 0;
     let mut need_nonhex = false;
-    while let Some(ch) = chars.next() {
-        if need_nonhex && ch.is_ascii_hexdigit() {
-            rendered.push_str("\\ ");
-        }
-        need_nonhex = false;
-        match ch {
-            '"' => rendered.push_str("\\\""),
-            '\\' => rendered.push_str("\\\\"),
-            '\n' if escape_newlines => rendered.push_str("\\n"),
-            '\u{000C}' if escape_newlines => rendered.push_str("\\f"),
-            ch if escape_control && ((ch as u32) < 0x20 || ch as u32 == 0x7f) => {
-                let code = ch as u32;
-                let next_is_octal_digit =
-                    matches!(chars.peek(), Some(next) if ('0'..='7').contains(next));
-                let digits = if code > 0o77 || next_is_octal_digit {
-                    3
-                } else if code > 0o7 {
-                    2
-                } else {
-                    1
-                };
-                rendered.push('\\');
-                for shift in (0..digits).rev() {
-                    let digit = (code >> (3 * shift)) & 7;
-                    rendered.push(char::from(b'0' + digit as u8));
+    while offset < state.bytes().len() {
+        // print.c:fetch_string_char_advance, before any escaping decision.
+        let (code, width) = if multibyte {
+            crate::lisp::types::string_data::decode_character(&state.bytes()[offset..])
+                .expect("stored string character")
+        } else {
+            (u32::from(state.bytes()[offset]), 1)
+        };
+        offset += width;
+        let raw = if multibyte && (0x3fff80..=0x3fffff).contains(&code) {
+            Some(code - 0x3fff00)
+        } else if !multibyte && code >= 128 && escape_nonascii {
+            Some(code)
+        } else {
+            None
+        };
+        if let Some(byte) = raw {
+            rendered.push_str(&format!("\\{byte:03o}"));
+            need_nonhex = false;
+        } else if multibyte && code >= 128 && escape_multibyte {
+            rendered.push_str(&format!("\\x{code:04x}"));
+            need_nonhex = true;
+        } else {
+            if code <= 127 && (code as u8).is_ascii_hexdigit() && need_nonhex {
+                rendered.push_str("\\ ");
+            }
+            need_nonhex = false;
+            match code {
+                34 => rendered.push_str("\\\""),
+                92 => rendered.push_str("\\\\"),
+                10 if escape_newlines => rendered.push_str("\\n"),
+                12 if escape_newlines => rendered.push_str("\\f"),
+                code if escape_control && (code < 32 || code == 127) => {
+                    let next_is_octal = state
+                        .bytes()
+                        .get(offset)
+                        .is_some_and(|next| (b'0'..=b'7').contains(next));
+                    let digits = if code > 0o77 || next_is_octal {
+                        3
+                    } else if code > 0o7 {
+                        2
+                    } else {
+                        1
+                    };
+                    rendered.push('\\');
+                    for shift in (0..digits).rev() {
+                        rendered.push_code(u32::from(b'0') + ((code >> (3 * shift)) & 7));
+                    }
                 }
+                code if !multibyte && code >= 128 => rendered.push_code(0x3fff00 + code),
+                code => rendered.push_code(code),
             }
-            // print.c:print_object distinguishes raw bytes in multibyte
-            // strings from unibyte bytes. The latter remain BYTE8 chars
-            // unless the actual destination requests octal escapes.
-            ch if case::is_raw_byte_regex_char(ch) && (multibyte || escape_nonascii) => {
-                let byte = case::raw_byte_from_regex_char(ch)
-                    .expect("raw byte placeholder maps back to its byte");
-                rendered.push_str(&format!("\\{byte:03o}"));
-            }
-            ch if multibyte && escape_multibyte && !ch.is_ascii() => {
-                rendered.push_str(&format!("\\x{:04x}", ch as u32));
-                need_nonhex = true;
-            }
-            ch => rendered.push(ch),
         }
     }
     rendered.push('"');
@@ -109,27 +113,41 @@ pub(crate) struct PrintOptions {
 
 fn render_princ_string(
     interp: &Interpreter,
-    text: &str,
-    multibyte: bool,
+    state: &crate::lisp::types::SharedStringState,
     env: &Env,
     output_is_function: bool,
-) -> String {
+) -> PrintOutput {
     let escape_nonascii = !output_is_function
         && interp
             .lookup_var("print-escape-nonascii", env)
             .is_some_and(|value| value.is_truthy());
-    let mut rendered = String::with_capacity(text.len());
-    for ch in text.chars() {
-        if let Some(byte) = raw_byte_from_regex_char(ch) {
+    let mut rendered = PrintOutput::with_capacity(state.bytes().len());
+    let mut offset = 0;
+    while offset < state.bytes().len() {
+        let (code, width) = if state.is_multibyte() {
+            crate::lisp::types::string_data::decode_character(&state.bytes()[offset..])
+                .expect("stored string character")
+        } else {
+            (u32::from(state.bytes()[offset]), 1)
+        };
+        offset += width;
+        let raw = if (0x3fff80..=0x3fffff).contains(&code) {
+            Some(code - 0x3fff00)
+        } else if !state.is_multibyte() && code >= 128 {
+            Some(code)
+        } else {
+            None
+        };
+        if let Some(byte) = raw {
             if escape_nonascii {
                 rendered.push_str(&format!("\\{byte:03o}"));
-            } else if output_is_function && !multibyte {
-                rendered.push(char::from(byte));
+            } else if output_is_function && !state.is_multibyte() {
+                rendered.push_code(byte);
             } else {
-                rendered.push(ch);
+                rendered.push_code(0x3fff00 + byte);
             }
         } else {
-            rendered.push(ch);
+            rendered.push_code(code);
         }
     }
     rendered
@@ -563,9 +581,9 @@ pub(crate) fn render_prin1_list(
     env: &mut crate::lisp::types::Env,
     context: &mut PrintContext,
     depth: usize,
-) -> Result<String, LispError> {
+) -> Result<PrintOutput, LispError> {
     let Some((car, cdr)) = value.cons_values() else {
-        return Ok(value.to_string());
+        return Ok(value.to_string().into());
     };
     if context.options.level.is_some_and(|limit| depth >= limit) {
         return Ok("...".into());
@@ -593,10 +611,10 @@ pub(crate) fn render_prin1_list(
     loop {
         if is_vector_value(&tail) {
             let tail_rendered = render_prin1_with_context(interp, &tail, env, context, depth + 1)?;
-            return Ok(format!("({} . {})", rendered.join(" "), tail_rendered));
+            return Ok(PrintOutput::dotted(&rendered, tail_rendered));
         }
         match tail.kind() {
-            Kind::Nil => return Ok(format!("({})", rendered.join(" "))),
+            Kind::Nil => return Ok(PrintOutput::join(&rendered, " ").enclosed("(", ")")),
             Kind::Cons(_) => {
                 if context
                     .options
@@ -604,14 +622,14 @@ pub(crate) fn render_prin1_list(
                     .is_some_and(|limit| rendered.len() >= limit)
                 {
                     rendered.push("...".into());
-                    return Ok(format!("({})", rendered.join(" ")));
+                    return Ok(PrintOutput::join(&rendered, " ").enclosed("(", ")"));
                 }
                 if let Some(key) = print_ref_key(interp, &tail, context.options)
                     && should_label_value(&tail, &key, context)
                 {
                     let tail_rendered =
                         render_prin1_with_context(interp, &tail, env, context, depth + 1)?;
-                    return Ok(format!("({} . {})", rendered.join(" "), tail_rendered));
+                    return Ok(PrintOutput::dotted(&rendered, tail_rendered));
                 }
                 if !context.options.circle {
                     tortoise_countdown -= 1;
@@ -621,11 +639,14 @@ pub(crate) fn render_prin1_list(
                         tortoise_countdown = tortoise_period;
                         tortoise = tail;
                     } else if same_cons_cell(&tail, &tortoise) {
-                        return Ok(format!("({} . #{})", rendered.join(" "), tortoise_index));
+                        return Ok(PrintOutput::dotted(
+                            &rendered,
+                            format!("#{tortoise_index}").into(),
+                        ));
                     }
                 }
                 let Some((next_car, next_cdr)) = tail.cons_values() else {
-                    return Ok(value.to_string());
+                    return Ok(value.to_string().into());
                 };
                 rendered.push(render_prin1_with_context(
                     interp,
@@ -639,7 +660,7 @@ pub(crate) fn render_prin1_list(
             other => {
                 let tail_rendered =
                     render_prin1_with_context(interp, &other.value(), env, context, depth + 1)?;
-                return Ok(format!("({} . {})", rendered.join(" "), tail_rendered));
+                return Ok(PrintOutput::dotted(&rendered, tail_rendered));
             }
         }
     }
@@ -676,7 +697,7 @@ pub(crate) fn render_prin1_with_context(
     env: &mut crate::lisp::types::Env,
     context: &mut PrintContext,
     depth: usize,
-) -> Result<String, LispError> {
+) -> Result<PrintOutput, LispError> {
     if context.options.circle
         && let Some(rendered) = print_number_table_substitution(interp, value, env)?
     {
@@ -687,13 +708,13 @@ pub(crate) fn render_prin1_with_context(
             if let Some(label) = context.labels.get_mut(&key) {
                 let number = label.number;
                 if label.printed {
-                    return Ok(format!("#{number}#"));
+                    return Ok(format!("#{number}#").into());
                 }
                 label.printed = true;
                 context.active.insert(key.clone(), depth);
                 let rendered = render_prin1_body(interp, value, env, context, depth);
                 context.active.remove(&key);
-                return rendered.map(|body| format!("#{number}={body}"));
+                return rendered.map(|body| body.enclosed(&format!("#{number}="), ""));
             }
             let number = context.next_label;
             context.next_label += 1;
@@ -708,10 +729,10 @@ pub(crate) fn render_prin1_with_context(
             context.active.insert(key.clone(), depth);
             let rendered = render_prin1_body(interp, value, env, context, depth);
             context.active.remove(&key);
-            return rendered.map(|body| format!("#{number}={body}"));
+            return rendered.map(|body| body.enclosed(&format!("#{number}="), ""));
         }
         if let Some(outer_depth) = context.active.get(&key).copied() {
-            return Ok(print_ref_placeholder(outer_depth));
+            return Ok(print_ref_placeholder(outer_depth).into());
         }
         // print.c:2249: printing without `print-circle' gives up past
         // PRINT_CIRCLE levels rather than exhausting the C stack; with
@@ -735,7 +756,7 @@ pub(crate) fn print_number_table_substitution(
     interp: &mut Interpreter,
     value: &Value,
     env: &Env,
-) -> Result<Option<String>, LispError> {
+) -> Result<Option<PrintOutput>, LispError> {
     let Some(table) = interp.lookup_var("print-number-table", env) else {
         return Ok(None);
     };
@@ -744,9 +765,14 @@ pub(crate) fn print_number_table_substitution(
     };
     for (key, replacement) in entries {
         if key == *value
-            && let Some(text) = string_like(&replacement)
+            && let Kind::StringObject(text) = replacement.kind()
         {
-            return Ok(Some(text.text));
+            return Ok(Some(render_princ_string(
+                interp,
+                &text.borrow(),
+                env,
+                false,
+            )));
         }
     }
     Ok(None)
@@ -909,7 +935,7 @@ pub(crate) fn render_hash_table_prin1(
     env: &mut Env,
     context: &mut PrintContext,
     depth: usize,
-) -> Result<String, LispError> {
+) -> Result<PrintOutput, LispError> {
     // print.c:2588 prints only what the reader needs: the test when it is
     // not `eql', the weakness when the table is weak, `purecopy t' when
     // set, and the data when the table is non-empty.
@@ -921,10 +947,10 @@ pub(crate) fn render_hash_table_prin1(
         .map(|(_, entries)| entries)
         .unwrap_or_default();
 
-    let mut rendered = String::from("#s(hash-table");
+    let mut rendered = PrintOutput::from("#s(hash-table");
     if !matches!(test.kind(), Kind::Symbol(name) if name == "eql") {
         rendered.push_str(" test ");
-        rendered.push_str(&render_prin1_with_context(
+        rendered.append(&render_prin1_with_context(
             interp,
             &test,
             env,
@@ -934,7 +960,7 @@ pub(crate) fn render_hash_table_prin1(
     }
     if weakness.is_truthy() {
         rendered.push_str(" weakness ");
-        rendered.push_str(&render_prin1_with_context(
+        rendered.append(&render_prin1_with_context(
             interp,
             &weakness,
             env,
@@ -970,7 +996,7 @@ pub(crate) fn render_hash_table_prin1(
             data_parts.push("...".into());
         }
         rendered.push_str(" data (");
-        rendered.push_str(&data_parts.join(" "));
+        rendered.append(&PrintOutput::join(&data_parts, " "));
         rendered.push(')');
     }
     rendered.push(')');
@@ -1048,11 +1074,11 @@ pub(crate) fn render_prin1_body(
     env: &mut crate::lisp::types::Env,
     context: &mut PrintContext,
     depth: usize,
-) -> Result<String, LispError> {
+) -> Result<PrintOutput, LispError> {
     let unreadable_override = |interp: &mut Interpreter,
                                value: &Value,
                                env: &mut crate::lisp::types::Env|
-     -> Result<Option<String>, LispError> {
+     -> Result<Option<PrintOutput>, LispError> {
         let Some(function) = interp.lookup_var("print-unreadable-function", env) else {
             return Ok(None);
         };
@@ -1061,12 +1087,20 @@ pub(crate) fn render_prin1_body(
         }
         let rendered = call_function_value(interp, &function, &[*value, Value::T], env)?;
         if matches!(rendered.kind(), Kind::T) {
-            return Ok(Some(String::new()));
+            return Ok(Some(PrintOutput::default()));
         }
         if rendered.is_nil() {
             return Ok(None);
         }
-        Ok(Some(string_text(&rendered)?))
+        let Kind::StringObject(string) = rendered.kind() else {
+            return Err(LispError::WrongTypeArgument("stringp".into(), rendered));
+        };
+        Ok(Some(render_princ_string(
+            interp,
+            &string.borrow(),
+            env,
+            false,
+        )))
     };
 
     // print.c's print_object for a two-element list headed by Qquote,
@@ -1097,7 +1131,7 @@ pub(crate) fn render_prin1_body(
             context.backquote_output = context.backquote_output.wrapping_add_signed(nesting);
             let rendered = render_prin1_with_context(interp, &inner, env, context, depth);
             context.backquote_output = context.backquote_output.wrapping_add_signed(-nesting);
-            return Ok(format!("{prefix}{}", rendered?));
+            return Ok(rendered?.enclosed(prefix, ""));
         }
     }
 
@@ -1108,29 +1142,39 @@ pub(crate) fn render_prin1_body(
             } else {
                 render_princ_integer_as_character(value)
             };
-            Ok(rendered.unwrap_or_else(|| value.to_string()))
+            Ok(rendered.unwrap_or_else(|| value.to_string()).into())
         }
         Kind::StringObject(state) if !context.options.escape => {
             let state = state.borrow();
             Ok(render_princ_string(
                 interp,
-                &state.text(),
-                state.is_multibyte(),
+                &state,
                 env,
                 context.options.output_is_function,
             ))
         }
         Kind::StringObject(state) => {
-            let (text, props, multibyte) = {
+            let (literal, props, keep_charset) = {
                 let state = state.borrow();
-                (state.text(), state.props.to_vec(), state.is_multibyte())
+                let literal = render_prin1_string(interp, &state, env);
+                let props = state.props.to_vec();
+                let keep_charset = props
+                    .iter()
+                    .any(|span| span.props.iter().any(|(name, _)| name == "charset"))
+                    && charset_text_properties_print(
+                        interp,
+                        env,
+                        &state.text(),
+                        state.is_multibyte(),
+                        &props,
+                    );
+                (literal, props, keep_charset)
             };
             if props.is_empty() {
-                return Ok(render_prin1_string(interp, &text, multibyte, env));
+                return Ok(literal);
             }
-            let mut rendered = vec![render_prin1_string(interp, &text, multibyte, env)];
+            let mut rendered = vec![literal];
             let mut field_values = Vec::new();
-            let keep_charset = charset_text_properties_print(interp, env, &text, multibyte, &props);
             for span in props {
                 let filtered_props = span
                     .props
@@ -1163,14 +1207,14 @@ pub(crate) fn render_prin1_body(
                 )?);
             }
             if rendered.len() == 1 {
-                return Ok(render_prin1_string(interp, &text, multibyte, env));
+                return Ok(rendered.remove(0));
             }
-            Ok(format!("#({})", rendered.join(" ")))
+            Ok(PrintOutput::join(&rendered, " ").enclosed("#(", ")"))
         }
         Kind::Symbol(symbol) if context.options.escape && symbol == "`" => Ok("\\`".into()),
         Kind::Symbol(symbol) if context.options.escape && symbol == "," => Ok("\\,".into()),
         Kind::Symbol(symbol) if context.options.escape && symbol == ",@" => Ok("\\,@".into()),
-        Kind::Symbol(symbol) => Ok(render_prin1_symbol(&symbol, context.options)),
+        Kind::Symbol(symbol) => Ok(render_prin1_symbol(&symbol, context.options).into()),
         Kind::Vector(_) | Kind::Cons(_) if is_vector_value(value) => {
             let items = vector_items(value)?;
             let mut rendered_items = Vec::new();
@@ -1187,7 +1231,7 @@ pub(crate) fn render_prin1_body(
                     depth + 1,
                 )?);
             }
-            Ok(format!("[{}]", rendered_items.join(" ")))
+            Ok(PrintOutput::join(&rendered_items, " ").enclosed("[", "]"))
         }
         Kind::Cons(_) => render_prin1_list(interp, value, env, context, depth),
         Kind::Closure(lambda_value) => {
@@ -1211,7 +1255,7 @@ pub(crate) fn render_prin1_body(
                     depth + 1,
                 )?);
             }
-            Ok(format!("#[{}]", rendered_slots.join(" ")))
+            Ok(PrintOutput::join(&rendered_slots, " ").enclosed("#[", "]"))
         }
         Kind::CharTable(table) => {
             let mut fields = Vec::new();
@@ -1228,10 +1272,13 @@ pub(crate) fn render_prin1_body(
                     depth + 1,
                 )?);
             }
-            Ok(format!("#^[{}]", fields.join(" ")))
+            Ok(PrintOutput::join(&fields, " ").enclosed("#^[", "]"))
         }
         Kind::SubCharTable(table) => {
-            let mut fields = vec![table.depth().to_string(), table.min_char().to_string()];
+            let mut fields = vec![
+                PrintOutput::from(table.depth().to_string()),
+                PrintOutput::from(table.min_char().to_string()),
+            ];
             for field in table.slots() {
                 if context
                     .options
@@ -1249,20 +1296,22 @@ pub(crate) fn render_prin1_body(
                     depth + 1,
                 )?);
             }
-            Ok(format!("#^^[{}]", fields.join(" ")))
+            Ok(PrintOutput::join(&fields, " ").enclosed("#^^[", "]"))
         }
         Kind::BuiltinFunc(_) | Kind::Buffer(_) | Kind::Marker(_) | Kind::Overlay(_) => {
             if let Some(rendered) = unreadable_override(interp, value, env)? {
                 return Ok(rendered);
             }
             match value.kind() {
-                Kind::BuiltinFunc(name) => Ok(format!("#<subr {name}>")),
-                Kind::Buffer(buffer) => Ok(match interp.get_buffer_by_id(buffer.id) {
-                    Some(live) if context.options.escape => format!("#<buffer {}>", live.name),
-                    Some(live) => live.name.clone(),
-                    None => "#<killed buffer>".into(),
-                }),
-                Kind::Marker(marker) => Ok(match marker.buffer() {
+                Kind::BuiltinFunc(name) => Ok(format!("#<subr {name}>").into()),
+                Kind::Buffer(buffer) => Ok(PrintOutput::from(
+                    match interp.get_buffer_by_id(buffer.id) {
+                        Some(live) if context.options.escape => format!("#<buffer {}>", live.name),
+                        Some(live) => live.name.clone(),
+                        None => "#<killed buffer>".into(),
+                    },
+                )),
+                Kind::Marker(marker) => Ok(PrintOutput::from(match marker.buffer() {
                     Some(buffer) => {
                         let buffer_name = &buffer.borrow().name;
                         let position = marker.last_position();
@@ -1274,23 +1323,23 @@ pub(crate) fn render_prin1_body(
                         format!("#<marker{advances} at {position} in {buffer_name}>")
                     }
                     None => "#<marker in no buffer>".into(),
-                }),
-                _ => Ok(value.to_string()),
+                })),
+                _ => Ok(value.to_string().into()),
             }
         }
         Kind::Frame(frame) => {
             let id = frame.identity();
             let name = string_text(&frame.name.get())
                 .unwrap_or_else(|_| format!("F{}", frame.borrow().id));
-            Ok(format!("#<frame {name} 0x{id:x}>"))
+            Ok(format!("#<frame {name} 0x{id:x}>").into())
         }
         Kind::Terminal(terminal) => {
             let state = terminal.borrow();
-            Ok(if state.live {
+            Ok(PrintOutput::from(if state.live {
                 format!("#<terminal {} on {}>", terminal.id, state.name)
             } else {
                 format!("#<terminal {}>", terminal.id)
-            })
+            }))
         }
         Kind::SymbolWithPos(object) => {
             let symbol = object.symbol();
@@ -1300,7 +1349,7 @@ pub(crate) fn render_prin1_body(
             }
             let rendered_symbol =
                 render_prin1_with_context(interp, &symbol, env, context, depth + 1)?;
-            Ok(format!("#<symbol {rendered_symbol} at {position}>"))
+            Ok(rendered_symbol.enclosed("#<symbol ", &format!(" at {position}>")))
         }
         Kind::LispRecord(record) => {
             let mut fields = Vec::new();
@@ -1317,17 +1366,17 @@ pub(crate) fn render_prin1_body(
                     depth + 1,
                 )?);
             }
-            Ok(format!("#s({})", fields.join(" ")))
+            Ok(PrintOutput::join(&fields, " ").enclosed("#s(", ")"))
         }
         Kind::HashTable(_) => render_hash_table_prin1(interp, value, env, context, depth),
         Kind::Record(id) => {
             if let Some(record) = interp.find_record(id) {
                 let rendered = match record.kind {
                     crate::lisp::eval::RecordKind::ModuleFunction => {
-                        crate::lisp::modules::print_function(interp, id.id)
+                        PrintOutput::from(crate::lisp::modules::print_function(interp, id.id))
                     }
                     crate::lisp::eval::RecordKind::UserPointer => {
-                        crate::lisp::modules::print_user_pointer(interp, id.id)
+                        PrintOutput::from(crate::lisp::modules::print_user_pointer(interp, id.id))
                     }
                     // print.c:1930 prints a thread, mutex or condition
                     // variable by name, falling back to the object's
@@ -1336,21 +1385,24 @@ pub(crate) fn render_prin1_body(
                     crate::lisp::eval::RecordKind::Thread => interp
                         .thread_name(id.id)
                         .map(|name| format!("#<thread {name}>"))
-                        .unwrap_or_else(|| format!("#<thread 0x{:x}>", id.identity())),
+                        .unwrap_or_else(|| format!("#<thread 0x{:x}>", id.identity()))
+                        .into(),
                     crate::lisp::eval::RecordKind::Mutex => interp
                         .mutex_name(id.id)
                         .map(|name| format!("#<mutex {name}>"))
-                        .unwrap_or_else(|| format!("#<mutex 0x{:x}>", id.identity())),
+                        .unwrap_or_else(|| format!("#<mutex 0x{:x}>", id.identity()))
+                        .into(),
                     crate::lisp::eval::RecordKind::ConditionVariable => interp
                         .condition_variable_name(id.id)
                         .map(|name| format!("#<condvar {name}>"))
-                        .unwrap_or_else(|| format!("#<condvar 0x{:x}>", id.identity())),
+                        .unwrap_or_else(|| format!("#<condvar 0x{:x}>", id.identity()))
+                        .into(),
                     // print.c `print_bool_vector': `#&SIZE"BYTES"', the
                     // bits packed low-order-first and the bytes written
                     // with string escaping rules.
                     crate::lisp::eval::RecordKind::BoolVector => {
                         let bits = bool_vector_bits(interp, value)?;
-                        render_bool_vector_prin1(interp, env, &bits, context.options)
+                        render_bool_vector_prin1(interp, env, &bits, context.options).into()
                     }
                     // print.c:1782: a process prints as `#<process NAME>',
                     // or as its bare name when `princ' clears escapeflag.
@@ -1359,9 +1411,9 @@ pub(crate) fn render_prin1_body(
                             .process_name(id.id)
                             .unwrap_or_else(|| format!("0x{:x}", id.identity()));
                         if context.options.escape {
-                            format!("#<process {name}>")
+                            PrintOutput::from(format!("#<process {name}>"))
                         } else {
-                            name
+                            name.into()
                         }
                     }
                     // print.c:2087.
@@ -1370,11 +1422,11 @@ pub(crate) fn render_prin1_body(
                             crate::lisp::primitives::completion::obarray_symbols(interp, value)
                                 .map(|symbols| symbols.len())
                                 .unwrap_or(0);
-                        format!("#<obarray n={count}>")
+                        PrintOutput::from(format!("#<obarray n={count}>"))
                     }
                     _ => {
                         let Some(fields) = record_prin1_fields(interp, id.id) else {
-                            return Ok(value.to_string());
+                            return Ok(value.to_string().into());
                         };
                         let rendered_fields = fields
                             .iter()
@@ -1382,14 +1434,14 @@ pub(crate) fn render_prin1_body(
                                 render_prin1_with_context(interp, field, env, context, depth + 1)
                             })
                             .collect::<Result<Vec<_>, _>>()?;
-                        format!("#s({})", rendered_fields.join(" "))
+                        PrintOutput::join(&rendered_fields, " ").enclosed("#s(", ")")
                     }
                 };
                 return Ok(rendered);
             }
-            Ok(value.to_string())
+            Ok(value.to_string().into())
         }
-        _ => Ok(value.to_string()),
+        _ => Ok(value.to_string().into()),
     }
 }
 
@@ -1441,6 +1493,16 @@ fn prepare_print_numbering(interp: &mut Interpreter, env: &mut Env, options: Pri
     }
 }
 
+pub(crate) fn render_prin1_output(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut Env,
+) -> Result<PrintOutput, LispError> {
+    with_printer_buffer_escape(interp, env, Some(true), |interp, env| {
+        render_printer_output(interp, value, env, true, false)
+    })
+}
+
 pub(crate) fn render_prin1(
     interp: &mut Interpreter,
     value: &Value,
@@ -1486,6 +1548,17 @@ pub(crate) fn render_printer_object(
     escape: bool,
     output_is_function: bool,
 ) -> Result<String, LispError> {
+    render_printer_output(interp, value, env, escape, output_is_function)
+        .map(|output| output.host_text())
+}
+
+pub(crate) fn render_printer_output(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &mut Env,
+    escape: bool,
+    output_is_function: bool,
+) -> Result<PrintOutput, LispError> {
     let mut options = print_options(interp, env);
     options.escape = escape;
     options.output_is_function = output_is_function;
@@ -1551,7 +1624,26 @@ pub(crate) fn read_one_form_in_env(
     env: &mut Env,
 ) -> Result<(Value, usize), LispError> {
     let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
-    let mut reader = crate::lisp::reader::Reader::with_symbol_shorthands(text, symbol_shorthands);
+    let reader = crate::lisp::reader::Reader::with_symbol_shorthands(text, symbol_shorthands);
+    read_one_from_reader(interp, reader, env)
+}
+
+pub(crate) fn read_encoded_form_in_env(
+    interp: &mut Interpreter,
+    bytes: &[u8],
+    multibyte: bool,
+    env: &mut Env,
+) -> Result<(Value, usize), LispError> {
+    let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
+    let reader = crate::lisp::reader::Reader::from_encoded(bytes, multibyte, symbol_shorthands);
+    read_one_from_reader(interp, reader, env)
+}
+
+fn read_one_from_reader(
+    interp: &mut Interpreter,
+    mut reader: crate::lisp::reader::Reader<'_>,
+    env: &mut Env,
+) -> Result<(Value, usize), LispError> {
     let value = match reader.read()? {
         Some(value) => value,
         None => return Err(end_of_file_error(interp, env)),
@@ -1570,7 +1662,7 @@ pub(crate) fn read_one_form_in_env(
         Value::list(reader.unescaped_character_literals().map(Value::Integer)),
         env,
     );
-    let consumed = text[..reader.position()].chars().count();
+    let consumed = reader.characters_consumed();
     Ok((value, consumed))
 }
 
@@ -2160,9 +2252,10 @@ fn read_from_lisp_source_raw(
             interp.set_marker(id, Some((start + consumed).min(end)), Some(buffer_id))?;
             result.map(|(value, _)| value)
         }
-        Kind::StringObject(_) => {
-            let s = reader_string_source_text(source)?;
-            read_one_form_in_env(interp, &s, env).map(|(value, _)| value)
+        Kind::StringObject(state) => {
+            let contents = state.borrow();
+            read_encoded_form_in_env(interp, contents.bytes(), contents.is_multibyte(), env)
+                .map(|(value, _)| value)
         }
         _ => read_from_callable_source(interp, source, env),
     }

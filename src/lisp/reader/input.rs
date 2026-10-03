@@ -113,6 +113,12 @@ impl FunctionInput<'_> {
 
 pub(super) enum Input<'a> {
     Text(&'a [u8]),
+    /// Borrow the authoritative Lisp string/blob bytes. Their encoding is
+    /// Emacs's full character range, not Rust UTF-8.
+    Encoded {
+        bytes: &'a [u8],
+        multibyte: bool,
+    },
     Function(FunctionInput<'a>),
 }
 
@@ -131,14 +137,16 @@ impl<'a> Input<'a> {
 
     pub(super) fn peek(&mut self, position: usize, offset: usize) -> Result<Option<u8>, LispError> {
         match self {
-            Self::Text(bytes) => Ok(bytes.get(position + offset).copied()),
+            Self::Text(bytes) | Self::Encoded { bytes, .. } => {
+                Ok(bytes.get(position + offset).copied())
+            }
             Self::Function(input) => input.peek(offset),
         }
     }
 
     pub(super) fn advance(&mut self, position: usize) -> Result<Option<u8>, LispError> {
         match self {
-            Self::Text(bytes) => Ok(bytes.get(position).copied()),
+            Self::Text(bytes) | Self::Encoded { bytes, .. } => Ok(bytes.get(position).copied()),
             Self::Function(input) => input.advance(),
         }
     }
@@ -151,28 +159,28 @@ impl<'a> Input<'a> {
 
     pub(super) fn unread_lookahead(&mut self) -> Result<(), LispError> {
         match self {
-            Self::Text(_) => Ok(()),
+            Self::Text(_) | Self::Encoded { .. } => Ok(()),
             Self::Function(input) => input.unread_lookahead(),
         }
     }
 
     pub(super) fn function_code(&mut self) -> Result<Option<i64>, LispError> {
         match self {
-            Self::Text(_) => Ok(None),
+            Self::Text(_) | Self::Encoded { .. } => Ok(None),
             Self::Function(input) => Ok(input.peek(0)?.map(|_| input.characters[0].code)),
         }
     }
 
     pub(super) fn function_position(&self) -> Option<i64> {
         match self {
-            Self::Text(_) => None,
+            Self::Text(_) | Self::Encoded { .. } => None,
             Self::Function(input) => Some(input.position),
         }
     }
 
     pub(super) fn root_depth(&self) -> usize {
         match self {
-            Self::Text(_) => 0,
+            Self::Text(_) | Self::Encoded { .. } => 0,
             Self::Function(input) => input.roots.len(),
         }
     }
@@ -183,6 +191,23 @@ impl<'a> Input<'a> {
             if let Some(value) = value {
                 input.roots.push(value);
             }
+        }
+    }
+
+    pub(super) fn encoded_character(
+        &self,
+        position: usize,
+    ) -> Result<Option<(u32, usize)>, LispError> {
+        let Self::Encoded { bytes, multibyte } = self else {
+            return Ok(None);
+        };
+        let Some(&byte) = bytes.get(position) else {
+            return Ok(None);
+        };
+        if *multibyte {
+            crate::lisp::types::string_data::decode_character(&bytes[position..]).map(Some)
+        } else {
+            Ok(Some((u32::from(byte), 1)))
         }
     }
 }

@@ -21,7 +21,7 @@ pub(crate) fn string_storage_error(
 }
 
 /// fns.c:validate_subarray checks both index types before their joint range.
-fn validate_subarray(
+pub(crate) fn validate_subarray(
     array: Value,
     from: Value,
     to: Value,

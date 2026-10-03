@@ -23,6 +23,42 @@ fn call_via_lisp(
 }
 
 #[test]
+fn read_from_string_preserves_gnu_range_error_arguments_and_order() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/read-from-string-range-errors.el"),
+        include_str!("../../../tests/fixtures/read-from-string-range-errors.expected").trim_end(),
+        "reader bounds, negative indices, error argument identity and type-check order",
+    );
+}
+
+#[test]
+fn reader_consumes_internal_character_bytes_without_host_text_loss() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-internal-character-codes.el"),
+        include_str!("../../../tests/fixtures/reader-internal-character-codes.expected").trim_end(),
+        "string and character reads, byte offsets, symbol identity and cyclic data",
+    );
+}
+
+#[test]
+fn native_printed_string_constants_keep_full_character_codes_and_sharing() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/native-printed-string-constants.el"),
+        include_str!("../../../tests/fixtures/native-printed-string-constants.expected").trim_end(),
+        "native relocation printing and reload preserve actual strings and shared constants",
+    );
+}
+
+#[test]
+fn printer_preserves_full_character_codes_in_strings_buffers_and_callbacks() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/printer-full-range-streams.el"),
+        include_str!("../../../tests/fixtures/printer-full-range-streams.expected").trim_end(),
+        "printer codes, escaping, round-trip reading and real output destinations",
+    );
+}
+
+#[test]
 fn native_numeric_predicates_and_sorting_recognize_all_bignums() {
     assert_oracle_contract_matches_interpreter(
         r#"(progn

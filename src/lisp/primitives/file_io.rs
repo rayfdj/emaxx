@@ -995,15 +995,15 @@ pub(crate) fn print_object_to_stream(
         let output_is_function =
             multibyte.is_none() && stream.is_some_and(|value| !matches!(value.kind(), Kind::T));
         with_printer_buffer_escape(interp, env, multibyte, |interp, env| {
-            let rendered = render_printer_object(interp, value, env, escape, output_is_function)?;
+            let rendered = render_printer_output(interp, value, env, escape, output_is_function)?;
             let rendered = if newlines {
-                format!("\n{rendered}\n")
+                rendered.enclosed("\n", "\n")
             } else {
                 rendered
             };
             write_prepared_printer_output(interp, &rendered, stream.as_ref(), env)?;
             if (newlines || native_print_updates_batch_last_char(interp, value, env, escape))
-                && let Some(last) = rendered.chars().last()
+                && let Some(last) = rendered.codes().last()
             {
                 record_batch_standard_output_char(interp, stream.as_ref(), env, last);
             }
@@ -1076,68 +1076,70 @@ pub(crate) fn write_printer_output(
     env: &mut Env,
 ) -> Result<(), LispError> {
     with_printer_destination(interp, stream, env, |interp, env| {
-        write_prepared_printer_output(interp, text, stream, env)
+        write_prepared_printer_output(interp, &PrintOutput::from(text), stream, env)
     })
 }
 
 fn write_prepared_printer_output(
     interp: &mut Interpreter,
-    text: &str,
+    output: &PrintOutput,
     stream: Option<&Value>,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    match stream.map(|v| v.kind()) {
-        // An explicit `t' stream prints to the echo area, which
-        // `ert-with-message-capture' observes like the upstream print
-        // advice; it never inserts into the current buffer.  In batch mode
-        // GNU also treats that echo-area stream as the process stdout.
+    match stream.map(|value| value.kind()) {
         Some(Kind::T) => {
-            interp.append_message_capture(text, false, env);
+            // Existing echo/message-capture APIs still accept host text.
+            // Actual batch output consumes the canonical bytes directly.
+            let text = output.host_text();
+            interp.append_message_capture(&text, false, env);
             if interp
                 .lookup_var("noninteractive", env)
                 .is_some_and(|value| value.is_truthy())
             {
-                // print.c printchar/strout: stdio's buffered stdout, and
-                // `noninteractive_need_newline' for the next `message'.
-                // print.c:printchar writes CHAR_STRING bytes, including
-                // Emacs's two-byte encoding for BYTE8 characters.
-                let bytes = if text.chars().any(is_raw_byte_regex_char) {
-                    let mut bytes = Vec::with_capacity(text.len());
-                    for character in text.chars() {
-                        push_emacs_multibyte_char(
-                            &mut bytes,
-                            string_character_code(true, character) as u32,
-                        )?;
-                    }
-                    std::borrow::Cow::Owned(bytes)
-                } else {
-                    std::borrow::Cow::Borrowed(text.as_bytes())
-                };
-                crate::lisp::primitives::batch_stdout::write(&bytes)
+                crate::lisp::primitives::batch_stdout::write(output.bytes())
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 interp.batch_stdout_need_newline = true;
             } else {
-                // An interactive session's `t' stream is the echo area
-                // (print_string to Qt): eval-expression's result shows.
-                crate::lisp::primitives::echo_area_print(text);
+                crate::lisp::primitives::echo_area_print(&text);
             }
             Ok(())
         }
         None | Some(Kind::Nil | Kind::Buffer(_) | Kind::Marker(_)) => {
-            insert_text_with_hooks(interp, text, &[], &[], false, false, env)
+            let (text, extended) = output.text_parts();
+            insert_text_with_hooks(interp, &text, &[], &extended, false, false, env)
         }
         Some(Kind::Symbol(name)) if name == "external-debugging-output" => {
-            append_external_debugging_output(interp, text)
+            match interp.external_debugging_output_target.as_deref() {
+                Some(path) => {
+                    let mut file = fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    file.write_all(output.bytes())
+                        .map_err(|error| LispError::Signal(error.to_string()))
+                }
+                None => {
+                    let buffer_id = interp
+                        .find_buffer(" *external-debugging-output*")
+                        .map(|(id, _)| id)
+                        .unwrap_or_else(|| interp.create_buffer(" *external-debugging-output*").0);
+                    let mut buffer = interp.get_buffer_by_id_mut(buffer_id).ok_or_else(|| {
+                        LispError::Signal(format!("No buffer with id {buffer_id}"))
+                    })?;
+                    let end = buffer.point_max();
+                    buffer.goto_char(end);
+                    let (text, extended) = output.text_parts();
+                    buffer.insert(&text);
+                    buffer.set_inserted_extended_chars(end, &extended);
+                    Ok(())
+                }
+            }
         }
         Some(_) => {
             let function = *stream.expect("matched Some");
-            for ch in text.chars() {
-                call_function_value(
-                    interp,
-                    &function,
-                    &[Value::Integer(string_character_code(true, ch))],
-                    env,
-                )?;
+            for code in output.codes() {
+                call_function_value(interp, &function, &[Value::Integer(i64::from(code))], env)?;
             }
             Ok(())
         }
@@ -1153,7 +1155,7 @@ pub(crate) fn record_batch_standard_output_char(
     interp: &mut Interpreter,
     stream: Option<&Value>,
     env: &Env,
-    ch: char,
+    ch: u32,
 ) {
     if stream.is_some_and(|value| matches!(value.kind(), Kind::T))
         && interp

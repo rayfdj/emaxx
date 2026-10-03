@@ -5213,7 +5213,7 @@ pub struct InterpreterState {
     /// decide whether stdout is already at the beginning of a line.  Keep it
     /// interpreter-local because Rust tests run independent interpreters in
     /// parallel inside one host process.
-    pub(crate) batch_standard_output_last_char: Option<char>,
+    pub(crate) batch_standard_output_last_char: Option<u32>,
     /// xdisp.c `noninteractive_need_newline': set by every batch write to
     /// stdout (print.c printchar/strout), cleared by `message', which
     /// first emits a newline on stderr when it is set.

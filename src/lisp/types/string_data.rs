@@ -230,6 +230,40 @@ impl StringObjectRef {
         Self::from_encoded(bytes, characters, false, Vec::new())
     }
 
+    /// alloc.c:make_string classifies a C byte sequence as multibyte only
+    /// when every byte belongs to valid internal character encoding.
+    pub(crate) fn from_c_bytes(bytes: &[u8]) -> Result<Self, StringError> {
+        let mut offset = 0;
+        let mut characters = 0;
+        while offset < bytes.len() {
+            let decoded = decode_character(&bytes[offset..])
+                .ok()
+                .filter(|&(code, width)| {
+                    // character.h:multibyte_length(..., allow_8bit=false)
+                    // rejects raw-byte forms and overlong character encodings.
+                    code < 0x3fff80 && encode_character(code).is_ok_and(|(_, n)| n == width)
+                });
+            let Some((_, width)) = decoded else {
+                return Self::try_from_slice(
+                    bytes,
+                    bytes.len(),
+                    false,
+                    Vec::new(),
+                    StringAllocation::Ordinary,
+                );
+            };
+            offset += width;
+            characters += 1;
+        }
+        Self::try_from_slice(
+            bytes,
+            characters,
+            characters != bytes.len(),
+            Vec::new(),
+            StringAllocation::Ordinary,
+        )
+    }
+
     pub(crate) fn from_storage(
         bytes: Vec<u8>,
         characters: usize,
@@ -760,7 +794,7 @@ pub(crate) fn encode_character(code: u32) -> Result<([u8; 5], usize), LispError>
     Ok((bytes, width))
 }
 
-fn decode_character(bytes: &[u8]) -> Result<(u32, usize), LispError> {
+pub(crate) fn decode_character(bytes: &[u8]) -> Result<(u32, usize), LispError> {
     let Some(&lead) = bytes.first() else {
         return Err(LispError::Signal("Truncated string character".into()));
     };

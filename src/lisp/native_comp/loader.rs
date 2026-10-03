@@ -14,7 +14,7 @@ use super::backend::{
 use super::runtime::{NativeCallingConvention, NativeRuntime, NativeWord};
 use crate::lisp::eval::{Interpreter, RecordKind};
 use crate::lisp::primitives::{
-    decode_utf8_bytes, is_vector_value, read_one_form_in_env, string_like, values_equal,
+    is_vector_value, read_from_lisp_source, string_like, string_storage_error, values_equal,
 };
 use crate::lisp::types::{Env, Kind, LispError, Value};
 use libloading::Library;
@@ -557,14 +557,14 @@ unsafe fn read_static_object(
             )
         }
     };
-    // comp.c:load_static_obj passes a freshly allocated Lisp string of this
-    // exact blob length (including its terminating NUL) to Fread.  Rust can
-    // parse the borrowed bytes directly, but GC timing must still account for
-    // the C-owned temporary allocation.
-    crate::lisp::types::note_string_allocation(len);
-    let text = decode_utf8_bytes(bytes);
-    let (value, _) = read_one_form_in_env(interpreter, &text, environment)?;
-    Ok(value)
+    // comp.c:load_static_obj passes make_string(blob->data, blob->len) to
+    // Fread. Allocate that real temporary string, preserving GNU internal
+    // bytes and ordinary allocation/rooting instead of charging a fictional
+    // allocation and converting the blob to lossy host UTF-8.
+    let source = crate::lisp::types::StringObjectRef::from_c_bytes(bytes)
+        .map(Value::StringObject)
+        .map_err(|error| string_storage_error(interpreter, environment, error))?;
+    read_from_lisp_source(interpreter, &source, environment)
 }
 
 fn vector_values(value: &Value) -> Result<Vec<Value>, LispError> {

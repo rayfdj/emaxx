@@ -430,14 +430,28 @@ define_dispatch!(
                 if args.is_empty() || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let s = reader_string_source_text(&args[0])?;
-                let chars: Vec<char> = s.chars().collect();
-                let start = normalize_string_index(args.get(1), 0, chars.len() as i64)? as usize;
-                let end =
-                    normalize_string_index(args.get(2), chars.len() as i64, chars.len() as i64)?
-                        as usize;
-                let slice: String = chars[start..end].iter().collect();
-                match read_one_form_in_env(interp, &slice, env) {
+                let Kind::StringObject(state) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
+                let contents = state.borrow();
+                let length = contents.len();
+                // lread.c:read_internal_start uses fns.c:validate_subarray:
+                // check both types before the joint range and retain the
+                // caller's original indices in the signaled condition.
+                let (start, end) = validate_subarray(
+                    args[0],
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                    length,
+                )?;
+                let first = contents.byte_offset(start).expect("validated string start");
+                let last = contents.byte_offset(end).expect("validated string end");
+                match read_encoded_form_in_env(
+                    interp,
+                    &contents.bytes()[first..last],
+                    contents.is_multibyte(),
+                    env,
+                ) {
                     Ok((val, consumed)) => {
                         Ok(Value::cons(val, Value::Integer((start + consumed) as i64)))
                     }
