@@ -44,7 +44,12 @@ Current user direction is to pursue that measured work after this bounded repair
 without continuously adding unrelated correctness probes. Preserve required semantics.
 
 The [full-validation launches](docs/handover/2026-09-30-shared-reader-draft/source284-full-validation-launch.json)
-select exact runtime `9c5b5356`. Linux Rust37091391964 and frozen37091394500 are
+select exact runtime `9c5b5356`. The [closed Linux Rust failure](docs/handover/2026-09-30-shared-reader-draft/source284-complete-linux-rust-failure-manifest.json)
+retains **2,284 passes / one GNU reference-assertion failure**: the first empty-vector
+census is -9 instead of zero, byte-identical to the earlier source272 GNU failure.
+That control does not reach Emaxx; all four new printer/reader controls pass.
+The remaining 756 library names and both Cargo stages never run. The cause stays
+unresolved; no expectation or verdict changes. Linux frozen37091394500 remains
 in progress. macOS supervisor **48303** runs in
 `target/runtime-goal/recovered-2026-10-03/reader-characters-full/emaxx`, after the
 pilot and profiles finish. Read actual source284-full/source284-linux receipts

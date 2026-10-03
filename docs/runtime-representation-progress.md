@@ -19,8 +19,12 @@ remain required, and the unchanged 3% criterion is not satisfied. The user direc
 this measured performance work without further unrelated correctness expansion.
 
 [Full final-source validation](handover/2026-09-30-shared-reader-draft/source284-full-validation-launch.json)
-is in progress: Linux Rust37091391964/frozen37091394500 and macOS supervisor48303,
-all selecting 9c5b5356. No launch implies a pass. Source279's complete Rust passes
+selects 9c5b5356. The [closed Linux Rust failure](handover/2026-09-30-shared-reader-draft/source284-complete-linux-rust-failure-manifest.json)
+has 2,284 passes / one GNU first-vector census reference failure (-9 versus zero),
+identical to source272's GNU output. That control stops before Emaxx; the four new
+reader/printer controls pass. The remaining 756 library tests and both Cargo stages
+never run. Linux frozen37091394500 and macOS supervisor48303 remain in progress.
+No selected or performance result certifies the failed full run. Source279's complete Rust passes
 and Linux 7,928-match frozen run remain predecessor evidence. Its [closed macOS run](handover/2026-09-30-shared-reader-draft/source279-macos-frozen-terminal-and-retry-manifest.json)
 has 7,915 matches/six feature-diagnostic differences; terminal stops after 318 exact
 comparisons at a GNU readiness timeout. The separate bounded longer retry gets

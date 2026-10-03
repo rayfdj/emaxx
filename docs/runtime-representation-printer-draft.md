@@ -128,8 +128,15 @@ optimization is included in this checkpoint.
 
 The [exact-source launches](handover/2026-09-30-shared-reader-draft/source284-full-validation-launch.json)
 select `9c5b5356`. Linux [Rust37091391964](https://github.com/rayfdj/emaxx/actions/runs/37091391964)
-and [frozen37091394500](https://github.com/rayfdj/emaxx/actions/runs/37091394500)
-are in progress. macOS supervisor **48303** runs full Rust, frozen and the unchanged
+has [closed failure evidence](handover/2026-09-30-shared-reader-draft/source284-complete-linux-rust-failure-manifest.json):
+**2,284 passes / one GNU reference-assertion failure**. The first empty-vector
+census is -9 instead of zero, byte-identical to source272's GNU failure; every later
+row matches. The helper stops before Emaxx in that control. All four added
+printer/reader controls pass. The remaining 756 library names (including two
+existing ignores) and both Cargo stages never run. The actual pinned GNU inputs
+are retained and verified unchanged; the cause remains unresolved and the original
+expectation stays. [Linux frozen37091394500](https://github.com/rayfdj/emaxx/actions/runs/37091394500)
+is still in progress. macOS supervisor **48303** runs full Rust, frozen and the unchanged
 226-scenario terminal inventory in
 `target/runtime-goal/recovered-2026-10-03/reader-characters-full/emaxx`.
 It starts after timing/profiling finish. Read actual `source284-full-*` and
