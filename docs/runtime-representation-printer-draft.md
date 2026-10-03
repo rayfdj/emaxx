@@ -1,123 +1,157 @@
-# Canonical printer draft — 2 October 2026
+# Canonical printer/reader checkpoint and performance baseline — 3 October 2026
 
 Read the [complete goal](runtime-representation-goal.md), [handover](../HANDOVER.md)
 and [allocation recovery](runtime-representation-string-allocation-recovery.md).
-The full goal remains incomplete. Applied runtime279 is `d64040a7`; main remains
-`21d20f0e`, and PR79 remains draft. **Do not apply source281 yet.**
+The full goal remains incomplete. **Source284 is applied and pushed as `9c5b5356`**
+on `runtime-char-tables`; main remains `21d20f0e`, and PR79 remains draft.
+The user directs bounded correctness repairs followed by performance work from
+measured profiles, without continually adding unrelated edge-case probes.
 
-The [portable unfinished draft](handover/2026-09-30-shared-reader-draft/source281-canonical-printer-unfinished-manifest.json)
-retains both source280 and source281 patches, 514 source/test input hashes, original
-failures, commands and raw comparisons. Both incremental patches replay exactly
-from `d64040a7`; both complete patches replay from main, including file modes.
-Local frozen checkouts are `target/runtime-goal/recovered-2026-09-30/string-print-characters/emaxx`
-(source280) and `string-print-decoder/emaxx` (source281, under the same parent).
+The [closed selected evidence](handover/2026-09-30-shared-reader-draft/source284-reader-printer-selected-manifest.json)
+retains source282–284, commands, failures, actual outputs and portable patches.
+All **520 source/test inputs and file modes** replay from `d64040a7` and main.
+Source284 passes zero-warning formatting, all-target checking, Clippy and diff
+checks, **six targeted controls in each profile**, and **42 ordinary exact GNU
+comparisons**. These include the native-constant failure, all **198 generated
+rows / 4,088,269 bytes**, and **679 reader bounds cases**. Every prior fixture and
+test remains. These overlapping counts do not certify full-platform validation.
+
+The frozen selected checkout is
+`target/runtime-goal/recovered-2026-10-03/reader-bounds-ascii/emaxx`.
 Receipts/helpers are under `target/runtime-goal/resume-2026-09-28`.
-Preserve these inputs and executed helpers; develop the repair in a successor.
+Preserve frozen inputs and executed helpers; develop changes in successors.
 
-## Printer behavior and bounded results
+## Implementation and remaining adapters
 
-GNU `print.c:print_object` reads actual character codes before selecting octal,
-hexadecimal or literal output. The old printer instead iterates a Rust text view,
-which replaces non-Unicode Emacs characters with U+F8FF. The retained generated
-probe has 53 wrong rows on source279 and 58 on source270; their first 192 rows
-are byte-identical, so those printer failures predate the allocator checkpoint.
+GNU `print.c:print_object` reads actual character codes before choosing octal,
+hexadecimal or literal output. The old Rust text view lost non-Unicode Emacs
+codes. `PrintOutput` carries canonical bytes through recursive printing, string
+results, buffer/marker insertion, callbacks, stdout and native serialization.
+No retained Lisp mirror, identity cache or per-access registry is added.
 
-Source281 carries canonical GNU bytes through recursive printing, string results,
-buffer/marker insertion, callback codes, batch stdout and native serialization.
-`PrintOutput` replaces temporary host text; it adds no retained Lisp object mirror,
-cache or per-access registry. Rust `str` cannot represent every Emacs character;
-the existing buffer API still needs a temporary Unicode view plus exact extended
-positions. Its cost is unmeasured. Legacy formatting, echo/message capture, symbol
-and unreadable-object names still use host text. Callback mutation timing is also
-unreviewed. This is not a complete printer migration.
+The reader borrows encoded Lisp bytes for ordinary string sources, preserving
+GNU character widths, BYTE8, genuine private-use characters and consumed character
+positions. Native `read_static_object` follows GNU `comp.c:load_static_obj`: create
+a real Lisp string with `make_string` semantics, then use the shared reader.
+Valid canonical multibyte input stays multibyte; invalid/BYTE8/overlong C input is
+wholly unibyte, following `alloc.c:make_string` and `character.c:parse_str_as_multibyte`.
+The lossy UTF-8 conversion and fake length-only allocation notification are removed.
 
-Source280 fails compilation because the existing decoder is private. No runtime
-control runs on it. Source281 changes only the decoder's crate visibility from280,
-preserving the algorithm and all fixtures. Formatting, all-target checking, Clippy
-and diff checks pass with zero warnings. Its 3,030-name gate inventory preserves
-all 3,029 source279 names and adds one stream control; that control passes.
-Every pre-existing test body, fixture and expected byte is preserved.
+`read-from-string` reuses the unchanged `validate_subarray`, following GNU
+`lread.c:read_internal_start` and `fns.c:validate_subarray`: check both index types
+before the joint bounds and retain original arguments in range errors.
 
-All 37 earlier ordinary outputs still match GNU, and the new 23-source stream
-fixture matches its GNU-derived expected bytes. The successor generated fixture
-retains and checks nine temporary allocations before releasing them, avoiding the
-old unused-result bytecompiler warning while preserving the printed observations.
-Its **198 rows / 4,088,269 bytes** match both fresh GNU and the original GNU output
-exactly, with zero stderr. It covers interpreted and verified bytecode execution.
-The first runner incorrectly used `--eval` on a multi-form file and produced empty
-output in both editors. That equality result is **invalid coverage**, explicitly
-retained and superseded by whole-file `-l` execution with mandatory row/byte checks.
-The first portable auditor also used a wrong retained-output filename; its failed
-helper remains, and the successor corrects the path without changing comparisons.
+This remains a partial migration. Symbol tokens, positioned/buffer readers,
+legacy formatting, echo capture and unreadable-object names retain host-text
+adapters. Buffer insertion requires a temporary Unicode view plus exact extended
+positions because Rust `str` cannot represent every Emacs code. Callback mutation
+timing remains unreviewed. Whole-runtime timings do not isolate those adapters'
+cost or certify public ownership soundness.
 
-## Native reload failure and next implementation work
+## Preserved failures
 
-`printer-native-literals-83729.el` compiles a real lambda returning a shared vector
-of full-range string constants, including properties, then checks native status,
-post-GC character codes and sharing. GNU returns the original codes. Source279
-signals a native compiler error. Source281 compiles and executes native code but
-returns wrong codes: encoded extended characters become separate raw bytes.
-All three original outputs are retained; neither Emaxx result matches GNU.
+The [source280/281 archive](handover/2026-09-30-shared-reader-draft/source281-canonical-printer-unfinished-manifest.json)
+retains source280's private-decoder compile error and source281's actual native
+constant corruption. Source281's partial suite was withdrawn after sandbox socket
+denials; identical permitted replays pass, but its original run remains incomplete
+and release never starts. An earlier generated runner incorrectly used `--eval`
+on a multi-form file and produced empty output from both editors; that is invalid
+coverage. The corrected `-l` execution requires every output row and byte.
 
-The remaining boundary is `src/lisp/native_comp/loader.rs:read_static_object`:
-it calls `decode_utf8_bytes` before `read_one_form_in_env`. GNU
-`comp.c:load_static_obj` passes the blob through `make_string` and `Fread`, retaining
-its internal character encoding. The Rust reader currently takes host text or a
-callable character source. Continue by carrying actual codes through the shared
-reader boundary, including string and symbol semantics, rooting and lookahead.
-Do not rewrite the native expected answer, emit substitute escapes to conceal the
-boundary, or use a callback adapter with different symbol-byte semantics. The
-existing `ReaderStream` function path deliberately has GNU function-stream rules;
-it cannot be substituted blindly for a multibyte string source.
+Source282 eventually passes **217 focused controls / two existing ignores and
+1,073 affected controls in each profile**, plus 41 ordinary comparisons. Its first
+focused run has 207 passes / ten missing-GNU-source-path failures; its affected run
+is interrupted. A corrected-path helper then has log-filename errors. Its completed
+1,073-test gate run is audited and reused; a separate runner finishes both focused
+profiles and affected release. All failed/incomplete runs remain. These setup
+mistakes cost time and must not be described as runtime regressions or passes.
 
-After the repair, rerun the unchanged native negative and ordinary comparisons,
-both selected profiles with required socket permission, then full final-source
-platform/integration checks. Existing native artifact identity must still pass.
-No native repair or performance result is claimed here.
+Source282 is **never applied**: a later matrix confirms normalized bounds replacing
+original negative error arguments. Source283 repairs that runtime defect, but its
+new test fails at the GNU reference assertion: literal Greek argv in the expected
+output generator was decoded differently under the `C` locale. Emaxx is not reached.
+Source284 changes only that fixture to numeric character construction. Fresh GNU
+output exactly matches the original test helper's GNU output; production bytes
+are unchanged from283 and all 679 cases remain. Source282's larger test counts
+are predecessor evidence, not final-source certification.
 
-## Closed partial validation
+## Performance baseline and profiles
 
-Source281 supervisor85186 is **withdrawn**, with no process remaining. Its focused
-run has **214 passes / one failure / two existing ignores**. The failure is a
-loopback socket bind denied by the sandbox (`Operation not permitted`). Its affected
-run completes **690 passes / five socket-permission failures** before withdrawal;
-one control is interrupted and 375 never start. Release never starts. All five
-failed socket controls pass together with the identical binary and loopback
-permission; the focused socket control also passes separately. These diagnostics
-do not turn the original incomplete suites into passes. The real native constant
-failure remains independently reproducible.
+The [closed pilot and profiles](handover/2026-09-30-shared-reader-draft/source284-core-performance-pilot-manifest.json)
+use the unchanged locked 16 workloads, sizes, modes, 600-second process limit and
+3% tolerance. Native preparation uses identical upstream Lisp and each editor's
+own compiled artifact. All **32 processes complete**; each actual result equals
+GNU's answer and the locked expected value, and execution modes match. The adopted
+GNU pin and all measured input hashes remain unchanged. No local build, validation
+or profiling job runs concurrently with timing.
 
-An initial supervisor-preparation assertion counted bracketed strings instead of
-the actual stage list and failed before launching tests; its successor validates
-the six-stage AST list. The prepared runtime and helper bodies were unchanged.
-Raw partial inventories and every original failure remain in the portable archive.
+These are **one paired sample per workload**, not calibrated parity evidence.
+Every body exceeds 100 ms. The geometric mean Emaxx/GNU body-time ratio is **3.05×**;
+all 16 ratios are unfavorable. Emaxx allocation counters explicitly report
+unavailable. Physical accounting and the full performance criterion remain open.
 
-## Applied checkpoint validation and requested GNU wait
+| Workload | GNU seconds | Emaxx seconds | Emaxx / GNU |
+| --- | ---: | ---: | ---: |
+| Interpreted lexical | 0.209 | 0.522 | 2.49× |
+| Interpreted dynamic | 0.189 | 0.405 | 2.14× |
+| Interpreted calls | 0.284 | 0.779 | 2.74× |
+| Bytecode calls | 0.136 | 0.919 | 6.78× |
+| Native execution | 0.616 | 1.969 | 3.20× |
+| Interpreted to native | 0.221 | 0.514 | 2.33× |
+| Bytecode to native | 0.163 | 1.564 | 9.58× |
+| Native to interpreted | 0.213 | 0.606 | 2.85× |
+| Native to bytecode | 0.204 | 0.605 | 2.97× |
+| Cons allocation | 0.198 | 0.368 | 1.86× |
+| List traversal | 0.293 | 0.621 | 2.12× |
+| Mapcar | 0.142 | 0.326 | 2.30× |
+| Explicit GC | 0.168 | 0.184 | 1.09× |
+| Upstream sort | 0.335 | 1.742 | 5.21× |
+| Upstream undo | 0.123 | 0.665 | 5.41× |
+| Upstream bindat | 0.172 | 0.591 | 3.43× |
+
+Separate two-second macOS samples profile bytecode calls and bytecode-to-native
+calls, repeating exact locked-size bodies 20 times; all results/modes pass.
+The first GNU native profile has no stacks despite sampler exit zero and is
+retained as unusable. An 80-repeat GNU-only successor captures actual stacks and
+passes every result check. Instrumented durations are excluded from timing.
+Background GNU `__select` samples must not be mistaken for Lisp CPU work.
+
+Emaxx samples concentrate in `run_fast` and `run_frames`, with closure decoding,
+backtrace capture, function lookup/hashing, native invocation and handler bookkeeping
+also visible. GNU samples concentrate in `exec_byte_code` and `funcall_subr`.
+These are candidate costs, not permission to remove required error, rooting,
+binding or unwind behavior. Continue from GNU `bytecode.c:Bcall`, `setup_frame`
+and `eval.c:funcall_subr`, then validate ordinary-path improvements. No performance
+optimization is included in this checkpoint.
+
+## Full-platform state and GNU timeout retry
+
+The [exact-source launches](handover/2026-09-30-shared-reader-draft/source284-full-validation-launch.json)
+select `9c5b5356`. Linux [Rust37091391964](https://github.com/rayfdj/emaxx/actions/runs/37091391964)
+and [frozen37091394500](https://github.com/rayfdj/emaxx/actions/runs/37091394500)
+are in progress. macOS supervisor **48303** runs full Rust, frozen and the unchanged
+226-scenario terminal inventory in
+`target/runtime-goal/recovered-2026-10-03/reader-characters-full/emaxx`.
+It starts after timing/profiling finish. Read actual `source284-full-*` and
+`source284-linux-*` receipts before reporting completion; launches are not passes.
 
 Source279's [complete Rust audits](handover/2026-09-30-shared-reader-draft/source279-complete-rust-platforms-manifest.json)
-verify **3,126 macOS / 3,138 Linux passes**, two existing ignores each, all
-3,029/3,037 library names, native artifact identity and retained actual GNU/Rust
-inputs. Its [complete Linux frozen audit](handover/2026-09-30-shared-reader-draft/source279-complete-linux-frozen-manifest.json)
-verifies **519 files / 7,928 matching outcomes / 1,038 successful processes**.
-Each editor has 7,670 passes, 47 expected failures and 211 skips. The original
-Eglot completion case completes and passes in both editors in this new full run.
-Neither this pass nor a later census pass establishes the cause of an earlier failure.
-The [supplementary execution inputs](handover/2026-09-30-shared-reader-draft/source279-linux-execution-markers-manifest.json)
-retain all 1,038 readiness markers and both Linux AppArmor profiles, whose file
-extensions were outside the primary archive's allowlist. Actual executables/images
-remain retained locally; portable archives identify them by hash and require rebuilding.
+remain **3,126 macOS / 3,138 Linux passes**, two existing ignores each, including
+native artifact identity. Its [Linux frozen audit](handover/2026-09-30-shared-reader-draft/source279-complete-linux-frozen-manifest.json)
+has 519 files / 7,928 matches / 1,038 successful processes, including Eglot.
+These certify that predecessor only and do not explain earlier census failures.
 
-The user specifically requested a reasonable longer GNU wait. The separately
-[retained macOS retry](handover/2026-09-30-shared-reader-draft/source279-varied-output-and-eglot-retry-manifest.json)
-uses 60-second JSON-RPC and 180-second process bounds for both editors, retains
-all upstream assertions, and captures identical actual final buffer bytes.
-Original GNU timeouts remain recorded separately. Never slow Emaxx or manufacture
-a matching timeout. A completed answer is required before claiming equivalence;
-an unresolved timeout remains inconclusive.
+The [closed macOS run and bounded retry](handover/2026-09-30-shared-reader-draft/source279-macos-frozen-terminal-and-retry-manifest.json)
+records supervisor77583's exit. Frozen has **7,915 matches / six strict feature
+diagnostic mismatches**, 519 files and 1,038 successful processes. Terminal has
+164 fully matching scenarios / 318 exact comparisons, then GNU startup times out
+at `revert-buffer-decline`. There are 368 unexecuted comparisons and 61 unstarted
+scenarios; the original full run remains incomplete. A separate unchanged-scenario
+retry uses 180-second readiness for both editors and a 300-second overall bound.
+It finishes in **14.224 seconds with all three screens equal**. This obtains the
+actual GNU answer without slowing Emaxx or manufacturing a timeout.
 
-MacOS full supervisor77583 continues frozen/terminal validation in the clean
-`string-allocation-full/emaxx` checkout at `d64040a7`. Read its actual receipts
-before reporting completion. Printer/native repair, real intervals, unified pure
-storage, symbol authority, physical accounting/counters, public ownership, VM/call
-profiles, final adversarial audit and the locked 16 workloads with the unchanged
-3% ceiling remain required. Passing source279 suites do not certify source281.
+Source276's original Emaxx census failure remains unexplained. Real intervals,
+unified pure storage, symbol authority, physical accounting/counters, public
+ownership, remaining adapters, VM/call optimization, final adversarial review,
+full final-source validation and calibrated repeated performance remain required.

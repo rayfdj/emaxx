@@ -16,49 +16,62 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
-## Current correctness recovery
+## Current checkpoint and performance work
 
-Read the latest [string allocation recovery](docs/runtime-representation-string-allocation-recovery.md)
-before continuing. **Source279 is applied and pushed as `d64040a7`, with 511
-verified inputs.** Its [closed selected evidence](docs/handover/2026-09-30-shared-reader-draft/source279-string-allocation-selected-manifest.json)
-records zero-warning strict checks, 211 focused passes / two existing ignores and
-all 1,067 affected passes in each profile, plus 37 byte-for-byte ordinary GNU
-comparisons. Supervisor72187 has exited. The [complete Rust audits](docs/handover/2026-09-30-shared-reader-draft/source279-complete-rust-platforms-manifest.json)
-now verify **3,126 macOS / 3,138 Linux passes**, with two existing ignores each,
-all library names and native artifact identity. The [complete Linux frozen audit](docs/handover/2026-09-30-shared-reader-draft/source279-complete-linux-frozen-manifest.json)
-verifies **519 files / 7,928 matching outcomes / 1,038 successful processes** on
-that exact commit. The Eglot case completes and passes in both editors. Earlier
-timeouts and census failures remain separate. Full macOS supervisor77583 continues
-frozen/terminal validation; do not infer those results from the Rust pass.
+Read the [printer/reader checkpoint and performance baseline](docs/runtime-representation-printer-draft.md)
+before continuing. **Source284 is applied and pushed as `9c5b5356`**, with 520
+verified inputs and exact portable replays from source279 and main. Its
+[closed selected evidence](docs/handover/2026-09-30-shared-reader-draft/source284-reader-printer-selected-manifest.json)
+verifies warning-free strict checks, six targeted controls in each profile and
+42 ordinary byte-for-byte GNU comparisons. The native constant failure is repaired;
+all 198 generated rows / 4,088,269 bytes and 679 reader bounds cases match.
+Every prior fixture and test remains. This is a bounded checkpoint, not completion.
 
-Read the latest [unfinished canonical-printer continuation](docs/runtime-representation-printer-draft.md)
-before editing. **Source281 is isolated and unapplied**, with 514 replayed inputs.
-Its strict checks, stream control, 37 prior ordinary comparisons and all 198
-generated output rows pass; a new native-literal comparison still fails because
-the loader decodes GNU internal bytes as UTF-8. Supervisor85186 was withdrawn after
-sandbox socket failures; its partial results and five permitted passing replays
-are retained. Release never started. Preserve source280/281 and their executed
-helpers; continue in a successor and repair the actual reader boundary before
-applying the printer change. Main and runtime279 remain unchanged.
+Canonical bytes now pass through printing and actual string/native reader input.
+The loader follows GNU make_string/Fread rather than lossy UTF-8 conversion.
+Bounds reuse GNU-compatible validate_subarray with original error arguments.
+Remaining symbol, positioned-reader and formatting adapters, ownership/accounting,
+real intervals, unified pure storage and the complete architectural goal stay open.
 
-The [additional generated failure and Eglot retry](docs/handover/2026-09-30-shared-reader-draft/source279-varied-output-and-eglot-retry-manifest.json)
-preserve **53 wrong output rows among 198**. The identical probe has 58 wrong rows
-on retained source270; all first 192 mutation/copy rows are unchanged. The allocator
-repairs five additional whole rows, but an older extended-character printer still
-loses real codes through its Rust text view. No printer repair is applied. Both
-the initial malformed probe and matching bytecompiler warning remain recorded.
-The user requests a bounded longer GNU wait to obtain and compare answers.
-A fresh macOS retry uses 60s JSON-RPC/180s process bounds for both editors; both
-complete the unchanged Eglot test and their actual final buffer bytes match.
-This does not reclassify the original Linux timeout or establish a speedup.
+**Performance work has started.** The [closed unchanged 16-workload pilot and profiles](docs/handover/2026-09-30-shared-reader-draft/source284-core-performance-pilot-manifest.json)
+verify all 32 processes, matching actual results and execution modes. One paired
+sample per workload gives a 3.05× geometric mean Emaxx/GNU body-time ratio;
+bytecode-to-native is 9.58× and bytecode calls 6.78×. All ratios are unfavorable
+and retained. This is diagnostic, not parity certification; Emaxx allocation
+counters explicitly report unavailable. The locked workloads and 3% ceiling
+are unchanged. Profiles identify VM dispatch and call setup as the next targets.
+Current user direction is to pursue that measured work after this bounded repair,
+without continuously adding unrelated correctness probes. Preserve required semantics.
 
-Source276's
-broader **1,063 passes / one Emaxx GC-census failure** remains unresolved; its
-release never ran. Source270 terminal validation is now audited complete:
-**226 scenarios / 686 exact comparisons**, none missing. The linked recovery
-preserves raw failures, exact patches, the active queue and bounded Eglot review.
-Current user steering welcomes Emaxx being faster and requires equal answers and
-honest work; a GNU timeout must not be copied into Emaxx behavior.
+The [full-validation launches](docs/handover/2026-09-30-shared-reader-draft/source284-full-validation-launch.json)
+select exact runtime `9c5b5356`. Linux Rust37091391964 and frozen37091394500 are
+in progress. macOS supervisor **48303** runs in
+`target/runtime-goal/recovered-2026-10-03/reader-characters-full/emaxx`, after the
+pilot and profiles finish. Read actual source284-full/source284-linux receipts
+before reporting completion. The selected checkout
+`target/runtime-goal/recovered-2026-10-03/reader-bounds-ascii/emaxx` stays frozen.
+Main remains `21d20f0e`, PR79 remains draft and the full goal remains active.
+
+Source282's 217 focused passes/two existing ignores and 1,073 affected passes per
+profile are predecessor evidence. It is never applied because a subsequent bounds
+negative is real. Source283 repairs that error but its new fixture fails at a GNU
+reference assertion due to locale-dependent literal argv decoding. Source284
+changes only that fixture to numeric character construction and matches the original
+helper's actual GNU output. The source282 missing-GNU-path and log-path setup
+failures, source283 failed reference, and earlier source280/281/native negatives
+remain recorded in the linked archives. Do not reclassify failed or incomplete runs.
+
+Source279's closed Rust validation remains 3,126 macOS / 3,138 Linux passes,
+two existing ignores each, and its Linux frozen run matches all 7,928 outcomes.
+The [closed macOS frozen/terminal audit and GNU retry](docs/handover/2026-09-30-shared-reader-draft/source279-macos-frozen-terminal-and-retry-manifest.json)
+supersede supervisor77583's prior running state: 7,915 frozen matches / six strict
+feature-diagnostic mismatches; terminal has 164 fully matching scenarios / 318
+exact comparisons before GNU readiness times out. There are 368 unexecuted
+comparisons and 61 unstarted scenarios. The unchanged failing scenario separately
+completes in 14.224 seconds under a bounded longer wait, all three screens equal.
+Never slow Emaxx to reproduce a GNU timeout; require actual equal answers.
+Source276's original Emaxx census failure remains unexplained. Source270's prior
+226-scenario / 686-comparison terminal pass does not certify the final runtime.
 
 The preceding runtime **source272**, pushed as **`eb286e23`**, has **510 verified inputs**. Its
 [closed borrow-root repair evidence](docs/handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json)
@@ -1026,7 +1039,7 @@ implement honest physical allocation/GC accounting and real counters, preserve
 survival and reclamation, and complete VM/call optimization from profiles. The
 final adversarial review, zero-warning Linux/macOS validation, pinned compatibility
 and **locked 16-workload GNU performance criterion with its unchanged 3% ceiling**
-remain required. No current timing or GNU-parity claim exists.
+remain required. Source284 has a diagnostic pilot and profiles; no GNU-parity claim exists.
 
 Receipts and reproduction helpers are under `target/runtime-goal/resume-2026-09-28`;
 recovered checkouts and GNU are under `target/runtime-goal/recovered-2026-09-30`.

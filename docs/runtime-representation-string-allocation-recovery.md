@@ -1,8 +1,9 @@
 # String allocation recovery — 2 October 2026
 
 The [full goal](runtime-representation-goal.md) remains active and incomplete.
-The applied runtime is **source279** (`d64040a7`), main is `21d20f0e`, and PR79
-remains draft. Its original selected checkout remains frozen in
+This historical allocation checkpoint is **source279** (`d64040a7`); the current
+[printer/reader checkpoint](runtime-representation-printer-draft.md) is source284
+(`9c5b5356`). Main remains `21d20f0e`, and PR79 remains draft. Its original selected checkout remains frozen in
 `target/runtime-goal/recovered-2026-09-30/string-allocation-recovery/emaxx`.
 Its [portable draft and bounded evidence](handover/2026-09-30-shared-reader-draft/source279-string-allocation-recovery-draft-manifest.json)
 retain failed predecessors and all 511 input identities. Receipts/helpers are in
@@ -14,11 +15,11 @@ must be read with that passing selected result: **53 of 198 generated output
 rows still differ from GNU**. This is an incremental allocator checkpoint,
 not a complete correctness certificate.
 
-The latest [canonical-printer continuation](runtime-representation-printer-draft.md)
-packages an isolated source281 repair. All 198 generated ordinary rows now match
-there, but a new native-literal comparison still fails during reload. It remains
-unapplied; source279's original failure is unchanged. The linked continuation
-preserves its partial selected run, sandbox socket failures and permitted replays.
+The latest [printer/reader continuation](runtime-representation-printer-draft.md)
+repairs all 198 generated rows and the native reload failure in applied source284.
+It retains the original source279/281 failures, later reader/bounds repairs,
+selected evidence and first diagnostic performance pilot. These successor passes
+do not erase this allocation checkpoint's original failed observations.
 
 ## Recoverable allocation errors
 
@@ -74,7 +75,7 @@ The preceding fixtures and expected-output digests are unchanged.
 That later pass does not diagnose the earlier interaction.
 Supervisor **72187 has exited**, and all eight selected stages and the final raw
 audit pass. Source279 is applied and pushed as `d64040a7` with all 511 inputs/modes
-unchanged. Full macOS supervisor **77583** runs in the clean exact-commit checkout
+unchanged. Full macOS supervisor **77583** has exited from the clean exact-commit checkout
 `target/runtime-goal/recovered-2026-09-30/string-allocation-full/emaxx`.
 Linux [Rust36950663403](https://github.com/rayfdj/emaxx/actions/runs/36950663403) and
 [frozen36950667238](https://github.com/rayfdj/emaxx/actions/runs/36950667238)
@@ -85,8 +86,12 @@ all library names, native artifact identity and retained actual inputs. The
 [closed Linux frozen audit](handover/2026-09-30-shared-reader-draft/source279-complete-linux-frozen-manifest.json)
 verifies **519 files / 7,928 matching outcomes / 1,038 successful processes**.
 The original Eglot case completes and passes in both editors in this fresh full run.
-Prior timeouts/census failures remain separate. MacOS supervisor77583 continues
-frozen/terminal validation; the full Rust pass does not certify those stages.
+Prior timeouts/census failures remain separate. The [closed macOS frozen/terminal
+run and bounded GNU retry](handover/2026-09-30-shared-reader-draft/source279-macos-frozen-terminal-and-retry-manifest.json)
+record 7,915 frozen matches/six strict feature-diagnostic differences and 318 exact
+terminal comparisons before GNU readiness times out. The separate unchanged-scenario
+retry finishes in 14.224 seconds with all three screens equal. The original run
+remains incomplete, with 368 unexecuted comparisons and 61 unstarted scenarios.
 
 ## Additional adversarial output failure
 
