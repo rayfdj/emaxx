@@ -1,5 +1,13 @@
 # Canonical printer/reader checkpoint and performance baseline — 3 October 2026
 
+**Superseded by the [source286 VM checkpoint](runtime-representation-vm-dispatch.md).**
+Source284 remains the preserved printer baseline. Its full runs are now closed:
+3,130 macOS Rust passes/two ignores, 7,928 Linux frozen matches, six macOS frozen
+diagnostic failures, and an incomplete terminal run after eight matches. The
+unchanged GNU org-fold retry obtains an equal screen in 13.195 seconds. See the
+[current closed evidence](handover/2026-09-30-shared-reader-draft/source284-complete-platform-results-manifest.json).
+
+
 Read the [complete goal](runtime-representation-goal.md), [handover](../HANDOVER.md)
 and [allocation recovery](runtime-representation-string-allocation-recovery.md).
 The full goal remains incomplete. **Source284 is applied and pushed as `9c5b5356`**
@@ -136,8 +144,8 @@ printer/reader controls pass. The remaining 756 library names (including two
 existing ignores) and both Cargo stages never run. The actual pinned GNU inputs
 are retained and verified unchanged; the cause remains unresolved and the original
 expectation stays. [Linux frozen37091394500](https://github.com/rayfdj/emaxx/actions/runs/37091394500)
-is still in progress. macOS supervisor **48303** runs full Rust, frozen and the unchanged
-226-scenario terminal inventory in
+is complete. macOS supervisor **48303** has exited after full Rust, frozen and
+an incomplete terminal run in
 `target/runtime-goal/recovered-2026-10-03/reader-characters-full/emaxx`.
 It starts after timing/profiling finish. Read actual `source284-full-*` and
 `source284-linux-*` receipts before reporting completion; launches are not passes.

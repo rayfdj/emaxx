@@ -16,7 +16,46 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
-## Current checkpoint and performance work
+## Current VM checkpoint — 5 October 2026
+
+Read the [direct VM dispatch checkpoint](docs/runtime-representation-vm-dispatch.md)
+before continuing. **Source286 is applied and pushed as `654aca96`**, with 522
+inputs replayed from source284 and main. Warning-free strict checks, **118 selected
+passes in each profile** and **43 ordinary exact GNU comparisons** pass. Both
+suspended-root contracts and all prior fixtures remain. Direct canonical opcode
+dispatch removes repeated decoding; GNU remainder operand coercion is repaired.
+Source287 preserves a separately validated correctness-only performance baseline.
+
+The [closed repeated full16 pilot](docs/handover/2026-09-30-shared-reader-draft/source286-vm-dispatch-performance-manifest.json)
+verifies **288 processes with actual equal GNU results/modes**. Bytecode-call
+median time falls **18.2%**, bytecode-to-native **4.4%** versus the corrected baseline.
+Other workloads include slower medians; the overall raw median geometric ratio
+is 0.9961, so no meaningful overall speedup is claimed. Optimized Emaxx remains
+**3.0421× GNU** by the paired-ratio geometric mean. Counters, calibrated repeated
+acceptance and the unchanged 3% criterion remain open. Post-change profiles still
+show VM/call/frame/native-transition costs. Continue measured ordinary-path work,
+without unrelated correctness expansion or weakening existing contracts.
+
+[Closed source284 platform evidence](docs/handover/2026-09-30-shared-reader-draft/source284-complete-platform-results-manifest.json)
+now verifies **3,130 macOS Rust passes / two existing ignores** and **7,928 Linux
+frozen matches**. macOS frozen remains 7,915 matches / six strict diagnostic
+differences. Its terminal run stops after eight matching comparisons at GNU
+`org-fold` startup; 678 comparisons never run. A separate bounded longer retry
+finishes in **13.195 seconds with the actual screen equal**. The original failure
+remains. Its Linux Rust failure is still 2,284 passes / one GNU census reference
+failure, with 756 library names and both Cargo stages unexecuted. No pass is
+inferred for the failed or unrun work; source276's Emaxx census failure stays open.
+
+[Source286 full validation](docs/handover/2026-09-30-shared-reader-draft/source286-full-validation-launch.json)
+selects exact `654aca96`: Linux Rust **37254821073**, frozen **37254829602**, and
+macOS supervisor **10785** in
+`target/runtime-goal/recovered-2026-10-03/vm-dispatch-full/emaxx`. Inspect current
+receipts before reporting outcomes. Selected source286 and corrected source287
+checkouts remain frozen. Main stays `21d20f0e`, PR79 stays draft, and the complete
+goal remains incomplete. The linked checkpoint records original setup/fixture/lint
+failures, all unfavorable timings and the portable reproduction evidence.
+
+## Preceding printer checkpoint and performance baseline
 
 Read the [printer/reader checkpoint and performance baseline](docs/runtime-representation-printer-draft.md)
 before continuing. **Source284 is applied and pushed as `9c5b5356`**, with 520
@@ -49,11 +88,9 @@ retains **2,284 passes / one GNU reference-assertion failure**: the first empty-
 census is -9 instead of zero, byte-identical to the earlier source272 GNU failure.
 That control does not reach Emaxx; all four new printer/reader controls pass.
 The remaining 756 library names and both Cargo stages never run. The cause stays
-unresolved; no expectation or verdict changes. Linux frozen37091394500 remains
-in progress. macOS supervisor **48303** runs in
-`target/runtime-goal/recovered-2026-10-03/reader-characters-full/emaxx`, after the
-pilot and profiles finish. Read actual source284-full/source284-linux receipts
-before reporting completion. The selected checkout
+unresolved; no expectation or verdict changes. Linux frozen37091394500 and macOS supervisor **48303** are now closed;
+read the platform results above and the linked current VM checkpoint. The original
+macOS selected checkout and complete checkout retain their exact source284 inputs. The selected checkout
 `target/runtime-goal/recovered-2026-10-03/reader-bounds-ascii/emaxx` stays frozen.
 Main remains `21d20f0e`, PR79 remains draft and the full goal remains active.
 

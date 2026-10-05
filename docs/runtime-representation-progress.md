@@ -1,37 +1,38 @@
-# Current goal status — 3 October 2026
+# Current goal status — 5 October 2026
 
-The latest [printer/reader checkpoint and performance baseline](runtime-representation-printer-draft.md)
-is **source284, applied and pushed as `9c5b5356`**, with 520 verified inputs.
-Strict checks pass without warnings, six targeted controls pass in each profile,
-and 42 ordinary exact GNU comparisons pass, including native constants, all 198
-generated rows and 679 reader bounds cases. Every prior test and fixture remains.
-Source282's larger selected suites are predecessor evidence; its later bounds
-negative and source283's locale-dependent GNU fixture failure remain recorded.
-Setup mistakes and incomplete runs are preserved, not counted as runtime passes.
+The latest [VM dispatch checkpoint](runtime-representation-vm-dispatch.md) is
+**source286, applied and pushed as `654aca96`**, with 522 verified inputs and exact
+portable replays. It removes repeated decoding on the ordinary hot bytecode path
+and repairs GNU remainder operand coercion. Strict checks are warning-free;
+**118 selected controls in both profiles and 43 ordinary GNU comparisons pass**.
+Every prior test/fixture remains, including both required suspended-root controls.
+Source287 is the separately validated correctness-only baseline.
 
-The [16-workload pilot](handover/2026-09-30-shared-reader-draft/source284-core-performance-pilot-manifest.json)
-completes all 32 processes with equal actual results and modes. One paired sample
-per workload gives a 3.05× geometric mean Emaxx/GNU body-time ratio, with bytecode
-to native 9.58× and bytecode calls 6.78×. All unfavorable results remain visible.
-Separate profiles identify VM dispatch and call setup for further work. This is
-diagnostic: allocation counters remain unavailable, calibration/repeated timing
-remain required, and the unchanged 3% criterion is not satisfied. The user directs
-this measured performance work without further unrelated correctness expansion.
+Three rotated repetitions of the unchanged full16 pilot verify **all 288 actual
+results and execution modes against GNU**. Bytecode-call median time improves
+18.2% and bytecode-to-native 4.4% against source287. Other medians regress; the
+raw aggregate ratio is 0.9961 and does not establish meaningful overall improvement.
+The optimized paired GNU ratio geometric mean is 3.0421×. All samples and separate
+post-change profiles are retained. Allocation counters, calibration and the
+nine-round acceptance criterion remain unresolved; the 3% ceiling is unchanged.
 
-[Full final-source validation](handover/2026-09-30-shared-reader-draft/source284-full-validation-launch.json)
-selects 9c5b5356. The [closed Linux Rust failure](handover/2026-09-30-shared-reader-draft/source284-complete-linux-rust-failure-manifest.json)
-has 2,284 passes / one GNU first-vector census reference failure (-9 versus zero),
-identical to source272's GNU output. That control stops before Emaxx; the four new
-reader/printer controls pass. The remaining 756 library tests and both Cargo stages
-never run. Linux frozen37091394500 and macOS supervisor48303 remain in progress.
-No selected or performance result certifies the failed full run. Source279's complete Rust passes
-and Linux 7,928-match frozen run remain predecessor evidence. Its [closed macOS run](handover/2026-09-30-shared-reader-draft/source279-macos-frozen-terminal-and-retry-manifest.json)
-has 7,915 matches/six feature-diagnostic differences; terminal stops after 318 exact
-comparisons at a GNU readiness timeout. The separate bounded longer retry gets
-actual equal answers on all three screens; the original run remains incomplete.
-Source276's Emaxx census failure remains unresolved. Main remains 21d20f0e, PR79
-remains draft, and architecture, accounting, ownership, final audit, complete
-validation and the locked performance goal all remain open.
+The [closed source284 validation](handover/2026-09-30-shared-reader-draft/source284-complete-platform-results-manifest.json)
+verifies 3,130 macOS Rust passes/two existing ignores and 7,928 Linux frozen matches.
+macOS frozen still has six diagnostic differences. Its terminal run stops after
+eight matches at GNU org-fold startup, leaving 678 comparisons unexecuted. The
+unchanged scenario completes with an equal screen in a separate 13.195-second
+bounded longer retry. Its Linux Rust GNU-reference census failure remains failed:
+2,284 passes, one failure, 756 library names and both Cargo stages unexecuted.
+Source276's Emaxx census failure remains unexplained. Earlier source279 results,
+failed helpers and unfavorable evidence remain linked in the handovers.
+
+[Source286 full runs](handover/2026-09-30-shared-reader-draft/source286-full-validation-launch.json)
+are launched on exact `654aca96`: Linux Rust 37254821073 / frozen 37254829602 and macOS
+supervisor 10785. Read actual receipts before calling them complete. Main stays
+21d20f0e; PR79 stays draft. Shared representation completion, real intervals,
+unified pure storage, symbol authority, remaining adapters, physical accounting,
+public ownership, final adversarial review and calibrated performance all remain
+required. Continue profile-driven VM/call improvements without unrelated expansion.
 
 The preceding runtime **source272** (`eb286e23`) has 510 verified inputs and
 [closed borrow-root repair evidence](handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json):

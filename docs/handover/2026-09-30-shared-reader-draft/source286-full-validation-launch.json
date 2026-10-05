@@ -1,0 +1,46 @@
+{
+  "source_commit": "654aca96a1144aeeb9c302e77a982524072d4593",
+  "linux": {
+    "rust": {
+      "run_id": 37254821073,
+      "state": {
+        "conclusion": "",
+        "headSha": "654aca96a1144aeeb9c302e77a982524072d4593",
+        "status": "queued",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/37254821073"
+      },
+      "source_commit": "654aca96a1144aeeb9c302e77a982524072d4593",
+      "runtime_source": "source286",
+      "qualification": "Exact pushed source286 canonical printer/reader checkpoint. Requires audited522 inputs, zero-warning strict checks,118 selected contracts in both profiles and43 ordinary GNU comparisons. Three repeated full16 pilots verify all288 answers/modes, with remaining unfavorable performance results retained. This full run validates source286 direct opcode dispatch and GNU remainder operands; retains original missing-path/helper failures and all earlier negatives, including the unresolved source276 census failure. No full-platform, process-wide OOM, ownership/accounting or performance completion is inferred from dispatch."
+    },
+    "frozen": {
+      "run_id": 37254829602,
+      "state": {
+        "conclusion": "",
+        "headSha": "654aca96a1144aeeb9c302e77a982524072d4593",
+        "status": "queued",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/37254829602"
+      },
+      "source_commit": "654aca96a1144aeeb9c302e77a982524072d4593",
+      "runtime_source": "source286",
+      "qualification": "Exact pushed source286 canonical printer/reader checkpoint. Requires audited522 inputs, zero-warning strict checks,118 selected contracts in both profiles and43 ordinary GNU comparisons. Three repeated full16 pilots verify all288 answers/modes, with remaining unfavorable performance results retained. This full run validates source286 direct opcode dispatch and GNU remainder operands; retains original missing-path/helper failures and all earlier negatives, including the unresolved source276 census failure. No full-platform, process-wide OOM, ownership/accounting or performance completion is inferred from dispatch."
+    }
+  },
+  "macos": {
+    "pid": 10785,
+    "command": [
+      "/Library/Developer/CommandLineTools/usr/bin/python3",
+      "-B",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-source286-full-macos.py"
+    ],
+    "helper_sha256": "8b713baaac35bd3bf906014501b534908b5e12d3ebab06d95022889bbb9407e4",
+    "validation_commit": "654aca96a1144aeeb9c302e77a982524072d4593",
+    "launched_at_unix": 1791166658.391191,
+    "stdin": "DEVNULL",
+    "start_new_session": true,
+    "goal_complete": false,
+    "qualification": "Full macOS validation launched on a clean exact-source286 commit; no outcome inferred."
+  },
+  "qualification": "Launches only. Source286 selected checks and diagnostic timing do not certify these full runs. Inspect complete raw results before reporting completion.",
+  "goal_complete": false
+}
