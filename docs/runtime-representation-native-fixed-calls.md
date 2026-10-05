@@ -1,5 +1,61 @@
 # Native call routing and argument boundaries — 5 October 2026
 
+## Native Bcall variants rejected; applied checkpoint passes Linux — 5 October 2026
+
+**Applied runtime remains source297 (`4af440a9`). Sources 300 and 301 are rejected
+and unapplied.** The [closed inline comparison](handover/2026-09-30-shared-reader-draft/source301-native-bytecode-inline-performance-manifest.json)
+verifies all **288 actual process answers and modes** across rotated full 16 pilots.
+Source301 still improves bytecode-to-native by 9.624%, but native-to-bytecode is
+12.098% slower, native execution 5.648% slower, and raw body geometric mean 3.178%
+slower than 297. Default300 also retains slower native transitions. Forced inlining
+does not establish a satisfactory tradeoff; this experiment is closed. Both full
+cohorts and every unfavorable sample remain. These small diagnostics establish
+neither statistical significance nor a causal explanation for all timing changes.
+
+[Source301 selected evidence](handover/2026-09-30-shared-reader-draft/source301-native-bytecode-inline-selected-manifest.json)
+verifies all 532 input bytes/modes, fresh builds, warning-free strict checks,
+**327 tests per profile / no failures or ignores**, and **47 actual GNU comparisons**.
+Only the helper inline attribute differs from 300. No test, fixture, workload,
+timeout, selector or tolerance was changed to obtain these results.
+
+[Complete source297 Linux evidence](handover/2026-09-30-shared-reader-draft/source297-complete-linux-results-manifest.json)
+now verifies exact `4af440a9`: **3,148 Rust passes/two existing ignores** and
+**519 frozen files/7,928 equal outcomes/1,038 successful processes**, native
+artifact identity, 177 compiler controls and the retained pinned GNU inputs.
+Runs 37284983243 and 37284989055 both passed. Full macOS for 297 remains unstarted.
+The same 60 display-column failures, earlier GNU census failures and source276
+Emaxx negative remain open; the later Linux passes do not erase those failures.
+
+All source301 validation and timing coordinators are closed. Preserve frozen checkouts
+and write-once receipts. The next profile-led candidate is native two-fixnum
+addition/subtraction after existing handler synchronization, following
+`data.c:arith_driver`; it is not yet applied or validated. Main remains `21d20f0e`,
+PR79 remains draft, and the full architecture, ownership, honest accounting/counters,
+final validation/audit and unchanged every-case 3% GNU criterion remain incomplete.
+The sections below retain historical states.
+
+| Case | Applied297 / GNU | Default300 / GNU | Inline301 / GNU | 301 body vs297 |
+| --- | ---: | ---: | ---: | ---: |
+| interpreted-lexical | 2.3873× | 2.4210× | 2.4642× | +4.838% |
+| interpreted-dynamic | 2.1692× | 2.0622× | 2.1738× | +2.417% |
+| interpreted-calls | 2.8183× | 2.7796× | 2.7146× | +2.087% |
+| bytecode-calls | 4.1159× | 4.1357× | 4.2720× | +1.445% |
+| native-execution | 2.9230× | 2.9360× | 2.8742× | +5.648% |
+| interpreted-to-native | 2.4005× | 2.4425× | 2.4164× | +1.269% |
+| bytecode-to-native | 8.4911× | 7.5772× | 7.6582× | -9.624% |
+| native-to-interpreted | 2.6990× | 2.6849× | 2.7316× | +2.446% |
+| native-to-bytecode | 2.8120× | 2.8679× | 2.9796× | +12.098% |
+| cons-allocation | 1.7801× | 1.7986× | 1.8509× | +2.214% |
+| list-traversal | 1.9843× | 2.0364× | 2.1655× | +5.083% |
+| mapcar | 2.2575× | 2.2521× | 2.2340× | +6.294% |
+| explicit-gc | 1.0221× | 1.0366× | 1.0688× | +4.493% |
+| upstream-sort | 4.9880× | 4.9747× | 5.1312× | +3.768% |
+| upstream-undo | 5.6126× | 5.4661× | 5.4121× | +2.608% |
+| upstream-bindat | 3.3207× | 3.4262× | 3.4375× | +5.188% |
+
+This cohort’s GNU paired ratio geometric means are 2.864788× / 2.851701× / 2.896677×
+for 297/300/301. All body intervals exceed 100 ms. No final parity claim is made.
+
 ## Native Bcall candidate held; inline-only comparison running — 5 October 2026
 
 **Applied runtime remains source297 (`4af440a9`)**. Source300 shares the ordinary

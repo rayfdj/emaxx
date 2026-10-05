@@ -1,5 +1,39 @@
 # Current goal status — 5 October 2026
 
+## Native Bcall variants rejected; applied checkpoint passes Linux — 5 October 2026
+
+**Applied runtime remains source297 (`4af440a9`). Sources 300 and 301 are rejected
+and unapplied.** The [closed inline comparison](handover/2026-09-30-shared-reader-draft/source301-native-bytecode-inline-performance-manifest.json)
+verifies all **288 actual process answers and modes** across rotated full 16 pilots.
+Source301 still improves bytecode-to-native by 9.624%, but native-to-bytecode is
+12.098% slower, native execution 5.648% slower, and raw body geometric mean 3.178%
+slower than 297. Default300 also retains slower native transitions. Forced inlining
+does not establish a satisfactory tradeoff; this experiment is closed. Both full
+cohorts and every unfavorable sample remain. These small diagnostics establish
+neither statistical significance nor a causal explanation for all timing changes.
+
+[Source301 selected evidence](handover/2026-09-30-shared-reader-draft/source301-native-bytecode-inline-selected-manifest.json)
+verifies all 532 input bytes/modes, fresh builds, warning-free strict checks,
+**327 tests per profile / no failures or ignores**, and **47 actual GNU comparisons**.
+Only the helper inline attribute differs from 300. No test, fixture, workload,
+timeout, selector or tolerance was changed to obtain these results.
+
+[Complete source297 Linux evidence](handover/2026-09-30-shared-reader-draft/source297-complete-linux-results-manifest.json)
+now verifies exact `4af440a9`: **3,148 Rust passes/two existing ignores** and
+**519 frozen files/7,928 equal outcomes/1,038 successful processes**, native
+artifact identity, 177 compiler controls and the retained pinned GNU inputs.
+Runs 37284983243 and 37284989055 both passed. Full macOS for 297 remains unstarted.
+The same 60 display-column failures, earlier GNU census failures and source276
+Emaxx negative remain open; the later Linux passes do not erase those failures.
+
+All source301 validation and timing coordinators are closed. Preserve frozen checkouts
+and write-once receipts. The next profile-led candidate is native two-fixnum
+addition/subtraction after existing handler synchronization, following
+`data.c:arith_driver`; it is not yet applied or validated. Main remains `21d20f0e`,
+PR79 remains draft, and the full architecture, ownership, honest accounting/counters,
+final validation/audit and unchanged every-case 3% GNU criterion remain incomplete.
+The sections below retain historical states.
+
 ## Native Bcall candidate held; inline-only comparison running — 5 October 2026
 
 **Applied runtime remains source297 (`4af440a9`)**. Source300 shares the ordinary
