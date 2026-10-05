@@ -1566,16 +1566,26 @@ impl Value {
 
     /// lisp.h's `make_int': a fixnum for a value in `most-positive-fixnum''s
     /// range, a bignum past it.
-    #[inline]
+    #[inline(always)]
     pub fn Integer(n: i64) -> Value {
         const MOST_POSITIVE: i64 = (1_i64 << 61) - 1;
         const MOST_NEGATIVE: i64 = -(1_i64 << 61);
         if (MOST_NEGATIVE..=MOST_POSITIVE).contains(&n) {
             Value::from_bits(((n << 2) as usize) | TAG_INT0)
         } else {
-            Value::BigInteger(BigInt::from(n).into())
+            Self::integer_bignum(n)
         }
     }
+
+    // lisp.h:make_int keeps the ordinary immediate path separate from
+    // make_bigint. Outlining allocation also lets each Rust caller inline
+    // the range check and tagged word without the bignum construction body.
+    #[cold]
+    #[inline(never)]
+    fn integer_bignum(n: i64) -> Value {
+        Value::BigInteger(BigInt::from(n).into())
+    }
+
     #[inline]
     pub fn BigInteger(value: SharedBigInt) -> Value {
         Value::from_bits(value.identity_ptr() | TAG_VECTORLIKE)

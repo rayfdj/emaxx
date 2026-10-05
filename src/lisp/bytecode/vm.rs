@@ -620,16 +620,14 @@ fn run_fast(
             }
             // Bnot.
             0o77 => {
-                let value = pop!();
-                let is_nil = value.is_nil();
-                value.discard();
-                ops.push_within_frame(if is_nil { Value::T } else { Value::Nil });
+                let top = ops.last_mut().expect("validated bytecode");
+                *top = if top.is_nil() { Value::T } else { Value::Nil };
             }
             // Bcons.
             0o102 => {
                 let b = pop!();
-                let a = pop!();
-                ops.push_within_frame(Value::cons(a, b));
+                let top = ops.last_mut().expect("validated bytecode");
+                *top = Value::cons(*top, b);
             }
             // Beq.
             0o75 => {
@@ -640,9 +638,8 @@ fn run_fast(
                     slow!();
                 }
                 let equal = crate::lisp::primitives::values_eq_plain(&ops[len - 2], &ops[len - 1]);
-                pop!().discard();
-                pop!().discard();
-                ops.push_within_frame(if equal { Value::T } else { Value::Nil });
+                ops[len - 2] = if equal { Value::T } else { Value::Nil };
+                ops.truncate(len - 1);
             }
             // Bconsp.
             0o72 => {
@@ -652,8 +649,8 @@ fn run_fast(
                     Kind::Record(_) => slow!(),
                     _ => false,
                 };
-                pop!().discard();
-                ops.push_within_frame(if is_cons { Value::T } else { Value::Nil });
+                *ops.last_mut().expect("validated bytecode") =
+                    if is_cons { Value::T } else { Value::Nil };
             }
             0o134 | 0o132 | 0o137 | 0o245 | 0o246 => {
                 let len = ops.len();
@@ -673,8 +670,11 @@ fn run_fast(
                     _ => x.checked_rem(y),
                 };
                 let Some(n) = fast else { slow!() };
-                ops.truncate(len - 2);
-                ops.push_within_frame(Value::Integer(n));
+                // bytecode.c pops the right operand and overwrites TOP.
+                // The result occupies an existing slot: no push, capacity
+                // check or extra length update is needed.
+                ops[len - 2] = Value::Integer(n);
+                ops.truncate(len - 1);
             }
             0o125..=0o131 => {
                 let len = ops.len();
@@ -690,8 +690,8 @@ fn run_fast(
                     0o130 => x <= y,
                     _ => x >= y,
                 };
-                ops.truncate(len - 2);
-                ops.push_within_frame(if holds { Value::T } else { Value::Nil });
+                ops[len - 2] = if holds { Value::T } else { Value::Nil };
+                ops.truncate(len - 1);
             }
             0o124 | 0o123 | 0o133 => {
                 let Kind::Integer(x) = ops.last().expect("validated bytecode").kind() else {
@@ -719,9 +719,8 @@ fn run_fast(
                 else {
                     slow!();
                 };
-                pop!().discard();
-                pop!().discard();
-                ops.push_within_frame(value);
+                ops[len - 2] = value;
+                ops.truncate(len - 1);
             }
             // Baset.
             0o111 => {
@@ -740,10 +739,8 @@ fn run_fast(
                 {
                     slow!();
                 }
-                let value = pop!();
-                pop!().discard();
-                pop!().discard();
-                ops.push_within_frame(value);
+                ops[len - 3] = ops[len - 1];
+                ops.truncate(len - 2);
             }
             0o100 | 0o101 | 0o242 | 0o243 => {
                 // bytecode.c reads the car or cdr of the object on the stack
@@ -1104,255 +1101,9 @@ fn run_frames(
             let offset = instr.offset;
             pc += instr.len;
 
-            // Hot pre-dispatch: the ops below either cannot fail or only take
-            // this path when their operands make failure impossible, so they
-            // skip the fallible arms (and their Result plumbing) entirely.
-            // Anything that falls through runs the full arm below.
-            match op {
-                Op::StackRef(n) => {
-                    let value = interp.bc_stack[interp.bc_stack.len() - 1 - n as usize];
-                    push!(value);
-                    continue;
-                }
-                Op::StackSet(n) => {
-                    let value = pop!();
-                    let slot = interp.bc_stack.len() - 1 - (n as usize - 1);
-                    std::mem::replace(&mut interp.bc_stack[slot], value).discard();
-                    continue;
-                }
-                Op::Dup => {
-                    let top = *interp.bc_stack.last().expect("validated bytecode");
-                    push!(top);
-                    continue;
-                }
-                Op::Discard => {
-                    pop!().discard();
-                    continue;
-                }
-                Op::Constant(index) | Op::Constant2(index) => {
-                    push!(program.constant(index));
-                    continue;
-                }
-                Op::Goto { target } => {
-                    branch!(target);
-                    continue;
-                }
-                Op::GotoIfNil { target } => {
-                    let value = pop!();
-                    let is_nil = value.is_nil();
-                    value.discard();
-                    if is_nil {
-                        branch!(target);
-                    }
-                    continue;
-                }
-                Op::GotoIfNonNil { target } => {
-                    let value = pop!();
-                    let is_nil = value.is_nil();
-                    value.discard();
-                    if !is_nil {
-                        branch!(target);
-                    }
-                    continue;
-                }
-                Op::GotoIfNilElsePop { target } => {
-                    if interp.bc_stack.last().expect("validated bytecode").is_nil() {
-                        branch!(target);
-                    } else {
-                        pop!();
-                    }
-                    continue;
-                }
-                Op::GotoIfNonNilElsePop { target } => {
-                    if !interp.bc_stack.last().expect("validated bytecode").is_nil() {
-                        branch!(target);
-                    } else {
-                        pop!();
-                    }
-                    continue;
-                }
-                Op::Return => {
-                    breturn!(pop!());
-                }
-                Op::Not => {
-                    let value = pop!();
-                    push!(if value.is_nil() { Value::T } else { Value::Nil });
-                    continue;
-                }
-                Op::Cons => {
-                    let b = pop!();
-                    let a = pop!();
-                    push!(Value::cons(a, b));
-                    continue;
-                }
-                Op::Eq => {
-                    let b = pop!();
-                    let a = pop!();
-                    let equal = crate::lisp::primitives::values_eq_in_env(interp, &a, &b, env);
-                    push!(if equal { Value::T } else { Value::Nil });
-                    continue;
-                }
-                Op::Consp => {
-                    let a = pop!();
-                    push!(if primitives::is_cons_value(interp, &a) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    });
-                    continue;
-                }
-                Op::Plus | Op::Diff | Op::Mult => {
-                    let len = interp.bc_stack.len();
-                    if let (Kind::Integer(x), Kind::Integer(y)) = {
-                        let operands = &interp.bc_stack;
-                        (operands[len - 2].kind(), operands[len - 1].kind())
-                    } {
-                        let fast = match op {
-                            Op::Plus => x.checked_add(y),
-                            Op::Diff => x.checked_sub(y),
-                            _ => x.checked_mul(y),
-                        };
-                        if let Some(n) = fast {
-                            interp.bc_stack.truncate(len - 2);
-                            push!(Value::Integer(n));
-                            continue;
-                        }
-                    }
-                }
-                Op::Quo | Op::Rem => {
-                    let len = interp.bc_stack.len();
-                    if let (Kind::Integer(x), Kind::Integer(y)) = {
-                        let operands = &interp.bc_stack;
-                        (operands[len - 2].kind(), operands[len - 1].kind())
-                    } {
-                        // checked_div/checked_rem refuse y == 0 and the MIN/-1
-                        // overflow, which fall through to the full arithmetic
-                        // (and its arith-error).
-                        let fast = match op {
-                            Op::Quo => x.checked_div(y),
-                            _ => x.checked_rem(y),
-                        };
-                        if let Some(n) = fast {
-                            interp.bc_stack.truncate(len - 2);
-                            push!(Value::Integer(n));
-                            continue;
-                        }
-                    }
-                }
-                Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
-                    let len = interp.bc_stack.len();
-                    if let (Kind::Integer(x), Kind::Integer(y)) = {
-                        let operands = &interp.bc_stack;
-                        (operands[len - 2].kind(), operands[len - 1].kind())
-                    } {
-                        let holds = match op {
-                            Op::Eqlsign => x == y,
-                            Op::Gtr => x > y,
-                            Op::Lss => x < y,
-                            Op::Leq => x <= y,
-                            _ => x >= y,
-                        };
-                        interp.bc_stack.truncate(len - 2);
-                        push!(if holds { Value::T } else { Value::Nil });
-                        continue;
-                    }
-                }
-                Op::Add1 | Op::Sub1 | Op::Negate => {
-                    if let Some(Kind::Integer(x)) =
-                        ({ interp.bc_stack.last().cloned() }).map(|v| v.kind())
-                    {
-                        let fast = match op {
-                            Op::Add1 => x.checked_add(1),
-                            Op::Sub1 => x.checked_sub(1),
-                            _ => x.checked_neg(),
-                        };
-                        if let Some(n) = fast {
-                            *interp.bc_stack.last_mut().expect("validated bytecode") =
-                                Value::Integer(n);
-                            continue;
-                        }
-                    }
-                }
-                Op::Aref => {
-                    let len = interp.bc_stack.len();
-                    if let Kind::Integer(index) = ({ interp.bc_stack[len - 1] }).kind()
-                        && index >= 0
-                        && let Some(value) = {
-                            let operands = &interp.bc_stack;
-                            crate::lisp::primitives::vector_aref_fast(
-                                &operands[len - 2],
-                                index as usize,
-                            )
-                        }
-                    {
-                        interp.bc_stack.truncate(len - 2);
-                        push!(value);
-                        continue;
-                    }
-                }
-                Op::Aset => {
-                    // Stack: [.. vector index value]; aset returns the value.
-                    let len = interp.bc_stack.len();
-                    if let Kind::Integer(index) = ({ interp.bc_stack[len - 2] }).kind()
-                        && index >= 0
-                        && {
-                            let operands = &interp.bc_stack;
-                            crate::lisp::primitives::vector_aset_fast(
-                                &operands[len - 3],
-                                index as usize,
-                                &operands[len - 1],
-                            )
-                            .is_some()
-                        }
-                    {
-                        let value = pop!();
-                        interp.bc_stack.truncate(len - 3);
-                        push!(value);
-                        continue;
-                    }
-                }
-                Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => {
-                    // bytecode.c reads the car or cdr of the object on the
-                    // stack top and stores it there: the operand is read in
-                    // place, never copied first (a copy cost the cell two
-                    // reference-count round trips and a drop per op).
-                    enum Step {
-                        Replace(Value),
-                        Keep,
-                        Signal,
-                    }
-                    let step = {
-                        let operands = &interp.bc_stack;
-                        match operands.last().expect("validated bytecode").kind() {
-                            Kind::Cons(cell) => {
-                                Step::Replace(if matches!(op, Op::Car | Op::CarSafe) {
-                                    cell.car.get()
-                                } else {
-                                    cell.cdr.get()
-                                })
-                            }
-                            Kind::Nil => Step::Keep,
-                            _ if matches!(op, Op::CarSafe | Op::CdrSafe) => {
-                                Step::Replace(Value::Nil)
-                            }
-                            _ => Step::Signal,
-                        }
-                    };
-                    match step {
-                        Step::Replace(value) => {
-                            let operands = &mut interp.bc_stack;
-                            let top = operands.last_mut().expect("validated bytecode");
-                            std::mem::replace(top, value).discard();
-                            continue;
-                        }
-                        Step::Keep => continue,
-                        // The full arm signals wrong-type-argument.
-                        Step::Signal => {}
-                    }
-                }
-                _ => {}
-            }
-
+            // run_fast already handled the ordinary stack/value cases.
+            // A fallback goes directly to its complete operation; repeating
+            // the same fast predicates here only adds a third dispatch.
             // Every fallible operation funnels through the closure's result so
             // handler unwinding (GNU's sys_setjmp arm) is applied uniformly.
             match op {

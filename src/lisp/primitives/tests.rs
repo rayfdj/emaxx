@@ -27476,3 +27476,12 @@ fn bytecode_call_widths_preserve_gnu_arguments_across_execution_modes() {
         "packed, byte and word call operands with live arguments across collection",
     );
 }
+
+#[test]
+fn bytecode_integer_boundaries_preserve_gnu_results_types_and_errors() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-integer-boundaries.el"),
+        include_str!("../../../tests/fixtures/bytecode-integer-boundaries.expected").trim_end(),
+        "bytecode integer boundaries, bignum allocation, operand errors and GC",
+    );
+}
