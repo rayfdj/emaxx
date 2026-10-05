@@ -1,5 +1,8 @@
 # Native and bytecode call entry — 5 October 2026
 
+The latest [integer/VM drafts](runtime-representation-integer-vm-draft.md) remain
+unapplied; this source289 runtime is still the applied checkpoint.
+
 The [complete runtime goal](runtime-representation-goal.md) remains incomplete.
 **Source289 is applied and pushed as `ae1fcb0f`** on `runtime-char-tables`.
 Main remains `21d20f0e`; PR79 stays draft. This follows the
@@ -117,7 +120,9 @@ These complete results do not certify source289.
 [Source289 Linux launches](handover/2026-09-30-shared-reader-draft/source289-full-validation-launch.json)
 select exact `ae1fcb0f`: [Rust37265044228](https://github.com/rayfdj/emaxx/actions/runs/37265044228)
 and [frozen37265047878](https://github.com/rayfdj/emaxx/actions/runs/37265047878).
-At publication both are in progress after build/lint. Read final receipts before
+The [closed Rust archive](handover/2026-09-30-shared-reader-draft/source289-complete-linux-rust-manifest.json)
+verifies 3,145 passes/two existing ignores, all 3,044 library names and native
+artifact identity. Frozen is still running; inspect its final receipts before
 claiming a result. Complete source289 macOS validation has not been launched;
 final exact-source validation remains required.
 

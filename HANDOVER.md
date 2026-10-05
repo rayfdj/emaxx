@@ -16,7 +16,39 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
-## Current native/bytecode call checkpoint — 5 October 2026
+## Current optimization drafts — 5 October 2026
+
+Read the [integer/VM draft and profile qualification](docs/runtime-representation-integer-vm-draft.md)
+first. **Applied runtime remains source289 (`ae1fcb0f`)**. Its
+[closed Linux Rust run](docs/handover/2026-09-30-shared-reader-draft/source289-complete-linux-rust-manifest.json)
+verifies **3,145 passes / two existing ignores**, all 3,044 library names,
+native artifact identity and retained inputs. Frozen Linux37265047878 is still
+running at publication; full source289 macOS remains unstarted. The preceding
+GNU census failures and source276 Emaxx negative remain unexplained.
+
+**Source290 is held unapplied.** It removes duplicate VM dispatch, updates existing
+stack slots and outlines integer allocation. Strict checks, **325 selected passes
+per profile** and **46 ordinary GNU comparisons** pass, including 588 numeric
+boundary rows. The closed 192-process full16 diagnostic verifies every answer and
+mode, but sorting/undo/Bindat medians rise 3.764%/6.969%/8.685% while bytecode calls
+fall 14.367%. All results remain; no favorable-only application or parity claim.
+
+**Source291 is an unfinished separate inlining comparison**, changing only forced
+Integer inlining to ordinary compiler guidance. Its 528-input portable patches
+replay exactly. Strict checks pass; selected validation is running in
+`target/runtime-goal/recovered-2026-10-05/vm-integer-inlining/emaxx`.
+Read `source291-validation-state.json`, its final result and `inline-selection-state.json`
+under `target/runtime-goal/resume-2026-09-28`. The comparison helper waits for
+validation; performance has not started. Keep both candidate checkouts and their
+executed helpers unchanged. The new draft archive is a launch snapshot, not a pass.
+
+Six separate profiles verify 120 results/modes and identify broader evaluator,
+native-call and buffer costs. Sampling also includes pre-body collection; all
+body GC deltas are zero, so GC samples cannot be attributed to timed-body costs.
+The linked qualification and raw trees preserve that limit. Main remains
+`21d20f0e`, PR79 stays draft, and all full-goal requirements remain open as mapped.
+
+## Applied native/bytecode call checkpoint — 5 October 2026
 
 Read the [source289 call-entry checkpoint](docs/runtime-representation-call-entry.md)
 first. **Source289 is applied and pushed as `ae1fcb0f`**, with 526 verified inputs,
