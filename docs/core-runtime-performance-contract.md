@@ -95,7 +95,9 @@ python3 tools/core_runtime_perf.py run --source /path/to/emacs \
   --output target/core-comparison
 ```
 
-The starting Darwin GNU executable has the correct source revision but differs
-from the pinned executable hash. Current measurements require `--diagnostic`;
-they must not be called frozen certification. The original September 21
-baseline remains separate from the corrected release baseline.
+The starting Darwin GNU executable had the correct source revision but differed
+from the then-pinned executable hash. The rebuilt replacement was explicitly
+adopted at `3dcf5351`; that historical identity mismatch is settled. Current
+pilots remain diagnostic because counters, calibration and the prescribed
+repetitions/acceptance are incomplete. They are not final certification. The
+original September 21 baseline remains separate from the corrected baseline.

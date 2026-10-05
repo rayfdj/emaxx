@@ -1,5 +1,8 @@
 # Direct bytecode dispatch checkpoint — 5 October 2026
 
+The current [source289 call-entry checkpoint](runtime-representation-call-entry.md)
+supersedes this historical source286 checkpoint.
+
 The [complete runtime goal](runtime-representation-goal.md) remains incomplete.
 **Source286 is applied and pushed as `654aca96`** on `runtime-char-tables`.
 Main remains `21d20f0e`; PR79 stays draft. Continue measured VM/call work without
@@ -112,8 +115,13 @@ before Emaxx. Source276's earlier Emaxx census failure also remains unexplained.
 select exact `654aca96`: [Linux Rust37254821073](https://github.com/rayfdj/emaxx/actions/runs/37254821073),
 [Linux frozen37254829602](https://github.com/rayfdj/emaxx/actions/runs/37254829602) and macOS supervisor
 **10785** in `target/runtime-goal/recovered-2026-10-03/vm-dispatch-full/emaxx`.
-They are running; inspect their actual receipts before reporting any full pass.
-The selected and corrected-baseline checkouts stay frozen.
+All are closed. The [complete platform archive](handover/2026-09-30-shared-reader-draft/source286-complete-platform-results-manifest.json)
+verifies 3,131 macOS Rust passes/two existing ignores, terminal 226 scenarios/686
+matches and 7,928 Linux frozen matches. macOS frozen retains six diagnostic
+failures. Linux Rust retains 2,285 passes/one GNU reference census failure, with
+756 library names and both Cargo stages unrun. The GNU assertion precedes Emaxx;
+its cause remains unresolved. These results do not certify source289. The
+selected and corrected-baseline checkouts stay frozen.
 
 Source285's initial fixture used invalid `#(...)` vector notation; GNU rejected
 it before Emaxx ran. The corrected `[...]` fixture revealed the real remainder
@@ -140,7 +148,7 @@ remain under `target/runtime-goal/resume-2026-09-28`; source286 is
 `recovered-2026-10-03/vm-opcode-dispatch/emaxx`, source287 is
 `recovered-2026-10-03/remainder-corrected-baseline/emaxx`.
 
-Complete the current full runs and continue measured call/VM improvements.
+Continue measured call/VM improvements from the newer linked checkpoint.
 Real intervals, unified pure storage, symbol authority, remaining host adapters,
 physical accounting/counters, public ownership/serialization, final adversarial
 review and calibrated performance acceptance remain open. The complete goal is

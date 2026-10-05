@@ -1,0 +1,35 @@
+{
+  "goal_complete": false,
+  "runtime_source": "source289",
+  "source_commit": "ae1fcb0f8cdaf9e8931eaa67e39cee783cc7a808",
+  "linux": {
+    "rust": {
+      "run_id": 37265044228,
+      "state": {
+        "conclusion": "",
+        "headSha": "ae1fcb0f8cdaf9e8931eaa67e39cee783cc7a808",
+        "status": "queued",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/37265044228"
+      },
+      "source_commit": "ae1fcb0f8cdaf9e8931eaa67e39cee783cc7a808",
+      "runtime_source": "source289",
+      "qualification": "Exact pushed source289 native and bytecode call-entry checkpoint. Requires audited526 inputs, zero-warning strict checks,274 selected contracts in both profiles and45 ordinary GNU comparisons. Three repeated full16 pilots verify all288 answers/modes, with remaining unfavorable performance results retained. This full run validates source289 native argument words, single-read closure entry and direct Bcall operand decoding; retains original helper/queue records and all earlier negatives, including the unresolved source276 census failure. No full-platform, process-wide OOM, ownership/accounting or performance completion is inferred from dispatch."
+    },
+    "frozen": {
+      "run_id": 37265047878,
+      "state": {
+        "conclusion": "",
+        "headSha": "ae1fcb0f8cdaf9e8931eaa67e39cee783cc7a808",
+        "status": "queued",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/37265047878"
+      },
+      "source_commit": "ae1fcb0f8cdaf9e8931eaa67e39cee783cc7a808",
+      "runtime_source": "source289",
+      "qualification": "Exact pushed source289 native and bytecode call-entry checkpoint. Requires audited526 inputs, zero-warning strict checks,274 selected contracts in both profiles and45 ordinary GNU comparisons. Three repeated full16 pilots verify all288 answers/modes, with remaining unfavorable performance results retained. This full run validates source289 native argument words, single-read closure entry and direct Bcall operand decoding; retains original helper/queue records and all earlier negatives, including the unresolved source276 census failure. No full-platform, process-wide OOM, ownership/accounting or performance completion is inferred from dispatch."
+    }
+  },
+  "macos": {
+    "status": "not launched",
+    "qualification": "Selected gate/release and ordinary checks passed; complete exact-source macOS validation remains required. Source286 complete results do not certify source289."
+  }
+}

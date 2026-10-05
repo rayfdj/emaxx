@@ -16,7 +16,44 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
-## Current VM checkpoint — 5 October 2026
+## Current native/bytecode call checkpoint — 5 October 2026
+
+Read the [source289 call-entry checkpoint](docs/runtime-representation-call-entry.md)
+first. **Source289 is applied and pushed as `ae1fcb0f`**, with 526 verified inputs,
+exact portable replays, warning-free strict checks, **274 selected passes in each
+profile** and **45 ordinary same-input GNU comparisons**. Fixed native arguments
+avoid an intermediate copy; closure entry reads slots once; duplicate transient
+activation storage and repeated Bcall decoding are removed. All earlier tests,
+fixtures and both required suspended-root contracts remain.
+
+The [closed performance archive](docs/handover/2026-09-30-shared-reader-draft/source289-native-vm-calls-performance-manifest.json)
+verifies all **288 process results and modes** across three unchanged full16 pilots
+for source286/288/289. Source289 bytecode-call median body time is **15.350% lower**
+than source286, bytecode-to-native **3.540% lower**. Unfavorable cases are retained;
+the small pilot establishes no broad statistical gain. The paired GNU ratio
+geometric mean is **2.97399×**, so parity is still far from achieved. Counters,
+calibration and the unchanged 3% every-case criterion remain open. New separate
+profiles identify ordinary VM stack/constant, frame and native-transition costs.
+
+[Closed source286 platform evidence](docs/handover/2026-09-30-shared-reader-draft/source286-complete-platform-results-manifest.json)
+verifies **3,131 macOS Rust passes / two existing ignores**, **226 terminal
+scenarios / 686 exact comparisons** and **7,928 Linux frozen matches**. macOS
+frozen retains six strict feature-diagnostic differences. Linux Rust retains
+2,285 passes / one GNU census reference failure, with 756 library names and both
+Cargo stages unexecuted. The failure occurs before Emaxx; its cause and the
+source276 Emaxx census negative remain unresolved. Supervisor 10785 has exited.
+These predecessor results do not certify source289.
+
+[Source289 Linux CI](docs/handover/2026-09-30-shared-reader-draft/source289-full-validation-launch.json)
+selects exact `ae1fcb0f`: Rust **37265044228**, frozen **37265047878**. Both are
+in progress at publication; inspect receipts before claiming completion. No
+complete source289 macOS run has started. All local selected/profile/timing
+pipelines are closed. Main remains `21d20f0e`, PR79 remains draft. Continue
+profile-driven work without unrelated correctness expansion. Sblocks are already
+applied in source279; remaining architecture, accounting, ownership, final validation and
+the complete goal remain unfinished. The older sections below retain history.
+
+## Preceding VM checkpoint — 5 October 2026
 
 Read the [direct VM dispatch checkpoint](docs/runtime-representation-vm-dispatch.md)
 before continuing. **Source286 is applied and pushed as `654aca96`**, with 522
@@ -47,10 +84,10 @@ failure, with 756 library names and both Cargo stages unexecuted. No pass is
 inferred for the failed or unrun work; source276's Emaxx census failure stays open.
 
 [Source286 full validation](docs/handover/2026-09-30-shared-reader-draft/source286-full-validation-launch.json)
-selects exact `654aca96`: Linux Rust **37254821073**, frozen **37254829602**, and
+selected exact `654aca96`: Linux Rust **37254821073**, frozen **37254829602**, and
 macOS supervisor **10785** in
-`target/runtime-goal/recovered-2026-10-03/vm-dispatch-full/emaxx`. Inspect current
-receipts before reporting outcomes. Selected source286 and corrected source287
+`target/runtime-goal/recovered-2026-10-03/vm-dispatch-full/emaxx`. All are closed;
+read the audited results above and the current call-entry checkpoint. Selected source286 and corrected source287
 checkouts remain frozen. Main stays `21d20f0e`, PR79 stays draft, and the complete
 goal remains incomplete. The linked checkpoint records original setup/fixture/lint
 failures, all unfavorable timings and the portable reproduction evidence.
