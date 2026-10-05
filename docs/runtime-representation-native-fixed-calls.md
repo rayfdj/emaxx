@@ -1,5 +1,67 @@
 # Native call routing and argument boundaries — 5 October 2026
 
+## Applied native arithmetic checkpoint — 5 October 2026
+
+**Source302 is applied.** The existing native two-fixnum dispatch now returns
+in-range `+`/`-` results directly after the same handler synchronization, following
+GNU `data.c:arith_driver`. This removes argument staging, repeated primitive
+routing, coercion and normalization. Bignum results, other operand types and other
+arities retain the original general path. No cache, representation or unsafe
+access is added; the prior two-argument buffer was inline, so no removed heap
+allocation is claimed.
+
+The [closed selected evidence](handover/2026-09-30-shared-reader-draft/source302-native-arithmetic-selected-manifest.json)
+verifies all **534 source inputs and modes**, portable replays from `4af440a9` and
+main, fresh builds and zero-warning strict checks. **328 selected tests pass in
+each profile**, with no failures or ignores, and **48 actual GNU comparisons**
+pass. Every original test/assertion/fixture remains. One new control forces native
+workers through 108 varied arithmetic cases, overflow/promotion, invalid operands,
+GC and marker coercion; it already matches GNU on the unchanged 297 baseline.
+
+The [closed full16 diagnostic](handover/2026-09-30-shared-reader-draft/source302-native-arithmetic-performance-manifest.json)
+verifies all **192 process answers and execution modes**. Native execution's median
+body is **22.893% lower** than 297; the raw body geometric ratio is **0.981839**.
+Other cases range from 1.388% faster to 0.506% slower; every sample is retained.
+The paired GNU geometric means are 2.836585× for 297 and 2.785707× for 302. These small
+pilots establish no statistical significance or GNU-parity acceptance. Real
+counters, calibration, nine rounds and the unchanged every-case upper 95% ratio
+at most 1.03 remain required. Build/test/profile work is separate from timing.
+
+All source302 selected/timing coordinators are closed. Exact-source Linux and full
+macOS validation are next; predecessor297's complete Linux pass does not certify
+this new source. Inspect `source302-full-validation-launch.json` and
+`source302-full-launch.json` under `target/runtime-goal/resume-2026-09-28` for later
+launches, then their complete raw audits. The prepared macOS helpers require the
+applied commit and closed timing before starting. Do not restart write-once jobs.
+
+The same 60 column-width failures, earlier GNU census failures and source276 Emaxx
+negative remain open. Sources300/301 remain rejected and unapplied. Main stays
+`21d20f0e`, PR79 stays draft, and the full architecture, real intervals/pure storage,
+symbol authority, physical accounting/counters, public ownership, final validation
+and adversarial audit remain incomplete. The following sections are historical.
+
+| Case | Applied297 / GNU | Source302 / GNU | 302 body vs297 |
+| --- | ---: | ---: | ---: |
+| interpreted-lexical | 2.3512× | 2.3240× | +0.306% |
+| interpreted-dynamic | 2.1009× | 2.1251× | -0.484% |
+| interpreted-calls | 2.6023× | 2.6407× | -1.388% |
+| bytecode-calls | 4.0728× | 4.0612× | -0.378% |
+| native-execution | 2.8573× | 2.2066× | -22.893% |
+| interpreted-to-native | 2.3758× | 2.4148× | -0.544% |
+| bytecode-to-native | 8.6580× | 8.5120× | -0.170% |
+| native-to-interpreted | 2.6924× | 2.6597× | -0.402% |
+| native-to-bytecode | 2.7952× | 2.7850× | -0.328% |
+| cons-allocation | 1.7799× | 1.7852× | +0.161% |
+| list-traversal | 2.0996× | 2.0726× | -0.964% |
+| mapcar | 2.2755× | 2.2637× | +0.321% |
+| explicit-gc | 1.0134× | 1.0110× | +0.404% |
+| upstream-sort | 4.8676× | 4.9434× | -0.249% |
+| upstream-undo | 5.4765× | 5.3813× | -0.097% |
+| upstream-bindat | 3.3029× | 3.2810× | +0.506% |
+
+Three alternating pilots per source retain all startup/body/total/RSS/GC reports
+and unavailable-counter errors; all measured bodies exceed 100 ms.
+
 ## Native Bcall variants rejected; applied checkpoint passes Linux — 5 October 2026
 
 **Applied runtime remains source297 (`4af440a9`). Sources 300 and 301 are rejected

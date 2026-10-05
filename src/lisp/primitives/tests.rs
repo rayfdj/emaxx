@@ -27494,3 +27494,12 @@ fn buffer_line_indexes_preserve_gnu_lf_motion_narrowing_and_edits() {
         "LF-only line counts and motion, CR/Unicode separators, chunk boundaries, narrowing and edits",
     );
 }
+
+#[test]
+fn native_binary_arithmetic_preserves_gnu_boundaries_types_and_errors() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/native-binary-arithmetic.el"),
+        include_str!("../../../tests/fixtures/native-binary-arithmetic.expected").trim_end(),
+        "native addition and subtraction across fixnum, bignum, float, marker and error boundaries",
+    );
+}

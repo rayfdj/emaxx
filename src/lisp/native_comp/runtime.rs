@@ -1534,6 +1534,20 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             if let Some(result) = result {
                 return native_boolean(result);
             }
+            // data.c:arith_driver keeps integer addition/subtraction in its
+            // machine accumulator. Two fixnums cannot overflow i64; return
+            // their immediate result without staging or decoding Values.
+            // Bignum results and every other operand use the general path.
+            let integer = match subroutine.name {
+                "+" => Some(left + right),
+                "-" => Some(left - right),
+                _ => None,
+            };
+            if let Some(integer) = integer
+                && (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&integer)
+            {
+                return ((integer as NativeWord) << FIXNUM_BITS) | TAG_FIXNUM_LOW;
+            }
         }
         if subroutine.name == "cons" && arguments.len() == 2 {
             return unsafe { &mut *active.runtime }

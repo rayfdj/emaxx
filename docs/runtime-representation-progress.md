@@ -1,5 +1,45 @@
 # Current goal status — 5 October 2026
 
+## Applied native arithmetic checkpoint — 5 October 2026
+
+**Source302 is applied.** The existing native two-fixnum dispatch now returns
+in-range `+`/`-` results directly after the same handler synchronization, following
+GNU `data.c:arith_driver`. This removes argument staging, repeated primitive
+routing, coercion and normalization. Bignum results, other operand types and other
+arities retain the original general path. No cache, representation or unsafe
+access is added; the prior two-argument buffer was inline, so no removed heap
+allocation is claimed.
+
+The [closed selected evidence](handover/2026-09-30-shared-reader-draft/source302-native-arithmetic-selected-manifest.json)
+verifies all **534 source inputs and modes**, portable replays from `4af440a9` and
+main, fresh builds and zero-warning strict checks. **328 selected tests pass in
+each profile**, with no failures or ignores, and **48 actual GNU comparisons**
+pass. Every original test/assertion/fixture remains. One new control forces native
+workers through 108 varied arithmetic cases, overflow/promotion, invalid operands,
+GC and marker coercion; it already matches GNU on the unchanged 297 baseline.
+
+The [closed full16 diagnostic](handover/2026-09-30-shared-reader-draft/source302-native-arithmetic-performance-manifest.json)
+verifies all **192 process answers and execution modes**. Native execution's median
+body is **22.893% lower** than 297; the raw body geometric ratio is **0.981839**.
+Other cases range from 1.388% faster to 0.506% slower; every sample is retained.
+The paired GNU geometric means are 2.836585× for 297 and 2.785707× for 302. These small
+pilots establish no statistical significance or GNU-parity acceptance. Real
+counters, calibration, nine rounds and the unchanged every-case upper 95% ratio
+at most 1.03 remain required. Build/test/profile work is separate from timing.
+
+All source302 selected/timing coordinators are closed. Exact-source Linux and full
+macOS validation are next; predecessor297's complete Linux pass does not certify
+this new source. Inspect `source302-full-validation-launch.json` and
+`source302-full-launch.json` under `target/runtime-goal/resume-2026-09-28` for later
+launches, then their complete raw audits. The prepared macOS helpers require the
+applied commit and closed timing before starting. Do not restart write-once jobs.
+
+The same 60 column-width failures, earlier GNU census failures and source276 Emaxx
+negative remain open. Sources300/301 remain rejected and unapplied. Main stays
+`21d20f0e`, PR79 stays draft, and the full architecture, real intervals/pure storage,
+symbol authority, physical accounting/counters, public ownership, final validation
+and adversarial audit remain incomplete. The following sections are historical.
+
 ## Native Bcall variants rejected; applied checkpoint passes Linux — 5 October 2026
 
 **Applied runtime remains source297 (`4af440a9`). Sources 300 and 301 are rejected
@@ -777,32 +817,33 @@ source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 
 ## Full-goal requirements — current
 
-This map reflects applied source297 (`4af440a9`, 532 inputs). Its selected
-validation, three-way diagnostic and separate profiles are closed. Exact297 Linux
-Rust/frozen runs are in progress; full macOS is unstarted. Predecessor292 has complete
-passing Linux Rust/frozen audits; source296 has a passing Linux Rust and
-frozen audits. All earlier failures remain. The [native-call
-checkpoint](runtime-representation-native-fixed-calls.md) links evidence and
-reproduction helpers. A validated checkpoint does not complete the full goal.
+This map reflects applied source302 (534 inputs). Its warning-free selected
+validation and paired full16 diagnostic are closed. Exact-source Linux and full
+macOS validation are next. Predecessor297 has complete passing Linux audits;
+these do not certify302. All earlier failures remain. The [native-call
+checkpoint](runtime-representation-native-fixed-calls.md) links the source,
+measurements and reproduction helpers. A checkpoint does not complete the goal.
 
 | Full-goal requirement | Current evidence and remaining work |
 | --- | --- |
 | 1. Reproducible starting point | Original and corrected baselines and failures remain archived. Exact source/executable/image identities accompany each measurement. GNU adoption at `3dcf5351` settled the replacement oracle; final corrected-baseline measurement and complete provenance remain required. |
 | 2. GNU architectural reference | Cons/closure/string storage, comparison/allocation, canonical printing, direct opcode dispatch and native/VM call entry have recorded C mappings. The final complete review and justification/cost of every necessary Rust deviation remain open. |
 | 3. Compact authoritative objects | Values are one word, cons payloads two words, four-slot closures 40 inline bytes. Source270 supplies direct compact string headers; source272 roots active borrows; source279 implements pooled sblocks. Source284 carries canonical bytes through printing/reading. Real intervals, unified pure storage, allocated-symbol authority and remaining host adapters are unfinished. |
-| 4. Allocation, GC and ownership | Required live-root and reclamation controls remain and pass selected source297. Seven category variables still initialize to zero; `memory-use-counts` is unsupported. GNU-shaped charges do not establish actual Rust capacities/retention. Physical accounting, real counters, public ownership/serialization and collection-cost explanations remain required. GNU census reference failures and source276's Emaxx census failure remain unresolved. |
-| 5. VM/function-call work | Source286 removes repeated decoding on hot opcodes; source289 removes repeated closure reads, a transient activation copy, Bcall decoding and fixed native argument staging. Source290 removes duplicate optimistic dispatch, redundant operand stack changes and immediate Integer calls. Source296 removes fixed-call copying unless padding is needed; source297 avoids unrelated primitive checks before funcall and repairs null/empty slice construction. Measured bytecode-call gains are recorded. VM still reserves 256K value slots plus separate frames versus GNU's 512K words including headers. Stack layout/capacity, remaining frame/call work and actual accounting remain open; closed297 profiles guide the next work. Unapplied300 improves bytecode-to-native11.579% but regresses two other native transitions4.652%/6.609%. Inline-only301 is in selected validation before its three-way comparison. |
+| 4. Allocation, GC and ownership | Required live-root and reclamation controls remain and pass selected source302. Seven category variables still initialize to zero; `memory-use-counts` is unsupported. GNU-shaped charges do not establish actual Rust capacities/retention. Physical accounting, real counters, public ownership/serialization and collection-cost explanations remain required. GNU census reference failures and source276's Emaxx census failure remain unresolved. |
+| 5. VM/function-call work | Source286 removes repeated decoding on hot opcodes; source289 removes repeated closure reads, a transient activation copy, Bcall decoding and fixed native argument staging. Source290 removes duplicate optimistic dispatch, redundant operand stack changes and immediate Integer calls. Source296 removes fixed-call copying unless padding is needed; source297 avoids unrelated primitive checks before funcall and repairs null/empty slice construction. Measured bytecode-call gains are recorded. VM still reserves 256K value slots plus separate frames versus GNU's 512K words including headers. Stack layout/capacity, remaining frame/call work and actual accounting remain open; closed297 profiles led to the native arithmetic change. Sources300/301 are rejected after both complete cohorts retain slower native transitions despite targeted bytecode-to-native gains. Source302 is applied: in-range two-fixnum +/− avoids argument staging, repeated dispatch, coercion and normalization after the same handler synchronization; other types and bignum results retain general fallback. |
 | 6. Adversarial audit | Existing evaluator/root/reporting controls and failed runs remain. New call-width and native ABI/GC controls use actual same-input GNU output; no expectations or original assertions are weakened. Final actual-source review of runtime, startup/images, loading, selection/comparison/reporting and deliberate evidence corruption remains required. |
-| 7. Equivalent performance | All16 workloads and the3% ceiling remain locked. The297/298/296 diagnostic verifies288 answers/modes; native median297 is1.836% lower than corrected298, raw aggregate0.989164. Bytecode calls, bytecode-to-native, sort and undo are slower than298, with all samples retained. Paired GNU aggregate2.886985× remains far from parity. Original/corrected baselines and rejected candidates remain. Real counters, calibration, prescribed repetitions/distributions and every-case acceptance remain open. |
-| 8. Complete validation | Source297 strict checks are warning-free,327 selected tests pass per profile and47 ordinary GNU comparisons pass. Exact Linux runs37284983243/37284989055 are in progress, full macOS unstarted. Source292 has3147 Linux Rust passes/two existing ignores and7928 matching frozen outcomes;296 has3147 Linux Rust passes/two ignores, all7928 frozen outcomes match. Earlier GNU census and Emaxx276 failures remain unexplained. Source286 macOS Rust3131 and terminal226/686 pass, but six frozen diagnostic differences remain. Final-source platform/release/frozen/terminal validation remains required. |
-| 9. Independently checkable delivery | Portable patches/manifests, raw commands/results, unfavorable samples and profiles are retained and verified. Source297 is applied/pushed; main remains 21d20f0e and PR79 is draft. Final source/evidence review and satisfaction of every architectural/performance requirement remain outstanding. |
+| 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. The297/302 diagnostic verifies192 answers/modes; native302 median is22.893% lower than297, raw geometric ratio0.981839. Other cases range from1.388% faster to0.506% slower and all samples remain. Source302's paired GNU aggregate2.785707× remains far from parity. Every original/corrected baseline and rejected candidate remains. Real counters, calibration, prescribed repetitions/distributions and every-case acceptance remain open. |
+| 8. Complete validation | Source302 strict checks are warning-free;328 selected tests pass per profile and48 actual GNU comparisons pass. Exact-source Linux and complete macOS validation are next. Predecessor297 Linux runs37284983243/37284989055 have raw-audited3148 Rust passes/two existing ignores and7928 equal frozen outcomes across519 files/1038 processes. Source292 has3147 Linux Rust passes/two existing ignores and7928 matching frozen outcomes;296 has3147 Linux Rust passes/two ignores, all7928 frozen outcomes match. Earlier GNU census and Emaxx276 failures remain unexplained. Source286 macOS Rust3131 and terminal226/686 pass, but six frozen diagnostic differences remain. Final-source platform/release/frozen/terminal validation remains required. |
+| 9. Independently checkable delivery | Portable patches/manifests, raw commands/results, unfavorable samples and profiles are retained and verified. Source302 is applied; publication and exact-source platform validation follow; main remains 21d20f0e and PR79 is draft. Final source/evidence review and satisfaction of every architectural/performance requirement remain outstanding. |
 
 Optional inlining291 and buffer lookups294/295 remain unapplied after their
 complete comparisons. Source293's reused-build validation is rejected. LF-only292
 and native296/297 are applied. Source298 preserves the null/empty correction alone.
 Unapplied300 follows299's formatting failure and has closed strict/selected/GNU
-comparison and timing evidence. Its two native-transition regressions keep it held
-while inline-only301 is tested. No301 runtime or speed pass is inferred.
+comparison and timing evidence. The closed297/300/301 cohort also verifies288 actual answers/modes, but forced
+inlining leaves301 native-to-bytecode12.098% slower and native execution5.648%
+slower than297. Both300/301 remain rejected and unapplied. The original192-process
+cohort and every unfavorable sample remain. Source302 is applied after its closed validation and comparison.
 
 Continue measured ordinary VM/call work from the current profiles. Complete real
 intervals, pure storage, symbol authority, adapters, actual allocator accounting
