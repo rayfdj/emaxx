@@ -27458,3 +27458,21 @@ fn bytecode_direct_dispatch_preserves_gnu_stack_arithmetic_and_branches() {
         "direct byte dispatch, slow arithmetic, branches and array effects",
     );
 }
+
+#[test]
+fn native_argument_words_preserve_gnu_order_identity_and_optional_slots() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/native-argument-words.el"),
+        include_str!("../../../tests/fixtures/native-argument-words.expected").trim_end(),
+        "native fixed, many, optional and rest argument words across collection",
+    );
+}
+
+#[test]
+fn bytecode_call_widths_preserve_gnu_arguments_across_execution_modes() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-call-widths.el"),
+        include_str!("../../../tests/fixtures/bytecode-call-widths.expected").trim_end(),
+        "packed, byte and word call operands with live arguments across collection",
+    );
+}

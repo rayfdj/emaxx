@@ -1,0 +1,53 @@
+(progn
+  (require 'bytecomp)
+  (require 'comp)
+  (let* ((lexical-binding t)
+         (body '(lambda (&rest arguments) (garbage-collect) arguments))
+         (interpreted (eval body t))
+         (compiled (byte-compile body))
+         (native (native-compile body))
+         (rows nil))
+    (unless (and (not (byte-code-function-p interpreted))
+                 (not (native-comp-function-p interpreted))
+                 (byte-code-function-p compiled)
+                 (native-comp-function-p native))
+      (error "Call-width fixture did not establish its execution modes"))
+    (dolist (callee (list (cons 'interpreted interpreted)
+                         (cons 'bytecode compiled)
+                         (cons 'native native)))
+      (dolist (encoding '(packed byte word))
+        (dolist (count '(0 1 2 3 4 5 6 17 255 256 257))
+          (when (or (eq encoding 'word)
+                    (and (eq encoding 'byte) (< count 256))
+                    (and (eq encoding 'packed) (< count 6)))
+            (let* ((arguments
+                    (mapcar (lambda (index) (cons (+ index 37) (vector index)))
+                            (number-sequence 1 count)))
+                   (constants (vconcat (vector (cdr callee)) arguments))
+                   (code
+                    (apply #'unibyte-string
+                           (append
+                            '(192)
+                            (apply #'append
+                                   (mapcar (lambda (index)
+                                             (list 129 (logand index 255)
+                                                   (lsh index -8)))
+                                           (number-sequence 1 count)))
+                            (cond ((eq encoding 'packed) (list (+ 32 count)))
+                                  ((eq encoding 'byte) (list 38 count))
+                                  (t (list 39 (logand count 255) (lsh count -8))))
+                            '(135))))
+                   (caller (make-byte-code 0 code constants (1+ count)))
+                   (answer (funcall caller))
+                   (left arguments)
+                   (right answer)
+                   (identical t))
+              (while left
+                (setq identical (and identical (eq (car left) (car right)))
+                      left (cdr left) right (cdr right)))
+              (push (list (car callee) encoding count
+                          (byte-code-function-p caller)
+                          (equal answer arguments) identical
+                          (apply #'+ (mapcar #'car answer)))
+                    rows))))))
+    (nreverse rows)))

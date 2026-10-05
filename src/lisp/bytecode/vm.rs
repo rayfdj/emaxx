@@ -10,7 +10,7 @@
 use super::super::eval::roots::{LispRootMarker, TraceLispRoots};
 use super::super::eval::{Interpreter, LabeledRestriction};
 use super::super::primitives;
-use super::super::types::{Env, LispError, Value, VectorRef};
+use super::super::types::{Env, LispError, Value};
 use super::{ArgSpec, ByteCodeObject, Op};
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
@@ -168,7 +168,7 @@ fn legacy_arity_error(function: &Value, nargs: usize) -> LispError {
 /// `bc_frame': the caller's program and pc, its stack top, and the
 /// watermarks the callee's return or error restores).
 struct BcFrame {
-    program: BytecodeActivation,
+    program: ByteCodeObject,
     pc: usize,
     /// The caller's slot holding the callee (Bcall's TOP after DISCARD):
     /// the callee's arguments and frame lie above it, and the return
@@ -435,7 +435,7 @@ enum FastExit {
 /// another kind) is left untouched at PC for the full dispatch.
 #[inline(never)]
 fn run_fast(
-    object: &BytecodeActivation,
+    object: &ByteCodeObject,
     code: &[u8],
     ops: &mut BcStack,
     pc: &mut usize,
@@ -499,6 +499,18 @@ fn run_fast(
             byte,
         };
         match byte {
+            // Bcall's argument count uses the same checked operand reader
+            // as the other packed families. Keep the instruction needed
+            // by the full call/error path without decoding the opcode again.
+            super::B_CALL..=0o047 => {
+                let count = operand!(reader.family_operand(super::B_CALL));
+                *pc = offset;
+                return FastExit::Slow(super::Instr {
+                    offset,
+                    len: reader.cursor - offset,
+                    op: Op::Call(count),
+                });
+            }
             0o001..=0o007 => {
                 let n = operand!(reader.family_operand(super::B_STACK_REF));
                 at = reader.cursor;
@@ -758,17 +770,7 @@ fn run_fast(
     }
 }
 
-/// Entry fields read from the shared closure; no decoded program or heap
-/// activation. Suspended frames retain these handles and a byte-offset PC.
-#[derive(Clone)]
-pub struct BytecodeActivation {
-    pub argspec: ArgSpec,
-    pub code: super::CodeBytes,
-    pub constants: VectorRef,
-    pub stack_depth: usize,
-}
-
-impl TraceLispRoots for BytecodeActivation {
+impl TraceLispRoots for ByteCodeObject {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         marker.value(&self.code.original());
         marker.value(&Value::Vector(self.constants));
@@ -778,7 +780,7 @@ impl TraceLispRoots for BytecodeActivation {
     }
 }
 
-impl BytecodeActivation {
+impl ByteCodeObject {
     #[inline]
     fn constant(&self, index: u16) -> Value {
         // bytecode.c reads vectorp[index] at the instruction, not a copy
@@ -789,27 +791,17 @@ impl BytecodeActivation {
     }
 }
 
-fn build_activation(object: &ByteCodeObject) -> Result<BytecodeActivation, LispError> {
-    Ok(BytecodeActivation {
-        argspec: object.argspec,
-        code: object.code,
-        constants: object.constants,
-        stack_depth: object.stack_depth,
-    })
-}
-
 pub(crate) fn closure_program(
     closure: crate::lisp::types::ClosureRef,
-) -> Result<BytecodeActivation, LispError> {
-    let object = ByteCodeObject::from_closure(closure)
+) -> Result<ByteCodeObject, LispError> {
+    ByteCodeObject::from_closure(closure)
         .map_err(|error| LispError::Signal(error.to_string()))?
         .ok_or_else(|| {
             LispError::SignalValue(Value::list([
                 Value::symbol("invalid-function"),
                 Value::Closure(closure),
             ]))
-        })?;
-    build_activation(&object)
+        })
 }
 
 /// Read the actual PVEC_CLOSURE fields and dispatch from its code bytes.
@@ -832,7 +824,7 @@ pub fn execute(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let program = build_activation(object)?;
+    let program = object.clone();
     run(interp, program, Value::Nil, args, env)
 }
 
@@ -842,7 +834,7 @@ pub fn execute(
 /// and the stack cut back to the entry mark on the way out.
 fn run(
     interp: &mut Interpreter,
-    program: BytecodeActivation,
+    program: ByteCodeObject,
     function: Value,
     args: &[Value],
     env: &mut Env,
@@ -909,7 +901,7 @@ fn run(
 /// loop (`goto setup_frame'), its return pops it.
 fn run_frames(
     interp: &mut Interpreter,
-    mut program: BytecodeActivation,
+    mut program: ByteCodeObject,
     function: Value,
     args: &[Value],
     env: &mut Env,
@@ -2824,7 +2816,7 @@ mod native_surface_tests {
         let object = ByteCodeObject::from_slots(&slots)
             .expect("valid bytecode")
             .expect("bytecode slots");
-        let program = build_activation(&object).expect("decoded program");
+        let program = object.clone();
         let Kind::Vector(vector) = constants.kind() else {
             panic!("constants vector")
         };

@@ -1129,24 +1129,30 @@ impl NativeRuntime {
         let mut invocation = NativeInvocation::new(target);
         self.begin_call(invocation.jump_buffer(), interpreter);
 
-        // GNU passes each Lisp_Object to generated code unchanged.
+        // eval.c:funcall_subr passes the authoritative Lisp_Object words
+        // directly to a fixed-arity entry. Fill the trampoline's register
+        // slots once, without first staging the same words in a SmallVec.
+        // MANY retains owned, writable argument storage for its pointer ABI;
+        // no native pointer aliases the caller's shared Rust Value slice.
         let mut encoded = smallvec::SmallVec::<[NativeWord; 8]>::new();
-        for argument in arguments {
-            let word = match self.heap.encode(argument) {
-                Ok(word) => word,
-                Err(error) => {
-                    let finish = self.finish_call(interpreter);
-                    finish?;
-                    return Err(super::lisp::native_ice(&error));
-                }
-            };
-            encoded.push(word);
-        }
         match convention {
             NativeCallingConvention::Fixed => {
-                invocation.arguments[..encoded.len()].copy_from_slice(&encoded);
+                for (slot, argument) in invocation.arguments.iter_mut().zip(arguments) {
+                    *slot = argument.word();
+                }
             }
             NativeCallingConvention::Many => {
+                for argument in arguments {
+                    let word = match self.heap.encode(argument) {
+                        Ok(word) => word,
+                        Err(error) => {
+                            let finish = self.finish_call(interpreter);
+                            finish?;
+                            return Err(super::lisp::native_ice(&error));
+                        }
+                    };
+                    encoded.push(word);
+                }
                 invocation.arguments[0] = encoded.len();
                 invocation.arguments[1] = encoded.as_ptr() as NativeWord;
             }

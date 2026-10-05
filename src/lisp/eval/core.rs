@@ -1288,7 +1288,7 @@ impl Interpreter {
     pub(crate) fn bytecode_callee(
         &self,
         func: &Value,
-    ) -> Option<(crate::lisp::bytecode::vm::BytecodeActivation, Value)> {
+    ) -> Option<(crate::lisp::bytecode::ByteCodeObject, Value)> {
         if profile_path().is_some() {
             return None;
         }

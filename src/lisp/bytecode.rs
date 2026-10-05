@@ -647,6 +647,8 @@ impl CodeBytes {
     }
 }
 
+/// Entry fields read from the shared closure. The VM uses this same value;
+/// there is no second activation representation or retained decoded program.
 #[derive(Clone, Debug)]
 pub struct ByteCodeObject {
     pub argspec: ArgSpec,
@@ -713,13 +715,6 @@ pub fn slots_are_genuine_bytecode(slots: &[Value]) -> bool {
         && matches!(slots[3].kind(), Kind::Integer(_))
 }
 
-fn constant_vector(value: &Value) -> Option<VectorRef> {
-    let Kind::Vector(vector) = value.kind() else {
-        return None;
-    };
-    Some(vector)
-}
-
 impl ByteCodeObject {
     /// Parse and validate a genuine byte-code function from record
     /// slots ([argspec, code, constants, depth, doc?, interactive?]).
@@ -748,29 +743,30 @@ impl ByteCodeObject {
         len: usize,
         field: impl Fn(usize) -> Option<Value>,
     ) -> Result<Option<Self>, ByteCodeError> {
-        if len < 4
-            || !matches!(
-                field(0).map(|value| value.kind()),
-                Some(Kind::Integer(_) | Kind::Nil | Kind::Cons(_))
-            )
-            || !field(1).is_some_and(|value| value.is_string())
-            || !matches!(field(2).map(|value| value.kind()), Some(Kind::Vector(_)))
-            || !matches!(field(3).map(|value| value.kind()), Some(Kind::Integer(_)))
+        if len < 4 {
+            return Ok(None);
+        }
+        // bytecode.c:setup_frame reads the closure's actual fields once.
+        // No callback runs here, so retain those words through validation
+        // instead of reloading and reclassifying the same slots.
+        let (Some(arguments), Some(code), Some(constants), Some(depth)) =
+            (field(0), field(1), field(2), field(3))
+        else {
+            return Ok(None);
+        };
+        if !matches!(
+            arguments.kind(),
+            Kind::Integer(_) | Kind::Nil | Kind::Cons(_)
+        ) || !code.is_string()
         {
             return Ok(None);
         }
-        let argspec = ArgSpec::from_value(&field(0).expect("validated argument slot"))?;
-        let code_slot = field(1).expect("validated code slot");
-        let code = CodeBytes::new(code_slot)?;
-        let constants =
-            constant_vector(&field(2).expect("validated constants slot")).ok_or_else(|| {
-                ByteCodeError::MalformedObject("constants slot is not a vector".into())
-            })?;
-        let Kind::Integer(depth) = field(3).expect("validated depth slot").kind() else {
-            return Err(ByteCodeError::MalformedObject(
-                "stack depth slot is not an integer".into(),
-            ));
+        let (Kind::Vector(constants), Kind::Integer(depth)) = (constants.kind(), depth.kind())
+        else {
+            return Ok(None);
         };
+        let argspec = ArgSpec::from_value(&arguments)?;
+        let code = CodeBytes::new(code)?;
         if depth < 0 {
             return Err(ByteCodeError::MalformedObject(format!(
                 "negative stack depth {depth}"
