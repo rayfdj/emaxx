@@ -1,5 +1,68 @@
 # Native call routing and argument boundaries — 5 October 2026
 
+## Native Bcall candidate held; inline-only comparison running — 5 October 2026
+
+**Applied runtime remains source297 (`4af440a9`)**. Source300 shares the ordinary
+native call body with Bcall after its existing function resolution, removing a
+second symbol/alias lookup and general dispatch. All 532 inputs/modes replay;
+strict checks are warning-free, **327 tests pass per profile**, and **47 actual
+GNU comparisons** pass. Every original test, assertion and fixture remains.
+
+The [closed source300 comparison](handover/2026-09-30-shared-reader-draft/source300-native-bytecode-performance-manifest.json)
+verifies all **192 process results/modes**. Bytecode-to-native median time falls
+**11.579%**, but native-to-interpreted and native-to-bytecode are **4.652% and
+6.609% slower**. The raw body geometric ratio is0.993933; GNU paired ratio is
+2.886033×. Source300 is **held and unapplied** while the extracted helper's inlining
+cost is checked. No causal explanation or final statistical acceptance is claimed.
+
+[Source301's portable draft](handover/2026-09-30-shared-reader-draft/source301-native-bytecode-inline-draft-manifest.json)
+changes only that helper from `#[inline]` to `#[inline(always)]`. Its strict checks
+are warning-free; selected validation is running and a rotated297/300/301 full16
+comparison is queued. Inspect `native-bytecode-inlining-selection-closed-*` and
+`native-bytecode-inlining-performance-sequence-closed-*` receipts under
+`target/runtime-goal/resume-2026-09-28`. Preserve original300 timing and the frozen
+checkouts; do not restart completed write-once producers. Source299's formatting
+failure and source300's preparer assertion correction are retained separately.
+
+[Complete source296 Linux results](handover/2026-09-30-shared-reader-draft/source296-complete-linux-results-manifest.json)
+now verify exact68ca5d88: **3,147 Rust passes/two existing ignores**, **519 frozen
+files/7,928 equal outcomes/1,038 successful processes**, native artifact identity,
+177 compiler controls and retained pinned GNU inputs. These results do not certify
+later source. Exact297 Linux runs37284983243/37284989055 are in progress; full macOS
+is unstarted. The60 original width failures, prior GNU census failures and source276
+Emaxx negative remain open. Main, draft PR and all full-goal criteria remain unchanged.
+
+The [selected source300 archive](handover/2026-09-30-shared-reader-draft/source300-native-bytecode-selected-manifest.json)
+contains the fresh builds, exact inventories, all47 ordinary GNU outputs and both
+portable replays. The original broad probe still differs in its same60 column-width
+rows. Extracting the call body does not close existing call-resolution/GC ordering,
+native record ownership or any other full-goal gap. Source301 adds no semantic or
+test changes. Its measurement changes no workload, timeout, selector or tolerance.
+
+| Case | Applied297 / GNU | Held300 / GNU | 300 body vs297 |
+| --- | ---: | ---: | ---: |
+| interpreted-lexical | 2.4968× | 2.4946× | -4.266% |
+| interpreted-dynamic | 2.1826× | 2.1418× | +2.382% |
+| interpreted-calls | 2.8221× | 2.7143× | -0.282% |
+| bytecode-calls | 4.0279× | 4.1092× | +1.075% |
+| native-execution | 2.8936× | 2.8216× | +1.800% |
+| interpreted-to-native | 2.4323× | 2.4945× | -0.420% |
+| bytecode-to-native | 8.4464× | 7.5719× | -11.579% |
+| native-to-interpreted | 2.7422× | 2.8969× | +4.652% |
+| native-to-bytecode | 2.8566× | 2.9748× | +6.609% |
+| cons-allocation | 1.8403× | 1.8280× | -0.364% |
+| list-traversal | 1.9959× | 2.0427× | -1.473% |
+| mapcar | 2.2377× | 2.2345× | -2.428% |
+| explicit-gc | 1.0603× | 1.0549× | +1.795% |
+| upstream-sort | 5.1048× | 5.2527× | -0.010% |
+| upstream-undo | 5.4614× | 5.5163× | -3.582% |
+| upstream-bindat | 3.4079× | 3.3187× | -2.310% |
+
+Every sample remains. These three one-sample/no-warmup pilots per source are
+separate from builds/tests/profiles, and all body intervals exceed100ms. Real
+counters, calibrated nine-round distributions and every-case upper95% GNU ratio
+at most1.03 remain required. The sections below retain earlier applied checkpoints.
+
 The [full goal](runtime-representation-goal.md) remains active and incomplete.
 **Source297 is applied** after source296 below. Main remains `21d20f0e`; PR79 is draft.
 The immutable `funcall` descriptor enters its existing guarded handler immediately

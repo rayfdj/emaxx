@@ -1,0 +1,32 @@
+{
+  "runtime_source": "source297",
+  "source_commit": "4af440a93be274739b3745d26e9026e12974b411",
+  "linux": [
+    {
+      "run_id": 37284983243,
+      "state": {
+        "conclusion": "",
+        "headSha": "4af440a93be274739b3745d26e9026e12974b411",
+        "status": "queued",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/37284983243"
+      },
+      "source_commit": "4af440a93be274739b3745d26e9026e12974b411",
+      "runtime_source": "source297",
+      "qualification": "Exact pushed source297 with532 verified inputs,327 selected passes per profile,47 ordinary GNU comparisons and288 diagnostic process results/modes. Full platform, ownership/counters, final audit and GNU parity remain open."
+    },
+    {
+      "run_id": 37284989055,
+      "state": {
+        "conclusion": "",
+        "headSha": "4af440a93be274739b3745d26e9026e12974b411",
+        "status": "queued",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/37284989055"
+      },
+      "source_commit": "4af440a93be274739b3745d26e9026e12974b411",
+      "runtime_source": "source297",
+      "qualification": "Exact pushed source297 with532 verified inputs,327 selected passes per profile,47 ordinary GNU comparisons and288 diagnostic process results/modes. Full platform, ownership/counters, final audit and GNU parity remain open."
+    }
+  ],
+  "macos": "unstarted",
+  "goal_complete": false
+}

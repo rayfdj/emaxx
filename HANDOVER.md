@@ -16,6 +16,38 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
+## Native Bcall candidate held; inline-only comparison running — 5 October 2026
+
+**Applied runtime remains source297 (`4af440a9`)**. Source300 shares the ordinary
+native call body with Bcall after its existing function resolution, removing a
+second symbol/alias lookup and general dispatch. All 532 inputs/modes replay;
+strict checks are warning-free, **327 tests pass per profile**, and **47 actual
+GNU comparisons** pass. Every original test, assertion and fixture remains.
+
+The [closed source300 comparison](docs/handover/2026-09-30-shared-reader-draft/source300-native-bytecode-performance-manifest.json)
+verifies all **192 process results/modes**. Bytecode-to-native median time falls
+**11.579%**, but native-to-interpreted and native-to-bytecode are **4.652% and
+6.609% slower**. The raw body geometric ratio is0.993933; GNU paired ratio is
+2.886033×. Source300 is **held and unapplied** while the extracted helper's inlining
+cost is checked. No causal explanation or final statistical acceptance is claimed.
+
+[Source301's portable draft](docs/handover/2026-09-30-shared-reader-draft/source301-native-bytecode-inline-draft-manifest.json)
+changes only that helper from `#[inline]` to `#[inline(always)]`. Its strict checks
+are warning-free; selected validation is running and a rotated297/300/301 full16
+comparison is queued. Inspect `native-bytecode-inlining-selection-closed-*` and
+`native-bytecode-inlining-performance-sequence-closed-*` receipts under
+`target/runtime-goal/resume-2026-09-28`. Preserve original300 timing and the frozen
+checkouts; do not restart completed write-once producers. Source299's formatting
+failure and source300's preparer assertion correction are retained separately.
+
+[Complete source296 Linux results](docs/handover/2026-09-30-shared-reader-draft/source296-complete-linux-results-manifest.json)
+now verify exact68ca5d88: **3,147 Rust passes/two existing ignores**, **519 frozen
+files/7,928 equal outcomes/1,038 successful processes**, native artifact identity,
+177 compiler controls and retained pinned GNU inputs. These results do not certify
+later source. Exact297 Linux runs37284983243/37284989055 are in progress; full macOS
+is unstarted. The60 original width failures, prior GNU census failures and source276
+Emaxx negative remain open. Main, draft PR and all full-goal criteria remain unchanged.
+
 ## Applied native dispatch checkpoint — 5 October 2026
 
 **Source297 is applied**, including the null/empty MANY argument repair. Read the
