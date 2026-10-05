@@ -1,0 +1,32 @@
+{
+  "runtime_source": "source296",
+  "source_commit": "68ca5d8819ddae6f699ac7eeae694b1b19867261",
+  "linux": [
+    {
+      "run_id": 37280524716,
+      "state": {
+        "conclusion": "",
+        "headSha": "68ca5d8819ddae6f699ac7eeae694b1b19867261",
+        "status": "in_progress",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/37280524716"
+      },
+      "source_commit": "68ca5d8819ddae6f699ac7eeae694b1b19867261",
+      "runtime_source": "source296",
+      "qualification": "Exact pushed source296,532 verified inputs,326 selected passes per profile and47 ordinary GNU comparisons. Diagnostic192 results/modes verify, with all unfavorable cases preserved. Full platform, counters/ownership and GNU parity remain open."
+    },
+    {
+      "run_id": 37280528176,
+      "state": {
+        "conclusion": "",
+        "headSha": "68ca5d8819ddae6f699ac7eeae694b1b19867261",
+        "status": "in_progress",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/37280528176"
+      },
+      "source_commit": "68ca5d8819ddae6f699ac7eeae694b1b19867261",
+      "runtime_source": "source296",
+      "qualification": "Exact pushed source296,532 verified inputs,326 selected passes per profile and47 ordinary GNU comparisons. Diagnostic192 results/modes verify, with all unfavorable cases preserved. Full platform, counters/ownership and GNU parity remain open."
+    }
+  ],
+  "macos": "unstarted",
+  "goal_complete": false
+}

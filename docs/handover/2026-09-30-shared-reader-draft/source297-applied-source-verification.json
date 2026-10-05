@@ -1,0 +1,39 @@
+{
+  "status": "source297 applied; all532 validated bytes and modes verified",
+  "base_commit": "68ca5d8819ddae6f699ac7eeae694b1b19867261",
+  "patch_sha256": "a921791673dfac65df483c66e04251832ffd9bcc8efd0c96f9436e16e57ecb75",
+  "steps": [
+    {
+      "command": [
+        "git",
+        "apply",
+        "--check",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source297-portable-incremental.patch"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "apply",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source297-portable-incremental.patch"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "goal_complete": false
+}

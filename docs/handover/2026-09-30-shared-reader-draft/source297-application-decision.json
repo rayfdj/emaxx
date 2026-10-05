@@ -1,0 +1,263 @@
+{
+  "status": "apply source297 after closed selected validation and three-way full16 diagnostic",
+  "applied_source": "source297",
+  "corrected_baseline": "source298 retained separately, unapplied",
+  "evidence": {
+    "source297-selected-audit.json": "74c3e5bdcfe9d81c43b0eb89a99ff7d258a082ae6815cff3893a28c58b59fc09",
+    "source298-selected-audit.json": "48c9634753b6138c94858fca1c1c6d8ee71ef13649f5733c6933d31e9cb38b1c",
+    "native-dispatch-performance-audit.json": "bddd55f0231a4038bb29c3fd1960c27e28dae9fcac6544bbf00743f6d5a72720",
+    "source297-static-review.json": "59125370dd5676e11f5222aec35c38f9226c45135bbcaeaee3a53b3deacb9e9c"
+  },
+  "geometric_mean_body_optimized_over_corrected": 0.9891640792472657,
+  "geometric_mean_body_optimized_over_original": 0.9961347663640221,
+  "geometric_mean_gnu_ratios": {
+    "source296": 2.9224954116040815,
+    "source298": 2.9369005336376195,
+    "source297": 2.886985220596495
+  },
+  "cases": [
+    {
+      "case": "interpreted-lexical",
+      "emaxx_median_seconds": {
+        "source296": 0.5163500308990479,
+        "source298": 0.5260040760040283,
+        "source297": 0.5180840492248535
+      },
+      "median_gnu_ratios": {
+        "source296": 2.4260353107360455,
+        "source298": 2.4680074905361504,
+        "source297": 2.4606697709474075
+      },
+      "optimized_over_corrected": 0.9849430315457971,
+      "corrected_over_original": 1.018696706744011
+    },
+    {
+      "case": "interpreted-dynamic",
+      "emaxx_median_seconds": {
+        "source296": 0.3936619758605957,
+        "source298": 0.3982410430908203,
+        "source297": 0.39709901809692383
+      },
+      "median_gnu_ratios": {
+        "source296": 2.1370954137630265,
+        "source298": 2.1757996696591864,
+        "source297": 2.173194956211313
+      },
+      "optimized_over_corrected": 0.9971323272331927,
+      "corrected_over_original": 1.011631977460394
+    },
+    {
+      "case": "interpreted-calls",
+      "emaxx_median_seconds": {
+        "source296": 0.7104501724243164,
+        "source298": 0.7462430000305176,
+        "source297": 0.7138509750366211
+      },
+      "median_gnu_ratios": {
+        "source296": 2.6502191069738923,
+        "source298": 2.9124750971687305,
+        "source297": 2.6253396640843865
+      },
+      "optimized_over_corrected": 0.9565931941839698,
+      "corrected_over_original": 1.0503804897169113
+    },
+    {
+      "case": "bytecode-calls",
+      "emaxx_median_seconds": {
+        "source296": 0.5477240085601807,
+        "source298": 0.5381839275360107,
+        "source297": 0.5393271446228027
+      },
+      "median_gnu_ratios": {
+        "source296": 4.190509284593777,
+        "source298": 4.119692078017122,
+        "source297": 4.014399366811181
+      },
+      "optimized_over_corrected": 1.0021242126126397,
+      "corrected_over_original": 0.9825823208859362
+    },
+    {
+      "case": "native-execution",
+      "emaxx_median_seconds": {
+        "source296": 1.576117992401123,
+        "source298": 1.5960359573364258,
+        "source297": 1.5667338371276855
+      },
+      "median_gnu_ratios": {
+        "source296": 2.9133351331074335,
+        "source298": 2.9035047974529538,
+        "source297": 2.9223211014912303
+      },
+      "optimized_over_corrected": 0.9816406891874532,
+      "corrected_over_original": 1.0126373564868445
+    },
+    {
+      "case": "interpreted-to-native",
+      "emaxx_median_seconds": {
+        "source296": 0.4546661376953125,
+        "source298": 0.45833396911621094,
+        "source297": 0.4582970142364502
+      },
+      "median_gnu_ratios": {
+        "source296": 2.4322703303616113,
+        "source298": 2.5174192940091875,
+        "source297": 2.4810901510800187
+      },
+      "optimized_over_corrected": 0.9999193712832762,
+      "corrected_over_original": 1.0080670872906667
+    },
+    {
+      "case": "bytecode-to-native",
+      "emaxx_median_seconds": {
+        "source296": 1.3545658588409424,
+        "source298": 1.3490421772003174,
+        "source297": 1.3502979278564453
+      },
+      "median_gnu_ratios": {
+        "source296": 8.765941656676372,
+        "source298": 8.589821453761667,
+        "source297": 8.680752880507256
+      },
+      "optimized_over_corrected": 1.0009308461050002,
+      "corrected_over_original": 0.9959221756516502
+    },
+    {
+      "case": "native-to-interpreted",
+      "emaxx_median_seconds": {
+        "source296": 0.5945949554443359,
+        "source298": 0.6102018356323242,
+        "source297": 0.5942790508270264
+      },
+      "median_gnu_ratios": {
+        "source296": 2.752141502720526,
+        "source298": 2.816985306257223,
+        "source297": 2.644449819801755
+      },
+      "optimized_over_corrected": 0.973905708119023,
+      "corrected_over_original": 1.0262479189321836
+    },
+    {
+      "case": "native-to-bytecode",
+      "emaxx_median_seconds": {
+        "source296": 0.6004910469055176,
+        "source298": 0.6035399436950684,
+        "source297": 0.6029129028320312
+      },
+      "median_gnu_ratios": {
+        "source296": 2.968892148274579,
+        "source298": 2.970833945736206,
+        "source297": 2.9743344856017417
+      },
+      "optimized_over_corrected": 0.9989610615343897,
+      "corrected_over_original": 1.005077339296335
+    },
+    {
+      "case": "cons-allocation",
+      "emaxx_median_seconds": {
+        "source296": 0.3694489002227783,
+        "source298": 0.36852478981018066,
+        "source297": 0.363023042678833
+      },
+      "median_gnu_ratios": {
+        "source296": 1.8124008353132712,
+        "source298": 1.7943477705675446,
+        "source297": 1.7277745879223754
+      },
+      "optimized_over_corrected": 0.9850708899822411,
+      "corrected_over_original": 0.9974986786750741
+    },
+    {
+      "case": "list-traversal",
+      "emaxx_median_seconds": {
+        "source296": 0.6130251884460449,
+        "source298": 0.6074669361114502,
+        "source297": 0.6026139259338379
+      },
+      "median_gnu_ratios": {
+        "source296": 2.080935916707517,
+        "source298": 2.0127794340931318,
+        "source297": 2.0373596151287003
+      },
+      "optimized_over_corrected": 0.9920110710737976,
+      "corrected_over_original": 0.9909330767489598
+    },
+    {
+      "case": "mapcar",
+      "emaxx_median_seconds": {
+        "source296": 0.3416879177093506,
+        "source298": 0.3365640640258789,
+        "source297": 0.33567285537719727
+      },
+      "median_gnu_ratios": {
+        "source296": 2.376897140212987,
+        "source298": 2.2260116500200264,
+        "source297": 2.261678530313103
+      },
+      "optimized_over_corrected": 0.9973520386044152,
+      "corrected_over_original": 0.9850042877786794
+    },
+    {
+      "case": "explicit-gc",
+      "emaxx_median_seconds": {
+        "source296": 0.19260406494140625,
+        "source298": 0.2018589973449707,
+        "source297": 0.19214200973510742
+      },
+      "median_gnu_ratios": {
+        "source296": 1.0982954980809552,
+        "source298": 1.1248832478811899,
+        "source297": 1.078541589234532
+      },
+      "optimized_over_corrected": 0.951862499379915,
+      "corrected_over_original": 1.0480515943751239
+    },
+    {
+      "case": "upstream-sort",
+      "emaxx_median_seconds": {
+        "source296": 1.7927048206329346,
+        "source298": 1.7817649841308594,
+        "source297": 1.7982909679412842
+      },
+      "median_gnu_ratios": {
+        "source296": 5.269287071574355,
+        "source298": 5.135067499737175,
+        "source297": 5.240478652003902
+      },
+      "optimized_over_corrected": 1.0092750637472463,
+      "corrected_over_original": 0.9938975806969645
+    },
+    {
+      "case": "upstream-undo",
+      "emaxx_median_seconds": {
+        "source296": 0.6762351989746094,
+        "source298": 0.6685011386871338,
+        "source297": 0.6726350784301758
+      },
+      "median_gnu_ratios": {
+        "source296": 5.326532605184679,
+        "source298": 5.572098346056749,
+        "source297": 5.469780102600691
+      },
+      "optimized_over_corrected": 1.006183893345583,
+      "corrected_over_original": 0.9885630616400878
+    },
+    {
+      "case": "upstream-bindat",
+      "emaxx_median_seconds": {
+        "source296": 0.619239091873169,
+        "source298": 0.6196229457855225,
+        "source297": 0.6139421463012695
+      },
+      "median_gnu_ratios": {
+        "source296": 3.5066041623041952,
+        "source298": 3.497096655138948,
+        "source297": 3.391083567521156
+      },
+      "optimized_over_corrected": 0.9908318445549961,
+      "corrected_over_original": 1.0006198799742962
+    }
+  ],
+  "reason": "The existing guarded funcall path moves ahead of irrelevant immutable primitive-name tests, after unchanged handler synchronization. This removes concrete routing work without adding state, specialization or a new lifecycle. The separate null/empty MANY slice correction eliminates invalid Rust slice construction and preserves GNU Flist nonpositive-count behavior. Both candidates pass327 selected tests per profile and47 ordinary GNU comparisons. All288 measured process results/modes verify. Native body median is1.836% lower than corrected298; geometric body ratio0.989164. Bytecode calls, bytecode-to-native, sort and undo are0.212%,0.093%,0.928%,0.618% slower. All samples remain; the diagnostic does not establish statistical significance or explain every difference.",
+  "qualification": "Original296, corrected298 and optimized297 each have three rotated full16 pilots, one sample/no warmup per pilot. Real allocation counters, calibrated nine-round/every-case3% acceptance, remaining architecture/ownership, complete exact-source platform validation and final audit remain required. Existing60 display-column failures and historical GNU/Emaxx census failures stay open. No workload, result, timeout, selector, GC cadence or tolerance changes.",
+  "goal_complete": false
+}

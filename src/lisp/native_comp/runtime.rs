@@ -1512,6 +1512,13 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             remember_helper_error(active, error);
             return 0;
         }
+        // GNU native code enters Ffuncall directly. After synchronizing
+        // handlers, use the same call path before unrelated primitive checks.
+        if subroutine.name == "funcall"
+            && let Some(result) = invoke_native_funcall(active, arguments)
+        {
+            return result;
+        }
         if arguments.len() == 2
             && let (Some(left), Some(right)) =
                 (decode_fixnum(arguments[0]), decode_fixnum(arguments[1]))
@@ -1629,11 +1636,6 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
         }
         if subroutine.name == "get" && arguments.len() == 2 {
             return invoke_native_get(active, arguments[0], arguments[1]);
-        }
-        if subroutine.name == "funcall"
-            && let Some(result) = invoke_native_funcall(active, arguments)
-        {
-            return result;
         }
         if subroutine.name == "apply"
             && let Some(result) = invoke_native_apply(active, arguments)
@@ -3178,9 +3180,15 @@ pub(crate) unsafe fn invoke_subr_many(
     if argument_count != 0 && arguments.is_null() {
         return invoke_subr_error("native subroutine arguments are null");
     }
-    // SAFETY: Generated code passes the count and pointer pair used by GNU's
-    // MANY ABI.  The zero-length case permits a null pointer.
-    let arguments = unsafe { std::slice::from_raw_parts(arguments, argument_count) };
+    let arguments = if argument_count == 0 {
+        // GNU's MANY ABI may supply null for no arguments. Even an empty
+        // Rust slice must have a nonnull aligned address.
+        &[]
+    } else {
+        // SAFETY: Generated code supplies the GNU MANY count/pointer pair;
+        // the nonempty pointer was checked above.
+        unsafe { std::slice::from_raw_parts(arguments, argument_count) }
+    };
     invoke_subr(index, arguments)
 }
 
@@ -7508,6 +7516,40 @@ mod tests {
                     .expect("cleanup returns to generated code"),
                 Value::Nil
             );
+        }
+    }
+
+    #[test]
+    fn native_many_empty_and_negative_list_counts_accept_null_storage() {
+        extern "C" fn call_empty_list(count: NativeWord) -> NativeWord {
+            let index = super::super::abi::native_subrs()
+                .iter()
+                .position(|subroutine| subroutine.name == "list")
+                .expect("list belongs to the native ABI");
+            let count = decode_fixnum(count).expect("test count is a fixnum") as isize;
+            // alloc.c:Flist never reads args for any non-positive count.
+            unsafe { invoke_subr_many(index, count, std::ptr::null()) }
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        for count in [0, -1, -7] {
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        call_empty_list as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[Value::Integer(count)],
+                    )
+                    .expect("an empty native list does not read null storage"),
+                Value::Nil,
+            );
+            assert_eq!(interpreter.backtrace_frames_len(), 0);
+            assert_eq!(interpreter.lisp_eval_depth, 0);
+            assert!(runtime.calls.is_empty());
         }
     }
 

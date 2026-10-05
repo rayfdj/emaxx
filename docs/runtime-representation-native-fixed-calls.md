@@ -1,4 +1,84 @@
-# Native fixed-call argument staging — 5 October 2026
+# Native call routing and argument boundaries — 5 October 2026
+
+The [full goal](runtime-representation-goal.md) remains active and incomplete.
+**Source297 is applied** after source296 below. Main remains `21d20f0e`; PR79 is draft.
+The immutable `funcall` descriptor enters its existing guarded handler immediately
+after handler synchronization, before unrelated primitive-name/type checks. All
+fallback, debugger, backtrace, GC, roots, arity/error order and unwind behavior remain.
+GNU native calls enter `Ffuncall` directly; no new lookup, cache or lifecycle is added.
+
+The MANY argument boundary now uses `&[]` for zero arguments. Rust requires an
+aligned nonnull address even for an empty slice; generated GNU ABI callers may
+supply null. GNU `alloc.c:Flist` returns nil without reading storage for every
+nonpositive count. One test invokes the real native trampoline with null storage
+and counts 0, -1 and -7, checking nil and balanced call state. Positive counts and
+all prior tests/assertions/fixtures are unchanged. Correctness-only source298 keeps
+the complete original296 router so the cost of this repair remains visible.
+
+The [closed selected evidence](handover/2026-09-30-shared-reader-draft/source297-298-native-dispatch-selected-manifest.json)
+verifies both 532-input byte/mode replays, fresh gate/release/ordinary builds and
+warning-free strict checks. Each candidate passes **327 selected tests per profile,
+zero failures/ignores**, and **47 ordinary GNU comparisons**. The complete broad
+probe still fails its same 60 display-column rows. Both suspended-root contracts
+remain. The original helper-generation error and its correction are retained.
+
+The [closed three-way diagnostic](handover/2026-09-30-shared-reader-draft/source297-298-native-dispatch-performance-manifest.json)
+verifies **288 actual process answers and modes** across three rotated full16 pilots
+per source. All bodies exceed 100 ms. Build, test and profile work is separate from
+timing. Source297's raw body geometric ratio is **0.989164 versus corrected298**,
+**0.996135 versus original296**. Native execution's median is 1.836% lower than298.
+All unfavorable cases, startup/total/RSS/GC reports and unavailable-counter errors
+remain. Three small samples do not establish statistical significance or explain
+all differences. Source297's paired GNU ratio geometric mean is **2.886985×**;
+calibration, real counters, prescribed nine rounds and every-case upper 95% ratio
+at most 1.03 remain required.
+
+| Case | Original296 / GNU | Corrected298 / GNU | Source297 / GNU | 297 body vs298 | 298 body vs296 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| interpreted-lexical | 2.4260× | 2.4680× | 2.4607× | -1.506% | +1.870% |
+| interpreted-dynamic | 2.1371× | 2.1758× | 2.1732× | -0.287% | +1.163% |
+| interpreted-calls | 2.6502× | 2.9125× | 2.6253× | -4.341% | +5.038% |
+| bytecode-calls | 4.1905× | 4.1197× | 4.0144× | +0.212% | -1.742% |
+| native-execution | 2.9133× | 2.9035× | 2.9223× | -1.836% | +1.264% |
+| interpreted-to-native | 2.4323× | 2.5174× | 2.4811× | -0.008% | +0.807% |
+| bytecode-to-native | 8.7659× | 8.5898× | 8.6808× | +0.093% | -0.408% |
+| native-to-interpreted | 2.7521× | 2.8170× | 2.6444× | -2.609% | +2.625% |
+| native-to-bytecode | 2.9689× | 2.9708× | 2.9743× | -0.104% | +0.508% |
+| cons-allocation | 1.8124× | 1.7943× | 1.7278× | -1.493% | -0.250% |
+| list-traversal | 2.0809× | 2.0128× | 2.0374× | -0.799% | -0.907% |
+| mapcar | 2.3769× | 2.2260× | 2.2617× | -0.265% | -1.500% |
+| explicit-gc | 1.0983× | 1.1249× | 1.0785× | -4.814% | +4.805% |
+| upstream-sort | 5.2693× | 5.1351× | 5.2405× | +0.928% | -0.610% |
+| upstream-undo | 5.3265× | 5.5721× | 5.4698× | +0.618% | -1.144% |
+| upstream-bindat | 3.5066× | 3.4971× | 3.3911× | -0.917% | +0.062% |
+
+The [application decision](handover/2026-09-30-shared-reader-draft/source297-application-decision.json)
+retains this measured tradeoff without claiming final acceptance. [Applied bytes
+and modes](handover/2026-09-30-shared-reader-draft/source297-applied-source-verification.json)
+match all validated inputs. All selected/timing coordinators are closed. Frozen
+checkouts are `target/runtime-goal/recovered-2026-10-05/native-funcall-dispatch/emaxx`
+and `native-empty-arguments/emaxx`; receipts and helpers remain under
+`target/runtime-goal/resume-2026-09-28`. Do not restart write-once producers.
+The [original launch package](handover/2026-09-30-shared-reader-draft/source297-298-native-dispatch-drafts-manifest.json)
+remains historical; the closed results above supersede its unfinished states.
+
+[Complete source292 Linux results](handover/2026-09-30-shared-reader-draft/source292-complete-linux-results-manifest.json)
+verify exact `93ed451d`, 3,147 Rust passes/two existing ignores, and all 7,928 frozen
+outcomes across 519 files. Raw test names/verdicts, 1,038 successful frozen processes,
+177 compiler controls, published source and retained GNU inputs are verified.
+Earlier GNU census failures and source276's Emaxx negative remain unexplained.
+[Source296 Linux runs](handover/2026-09-30-shared-reader-draft/source296-full-validation-launch.json)
+select `68ca5d88`: [the closed Rust audit](handover/2026-09-30-shared-reader-draft/source296-complete-linux-rust-manifest.json)
+verifies 3,147 passes/two existing ignores and native artifact identity. Frozen
+run37280528176 is running. Exact297 Linux and full macOS remain required. [Three separate297 profiles](handover/2026-09-30-shared-reader-draft/source297-native-call-profiles-manifest.json)
+verify all 60 body results and modes. Native dispatch/function resolution and
+bytecode-to-native call entry remain costs to inspect. The whole-process samples
+include setup and pre-body GC: every body GC delta is zero, so collector samples
+are not timed-body costs. Instrumented durations are not performance evidence.
+Object authority/adapters, intervals/pure storage, physical counters, general
+Rust ownership, final audit and the complete performance criterion stay open.
+
+## Earlier source296 checkpoint
 
 The [full goal](runtime-representation-goal.md) remains active and incomplete.
 **Source296 is applied** after the [LF-only checkpoint](runtime-representation-buffer-lines.md).

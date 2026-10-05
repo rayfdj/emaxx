@@ -1,5 +1,40 @@
 # Current goal status — 5 October 2026
 
+## Applied native dispatch checkpoint — 5 October 2026
+
+**Source297 is applied**, including the null/empty MANY argument repair. Read the
+[native-call continuation](runtime-representation-native-fixed-calls.md).
+The existing guarded `funcall` path now precedes irrelevant primitive-name checks,
+after the same handler synchronization. No call lifecycle or fallback is removed.
+Correctness-only source298 stays preserved separately with the original router.
+
+Both 532-input candidates pass warning-free strict checks, **327 selected tests
+per profile / no failures or ignores**, and **47 ordinary GNU comparisons**.
+All **288 process results and execution modes** verify in the closed three-way
+full16 diagnostic. Source297's native median is **1.836% lower** than corrected298;
+raw body geometric ratios are **0.989164 vs298 / 0.996135 vs original296**.
+Bytecode calls, bytecode-to-native, sort and undo remain 0.212%, 0.093%, 0.928%
+and 0.618% slower than298. These small diagnostics establish no statistical
+acceptance. Source297's paired GNU ratio geometric mean is **2.886985×**.
+All samples and the unchanged 3% every-case criterion remain.
+
+[Source292 complete Linux results](handover/2026-09-30-shared-reader-draft/source292-complete-linux-results-manifest.json)
+are closed and raw-audited: **3,147 Rust passes / two existing ignores**, plus
+**519 files / 7,928 equal frozen outcomes / 1,038 successful processes** at exact
+`93ed451d`. Earlier GNU census failures and source276's Emaxx negative remain
+unexplained; later success does not erase them. Source296 Linux Rust37280524716
+also has a closed raw audit: 3,147 passes and two existing ignores. Its frozen
+run37280528176 remains in progress.
+Those predecessor results do not certify297. Exact297 Linux and complete macOS
+validation remain required. The unchanged 60 display-column failures remain open.
+
+All local297/298 validation and timing coordinators are closed; preserve their
+frozen checkouts and write-once evidence. Separate source297 native/call/sort
+profiles are closed: all 60 results/modes verify. Whole-process collector samples
+are pre-body work; every measured-body GC delta is zero. Main remains `21d20f0e`, PR79 remains draft, and the full
+architecture, honest counters, ownership, final validation/audit and GNU parity
+requirements remain incomplete. The sections below retain historical states.
+
 ## Applied native fixed-call checkpoint — 5 October 2026
 
 **Source296 is applied**. Read the [native-call continuation](runtime-representation-native-fixed-calls.md).
