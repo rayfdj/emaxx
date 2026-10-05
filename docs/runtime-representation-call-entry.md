@@ -1,7 +1,8 @@
 # Native and bytecode call entry — 5 October 2026
 
-The latest [integer/VM checkpoint](runtime-representation-integer-vm-draft.md)
-supersedes this runtime with applied source290 (`b870a848`). Source289's complete
+The latest [native fixed-call checkpoint](runtime-representation-native-fixed-calls.md)
+supersedes this runtime with applied source296. The preceding
+[integer/VM checkpoint](runtime-representation-integer-vm-draft.md) is source290 (`b870a848`). Source289's complete
 Linux Rust and frozen runs are closed and passed; the linked checkpoint records
 their evidence and the new source290 validation launches.
 

@@ -1,7 +1,10 @@
 # Profile-led buffer line lookup — 5 October 2026
 
+The latest applied runtime is [native-call source296](runtime-representation-native-fixed-calls.md),
+which retains this LF-only correction. The results below describe the closed line checkpoint.
+
 The [full goal](runtime-representation-goal.md) is active and incomplete. Applied
-runtime is **source292**, the LF-only correction. Main remains `21d20f0e`; PR79
+line runtime is **source292**, the LF-only correction. Main remains `21d20f0e`; PR79
 stays draft. Both optional lookup changes, source294 and source295, are rejected.
 
 

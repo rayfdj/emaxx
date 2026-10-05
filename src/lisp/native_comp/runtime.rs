@@ -2054,13 +2054,16 @@ impl DirectFuncallTarget {
 
         if matches!(convention, NativeCallingConvention::Fixed) {
             let maximum = maximum.expect("a fixed subr has a finite maximum arity");
-            let mut padded = smallvec::SmallVec::<[NativeWord; 8]>::new();
-            padded.extend_from_slice(arguments);
-            padded.resize(maximum, 0);
-            Ok(unsafe { call_word_target(target, convention, &padded) })
-        } else {
-            Ok(unsafe { call_word_target(target, convention, arguments) })
+            // eval.c:funcall_subr copies only to supply omitted optional
+            // arguments. Fully supplied fixed calls use the original words.
+            if arguments.len() < maximum {
+                let mut padded = smallvec::SmallVec::<[NativeWord; 8]>::new();
+                padded.extend_from_slice(arguments);
+                padded.resize(maximum, 0);
+                return Ok(unsafe { call_word_target(target, convention, &padded) });
+            }
         }
+        Ok(unsafe { call_word_target(target, convention, arguments) })
     }
 }
 

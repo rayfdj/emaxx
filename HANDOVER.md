@@ -16,6 +16,33 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
+## Applied native fixed-call checkpoint — 5 October 2026
+
+**Source296 is applied**. Read the [native-call continuation](docs/runtime-representation-native-fixed-calls.md).
+Following GNU `funcall_subr`, fully supplied fixed native calls use their original
+arguments; only missing optional arguments require copying and nil padding. All
+arity/error/root/GC/handler/unwind paths and all tests/fixtures remain.
+
+All 532 inputs/modes replay exactly. Strict checks are warning-free; **326 selected
+tests pass per profile, no failures/ignores**, and **47 ordinary GNU comparisons**
+pass. The complete paired full16 diagnostic verifies all **192 process answers and
+modes**. Native execution's median body is **14.167% lower** than corrected292;
+raw median body geometric ratio is **0.950033**. Undo remains **2.916% slower** and
+Bindat **4.265% slower**. All results remain. The paired GNU ratio geometric mean
+is **2.880160×**, so the unchanged every-case 3% criterion is far from achieved.
+Real counters, calibration and prescribed final repetitions remain required.
+
+All local native296 validation/timing coordinators are closed. Preserve their
+frozen checkout and write-once receipts. The next measured lead is primitive-name
+routing before the existing native `funcall` handler. The recorded null/empty
+argument-slice boundary also needs a sound implementation; neither change is in296.
+
+[Source292 Linux validation](docs/handover/2026-09-30-shared-reader-draft/source292-full-validation-launch.json)
+selects `93ed451d`: Rust37278007515 and frozen37278010760 are running. They do not
+certify296. Exact296 Linux validation is next; full macOS remains unstarted. The
+60 original column-width failures and recurring GNU census failure stay open.
+Main, draft PR status and every full-goal requirement remain unchanged.
+
 ## Applied LF correction; lookup experiments closed — 5 October 2026
 
 **Source292 is applied** with 532 verified source inputs and file modes. Read the

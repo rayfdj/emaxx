@@ -1,0 +1,144 @@
+{
+  "status": "apply source296 after selected validation and complete paired full16 diagnostic",
+  "applied_source": "source296",
+  "selected_audit_sha256": "4672a99e57061fe43938b49f01c37bd7fd6a263933cd515f2f8a3a9d961f4024",
+  "performance_audit_sha256": "baa9cdac468839da3b3db02312d45f641424acb86b76c3b16fc39f9a5f01db6c",
+  "geometric_mean_body_ratio": 0.9500333036731502,
+  "geometric_mean_gnu_ratios": {
+    "source292": 2.9967380687467475,
+    "source296": 2.8801597154739964
+  },
+  "cases": [
+    {
+      "case": "interpreted-lexical",
+      "body_change_percent": -5.9968299488869725,
+      "median_gnu_ratios": {
+        "source292": 2.451890537400413,
+        "source296": 2.3023156670224827
+      }
+    },
+    {
+      "case": "interpreted-dynamic",
+      "body_change_percent": -5.333766427949039,
+      "median_gnu_ratios": {
+        "source292": 2.2715898349872385,
+        "source296": 2.110788411498351
+      }
+    },
+    {
+      "case": "interpreted-calls",
+      "body_change_percent": -12.41092541356389,
+      "median_gnu_ratios": {
+        "source292": 3.042665785927947,
+        "source296": 2.7045854043785713
+      }
+    },
+    {
+      "case": "bytecode-calls",
+      "body_change_percent": -2.072661459094838,
+      "median_gnu_ratios": {
+        "source292": 4.09525277326049,
+        "source296": 4.083705383315205
+      }
+    },
+    {
+      "case": "native-execution",
+      "body_change_percent": -14.166837259528043,
+      "median_gnu_ratios": {
+        "source292": 3.4259364809761728,
+        "source296": 3.0081582285604362
+      }
+    },
+    {
+      "case": "interpreted-to-native",
+      "body_change_percent": -1.4840416593231431,
+      "median_gnu_ratios": {
+        "source292": 2.515745687651955,
+        "source296": 2.41994739425364
+      }
+    },
+    {
+      "case": "bytecode-to-native",
+      "body_change_percent": -2.1853943289602884,
+      "median_gnu_ratios": {
+        "source292": 8.599620109131736,
+        "source296": 8.47075958983857
+      }
+    },
+    {
+      "case": "native-to-interpreted",
+      "body_change_percent": -7.29789569081224,
+      "median_gnu_ratios": {
+        "source292": 2.8268820917765725,
+        "source296": 2.688107849779397
+      }
+    },
+    {
+      "case": "native-to-bytecode",
+      "body_change_percent": -8.852941165459482,
+      "median_gnu_ratios": {
+        "source292": 2.911944100321088,
+        "source296": 2.8971405608547762
+      }
+    },
+    {
+      "case": "cons-allocation",
+      "body_change_percent": -2.48481477389475,
+      "median_gnu_ratios": {
+        "source292": 1.814667027705922,
+        "source296": 1.8682456062472932
+      }
+    },
+    {
+      "case": "list-traversal",
+      "body_change_percent": -4.3741513491237445,
+      "median_gnu_ratios": {
+        "source292": 2.1156534543139127,
+        "source296": 1.9866896536029826
+      }
+    },
+    {
+      "case": "mapcar",
+      "body_change_percent": -5.218830794667095,
+      "median_gnu_ratios": {
+        "source292": 2.3755849085590284,
+        "source296": 2.2383769010448185
+      }
+    },
+    {
+      "case": "explicit-gc",
+      "body_change_percent": -10.643891959281582,
+      "median_gnu_ratios": {
+        "source292": 1.0752359351529912,
+        "source296": 1.077663660700924
+      }
+    },
+    {
+      "case": "upstream-sort",
+      "body_change_percent": -2.586430703032472,
+      "median_gnu_ratios": {
+        "source292": 5.50222756508765,
+        "source296": 5.362064954417891
+      }
+    },
+    {
+      "case": "upstream-undo",
+      "body_change_percent": 2.9155545355116885,
+      "median_gnu_ratios": {
+        "source292": 5.511866820105717,
+        "source296": 5.051547682171014
+      }
+    },
+    {
+      "case": "upstream-bindat",
+      "body_change_percent": 4.2648192380564165,
+      "median_gnu_ratios": {
+        "source292": 3.359274477131936,
+        "source296": 3.586891830168571
+      }
+    }
+  ],
+  "reason": "The ordinary fixed native funcall path now follows GNU funcall_subr: copy only to supply missing optional arguments. All532 inputs/modes replay, strict checks are warning-free,326 selected tests per profile and47 ordinary GNU comparisons pass. Every one of192 timed process answers/modes verifies. Native execution median is14.167% lower and raw body geometric ratio0.950033. Undo remains2.916% slower and Bindat4.265% slower; these samples and all other results remain. This is a development checkpoint with concrete eliminated work, not statistical acceptance or an explanation of all cross-workload timing changes.",
+  "qualification": "One sample/no warmup in each of three alternating full16 pilots per variant. Actual counters, calibrated nine-round validation, general ownership/architecture, final adversarial audit and full exact-source platform validation remain required. No collection cadence, Lisp output, workload, timeout, expected result, selector or tolerance changes.",
+  "goal_complete": false
+}
