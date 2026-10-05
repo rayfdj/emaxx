@@ -16,6 +16,37 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
+## Applied LF correction; lookup experiments closed — 5 October 2026
+
+**Source292 is applied** with 532 verified source inputs and file modes. Read the
+[buffer-line checkpoint](docs/runtime-representation-buffer-lines.md). Rope metadata
+now counts LF, matching GNU; the original backward scan remains. Warning-free
+strict checks, 290 selected passes per profile/two existing TTY ignores, and
+47 ordinary actual GNU comparisons pass. The full broad probe improves from
+155 differing rows to 60 unchanged display-column failures; those remain failures.
+
+**Source294 and source295 are rejected and unapplied.** Indexed294 slows undo
+37.691% versus corrected292. The narrower295 shortcut shows no useful measured
+advantage; its undo and bytecode medians are also slower than292. Both complete
+three-way cohorts retain all 576 process answers/modes, all matching GNU. Across
+six samples for original290 and corrected292, the raw median body geometric
+ratio is 1.001869 and corrected292's paired GNU ratio geometric mean is 2.97884×.
+All slower cases remain. This correctness repair makes no performance-gain claim;
+calibrated every-case acceptance and real allocation counters remain required.
+
+All local line validation/timing coordinators are closed. Do not restart their
+write-once producers. The next measured lead is the redundant fixed-argument copy
+in native `DirectFuncallTarget::invoke`; GNU copies only when padding is needed.
+Its roots, error order, optional padding and nonlocal exits must remain intact.
+
+Predecessor source290 (`b870a848`) has a
+[closed Linux frozen audit](docs/handover/2026-09-30-shared-reader-draft/source290-complete-linux-frozen-manifest.json):
+519 files, 7,928 equal outcomes and 1,038 successful processes. Its Linux Rust run
+retains 2,288 passes/one GNU census reference failure before Emaxx. These results
+do not certify the new LF configuration. Exact-source Linux validation is next;
+complete macOS validation is unstarted. Main and all full-goal requirements remain
+unchanged. The sections below preserve earlier publication states.
+
 ## Fresh-build correction — 5 October 2026
 
 The [stale-cache evidence and source294 launch](docs/handover/2026-09-30-shared-reader-draft/source293-stale-cache-and294-launch-manifest.json)

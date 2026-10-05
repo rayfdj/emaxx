@@ -111,7 +111,8 @@ and [frozen37269857506](https://github.com/rayfdj/emaxx/actions/runs/37269857506
 The [closed Rust failure](handover/2026-09-30-shared-reader-draft/source290-complete-linux-rust-failure-manifest.json)
 records 2,288 passes and one recurring GNU empty-record census reference failure
 (−7 versus 2), before Emaxx. The remaining 756 library names and both Cargo stages
-never run. Frozen remains in progress; full source290 macOS is unstarted. Read the
+never run. The [closed frozen audit](handover/2026-09-30-shared-reader-draft/source290-complete-linux-frozen-manifest.json)
+verifies all7,928 outcomes and519 files. Full source290 macOS is unstarted. Read the
 [latest buffer-line continuation](runtime-representation-buffer-lines.md) for the
 next unapplied drafts and all current limits.
 

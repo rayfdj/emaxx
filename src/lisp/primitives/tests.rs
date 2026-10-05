@@ -27485,3 +27485,12 @@ fn bytecode_integer_boundaries_preserve_gnu_results_types_and_errors() {
         "bytecode integer boundaries, bignum allocation, operand errors and GC",
     );
 }
+
+#[test]
+fn buffer_line_indexes_preserve_gnu_lf_motion_narrowing_and_edits() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/buffer-lf-line-motion.el"),
+        include_str!("../../../tests/fixtures/buffer-lf-line-motion.expected").trim_end(),
+        "LF-only line counts and motion, CR/Unicode separators, chunk boundaries, narrowing and edits",
+    );
+}

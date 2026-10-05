@@ -1,26 +1,109 @@
 # Profile-led buffer line lookup — 5 October 2026
 
-The [full goal](runtime-representation-goal.md) remains active and incomplete.
-Applied runtime is still source290, `b870a848`; the two drafts here are unapplied.
-Main remains `21d20f0e` and PR79 stays draft.
+The [full goal](runtime-representation-goal.md) is active and incomplete. Applied
+runtime is **source292**, the LF-only correction. Main remains `21d20f0e`; PR79
+stays draft. Both optional lookup changes, source294 and source295, are rejected.
 
-## Fresh-build correction — 5 October 2026
 
-The [stale-cache evidence and source294 launch](handover/2026-09-30-shared-reader-draft/source293-stale-cache-and294-launch-manifest.json)
-supersede source293's validation status below. Cargo reused source292's exact
-binaries in gate and release (`fresh=true`); those runs do **not** validate the
-indexed lookup. Both v3 coordinators were terminated before any timing. Preserve
-their outputs and withdrawal receipts; do not resume them.
+## Applied LF-only correction
 
-**Source294 has exactly the same 532 source inputs as source293**, in
-`target/runtime-goal/recovered-2026-10-05/buffer-line-lookup-fresh/emaxx`. It explicitly
-cleans the package in gate and release and requires freshly compiled artifacts
-and different test binaries from source292. Its build/validation is running;
-no candidate speed or validation pass is claimed. Current coordinator receipts
-are `buffer-selection-fresh-state.json` and `buffer-performance-sequence-fresh-state.json`,
-followed by their final results, under `target/runtime-goal/resume-2026-09-28`.
-Source292's separately verified fresh build and 290 selected passes per profile
-remain valid. Applied source290 and all goal requirements are unchanged.
+The [application review](handover/2026-09-30-shared-reader-draft/source292-application-review.json)
+and [byte/mode verification](handover/2026-09-30-shared-reader-draft/source292-applied-source-verification.json)
+apply exactly the separately validated source292 inputs. Production changes only
+Ropey's feature configuration: GNU line operations count LF, so disable the extra
+CR/Unicode separators and retain SIMD. The original backward scan is unchanged.
+All original tests remain; the dedicated 338-row line-motion fixture and original
+broader probe are retained. The broader comparison falls from 155 differing rows
+to 60 unchanged display-column failures. Every line/motion field matches GNU.
+
+The [second closed diagnostic](handover/2026-09-30-shared-reader-draft/source295-single-line-performance-manifest.json)
+adds 288 verified actual answers/modes to the preceding 288, with no short bodies.
+It compares original290, corrected292 and shortcut295 through all 16 unchanged
+workloads. Across the two cohorts, six samples per original/corrected editor/case
+give corrected292 a raw body geometric ratio **1.001869** versus original290 and
+paired GNU ratio geometric mean **2.97884×**. Bytecode calls remain 3.194% slower
+and explicit GC 3.780% slower; undo is 3.026% faster and sorting 3.475% faster.
+All per-case changes and raw samples remain in the review. This necessary
+correctness repair claims no performance improvement or statistical acceptance.
+
+The [source295 decision](handover/2026-09-30-shared-reader-draft/source295-application-decision.json)
+rejects its optional shortcut: raw body ratio 0.997711 versus corrected292, with
+undo 2.036% slower and bytecode calls 4.842% slower. The small diagnostic provides
+no useful demonstrated advantage to justify retaining the extra branch. No
+source295 runtime code is applied. Source294's rejection remains unchanged.
+
+All line pipelines are closed. Next review the profile-identified native fixed
+argument copy against GNU `eval.c:funcall_subr`, preserving the existing native
+arity, optional-padding, root, handler and unwind contracts. Exact-source Linux
+and complete macOS validation are still required for the applied LF correction.
+
+## Closed comparison and rejected indexed lookup
+
+The [closed selected archive](handover/2026-09-30-shared-reader-draft/source294-buffer-line-selected-manifest.json)
+verifies fresh source292 and294 builds, 532 inputs, zero-warning strict checks,
+**290 passes in each gate/release profile**, two existing ignores, and **47 ordinary
+actual GNU comparisons** per variant. Both required suspended-root contracts pass.
+All original test assertions and fixture bytes remain. All 338 dedicated LF motion
+rows and 198 generated reader/printer rows match. The unchanged broader probe still
+fails 60 display-column rows; every line/motion field now matches, and every column
+value equals the original source290 value. No display-width repair is claimed.
+
+The [closed full16 diagnostic](handover/2026-09-30-shared-reader-draft/source294-buffer-line-performance-manifest.json)
+verifies **288 process answers/modes**, all three interleaved repetitions for each
+of original290, LF-only baseline292 and indexed294. Every sample and unfavorable
+result remains, with startup/total/RSS/GC and unavailable-allocation reports.
+There are no short bodies or concurrent builds/tests/profiles. Paired GNU ratio
+geometric means are **2.99694× / 2.97907× / 3.04121×**. Indexed294 has a raw body
+geometric ratio **1.02107** versus corrected292, and undo is **37.691% slower**.
+The LF-only baseline has raw aggregate **0.995904** versus original290, which
+establishes no broad statistically significant gain.
+
+The [application decision](handover/2026-09-30-shared-reader-draft/source294-application-decision.json)
+**rejects indexed294**. Do not apply it or claim a speedup. The current refinement
+is based on corrected292's original scan, not the slower indexed implementation.
+These diagnostics do not satisfy calibrated nine-round acceptance or the unchanged
+upper95% ratio≤1.03 requirement on every case.
+
+## Source295: constant-time proof that a scan is unnecessary
+
+The [portable refinement and launch](handover/2026-09-30-shared-reader-draft/source294-review-and295-single-line-draft-manifest.json)
+retains 532 exact byte/mode replays from `7f687d58` and main. After the original
+position clamp, `line_start_at` checks whether the authoritative LF line count is
+one. If so, no LF exists anywhere in the buffer and the original scan must return
+the accessible beginning. Other buffers follow every original scan instruction.
+This uses already maintained metadata, with no new cache, allocation, unsafe code,
+callback or GC change. GNU's newline-free-region skip supplies the reference.
+
+No test, fixture, expected byte or selector is added or changed relative to292.
+The [closed selected archive](handover/2026-09-30-shared-reader-draft/source295-single-line-selected-manifest.json)
+verifies zero-warning strict checks, fresh gate/release builds, 290 passes/two
+existing ignores in each profile and all 47 ordinary GNU comparisons. Its broader
+probe retains the same 60 width failures. The performance decision above rejects
+this optional optimization. The frozen checkout remains
+`target/runtime-goal/recovered-2026-10-05/buffer-single-line/emaxx`; every validation,
+comparison and timing coordinator is closed. Preserve their final receipts under
+`target/runtime-goal/resume-2026-09-28`; do not restart write-once producers.
+
+## Preserved setup and cache failures
+
+The [stale-cache rejection and fresh-build launch](handover/2026-09-30-shared-reader-draft/source293-stale-cache-and294-launch-manifest.json)
+remain essential. Source293 reused source292's exact gate/release binaries;
+those tests do not validate the indexed change. Its coordinator and benchmark
+queue were withdrawn before timing. Source294 has identical source bytes but
+explicitly cleans both profiles, requires `fresh=false` compiler records and
+verifies binaries differ from292. Both profiles and the ordinary build pass
+those checks. The available previous286–292 build logs were also rechecked;
+their recorded test artifacts were freshly compiled and ordinary logs compile
+Emaxx. No earlier timing was silently substituted.
+
+A prior comparison child had completed all46 source292 ordinary controls before
+its parent was withdrawn. The later coordinator stopped on immutable receipt
+collision; all92 process receipts were independently reverified and reused,
+without repeating those comparisons or changing their verdicts. Another preflight
+stopped because sparse checkout omitted the benchmark driver/support files;
+restoring exact base-commit tools/compat files, with all532 runtime inputs unchanged,
+resolved it before any timing. Every stopped attempt and recovery remains in the
+archives. The following paragraphs retain the original motivation and probes.
 
 The source290 undo profile identifies `Buffer::line_start_at` as its largest
 non-GC self-sample. Its scope includes pre-body collection, so collector samples
@@ -81,8 +164,9 @@ both Cargo stages unexecuted. The first empty-record sample is −7 rather than 
 all later values match. This actual GNU output equals the earlier source272
 reference failure. The unchanged pinned GNU inputs verify; the cause remains
 unresolved. The assertion stops before Emaxx. All new numeric, native-argument
-and bytecode-call controls pass. Linux frozen37269857506 remains in progress;
-full source290 macOS is unstarted. No selected result certifies that failed run.
+and bytecode-call controls pass. The [closed Linux frozen archive](handover/2026-09-30-shared-reader-draft/source290-complete-linux-frozen-manifest.json)
+verifies 519 files/7,928 equal outcomes/1,038 successful processes and all177 compiler
+controls, including pinned oracle bytes. Full source290 macOS remains unstarted. No selected result certifies that failed run.
 
 Remaining architecture, physical accounting/counters, ownership, final audits,
 final-source platform validation and calibrated every-case GNU parity remain

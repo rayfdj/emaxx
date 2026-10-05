@@ -4,7 +4,8 @@ version = "30.2.0"
 edition = "2024"
 
 [dependencies]
-ropey = "1.6"
+# GNU search.c counts only LF; use the same separator in the rope metadata.
+ropey = { version = "1.6", default-features = false, features = ["simd"] }
 memchr = "2"
 crossterm = "0.28"
 clap = { version = "4.5", features = ["derive"] }
