@@ -1,8 +1,8 @@
-# Integer and VM measurement drafts — 5 October 2026
+# Integer and VM checkpoint — 5 October 2026
 
 The [full runtime goal](runtime-representation-goal.md) is active and incomplete.
-**Applied runtime remains source289, `ae1fcb0f`.** Source290 and source291 below
-are separate, unapplied candidates. Main remains `21d20f0e`; PR79 stays draft.
+**Source290 is applied and pushed as `b870a848`.** Source291 is a validated,
+measured alternative that remains unapplied. Main remains `21d20f0e`; PR79 stays draft.
 Read the [applied call-entry checkpoint](runtime-representation-call-entry.md)
 for its implementation and prior measurements.
 
@@ -15,8 +15,12 @@ against actual verdicts: 3,042 pass; binaries add 61 and integration adds 42.
 Native artifact identity, all four retained inputs and 526 source inputs verify.
 The unchanged GNU census reference passes this time; earlier failures and the
 source276 Emaxx census failure remain unexplained and preserved.
-Linux frozen37265047878 is still running at publication. Complete source289
-macOS validation remains unstarted; predecessor source286 results do not certify it.
+The [closed Linux frozen archive](handover/2026-09-30-shared-reader-draft/source289-complete-linux-frozen-manifest.json)
+verifies [run37265047878](https://github.com/rayfdj/emaxx/actions/runs/37265047878):
+519 files, **7,928 matching outcomes**, 1,038 successful processes, execution
+hashes and retained GNU inputs. Each editor reports 7,670 passes, 47 expected
+failures and 211 skips. Complete source289 macOS validation remains unstarted;
+these predecessor results do not certify source290.
 
 ## Source290: correct selected results, unfavorable timings retained
 
@@ -71,9 +75,40 @@ from timing. No workload, timeout, expectation or tolerance changes.
 The raw median geometric ratio is 0.97505; the paired GNU ratio geometric means
 are 2.98514× and 2.95864×. Those aggregates answer different questions.
 No broad statistical gain or cause of the unfavorable cases is established by
-this small pilot. **Hold source290 unapplied while investigating those cases.**
-Do not select only its faster bytecode result. Real counters, calibrated nine-round
+this small pilot. The original decision held source290 for investigation; the
+second complete cohort and application review below supersede that decision.
+Real counters, calibrated nine-round
 measurements and the unchanged every-case upper 95% ratio ≤1.03 remain required.
+
+## Second cohort and source290 application
+
+The [closed comparison and application review](handover/2026-09-30-shared-reader-draft/source290-inlining-review-and291-results-manifest.json)
+retains all **288 additional processes**, three rotated full16 pilots for each of
+source289/290/291. Every actual answer and execution mode matches GNU, and all
+bodies exceed 100 ms. No builds, tests or profiles run during timing. The
+paired GNU ratio geometric means are **3.05806× / 2.95393× / 3.00323×**.
+All samples remain, including slower cases. The original audit receipt's prose
+mistakenly names a predecessor cohort; its actual commands, inputs and samples
+identify 289/290/291, as explicitly corrected in the archive qualification.
+
+Across both cohorts' six samples per editor/source/case, source290's bytecode-call
+median is **14.264% lower** than source289; the geometric mean of raw median body
+ratios is **0.97158**. Sorting is 0.398% lower, undo **1.943% higher**, Bindat
+**1.499% higher**. The earlier larger upstream increases do not repeat in the
+second cohort. The combined paired GNU ratio geometric mean is **2.95454×**.
+These are descriptive diagnostic results, without statistical acceptance or
+an established explanation for variation between cohorts.
+
+Source291 does not improve the overall tradeoff and stays unapplied. Source290
+is applied after review of both complete cohorts, preserving the original hold,
+all unfavorable results and the inlining alternative. The applied 528 inputs and
+file modes match the validated candidate exactly. No workload, expectation,
+timeout, tolerance, collector cadence or comparison rule changes.
+
+[Source290 Linux CI](handover/2026-09-30-shared-reader-draft/source290-full-validation-launch.json)
+selects exact `b870a848`: [Rust37269853253](https://github.com/rayfdj/emaxx/actions/runs/37269853253)
+and [frozen37269857506](https://github.com/rayfdj/emaxx/actions/runs/37269857506).
+Both are in progress at publication; full source290 macOS remains unstarted.
 
 ## Profile limits and next targets
 
@@ -91,29 +126,26 @@ rope slicing and evaluator work in sorting, and `Buffer::line_start_at` in undo.
 These are leads for ordinary-path review; no new cause or repair is established.
 The VM and call profiles remain in the archive as well. Preserve their full trees.
 
-## Source291: unfinished isolated inlining comparison
+## Source291: closed isolated inlining comparison, unapplied
 
 The [portable source291 draft](handover/2026-09-30-shared-reader-draft/source291-unfinished-inlining-draft-manifest.json)
 changes only source290's `Value::Integer` annotation from forced to ordinary
 inlining. The outlined bignum path, VM implementation, tests and fixtures remain
-identical. It tests whether compiler-chosen inlining avoids the unfavorable
-upstream observations; that hypothesis is unproven.
+identical. That archive is the original unfinished launch snapshot; the closed
+comparison archive above supplies its final evidence.
 
 All **528 inputs and modes** replay exactly from `fc7db1dc` and main. Strict checks
-pass with zero warnings; selected validation is in progress at publication.
-Ordinary comparisons and performance are pending. This launch snapshot is not a
-passed candidate. Inspect `source291-validation-state.json`, its final result and
-`inline-selection-state.json` before continuing. Do not restart active jobs or
-apply either draft without reviewing its actual results.
+pass with zero warnings; **325 selected tests pass in each profile**, no failures
+or ignores. All **46 ordinary GNU comparisons** pass, including the 588 numeric
+boundary rows and 198 generated reader/printer rows. Performance is closed as
+reported above. Both validation supervisors have exited successfully.
 
 Local frozen candidates are under `target/runtime-goal/recovered-2026-10-05/`:
 `vm-integer-path/emaxx` (290), `vm-integer-inlining/emaxx` (291). Helpers and raw
-evidence are under `target/runtime-goal/resume-2026-09-28`. Source291 validation
-uses `run-source291-validation.py`; `finish-source291-selected.py` waits for it,
-then performs the same ordinary comparisons and an independent audit. A new
-interleaved baseline/forced/compiler-chosen measurement is still to be prepared
-after selected validation. Preserve source289 and source290 binaries and their
-own images/native artifacts for that comparison. No source291 timing is launched.
+evidence are under `target/runtime-goal/resume-2026-09-28`. The executed validation,
+comparison, timing and independent audit helpers remain in the closed archive.
+All local selected/profile/timing pipelines are closed. Preserve frozen candidates
+and their own executable/image/native artifacts; do not rerun their write-once helpers.
 
 Source290's original edit generator stopped at a text-pattern assertion after
 writing only types.rs; the VM successor was written before validation. Its

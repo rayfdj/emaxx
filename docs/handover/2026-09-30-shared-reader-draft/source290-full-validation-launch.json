@@ -1,0 +1,32 @@
+{
+  "runtime_source": "source290",
+  "source_commit": "b870a848be77dd7e99931dd3c6efd65c2f3183bc",
+  "linux": [
+    {
+      "run_id": 37269853253,
+      "state": {
+        "conclusion": "",
+        "headSha": "b870a848be77dd7e99931dd3c6efd65c2f3183bc",
+        "status": "queued",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/37269853253"
+      },
+      "source_commit": "b870a848be77dd7e99931dd3c6efd65c2f3183bc",
+      "runtime_source": "source290",
+      "qualification": "Exact pushed source290:528 verified inputs, zero-warning strict checks,325 selected controls per profile and46 ordinary GNU comparisons. Both diagnostic cohorts retain480 actual GNU results/modes. Integer allocation and VM stack/dispatch simplification preserve original semantics and tests; all unfavorable observations and the held291 alternative remain. Source290 is a selected checkpoint, not full-platform, accounting/ownership or GNU-parity completion"
+    },
+    {
+      "run_id": 37269857506,
+      "state": {
+        "conclusion": "",
+        "headSha": "b870a848be77dd7e99931dd3c6efd65c2f3183bc",
+        "status": "queued",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/37269857506"
+      },
+      "source_commit": "b870a848be77dd7e99931dd3c6efd65c2f3183bc",
+      "runtime_source": "source290",
+      "qualification": "Exact pushed source290:528 verified inputs, zero-warning strict checks,325 selected controls per profile and46 ordinary GNU comparisons. Both diagnostic cohorts retain480 actual GNU results/modes. Integer allocation and VM stack/dispatch simplification preserve original semantics and tests; all unfavorable observations and the held291 alternative remain. Source290 is a selected checkpoint, not full-platform, accounting/ownership or GNU-parity completion"
+    }
+  ],
+  "macos": "unstarted",
+  "goal_complete": false
+}

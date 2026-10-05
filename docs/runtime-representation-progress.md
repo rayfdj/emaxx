@@ -1,35 +1,32 @@
 # Current goal status — 5 October 2026
 
-Read the [integer/VM draft and profile qualification](runtime-representation-integer-vm-draft.md)
-first. **Applied runtime remains source289 (`ae1fcb0f`)**. Its
-[closed Linux Rust run](handover/2026-09-30-shared-reader-draft/source289-complete-linux-rust-manifest.json)
-verifies **3,145 passes / two existing ignores**, all 3,044 library names,
-native artifact identity and retained inputs. Frozen Linux37265047878 is still
-running at publication; full source289 macOS remains unstarted. The preceding
-GNU census failures and source276 Emaxx negative remain unexplained.
+Read the [integer/VM checkpoint and profile qualification](runtime-representation-integer-vm-draft.md)
+first. **Source290 is applied and pushed as `b870a848`**, with 528 exact inputs,
+warning-free strict checks, **325 selected passes per profile** and **46 ordinary
+GNU comparisons**, including 588 numeric boundary rows. It removes redundant VM
+dispatch and stack updates and outlines unchanged bignum allocation.
 
-**Source290 is held unapplied.** It removes duplicate VM dispatch, updates existing
-stack slots and outlines integer allocation. Strict checks, **325 selected passes
-per profile** and **46 ordinary GNU comparisons** pass, including 588 numeric
-boundary rows. The closed 192-process full16 diagnostic verifies every answer and
-mode, but sorting/undo/Bindat medians rise 3.764%/6.969%/8.685% while bytecode calls
-fall 14.367%. All results remain; no favorable-only application or parity claim.
+The [closed second comparison and application review](handover/2026-09-30-shared-reader-draft/source290-inlining-review-and291-results-manifest.json)
+verifies all 288 new process answers/modes, alongside the preserved first192.
+Across both full16 diagnostic cohorts, bytecode-call median time falls **14.264%**
+versus source289; the raw median body geometric ratio is **0.97158**. Undo and
+Bindat remain 1.943% and 1.499% slower. All unfavorable samples remain. The paired
+GNU ratio geometric mean is **2.95454×**; this does not satisfy GNU parity or the
+unchanged calibrated every-case 3% criterion. **Source291 remains unapplied**:
+its 325 passes per profile and46 ordinary comparisons are closed, but compiler
+chosen inlining gives a worse overall measured tradeoff. The original source290
+hold and unfinished291 snapshot remain historical, superseded by this review.
 
-**Source291 is an unfinished separate inlining comparison**, changing only forced
-Integer inlining to ordinary compiler guidance. Its 528-input portable patches
-replay exactly. Strict checks pass; selected validation is running in
-`target/runtime-goal/recovered-2026-10-05/vm-integer-inlining/emaxx`.
-Read `source291-validation-state.json`, its final result and `inline-selection-state.json`
-under `target/runtime-goal/resume-2026-09-28`. The comparison helper waits for
-validation; performance has not started. Keep both candidate checkouts and their
-executed helpers unchanged. The new draft archive is a launch snapshot, not a pass.
-
-Six separate profiles verify 120 results/modes and identify broader evaluator,
-native-call and buffer costs. Sampling also includes pre-body collection; all
-body GC deltas are zero, so GC samples cannot be attributed to timed-body costs.
-The linked qualification and raw trees preserve that limit. Main remains
-`21d20f0e`, PR79 stays draft, and all full-goal requirements remain open as mapped.
-
+Source289's complete Linux results are closed: **3,145 Rust passes / two existing
+ignores**, and [519 files /7,928 matching frozen outcomes](handover/2026-09-30-shared-reader-draft/source289-complete-linux-frozen-manifest.json).
+Earlier GNU census failures and source276's Emaxx negative remain unexplained.
+[Source290 Linux CI](handover/2026-09-30-shared-reader-draft/source290-full-validation-launch.json)
+selects exact `b870a848`: Rust37269853253 and frozen37269857506 are in progress at
+publication; full290 macOS is unstarted. All local selected/profile/timing jobs
+are closed. Six separate profiles verify120 results/modes, but include pre-body
+GC; all body GC deltas are zero, so collector samples are not timed-body costs.
+Next follow the measured ordinary evaluator/native/buffer leads. Main remains
+`21d20f0e`, PR79 stays draft, and every remaining full-goal requirement stays open.
 
 Read the [source289 call-entry checkpoint](runtime-representation-call-entry.md)
 first. **Source289 is applied and pushed as `ae1fcb0f`**, with 526 verified inputs,
@@ -583,11 +580,11 @@ source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 
 ## Full-goal requirements — current
 
-This map reflects applied source289 (`ae1fcb0f`, 526 inputs). Its selected
-validation and diagnostic measurements are closed. Complete source286 platform
-results are historical; source289 Linux Rust is closed with 3,145 passes/two existing
-ignores, Linux frozen is still running, and complete macOS has not started. The [call-entry checkpoint](runtime-representation-call-entry.md)
-links raw evidence, failed predecessors, GNU mappings and reproduction helpers.
+This map reflects applied source290 (`b870a848`, 528 inputs). Selected validation
+and both diagnostic cohorts are closed. Source289's complete Linux Rust and
+frozen results pass; source290 Linux CI is running and full macOS is unstarted.
+The [integer/VM checkpoint](runtime-representation-integer-vm-draft.md) links
+raw evidence, failed predecessors, GNU mappings and reproduction helpers.
 A validated checkpoint does not complete the architectural/performance goal.
 
 | Full-goal requirement | Current evidence and remaining work |
@@ -595,16 +592,16 @@ A validated checkpoint does not complete the architectural/performance goal.
 | 1. Reproducible starting point | Original and corrected baselines and failures remain archived. Exact source/executable/image identities accompany each measurement. GNU adoption at `3dcf5351` settled the replacement oracle; final corrected-baseline measurement and complete provenance remain required. |
 | 2. GNU architectural reference | Cons/closure/string storage, comparison/allocation, canonical printing, direct opcode dispatch and native/VM call entry have recorded C mappings. The final complete review and justification/cost of every necessary Rust deviation remain open. |
 | 3. Compact authoritative objects | Values are one word, cons payloads two words, four-slot closures 40 inline bytes. Source270 supplies direct compact string headers; source272 roots active borrows; source279 implements pooled sblocks. Source284 carries canonical bytes through printing/reading. Real intervals, unified pure storage, allocated-symbol authority and remaining host adapters are unfinished. |
-| 4. Allocation, GC and ownership | Required live-root and reclamation controls remain and pass selected source289. Seven category variables still initialize to zero; `memory-use-counts` is unsupported. GNU-shaped charges do not establish actual Rust capacities/retention. Physical accounting, real counters, public ownership/serialization and collection-cost explanations remain required. GNU census reference failures and source276's Emaxx census failure remain unresolved. |
-| 5. VM/function-call work | Source286 removes repeated decoding on hot opcodes; source289 removes repeated closure reads, a transient activation copy, Bcall decoding and fixed native argument staging. Measured bytecode-call gains are recorded. VM still reserves 256K value slots plus separate frames versus GNU's 512K words including headers. Stack layout/capacity, remaining frame/call work and actual accounting remain open; post289 profiles guide the next work. |
+| 4. Allocation, GC and ownership | Required live-root and reclamation controls remain and pass selected source290. Seven category variables still initialize to zero; `memory-use-counts` is unsupported. GNU-shaped charges do not establish actual Rust capacities/retention. Physical accounting, real counters, public ownership/serialization and collection-cost explanations remain required. GNU census reference failures and source276's Emaxx census failure remain unresolved. |
+| 5. VM/function-call work | Source286 removes repeated decoding on hot opcodes; source289 removes repeated closure reads, a transient activation copy, Bcall decoding and fixed native argument staging. Source290 removes duplicate optimistic dispatch, redundant operand stack changes and immediate Integer calls. Measured bytecode-call gains are recorded. VM still reserves 256K value slots plus separate frames versus GNU's 512K words including headers. Stack layout/capacity, remaining frame/call work and actual accounting remain open; post290 profiles guide the next work. |
 | 6. Adversarial audit | Existing evaluator/root/reporting controls and failed runs remain. New call-width and native ABI/GC controls use actual same-input GNU output; no expectations or original assertions are weakened. Final actual-source review of runtime, startup/images, loading, selection/comparison/reporting and deliberate evidence corruption remains required. |
-| 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. The latest diagnostic verifies 288 processes; bytecode calls improve 15.350% and bytecode-to-native 3.540% versus source286. Other cases regress. Optimized paired GNU ratio geometric mean 2.97399× does not meet parity. Real counters, calibration, prescribed repetitions/distributions and every-case acceptance remain open. |
-| 8. Complete validation | Source289 strict checks are warning-free, 274 selected tests pass in each profile and 45 ordinary GNU comparisons pass. Its complete Linux Rust run passes 3,145 tests with two existing ignores; Linux frozen is in progress and complete macOS is unstarted. Source286 closed results: 3131 macOS Rust passes/two existing ignores, terminal 226 scenarios/686 matches, Linux frozen 7928 matches; macOS frozen six diagnostic failures and Linux Rust one GNU reference failure remain. Final-source platform/release/frozen/terminal validation remains required. |
-| 9. Independently checkable delivery | Portable patches/manifests, raw commands/results, unfavorable samples and profiles are retained and verified. Source289 is applied/pushed; main remains 21d20f0e and PR79 is draft. Final source/evidence review and satisfaction of every architectural/performance requirement remain outstanding. |
+| 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. The latest two diagnostic cohorts verify 480 process answers/modes, including the held291 alternative. Source290 bytecode calls improve 14.264% versus source289 across all six samples; undo/Bindat remain slower. Optimized paired GNU ratio geometric mean 2.95454× does not meet parity. Real counters, calibration, prescribed repetitions/distributions and every-case acceptance remain open. |
+| 8. Complete validation | Source290 strict checks are warning-free, 325 selected tests pass in each profile and 46 ordinary GNU comparisons pass. Linux CI is in progress; full macOS is unstarted. Predecessor source289 has 3,145 Linux Rust passes/two existing ignores and all7,928 frozen outcomes match. Source286 closed results: 3131 macOS Rust passes/two existing ignores, terminal 226 scenarios/686 matches, Linux frozen 7928 matches; macOS frozen six diagnostic failures and Linux Rust one GNU reference failure remain. Final-source platform/release/frozen/terminal validation remains required. |
+| 9. Independently checkable delivery | Portable patches/manifests, raw commands/results, unfavorable samples and profiles are retained and verified. Source290 is applied/pushed; main remains 21d20f0e and PR79 is draft. Final source/evidence review and satisfaction of every architectural/performance requirement remain outstanding. |
 
-Sources290/291 are unapplied optimization drafts, described above. Source290 has
-selected correctness passes but unfavorable upstream timings; source291 isolates
-inlining and is still under validation. Neither replaces applied289 evidence.
+Source291 is a closed, selected-correctness-validated inlining alternative that
+remains unapplied after the full comparison. Its original launch snapshot and
+source290's earlier held decision remain historical, not current status.
 
 Continue measured ordinary VM/call work from the current profiles. Complete real
 intervals, pure storage, symbol authority, adapters, actual allocator accounting

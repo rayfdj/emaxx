@@ -1,7 +1,9 @@
 # Native and bytecode call entry — 5 October 2026
 
-The latest [integer/VM drafts](runtime-representation-integer-vm-draft.md) remain
-unapplied; this source289 runtime is still the applied checkpoint.
+The latest [integer/VM checkpoint](runtime-representation-integer-vm-draft.md)
+supersedes this runtime with applied source290 (`b870a848`). Source289's complete
+Linux Rust and frozen runs are closed and passed; the linked checkpoint records
+their evidence and the new source290 validation launches.
 
 The [complete runtime goal](runtime-representation-goal.md) remains incomplete.
 **Source289 is applied and pushed as `ae1fcb0f`** on `runtime-char-tables`.
