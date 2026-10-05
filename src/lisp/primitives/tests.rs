@@ -27449,3 +27449,12 @@ fn pure_string_properties_preserve_gnu_noop_and_readonly_behavior() {
         "string-pure-property-storage",
     );
 }
+
+#[test]
+fn bytecode_direct_dispatch_preserves_gnu_stack_arithmetic_and_branches() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-direct-dispatch.el"),
+        include_str!("../../../tests/fixtures/bytecode-direct-dispatch.expected").trim_end(),
+        "direct byte dispatch, slow arithmetic, branches and array effects",
+    );
+}

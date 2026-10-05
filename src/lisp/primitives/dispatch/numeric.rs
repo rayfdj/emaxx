@@ -36,6 +36,32 @@ fn checked_integer_fold(
     Ok(Some(accumulator))
 }
 
+/// data.c:Frem/Fmod coerce operands in order before calculating a remainder.
+/// `%` accepts integers/markers; only `mod` also accepts floating point.
+fn remainder_argument(
+    interp: &Interpreter,
+    value: Value,
+    modulo: bool,
+) -> Result<Value, LispError> {
+    match value.kind() {
+        Kind::Integer(_) | Kind::BigInteger(_) => Ok(value),
+        Kind::Float(_) if modulo => Ok(value),
+        Kind::Marker(marker) => interp
+            .marker_position(marker)
+            .map(|position| Value::Integer(position as i64))
+            .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into())),
+        _ => Err(LispError::WrongTypeArgument(
+            if modulo {
+                "number-or-marker-p"
+            } else {
+                "integer-or-marker-p"
+            }
+            .into(),
+            value,
+        )),
+    }
+}
+
 define_dispatch!(
     pub(super) fn call(
         interp: &mut Interpreter,
@@ -102,6 +128,11 @@ define_dispatch!(
             }
             "%" | "mod" => {
                 need_args(name, args, 2)?;
+                let numbers = [
+                    remainder_argument(interp, args[0], name == "mod")?,
+                    remainder_argument(interp, args[1], name == "mod")?,
+                ];
+                let args = &numbers;
                 if has_float(args) {
                     let a = numeric_to_f64(interp, &args[0])?;
                     let b = numeric_to_f64(interp, &args[1])?;

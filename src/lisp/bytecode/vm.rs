@@ -428,9 +428,9 @@ enum FastExit {
 /// exec_byte_code's dispatch loop for the ops that need nothing but the
 /// operand stack and the program: stack shuffles, constants, jumps,
 /// car/cdr, cons, eq, fixnum arithmetic and comparison, vector aref/aset.
-/// The stack is held directly for the whole run (bytecode.c's `top'
-/// pointer), so an op costs its work and one predicted jump, not a
-/// `RefCell' round trip and a pass through the fallible dispatch.  An op
+/// Dispatches directly on the canonical opcode, as bytecode.c's FETCH/NEXT,
+/// without first building an Instr and switching on its Op a second time.
+/// The operand stack is held directly for the whole run. An op
 /// that cannot complete here (a call, a variable, a signal, an operand of
 /// another kind) is left untouched at PC for the full dispatch.
 #[inline(never)]
@@ -442,11 +442,25 @@ fn run_fast(
     quitcounter: &mut u8,
 ) -> FastExit {
     let mut at = *pc;
-    let mut instruction: super::Instr;
+    let mut offset;
+    macro_rules! operand {
+        ($value:expr) => {
+            match $value {
+                Ok(value) => value,
+                Err(error) => {
+                    *pc = offset;
+                    return FastExit::Error(error);
+                }
+            }
+        };
+    }
     macro_rules! slow {
         () => {{
-            *pc = instruction.offset;
-            return FastExit::Slow(instruction);
+            *pc = offset;
+            return match super::fetch_instruction(code, offset, object.constants.len()) {
+                Ok(instruction) => FastExit::Slow(instruction),
+                Err(error) => FastExit::Error(error),
+            };
         }};
     }
     macro_rules! jump {
@@ -469,38 +483,55 @@ fn run_fast(
         };
     }
     loop {
-        instruction = match super::fetch_instruction(code, at, object.constants.len()) {
-            Ok(instr) => instr,
-            Err(error) => {
-                *pc = at;
-                return FastExit::Error(error);
-            }
+        offset = at;
+        let Some(&byte) = code.get(at) else {
+            *pc = at;
+            return FastExit::Error(super::ByteCodeError::EndOfCode { offset: at });
         };
-        let op = instruction.op;
-        at += instruction.len;
-        match op {
-            Op::StackRef(n) => {
+        at += 1;
+        // bytecode.c's FETCH/NEXT dispatches the actual opcode directly.
+        // Only the interpreter fallback needs a decoded Instr. Neither
+        // representation nor an instruction cache survives this borrow.
+        let mut reader = super::OperandReader {
+            code,
+            cursor: at,
+            offset,
+            byte,
+        };
+        match byte {
+            0o001..=0o007 => {
+                let n = operand!(reader.family_operand(super::B_STACK_REF));
+                at = reader.cursor;
                 let index = ops.len() - 1 - n as usize;
                 let value = ops[index];
                 ops.push_within_frame(value);
             }
-            Op::StackSet(n) => {
+            super::B_STACK_SET | super::B_STACK_SET2 => {
+                let n = operand!(if byte == super::B_STACK_SET {
+                    reader.fetch()
+                } else {
+                    reader.fetch2()
+                });
+                at = reader.cursor;
                 let value = pop!();
                 // stack-set N stores relative to the pre-pop top.
                 let slot = ops.len() - 1 - (n as usize - 1);
                 std::mem::replace(&mut ops[slot], value).discard();
             }
-            Op::Dup => {
+            // Bdup.
+            0o211 => {
                 let top = *ops.last().expect("validated bytecode");
                 ops.push_within_frame(top);
             }
-            Op::Discard => {
+            // Bdiscard.
+            0o210 => {
                 pop!().discard();
             }
-            Op::DiscardN {
-                count,
-                preserve_tos,
-            } => {
+            super::B_DISCARDN => {
+                let raw = operand!(reader.fetch()) as u8;
+                at = reader.cursor;
+                let count = raw & 0x7f;
+                let preserve_tos = raw & 0x80 != 0;
                 if preserve_tos {
                     let top = pop!();
                     for _ in 0..count {
@@ -513,13 +544,29 @@ fn run_fast(
                     }
                 }
             }
-            Op::Constant(index) | Op::Constant2(index) => {
+            super::B_CONSTANT2 | 0o300..=0o377 => {
+                let index = if byte == super::B_CONSTANT2 {
+                    let index = operand!(reader.fetch2());
+                    at = reader.cursor;
+                    index
+                } else {
+                    u16::from(byte - super::B_CONSTANT)
+                };
+                operand!(super::check_constant_index(
+                    offset,
+                    index,
+                    object.constants.len()
+                ));
                 ops.push_within_frame(object.constant(index));
             }
-            Op::Goto { target } => {
+            0o202 => {
+                let target = operand!(reader.fetch2());
+                at = reader.cursor;
                 jump!(target);
             }
-            Op::GotoIfNil { target } => {
+            0o203 => {
+                let target = operand!(reader.fetch2());
+                at = reader.cursor;
                 let value = pop!();
                 let is_nil = value.is_nil();
                 value.discard();
@@ -527,7 +574,9 @@ fn run_fast(
                     jump!(target);
                 }
             }
-            Op::GotoIfNonNil { target } => {
+            0o204 => {
+                let target = operand!(reader.fetch2());
+                at = reader.cursor;
                 let value = pop!();
                 let is_nil = value.is_nil();
                 value.discard();
@@ -535,35 +584,43 @@ fn run_fast(
                     jump!(target);
                 }
             }
-            Op::GotoIfNilElsePop { target } => {
+            0o205 => {
+                let target = operand!(reader.fetch2());
+                at = reader.cursor;
                 if ops.last().expect("validated bytecode").is_nil() {
                     jump!(target);
                 } else {
                     pop!().discard();
                 }
             }
-            Op::GotoIfNonNilElsePop { target } => {
+            0o206 => {
+                let target = operand!(reader.fetch2());
+                at = reader.cursor;
                 if !ops.last().expect("validated bytecode").is_nil() {
                     jump!(target);
                 } else {
                     pop!().discard();
                 }
             }
-            Op::Return => {
+            // Breturn.
+            0o207 => {
                 return FastExit::Return(pop!());
             }
-            Op::Not => {
+            // Bnot.
+            0o77 => {
                 let value = pop!();
                 let is_nil = value.is_nil();
                 value.discard();
                 ops.push_within_frame(if is_nil { Value::T } else { Value::Nil });
             }
-            Op::Cons => {
+            // Bcons.
+            0o102 => {
                 let b = pop!();
                 let a = pop!();
                 ops.push_within_frame(Value::cons(a, b));
             }
-            Op::Eq => {
+            // Beq.
+            0o75 => {
                 let len = ops.len();
                 if matches!(ops[len - 1].kind(), Kind::SymbolWithPos(_))
                     || matches!(ops[len - 2].kind(), Kind::SymbolWithPos(_))
@@ -575,7 +632,8 @@ fn run_fast(
                 pop!().discard();
                 ops.push_within_frame(if equal { Value::T } else { Value::Nil });
             }
-            Op::Consp => {
+            // Bconsp.
+            0o72 => {
                 let is_cons = match ops.last().expect("validated bytecode").kind() {
                     Kind::Cons(_) => true,
                     // A keymap record reads as a cons; the full arm asks.
@@ -585,7 +643,7 @@ fn run_fast(
                 pop!().discard();
                 ops.push_within_frame(if is_cons { Value::T } else { Value::Nil });
             }
-            Op::Plus | Op::Diff | Op::Mult | Op::Quo | Op::Rem => {
+            0o134 | 0o132 | 0o137 | 0o245 | 0o246 => {
                 let len = ops.len();
                 let (Kind::Integer(x), Kind::Integer(y)) =
                     (ops[len - 2].kind(), ops[len - 1].kind())
@@ -595,47 +653,48 @@ fn run_fast(
                 // checked_div/checked_rem refuse y == 0 and the MIN/-1
                 // overflow, which fall through to the full arithmetic
                 // (and its arith-error); overflow falls through to bignums.
-                let fast = match op {
-                    Op::Plus => x.checked_add(y),
-                    Op::Diff => x.checked_sub(y),
-                    Op::Mult => x.checked_mul(y),
-                    Op::Quo => x.checked_div(y),
+                let fast = match byte {
+                    0o134 => x.checked_add(y),
+                    0o132 => x.checked_sub(y),
+                    0o137 => x.checked_mul(y),
+                    0o245 => x.checked_div(y),
                     _ => x.checked_rem(y),
                 };
                 let Some(n) = fast else { slow!() };
                 ops.truncate(len - 2);
                 ops.push_within_frame(Value::Integer(n));
             }
-            Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
+            0o125..=0o131 => {
                 let len = ops.len();
                 let (Kind::Integer(x), Kind::Integer(y)) =
                     (ops[len - 2].kind(), ops[len - 1].kind())
                 else {
                     slow!();
                 };
-                let holds = match op {
-                    Op::Eqlsign => x == y,
-                    Op::Gtr => x > y,
-                    Op::Lss => x < y,
-                    Op::Leq => x <= y,
+                let holds = match byte {
+                    0o125 => x == y,
+                    0o126 => x > y,
+                    0o127 => x < y,
+                    0o130 => x <= y,
                     _ => x >= y,
                 };
                 ops.truncate(len - 2);
                 ops.push_within_frame(if holds { Value::T } else { Value::Nil });
             }
-            Op::Add1 | Op::Sub1 | Op::Negate => {
+            0o124 | 0o123 | 0o133 => {
                 let Kind::Integer(x) = ops.last().expect("validated bytecode").kind() else {
                     slow!();
                 };
-                let fast = match op {
-                    Op::Add1 => x.checked_add(1),
-                    Op::Sub1 => x.checked_sub(1),
+                let fast = match byte {
+                    0o124 => x.checked_add(1),
+                    0o123 => x.checked_sub(1),
                     _ => x.checked_neg(),
                 };
                 let Some(n) = fast else { slow!() };
                 *ops.last_mut().expect("validated bytecode") = Value::Integer(n);
             }
-            Op::Aref => {
+            // Baref.
+            0o110 => {
                 let len = ops.len();
                 let Kind::Integer(index) = ops[len - 1].kind() else {
                     slow!()
@@ -652,7 +711,8 @@ fn run_fast(
                 pop!().discard();
                 ops.push_within_frame(value);
             }
-            Op::Aset => {
+            // Baset.
+            0o111 => {
                 // Stack: [.. vector index value]; aset returns the value.
                 let len = ops.len();
                 let Kind::Integer(index) = ops[len - 2].kind() else {
@@ -673,20 +733,20 @@ fn run_fast(
                 pop!().discard();
                 ops.push_within_frame(value);
             }
-            Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => {
+            0o100 | 0o101 | 0o242 | 0o243 => {
                 // bytecode.c reads the car or cdr of the object on the stack
                 // top and stores it there: the operand is read in place,
                 // never copied first.
                 let replacement = match ops.last().expect("validated bytecode").kind() {
                     Kind::Cons(cell) => {
-                        if matches!(op, Op::Car | Op::CarSafe) {
+                        if matches!(byte, 0o100 | 0o242) {
                             cell.car.get()
                         } else {
                             cell.cdr.get()
                         }
                     }
                     Kind::Nil => continue,
-                    _ if matches!(op, Op::CarSafe | Op::CdrSafe) => Value::Nil,
+                    _ if matches!(byte, 0o242 | 0o243) => Value::Nil,
                     // The full arm signals wrong-type-argument.
                     _ => slow!(),
                 };

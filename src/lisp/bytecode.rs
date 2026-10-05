@@ -670,19 +670,32 @@ fn fetch_instruction(
     | Op::VarBind(index)
     | Op::Constant(index)
     | Op::Constant2(index) = instr.op
-        && usize::from(index) >= constants_len
     {
-        return Err(ByteCodeError::ConstantOutOfRange {
-            offset,
-            index: usize::from(index),
-            constants_len,
-        });
+        check_constant_index(offset, index, constants_len)?;
     }
     // bytecode.c only uses a branch or handler destination when control
     // transfers there. An untaken branch must not inspect it. The next
     // decode bounds-checks the actual PC before reading any bytes, so even
     // an invalid taken branch cannot perform an out-of-bounds Rust access.
     Ok(instr)
+}
+
+/// Shared by direct byte dispatch and the interpreter fallback. A constant
+/// access checks its actual index when executed; dead code stays unread.
+#[inline]
+fn check_constant_index(
+    offset: usize,
+    index: u16,
+    constants_len: usize,
+) -> Result<(), ByteCodeError> {
+    if usize::from(index) >= constants_len {
+        return Err(ByteCodeError::ConstantOutOfRange {
+            offset,
+            index: usize::from(index),
+            constants_len,
+        });
+    }
+    Ok(())
 }
 
 /// Whether record slots look like a GENUINE GNU byte-code function
