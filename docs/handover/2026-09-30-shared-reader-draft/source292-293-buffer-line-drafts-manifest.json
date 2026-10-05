@@ -1,0 +1,1410 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "portable unapplied drafts; source292 strict/selected/build closed, source293 validation running",
+    "source292_closed": {
+      "status": "strict, selected and ordinary build passed; raw audit and ordinary comparisons required",
+      "candidate": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-05/buffer-line-index/emaxx",
+      "source_manifest": "source292-manifest.json",
+      "changes": [
+        "Cargo.toml",
+        "src/lisp/primitives/tests.rs",
+        "tests/fixtures/buffer-lf-line-index.el",
+        "tests/fixtures/buffer-lf-line-index.expected",
+        "tests/fixtures/buffer-lf-line-motion.el",
+        "tests/fixtures/buffer-lf-line-motion.expected"
+      ],
+      "results": [
+        {
+          "stage": "cache-clone",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 2.151119042,
+          "source_unchanged": true
+        },
+        {
+          "stage": "fresh-crate",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 0.5515090839999996,
+          "source_unchanged": true
+        },
+        {
+          "stage": "fmt",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 2.0068905000000004,
+          "source_unchanged": true
+        },
+        {
+          "stage": "check",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 27.974519917,
+          "source_unchanged": true
+        },
+        {
+          "stage": "clippy",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 33.703232541000006,
+          "source_unchanged": true
+        },
+        {
+          "stage": "diff",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 0.179107958000003,
+          "source_unchanged": true
+        },
+        {
+          "stage": "gate-build",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 193.22797416699999,
+          "source_unchanged": true
+        },
+        {
+          "stage": "gate-inventory",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 0.7689887500000054,
+          "source_unchanged": true
+        },
+        {
+          "stage": "gate-selected",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 113.06757116700004,
+          "source_unchanged": true
+        },
+        {
+          "stage": "release-build",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 164.328934917,
+          "source_unchanged": true
+        },
+        {
+          "stage": "release-inventory",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 0.7398765830000116,
+          "source_unchanged": true
+        },
+        {
+          "stage": "release-selected",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 109.20923158299999,
+          "source_unchanged": true
+        },
+        {
+          "stage": "ordinary-build",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 161.52569179200003,
+          "source_unchanged": true
+        },
+        {
+          "stage": "ordinary-image-recovered",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 6.523275708,
+          "source_unchanged": true
+        }
+      ],
+      "profiles": {
+        "gate": {
+          "passed": 290,
+          "failed": 0,
+          "ignored": 2,
+          "ignored_names": [
+            "tty::tty_differential_end_to_end",
+            "tty::tty_smoke_end_to_end"
+          ],
+          "selectors": [
+            "anti_cheat::gate_tests::batch_source_audit_keeps_code_after_inline_test_attributes",
+            "batch::tests::batch_reconstruction_reaches_loadup_native_trampoline_transition",
+            "batch::tests::batch_runtime_binds_command_line_args_left_to_nil",
+            "buffer::tests::adjacent_inserts_share_one_gnu_undo_record_and_public_pair",
+            "buffer::tests::beginning_and_end_of_line",
+            "buffer::tests::buffer_string_and_substring",
+            "buffer::tests::byte_positions_use_absolute_buffer_positions_when_narrowed",
+            "buffer::tests::char_access",
+            "buffer::tests::current_column_tracking",
+            "buffer::tests::delete_char_backward",
+            "buffer::tests::delete_char_forward",
+            "buffer::tests::delete_region_basic",
+            "buffer::tests::empty_buffer_predicates",
+            "buffer::tests::extended_character_metadata_tracks_edits_and_undo",
+            "buffer::tests::forward_char_errors_at_boundary",
+            "buffer::tests::forward_line_basic",
+            "buffer::tests::inherited_text_properties_obey_directional_stickiness",
+            "buffer::tests::insert_and_point_advance",
+            "buffer::tests::insert_in_middle",
+            "buffer::tests::inverse_edits_remain_modified_until_explicitly_marked_clean",
+            "buffer::tests::line_boundaries",
+            "buffer::tests::modification_tracking",
+            "buffer::tests::modification_tracking_ignores_narrowing",
+            "buffer::tests::multibyte_basic",
+            "buffer::tests::narrowing",
+            "buffer::tests::point_and_goto_char",
+            "buffer::tests::point_min_max_buffer_size",
+            "buffer::tests::region_beginning_end",
+            "buffer::tests::rope_character_cache_tracks_text_mutation_and_swap",
+            "buffer::tests::self_insert_negative_arg",
+            "buffer::tests::skip_while_walks_long_rope_slices_in_both_directions",
+            "buffer::tests::sparse_text_property_lookup_respects_span_boundaries",
+            "buffer::tests::undo_delete",
+            "buffer::tests::undo_delete_restores_text_properties",
+            "buffer::tests::undo_insert",
+            "lisp::eval::tests::eval_01::accept_process_output_drains_the_gnu_post_delivery_readiness_window",
+            "lisp::eval::tests::eval_01::c_mode_matches_gnu_comment_and_modeline_defaults",
+            "lisp::eval::tests::eval_01::define_minor_mode_registers_mode_line_and_keymap_metadata",
+            "lisp::eval::tests::eval_01::dumped_with_current_buffer_window_runs_setup_body_display_and_quit",
+            "lisp::eval::tests::eval_01::eieio_registers_the_gnu_initialize_instance_method_and_class_lineage",
+            "lisp::eval::tests::eval_01::fill_column_binding_crosses_lexical_function_boundaries_and_assigns_locally",
+            "lisp::eval::tests::eval_01::format_mode_line_is_a_batch_no_op_before_inspecting_the_format",
+            "lisp::eval::tests::eval_01::gnu_visual_line_mode_exposes_the_complete_minor_mode_contract",
+            "lisp::eval::tests::eval_01::header_line_format_accepts_a_quoted_eval_form_as_data",
+            "lisp::eval::tests::eval_01::header_line_glass_honors_propertized_align_to_columns",
+            "lisp::eval::tests::eval_01::header_line_glass_keeps_partial_sort_column_face",
+            "lisp::eval::tests::eval_01::killing_buffer_replaces_it_in_every_window",
+            "lisp::eval::tests::eval_01::killing_selected_window_buffer_moves_window_to_live_buffer",
+            "lisp::eval::tests::eval_01::line_formats_are_bound_special_and_auto_buffer_local",
+            "lisp::eval::tests::eval_01::loaded_with_current_buffer_window_macro_owns_its_display_lifecycle",
+            "lisp::eval::tests::eval_01::menu_bar_menu_at_x_y_maps_columns_to_bar_items",
+            "lisp::eval::tests::eval_01::native_window_scroll_policy_is_bound_and_dynamically_special",
+            "lisp::eval::tests::eval_01::newline_inserts_requested_line_breaks",
+            "lisp::eval::tests::eval_01::newline_scans_cross_the_rope_chunks",
+            "lisp::eval::tests::eval_01::scroll_up_moves_point_with_window_when_point_would_scroll_off_top",
+            "lisp::eval::tests::eval_01::set_window_buffer_accepts_nil_for_selected_window",
+            "lisp::eval::tests::eval_01::set_window_buffer_honors_keep_margins_and_default_reset",
+            "lisp::eval::tests::eval_01::tab_line_glass_evaluates_per_buffer_format",
+            "lisp::eval::tests::eval_01::window_buffer_tracks_selected_buffer",
+            "lisp::eval::tests::eval_01::window_face_spans_honor_font_lock_face_aliases_on_overlays",
+            "lisp::eval::tests::eval_01::window_face_spans_layer_text_properties_region_and_overlays",
+            "lisp::eval::tests::eval_01::window_face_spans_resolve_faces_inherited_from_overlay_categories",
+            "lisp::eval::tests::eval_01::window_face_spans_resolve_faces_inherited_from_text_categories",
+            "lisp::eval::tests::eval_01::window_parameters_round_trip_and_support_setf",
+            "lisp::eval::tests::eval_01::with_temp_buffer_does_not_change_the_selected_windows_buffer",
+            "lisp::eval::tests::eval_02::beginning_of_defun_raw_moves_between_column_zero_lists",
+            "lisp::eval::tests::eval_02::blank_temporary_syntax_tables_and_narrowed_scans_use_gnu_coordinates",
+            "lisp::eval::tests::eval_02::forward_comment_finds_line_comment_before_unterminated_nested_marker",
+            "lisp::eval::tests::eval_02::forward_comment_moves_backward_over_lisp_line_comments",
+            "lisp::eval::tests::eval_02::forward_comment_uses_absolute_positions_in_a_narrowed_buffer",
+            "lisp::eval::tests::eval_02::forward_comment_uses_leftmost_line_comment_start",
+            "lisp::eval::tests::eval_02::invisible_p_accepts_raw_invisibility_property_values",
+            "lisp::eval::tests::eval_02::invisible_p_honors_symbolic_overlay_categories",
+            "lisp::eval::tests::eval_02::invisible_p_tracks_invisible_text_properties",
+            "lisp::eval::tests::eval_02::preloaded_command_line_1_processes_command_switch_alist",
+            "lisp::eval::tests::eval_02::re_search_backward_empty_line_before_separator_respects_bound",
+            "lisp::eval::tests::eval_02::re_search_backward_empty_line_with_bound_returns_line_start",
+            "lisp::eval::tests::eval_02::re_search_backward_respects_line_end_anchors",
+            "lisp::eval::tests::eval_02::real_outline_library_loads_over_the_runtime_keymap_list_adapter",
+            "lisp::eval::tests::eval_02::require_final_newline_matches_batch_default",
+            "lisp::eval::tests::eval_02::scan_lists_backward_skips_line_comments",
+            "lisp::eval::tests::eval_02::scan_lists_skips_escaped_line_and_block_comment_endings",
+            "lisp::eval::tests::eval_02::truncate_string_to_width_uses_display_columns",
+            "lisp::eval::tests::eval_03::align_c_variable_declaration_regex_matches_resource_lines",
+            "lisp::eval::tests::eval_03::align_css_declaration_search_positions_match_buffer_lines",
+            "lisp::eval::tests::eval_03::align_region_separator_finds_brace_line_between_css_blocks",
+            "lisp::eval::tests::eval_03::changing_current_buffer_saves_the_selected_windows_point",
+            "lisp::eval::tests::eval_03::define_inline_lowers_inline_wrappers_into_a_runtime_function",
+            "lisp::eval::tests::eval_03::deleting_the_selected_window_restores_the_replacement_windows_point",
+            "lisp::eval::tests::eval_03::display_buffer_preserves_current_and_selected_window_like_headless_gnu",
+            "lisp::eval::tests::eval_03::display_buffer_respects_inhibit_same_window_action",
+            "lisp::eval::tests::eval_03::dumped_event_position_helpers_select_the_event_window_and_point",
+            "lisp::eval::tests::eval_03::ert_tests_get_independent_window_excursions",
+            "lisp::eval::tests::eval_03::frame_resize_keeps_split_window_tree_geometry_coherent",
+            "lisp::eval::tests::eval_03::frame_selected_window_family_preserves_norecord_state",
+            "lisp::eval::tests::eval_03::headless_window_splittability_and_combination_match_gnu",
+            "lisp::eval::tests::eval_03::headless_window_vscroll_is_zero",
+            "lisp::eval::tests::eval_03::indent_line_to_leaves_point_and_return_value_at_gnu_boundaries",
+            "lisp::eval::tests::eval_03::keyboard_macro_normalizes_shift_tab_and_selected_window_context",
+            "lisp::eval::tests::eval_03::marked_files_popup_preserves_the_origin_window_point_and_start",
+            "lisp::eval::tests::eval_03::mode_line_buffer_identification_is_bound",
+            "lisp::eval::tests::eval_03::plain_searches_read_the_text_in_overlapping_windows",
+            "lisp::eval::tests::eval_03::pos_visible_in_window_p_checks_selected_window_range",
+            "lisp::eval::tests::eval_03::pos_visible_in_window_p_is_nil_when_noninteractive",
+            "lisp::eval::tests::eval_03::pos_visible_in_window_p_respects_window_height",
+            "lisp::eval::tests::eval_03::pos_visible_in_window_p_uses_the_queried_split_window_height",
+            "lisp::eval::tests::eval_03::preloaded_window_contract_restores_context_and_defines_resize_mode",
+            "lisp::eval::tests::eval_03::quit_window_buries_current_buffer_without_killing_it",
+            "lisp::eval::tests::eval_03::quit_window_does_not_reselect_buffer_that_quit_to_restored_buffer",
+            "lisp::eval::tests::eval_03::quit_window_returns_to_previous_pop_to_buffer_target",
+            "lisp::eval::tests::eval_03::reselecting_a_window_showing_the_target_preserves_its_start",
+            "lisp::eval::tests::eval_03::same_buffer_window_refresh_applies_its_tty_margin_widths",
+            "lisp::eval::tests::eval_03::save_selected_window_does_not_rewind_the_selected_windows_live_point",
+            "lisp::eval::tests::eval_03::save_window_excursion_restores_current_buffer",
+            "lisp::eval::tests::eval_03::save_window_excursion_restores_the_window_tree",
+            "lisp::eval::tests::eval_03::save_window_excursion_restores_window_start",
+            "lisp::eval::tests::eval_03::split_window_returns_distinct_live_windows_in_headless_runtime",
+            "lisp::eval::tests::eval_03::vertical_motion_moves_by_lines_and_reports_actual_motion",
+            "lisp::eval::tests::eval_03::window_configuration_equality_ignores_view_position_but_compares_layout",
+            "lisp::eval::tests::eval_03::window_edge_aliases_report_selected_window_geometry",
+            "lisp::eval::tests::eval_03::window_height_tracks_runtime_frame_height",
+            "lisp::eval::tests::eval_03::window_use_times_follow_selection_and_second_most_recent_bumps",
+            "lisp::eval::tests::eval_03::window_width_tracks_runtime_frame_width",
+            "lisp::eval::tests::eval_03::windows_preserve_independent_points_across_selection",
+            "lisp::eval::tests::eval_04::boundary_heavy_searches_use_linear_candidates_without_weakening_symbol_boundaries",
+            "lisp::eval::tests::eval_04::buffer_size_ignores_narrowing_like_emacs",
+            "lisp::eval::tests::eval_04::buffer_undo_list_mutates_saved_head_for_adjacent_insertions_like_gnu",
+            "lisp::eval::tests::eval_04::current_column_uses_lexically_bound_tab_width",
+            "lisp::eval::tests::eval_04::default_indent_line_function_is_indent_relative",
+            "lisp::eval::tests::eval_04::describe_char_observes_preloaded_eldoc_multiline_policy",
+            "lisp::eval::tests::eval_04::dumped_help_metadata_keymaps_and_window_entry_points_keep_their_gnu_shape",
+            "lisp::eval::tests::eval_04::editfns_edge_contracts_preserve_float_character_and_undo_semantics",
+            "lisp::eval::tests::eval_04::electric_newline_observes_c_basic_offset_binding",
+            "lisp::eval::tests::eval_04::header_line_indent_mode_defaults_to_nil",
+            "lisp::eval::tests::eval_04::header_line_indent_mode_sets_buffer_local_state",
+            "lisp::eval::tests::eval_04::indent_line_to_replaces_existing_indentation",
+            "lisp::eval::tests::eval_04::indent_relative_uses_previous_line_indent_points",
+            "lisp::eval::tests::eval_04::regexp_whitespace_atom_stops_before_a_table_classed_comment_end_newline",
+            "lisp::eval::tests::eval_05::batch_window_hscroll_defaults_to_zero",
+            "lisp::eval::tests::eval_05::beginning_of_defun_ignores_a_column_zero_opener_inside_a_string",
+            "lisp::eval::tests::eval_05::beginning_of_line_crosses_an_unterminated_final_line_to_eob",
+            "lisp::eval::tests::eval_05::c_brace_newlines_reports_c_style_layout",
+            "lisp::eval::tests::eval_05::c_toggle_comment_style_switches_between_block_and_line_comments",
+            "lisp::eval::tests::eval_05::dired_revert_preserves_line_when_header_length_changes",
+            "lisp::eval::tests::eval_05::dumped_loaddefs_inline_functions_are_available_without_owner_loads",
+            "lisp::eval::tests::eval_05::erc_process_input_line_preserves_spaces_in_the_flood_queue",
+            "lisp::eval::tests::eval_05::eshell_external_pipeline_finishes_redirected_output_before_returning",
+            "lisp::eval::tests::eval_05::eshell_external_pipeline_parser_only_shells_the_external_segment",
+            "lisp::eval::tests::eval_05::eshell_internal_command_feeds_external_pipeline_before_returning",
+            "lisp::eval::tests::eval_05::keyboard_macro_decimal_prefix_moves_the_requested_number_of_lines",
+            "lisp::eval::tests::eval_05::killing_a_noncurrent_buffer_does_not_retarget_the_selected_window",
+            "lisp::eval::tests::eval_05::line_beginning_position_crosses_an_unterminated_final_line_to_eob",
+            "lisp::eval::tests::eval_05::line_edge_motion_stops_at_field_boundaries",
+            "lisp::eval::tests::eval_05::line_move_moves_by_logical_lines_in_batch",
+            "lisp::eval::tests::eval_05::move_end_of_line_crosses_a_leading_timestamp_field",
+            "lisp::eval::tests::eval_05::return_key_defaults_to_newline_command",
+            "lisp::eval::tests::eval_05::upstream_dired_killed_buffer_cleanup_preserves_later_window_display",
+            "lisp::eval::tests::eval_05::windows_1251_alias_uses_the_preloaded_single_byte_codec",
+            "lisp::eval::tests::eval_05::windows_1252_is_a_preloaded_single_byte_round_tripping_coding",
+            "lisp::native_comp::runtime::tests::image_clones_copy_frame_window_terminal_and_parameter_cycles",
+            "lisp::native_comp::runtime::tests::killed_buffer_releases_editing_roots_before_its_object_is_reclaimed",
+            "lisp::native_comp::runtime::tests::native_call_trampoline_returns_values_and_lisp_errors_through_rust",
+            "lisp::native_comp::runtime::tests::native_char_table_gc_traces_inline_slots_and_reclaims_detached_graphs",
+            "lisp::native_comp::runtime::tests::native_char_tables_share_words_and_expose_gnu_inline_fields",
+            "lisp::primitives::compat_runtime_tests::compat_01::display_buffer_honors_inhibit_same_window_and_action_function_returns",
+            "lisp::primitives::compat_runtime_tests::compat_01::forward_line_treats_nil_as_default_step",
+            "lisp::primitives::compat_runtime_tests::compat_01::get_buffer_window_only_reports_selected_buffer",
+            "lisp::primitives::compat_runtime_tests::compat_01::line_number_at_pos_counts_from_the_accessible_region_unless_absolute",
+            "lisp::primitives::compat_runtime_tests::compat_01::line_number_at_pos_treats_nil_as_point_and_checks_bounds",
+            "lisp::primitives::compat_runtime_tests::compat_01::selected_window_is_a_record_and_tracks_window_start",
+            "lisp::primitives::compat_runtime_tests::compat_02::extracted_strings_preserve_the_buffer_multibyte_mode",
+            "lisp::primitives::compat_runtime_tests::compat_02::set_buffer_multibyte_reinterprets_the_unchanged_utf8_bytes",
+            "lisp::primitives::pdumper::tests::inline_record_type_and_data_cycles_survive_clone_and_dump",
+            "lisp::primitives::tests::active_minibuffer_selected_window_tracks_entry_across_nested_reads",
+            "lisp::primitives::tests::buffer_line_indexes_preserve_gnu_lf_motion_narrowing_and_edits",
+            "lisp::primitives::tests::buffer_multibyte_non_t_flags_preserve_ascii_and_convert_eight_bit_bytes",
+            "lisp::primitives::tests::buffer_undo_list_assignment_preserves_cons_identity",
+            "lisp::primitives::tests::char_charset_restriction_narrows_to_charset_list_or_coding_system",
+            "lisp::primitives::tests::char_property_primitives_accept_windows_and_filter_window_overlays",
+            "lisp::primitives::tests::delete_line_removes_the_current_line",
+            "lisp::primitives::tests::dynamic_buffer_undo_list_binding_restores_native_history",
+            "lisp::primitives::tests::embedded_native_compilation_builds_uncached_advice_trampolines",
+            "lisp::primitives::tests::eval_buffer_binds_lexical_binding_from_the_first_line_cookie",
+            "lisp::primitives::tests::font_lock_mode_declines_to_enable_in_a_batch_session",
+            "lisp::primitives::tests::format_mode_line_renders_the_dumped_spec_interactively",
+            "lisp::primitives::tests::glass_mode_line_honors_font_lock_face_string_properties",
+            "lisp::primitives::tests::glass_mode_line_pads_min_width_spans_like_the_display_engine",
+            "lisp::primitives::tests::indent_rigidly_shifts_each_line_in_region",
+            "lisp::primitives::tests::inhibit_read_only_allows_buffer_read_only_edits",
+            "lisp::primitives::tests::input_decode_keyboard_macro_uses_the_same_live_translation_pipeline",
+            "lisp::primitives::tests::input_decode_pipeline_matches_gnu",
+            "lisp::primitives::tests::interactive_recenter_uses_the_live_shrunken_window_height",
+            "lisp::primitives::tests::interactive_undo_restores_the_unmodified_state",
+            "lisp::primitives::tests::interactive_vertical_motion_honors_the_cons_goal_column",
+            "lisp::primitives::tests::marker_adjustments_stay_adjacent_to_their_deletion_in_the_undo_list",
+            "lisp::primitives::tests::message_log_disables_undo_in_the_messages_buffer",
+            "lisp::primitives::tests::minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window",
+            "lisp::primitives::tests::mode_line_line_number_is_relative_to_the_accessible_region",
+            "lisp::primitives::tests::native_headless_window_geometry_and_hscroll_match_gnu_c_contracts",
+            "lisp::primitives::tests::native_indent_c_motion_and_line_number_width_family_matches_gnu",
+            "lisp::primitives::tests::native_process_window_and_foreground_queries_follow_pty_ownership",
+            "lisp::primitives::tests::native_sqlite_columns_uses_the_live_result_set_schema",
+            "lisp::primitives::tests::native_window_change_state_hooks_and_minibuffer_resize_match_gnu",
+            "lisp::primitives::tests::preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior",
+            "lisp::primitives::tests::primitive_undo_consumes_marker_adjustments_with_their_deletion",
+            "lisp::primitives::tests::process_lines_uses_default_directory_as_subprocess_cwd",
+            "lisp::primitives::tests::recenter_uses_the_published_window_height_for_negative_lines",
+            "lisp::primitives::tests::set_minibuffer_window_validates_and_updates_the_shared_window_state",
+            "lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots",
+            "lisp::primitives::tests::terminal_frames_follow_gnu_device_window_and_deletion_lifecycle",
+            "lisp::primitives::tests::terminal_frames_preserve_other_frames_when_windows_change",
+            "lisp::primitives::tests::threads_retain_lexical_caller_roots_across_separate_callee_environments",
+            "lisp::primitives::tests::tmm_nested_menu_keeps_the_completions_window_at_its_first_line",
+            "lisp::primitives::tests::tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it",
+            "lisp::primitives::tests::tty_frame_size_shapes_the_root_and_minibuffer_windows",
+            "lisp::primitives::tests::tty_minibuffer_edits_complete_and_recall_history",
+            "lisp::primitives::tests::undo_file_marker_records_the_visited_modtime",
+            "lisp::primitives::tests::undo_host_records_match_gnu_save_point_property_and_multibyte_contracts",
+            "lisp::primitives::tests::unreached_markers_leave_their_buffers_edit_walk",
+            "lisp::primitives::tests::window_configuration_restore_keeps_the_current_frame_size_like_gnu",
+            "lisp::primitives::tests::window_cycling_follows_tree_order_from_the_selected_window",
+            "lisp::primitives::tests::window_end_and_posn_follow_published_interactive_geometry",
+            "lisp::primitives::tests::window_mode_lines_render_in_each_windows_own_context",
+            "lisp::primitives::tests::window_render_layout_reports_split_geometry_in_tree_order",
+            "lisp::primitives::tests::window_resize_apply_commits_staged_pixel_sizes",
+            "lisp::primitives::tests::window_text_pixel_size_measures_the_window_buffer_with_mode_lines",
+            "lisp::tests::parses_compact_lexical_binding_modelines",
+            "lisp::tests::parses_multiline_read_symbol_shorthands_from_magit_style_blocks",
+            "tty::tests::active_minibuffer_only_owns_cursor_while_its_window_is_selected",
+            "tty::tests::align_to_display_specs_lay_out_as_blank_columns",
+            "tty::tests::canonical_t_invisibility_spec_hides_true_overlay_regions",
+            "tty::tests::command_cycle_reselects_the_selected_windows_displayed_buffer",
+            "tty::tests::command_reader_retains_prefix_across_events_and_collecting_filters",
+            "tty::tests::control_characters_use_ascii_codes",
+            "tty::tests::display_columns_match_tab_expansion",
+            "tty::tests::display_glyph_codes_validate_both_representations_and_full_character_bits",
+            "tty::tests::display_string_cursor_property_selects_its_first_non_nil_cell",
+            "tty::tests::display_tables_select_one_valid_window_buffer_or_standard_table",
+            "tty::tests::display_tables_translate_echo_before_clipping_and_remap_minibuffer_point",
+            "tty::tests::display_vectors_remap_positions_and_faces_without_recursive_translation",
+            "tty::tests::embedded_display_newlines_are_hard_row_boundaries",
+            "tty::tests::function_keys_encode_as_symbols",
+            "tty::tests::glyphless_methods_follow_text_terminal_cons_and_width_rules",
+            "tty::tests::glyphless_wrap_restarts_a_split_display_element_like_gnu",
+            "tty::tests::graphical_fringe_overlay_strings_have_no_tty_text_glyph",
+            "tty::tests::hscroll_marker_precedes_the_requested_source_column",
+            "tty::tests::hscrolled_hidden_point_uses_the_last_line_number_gutter_cell",
+            "tty::tests::interactive_execution_inserts_through_lisp",
+            "tty::tests::interactive_startup_initializes_scratch_and_messages_buffers",
+            "tty::tests::invisible_properties_on_overlay_strings_remove_their_tty_cells",
+            "tty::tests::invisible_same_row_motion_defers_mode_line_point_until_input",
+            "tty::tests::isearch_dispatches_through_the_overriding_map_and_exits_on_other_keys",
+            "tty::tests::key_descriptions_follow_gnu_spellings",
+            "tty::tests::key_resolution_distinguishes_prefixes_commands_and_undefined",
+            "tty::tests::long_lines_wrap_exactly_like_a_gnu_tty",
+            "tty::tests::margin_default_foreground_preserves_an_extending_background",
+            "tty::tests::merged_attrs_keep_the_base_where_the_overlay_is_silent",
+            "tty::tests::meta_becomes_the_escape_prefix",
+            "tty::tests::minibuffer_before_string_inherits_its_prompt_anchor_face",
+            "tty::tests::minibuffer_cursor_follows_echo_wrapping",
+            "tty::tests::non_selected_windows_render_from_their_start_without_recentering",
+            "tty::tests::overlay_display_string_replaces_its_covered_buffer_range",
+            "tty::tests::paint_rows_compare_by_text_and_attribute",
+            "tty::tests::plain_characters_encode_as_their_codes",
+            "tty::tests::point_at_hidden_run_start_stays_before_the_ellipsis",
+            "tty::tests::point_max_overlay_before_string_contributes_hard_display_rows",
+            "tty::tests::point_precedes_a_point_max_overlay_after_string",
+            "tty::tests::prefix_echo_accumulates_like_gnu",
+            "tty::tests::propertized_string_display_specs_replace_the_covered_text",
+            "tty::tests::rendered_lines_expand_tabs_to_eight_column_stops",
+            "tty::tests::segment_counts_follow_the_wrap_geometry",
+            "tty::tests::selected_windows_recenter_around_an_off_window_point",
+            "tty::tests::sgr_sequences_reset_then_select_each_attribute",
+            "tty::tests::tabulated_list_glyphless_table_uses_tty_sort_indicators",
+            "tty::tests::terminal_editing_keys_use_gnu_codes",
+            "tty::tests::terminal_glyphless_expansion_tracks_coding_faces_and_point_columns",
+            "tty::tests::text_only_blits_preserve_an_extending_base_face",
+            "tty::tests::transient_printed_value_takes_precedence_over_an_active_minibuffer",
+            "tty::tests::truncated_rows_carry_the_dollar_marker_in_the_last_column",
+            "tty::tests::truncating_windows_keep_one_row_per_logical_line",
+            "tty::tests::tty_lisp_readers_preserve_mouse_events_and_keyboard_order",
+            "tty::tests::tty_redisplay_runs_the_lisp_pre_redisplay_coordinator_for_all_windows",
+            "tty::tests::universal_argument_prefixes_dispatch_through_simple_el",
+            "tty::tests::visual_row_positions_follow_wrap_geometry",
+            "tty::tests::width_display_specs_use_tty_cells_and_collapse_equal_runs",
+            "tty::tests::window_end_stops_before_a_wholly_invisible_buffer_tail",
+            "tty::tests::window_margin_display_strings_do_not_enter_the_text_body",
+            "tty::tests::window_overlay_after_strings_splice_before_hidden_newlines_with_faces",
+            "tty::tests::wrapped_echo_preserves_a_faced_trailing_space",
+            "tty::tests::wrapped_echo_trailing_newline_does_not_allocate_an_empty_row",
+            "tty::tty_differential_end_to_end",
+            "tty::tty_smoke_end_to_end"
+          ],
+          "binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-05/buffer-line-index/emaxx/target/vm-dispatch-validation/gate/deps/emaxx-51c583d2b156da0e",
+          "retained_binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source292-gate-libtest",
+          "binary_sha256": "e7096aa6993bdf8e2234d0fc48386499622707a7c163983616fec9c2cc8512f7",
+          "retained_inputs": [
+            {
+              "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-05/buffer-line-index/emaxx/target/vm-dispatch-validation/gate/deps/emaxx-51c583d2b156da0e",
+              "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source292-gate-retained-inputs/emaxx-51c583d2b156da0e",
+              "sha256": "e7096aa6993bdf8e2234d0fc48386499622707a7c163983616fec9c2cc8512f7",
+              "bytes": 29767888
+            },
+            {
+              "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source292/loadup-e7096aa6-d44829be.pdmp",
+              "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source292-gate-retained-inputs/loadup-e7096aa6-d44829be.pdmp",
+              "sha256": "26bc2a60470f262cd30930d8d1c29e89084acdecf798e234753fa8398bc2297f",
+              "bytes": 22378512
+            }
+          ]
+        },
+        "release": {
+          "passed": 290,
+          "failed": 0,
+          "ignored": 2,
+          "ignored_names": [
+            "tty::tty_differential_end_to_end",
+            "tty::tty_smoke_end_to_end"
+          ],
+          "selectors": [
+            "anti_cheat::gate_tests::batch_source_audit_keeps_code_after_inline_test_attributes",
+            "batch::tests::batch_reconstruction_reaches_loadup_native_trampoline_transition",
+            "batch::tests::batch_runtime_binds_command_line_args_left_to_nil",
+            "buffer::tests::adjacent_inserts_share_one_gnu_undo_record_and_public_pair",
+            "buffer::tests::beginning_and_end_of_line",
+            "buffer::tests::buffer_string_and_substring",
+            "buffer::tests::byte_positions_use_absolute_buffer_positions_when_narrowed",
+            "buffer::tests::char_access",
+            "buffer::tests::current_column_tracking",
+            "buffer::tests::delete_char_backward",
+            "buffer::tests::delete_char_forward",
+            "buffer::tests::delete_region_basic",
+            "buffer::tests::empty_buffer_predicates",
+            "buffer::tests::extended_character_metadata_tracks_edits_and_undo",
+            "buffer::tests::forward_char_errors_at_boundary",
+            "buffer::tests::forward_line_basic",
+            "buffer::tests::inherited_text_properties_obey_directional_stickiness",
+            "buffer::tests::insert_and_point_advance",
+            "buffer::tests::insert_in_middle",
+            "buffer::tests::inverse_edits_remain_modified_until_explicitly_marked_clean",
+            "buffer::tests::line_boundaries",
+            "buffer::tests::modification_tracking",
+            "buffer::tests::modification_tracking_ignores_narrowing",
+            "buffer::tests::multibyte_basic",
+            "buffer::tests::narrowing",
+            "buffer::tests::point_and_goto_char",
+            "buffer::tests::point_min_max_buffer_size",
+            "buffer::tests::region_beginning_end",
+            "buffer::tests::rope_character_cache_tracks_text_mutation_and_swap",
+            "buffer::tests::self_insert_negative_arg",
+            "buffer::tests::skip_while_walks_long_rope_slices_in_both_directions",
+            "buffer::tests::sparse_text_property_lookup_respects_span_boundaries",
+            "buffer::tests::undo_delete",
+            "buffer::tests::undo_delete_restores_text_properties",
+            "buffer::tests::undo_insert",
+            "lisp::eval::tests::eval_01::accept_process_output_drains_the_gnu_post_delivery_readiness_window",
+            "lisp::eval::tests::eval_01::c_mode_matches_gnu_comment_and_modeline_defaults",
+            "lisp::eval::tests::eval_01::define_minor_mode_registers_mode_line_and_keymap_metadata",
+            "lisp::eval::tests::eval_01::dumped_with_current_buffer_window_runs_setup_body_display_and_quit",
+            "lisp::eval::tests::eval_01::eieio_registers_the_gnu_initialize_instance_method_and_class_lineage",
+            "lisp::eval::tests::eval_01::fill_column_binding_crosses_lexical_function_boundaries_and_assigns_locally",
+            "lisp::eval::tests::eval_01::format_mode_line_is_a_batch_no_op_before_inspecting_the_format",
+            "lisp::eval::tests::eval_01::gnu_visual_line_mode_exposes_the_complete_minor_mode_contract",
+            "lisp::eval::tests::eval_01::header_line_format_accepts_a_quoted_eval_form_as_data",
+            "lisp::eval::tests::eval_01::header_line_glass_honors_propertized_align_to_columns",
+            "lisp::eval::tests::eval_01::header_line_glass_keeps_partial_sort_column_face",
+            "lisp::eval::tests::eval_01::killing_buffer_replaces_it_in_every_window",
+            "lisp::eval::tests::eval_01::killing_selected_window_buffer_moves_window_to_live_buffer",
+            "lisp::eval::tests::eval_01::line_formats_are_bound_special_and_auto_buffer_local",
+            "lisp::eval::tests::eval_01::loaded_with_current_buffer_window_macro_owns_its_display_lifecycle",
+            "lisp::eval::tests::eval_01::menu_bar_menu_at_x_y_maps_columns_to_bar_items",
+            "lisp::eval::tests::eval_01::native_window_scroll_policy_is_bound_and_dynamically_special",
+            "lisp::eval::tests::eval_01::newline_inserts_requested_line_breaks",
+            "lisp::eval::tests::eval_01::newline_scans_cross_the_rope_chunks",
+            "lisp::eval::tests::eval_01::scroll_up_moves_point_with_window_when_point_would_scroll_off_top",
+            "lisp::eval::tests::eval_01::set_window_buffer_accepts_nil_for_selected_window",
+            "lisp::eval::tests::eval_01::set_window_buffer_honors_keep_margins_and_default_reset",
+            "lisp::eval::tests::eval_01::tab_line_glass_evaluates_per_buffer_format",
+            "lisp::eval::tests::eval_01::window_buffer_tracks_selected_buffer",
+            "lisp::eval::tests::eval_01::window_face_spans_honor_font_lock_face_aliases_on_overlays",
+            "lisp::eval::tests::eval_01::window_face_spans_layer_text_properties_region_and_overlays",
+            "lisp::eval::tests::eval_01::window_face_spans_resolve_faces_inherited_from_overlay_categories",
+            "lisp::eval::tests::eval_01::window_face_spans_resolve_faces_inherited_from_text_categories",
+            "lisp::eval::tests::eval_01::window_parameters_round_trip_and_support_setf",
+            "lisp::eval::tests::eval_01::with_temp_buffer_does_not_change_the_selected_windows_buffer",
+            "lisp::eval::tests::eval_02::beginning_of_defun_raw_moves_between_column_zero_lists",
+            "lisp::eval::tests::eval_02::blank_temporary_syntax_tables_and_narrowed_scans_use_gnu_coordinates",
+            "lisp::eval::tests::eval_02::forward_comment_finds_line_comment_before_unterminated_nested_marker",
+            "lisp::eval::tests::eval_02::forward_comment_moves_backward_over_lisp_line_comments",
+            "lisp::eval::tests::eval_02::forward_comment_uses_absolute_positions_in_a_narrowed_buffer",
+            "lisp::eval::tests::eval_02::forward_comment_uses_leftmost_line_comment_start",
+            "lisp::eval::tests::eval_02::invisible_p_accepts_raw_invisibility_property_values",
+            "lisp::eval::tests::eval_02::invisible_p_honors_symbolic_overlay_categories",
+            "lisp::eval::tests::eval_02::invisible_p_tracks_invisible_text_properties",
+            "lisp::eval::tests::eval_02::preloaded_command_line_1_processes_command_switch_alist",
+            "lisp::eval::tests::eval_02::re_search_backward_empty_line_before_separator_respects_bound",
+            "lisp::eval::tests::eval_02::re_search_backward_empty_line_with_bound_returns_line_start",
+            "lisp::eval::tests::eval_02::re_search_backward_respects_line_end_anchors",
+            "lisp::eval::tests::eval_02::real_outline_library_loads_over_the_runtime_keymap_list_adapter",
+            "lisp::eval::tests::eval_02::require_final_newline_matches_batch_default",
+            "lisp::eval::tests::eval_02::scan_lists_backward_skips_line_comments",
+            "lisp::eval::tests::eval_02::scan_lists_skips_escaped_line_and_block_comment_endings",
+            "lisp::eval::tests::eval_02::truncate_string_to_width_uses_display_columns",
+            "lisp::eval::tests::eval_03::align_c_variable_declaration_regex_matches_resource_lines",
+            "lisp::eval::tests::eval_03::align_css_declaration_search_positions_match_buffer_lines",
+            "lisp::eval::tests::eval_03::align_region_separator_finds_brace_line_between_css_blocks",
+            "lisp::eval::tests::eval_03::changing_current_buffer_saves_the_selected_windows_point",
+            "lisp::eval::tests::eval_03::define_inline_lowers_inline_wrappers_into_a_runtime_function",
+            "lisp::eval::tests::eval_03::deleting_the_selected_window_restores_the_replacement_windows_point",
+            "lisp::eval::tests::eval_03::display_buffer_preserves_current_and_selected_window_like_headless_gnu",
+            "lisp::eval::tests::eval_03::display_buffer_respects_inhibit_same_window_action",
+            "lisp::eval::tests::eval_03::dumped_event_position_helpers_select_the_event_window_and_point",
+            "lisp::eval::tests::eval_03::ert_tests_get_independent_window_excursions",
+            "lisp::eval::tests::eval_03::frame_resize_keeps_split_window_tree_geometry_coherent",
+            "lisp::eval::tests::eval_03::frame_selected_window_family_preserves_norecord_state",
+            "lisp::eval::tests::eval_03::headless_window_splittability_and_combination_match_gnu",
+            "lisp::eval::tests::eval_03::headless_window_vscroll_is_zero",
+            "lisp::eval::tests::eval_03::indent_line_to_leaves_point_and_return_value_at_gnu_boundaries",
+            "lisp::eval::tests::eval_03::keyboard_macro_normalizes_shift_tab_and_selected_window_context",
+            "lisp::eval::tests::eval_03::marked_files_popup_preserves_the_origin_window_point_and_start",
+            "lisp::eval::tests::eval_03::mode_line_buffer_identification_is_bound",
+            "lisp::eval::tests::eval_03::plain_searches_read_the_text_in_overlapping_windows",
+            "lisp::eval::tests::eval_03::pos_visible_in_window_p_checks_selected_window_range",
+            "lisp::eval::tests::eval_03::pos_visible_in_window_p_is_nil_when_noninteractive",
+            "lisp::eval::tests::eval_03::pos_visible_in_window_p_respects_window_height",
+            "lisp::eval::tests::eval_03::pos_visible_in_window_p_uses_the_queried_split_window_height",
+            "lisp::eval::tests::eval_03::preloaded_window_contract_restores_context_and_defines_resize_mode",
+            "lisp::eval::tests::eval_03::quit_window_buries_current_buffer_without_killing_it",
+            "lisp::eval::tests::eval_03::quit_window_does_not_reselect_buffer_that_quit_to_restored_buffer",
+            "lisp::eval::tests::eval_03::quit_window_returns_to_previous_pop_to_buffer_target",
+            "lisp::eval::tests::eval_03::reselecting_a_window_showing_the_target_preserves_its_start",
+            "lisp::eval::tests::eval_03::same_buffer_window_refresh_applies_its_tty_margin_widths",
+            "lisp::eval::tests::eval_03::save_selected_window_does_not_rewind_the_selected_windows_live_point",
+            "lisp::eval::tests::eval_03::save_window_excursion_restores_current_buffer",
+            "lisp::eval::tests::eval_03::save_window_excursion_restores_the_window_tree",
+            "lisp::eval::tests::eval_03::save_window_excursion_restores_window_start",
+            "lisp::eval::tests::eval_03::split_window_returns_distinct_live_windows_in_headless_runtime",
+            "lisp::eval::tests::eval_03::vertical_motion_moves_by_lines_and_reports_actual_motion",
+            "lisp::eval::tests::eval_03::window_configuration_equality_ignores_view_position_but_compares_layout",
+            "lisp::eval::tests::eval_03::window_edge_aliases_report_selected_window_geometry",
+            "lisp::eval::tests::eval_03::window_height_tracks_runtime_frame_height",
+            "lisp::eval::tests::eval_03::window_use_times_follow_selection_and_second_most_recent_bumps",
+            "lisp::eval::tests::eval_03::window_width_tracks_runtime_frame_width",
+            "lisp::eval::tests::eval_03::windows_preserve_independent_points_across_selection",
+            "lisp::eval::tests::eval_04::boundary_heavy_searches_use_linear_candidates_without_weakening_symbol_boundaries",
+            "lisp::eval::tests::eval_04::buffer_size_ignores_narrowing_like_emacs",
+            "lisp::eval::tests::eval_04::buffer_undo_list_mutates_saved_head_for_adjacent_insertions_like_gnu",
+            "lisp::eval::tests::eval_04::current_column_uses_lexically_bound_tab_width",
+            "lisp::eval::tests::eval_04::default_indent_line_function_is_indent_relative",
+            "lisp::eval::tests::eval_04::describe_char_observes_preloaded_eldoc_multiline_policy",
+            "lisp::eval::tests::eval_04::dumped_help_metadata_keymaps_and_window_entry_points_keep_their_gnu_shape",
+            "lisp::eval::tests::eval_04::editfns_edge_contracts_preserve_float_character_and_undo_semantics",
+            "lisp::eval::tests::eval_04::electric_newline_observes_c_basic_offset_binding",
+            "lisp::eval::tests::eval_04::header_line_indent_mode_defaults_to_nil",
+            "lisp::eval::tests::eval_04::header_line_indent_mode_sets_buffer_local_state",
+            "lisp::eval::tests::eval_04::indent_line_to_replaces_existing_indentation",
+            "lisp::eval::tests::eval_04::indent_relative_uses_previous_line_indent_points",
+            "lisp::eval::tests::eval_04::regexp_whitespace_atom_stops_before_a_table_classed_comment_end_newline",
+            "lisp::eval::tests::eval_05::batch_window_hscroll_defaults_to_zero",
+            "lisp::eval::tests::eval_05::beginning_of_defun_ignores_a_column_zero_opener_inside_a_string",
+            "lisp::eval::tests::eval_05::beginning_of_line_crosses_an_unterminated_final_line_to_eob",
+            "lisp::eval::tests::eval_05::c_brace_newlines_reports_c_style_layout",
+            "lisp::eval::tests::eval_05::c_toggle_comment_style_switches_between_block_and_line_comments",
+            "lisp::eval::tests::eval_05::dired_revert_preserves_line_when_header_length_changes",
+            "lisp::eval::tests::eval_05::dumped_loaddefs_inline_functions_are_available_without_owner_loads",
+            "lisp::eval::tests::eval_05::erc_process_input_line_preserves_spaces_in_the_flood_queue",
+            "lisp::eval::tests::eval_05::eshell_external_pipeline_finishes_redirected_output_before_returning",
+            "lisp::eval::tests::eval_05::eshell_external_pipeline_parser_only_shells_the_external_segment",
+            "lisp::eval::tests::eval_05::eshell_internal_command_feeds_external_pipeline_before_returning",
+            "lisp::eval::tests::eval_05::keyboard_macro_decimal_prefix_moves_the_requested_number_of_lines",
+            "lisp::eval::tests::eval_05::killing_a_noncurrent_buffer_does_not_retarget_the_selected_window",
+            "lisp::eval::tests::eval_05::line_beginning_position_crosses_an_unterminated_final_line_to_eob",
+            "lisp::eval::tests::eval_05::line_edge_motion_stops_at_field_boundaries",
+            "lisp::eval::tests::eval_05::line_move_moves_by_logical_lines_in_batch",
+            "lisp::eval::tests::eval_05::move_end_of_line_crosses_a_leading_timestamp_field",
+            "lisp::eval::tests::eval_05::return_key_defaults_to_newline_command",
+            "lisp::eval::tests::eval_05::upstream_dired_killed_buffer_cleanup_preserves_later_window_display",
+            "lisp::eval::tests::eval_05::windows_1251_alias_uses_the_preloaded_single_byte_codec",
+            "lisp::eval::tests::eval_05::windows_1252_is_a_preloaded_single_byte_round_tripping_coding",
+            "lisp::native_comp::runtime::tests::image_clones_copy_frame_window_terminal_and_parameter_cycles",
+            "lisp::native_comp::runtime::tests::killed_buffer_releases_editing_roots_before_its_object_is_reclaimed",
+            "lisp::native_comp::runtime::tests::native_call_trampoline_returns_values_and_lisp_errors_through_rust",
+            "lisp::native_comp::runtime::tests::native_char_table_gc_traces_inline_slots_and_reclaims_detached_graphs",
+            "lisp::native_comp::runtime::tests::native_char_tables_share_words_and_expose_gnu_inline_fields",
+            "lisp::primitives::compat_runtime_tests::compat_01::display_buffer_honors_inhibit_same_window_and_action_function_returns",
+            "lisp::primitives::compat_runtime_tests::compat_01::forward_line_treats_nil_as_default_step",
+            "lisp::primitives::compat_runtime_tests::compat_01::get_buffer_window_only_reports_selected_buffer",
+            "lisp::primitives::compat_runtime_tests::compat_01::line_number_at_pos_counts_from_the_accessible_region_unless_absolute",
+            "lisp::primitives::compat_runtime_tests::compat_01::line_number_at_pos_treats_nil_as_point_and_checks_bounds",
+            "lisp::primitives::compat_runtime_tests::compat_01::selected_window_is_a_record_and_tracks_window_start",
+            "lisp::primitives::compat_runtime_tests::compat_02::extracted_strings_preserve_the_buffer_multibyte_mode",
+            "lisp::primitives::compat_runtime_tests::compat_02::set_buffer_multibyte_reinterprets_the_unchanged_utf8_bytes",
+            "lisp::primitives::pdumper::tests::inline_record_type_and_data_cycles_survive_clone_and_dump",
+            "lisp::primitives::tests::active_minibuffer_selected_window_tracks_entry_across_nested_reads",
+            "lisp::primitives::tests::buffer_line_indexes_preserve_gnu_lf_motion_narrowing_and_edits",
+            "lisp::primitives::tests::buffer_multibyte_non_t_flags_preserve_ascii_and_convert_eight_bit_bytes",
+            "lisp::primitives::tests::buffer_undo_list_assignment_preserves_cons_identity",
+            "lisp::primitives::tests::char_charset_restriction_narrows_to_charset_list_or_coding_system",
+            "lisp::primitives::tests::char_property_primitives_accept_windows_and_filter_window_overlays",
+            "lisp::primitives::tests::delete_line_removes_the_current_line",
+            "lisp::primitives::tests::dynamic_buffer_undo_list_binding_restores_native_history",
+            "lisp::primitives::tests::embedded_native_compilation_builds_uncached_advice_trampolines",
+            "lisp::primitives::tests::eval_buffer_binds_lexical_binding_from_the_first_line_cookie",
+            "lisp::primitives::tests::font_lock_mode_declines_to_enable_in_a_batch_session",
+            "lisp::primitives::tests::format_mode_line_renders_the_dumped_spec_interactively",
+            "lisp::primitives::tests::glass_mode_line_honors_font_lock_face_string_properties",
+            "lisp::primitives::tests::glass_mode_line_pads_min_width_spans_like_the_display_engine",
+            "lisp::primitives::tests::indent_rigidly_shifts_each_line_in_region",
+            "lisp::primitives::tests::inhibit_read_only_allows_buffer_read_only_edits",
+            "lisp::primitives::tests::input_decode_keyboard_macro_uses_the_same_live_translation_pipeline",
+            "lisp::primitives::tests::input_decode_pipeline_matches_gnu",
+            "lisp::primitives::tests::interactive_recenter_uses_the_live_shrunken_window_height",
+            "lisp::primitives::tests::interactive_undo_restores_the_unmodified_state",
+            "lisp::primitives::tests::interactive_vertical_motion_honors_the_cons_goal_column",
+            "lisp::primitives::tests::marker_adjustments_stay_adjacent_to_their_deletion_in_the_undo_list",
+            "lisp::primitives::tests::message_log_disables_undo_in_the_messages_buffer",
+            "lisp::primitives::tests::minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window",
+            "lisp::primitives::tests::mode_line_line_number_is_relative_to_the_accessible_region",
+            "lisp::primitives::tests::native_headless_window_geometry_and_hscroll_match_gnu_c_contracts",
+            "lisp::primitives::tests::native_indent_c_motion_and_line_number_width_family_matches_gnu",
+            "lisp::primitives::tests::native_process_window_and_foreground_queries_follow_pty_ownership",
+            "lisp::primitives::tests::native_sqlite_columns_uses_the_live_result_set_schema",
+            "lisp::primitives::tests::native_window_change_state_hooks_and_minibuffer_resize_match_gnu",
+            "lisp::primitives::tests::preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior",
+            "lisp::primitives::tests::primitive_undo_consumes_marker_adjustments_with_their_deletion",
+            "lisp::primitives::tests::process_lines_uses_default_directory_as_subprocess_cwd",
+            "lisp::primitives::tests::recenter_uses_the_published_window_height_for_negative_lines",
+            "lisp::primitives::tests::set_minibuffer_window_validates_and_updates_the_shared_window_state",
+            "lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots",
+            "lisp::primitives::tests::terminal_frames_follow_gnu_device_window_and_deletion_lifecycle",
+            "lisp::primitives::tests::terminal_frames_preserve_other_frames_when_windows_change",
+            "lisp::primitives::tests::threads_retain_lexical_caller_roots_across_separate_callee_environments",
+            "lisp::primitives::tests::tmm_nested_menu_keeps_the_completions_window_at_its_first_line",
+            "lisp::primitives::tests::tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it",
+            "lisp::primitives::tests::tty_frame_size_shapes_the_root_and_minibuffer_windows",
+            "lisp::primitives::tests::tty_minibuffer_edits_complete_and_recall_history",
+            "lisp::primitives::tests::undo_file_marker_records_the_visited_modtime",
+            "lisp::primitives::tests::undo_host_records_match_gnu_save_point_property_and_multibyte_contracts",
+            "lisp::primitives::tests::unreached_markers_leave_their_buffers_edit_walk",
+            "lisp::primitives::tests::window_configuration_restore_keeps_the_current_frame_size_like_gnu",
+            "lisp::primitives::tests::window_cycling_follows_tree_order_from_the_selected_window",
+            "lisp::primitives::tests::window_end_and_posn_follow_published_interactive_geometry",
+            "lisp::primitives::tests::window_mode_lines_render_in_each_windows_own_context",
+            "lisp::primitives::tests::window_render_layout_reports_split_geometry_in_tree_order",
+            "lisp::primitives::tests::window_resize_apply_commits_staged_pixel_sizes",
+            "lisp::primitives::tests::window_text_pixel_size_measures_the_window_buffer_with_mode_lines",
+            "lisp::tests::parses_compact_lexical_binding_modelines",
+            "lisp::tests::parses_multiline_read_symbol_shorthands_from_magit_style_blocks",
+            "tty::tests::active_minibuffer_only_owns_cursor_while_its_window_is_selected",
+            "tty::tests::align_to_display_specs_lay_out_as_blank_columns",
+            "tty::tests::canonical_t_invisibility_spec_hides_true_overlay_regions",
+            "tty::tests::command_cycle_reselects_the_selected_windows_displayed_buffer",
+            "tty::tests::command_reader_retains_prefix_across_events_and_collecting_filters",
+            "tty::tests::control_characters_use_ascii_codes",
+            "tty::tests::display_columns_match_tab_expansion",
+            "tty::tests::display_glyph_codes_validate_both_representations_and_full_character_bits",
+            "tty::tests::display_string_cursor_property_selects_its_first_non_nil_cell",
+            "tty::tests::display_tables_select_one_valid_window_buffer_or_standard_table",
+            "tty::tests::display_tables_translate_echo_before_clipping_and_remap_minibuffer_point",
+            "tty::tests::display_vectors_remap_positions_and_faces_without_recursive_translation",
+            "tty::tests::embedded_display_newlines_are_hard_row_boundaries",
+            "tty::tests::function_keys_encode_as_symbols",
+            "tty::tests::glyphless_methods_follow_text_terminal_cons_and_width_rules",
+            "tty::tests::glyphless_wrap_restarts_a_split_display_element_like_gnu",
+            "tty::tests::graphical_fringe_overlay_strings_have_no_tty_text_glyph",
+            "tty::tests::hscroll_marker_precedes_the_requested_source_column",
+            "tty::tests::hscrolled_hidden_point_uses_the_last_line_number_gutter_cell",
+            "tty::tests::interactive_execution_inserts_through_lisp",
+            "tty::tests::interactive_startup_initializes_scratch_and_messages_buffers",
+            "tty::tests::invisible_properties_on_overlay_strings_remove_their_tty_cells",
+            "tty::tests::invisible_same_row_motion_defers_mode_line_point_until_input",
+            "tty::tests::isearch_dispatches_through_the_overriding_map_and_exits_on_other_keys",
+            "tty::tests::key_descriptions_follow_gnu_spellings",
+            "tty::tests::key_resolution_distinguishes_prefixes_commands_and_undefined",
+            "tty::tests::long_lines_wrap_exactly_like_a_gnu_tty",
+            "tty::tests::margin_default_foreground_preserves_an_extending_background",
+            "tty::tests::merged_attrs_keep_the_base_where_the_overlay_is_silent",
+            "tty::tests::meta_becomes_the_escape_prefix",
+            "tty::tests::minibuffer_before_string_inherits_its_prompt_anchor_face",
+            "tty::tests::minibuffer_cursor_follows_echo_wrapping",
+            "tty::tests::non_selected_windows_render_from_their_start_without_recentering",
+            "tty::tests::overlay_display_string_replaces_its_covered_buffer_range",
+            "tty::tests::paint_rows_compare_by_text_and_attribute",
+            "tty::tests::plain_characters_encode_as_their_codes",
+            "tty::tests::point_at_hidden_run_start_stays_before_the_ellipsis",
+            "tty::tests::point_max_overlay_before_string_contributes_hard_display_rows",
+            "tty::tests::point_precedes_a_point_max_overlay_after_string",
+            "tty::tests::prefix_echo_accumulates_like_gnu",
+            "tty::tests::propertized_string_display_specs_replace_the_covered_text",
+            "tty::tests::rendered_lines_expand_tabs_to_eight_column_stops",
+            "tty::tests::segment_counts_follow_the_wrap_geometry",
+            "tty::tests::selected_windows_recenter_around_an_off_window_point",
+            "tty::tests::sgr_sequences_reset_then_select_each_attribute",
+            "tty::tests::tabulated_list_glyphless_table_uses_tty_sort_indicators",
+            "tty::tests::terminal_editing_keys_use_gnu_codes",
+            "tty::tests::terminal_glyphless_expansion_tracks_coding_faces_and_point_columns",
+            "tty::tests::text_only_blits_preserve_an_extending_base_face",
+            "tty::tests::transient_printed_value_takes_precedence_over_an_active_minibuffer",
+            "tty::tests::truncated_rows_carry_the_dollar_marker_in_the_last_column",
+            "tty::tests::truncating_windows_keep_one_row_per_logical_line",
+            "tty::tests::tty_lisp_readers_preserve_mouse_events_and_keyboard_order",
+            "tty::tests::tty_redisplay_runs_the_lisp_pre_redisplay_coordinator_for_all_windows",
+            "tty::tests::universal_argument_prefixes_dispatch_through_simple_el",
+            "tty::tests::visual_row_positions_follow_wrap_geometry",
+            "tty::tests::width_display_specs_use_tty_cells_and_collapse_equal_runs",
+            "tty::tests::window_end_stops_before_a_wholly_invisible_buffer_tail",
+            "tty::tests::window_margin_display_strings_do_not_enter_the_text_body",
+            "tty::tests::window_overlay_after_strings_splice_before_hidden_newlines_with_faces",
+            "tty::tests::wrapped_echo_preserves_a_faced_trailing_space",
+            "tty::tests::wrapped_echo_trailing_newline_does_not_allocate_an_empty_row",
+            "tty::tty_differential_end_to_end",
+            "tty::tty_smoke_end_to_end"
+          ],
+          "binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-05/buffer-line-index/emaxx/target/vm-dispatch-validation/release/deps/emaxx-e17fcfe01baaf180",
+          "retained_binary": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source292-release-libtest",
+          "binary_sha256": "85f6905d3507c89126cd56adb0ad637769a59f4eeff1b61c72b88683a7cb42b8",
+          "retained_inputs": [
+            {
+              "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-05/buffer-line-index/emaxx/target/vm-dispatch-validation/release/deps/emaxx-e17fcfe01baaf180",
+              "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source292-release-retained-inputs/emaxx-e17fcfe01baaf180",
+              "sha256": "85f6905d3507c89126cd56adb0ad637769a59f4eeff1b61c72b88683a7cb42b8",
+              "bytes": 22748992
+            },
+            {
+              "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source292/loadup-85f6905d-d44829be.pdmp",
+              "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source292-release-retained-inputs/loadup-85f6905d-d44829be.pdmp",
+              "sha256": "7c33d27e6bd2f4ec9bc5185c7770ec0f74193840e53f44d27e82aab5d6d39373",
+              "bytes": 22378536
+            },
+            {
+              "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source292/loadup-e7096aa6-d44829be.pdmp",
+              "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source292-release-retained-inputs/loadup-e7096aa6-d44829be.pdmp",
+              "sha256": "26bc2a60470f262cd30930d8d1c29e89084acdecf798e234753fa8398bc2297f",
+              "bytes": 22378512
+            }
+          ]
+        }
+      },
+      "goal_complete": false,
+      "runner": "continue-source292-validation.py",
+      "runner_sha256": "a6a75ed064ffa2baf74496283dd436284e1d5248738214c65c44e44d0b2ed7f0",
+      "original_failed_attempts": [
+        "source292-validation-result.json",
+        "source292-continuation-result.json"
+      ],
+      "image_setup_review": "source292-image-setup-review.json"
+    },
+    "source293_snapshot": {
+      "status": "running gate-selected",
+      "candidate": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-05/buffer-line-lookup/emaxx",
+      "source_manifest": "source293-manifest.json",
+      "changes": [
+        "src/buffer.rs"
+      ],
+      "results": [
+        {
+          "stage": "cache-clone",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 1.7646469580000002,
+          "source_unchanged": true
+        },
+        {
+          "stage": "fresh-crate",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 0.4779158749999999,
+          "source_unchanged": true
+        },
+        {
+          "stage": "fmt",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 2.610299916,
+          "source_unchanged": true
+        },
+        {
+          "stage": "check",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 27.330173416,
+          "source_unchanged": true
+        },
+        {
+          "stage": "clippy",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 33.692602582999996,
+          "source_unchanged": true
+        },
+        {
+          "stage": "diff",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 0.1332321659999991,
+          "source_unchanged": true
+        },
+        {
+          "stage": "gate-build",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 0.7082130839999934,
+          "source_unchanged": true
+        },
+        {
+          "stage": "gate-inventory",
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 0.7604700840000049,
+          "source_unchanged": true
+        }
+      ],
+      "profiles": {},
+      "goal_complete": false,
+      "runner": "run-source293-validation-v2.py",
+      "runner_sha256": "a03719c36f8b35ac6200cf3dbd3a444fa57107d3a2659a7b9cb3f32eaf79097e"
+    },
+    "qualification": "532 inputs and file modes replay exactly from7f687d58 and main21d20f0e for each variant. Source292 isolates LF-only rope metadata correction;293 also replaces the backward scan with existing metadata lookup. Original broad GNU probe records155 differing rows;60 include existing display-column defects, whose cause and pending status are explicit. A separate338-row line-only control passes in both292 profiles; ordinary replays and293 validation/measurement remain pending. Original parser and missing build-helper orchestration failures stay preserved. No full validation, speed, display-width repair or goal completion is claimed.",
+    "goal_complete": false
+  },
+  "archive": {
+    "path": "source292-293-buffer-line-drafts.tar.gz",
+    "bytes": 842211,
+    "sha256": "2d95f8b17083156f7215debfaa4d6c038d4627d58591c1f263b4244c34235a4c"
+  },
+  "files": [
+    {
+      "path": "audit-buffer-line-performance.py",
+      "bytes": 5948,
+      "sha256": "da53fa98643e40aca6dbc3007f0a2df4cf4778a92c35e2438fb299561b385c78"
+    },
+    {
+      "path": "audit-buffer-line-selected-v2.py",
+      "bytes": 8386,
+      "sha256": "3d1ac884f85b7d0e649d6d510beba4874eded399ad4917ade7386b89fc346f56"
+    },
+    {
+      "path": "audit-buffer-line-selected-v3.py",
+      "bytes": 8391,
+      "sha256": "568f2cd4ed94a417a4995bb7acf1e3010c86786956f8cfb03fe549c1969e7f29"
+    },
+    {
+      "path": "audit-buffer-line-selected.py",
+      "bytes": 8297,
+      "sha256": "f8a1ffdedf6be00d6eb4c3103b3b01b50dc7238b70b72855487e2f0d798567ed"
+    },
+    {
+      "path": "buffer-line-parser-negative-controls.json",
+      "bytes": 467,
+      "sha256": "7fb9efb23ce10056c523df0f74872bc43ffa04dca49da75c3614845b8b8fef54"
+    },
+    {
+      "path": "buffer-performance-sequence-result.json",
+      "bytes": 459,
+      "sha256": "a0f685216aed6be8249006789a2ca75274b479b24e07004a570046af9db6e3b1"
+    },
+    {
+      "path": "buffer-performance-sequence-v2-result.json",
+      "bytes": 462,
+      "sha256": "26428c40b7301934f65ff62c77c68c469fc0d8b68f7bdf889cec310da5739635"
+    },
+    {
+      "path": "buffer-performance-sequence-v3-state-launch-snapshot.json",
+      "bytes": 433,
+      "sha256": "9dbc31ef32061641f8c7c7d34ebfbd2805e465d7f4a73f395a47948e68d27562"
+    },
+    {
+      "path": "buffer-selection-result.json",
+      "bytes": 985,
+      "sha256": "4b04fa8fdc69568726867fba48ba159d63cdaf572b58900d1080ec057c1ea09e"
+    },
+    {
+      "path": "buffer-selection-v2-result.json",
+      "bytes": 1103,
+      "sha256": "b7d4932df673b1650648226d0a349231cb375ce1960c5f3bfe35ab6d2896cc35"
+    },
+    {
+      "path": "buffer-selection-v3-state-launch-snapshot.json",
+      "bytes": 1083,
+      "sha256": "94b7da906f1af90a8a85c915ebb64abf484429c2dac81e67ff0dbfb875ff7300"
+    },
+    {
+      "path": "buffer_line_validation_support.py",
+      "bytes": 1014,
+      "sha256": "4844fab6da24777def0356a754b131b822e626a62f0d40083ceebbaa743b755a"
+    },
+    {
+      "path": "compare-buffer-line-broad-probe.py",
+      "bytes": 4092,
+      "sha256": "3f1c7c7929963b9821a7e32ec394f9ca14ceb46cfb8fb5e07606ec23800e48de"
+    },
+    {
+      "path": "compare-source292-generated-loaded.py",
+      "bytes": 2833,
+      "sha256": "1e6f3efe0ae133871c83b01732cd6c17bbef13d9b8183980476406af8a970ec3"
+    },
+    {
+      "path": "compare-source293-generated-loaded.py",
+      "bytes": 2834,
+      "sha256": "bf8567b41a0cad66290d73108cfb15d40c9c9b73a74af357039766122ed323e0"
+    },
+    {
+      "path": "compare-vm-dispatch-fixtures.py",
+      "bytes": 4143,
+      "sha256": "cbacebaedda3cc6347863faf3cb63b83ec4a8083ed4ecfad2128ece2a7aaf9a4"
+    },
+    {
+      "path": "continue-source292-validation.py",
+      "bytes": 8482,
+      "sha256": "a6a75ed064ffa2baf74496283dd436284e1d5248738214c65c44e44d0b2ed7f0"
+    },
+    {
+      "path": "finish-buffer-line-performance-v2.py",
+      "bytes": 1896,
+      "sha256": "2e7a87553aad2dc39dbb08d9ffc722a4bfb826a8c7c75371b4a969249e2399be"
+    },
+    {
+      "path": "finish-buffer-line-performance-v3.py",
+      "bytes": 1896,
+      "sha256": "1dc70eff788a60da7a26d51f9e2526c05ac9f3a4e639ec6de569b6d2d5103859"
+    },
+    {
+      "path": "finish-buffer-line-performance.py",
+      "bytes": 1881,
+      "sha256": "22a253b07ab8e22d6bf84695a6dda986cea69a4d55985cc845013d8ecc8ea4c4"
+    },
+    {
+      "path": "finish-source292-image.py",
+      "bytes": 3611,
+      "sha256": "0cf2ec6426cb0748529989ffb32802627a5ee4b911065fa3017d15200f968e4d"
+    },
+    {
+      "path": "measure-buffer-line.py",
+      "bytes": 5174,
+      "sha256": "5eec59dcb9fc904cfc40ef3e68c36fedecd834eef1bb0d3d42cd9dcef0eda240"
+    },
+    {
+      "path": "package-buffer-line-launch.py",
+      "bytes": 4505,
+      "sha256": "4a7d49ce8242a8e8fac02dfe93e7057a12173b9b8acc64f362eff2135176c146"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "probe-source290-line-index.py",
+      "bytes": 2162,
+      "sha256": "fb69ab803d2d5b3de036ae072b92be417ee9886123694647514ebc2c6c3817ab"
+    },
+    {
+      "path": "replay-buffer-line-drafts.py",
+      "bytes": 2358,
+      "sha256": "2ccdea87a3a58c54f4a0e4254e345e7df9e0c7b53d53e43d613cfc059d685a98"
+    },
+    {
+      "path": "run-buffer-line-followups-v2.py",
+      "bytes": 3185,
+      "sha256": "41e30c7e0ddd58e2570fa9d8fb7bc6003a71c72aec91885bb0e024d961e71b07"
+    },
+    {
+      "path": "run-buffer-line-followups-v3.py",
+      "bytes": 3195,
+      "sha256": "c910267092cdb75b49b2bc09c71f3693449e422a8624e3665b16b3404bbfb88f"
+    },
+    {
+      "path": "run-buffer-line-followups.py",
+      "bytes": 3120,
+      "sha256": "38486debf6370ca6e86115a2cbd9dc7f3503d2ffc1f9ca13443a78027f769370"
+    },
+    {
+      "path": "run-source292-validation.py",
+      "bytes": 8767,
+      "sha256": "aaaf24e76c57e6a38617e6c73ae2fa5cfb640ff9ea10d47d04c6e939ab945a7c"
+    },
+    {
+      "path": "run-source293-validation-v2.py",
+      "bytes": 8461,
+      "sha256": "a03719c36f8b35ac6200cf3dbd3a444fa57107d3a2659a7b9cb3f32eaf79097e"
+    },
+    {
+      "path": "run-source293-validation.py",
+      "bytes": 8554,
+      "sha256": "b06cd2150edd952ab32e25f88245c1f2e7d0e63fbe5cd8841b262cb361453708"
+    },
+    {
+      "path": "source290-line-index-baseline-comparison.json",
+      "bytes": 716,
+      "sha256": "8fae23cbd21cf105bba6b2007e2e4b6d1e0203fd49e40095420abd234f337441"
+    },
+    {
+      "path": "source290-line-index-baseline-diagnosis.json",
+      "bytes": 181696,
+      "sha256": "4873cc534a8460aa44b611d96e2fb064394375bfba75c58ab62e1b210c0b4488"
+    },
+    {
+      "path": "source290-line-index-baseline-emaxx.command.json",
+      "bytes": 3676,
+      "sha256": "cdb5be70f362d082ea526daa884695a2b15712a6d5770d6822c621fba6520b24"
+    },
+    {
+      "path": "source290-line-index-baseline-emaxx.result.json",
+      "bytes": 264,
+      "sha256": "e849c48d4b408a5a6c48b75ce963de977502987e4cc4cb7b6d0bb1133163d426"
+    },
+    {
+      "path": "source290-line-index-baseline-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source290-line-index-baseline-emaxx.stdout",
+      "bytes": 30491,
+      "sha256": "50d0d5224fe5efc479b64bcb4707d0bcdb35d849021b88d320c1e550ef57b835"
+    },
+    {
+      "path": "source290-line-index-baseline-gnu.command.json",
+      "bytes": 3520,
+      "sha256": "7a62e1ed7c112719857395331e5bf6e39ebc22eb4dc8b170263bc233d31e579c"
+    },
+    {
+      "path": "source290-line-index-baseline-gnu.result.json",
+      "bytes": 264,
+      "sha256": "d483fec9cb94330e916e6d00d78b834f942a7402ef538e0f33160c6bde88bf4c"
+    },
+    {
+      "path": "source290-line-index-baseline-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source290-line-index-baseline-gnu.stdout",
+      "bytes": 30503,
+      "sha256": "9c558e648e82d61c9866916bda0fc4ee385bfaa82d28c9542a069206d0d89b5e"
+    },
+    {
+      "path": "source290-native-followup-review.json",
+      "bytes": 1650,
+      "sha256": "bc5bc3d254326aa1e1ca6b8c184ac50313e93aab7bd2c82742b53d0fec44fbe9"
+    },
+    {
+      "path": "source292-cache-clone-command.json",
+      "bytes": 1357,
+      "sha256": "d02553688c6519ab95c722c336b3788e50c0ed68ca2a034bcf7e4afe3ef3fbf4"
+    },
+    {
+      "path": "source292-cache-clone-result.json",
+      "bytes": 130,
+      "sha256": "4b12cc15b9a8e4527087725ee43d586e17733ff7b547695e8d97a8c1ba0f131d"
+    },
+    {
+      "path": "source292-cache-clone.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source292-check-command.json",
+      "bytes": 1150,
+      "sha256": "228dfeebbe0764a15e6c86e76c9311e76c079f24b9fa50060839552e795b711e"
+    },
+    {
+      "path": "source292-check-result.json",
+      "bytes": 125,
+      "sha256": "ab7b4991d8459d9f9c04fde6ddd88a2a5747e8d21fa37071cd2494f1a0fc45e2"
+    },
+    {
+      "path": "source292-check.log",
+      "bytes": 225,
+      "sha256": "43f469339b8a3307cead503ff29d7a9aae6829c077519398ef7b93628716bbeb"
+    },
+    {
+      "path": "source292-clippy-command.json",
+      "bytes": 1187,
+      "sha256": "87d84f9d31bad2b1c6811a1d6577391c9bf03f584489755f45f84c643fa83b45"
+    },
+    {
+      "path": "source292-clippy-result.json",
+      "bytes": 132,
+      "sha256": "1176a14b58adddd35ebbdd78f9cef3ec53a1282244021ab70c9aa3104afe2c57"
+    },
+    {
+      "path": "source292-clippy.log",
+      "bytes": 199,
+      "sha256": "6c8ae82a46124c6e6c73922462cd568e0a86668b795c1d5f45f87d8b74d20221"
+    },
+    {
+      "path": "source292-continuation-result.json",
+      "bytes": 57671,
+      "sha256": "2aba040c04f1e1afe6b56a5618371e26e66e8ae843e1223b7e8f08dfad491dcf"
+    },
+    {
+      "path": "source292-diff-command.json",
+      "bytes": 1103,
+      "sha256": "750ffdd6d5df87e23cfec37e9b537d6dc717ded239a9eb28b66b70f7f69e83b7"
+    },
+    {
+      "path": "source292-diff-result.json",
+      "bytes": 129,
+      "sha256": "9ce0a497c582bbe07a34052db71b58dde3b8c98e5fae4316f683ca72af1a6d96"
+    },
+    {
+      "path": "source292-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source292-fmt-command.json",
+      "bytes": 1127,
+      "sha256": "2aa83805f56e7a755dde12d140a52aca06e028e91f7466b821ce6907a8f22852"
+    },
+    {
+      "path": "source292-fmt-result.json",
+      "bytes": 129,
+      "sha256": "f6bc4fb0e60a7e76cf24648c5e813f296673c88e5f2bcc4a440f934e587fb6dc"
+    },
+    {
+      "path": "source292-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source292-fresh-crate-command.json",
+      "bytes": 1121,
+      "sha256": "1356ab83236a361cc09349176e87f7963f38c8e2cefae8cf40d6d39eaed8c9ab"
+    },
+    {
+      "path": "source292-fresh-crate-result.json",
+      "bytes": 137,
+      "sha256": "73ffc891d5bd3c12c98bc099c4e0c367e83fcc3a7e85a4b7bafb30a93e2c57e9"
+    },
+    {
+      "path": "source292-fresh-crate.log",
+      "bytes": 39,
+      "sha256": "8130adcc0c61a76fb9a3dd65a60dd8a5c4cd4fb8a788300be8e3ea8ba6c13886"
+    },
+    {
+      "path": "source292-gate-build-command.json",
+      "bytes": 1215,
+      "sha256": "ec68c538fa0944d5881b1eb2f28911351dcb9219ca1f859b72480f5ed789dc96"
+    },
+    {
+      "path": "source292-gate-build-result.json",
+      "bytes": 136,
+      "sha256": "95f4984687e1cee4b9eba8c225d0fc7d527248a64dc77638edc2308300dd7e5a"
+    },
+    {
+      "path": "source292-gate-build.log",
+      "bytes": 219073,
+      "sha256": "c716d562b8ba39adec1ab31bd372590feea0a26281ab12138bda514d479017c3"
+    },
+    {
+      "path": "source292-gate-inventory-command.json",
+      "bytes": 1246,
+      "sha256": "29f41a222d628069f493ef264f574f4c8d86895ea897c1a733f7a802c1e8035f"
+    },
+    {
+      "path": "source292-gate-inventory-result.json",
+      "bytes": 140,
+      "sha256": "0506058d8f0b633b3f4a359950adda4bea1e731881d8f5d987f55148cf513d1c"
+    },
+    {
+      "path": "source292-gate-inventory.log",
+      "bytes": 268493,
+      "sha256": "18d72ead156d02a61b18f0be292cea50d85059372406136c893a558c13631c96"
+    },
+    {
+      "path": "source292-gate-selected-command.json",
+      "bytes": 25568,
+      "sha256": "7dac42840a764b2c9ef6d6c5108bdeca8c292d341d43055d361fd17eb6dc2e2e"
+    },
+    {
+      "path": "source292-gate-selected-result.json",
+      "bytes": 139,
+      "sha256": "db3026ceb63f0076b1001c7e90178de91f58a435b9a5a987089f25905912c1c6"
+    },
+    {
+      "path": "source292-gate-selected.log",
+      "bytes": 26070,
+      "sha256": "a1dc64c15f10a96b6fbceb08c1f5209fe433e9c0c6bd5dac42b9fe1559ad84ad"
+    },
+    {
+      "path": "source292-image-setup-review.json",
+      "bytes": 1012,
+      "sha256": "37feec36345beb67d2b73f7dfcf80410352fe974496bb8e26a9103959a7a23d8"
+    },
+    {
+      "path": "source292-manifest.json",
+      "bytes": 61385,
+      "sha256": "3d1feb84d4fca427a8a4349493e4f1a35e0e68e613c68ca1a2325d39571f4aac"
+    },
+    {
+      "path": "source292-motion-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source292-motion-gnu.stdout",
+      "bytes": 29608,
+      "sha256": "5adf339daf05e0eaac4dd5428dd8592bbad64505d8f7340500110c5802b5782c"
+    },
+    {
+      "path": "source292-motion-reference.json",
+      "bytes": 3454,
+      "sha256": "09e133ecc3a6bcac5c24483b46b61e1f94f189c2b16980bd82ae3434a9fc852e"
+    },
+    {
+      "path": "source292-ordinary-artifacts.json",
+      "bytes": 766,
+      "sha256": "410d1f49082b1ff4f9c8e0ffa7be156f483ad4cec40db020059b11998011ff96"
+    },
+    {
+      "path": "source292-ordinary-build-command.json",
+      "bytes": 1244,
+      "sha256": "cf4489abff69f15c46542d06390908705872bcea6cf3dee8b7c668b4e38f8a68"
+    },
+    {
+      "path": "source292-ordinary-build-result.json",
+      "bytes": 140,
+      "sha256": "5ff2d3217ee6c7a613ace170cc6caa98ca5aa4c22b42762eee767feb51392439"
+    },
+    {
+      "path": "source292-ordinary-build.log",
+      "bytes": 189,
+      "sha256": "ca9255d41aab13404073329204d87cdb93579316875b317d8557947990bdc034"
+    },
+    {
+      "path": "source292-ordinary-image-command.json",
+      "bytes": 1281,
+      "sha256": "3cf8b5f179e3589f74124e90d1ea29e1147a42172df52eff104a78cadd6915c0"
+    },
+    {
+      "path": "source292-ordinary-image-recovered-command.json",
+      "bytes": 1663,
+      "sha256": "58e3f1987ab85d4cf8951f3e858a983ec5ccb3aa66c482ebba308931bbc229bd"
+    },
+    {
+      "path": "source292-ordinary-image-recovered-result.json",
+      "bytes": 143,
+      "sha256": "3cbf4b1a3beb6603df8d8970ac1f558824fb9a43214f4aa536e9014ee0a22253"
+    },
+    {
+      "path": "source292-ordinary-image-recovered.log",
+      "bytes": 6630,
+      "sha256": "8bed924d0078f788c53b2661933d3bbe0b54d22272e85f99f4e1a9ecc4e866d1"
+    },
+    {
+      "path": "source292-ordinary-image-result.json",
+      "bytes": 143,
+      "sha256": "d332a02de17537c078c1e180a3ccfa6506e88aebe03f1e823b478cd460e21fd1"
+    },
+    {
+      "path": "source292-ordinary-image.log",
+      "bytes": 52,
+      "sha256": "dcbbffbdd3335ba5cc07ef7279023bab0e3b886d048cb3cccbe544ae078223cf"
+    },
+    {
+      "path": "source292-portable-complete.patch",
+      "bytes": 1400393,
+      "sha256": "8573a8ffc8255c4fa6763642b8085b56dee27fffe3944a15321043cde1792ce7"
+    },
+    {
+      "path": "source292-portable-draft-audit.json",
+      "bytes": 1031,
+      "sha256": "661b61b0a2af7c589e6af8d91238d28fc3f0b6979ad7cfa4abdc6729f7bb68a3"
+    },
+    {
+      "path": "source292-portable-incremental.patch",
+      "bytes": 66910,
+      "sha256": "f1f1b3429ba83505740fd62ad549a106599032c87dcab142bcaf6f4c57e9d462"
+    },
+    {
+      "path": "source292-preparation.json",
+      "bytes": 320,
+      "sha256": "a1572826e642f17e92e2b01f908b8d5323d62a3c2b262187c4bef177ffe9754c"
+    },
+    {
+      "path": "source292-release-build-command.json",
+      "bytes": 1218,
+      "sha256": "3d1a1ae797b4a7b0d046e53ef2f86354ea00bd384e1cf5b2eff3a49689fea2e0"
+    },
+    {
+      "path": "source292-release-build-result.json",
+      "bytes": 134,
+      "sha256": "c1eeda2c710f14edb49c8235ad1ebe9616f58250c8613e28ca681377779c8f69"
+    },
+    {
+      "path": "source292-release-build.log",
+      "bytes": 220762,
+      "sha256": "dcb563b92ac61c0559a7ebaf27423e98b5489f355b5b668a2e6070ada175a2e5"
+    },
+    {
+      "path": "source292-release-inventory-command.json",
+      "bytes": 1249,
+      "sha256": "fcf24a987862f61cc01ccb377a2e9176934ba4c03912596ba222b3d8a328ef4a"
+    },
+    {
+      "path": "source292-release-inventory-result.json",
+      "bytes": 143,
+      "sha256": "f105fefb75b172dadb3b5bf6050f780f87f65f212ac7560aec68e666da0caca0"
+    },
+    {
+      "path": "source292-release-inventory.log",
+      "bytes": 268404,
+      "sha256": "61589459f3519e2b876377cdc49b47311140aeb7239f02bb9a83671cfd85de08"
+    },
+    {
+      "path": "source292-release-selected-command.json",
+      "bytes": 25571,
+      "sha256": "70415f93609c4e7b43b54293173f2cf315b642aa19aa25e00d5aa5d95e1b726f"
+    },
+    {
+      "path": "source292-release-selected-result.json",
+      "bytes": 142,
+      "sha256": "90942cbc73c38958fe9dcb3f5fee3831aed48ca7903b2d31406594482ef6daf8"
+    },
+    {
+      "path": "source292-release-selected.log",
+      "bytes": 26070,
+      "sha256": "edfac7e4cb762f8f8fee68a19b4bf7154085f3aa93d5ad2132c891635e151a66"
+    },
+    {
+      "path": "source292-scope.json",
+      "bytes": 866,
+      "sha256": "32a4149635384a09e263351b34e6f704c149c01c915748b2ad6c725acdfa348d"
+    },
+    {
+      "path": "source292-validation-closed-result.json",
+      "bytes": 57757,
+      "sha256": "6f4a6cfc40c635416cd2d260781f602c4f6c4d750856ba6c57eb429bae25f095"
+    },
+    {
+      "path": "source292-validation-result.json",
+      "bytes": 2161,
+      "sha256": "f2d2ce64528e1028a007330685da66a76b636a12fd29ca0ff3555438b9cb9196"
+    },
+    {
+      "path": "source292-wrapper-stop-review.json",
+      "bytes": 749,
+      "sha256": "e9c047d48340d518f03029e45edf352d37ea0ae14bd703d8b2f635bfaea39707"
+    },
+    {
+      "path": "source293-manifest.json",
+      "bytes": 61385,
+      "sha256": "ba0eef40c8d0073525957cfe1b8b0fa5bfdd635a108619a2129b7282c3ed9a9a"
+    },
+    {
+      "path": "source293-preflight-manifest.json",
+      "bytes": 61385,
+      "sha256": "ba0eef40c8d0073525957cfe1b8b0fa5bfdd635a108619a2129b7282c3ed9a9a"
+    },
+    {
+      "path": "source293-preflight-portable-complete.patch",
+      "bytes": 1402109,
+      "sha256": "836f6c1a81a19b9ab6110220f4ee903f81d5388fe28789ec3bf48923e5410be2"
+    },
+    {
+      "path": "source293-preflight-portable-draft-audit.json",
+      "bytes": 1052,
+      "sha256": "bbeebb9a11df10f356afab0b94b4b7b79b3a93165f9931ef8a0253a64fada832"
+    },
+    {
+      "path": "source293-preflight-portable-incremental.patch",
+      "bytes": 68741,
+      "sha256": "52286b5a1850d1f0b5f29c4a477422862215875507330692d4433a3f8a2979b8"
+    },
+    {
+      "path": "source293-preparation.json",
+      "bytes": 795,
+      "sha256": "c199856a99ad9ecd5b29cec5edcd2689406d54f811dfcdef3a0467e8487a83b7"
+    },
+    {
+      "path": "source293-static-review.json",
+      "bytes": 3688,
+      "sha256": "955ead40cbef815dde79b0185f387b9dbfc69f23f5aa1c67b7f1531412508583"
+    },
+    {
+      "path": "source293-validation-state-launch-snapshot.json",
+      "bytes": 1738,
+      "sha256": "7a8993773349138d0a9bdba28044a63a6faeaff8b330078f78277e0f374a8639"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

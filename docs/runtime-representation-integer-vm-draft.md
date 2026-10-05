@@ -108,7 +108,12 @@ timeout, tolerance, collector cadence or comparison rule changes.
 [Source290 Linux CI](handover/2026-09-30-shared-reader-draft/source290-full-validation-launch.json)
 selects exact `b870a848`: [Rust37269853253](https://github.com/rayfdj/emaxx/actions/runs/37269853253)
 and [frozen37269857506](https://github.com/rayfdj/emaxx/actions/runs/37269857506).
-Both are in progress at publication; full source290 macOS remains unstarted.
+The [closed Rust failure](handover/2026-09-30-shared-reader-draft/source290-complete-linux-rust-failure-manifest.json)
+records 2,288 passes and one recurring GNU empty-record census reference failure
+(−7 versus 2), before Emaxx. The remaining 756 library names and both Cargo stages
+never run. Frozen remains in progress; full source290 macOS is unstarted. Read the
+[latest buffer-line continuation](runtime-representation-buffer-lines.md) for the
+next unapplied drafts and all current limits.
 
 ## Profile limits and next targets
 

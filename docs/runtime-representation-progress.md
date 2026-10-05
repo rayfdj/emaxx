@@ -1,5 +1,25 @@
 # Current goal status — 5 October 2026
 
+## Current buffer-line drafts — 5 October 2026
+
+Read the [profile-led buffer continuation](runtime-representation-buffer-lines.md)
+first. Source292 isolates the LF-only line-metadata correction; source293 also
+replaces repeated backward scanning with the rope's existing index. Both portable
+532-input drafts remain unapplied. Source292 has zero-warning strict checks,
+290 selected passes per profile, the two existing TTY ignores and its own fresh
+ordinary executable/image. Source293 validation is running; ordinary comparisons
+and the queued three-way full16 diagnostic remain pending. Inspect the v3
+coordinator receipts before continuing. The original broad probe's display-column
+failures and both wrapper/setup errors remain explicit; no speed or full pass is claimed.
+
+**Applied runtime remains source290 (`b870a848`)**. Its
+[closed Linux Rust failure](handover/2026-09-30-shared-reader-draft/source290-complete-linux-rust-failure-manifest.json)
+records 2,288 passes and one recurring GNU reference assertion, before Emaxx:
+first empty-record census −7 versus 2. Remaining 756 library names and both Cargo
+stages never run. The cause stays unresolved. Frozen37269857506 is still running;
+full source290 macOS remains unstarted. Main and the full-goal requirements remain
+unchanged. The records below preserve earlier checkpoint publication states.
+
 Read the [integer/VM checkpoint and profile qualification](runtime-representation-integer-vm-draft.md)
 first. **Source290 is applied and pushed as `b870a848`**, with 528 exact inputs,
 warning-free strict checks, **325 selected passes per profile** and **46 ordinary
@@ -582,7 +602,7 @@ source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 
 This map reflects applied source290 (`b870a848`, 528 inputs). Selected validation
 and both diagnostic cohorts are closed. Source289's complete Linux Rust and
-frozen results pass; source290 Linux CI is running and full macOS is unstarted.
+frozen results pass; source290 Linux Rust has the recorded GNU reference failure, frozen CI is running and full macOS is unstarted.
 The [integer/VM checkpoint](runtime-representation-integer-vm-draft.md) links
 raw evidence, failed predecessors, GNU mappings and reproduction helpers.
 A validated checkpoint does not complete the architectural/performance goal.
@@ -596,11 +616,11 @@ A validated checkpoint does not complete the architectural/performance goal.
 | 5. VM/function-call work | Source286 removes repeated decoding on hot opcodes; source289 removes repeated closure reads, a transient activation copy, Bcall decoding and fixed native argument staging. Source290 removes duplicate optimistic dispatch, redundant operand stack changes and immediate Integer calls. Measured bytecode-call gains are recorded. VM still reserves 256K value slots plus separate frames versus GNU's 512K words including headers. Stack layout/capacity, remaining frame/call work and actual accounting remain open; post290 profiles guide the next work. |
 | 6. Adversarial audit | Existing evaluator/root/reporting controls and failed runs remain. New call-width and native ABI/GC controls use actual same-input GNU output; no expectations or original assertions are weakened. Final actual-source review of runtime, startup/images, loading, selection/comparison/reporting and deliberate evidence corruption remains required. |
 | 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. The latest two diagnostic cohorts verify 480 process answers/modes, including the held291 alternative. Source290 bytecode calls improve 14.264% versus source289 across all six samples; undo/Bindat remain slower. Optimized paired GNU ratio geometric mean 2.95454× does not meet parity. Real counters, calibration, prescribed repetitions/distributions and every-case acceptance remain open. |
-| 8. Complete validation | Source290 strict checks are warning-free, 325 selected tests pass in each profile and 46 ordinary GNU comparisons pass. Linux CI is in progress; full macOS is unstarted. Predecessor source289 has 3,145 Linux Rust passes/two existing ignores and all7,928 frozen outcomes match. Source286 closed results: 3131 macOS Rust passes/two existing ignores, terminal 226 scenarios/686 matches, Linux frozen 7928 matches; macOS frozen six diagnostic failures and Linux Rust one GNU reference failure remain. Final-source platform/release/frozen/terminal validation remains required. |
+| 8. Complete validation | Source290 strict checks are warning-free, 325 selected tests pass in each profile and 46 ordinary GNU comparisons pass. Linux Rust records 2,288 passes/one recurring GNU reference failure, with 756 library names and both Cargo stages unrun; frozen CI is running and full macOS is unstarted. Predecessor source289 has 3,145 Linux Rust passes/two existing ignores and all7,928 frozen outcomes match. Source286 closed results: 3131 macOS Rust passes/two existing ignores, terminal 226 scenarios/686 matches, Linux frozen 7928 matches; macOS frozen six diagnostic failures and Linux Rust one GNU reference failure remain. Final-source platform/release/frozen/terminal validation remains required. |
 | 9. Independently checkable delivery | Portable patches/manifests, raw commands/results, unfavorable samples and profiles are retained and verified. Source290 is applied/pushed; main remains 21d20f0e and PR79 is draft. Final source/evidence review and satisfaction of every architectural/performance requirement remain outstanding. |
 
 Source291 is a closed, selected-correctness-validated inlining alternative that
-remains unapplied after the full comparison. Its original launch snapshot and
+remains unapplied after the full comparison. The separately packaged buffer-line drafts292/293 are still under validation/measurement; their original broad display-column probe remains failed. Its original launch snapshot and
 source290's earlier held decision remain historical, not current status.
 
 Continue measured ordinary VM/call work from the current profiles. Complete real

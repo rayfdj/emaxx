@@ -16,7 +16,27 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
-## Current integer/VM checkpoint — 5 October 2026
+## Current buffer-line drafts — 5 October 2026
+
+Read the [profile-led buffer continuation](docs/runtime-representation-buffer-lines.md)
+first. Source292 isolates the LF-only line-metadata correction; source293 also
+replaces repeated backward scanning with the rope's existing index. Both portable
+532-input drafts remain unapplied. Source292 has zero-warning strict checks,
+290 selected passes per profile, the two existing TTY ignores and its own fresh
+ordinary executable/image. Source293 validation is running; ordinary comparisons
+and the queued three-way full16 diagnostic remain pending. Inspect the v3
+coordinator receipts before continuing. The original broad probe's display-column
+failures and both wrapper/setup errors remain explicit; no speed or full pass is claimed.
+
+**Applied runtime remains source290 (`b870a848`)**. Its
+[closed Linux Rust failure](docs/handover/2026-09-30-shared-reader-draft/source290-complete-linux-rust-failure-manifest.json)
+records 2,288 passes and one recurring GNU reference assertion, before Emaxx:
+first empty-record census −7 versus 2. Remaining 756 library names and both Cargo
+stages never run. The cause stays unresolved. Frozen37269857506 is still running;
+full source290 macOS remains unstarted. Main and the full-goal requirements remain
+unchanged. The records below preserve earlier checkpoint publication states.
+
+## Applied integer/VM checkpoint — 5 October 2026
 
 Read the [integer/VM checkpoint and profile qualification](docs/runtime-representation-integer-vm-draft.md)
 first. **Source290 is applied and pushed as `b870a848`**, with 528 exact inputs,
