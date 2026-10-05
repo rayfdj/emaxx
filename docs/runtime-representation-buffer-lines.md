@@ -4,6 +4,24 @@ The [full goal](runtime-representation-goal.md) remains active and incomplete.
 Applied runtime is still source290, `b870a848`; the two drafts here are unapplied.
 Main remains `21d20f0e` and PR79 stays draft.
 
+## Fresh-build correction — 5 October 2026
+
+The [stale-cache evidence and source294 launch](handover/2026-09-30-shared-reader-draft/source293-stale-cache-and294-launch-manifest.json)
+supersede source293's validation status below. Cargo reused source292's exact
+binaries in gate and release (`fresh=true`); those runs do **not** validate the
+indexed lookup. Both v3 coordinators were terminated before any timing. Preserve
+their outputs and withdrawal receipts; do not resume them.
+
+**Source294 has exactly the same 532 source inputs as source293**, in
+`target/runtime-goal/recovered-2026-10-05/buffer-line-lookup-fresh/emaxx`. It explicitly
+cleans the package in gate and release and requires freshly compiled artifacts
+and different test binaries from source292. Its build/validation is running;
+no candidate speed or validation pass is claimed. Current coordinator receipts
+are `buffer-selection-fresh-state.json` and `buffer-performance-sequence-fresh-state.json`,
+followed by their final results, under `target/runtime-goal/resume-2026-09-28`.
+Source292's separately verified fresh build and 290 selected passes per profile
+remain valid. Applied source290 and all goal requirements are unchanged.
+
 The source290 undo profile identifies `Buffer::line_start_at` as its largest
 non-GC self-sample. Its scope includes pre-body collection, so collector samples
 are not body-cost evidence. The method repeatedly scans backward through rope
