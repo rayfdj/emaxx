@@ -16,6 +16,50 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
+## Applied column and native-audit repair — 6 October 2026
+
+**Source304 is applied; the full goal is incomplete.** Ordinary buffer columns
+now follow GNU `indent.c:scan_for_column` and `buffer.h:CHARACTER_WIDTH`: ASCII
+controls honor `ctl-arrow`, unibyte non-ASCII characters occupy four columns,
+and multibyte widths come from the live `char-width-table` with GNU sanitization.
+All **338 rows of the original probe match actual GNU**, closing its recorded
+60 column differences. No original fixture or expected byte changed. This does
+not establish complete overlay, display-table or composition semantics.
+
+Source302's full checks found an omission: its native `+`/`-` paths were absent
+from the exact-contract inventory.304 adds the GNU owners and a real installed-ABI
+boundary test; every audit assertion, negative control and the empty deviation
+list remain. Native arithmetic production code is unchanged. The
+[failed302 evidence](docs/handover/2026-09-30-shared-reader-draft/source302-full-validation-failures-manifest.json)
+retains macOS **3,037 passes/one failure/two existing ignores** and Linux
+**3,045 passes/one failure/two existing ignores**. All library names ran, but bins
+and integration did not. Both frozen attempts stopped before any case; TTY never
+started. The sole Rust failure was the inventory omission. Those runs stay failed.
+
+[Source304 selected evidence](docs/handover/2026-09-30-shared-reader-draft/source304-native-audit-and-columns-selected-manifest.json)
+verifies all **534 inputs and modes**, fresh builds, zero-warning strict checks,
+**506 passes per profile**, including all24 audit tests, and **49 ordinary GNU
+comparisons**. The prior [303 draft](docs/handover/2026-09-30-shared-reader-draft/source303-buffer-columns-selected-manifest.json)
+remains unapplied: it passed482 tests/profile but inherited the inventory omission;
+its timing queue stopped before measuring anything.
+
+The [302/304 full16 diagnostic](docs/handover/2026-09-30-shared-reader-draft/source304-native-audit-and-columns-performance-manifest.json)
+verifies all **192 actual process answers and execution modes**. The raw body
+geometric ratio is **1.022383**; per-case changes range from
+**-6.142% to +7.665%**.304's paired GNU aggregate is
+**2.880732×**. Every sample and unfavorable case remains. These three-pilot
+results establish neither statistical significance nor GNU parity; real counters,
+calibration, nine rounds and every-case upper95% ratio at most1.03 remain required.
+
+All selected/timing coordinators are closed. Exact304 Linux and full macOS checks
+are next: inspect `source304-full-validation-launch.json` and
+`source304-full-launch.json` under `target/runtime-goal/resume-2026-09-28`, then
+their raw audits. Do not restart write-once jobs. Earlier GNU census failures and
+source276's Emaxx negative remain unresolved. Main remains `21d20f0e`, PR79 is draft,
+and authoritative symbols/native objects, intervals/pure storage, physical
+accounting, public ownership, final validation and adversarial audit remain open.
+The following sections preserve historical states.
+
 ## Applied native arithmetic checkpoint — 5 October 2026
 
 **Source302 is applied.** The existing native two-fixnum dispatch now returns

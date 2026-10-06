@@ -1,5 +1,49 @@
 # Current goal status — 5 October 2026
 
+## Applied column and native-audit repair — 6 October 2026
+
+**Source304 is applied; the full goal is incomplete.** Ordinary buffer columns
+now follow GNU `indent.c:scan_for_column` and `buffer.h:CHARACTER_WIDTH`: ASCII
+controls honor `ctl-arrow`, unibyte non-ASCII characters occupy four columns,
+and multibyte widths come from the live `char-width-table` with GNU sanitization.
+All **338 rows of the original probe match actual GNU**, closing its recorded
+60 column differences. No original fixture or expected byte changed. This does
+not establish complete overlay, display-table or composition semantics.
+
+Source302's full checks found an omission: its native `+`/`-` paths were absent
+from the exact-contract inventory.304 adds the GNU owners and a real installed-ABI
+boundary test; every audit assertion, negative control and the empty deviation
+list remain. Native arithmetic production code is unchanged. The
+[failed302 evidence](handover/2026-09-30-shared-reader-draft/source302-full-validation-failures-manifest.json)
+retains macOS **3,037 passes/one failure/two existing ignores** and Linux
+**3,045 passes/one failure/two existing ignores**. All library names ran, but bins
+and integration did not. Both frozen attempts stopped before any case; TTY never
+started. The sole Rust failure was the inventory omission. Those runs stay failed.
+
+[Source304 selected evidence](handover/2026-09-30-shared-reader-draft/source304-native-audit-and-columns-selected-manifest.json)
+verifies all **534 inputs and modes**, fresh builds, zero-warning strict checks,
+**506 passes per profile**, including all24 audit tests, and **49 ordinary GNU
+comparisons**. The prior [303 draft](handover/2026-09-30-shared-reader-draft/source303-buffer-columns-selected-manifest.json)
+remains unapplied: it passed482 tests/profile but inherited the inventory omission;
+its timing queue stopped before measuring anything.
+
+The [302/304 full16 diagnostic](handover/2026-09-30-shared-reader-draft/source304-native-audit-and-columns-performance-manifest.json)
+verifies all **192 actual process answers and execution modes**. The raw body
+geometric ratio is **1.022383**; per-case changes range from
+**-6.142% to +7.665%**.304's paired GNU aggregate is
+**2.880732×**. Every sample and unfavorable case remains. These three-pilot
+results establish neither statistical significance nor GNU parity; real counters,
+calibration, nine rounds and every-case upper95% ratio at most1.03 remain required.
+
+All selected/timing coordinators are closed. Exact304 Linux and full macOS checks
+are next: inspect `source304-full-validation-launch.json` and
+`source304-full-launch.json` under `target/runtime-goal/resume-2026-09-28`, then
+their raw audits. Do not restart write-once jobs. Earlier GNU census failures and
+source276's Emaxx negative remain unresolved. Main remains `21d20f0e`, PR79 is draft,
+and authoritative symbols/native objects, intervals/pure storage, physical
+accounting, public ownership, final validation and adversarial audit remain open.
+The following sections preserve historical states.
+
 ## Applied native arithmetic checkpoint — 5 October 2026
 
 **Source302 is applied.** The existing native two-fixnum dispatch now returns
@@ -817,24 +861,23 @@ source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 
 ## Full-goal requirements — current
 
-This map reflects applied source302 (534 inputs). Its warning-free selected
-validation and paired full16 diagnostic are closed. Exact-source Linux and full
-macOS validation are next. Predecessor297 has complete passing Linux audits;
-these do not certify302. All earlier failures remain. The [native-call
-checkpoint](runtime-representation-native-fixed-calls.md) links the source,
-measurements and reproduction helpers. A checkpoint does not complete the goal.
+This map reflects applied source304 (534 inputs). Its warning-free selected
+validation and paired full16 diagnostic are closed. All338 original column probe
+rows match GNU. Source302 full platform attempts failed the exact-contract audit;
+304 repairs the omission without relaxing that gate. Exact304 Linux and full macOS
+validation follow. Earlier failures remain. A checkpoint does not complete the goal.
 
 | Full-goal requirement | Current evidence and remaining work |
 | --- | --- |
 | 1. Reproducible starting point | Original and corrected baselines and failures remain archived. Exact source/executable/image identities accompany each measurement. GNU adoption at `3dcf5351` settled the replacement oracle; final corrected-baseline measurement and complete provenance remain required. |
 | 2. GNU architectural reference | Cons/closure/string storage, comparison/allocation, canonical printing, direct opcode dispatch and native/VM call entry have recorded C mappings. The final complete review and justification/cost of every necessary Rust deviation remain open. |
 | 3. Compact authoritative objects | Values are one word, cons payloads two words, four-slot closures 40 inline bytes. Source270 supplies direct compact string headers; source272 roots active borrows; source279 implements pooled sblocks. Source284 carries canonical bytes through printing/reading. Real intervals, unified pure storage, allocated-symbol authority and remaining host adapters are unfinished. |
-| 4. Allocation, GC and ownership | Required live-root and reclamation controls remain and pass selected source302. Seven category variables still initialize to zero; `memory-use-counts` is unsupported. GNU-shaped charges do not establish actual Rust capacities/retention. Physical accounting, real counters, public ownership/serialization and collection-cost explanations remain required. GNU census reference failures and source276's Emaxx census failure remain unresolved. |
+| 4. Allocation, GC and ownership | Required live-root and reclamation controls remain and pass selected source304. Seven category variables still initialize to zero; `memory-use-counts` is unsupported. GNU-shaped charges do not establish actual Rust capacities/retention. Physical accounting, real counters, public ownership/serialization and collection-cost explanations remain required. GNU census reference failures and source276's Emaxx census failure remain unresolved. |
 | 5. VM/function-call work | Source286 removes repeated decoding on hot opcodes; source289 removes repeated closure reads, a transient activation copy, Bcall decoding and fixed native argument staging. Source290 removes duplicate optimistic dispatch, redundant operand stack changes and immediate Integer calls. Source296 removes fixed-call copying unless padding is needed; source297 avoids unrelated primitive checks before funcall and repairs null/empty slice construction. Measured bytecode-call gains are recorded. VM still reserves 256K value slots plus separate frames versus GNU's 512K words including headers. Stack layout/capacity, remaining frame/call work and actual accounting remain open; closed297 profiles led to the native arithmetic change. Sources300/301 are rejected after both complete cohorts retain slower native transitions despite targeted bytecode-to-native gains. Source302 is applied: in-range two-fixnum +/− avoids argument staging, repeated dispatch, coercion and normalization after the same handler synchronization; other types and bignum results retain general fallback. |
 | 6. Adversarial audit | Existing evaluator/root/reporting controls and failed runs remain. New call-width and native ABI/GC controls use actual same-input GNU output; no expectations or original assertions are weakened. Final actual-source review of runtime, startup/images, loading, selection/comparison/reporting and deliberate evidence corruption remains required. |
-| 7. Equivalent performance | All 16 workloads and the 3% ceiling remain locked. The297/302 diagnostic verifies192 answers/modes; native302 median is22.893% lower than297, raw geometric ratio0.981839. Other cases range from1.388% faster to0.506% slower and all samples remain. Source302's paired GNU aggregate2.785707× remains far from parity. Every original/corrected baseline and rejected candidate remains. Real counters, calibration, prescribed repetitions/distributions and every-case acceptance remain open. |
-| 8. Complete validation | Source302 strict checks are warning-free;328 selected tests pass per profile and48 actual GNU comparisons pass. Exact-source Linux and complete macOS validation are next. Predecessor297 Linux runs37284983243/37284989055 have raw-audited3148 Rust passes/two existing ignores and7928 equal frozen outcomes across519 files/1038 processes. Source292 has3147 Linux Rust passes/two existing ignores and7928 matching frozen outcomes;296 has3147 Linux Rust passes/two ignores, all7928 frozen outcomes match. Earlier GNU census and Emaxx276 failures remain unexplained. Source286 macOS Rust3131 and terminal226/686 pass, but six frozen diagnostic differences remain. Final-source platform/release/frozen/terminal validation remains required. |
-| 9. Independently checkable delivery | Portable patches/manifests, raw commands/results, unfavorable samples and profiles are retained and verified. Source302 is applied; publication and exact-source platform validation follow; main remains 21d20f0e and PR79 is draft. Final source/evidence review and satisfaction of every architectural/performance requirement remain outstanding. |
+| 7. Equivalent performance | All16 workloads and the3% ceiling remain locked. The302/304 diagnostic verifies192 actual answers/modes; raw body geometric ratio is1.022383, paired GNU aggregate for304 is2.880732×. Every original/corrected baseline, unfavorable sample and rejected candidate remains. Real counters, calibration, prescribed repetitions/distributions and every-case acceptance remain open. |
+| 8. Complete validation | Source304 strict checks are warning-free;506 selected tests/profile and49 actual GNU comparisons pass. All338 original probe rows match.302 full Rust attempts fail only the missing native audit inventory (macOS3037pass/1fail/2ignore; Linux3045pass/1fail/2ignore); bins/integration and all frozen/TTY cases did not run.304 restores that contract inventory; exact-source full Linux/macOS validation follows. Predecessor297 Linux3148passes/2ignores and519frozen files/7928matches do not certify304. Prior census negatives remain unresolved. Final-source platform/release/frozen/terminal validation remains required. |
+| 9. Independently checkable delivery | Portable304 patches, raw commands/results and timing samples are retained;302 full failures and303 unapplied draft/stopped timing are separately packaged.304 is applied; exact-source platform validation follows. Main remains21d20f0e and PR79 is draft. Final source/evidence review and every architectural/performance requirement remain outstanding. |
 
 Optional inlining291 and buffer lookups294/295 remain unapplied after their
 complete comparisons. Source293's reused-build validation is rejected. LF-only292

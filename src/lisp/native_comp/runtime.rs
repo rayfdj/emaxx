@@ -6418,6 +6418,128 @@ mod tests {
     }
 
     #[test]
+    fn native_arithmetic_follows_data_c_fixnum_and_fallback_paths() {
+        // data.c:Fplus/Fminus/arith_driver: all arities, immediate results,
+        // promotion, existing bignums and floats use the installed MANY ABI.
+        // The separate native-binary-arithmetic GNU fixture checks 108 actual
+        // native results and condition values, plus marker coercion and GC.
+        let cases = [
+            ("+", vec![], Value::Integer(0)),
+            ("-", vec![], Value::Integer(0)),
+            ("+", vec![Value::Integer(17)], Value::Integer(17)),
+            ("-", vec![Value::Integer(17)], Value::Integer(-17)),
+            (
+                "+",
+                vec![
+                    Value::Integer(MOST_NEGATIVE_FIXNUM),
+                    Value::Integer(MOST_POSITIVE_FIXNUM),
+                ],
+                Value::Integer(-1),
+            ),
+            (
+                "+",
+                vec![Value::Integer(MOST_POSITIVE_FIXNUM), Value::Integer(1)],
+                Value::Integer(2_305_843_009_213_693_952),
+            ),
+            (
+                "-",
+                vec![Value::Integer(MOST_NEGATIVE_FIXNUM), Value::Integer(1)],
+                Value::Integer(-2_305_843_009_213_693_953),
+            ),
+            (
+                "+",
+                vec![
+                    Value::Integer(2_305_843_009_213_693_952),
+                    Value::Integer(MOST_NEGATIVE_FIXNUM),
+                ],
+                Value::Integer(0),
+            ),
+            (
+                "+",
+                vec![Value::Integer(31), Value::Integer(-7), Value::Integer(13)],
+                Value::Integer(37),
+            ),
+            (
+                "-",
+                vec![Value::Integer(31), Value::Integer(-7), Value::Integer(13)],
+                Value::Integer(25),
+            ),
+            (
+                "+",
+                vec![Value::float(1.25), Value::Integer(2)],
+                Value::float(3.25),
+            ),
+            (
+                "-",
+                vec![Value::float(3.5), Value::float(1.25)],
+                Value::float(2.25),
+            ),
+        ];
+        let mut roots = crate::lisp::alloc::RootedVec::new();
+        for (_, arguments, expected) in &cases {
+            for argument in arguments {
+                roots.push(*argument);
+            }
+            roots.push(*expected);
+        }
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        for (name, arguments, expected) in cases {
+            let index = super::super::abi::native_subrs()
+                .iter()
+                .position(|subroutine| subroutine.name == name)
+                .expect("arithmetic belongs to the native ABI");
+            let actual = runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    native_subr_address(index).cast_const(),
+                    NativeCallingConvention::Many,
+                    &arguments,
+                )
+                .expect("native arithmetic result");
+            assert_eq!(actual, expected, "{name} {arguments:?}");
+            assert_eq!(
+                actual.word() & 3 == TAG_FIXNUM_LOW,
+                expected.word() & 3 == TAG_FIXNUM_LOW
+            );
+            assert_eq!(interpreter.backtrace_frames_len(), 0);
+            assert_eq!(interpreter.lisp_eval_depth, 0);
+            assert!(runtime.calls.is_empty());
+        }
+        let invalid = Value::symbol("native-arithmetic-error");
+        for name in ["+", "-"] {
+            let index = super::super::abi::native_subrs()
+                .iter()
+                .position(|subroutine| subroutine.name == name)
+                .expect("arithmetic belongs to the native ABI");
+            for arguments in [[invalid, Value::Integer(1)], [Value::Integer(1), invalid]] {
+                let error = runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        native_subr_address(index).cast_const(),
+                        NativeCallingConvention::Many,
+                        &arguments,
+                    )
+                    .expect_err("invalid operands retain the general signaling path");
+                assert_eq!(
+                    crate::lisp::eval::error_condition_value(&error),
+                    Value::list([
+                        Value::symbol("wrong-type-argument"),
+                        Value::symbol("number-or-marker-p"),
+                        invalid,
+                    ]),
+                );
+                assert_eq!(interpreter.backtrace_frames_len(), 0);
+                assert_eq!(interpreter.lisp_eval_depth, 0);
+                assert!(runtime.calls.is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn native_numeric_comparisons_follow_data_c_fixnum_path() {
         let cases = [
             ("<", Value::Integer(1), Value::Integer(2), Value::T),

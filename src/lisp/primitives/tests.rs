@@ -27503,3 +27503,12 @@ fn native_binary_arithmetic_preserves_gnu_boundaries_types_and_errors() {
         "native addition and subtraction across fixnum, bignum, float, marker and error boundaries",
     );
 }
+
+#[test]
+fn buffer_display_columns_match_gnu_original_line_motion_probe() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/buffer-lf-line-index.el"),
+        include_str!("../../../tests/fixtures/buffer-lf-line-index.expected").trim_end(),
+        "original 338-row line/column probe across controls, multibyte text, narrowing and edits",
+    );
+}

@@ -974,8 +974,42 @@ pub(crate) fn column_after(
             .unwrap_or(8)
             .max(1) as usize;
         (current_col / tab_width + 1) * tab_width
-    } else {
+    } else if (' '..='~').contains(&ch) {
         current_col + 1
+    } else if ch == '\n' {
+        current_col
+    } else {
+        // indent.c:scan_for_column and buffer.h:CHARACTER_WIDTH use
+        // ctl-arrow for ASCII controls, four columns for unibyte high
+        // bytes, and the live char-width-table for multibyte characters.
+        let width = if ch <= '\u{7f}' {
+            if interp
+                .lookup_var("ctl-arrow", env)
+                .is_some_and(|value| value.is_truthy())
+            {
+                2
+            } else {
+                4
+            }
+        } else if !interp.buffer.borrow().is_multibyte() {
+            4
+        } else {
+            let width = interp
+                .lookup_var("char-width-table", env)
+                .and_then(|value| match value.kind() {
+                    Kind::CharTable(table) => interp.char_table_get(table, ch as u32),
+                    _ => None,
+                })
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(0);
+            // buffer.h:sanitize_char_width caps invalid numeric widths.
+            if (0..=1000).contains(&width) {
+                width as usize
+            } else {
+                1000
+            }
+        };
+        current_col + width
     }
 }
 
