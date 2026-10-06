@@ -19522,6 +19522,15 @@ fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
 }
 
 #[test]
+fn bytecode_stack_capacity_and_nested_reservations_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-stack-layout.el"),
+        include_str!("../../../tests/fixtures/bytecode-stack-layout.expected").trim(),
+        "bytecode frame reservations include actual footers, arguments and error recovery",
+    );
+}
+
+#[test]
 fn native_vector_and_closure_census_matches_gnu_word_layout() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/vector-closure-rounded-census.el"),

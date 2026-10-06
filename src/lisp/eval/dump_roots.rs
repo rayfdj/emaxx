@@ -38,10 +38,6 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "eval.c:init_eval_once_for_pdumper recreates the specpdl; the entries of the byte-code activations in progress are the running thread's",
     ),
     (
-        "bc_functions",
-        "bytecode.c:mark_bytecode marks the actual functions of live frames, which retain their code and constants; these belong to the running thread's stack, recreated by init_bc_thread and not written by pdumper.c",
-    ),
-    (
         "frame_states",
         "frame.c:init_frame_once_for_pdumper resets Vframe_list and selected_frame; frames are nilled in the image, their windows and face hash tables with them (window.c:init_window_once_for_pdumper)",
     ),

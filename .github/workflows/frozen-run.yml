@@ -5,7 +5,7 @@ on:
       validation:
         description: Oracle preparation, ordinary tests, full Rust gate, or sandbox diagnostics
         type: choice
-        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, rust-backtrace, rust-replay, rust-root-trace, rust-exact-roots, rust-exact-census, gnu-census, gnu-census-trace, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples, ordinary-samples]
+        options: [prepare-oracle, affected, remaining, frozen, rust, rust-tail, rust-backtrace, rust-replay, rust-root-trace, rust-exact-roots, rust-exact-census, gnu-census, gnu-census-trace, sandbox-diagnostics, image-diagnostics, startup-diagnostics, allocator-diagnostics, compiler-diagnostics, compiler-samples, ordinary-samples, core-runtime-pair]
         default: affected
       file:
         description: Upstream file/range, or retained artifact run ID for rust-exact-roots
@@ -24,7 +24,7 @@ on:
         type: string
         default: ''
       baseline_revision:
-        description: Full commit ID for the before binary in allocator diagnostics
+        description: Full commit ID for the before binary in paired runtime or allocator diagnostics
         type: string
         default: fb45ffdf253d23d4442cf87c56ae4d4291b86562
       startup_syscall:
@@ -169,6 +169,12 @@ jobs:
             cp compat/oracle.lock.linux.json target/frozen-ci/oracle-lock-before.json
             run_harness oracle pin --emacs ../emacs/src/emacs --repo ../emacs
             cp compat/oracle.lock.linux.json target/frozen-ci/oracle-lock-proposed.json
+          fi
+          if [ "$VALIDATION" = core-runtime-pair ]; then
+            python3 tools/core_runtime_perf_pair.py \
+              --baseline "$BASELINE_REVISION" --oracle-source ../emacs \
+              --output target/frozen-ci/core-runtime-pair
+            exit 0
           fi
           case "$VALIDATION" in
             sandbox-diagnostics|image-diagnostics|startup-diagnostics|allocator-diagnostics|compiler-diagnostics|compiler-samples|ordinary-samples)

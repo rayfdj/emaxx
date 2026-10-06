@@ -3960,14 +3960,9 @@ impl Interpreter {
         }
         // The thread's bytecode stack and its activations' specpdl entries
         // (alloc.c marks them with the thread).
-        for value in self.bc_stack.values() {
-            marked.mark(self, value);
-        }
+        roots::mark_source(self, &mut marked, &self.bc_stack);
         for entry in &self.bc_unwinds {
             roots::mark_source(self, &mut marked, entry);
-        }
-        for function in &self.bc_functions {
-            marked.mark(self, function);
         }
         for thread in &self.thread_states {
             if let Some(context) = &thread.context {
@@ -4748,7 +4743,6 @@ impl Interpreter {
         *clone.syntax_segment_cache.get_mut() = None;
         clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
         clone.bc_unwinds.clear();
-        clone.bc_functions.clear();
 
         // Identity-bearing keys acquire new addresses in the test image.
         // Rehash copied standard tables only after the complete graph is
@@ -5153,7 +5147,6 @@ pub struct InterpreterState {
     /// roots for as long as the activations run (alloc.c:mark_threads).
     pub(crate) bc_stack: crate::lisp::bytecode::vm::BcStack,
     pub(crate) bc_unwinds: Vec<crate::lisp::bytecode::vm::UnwindEntry>,
-    pub(crate) bc_functions: Vec<Value>,
     /// Live Rust-owned operand/context roots, independent of the reusable pool.
     stack_roots: roots::StackRoots,
     /// Recycled argument buffers for backtrace frames, same idea.
@@ -5904,7 +5897,6 @@ impl Interpreter {
             sqlite_handles: Vec::new(),
             bc_stack: crate::lisp::bytecode::vm::BcStack::new(),
             bc_unwinds: Vec::new(),
-            bc_functions: Vec::new(),
             stack_roots: roots::StackRoots::default(),
             treesit_queries: Vec::new(),
             treesit_languages: Vec::new(),

@@ -1,0 +1,37 @@
+{
+  "status": "separate Linux diagnostic orchestrator installed; runtime548 and auxiliary94 unchanged",
+  "files": {
+    "tools/core_runtime_perf_pair.py": {
+      "sha256": "2b79f0b494f43152e67040d8bffbed9ec8adbc8fdd1914dca31a588128c2e41e",
+      "mode": 493
+    },
+    ".github/workflows/frozen-run.yml": {
+      "sha256": "a20924feb536abe1d8317c3eac413f0e427d54696cd1be085f47f89bb3a43f36",
+      "mode": 420
+    }
+  },
+  "validation": {
+    "status": "raw pilot audit and six corruption controls passed",
+    "helper_sha256": "2b79f0b494f43152e67040d8bffbed9ec8adbc8fdd1914dca31a588128c2e41e",
+    "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source310-native-unit310-pilot-0",
+    "actual_cases": 16,
+    "actual_processes": 32,
+    "rejections": {
+      "wrong-result": "ValueError('raw process samples disagree with report')",
+      "missing-report": "FileNotFoundError(2, 'No such file or directory')",
+      "failed-process": "ValueError('unsuccessful process')",
+      "incomplete-inventory": "ValueError('incomplete pilot inventory')",
+      "duplicate-inventory": "ValueError('unexpected or duplicate pilot outcome')",
+      "wrong-mode": "ValueError(\"wrong execution mode: {'silent_fallback': True}; expected {'driver': 'interpreted', 'core-perf-lexical-loop': 'interpreted'}\")"
+    },
+    "qualification": "Tests raw-evidence validation using retained actual macOS pilot data. Linux pair build/orchestration has not run yet; final runtime or performance acceptance is not established."
+  },
+  "consistent_corruption": {
+    "status": "internally consistent incorrect result rejected",
+    "reason": "checked result differs from locked result",
+    "helper_sha256": "2b79f0b494f43152e67040d8bffbed9ec8adbc8fdd1914dca31a588128c2e41e",
+    "case": "interpreted-lexical"
+  },
+  "qualification": "The new Linux orchestration has not yet run in CI. Its raw-evidence audit passes actual retained pilot data and seven negative controls. All measurement workloads and expectations remain byte-identical.",
+  "goal_complete": false
+}

@@ -1,0 +1,26 @@
+{
+  "status": "apply source311 selected-correctness repair; full goal and performance remain open",
+  "base_runtime": "5e6f6fc89654b5e695161f5e1713d06ff8ca1f3c",
+  "pre_apply_head": "48593a3562ba26384bd9916099dbb08e53aa205e",
+  "selected_audit_sha256": "bb63883753394a2b825f9349a3f57bfa9b34ae97d7e3d43732774f86188f1046",
+  "reason": "Actual GNU accepts declared stack capacities that source310 rejects. Source311 uses the same 512K-word capacity and four-word frame reservations, with the actual function root and return state in each footer. This restores demonstrated semantics and removes the duplicate function-root vector.",
+  "evidence": {
+    "runtime_inputs": 548,
+    "auxiliary_inputs": 94,
+    "selected_per_profile": 1065,
+    "focused_per_profile": 5,
+    "ordinary_comparisons": 58,
+    "generated_rows": 198,
+    "source_and_mode_replays": "both exact"
+  },
+  "performance_status": "No source311 performance result yet. A separately audited diagnostic helper will build source310 and the published source311 revision before running three alternating unchanged full16 pilots on one Linux runner. This is not final calibrated acceptance.",
+  "limitations": [
+    "Full source311 Linux/macOS validation still required.",
+    "Host unwind/backtrace/handler watermarks and transient bytecode views remain.",
+    "Bcall resolves packed functions before maybe_gc, unlike GNU. Separate source310 probes also show an actual earlier GC-hook timing mismatch, whose cause is not yet determined; those negative results remain.",
+    "Real allocation counters, symbol authority, intervals/pure storage, remaining adapters, final internal soundness/de-cheating review and unchanged calibrated performance criterion remain open."
+  ],
+  "mechanism_review_sha256": "df77a1cf26f81c8700eb5899bacedaa124cd0f5544dc51484013b7c10b7b12fb",
+  "followup_negative_sha256": "099ed878f0c6fecf93fa6b60d36a42bf15574b1326050db81e9c5b373f7dceee",
+  "goal_complete": false
+}

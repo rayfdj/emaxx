@@ -16,6 +16,70 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
+## Applied bytecode stack — 6 October 2026
+
+**Source311 is applied; the full goal remains incomplete.** The VM now has GNU's
+512K-word stack capacity, with each function's declared operand space followed
+by its actual four-word frame footer. The footer holds the caller frame/top,
+return PC and real function object. GC follows that chain; the separate function
+root vector and duplicate host return PC are removed. Caller argument slices
+remain stable while the callee uses disjoint storage.
+
+The [selected evidence](docs/handover/2026-09-30-shared-reader-draft/source311-bytecode-stack-selected-manifest.json)
+verifies all **548 runtime/build/fixture inputs**, **94 unchanged auxiliary inputs**,
+warning-free strict checks, **1,065 passes per profile**, five focused controls per
+profile, and **58 ordinary GNU comparisons**, including 198 generated rows.
+Both portable patches reproduce every runtime byte and mode. All 1,036 predecessor
+selectors and all 24 audit controls remain. GNU's maximum single declared depth
+of 524280, nested reservations, arguments and recovery after overflow match.
+The original capacity fixture is unchanged. Source310's actual stack-overflow
+failure and the earlier moved-image setup failure remain separately recorded.
+
+This is a [correctness publication](docs/handover/2026-09-30-shared-reader-draft/source311-application-decision.json),
+with [exact applied-source verification](docs/handover/2026-09-30-shared-reader-draft/source311-applied-source-verification.json).
+**Source311 timing and complete platform results are pending.** The added
+`tools/core_runtime_perf_pair.py` builds both exact revisions before three alternating
+full16 pilots on one Linux runner. It retains executable/image copies and every
+actual process answer, execution mode, startup/body/total time, GC delta and RSS.
+Its raw-evidence audit passed an existing real pilot and rejected seven deliberate
+corruptions. The new orchestration still needs its actual Linux execution; this
+is diagnostic preparation, not calibrated nine-round acceptance.
+
+Predecessor source310 now has [complete Linux frozen evidence](docs/handover/2026-09-30-shared-reader-draft/source310-linux-frozen-results-manifest.json):
+**519 files / 7,928 matching outcomes / 1,038 successful processes**. Each editor
+reports 7,670 passes, 47 expected failures and 211 skips. Its
+[complete macOS Rust evidence](docs/handover/2026-09-30-shared-reader-draft/source310-macos-rust-results-manifest.json)
+verifies **3,150 passes / two existing ignores**, including native artifact identity.
+Source310 macOS frozen and terminal remain separate; inspect the saved queue state.
+These results certify310 only. The source310 Linux Rust run stays failed with
+2,295 passes / one GNU reference failure and 765 library names unstarted.
+
+The [Linux GNU census trace](docs/handover/2026-09-30-shared-reader-draft/source310-linux-gnu-census-trace-results-manifest.json)
+now reproduces the original -9 vector difference in seven of ten ordinary GNU
+runs and under the read-only debugger. Between the first two collections, GNU's
+marked heap loses exactly one 40-byte closure and its 32-byte constants vector,
+with no other marked-object change. A tagged closure pointer is on the C stack
+in the first snapshot and absent in the second; it is a candidate retention root,
+not a proven marking path. The record fixture reproduces -7 in four ordinary runs
+but matches under GDB. The global-heap delta can therefore include unrelated
+reclamation. Original fixtures and expectations are still unchanged; correcting
+that invalid footprint assumption requires preserved equivalent coverage.
+
+Host unwind/backtrace/handler watermarks and transient bytecode views remain.
+Function resolution still precedes `maybe_gc`, unlike GNU. Separate same-input
+source310 probes return the old function before its GC hook has run, while GNU's
+hook replaces it and the new function runs. Identical compiled bytes/constants
+rule out a compiler-shape difference; the missing hook's cause remains open, so
+those outputs alone do not prove the resolution-order cause. The negative outputs
+are preserved in the selected archive and are not counted as passing comparisons.
+
+Main remains `21d20f0e`, PR79 is draft. Allocated-symbol authority, real intervals
+and unified pure storage, remaining adapters, physical accounting/counters,
+remaining GC/call semantics, final internal ownership/borrow and adversarial review,
+complete final-source validation, and the unchanged performance criterion remain
+required. Source310's last diagnostic remains **2.634352× GNU overall**; no source311
+speedup or GNU parity is claimed. Historical checkpoint sections follow.
+
 ## Applied native compilation units — 6 October 2026
 
 **Source310 is applied; the full goal remains incomplete.** A native compilation

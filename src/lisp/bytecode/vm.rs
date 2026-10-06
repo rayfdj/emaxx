@@ -15,85 +15,189 @@ use super::{ArgSpec, ByteCodeObject, Op};
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
-/// bytecode.c's per-thread bytecode stack (`bc_thread_state'): one
-/// contiguous operand stack for every live activation, allocated once
-/// and never moved, so an activation's arguments are read in place by
-/// the callee (Bcall's `&TOP + 1') and by its backtrace frame while the
-/// callee's own frame grows above them.  Every push is checked against
-/// the capacity (GNU checks a frame's declared depth at `setup_frame');
-/// an overflow signals as GNU's "Bytecode stack overflow" does.
+/// bytecode.c's `bc_thread_state': one stable 512K-word allocation containing
+/// both operand slots and the four-word footer of every active frame. A callee
+/// begins after its caller's declared depth, not after its current stack top.
+/// Only initialized live slots are exposed as Rust values or traced precisely.
 pub(crate) struct BcStack {
-    values: Vec<Value>,
+    words: Vec<std::mem::MaybeUninit<usize>>,
+    frame: usize,
+    base: usize,
+    top: usize,
 }
 
-/// GNU's BC_STACK_SIZE is 512K words; a Value is two words.
-const BC_STACK_VALUES: usize = 1 << 18;
+const BC_STACK_WORDS: usize = 512 * 1024;
+const BC_HEADER_WORDS: usize = 4;
+
+/// GNU's `bc_frame', using allocation-relative offsets instead of interior
+/// pointers so a suspended stack can be moved with its owning thread state.
+/// The saved top includes outgoing arguments, which remain roots and borrowed
+/// backtrace arguments until the callee returns. The function is the actual
+/// closure, so no parallel function-root vector is necessary.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct BcHeader {
+    saved_frame: usize,
+    saved_top: usize,
+    saved_pc: usize,
+    function: Value,
+}
+
+const _: () = assert!(std::mem::size_of::<BcHeader>() == BC_HEADER_WORDS * 8);
+const _: () = assert!(std::mem::size_of::<Value>() == 8);
 
 impl BcStack {
     pub(crate) const fn new() -> Self {
-        Self { values: Vec::new() }
-    }
-
-    /// The stack's storage, allocated on the first activation; the
-    /// buffer is never reallocated afterwards.
-    fn ensure_allocated(&mut self) {
-        if self.values.capacity() == 0 {
-            self.values.reserve_exact(BC_STACK_VALUES);
+        Self {
+            words: Vec::new(),
+            frame: 0,
+            base: 0,
+            top: 0,
         }
     }
 
-    #[inline(always)]
-    fn has_room(&self, count: usize) -> bool {
-        self.values.len() + count <= self.values.capacity()
+    fn ensure_allocated(&mut self) {
+        if self.words.capacity() == 0 {
+            self.words.reserve_exact(BC_STACK_WORDS);
+            // SAFETY: the allocation is word-aligned and has room for the
+            // dummy footer. No operand slice refers to these first four words.
+            unsafe {
+                self.words.as_mut_ptr().cast::<BcHeader>().write(BcHeader {
+                    saved_frame: 0,
+                    saved_top: 0,
+                    saved_pc: 0,
+                    function: Value::Nil,
+                });
+            }
+        }
+    }
+
+    #[inline]
+    fn header(&self, frame: usize) -> BcHeader {
+        // SAFETY: FRAME is zero or a footer installed by enter_frame and
+        // retained in the live frame chain. Reading copies its four words.
+        unsafe { self.words.as_ptr().add(frame).cast::<BcHeader>().read() }
+    }
+
+    fn enter_frame(&mut self, depth: usize, function: Value, pc: usize) -> Result<(), LispError> {
+        let base = self.frame + BC_HEADER_WORDS;
+        let frame = base
+            .checked_add(depth)
+            .filter(|end| *end <= BC_STACK_WORDS - BC_HEADER_WORDS)
+            .ok_or_else(stack_overflow)?;
+        // SAFETY: the checked footer lies after the caller's entire declared
+        // frame. Its slots are disjoint from all caller/backtrace slices.
+        unsafe {
+            self.words
+                .as_mut_ptr()
+                .add(frame)
+                .cast::<BcHeader>()
+                .write(BcHeader {
+                    saved_frame: self.frame,
+                    saved_top: self.top,
+                    saved_pc: pc,
+                    function,
+                });
+        }
+        self.frame = frame;
+        self.base = base;
+        self.top = base;
+        Ok(())
+    }
+
+    fn leave_frame(&mut self) -> usize {
+        assert_ne!(self.frame, 0, "cannot pop the dummy bytecode frame");
+        let header = self.header(self.frame);
+        self.frame = header.saved_frame;
+        self.top = header.saved_top;
+        self.base = if self.frame == 0 {
+            0
+        } else {
+            self.header(self.frame).saved_frame + BC_HEADER_WORDS
+        };
+        header.saved_pc
+    }
+
+    #[cfg(test)]
+    fn frame_count(&self) -> usize {
+        let (mut frame, mut count) = (self.frame, 0);
+        while frame != 0 {
+            count += 1;
+            frame = self.header(frame).saved_frame;
+        }
+        count
     }
 
     #[inline(always)]
     pub(crate) fn push(&mut self, value: Value) -> Result<(), LispError> {
-        if self.values.len() == self.values.capacity() {
+        if self.top == self.frame {
             return Err(stack_overflow());
         }
-        self.values.push(value);
+        self.push_within_frame(value);
         Ok(())
     }
 
-    /// The loop's push: the frame's declared depth was checked at its
-    /// setup, so this fails only for a program that exceeds it.
     #[inline(always)]
     fn push_within_frame(&mut self, value: Value) {
         assert!(
-            self.values.len() < self.values.capacity(),
+            self.top < self.frame,
             "byte code exceeded its declared stack depth"
         );
-        self.values.push(value);
+        // SAFETY: this free operand word precedes the active footer and is
+        // disjoint from the live operand prefix and every caller's arguments.
+        unsafe {
+            self.words
+                .as_mut_ptr()
+                .add(self.top)
+                .cast::<Value>()
+                .write(value);
+        }
+        self.top += 1;
     }
 
     #[inline(always)]
     pub(crate) fn pop(&mut self) -> Option<Value> {
-        self.values.pop()
+        if self.top == self.base {
+            return None;
+        }
+        self.top -= 1;
+        // SAFETY: push initialized this word; Value is Copy and has no drop.
+        Some(unsafe { self.words.as_ptr().add(self.top).cast::<Value>().read() })
     }
 
     #[inline(always)]
     pub(crate) fn truncate(&mut self, len: usize) {
-        self.values.truncate(len);
+        self.top = self.base + len.min(self.top - self.base);
     }
 
     #[inline(always)]
-    fn drain_from(&mut self, start: usize) -> std::vec::Drain<'_, Value> {
-        self.values.drain(start..)
+    fn drain_from(&mut self, start: usize) -> impl Iterator<Item = Value> + '_ {
+        let len = self.top - self.base;
+        assert!(start <= len);
+        self.top = self.base + start;
+        // SAFETY: these removed slots are initialized and the iterator's
+        // borrow prevents stack mutation until the caller finishes copying.
+        unsafe {
+            std::slice::from_raw_parts(
+                self.words.as_ptr().add(self.top).cast::<Value>(),
+                len - start,
+            )
+        }
+        .iter()
+        .copied()
     }
 
-    pub(crate) fn values(&self) -> &[Value] {
-        &self.values
-    }
-
-    /// The values from START on, as bytecode.c reads a call's arguments
-    /// off the stack; the buffer itself never moves.
-    ///
     /// # Safety
-    /// The caller must not truncate the stack below START + LEN while
-    /// the slice is in use.
+    /// The caller must keep these initialized caller slots intact until the
+    /// returned slice is no longer used. Callee frames occupy disjoint storage.
     unsafe fn slice_from(&self, start: usize, len: usize) -> &'static [Value] {
-        unsafe { std::slice::from_raw_parts(self.values.as_ptr().add(start), len) }
+        assert!(start <= self.len() && len <= self.len() - start);
+        unsafe {
+            std::slice::from_raw_parts(
+                self.words.as_ptr().add(self.base + start).cast::<Value>(),
+                len,
+            )
+        }
     }
 }
 
@@ -101,14 +205,52 @@ impl std::ops::Deref for BcStack {
     type Target = [Value];
     #[inline(always)]
     fn deref(&self) -> &[Value] {
-        &self.values
+        // SAFETY: only the initialized prefix of the current frame is exposed;
+        // reserved slots and raw footer words are never reinterpreted as values.
+        unsafe {
+            std::slice::from_raw_parts(
+                self.words.as_ptr().add(self.base).cast::<Value>(),
+                self.top - self.base,
+            )
+        }
     }
 }
 
 impl std::ops::DerefMut for BcStack {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut [Value] {
-        &mut self.values
+        // SAFETY: exclusive access to the active initialized operand prefix.
+        // A borrowed caller's arguments are in an earlier, disjoint frame.
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.words.as_mut_ptr().add(self.base).cast::<Value>(),
+                self.top - self.base,
+            )
+        }
+    }
+}
+
+impl TraceLispRoots for BcStack {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
+        let (mut frame, mut top) = (self.frame, self.top);
+        while frame != 0 {
+            let header = self.header(frame);
+            let base = header.saved_frame + BC_HEADER_WORDS;
+            // SAFETY: TOP is the current top or the initialized caller prefix
+            // recorded on entry. Reserved holes and footers are not scanned.
+            let values = unsafe {
+                std::slice::from_raw_parts(
+                    self.words.as_ptr().add(base).cast::<Value>(),
+                    top - base,
+                )
+            };
+            for value in values {
+                marker.value(value);
+            }
+            marker.value(&header.function);
+            frame = header.saved_frame;
+            top = header.saved_top;
+        }
     }
 }
 
@@ -119,18 +261,36 @@ impl Default for BcStack {
 }
 
 impl Clone for BcStack {
-    /// A copy with the stack's full capacity (the interpreter template's
-    /// copy is reset before it runs anything).
     fn clone(&self) -> Self {
-        let mut values = Vec::with_capacity(BC_STACK_VALUES.max(self.values.len()));
-        values.extend(self.values.iter().cloned());
-        Self { values }
+        let mut copy = Self::new();
+        if self.words.capacity() != 0 {
+            copy.ensure_allocated();
+            // SAFETY: copying MaybeUninit words preserves initialized headers
+            // and operands without reading unused storage as initialized data.
+            // All links are offsets, not pointers into the original allocation.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    self.words.as_ptr(),
+                    copy.words.as_mut_ptr(),
+                    BC_STACK_WORDS,
+                );
+            }
+            copy.frame = self.frame;
+            copy.base = self.base;
+            copy.top = self.top;
+        }
+        copy
     }
 }
 
 impl std::fmt::Debug for BcStack {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "BcStack({} values)", self.values.len())
+        write!(
+            f,
+            "BcStack({} active values, footer at {})",
+            self.len(),
+            self.frame
+        )
     }
 }
 
@@ -169,7 +329,6 @@ fn legacy_arity_error(function: &Value, nargs: usize) -> LispError {
 /// watermarks the callee's return or error restores).
 struct BcFrame {
     program: ByteCodeObject,
-    pc: usize,
     /// The caller's slot holding the callee (Bcall's TOP after DISCARD):
     /// the callee's arguments and frame lie above it, and the return
     /// value replaces it.
@@ -837,18 +996,15 @@ fn run(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     interp.bc_stack.ensure_allocated();
-    let base = interp.bc_stack.len();
+    let stack_at_entry = (
+        interp.bc_stack.frame,
+        interp.bc_stack.base,
+        interp.bc_stack.top,
+    );
     let unwinds_at_entry = interp.bc_unwinds.len();
     let frames_at_entry = interp.backtrace_frames_len();
     // The activation's program is a root while it runs (alloc.c marks the
     // thread's bytecode stack, whose frames hold their functions).
-    let functions_at_entry = interp.bc_functions.len();
-    interp.bc_functions.push(if function.is_nil() {
-        // The raw byte-code primitive has no closure object.
-        Value::Vector(program.constants)
-    } else {
-        function
-    });
     let result = if function.is_nil() {
         // Direct Rust execution also roots the code and legacy arglist; a
         // constants-only root cannot keep them alive across a callback.
@@ -887,8 +1043,11 @@ fn run(
     } else {
         result
     };
-    interp.bc_stack.truncate(base);
-    interp.bc_functions.truncate(functions_at_entry);
+    (
+        interp.bc_stack.frame,
+        interp.bc_stack.base,
+        interp.bc_stack.top,
+    ) = stack_at_entry;
     result
 }
 
@@ -903,12 +1062,15 @@ fn run_frames(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if !interp
-        .bc_stack
-        .has_room(program.stack_depth + args.len() + 1)
-    {
-        return Err(stack_overflow());
-    }
+    interp.bc_stack.enter_frame(
+        program.stack_depth,
+        if function.is_nil() {
+            Value::Vector(program.constants)
+        } else {
+            function
+        },
+        0,
+    )?;
     // Argument prologue (exec_byte_code's ARGS_TEMPLATE handling).
     match &program.argspec {
         ArgSpec::Packed {
@@ -1053,11 +1215,10 @@ fn run_frames(
                         frames.push(frame);
                         return Err(error);
                     }
+                    pc = interp.bc_stack.leave_frame();
                     interp.bc_stack.truncate(frame.base);
                     push!(value);
-                    interp.bc_functions.pop();
                     program = frame.program;
-                    pc = frame.pc;
                     op_error_frames = frame.op_error_frames;
                     handlers.truncate(frame.handlers_len);
                     continue;
@@ -1502,11 +1663,28 @@ fn run_frames(
                             env,
                             None,
                         );
-                        interp.bc_functions.push(callee_function);
-                        crate::lisp::native_comp::maybe_gc(interp, env);
+                        interp.with_lisp_stack_roots(&callee_function, |interp| {
+                            crate::lisp::native_comp::maybe_gc(interp, env);
+                        });
+                        if let Err(error) =
+                            interp
+                                .bc_stack
+                                .enter_frame(callee.stack_depth, callee_function, pc)
+                        {
+                            let result = interp.settle_frame_result(Err(error), env);
+                            interp.truncate_backtrace_frames(backtrace_depth);
+                            interp.end_funcall();
+                            match result {
+                                Ok(value) => {
+                                    interp.bc_stack.truncate(args_start - 1);
+                                    push!(value);
+                                    continue;
+                                }
+                                Err(error) => return Err(error),
+                            }
+                        }
                         frames.push(BcFrame {
                             program: program.clone(),
-                            pc,
                             base: args_start - 1,
                             handlers_len: handlers.len(),
                             unwinds_len: interp.bc_unwinds.len(),
@@ -1536,19 +1714,11 @@ fn run_frames(
                             return Err(packed_arity_error(mandatory, nonrest, argc));
                         }
                         let pushed = argc.min(nonrest);
-                        if !interp.bc_stack.has_room(program.stack_depth + nonrest + 2) {
-                            return Err(stack_overflow());
-                        }
-                        for index in 0..pushed {
-                            let argument = interp.bc_stack[args_start + index];
-                            push!(argument);
+                        for argument in &call_args[..pushed] {
+                            push!(*argument);
                         }
                         if argc > nonrest {
-                            let rest_list = Value::list(
-                                interp.bc_stack[args_start + nonrest..args_start + argc]
-                                    .iter()
-                                    .cloned(),
-                            );
+                            let rest_list = Value::list(call_args[nonrest..].iter().cloned());
                             push!(rest_list);
                         } else {
                             for _ in argc..nonrest {
@@ -2065,11 +2235,10 @@ fn run_frames(
                             if let Err(error) = leave_frame(interp, env, &frame) {
                                 break 'run Err(error);
                             }
+                            pc = interp.bc_stack.leave_frame();
                             interp.bc_stack.truncate(frame.base);
                             push!(value);
-                            interp.bc_functions.pop();
                             program = frame.program;
-                            pc = frame.pc;
                             op_error_frames = frame.op_error_frames;
                             handlers.truncate(frame.handlers_len);
                             continue 'run;
@@ -2081,10 +2250,9 @@ fn run_frames(
                     {
                         error = unwind_error;
                     }
+                    pc = interp.bc_stack.leave_frame();
                     interp.bc_stack.truncate(frame.base);
-                    interp.bc_functions.pop();
                     program = frame.program;
-                    pc = frame.pc;
                     op_error_frames = frame.op_error_frames;
                 }
                 if !handled {
@@ -2837,11 +3005,59 @@ fn taken_bytecode_branch_outside_storage_errors_without_leaking_a_frame() {
         panic!("actual closure");
     };
     let stack_before = interp.bc_stack.len();
-    let roots_before = interp.bc_functions.len();
+    let roots_before = interp.bc_stack.frame_count();
     let error = execute_closure(&mut interp, closure, &[], &mut env)
         .expect_err("the actual next fetch must check the string boundary");
     assert!(matches!(error.kind(), LispErrorKind::Signal(message)
         if message == "byte code ran off the end of its program"));
     assert_eq!(interp.bc_stack.len(), stack_before);
-    assert_eq!(interp.bc_functions.len(), roots_before);
+    assert_eq!(interp.bc_stack.frame_count(), roots_before);
+}
+
+#[cfg(test)]
+#[test]
+fn bytecode_stack_footers_share_storage_and_preserve_borrowed_caller_arguments() {
+    let mut stack = BcStack::new();
+    stack.ensure_allocated();
+    assert_eq!(stack.words.capacity(), BC_STACK_WORDS);
+    assert_eq!(std::mem::size_of::<BcHeader>(), 32);
+    stack
+        .enter_frame(5, Value::Integer(11), 0)
+        .expect("caller reservation");
+    stack.push(Value::Integer(17)).expect("caller argument");
+    // This is the same borrow retained by an ordinary backtrace while the
+    // callee writes its own operands and while the owning stack moves.
+    let arguments = unsafe { stack.slice_from(0, 1) };
+    assert_eq!(arguments.as_ptr().cast::<usize>(), unsafe {
+        stack.words.as_ptr().add(4).cast::<usize>()
+    });
+    assert_eq!(stack.frame, 9);
+    stack
+        .enter_frame(7, Value::Integer(23), 91)
+        .expect("callee reservation");
+    stack.push(Value::Integer(29)).expect("callee operand");
+    assert_eq!(stack.frame, 20);
+    assert_eq!(stack.header(stack.frame).function, Value::Integer(23));
+    let caller = stack.header(stack.frame).saved_frame;
+    assert_eq!(stack.header(caller).function, Value::Integer(11));
+    assert_eq!(arguments, &[Value::Integer(17)]);
+    assert_eq!(&*stack, &[Value::Integer(29)]);
+    let mut moved = stack;
+    assert_eq!(moved.leave_frame(), 91);
+    assert_eq!(&*moved, arguments);
+    assert_eq!(moved.leave_frame(), 0);
+    assert!(moved.is_empty());
+    assert_eq!(moved.frame_count(), 0);
+    moved
+        .enter_frame(BC_STACK_WORDS - 8, Value::Integer(31), 0)
+        .expect("GNU's largest single frame includes both footers");
+    assert!(moved.enter_frame(0, Value::Nil, 0).is_err());
+    assert_eq!(moved.frame_count(), 1);
+    moved.leave_frame();
+    assert!(
+        moved
+            .enter_frame(BC_STACK_WORDS - 7, Value::Nil, 0)
+            .is_err()
+    );
+    assert_eq!(moved.frame_count(), 0);
 }

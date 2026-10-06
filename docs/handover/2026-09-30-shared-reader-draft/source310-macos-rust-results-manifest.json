@@ -1,0 +1,337 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "complete source310 macOS Rust validation passed",
+    "source_commit": "5e6f6fc89654b5e695161f5e1713d06ff8ca1f3c",
+    "macos_rust": {
+      "status": "passed",
+      "source_commit": "5e6f6fc89654b5e695161f5e1713d06ff8ca1f3c",
+      "published_source_equivalent_commit": "5e6f6fc89654b5e695161f5e1713d06ff8ca1f3c",
+      "validation_commit": "5e6f6fc89654b5e695161f5e1713d06ff8ca1f3c",
+      "source_manifest": "source310-manifest.json",
+      "complete_patch_sha256": "0667e3520a20b4d5bafcab480508a8bbfe9d92b87a4c89f1899801a24f9bc56b",
+      "validation_checkout": {
+        "dirty": false,
+        "head": "5e6f6fc89654b5e695161f5e1713d06ff8ca1f3c"
+      },
+      "verified_source_equivalent_inputs": 546,
+      "library_passed": 3051,
+      "library_ignored": 2,
+      "cargo_passed": {
+        "bins": 60,
+        "integration": 39
+      },
+      "total_passed": 3150,
+      "native_artifact_identity": "passed",
+      "native_identity_raw_lines": [
+        "test unchanged_gnu_sources_produce_identical_native_artifacts ... ok"
+      ],
+      "retained_files_verified": 4,
+      "test_binary_sha256": "0a89a2bd16da967badf965ede97c34b03e53767883eb850a302a6782d4050e03",
+      "summary_sha256": "1804b9e488de2bd33b01710c3dbdeb201585b35e3b891fc7e217a2e101f72362",
+      "qualification": "Complete group and Cargo result summaries cross-checked with raw logs and unchanged inventory counts. Post-run retained images do not establish which individual test used each file. Frozen and terminal runs are separate."
+    },
+    "excluded_binaries": [
+      {
+        "path": "full-gate-source310/retained-inputs/libtest",
+        "bytes": 29852528,
+        "sha256": "0a89a2bd16da967badf965ede97c34b03e53767883eb850a302a6782d4050e03"
+      },
+      {
+        "path": "full-gate-source310/retained-inputs/fixture-images/loadup-cb363ca6-d44829be.pdmp",
+        "bytes": 21781896,
+        "sha256": "48c60e3e334357e91526c7355efe431fe9246f2feafbde14b81244099c902779"
+      },
+      {
+        "path": "full-gate-source310/retained-inputs/fixture-images/loadup-83d714c6-d44829be.pdmp",
+        "bytes": 21781880,
+        "sha256": "78ecbfe7f1bd00577ca3622f54218dab9e210e6c082843cf702efa0fa9ca1a9b"
+      },
+      {
+        "path": "full-gate-source310/retained-inputs/fixture-images/loadup-0a89a2bd-d44829be.pdmp",
+        "bytes": 21778456,
+        "sha256": "31bd6045a930f74a059111b7eef2ce8dd49987a391e4b9e9707ddbd55eca4bad"
+      },
+      {
+        "path": "source310-full-retained-gnu/emacs.pdmp",
+        "bytes": 22954264,
+        "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67"
+      },
+      {
+        "path": "source310-full-retained-gnu/emacs",
+        "bytes": 9600848,
+        "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5"
+      }
+    ],
+    "goal_complete": false,
+    "qualification": "Every scheduled Rust library name and Cargo result is audited. Native artifact identity passes. macOS frozen and terminal remain separate active runs. Linux Rust still has its preserved GNU reference failure. This checkpoint does not certify source311 or the full architecture/performance goal."
+  },
+  "archive": {
+    "path": "source310-macos-rust-results.tar.gz",
+    "bytes": 562797,
+    "sha256": "de95cc832f011afe33bb1fb61f1cb417c9c35add03747cf8d34a3c6e15926eb8"
+  },
+  "files": [
+    {
+      "path": "audit-source310-macos-rust-names.py",
+      "bytes": 1743,
+      "sha256": "f53110be18b4e820e8e87adc8cb1627206dad4943852274fe04c158fce8c6d93"
+    },
+    {
+      "path": "full-gate-source310/bins.log",
+      "bytes": 5575,
+      "sha256": "3affd4a17bc8a53fd61225bcbf12b0046268723d5c953c75df96b1fea273f1d5"
+    },
+    {
+      "path": "full-gate-source310/build.log",
+      "bytes": 218637,
+      "sha256": "85408a6fd5e4a3f8e68b6f1c3a1ccac878959d2389d04a07703b2bbb0ff851a3"
+    },
+    {
+      "path": "full-gate-source310/ignored-inventory.txt",
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    {
+      "path": "full-gate-source310/integration.log",
+      "bytes": 4966,
+      "sha256": "5554e81f60159972b78f3679801af47fde04ffb13c8191f5a85ac98014002320"
+    },
+    {
+      "path": "full-gate-source310/inventory.txt",
+      "bytes": 270006,
+      "sha256": "8a38dc4263651857872ffde36495d2bcb7418fc0c26176559c2ea62cb4366e6b"
+    },
+    {
+      "path": "full-gate-source310/metadata.log",
+      "bytes": 15131,
+      "sha256": "114432b045d55368deedada74f03a49a772c286fd573f11fe423f6bfb0a8c03e"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-batch.json",
+      "bytes": 554,
+      "sha256": "3b3b02f04bba446c5e6418fc8229f2471570bd90d5a1552ee6959edf01acccbd"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-batch.log",
+      "bytes": 4237,
+      "sha256": "911f9d07d1403ddf4a61ecf9a8327b393684345d1c08ed0b50188ba4788f7e60"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-compat_runtime.json",
+      "bytes": 598,
+      "sha256": "f3d78e0e13a4d9d91b5526b064f1ebae3f720b50f68294a66bd4045329def0b5"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-compat_runtime.log",
+      "bytes": 10202,
+      "sha256": "76e96329e2a874f55e8f1f6e7157f8f20095daa92067f76cf2794c4291a8b328"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-eval_01.json",
+      "bytes": 573,
+      "sha256": "9e27ca59f03d4432c34664adfae2d96dfdcca2527fe433490f14dbcbe78e7ab5"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-eval_01.log",
+      "bytes": 36578,
+      "sha256": "ed52168e0c8bc9a9e1b8849a002f3fe18ad7e673b56270f6179569ddbfbc6ba7"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-eval_02.json",
+      "bytes": 573,
+      "sha256": "19dc565e86fe746cba917f767edbe2d28dc81423bf9b67b67fab53634f79e2e4"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-eval_02.log",
+      "bytes": 71662,
+      "sha256": "caa39af23dc8dfe618340c9e007fbc5c5c75ff343167c9fa8503f3f8469cc88a"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-eval_03.json",
+      "bytes": 573,
+      "sha256": "6cf7a80d8beab7c930d8b2f3d121320a11599f86c7c66988a3ea852769c63bc5"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-eval_03.log",
+      "bytes": 30516,
+      "sha256": "4c356e28e85cbd0b100b162cb7a6d79cbd8cbe253cf7eabc107f53192e36d5d0"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-eval_04.json",
+      "bytes": 573,
+      "sha256": "5b2c3a0dc5831094a032b18a1cf2cf2149e14af8e2a6acc4c5d950fc399b2e91"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-eval_04.log",
+      "bytes": 24662,
+      "sha256": "82817dd0166cdebbd44d107ef3f418e4c54419c01b7a2a663f0cd351a6f0789f"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-eval_05.json",
+      "bytes": 573,
+      "sha256": "c6387f1d8caef6de2e15d4882dec0bceb9e82b79ff04509daa3bf5fd13edcb36"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-eval_05.log",
+      "bytes": 79783,
+      "sha256": "8b05ce80b16044c5e9e90a1bc735128135881c6022d1e5318cb8ee0745795acb"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-lightweight.json",
+      "bytes": 968,
+      "sha256": "37c10cf93d650cadecf9e9eebc786347dab78ba544344e6a9221e2f714e46ac7"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-lightweight.log",
+      "bytes": 53247,
+      "sha256": "0bc90d9bc4af417853cbba03daa90b777fad96fbdcf6cf481e41fcb29ea60e13"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-primitives.json",
+      "bytes": 576,
+      "sha256": "c7fdedcc3245f0be88737832dcf0989193d30a4bd590028b2b61f6becf9f9b38"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-primitives.log",
+      "bytes": 66465,
+      "sha256": "12f168a2f0f80539d85afced5fc688c2d20fffa650e5c00d5de71454cbe80309"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-tty.json",
+      "bytes": 539,
+      "sha256": "b5d0277cca4df32b3a357939ede1886d71c18946955e495e213af07a8996d771"
+    },
+    {
+      "path": "full-gate-source310/repeat-01-tty.log",
+      "bytes": 5168,
+      "sha256": "2a12cc1a30ad60a6c71da729a61a63b08a3b014800c742cbb7687abc1ad7f20f"
+    },
+    {
+      "path": "full-gate-source310/retained-inputs/manifest.json",
+      "bytes": 1686,
+      "sha256": "391e2ed06c7d0440ab5f31638ea45a83e26177d0ede4131fb5315dc70796aff6"
+    },
+    {
+      "path": "full-gate-source310/summary.json",
+      "bytes": 15735,
+      "sha256": "1804b9e488de2bd33b01710c3dbdeb201585b35e3b891fc7e217a2e101f72362"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source310-macos-rust.py",
+      "bytes": 2756,
+      "sha256": "3f6c2c0e879cdeee617b64f99bf460a807ffd7ef5ea11af45059ea98380fc555"
+    },
+    {
+      "path": "source310-applied-commit.json",
+      "bytes": 356,
+      "sha256": "093c31032e05c272d610d8da46f1e3a0f5e78cbf7623edd195576fb0e0bd9458"
+    },
+    {
+      "path": "source310-full-checkout.json",
+      "bytes": 621,
+      "sha256": "a86851791230bac63766e8ddfbcd9ea485f215811055560029bcbce0060e2fc0"
+    },
+    {
+      "path": "source310-full-launch.json",
+      "bytes": 595,
+      "sha256": "fb833dbf4f41e8e348fd239e5c7c872b3967c1b79631389525bc673aeb87ed70"
+    },
+    {
+      "path": "source310-full-oracle-capture-command.json",
+      "bytes": 1246,
+      "sha256": "b2d5c9c6938442b0c9e650859abb6cfbaf3d2065061caa4808d6efc59fa3f9c8"
+    },
+    {
+      "path": "source310-full-oracle-capture-result.json",
+      "bytes": 211,
+      "sha256": "ac4483d6c16b82a06d1d4fcdc65c8baa38bfaa915018c3a04cb1f12fee621360"
+    },
+    {
+      "path": "source310-full-oracle-capture.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source310-full-retained-gnu/Makefile",
+      "bytes": 38033,
+      "sha256": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778"
+    },
+    {
+      "path": "source310-full-retained-gnu/config.h",
+      "bytes": 116675,
+      "sha256": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75"
+    },
+    {
+      "path": "source310-full-retained-gnu/manifest.json",
+      "bytes": 1393,
+      "sha256": "df9e4cb69e70d5cb6f7ff6890d31d0bdce29299c1687d956eb547784b4fbbe54"
+    },
+    {
+      "path": "source310-full-rust-binary.json",
+      "bytes": 373,
+      "sha256": "6c0d8ad6ddc32964f176fc7b5de9560b530a56561ecf01f8ad21bd96e71c02f2"
+    },
+    {
+      "path": "source310-full-rust-command.json",
+      "bytes": 1146,
+      "sha256": "9eb96ec7b9fdb3f5014e8d2f3500c97f2b13f8243212e1eb4a5ae8005b15c480"
+    },
+    {
+      "path": "source310-full-rust-result.json",
+      "bytes": 201,
+      "sha256": "cfd10d9005bdb0a3cbd1ae747d7094a717cb2ceb6e4fec3424e0136c97030176"
+    },
+    {
+      "path": "source310-full-rust-retention-result.json",
+      "bytes": 211,
+      "sha256": "74c36de044335bedf640b0e46e21bdbb68d20ddf47af2ff6c005fc215fbf1d19"
+    },
+    {
+      "path": "source310-macos-rust-audit.json",
+      "bytes": 1278,
+      "sha256": "19e75b23281cb095972cc34fe2f2487759e6675b4c8280c874abf8e135a327e7"
+    },
+    {
+      "path": "source310-macos-rust-name-audit.json",
+      "bytes": 414,
+      "sha256": "3a6eff25be62b26780881eb83bbd622bdd963ea256efc7ab9bf4d13c972488be"
+    },
+    {
+      "path": "source310-macos-rust-oracle-audit.json",
+      "bytes": 1769,
+      "sha256": "6bc64ca238f534fb8f83b6777d129cac2002dc2a4e3041be9b960bada844f02a"
+    },
+    {
+      "path": "source310-manifest.json",
+      "bytes": 63015,
+      "sha256": "660f7654e2a09a6adc8e1587ce30b014aa60617e8c39c17ddd1310e7f2ad93b9"
+    },
+    {
+      "path": "source310-portable-complete.patch",
+      "bytes": 1616364,
+      "sha256": "0667e3520a20b4d5bafcab480508a8bbfe9d92b87a4c89f1899801a24f9bc56b"
+    },
+    {
+      "path": "source310-push-result.json",
+      "bytes": 437,
+      "sha256": "2339dedcb8ad3121c3f2a25414bf5c62a59a43862f82b047b8593f7beefcdc54"
+    },
+    {
+      "path": "source310-validation-input-recovery.json",
+      "bytes": 124984,
+      "sha256": "e9c2d009ebae1775ade22431152fde8c269b363234e46dd214ab8eb9ebbd7d05"
+    },
+    {
+      "path": "verify-source310-macos-rust.py",
+      "bytes": 4401,
+      "sha256": "b5f4f2a6dfe3bdf1683e8b4020a7770fc721a22f3f024862b7dedfad04934ca3"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}
