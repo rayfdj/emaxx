@@ -33,7 +33,15 @@ passes all226 scenarios /686 screen and filesystem comparisons. Linux Rust stays
 failed after2,291 passes at the GNU first-record census (-7 instead of2), leaving
 758 library names and both Cargo stages unstarted. macOS frozen stays failed with
 7,915 exact matches and six existing build-feature skip-diagnostic differences.
-These results certify304 only. Exact308 full platform checks are next.
+These results certify304 only. The [closed exact308 platform evidence](handover/2026-09-30-shared-reader-draft/source308-platform-validation-progress-manifest.json)
+now verifies **3,157 Linux Rust passes** and **3,145 macOS Rust passes**, with the
+two existing ignores on each platform. Every library name and Cargo result is
+checked against raw output; both native artifact identity tests pass. Linux's
+complete frozen comparison matches **519 files /7,928 outcomes** from **1,038
+successful processes**: each editor reports 7,670 passes, 47 expected failures and 211
+skips. No expected failure or skip is counted as a pass. macOS frozen and terminal
+checks are still running separately. Earlier GNU census failures and source276's
+Emaxx negative remain preserved and unresolved; this later pass does not erase them.
 
 Main remains `21d20f0e`, PR79 stays draft. Symbol/unit authority, real intervals and
 pure storage, physical accounting, final ownership/borrow review, final adversarial
@@ -916,8 +924,8 @@ the goal.
 | 5. VM/function-call work | Source286 removes repeated decoding on hot opcodes; source289 removes repeated closure reads, a transient activation copy, Bcall decoding and fixed native argument staging. Source290 removes duplicate optimistic dispatch, redundant operand stack changes and immediate Integer calls. Source296 removes fixed-call copying unless padding is needed; source297 avoids unrelated primitive checks before funcall and repairs null/empty slice construction. Measured bytecode-call gains are recorded. VM still reserves 256K value slots plus separate frames versus GNU's 512K words including headers. Stack layout/capacity, remaining frame/call work and actual accounting remain open; closed297 profiles led to the native arithmetic change. Sources300/301 are rejected after both complete cohorts retain slower native transitions despite targeted bytecode-to-native gains. Source302 is applied: in-range two-fixnum +/− avoids argument staging, repeated dispatch, coercion and normalization after the same handler synchronization; other types and bignum results retain general fallback. |
 | 6. Adversarial audit | Existing evaluator/root/reporting controls and failed runs remain. New call-width and native ABI/GC controls use actual same-input GNU output; no expectations or original assertions are weakened. Final actual-source review of runtime, startup/images, loading, selection/comparison/reporting and deliberate evidence corruption remains required. |
 | 7. Equivalent performance | All16 workloads and the3% ceiling remain locked. The304/308 diagnostic verifies384 actual answers/modes; raw body geometric ratio is0.951094, paired GNU aggregate for308 is2.710317×. Every original/corrected baseline, unfavorable sample and rejected candidate remains. Real counters, calibration, prescribed repetitions/distributions and every-case acceptance remain open. |
-| 8. Complete validation | Source308 strict checks are warning-free;1031 selected tests/profile and52 actual GNU comparisons pass, including198 generated printer rows and all338 original column rows.304 Linux frozen and macOS Rust/TTY pass their complete inventories; Linux Rust retains a GNU census failure and758 unstarted library names, and macOS frozen retains six existing strict skip-diagnostic differences. Exact308 full platform validation follows. Final-source platform/release/frozen/terminal validation remains required. |
-| 9. Independently checkable delivery | Portable308 patches, raw commands/results and all384 timing answers/modes are retained.305/306/307 and308 development failures are separately preserved.308 is applied; exact-source platform validation follows. Main remains21d20f0e and PR79 is draft. Final source/evidence review and the remaining architecture/performance requirements are open. |
+| 8. Complete validation | Source308 strict checks are warning-free;1031 selected tests/profile and52 actual GNU comparisons pass, including198 generated printer rows and all338 original column rows.Exact308 full Rust passes 3,157 tests on Linux and 3,145 on macOS, with two existing ignores each and native artifact identity preserved. Exact308 Linux frozen matches all 519 files /7,928 outcomes; macOS frozen/TTY remain running.304 macOS TTY passes226 scenarios, while its six macOS frozen diagnostic differences and Linux GNU census failure remain preserved. Final-source platform/release/frozen/terminal validation remains required. |
+| 9. Independently checkable delivery | Portable308 patches, raw commands/results and all384 timing answers/modes are retained.305/306/307 and308 development failures are separately preserved.308 is applied; Linux Rust/frozen and macOS Rust are closed and audited, with macOS frozen/TTY still running. Main remains21d20f0e and PR79 is draft. Final source/evidence review and the remaining architecture/performance requirements are open. |
 
 Optional inlining291 and buffer lookups294/295 remain unapplied after their
 complete comparisons. Source293's reused-build validation is rejected. LF-only292

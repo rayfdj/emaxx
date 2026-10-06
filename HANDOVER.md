@@ -49,7 +49,15 @@ passes all226 scenarios /686 screen and filesystem comparisons. Linux Rust stays
 failed after2,291 passes at the GNU first-record census (-7 instead of2), leaving
 758 library names and both Cargo stages unstarted. macOS frozen stays failed with
 7,915 exact matches and six existing build-feature skip-diagnostic differences.
-These results certify304 only. Exact308 full platform checks are next.
+These results certify304 only. The [closed exact308 platform evidence](docs/handover/2026-09-30-shared-reader-draft/source308-platform-validation-progress-manifest.json)
+now verifies **3,157 Linux Rust passes** and **3,145 macOS Rust passes**, with the
+two existing ignores on each platform. Every library name and Cargo result is
+checked against raw output; both native artifact identity tests pass. Linux's
+complete frozen comparison matches **519 files /7,928 outcomes** from **1,038
+successful processes**: each editor reports 7,670 passes, 47 expected failures and 211
+skips. No expected failure or skip is counted as a pass. macOS frozen and terminal
+checks are still running separately. Earlier GNU census failures and source276's
+Emaxx negative remain preserved and unresolved; this later pass does not erase them.
 
 Main remains `21d20f0e`, PR79 stays draft. Symbol/unit authority, real intervals and
 pure storage, physical accounting, final ownership/borrow review, final adversarial
