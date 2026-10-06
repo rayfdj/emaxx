@@ -29,13 +29,31 @@ No runtime byte, assertion, selector or expected output changed for that recover
 
 This is a [correctness publication](handover/2026-09-30-shared-reader-draft/source310-application-decision.json),
 with [exact applied-byte verification](handover/2026-09-30-shared-reader-draft/source310-applied-source-verification.json).
-**310 performance is not yet measured.** Its unchanged full16 comparison is
-queued after the running308 terminal suite; all samples, including regressions,
-will remain. The required owner-shutdown allocator walk has no isolated cost
-measurement yet. Full310 Linux and macOS validation follows publication; earlier
-308 results do not certify310. Inspect `source310-full-validation-launch.json`,
-`source310-full-launch.json` and `native-unit310-sequence-state.json` under
-`target/runtime-goal/resume-2026-09-28` before starting any write-once job.
+The [closed source310 diagnostic](handover/2026-09-30-shared-reader-draft/source310-native-unit-performance-manifest.json)
+verifies all **192 actual answers and execution modes** in three alternating
+unchanged full 16 pilots. The raw body geometric ratio to source308 is **0.909231**;
+Source310's paired GNU aggregate is **2.634352×**. Native execution is **4.287% slower**,
+cons allocation **3.007% slower**, and list traversal **0.445% slower** in these
+raw medians; every sample remains. These small diagnostics establish neither
+statistical significance nor calibrated GNU parity. Separate profiles retain
+20 completed repetitions each for native execution, bytecode-to-native and
+upstream sorting. Total process cost remains recorded; the owner-shutdown allocator walk has
+no isolated cost measurement. The original correctness-publication decision remains unchanged,
+accurately recording that timing was still pending when source310 was published.
+
+The [exact source310 Linux Rust failure](handover/2026-09-30-shared-reader-draft/source310-linux-rust-failure-manifest.json)
+(run 37428917287) retains **2,295 passes/one failure**: GNU's first
+empty-vector census reports **-9 instead of 0**, before Emaxx executes that
+control. All later rows in that reference output match. The remaining 765 library
+names and both Cargo stages never run. The actual native-unit metadata test
+passes; the layout/tracing/owner unit tests are among the unstarted names.
+The pinned GNU inputs were retained and verified unchanged. This recurring
+reference failure remains unexplained; no assertion, fixture or expected output
+was changed. Linux frozen and complete macOS source310 validation are running separately.
+Inspect `source310-linux-collection-state.json` and `source310-full-queue-state.json`
+before starting further validation jobs. Predecessor source308's
+[terminal evidence](handover/2026-09-30-shared-reader-draft/source308-macos-terminal-results-manifest.json)
+now passes all 226 scenarios / 686 comparisons; it does not certify source310.
 
 Main remains `21d20f0e`, PR79 stays draft. Allocated-symbol authority, real intervals
 and unified pure storage, remaining adapters, physical accounting/counters,
@@ -984,8 +1002,9 @@ source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 
 This map reflects applied source310 (546 runtime/build/fixture inputs and94
 auxiliary inputs). Its warning-free selected validation and all56 ordinary GNU
-comparisons are closed. The full16 diagnostic and complete310 platform validation
-remain pending. Source308 platform results certify308 only; its six macOS frozen
+comparisons are closed. The full16 diagnostic verifies192 actual answers/modes;
+complete310 Linux Rust fails at the GNU census reference assertion after2295 passes,
+with765 library names and both Cargo stages unstarted. Linux frozen and macOS are running. Source308 platform results certify308 only; its six macOS frozen
 diagnostic failures and every earlier failure remain explicit. A checkpoint does
 not complete the goal.
 
@@ -998,8 +1017,8 @@ not complete the goal.
 | 5. VM/function-call work | Source286 removes repeated decoding on hot opcodes; source289 removes repeated closure reads, a transient activation copy, Bcall decoding and fixed native argument staging. Source290 removes duplicate optimistic dispatch, redundant operand stack changes and immediate Integer calls. Source296 removes fixed-call copying unless padding is needed; source297 avoids unrelated primitive checks before funcall and repairs null/empty slice construction. Measured bytecode-call gains are recorded. VM still reserves 256K value slots plus separate frames versus GNU's 512K words including headers. Stack layout/capacity, remaining frame/call work and actual accounting remain open; closed297 profiles led to the native arithmetic change. Sources300/301 are rejected after both complete cohorts retain slower native transitions despite targeted bytecode-to-native gains. Source302 is applied: in-range two-fixnum +/− avoids argument staging, repeated dispatch, coercion and normalization after the same handler synchronization; other types and bignum results retain general fallback. |
 | 6. Adversarial audit | Existing evaluator/root/reporting controls and failed runs remain. New call-width and native ABI/GC controls use actual same-input GNU output; no expectations or original assertions are weakened. Final actual-source review of runtime, startup/images, loading, selection/comparison/reporting and deliberate evidence corruption remains required. |
 | 7. Equivalent performance | All16 workloads and the3% ceiling remain locked. The304/308 diagnostic verifies384 actual answers/modes; raw body geometric ratio is0.951094, paired GNU aggregate for308 is2.710317×. Every original/corrected baseline, unfavorable sample and rejected candidate remains. Real counters, calibration, prescribed repetitions/distributions and every-case acceptance remain open. |
-| 8. Complete validation | Source308 strict checks are warning-free;1031 selected tests/profile and52 actual GNU comparisons pass, including198 generated printer rows and all338 original column rows.Exact308 full Rust passes 3,157 tests on Linux and 3,145 on macOS, with two existing ignores each and native artifact identity preserved. Exact308 Linux frozen matches all 519 files /7,928 outcomes; macOS frozen retains7915 exact matches/six known diagnostic differences; TTY remains running.304 macOS TTY passes226 scenarios, while its six macOS frozen diagnostic differences and Linux GNU census failure remain preserved. Source310 has warning-free strict checks,1036 passes per profile and56 actual GNU comparisons; full-source310 platform/frozen/terminal validation remains required. |
-| 9. Independently checkable delivery | Portable308 patches, raw commands/results and all384 timing answers/modes are retained.305/306/307 and308 development failures are separately preserved.308 is applied; Linux Rust/frozen and macOS Rust are closed and audited, with macOS frozen closed at six known diagnostic differences and TTY still running. Source310 is now applied with closed selected validation; its timing and complete platform results remain pending. Main remains21d20f0e and PR79 is draft. Final source/evidence review and the remaining architecture/performance requirements are open. |
+| 8. Complete validation | Source308 strict checks are warning-free;1031 selected tests/profile and52 actual GNU comparisons pass, including198 generated printer rows and all338 original column rows.Exact308 full Rust passes 3,157 tests on Linux and 3,145 on macOS, with two existing ignores each and native artifact identity preserved. Exact308 Linux frozen matches all 519 files /7,928 outcomes; macOS frozen retains7915 exact matches/six known diagnostic differences; TTY passes226 scenarios/686 comparisons.304 macOS TTY passes226 scenarios, while its six macOS frozen diagnostic differences and Linux GNU census failure remain preserved. Source310 has warning-free strict checks,1036 passes per profile and56 actual GNU comparisons; full-source310 platform/frozen/terminal validation remains required. |
+| 9. Independently checkable delivery | Portable308 patches, raw commands/results and all384 timing answers/modes are retained.305/306/307 and308 development failures are separately preserved.308 is applied; Linux Rust/frozen and macOS Rust are closed and audited, with macOS frozen closed at six known diagnostic differences and TTY passes226 scenarios/686 comparisons. Source310 is applied with closed selected validation and192 diagnostic process answers/modes. Its complete Linux Rust run fails after2295 passes at the GNU census reference assertion; Linux frozen and macOS are running. Main remains21d20f0e and PR79 is draft. Final source/evidence review and the remaining architecture/performance requirements are open. |
 
 Optional inlining291 and buffer lookups294/295 remain unapplied after their
 complete comparisons. Source293's reused-build validation is rejected. LF-only292

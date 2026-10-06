@@ -45,13 +45,31 @@ No runtime byte, assertion, selector or expected output changed for that recover
 
 This is a [correctness publication](docs/handover/2026-09-30-shared-reader-draft/source310-application-decision.json),
 with [exact applied-byte verification](docs/handover/2026-09-30-shared-reader-draft/source310-applied-source-verification.json).
-**310 performance is not yet measured.** Its unchanged full16 comparison is
-queued after the running308 terminal suite; all samples, including regressions,
-will remain. The required owner-shutdown allocator walk has no isolated cost
-measurement yet. Full310 Linux and macOS validation follows publication; earlier
-308 results do not certify310. Inspect `source310-full-validation-launch.json`,
-`source310-full-launch.json` and `native-unit310-sequence-state.json` under
-`target/runtime-goal/resume-2026-09-28` before starting any write-once job.
+The [closed source310 diagnostic](docs/handover/2026-09-30-shared-reader-draft/source310-native-unit-performance-manifest.json)
+verifies all **192 actual answers and execution modes** in three alternating
+unchanged full 16 pilots. The raw body geometric ratio to source308 is **0.909231**;
+Source310's paired GNU aggregate is **2.634352×**. Native execution is **4.287% slower**,
+cons allocation **3.007% slower**, and list traversal **0.445% slower** in these
+raw medians; every sample remains. These small diagnostics establish neither
+statistical significance nor calibrated GNU parity. Separate profiles retain
+20 completed repetitions each for native execution, bytecode-to-native and
+upstream sorting. Total process cost remains recorded; the owner-shutdown allocator walk has
+no isolated cost measurement. The original correctness-publication decision remains unchanged,
+accurately recording that timing was still pending when source310 was published.
+
+The [exact source310 Linux Rust failure](docs/handover/2026-09-30-shared-reader-draft/source310-linux-rust-failure-manifest.json)
+(run 37428917287) retains **2,295 passes/one failure**: GNU's first
+empty-vector census reports **-9 instead of 0**, before Emaxx executes that
+control. All later rows in that reference output match. The remaining 765 library
+names and both Cargo stages never run. The actual native-unit metadata test
+passes; the layout/tracing/owner unit tests are among the unstarted names.
+The pinned GNU inputs were retained and verified unchanged. This recurring
+reference failure remains unexplained; no assertion, fixture or expected output
+was changed. Linux frozen and complete macOS source310 validation are running separately.
+Inspect `source310-linux-collection-state.json` and `source310-full-queue-state.json`
+before starting further validation jobs. Predecessor source308's
+[terminal evidence](docs/handover/2026-09-30-shared-reader-draft/source308-macos-terminal-results-manifest.json)
+now passes all 226 scenarios / 686 comparisons; it does not certify source310.
 
 Main remains `21d20f0e`, PR79 stays draft. Allocated-symbol authority, real intervals
 and unified pure storage, remaining adapters, physical accounting/counters,

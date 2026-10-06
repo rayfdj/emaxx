@@ -1,0 +1,160 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "passed",
+    "terminal": {
+      "status": "passed",
+      "goal_complete": false,
+      "inputs_verified": 541,
+      "execution_inputs_verified": 10,
+      "fully_matching_scenarios": 226,
+      "matching_comparisons": 686,
+      "matching_screen_comparisons": 658,
+      "matching_filesystem_comparisons": 28,
+      "divergent_labels": [],
+      "partial_scenarios": [],
+      "unstarted_scenarios": [],
+      "unexecuted_comparisons": 0,
+      "log_sha256": "52942150f73feec1b80c0bfb786e4085dcf94335d4c4f1526e77c8631eb14e1c",
+      "gate_artifacts": {
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-06/native-subr-full/emaxx/target/compat-subject/gate/emaxx": {
+          "sha256": "6069a1e0c351681c1790f5051d78edf455d7f11dc284f4c0022662ba6b8ef046",
+          "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source308-full-frozen-subject/emaxx",
+          "bytes": 17723344
+        },
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-06/native-subr-full/emaxx/target/compat-subject/gate/emaxx.pdmp": {
+          "sha256": "537aec2fd2aaf25e1d552750d9ae35ca1a8f3b14c96a7b9922c9f7d7d49851ef",
+          "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source308-full-frozen-subject/emaxx.pdmp",
+          "bytes": 22350824
+        }
+      },
+      "qualification": "Complete source308 terminal run after local Rust exited, using the exact gate executable/image from its full rebuilt-GNU frozen comparison. Harness, actions, fixtures, timeouts and comparison rules match source248. Every raw comparison is checked against all original 226 scenarios/686 labels; ten execution inputs are unchanged. The isolated309 and later drafts require their own validation; this run certifies only the source308 terminal inventory. The six known macOS frozen skip-diagnostic failures and all earlier failed runs remain preserved. No performance or full-goal completion claim."
+    },
+    "final_oracle_verification": {
+      "status": "unchanged",
+      "capture_manifest_sha256": "df9e4cb69e70d5cb6f7ff6890d31d0bdce29299c1687d956eb547784b4fbbe54",
+      "qualification": "Checks original and retained bytes after validation; does not change gate outcomes.",
+      "files_verified": 4
+    },
+    "qualification": "Complete source308 terminal run after local Rust exited, using the exact gate executable/image from its full rebuilt-GNU frozen comparison. Harness, actions, fixtures, timeouts and comparison rules match source248. Every raw comparison is checked against all original 226 scenarios/686 labels; ten execution inputs are unchanged. The isolated309 and later drafts require their own validation; this run certifies only the source308 terminal inventory. The six known macOS frozen skip-diagnostic failures and all earlier failed runs remain preserved. No performance or full-goal completion claim.",
+    "goal_complete": false
+  },
+  "archive": {
+    "path": "source308-macos-terminal-results.tar.gz",
+    "bytes": 75690,
+    "sha256": "b14b5cc26028da8f0af9721e9f93d904c10000129b04bcf71a39142e92ea1ec3"
+  },
+  "files": [
+    {
+      "path": "audit-source308-macos-terminal.py",
+      "bytes": 5994,
+      "sha256": "0189b3422c6e4e15879d9db40f88853a4306bc74f91b2df8798b0e1fa5f75053"
+    },
+    {
+      "path": "package-native-unit310-results.py",
+      "bytes": 5836,
+      "sha256": "70be21d43d3752efaa7c14d499ced53327aacf099c1432413578e4894f0ae634"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "queue-source308-full-macos.py",
+      "bytes": 10292,
+      "sha256": "abf188f69a694318d2ea1006b62a1563bb2e483c50f213e9e9a7150c8f3d2f54"
+    },
+    {
+      "path": "source248-full-ttydiff-retry-command.json",
+      "bytes": 9201,
+      "sha256": "247ff4780a46dec41b0bf2e5d6e4762efc2ea734282c4cde0a8522bd50c82ccd"
+    },
+    {
+      "path": "source248-manifest.json",
+      "bytes": 54099,
+      "sha256": "686003776613cdc0825d9575e630e7b39fdbe0674dcdeea893f9f3620caef92f"
+    },
+    {
+      "path": "source308-full-checkout.json",
+      "bytes": 621,
+      "sha256": "70ba68cbec20c925e783dfc13d0a94c8358b8e3a8f7eaa65eacce3a3ce4836a7"
+    },
+    {
+      "path": "source308-full-launch.json",
+      "bytes": 594,
+      "sha256": "e16387196760fafcdeab0c9f38ee200bc941f884a6b26159601f7e8ae93bd9ae"
+    },
+    {
+      "path": "source308-full-oracle-verify-command.json",
+      "bytes": 1138,
+      "sha256": "3eab12cc7241ceb6cf394f2a5f7b73fe8539bda57ed5aa04b4430add72466cba"
+    },
+    {
+      "path": "source308-full-oracle-verify-result.json",
+      "bytes": 211,
+      "sha256": "6ba62de9b9bd324682d963c25c0f3e20d826197d7075ef6ea052083efeccea3c"
+    },
+    {
+      "path": "source308-full-oracle-verify.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source308-full-queue-result.json",
+      "bytes": 4457,
+      "sha256": "5533669cd6fb7d7337012e89f67e9226bd7ec0a292b728680737a534e7284aba"
+    },
+    {
+      "path": "source308-full-queue-state.json",
+      "bytes": 4458,
+      "sha256": "11e6104b1c06474513a2398b67a74bf4b9026084cd38daca726a8a286de5c442"
+    },
+    {
+      "path": "source308-full-retained-gnu/manifest.json",
+      "bytes": 1393,
+      "sha256": "df9e4cb69e70d5cb6f7ff6890d31d0bdce29299c1687d956eb547784b4fbbe54"
+    },
+    {
+      "path": "source308-full-retained-gnu/verification.json",
+      "bytes": 254,
+      "sha256": "dac552d599e19c622c38a92c6cf904bc98017bb1765a2f06257d1c4337994f8b"
+    },
+    {
+      "path": "source308-full-tty-command.json",
+      "bytes": 9098,
+      "sha256": "4a9d3063b17c639eef846e35b603af7a7f4257990284b8c710f94fa65f7d0692"
+    },
+    {
+      "path": "source308-full-tty-inventory.json",
+      "bytes": 225,
+      "sha256": "64efb0862d41ba80005b5da5f67f4debaa7b1779de26fec19bcb2910532b9669"
+    },
+    {
+      "path": "source308-full-tty-result.json",
+      "bytes": 199,
+      "sha256": "f0fccdc1dbae1f6d6e739133e83c63513a528047e053d5c48e7bec6e691a7c8e"
+    },
+    {
+      "path": "source308-full-tty.log",
+      "bytes": 62615,
+      "sha256": "52942150f73feec1b80c0bfb786e4085dcf94335d4c4f1526e77c8631eb14e1c"
+    },
+    {
+      "path": "source308-macos-frozen-audit.json",
+      "bytes": 7825,
+      "sha256": "7ece9ef9776f6aaec62567f5f5135556c9526a8d912bea6dff727c8706b15931"
+    },
+    {
+      "path": "source308-macos-terminal-audit.json",
+      "bytes": 1866,
+      "sha256": "59425460b0bfcdb3605de67909505ba38847092a39f90055b44155c4884fdfb8"
+    },
+    {
+      "path": "source308-manifest.json",
+      "bytes": 62431,
+      "sha256": "6eeb25fbc6ab8856c4fa9a856e1598346668307c04e7ef7c2ba0735620354504"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}
