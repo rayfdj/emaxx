@@ -805,7 +805,6 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
                 crate::lisp::eval::RecordKind::Thread => "thread",
                 crate::lisp::eval::RecordKind::Mutex => "mutex",
                 crate::lisp::eval::RecordKind::ConditionVariable => "condition-variable",
-                crate::lisp::eval::RecordKind::NativeCompUnit => "native-comp-unit",
                 crate::lisp::eval::RecordKind::ModuleFunction => "module-function",
                 crate::lisp::eval::RecordKind::UserPointer => "user-ptr",
                 crate::lisp::eval::RecordKind::TreeSitterParser => "treesit-parser",
@@ -816,6 +815,7 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
             return Ok(Value::symbol(type_name));
         }
         Kind::NativeFunction(_) => "native-comp-function",
+        Kind::NativeCompUnit(_) => "native-comp-unit",
         Kind::Finalizer(_) => "finalizer",
         Kind::ReaderForm(_) => {
             return Err(LispError::Signal(

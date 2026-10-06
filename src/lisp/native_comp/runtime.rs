@@ -830,8 +830,20 @@ pub(crate) struct NativeSharedState {
     heap: NativeHeap,
     thread_pointer: Box<*mut NativeThreadState>,
     link_table: Box<[*mut c_void]>,
-    permanent_root_ranges: Vec<NativeRootRange>,
+    linked_code: bool,
     suspended_stacks: suspension::SuspendedNativeStacks,
+}
+
+impl Drop for NativeSharedState {
+    fn drop(&mut self) {
+        if self.linked_code {
+            // Only the final shared owner runs this, after native frames have
+            // ended. Empty parked/default shells have no attached code.
+            crate::lisp::alloc::vectors::close_native_units_for_runtime(
+                std::ptr::from_mut(&mut *self.thread_pointer).cast(),
+            );
+        }
+    }
 }
 
 impl std::ops::Deref for NativeRuntime {
@@ -877,7 +889,7 @@ impl Default for NativeRuntime {
                 heap: NativeHeap::new(),
                 thread_pointer,
                 link_table: runtime_link_table().into_boxed_slice(),
-                permanent_root_ranges: Vec::new(),
+                linked_code: false,
                 suspended_stacks: suspension::SuspendedNativeStacks::default(),
             })),
             thread,
@@ -894,7 +906,7 @@ impl NativeRuntime {
         self.handlers.is_empty()
             && self.unwind.is_empty()
             && self.calls.is_empty()
-            && self.permanent_root_ranges.is_empty()
+            && !self.linked_code
             && self.ephemeral_root_ranges.is_empty()
             && self.suspended_stacks.is_empty()
             && self.thread.handler().is_null()
@@ -941,20 +953,15 @@ impl NativeRuntime {
         interpreter: &mut Interpreter,
         environment: &Env,
     ) {
-        // comp.c keeps loaded units' relocation objects alive between
-        // generated calls too. Use the same mark/sweep path in both states:
-        // the absence of a native stack removes only that stack's roots,
-        // not relocation roots or the bridge edges needed to reach them.
+        // Persistent native data is reached through each live unit's seven
+        // Lisp fields, as in comp.c. Only active ephemeral load ranges and
+        // active/suspended execution stacks are additional native roots.
         let mut roots = self
             .handlers
             .iter()
             .map(|handler| handler.storage.value())
             .collect::<Vec<_>>();
-        for range in self
-            .permanent_root_ranges
-            .iter()
-            .chain(&self.ephemeral_root_ranges)
-        {
+        for range in &self.ephemeral_root_ranges {
             if range.len != 0 {
                 roots.extend(unsafe { std::slice::from_raw_parts(range.start, range.len) });
             }
@@ -1028,13 +1035,6 @@ impl NativeRuntime {
             .collection_finished(live_bytes, threshold, percentage);
     }
 
-    pub(crate) fn register_permanent_root_range(&mut self, start: *const NativeWord, len: usize) {
-        if len != 0 {
-            self.permanent_root_ranges
-                .push(NativeRootRange { start, len });
-        }
-    }
-
     pub(crate) fn push_ephemeral_root_range(&mut self, start: *const NativeWord, len: usize) {
         if len != 0 {
             self.ephemeral_root_ranges
@@ -1050,7 +1050,15 @@ impl NativeRuntime {
         }
     }
 
+    pub(crate) fn current_thread_relocation_address(&self) -> *const c_void {
+        std::ptr::from_ref(&*self.thread_pointer).cast()
+    }
+
     pub(crate) fn current_thread_relocation(&mut self) -> *mut c_void {
+        // Rust image templates cannot duplicate live machine-code pointers
+        // into this stable runtime cell. This is a host clone constraint,
+        // not an object registry or a GC root.
+        self.linked_code = true;
         (&mut *self.thread_pointer as *mut *mut NativeThreadState).cast()
     }
 
@@ -4084,6 +4092,7 @@ impl NativeHeap {
                     unsafe { crate::lisp::alloc::vectors::header_tag(header) },
                     crate::lisp::alloc::VectorTag::Normal
                         | crate::lisp::alloc::VectorTag::Subr
+                        | crate::lisp::alloc::VectorTag::NativeCompUnit
                         | crate::lisp::alloc::VectorTag::Closure
                         | crate::lisp::alloc::VectorTag::Bignum
                         | crate::lisp::alloc::VectorTag::Record
@@ -4284,7 +4293,7 @@ mod tests {
             symbol_with_position_pointer(&dead).expect("expose unreachable native fields");
             let words = [live, live_symbol, dead, dead_symbol].map(Value::word);
             let roots = Box::new([words[0]]);
-            runtime.register_permanent_root_range(roots.as_ptr(), roots.len());
+            runtime.push_ephemeral_root_range(roots.as_ptr(), roots.len());
             (roots, words.map(|word| word ^ HIDE))
         }
 
@@ -12929,7 +12938,7 @@ mod tests {
             let words = [live, child, dead, dead_child]
                 .map(|value| runtime.heap.encode(&value).expect("canonical native word"));
             let roots = Box::new([words[0]]);
-            runtime.register_permanent_root_range(roots.as_ptr(), roots.len());
+            runtime.push_ephemeral_root_range(roots.as_ptr(), roots.len());
             (roots, words.map(|word| word ^ HIDE))
         }
 

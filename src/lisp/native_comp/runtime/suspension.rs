@@ -336,11 +336,8 @@ pub(crate) fn invoke_suspension_probe(interpreter: &mut Interpreter) -> Result<V
             value: key,
         },
     );
-    let result = super::super::loader::with_native_state(
-        &state.compiler,
-        &mut state.registry,
-        &mut state.runtime,
-        |runtime| {
+    let result =
+        super::super::loader::with_native_state(&state.compiler, &mut state.runtime, |runtime| {
             runtime.invoke(
                 interpreter,
                 &mut Env::new(),
@@ -348,8 +345,7 @@ pub(crate) fn invoke_suspension_probe(interpreter: &mut Interpreter) -> Result<V
                 NativeCallingConvention::Fixed,
                 &[],
             )
-        },
-    );
+        });
     state.runtime.unwind.pop().expect("test unwind root");
     interpreter.native_compiler = state;
     result

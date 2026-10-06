@@ -201,6 +201,12 @@ fn purecopy_inner(
                 Ok::<Value, LispError>(Value::LispRecord(copy))
             })?
         }
+        Kind::NativeCompUnit(_) => {
+            let printed = render_prin1(interp, value, env)?;
+            return Err(LispError::Signal(format!(
+                "Don't know how to purify: {printed}"
+            )));
+        }
         Kind::HashTable(table) => purecopy_hash_table(interp, table, env)?,
         Kind::Record(id) => {
             return interp

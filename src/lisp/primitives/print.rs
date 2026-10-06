@@ -1384,6 +1384,13 @@ pub(crate) fn render_prin1_body(
             }
             Ok(PrintOutput::join(&fields, " ").enclosed("#s(", ")"))
         }
+        Kind::NativeCompUnit(unit) => {
+            let fields = [
+                render_prin1_with_context(interp, &unit.field(0), env, context, depth + 1)?,
+                render_prin1_with_context(interp, &unit.field(1), env, context, depth + 1)?,
+            ];
+            Ok(PrintOutput::join(&fields, " ").enclosed("#<native compilation unit: ", ">"))
+        }
         Kind::HashTable(_) => render_hash_table_prin1(interp, value, env, context, depth),
         Kind::Record(id) => {
             if let Some(record) = interp.find_record(id) {

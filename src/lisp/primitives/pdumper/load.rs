@@ -52,7 +52,7 @@ pub(crate) struct LoadedImage {
     pub(crate) builtin_cells: Vec<LoadedSymbol>,
     /// RELOC_NATIVE_COMP_UNIT: the native compilation unit records, in
     /// image order, for the late phase that reopens each unit.
-    pub(crate) native_units: Vec<u64>,
+    pub(crate) native_units: Vec<crate::lisp::types::NativeUnitRef>,
     /// RELOC_NATIVE_SUBR: the native function records with their names,
     /// for the very late phase that resolves each in its unit.
     pub(crate) native_functions: Vec<crate::lisp::native_comp::DumpedNativeFunction>,
@@ -498,6 +498,19 @@ impl Loader<'_> {
                         native_function_records.push((offset, function, nslots));
                         continue;
                     }
+                    if kind_code == super::context::NATIVE_UNIT_CODE {
+                        if nslots != 7
+                            || self.relocs.get(&offset) != Some(&DumpRelocKind::NativeCompUnit)
+                        {
+                            return Err(LoadError::Error(
+                                "invalid native compilation unit image record".into(),
+                            ));
+                        }
+                        let unit = crate::lisp::types::NativeUnitRef::new();
+                        self.objects.insert(offset, Value::NativeCompUnit(unit));
+                        native_units.push(unit);
+                        continue;
+                    }
                     let record_kind = record_kind_from_code(kind_code).ok_or_else(|| {
                         LoadError::Error(format!("unknown record kind {kind_code} at {offset}"))
                     })?;
@@ -510,17 +523,6 @@ impl Loader<'_> {
                     self.objects.insert(offset, self.interp.record_value(id));
                     if kind == DumpType::Obarray {
                         obarray_records.push((offset, id, nslots));
-                    }
-                    // The native kinds carry their late relocations; a
-                    // record of either kind without one is not this
-                    // writer's.
-                    if record_kind == RecordKind::NativeCompUnit {
-                        if self.relocs.get(&offset) != Some(&DumpRelocKind::NativeCompUnit) {
-                            return Err(LoadError::Error(format!(
-                                "native compilation unit {id} has no late relocation"
-                            )));
-                        }
-                        native_units.push(id);
                     }
                 }
                 DumpType::CharTable => {
@@ -677,6 +679,12 @@ impl Loader<'_> {
                         function.set_arity(minimum, maximum);
                         function.set_doc_index(integer(slots[5])? as isize);
                         function.set_fields([slots[6], slots[7], slots[8], slots[9], slots[4]]);
+                    } else if let Kind::NativeCompUnit(unit) = self.objects[&offset].kind() {
+                        unit.set_fields(
+                            slots
+                                .try_into()
+                                .map_err(|_| LoadError::Error("invalid unit field count".into()))?,
+                        );
                     } else {
                         let record = self.interp.find_record_mut(id).ok_or_else(|| {
                             LoadError::Error(format!("record {id} was installed"))

@@ -269,3 +269,128 @@ fn native_subr_marks_all_five_fields_and_releases_unreachable_cycles() {
         );
     }
 }
+
+#[test]
+fn native_unit_allocation_has_actual_gnu_fields_and_direct_tagged_identity() {
+    let unit = NativeUnitRef::new();
+    let fields = std::array::from_fn(|index| Value::Integer(17 + index as i64 * 11));
+    unit.set_fields(fields);
+    unit.loaded_once.set(true);
+    unit.load_ongoing.set(true);
+    let value = Value::NativeCompUnit(unit);
+    let header = unit.0.as_ptr();
+    // Actual comp.h offsets, including the two one-byte flags and padding.
+    unsafe {
+        assert_eq!((*header).tag(), VectorTag::NativeCompUnit);
+        assert_eq!((*header).nbytes(), 88);
+        assert_eq!((*header).size & PSEUDOVECTOR_SIZE_MASK, 7);
+        let bytes = header.cast::<u8>();
+        for (index, field) in fields.into_iter().enumerate() {
+            assert_eq!(
+                bytes.add(8 + index * 8).cast::<usize>().read(),
+                field.word()
+            );
+        }
+        assert!(bytes.add(64).cast::<*mut usize>().read().is_null());
+        assert_eq!(bytes.add(72).read(), 1);
+        assert_eq!(bytes.add(73).read(), 1);
+        assert!(
+            bytes
+                .add(80)
+                .cast::<*mut std::ffi::c_void>()
+                .read()
+                .is_null()
+        );
+        // A store through the actual C field is immediately authoritative.
+        bytes
+            .add(16)
+            .cast::<std::cell::Cell<Value>>()
+            .as_ref()
+            .expect("allocated optimization-quality field")
+            .set(Value::Integer(313));
+        assert_eq!(unit.field(1), Value::Integer(313));
+        assert!(value_of(header).eq_value(value));
+    }
+    assert_eq!(value.word(), unit.identity() | 5);
+    assert!(matches!(value.kind(), Kind::NativeCompUnit(same) if same.ptr_eq(&unit)));
+}
+
+#[test]
+fn native_unit_traces_seven_fields_from_a_subr_and_collects_the_unreachable_cycle() {
+    const HIDE: usize = 0x5555_5555_5555_5555;
+    #[inline(never)]
+    fn allocate_cycle() -> (crate::lisp::alloc::RootedVec<Value>, [usize; 9]) {
+        let unit = NativeUnitRef::new();
+        let value = Value::NativeCompUnit(unit);
+        let function = NativeFunctionRef::blank();
+        function.set_fields([Value::Nil, Value::Nil, value, Value::Nil, Value::Nil]);
+        let subr = Value::NativeFunction(function);
+        let fields =
+            std::array::from_fn(|index| Value::vector([Value::Integer(index as i64), value, subr]));
+        unit.set_fields(fields);
+        let mut hidden = [0; 9];
+        hidden[0] = unit.identity() ^ HIDE;
+        hidden[1] = function.identity() ^ HIDE;
+        for (index, field) in fields.into_iter().enumerate() {
+            hidden[index + 2] = (field.word() & !7) ^ HIDE;
+        }
+        let mut roots = crate::lisp::alloc::RootedVec::new();
+        roots.push(subr);
+        (roots, hidden)
+    }
+    #[inline(never)]
+    fn is_live(hidden: usize, tag: VectorTag) -> bool {
+        let address = hidden ^ HIDE;
+        matches!(unsafe { crate::lisp::alloc::mem_find(address) },
+            Some(crate::lisp::alloc::Found::Vectorlike(header))
+                if header as usize == address && unsafe { header_tag(header) } == tag)
+    }
+    #[inline(never)]
+    fn check_fields(roots: &crate::lisp::alloc::RootedVec<Value>) {
+        let subr = roots[0];
+        let Kind::NativeFunction(function) = subr.kind() else {
+            panic!("native subr root")
+        };
+        let value = function.unit();
+        let Kind::NativeCompUnit(unit) = value.kind() else {
+            panic!("unit held by subr")
+        };
+        for (index, field) in unit.fields().into_iter().enumerate() {
+            let Kind::Vector(vector) = field.kind() else {
+                panic!("traced unit field")
+            };
+            assert_eq!(vector.get(0), Some(Value::Integer(index as i64)));
+            assert!(vector.get(1).expect("unit cycle").eq_value(value));
+            assert!(vector.get(2).expect("subr cycle").eq_value(subr));
+        }
+    }
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    let (roots, hidden) = allocate_cycle();
+    for _ in 0..3 {
+        crate::lisp::alloc::clobber_stack();
+        crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &Env::new());
+        assert!(is_live(hidden[0], VectorTag::NativeCompUnit));
+        assert!(is_live(hidden[1], VectorTag::Subr));
+        for child in &hidden[2..] {
+            assert!(is_live(*child, VectorTag::Normal));
+        }
+        check_fields(&roots);
+    }
+    drop(roots);
+    crate::lisp::alloc::clobber_stack();
+    crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &Env::new());
+    assert!(
+        !is_live(hidden[0], VectorTag::NativeCompUnit),
+        "unreachable unit retained"
+    );
+    assert!(
+        !is_live(hidden[1], VectorTag::Subr),
+        "unreachable subr retained"
+    );
+    for child in &hidden[2..] {
+        assert!(
+            !is_live(*child, VectorTag::Normal),
+            "unreachable unit field retained"
+        );
+    }
+}

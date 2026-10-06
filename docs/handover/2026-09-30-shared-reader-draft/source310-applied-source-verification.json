@@ -1,0 +1,42 @@
+{
+  "status": "source310 applied; all546 validated runtime inputs and94 auxiliary inputs verified",
+  "pre_apply_head": "e99c62ff8a98494be46fec7bb0760bdc7d5ea6a8",
+  "portable_patch_base": "6ad703c4ae85b4c3d0be6351a2df9f3bd47489ef",
+  "patch_sha256": "a00fa0e2b6344a491418e40e136b50211e34c85dbe749ffa89069175d0ea8a63",
+  "steps": [
+    {
+      "command": [
+        "git",
+        "apply",
+        "--check",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source310-portable-incremental.patch"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "apply",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source310-portable-incremental.patch"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "original_failed_attempt": "1032 passes/four omitted-generator failures retained; resumed selection passed",
+  "performance_status": "pending; immutable source308/source310 diagnostic queued after terminal validation",
+  "goal_complete": false
+}

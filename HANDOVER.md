@@ -16,6 +16,76 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
+## Applied native compilation units — 6 October 2026
+
+**Source310 is applied; the full goal remains incomplete.** A native compilation
+unit is now one actual 88-byte GNU-layout object. Its seven Lisp fields own the
+data graph, and the unreachable unit closes its library. The host record, strong
+library registry and permanent relocation roots are removed. Repeated loads check
+the library's actual runtime relocation before accepting another Rust editor;
+ordinary calls acquire no new ownership lookup.
+
+The [closed selected evidence](docs/handover/2026-09-30-shared-reader-draft/source310-native-unit-selected-manifest.json)
+verifies all **546 runtime/build/fixture inputs** and **94 auxiliary tools/compat
+inputs**, fresh warning-free strict checks, **1,036 passes in each profile**, and
+**56 actual GNU comparisons**, including 198 generated printer rows. Both portable
+patches reproduce the runtime bytes and modes. All 1,035 predecessor selectors
+and all 24 audit controls remain. GNU and310 return identical actual values and
+agree on native metadata, active-call survival and eventual unit reclamation;
+308's differing retention results remain preserved.
+
+The new two-editor control first reproduced309's missing owner check, then passed
+in both profiles after repair. It also verifies that the first editor remains
+usable and that the second can load the library after the first shuts down.
+The earlier test-setup failure remains separate. The initial formal selection
+also stays failed: **1,032 passes/four audit failures** because the sparse checkout
+omitted unchanged generators. Restoring exact published tools/compat inputs made
+all four controls and the complete selection pass on the same gate executable.
+No runtime byte, assertion, selector or expected output changed for that recovery.
+
+This is a [correctness publication](docs/handover/2026-09-30-shared-reader-draft/source310-application-decision.json),
+with [exact applied-byte verification](docs/handover/2026-09-30-shared-reader-draft/source310-applied-source-verification.json).
+**310 performance is not yet measured.** Its unchanged full16 comparison is
+queued after the running308 terminal suite; all samples, including regressions,
+will remain. The required owner-shutdown allocator walk has no isolated cost
+measurement yet. Full310 Linux and macOS validation follows publication; earlier
+308 results do not certify310. Inspect `source310-full-validation-launch.json`,
+`source310-full-launch.json` and `native-unit310-sequence-state.json` under
+`target/runtime-goal/resume-2026-09-28` before starting any write-once job.
+
+Main remains `21d20f0e`, PR79 stays draft. Allocated-symbol authority, real intervals
+and unified pure storage, remaining adapters, physical accounting/counters,
+VM stack capacity/layout, final internal ownership/borrow review, final audit,
+complete final-source validation and the unchanged calibrated performance
+criterion remain required. The following sections preserve earlier checkpoints.
+
+## Native compilation-unit draft — 6 October 2026
+
+The separately packaged [source309 selected draft](docs/handover/2026-09-30-shared-reader-draft/source309-native-unit-selected-draft-manifest.json)
+is **unapplied**. It replaces the host unit record, strong library registry and
+permanent relocation roots with one actual 88-byte GNU-layout unit. Its seven
+Lisp fields own the data graph, and unreachable units close their library handle.
+Both portable replays match all 546 inputs and modes. Fresh strict checks are
+warning-free; all **1,035 selected tests per profile** and **56 ordinary GNU
+comparisons** pass, including 198 generated printer rows.
+
+Actual GNU, source308 and source309 run the same lifecycle programs. Source308
+keeps file-loaded units after their functions are unbound; GNU and309 reclaim
+them. Across interpreted, bytecode and native calls,309 also keeps a self-unbound
+native function's unit alive during collection, returns the identical real data,
+and permits reclamation after return. The separate anonymous-compilation probe
+matches GNU's remaining count of two;308 retained three. The differing308 outputs
+and every development failure remain preserved.
+
+Review found a remaining **host ownership check**: a second Rust editor must not
+reuse a library still relocated to the first editor. The removed registry rejected
+that case;309's repeat-load path currently checks only the actual unit and live
+handle. The isolated310 successor adds a regression control and will restore the
+check using the library's actual current-thread relocation, with no new registry
+or ordinary-call lookup.309's passing selection does not resolve that gap or
+establish complete internal soundness. No309 timing or full-platform claim exists.
+The applied runtime remains308; the full goal remains incomplete.
+
 ## Applied native function objects — 6 October 2026
 
 **Source308 is applied; the full goal remains incomplete.** Native functions now
@@ -55,8 +125,11 @@ two existing ignores on each platform. Every library name and Cargo result is
 checked against raw output; both native artifact identity tests pass. Linux's
 complete frozen comparison matches **519 files /7,928 outcomes** from **1,038
 successful processes**: each editor reports 7,670 passes, 47 expected failures and 211
-skips. No expected failure or skip is counted as a pass. macOS frozen and terminal
-checks are still running separately. Earlier GNU census failures and source276's
+skips. No expected failure or skip is counted as a pass. The
+[closed308 macOS frozen comparison](docs/handover/2026-09-30-shared-reader-draft/source308-macos-frozen-results-manifest.json)
+retains **7,915 exact matches/six existing skip-diagnostic differences**, across
+all519 files and1,038 successful processes. It remains a failed strict comparison;
+terminal validation is still running separately. Earlier GNU census failures and source276's
 Emaxx negative remain preserved and unresolved; this later pass does not erase them.
 
 Main remains `21d20f0e`, PR79 stays draft. Symbol/unit authority, real intervals and

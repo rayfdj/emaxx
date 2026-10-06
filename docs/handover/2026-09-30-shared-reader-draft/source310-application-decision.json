@@ -1,0 +1,26 @@
+{
+  "status": "apply source310 for GNU native-unit representation, reclamation and host ownership correctness",
+  "source_manifest": "source310-manifest.json",
+  "source_manifest_sha256": "660f7654e2a09a6adc8e1587ce30b014aa60617e8c39c17ddd1310e7f2ad93b9",
+  "selected_audit": "source310-selected-audit.json",
+  "selected_audit_sha256": "90d02018a048e1fb98fc12808dffc48aba28ab56f904535a4ab882d86ddb854a",
+  "change": "One actual88-byte unit replaces the host record, strong registry and permanent relocation roots. Its seven Lisp fields own the graph and its handle closes when unreachable; repeated loads reject a different live Rust editor through the actual DSO runtime relocation.",
+  "correctness": {
+    "gate": 1036,
+    "release": 1036,
+    "ordinary_gnu_comparisons": 56,
+    "focused_per_profile": 5,
+    "prior_negative": "Source308 retains units that GNU and the candidate reclaim; source309 accepts a foreign live editor before the source310 owner repair."
+  },
+  "performance": {
+    "status": "not yet measured",
+    "reason": "The complete source308 terminal comparison is still running; local measurement is queued until it ends to exclude concurrent test load.",
+    "schedule": "Three alternating unchanged full16 source308/source310 pilots, all samples and actual answers/modes retained.",
+    "limits": "No speedup, memory-saving total, GNU parity or every-case3% claim. Any measured cost of correct reclamation stays visible; the original and corrected baselines remain frozen."
+  },
+  "publication": "Publish the selected-validated correctness checkpoint now and start the already approved Linux CI in parallel with the separate local continuation. Full local validation waits until diagnostic timing and profiling finish.",
+  "application_helper": "apply-native-unit310-correctness.py",
+  "application_helper_sha256": "58c9288d0572978347e9d4dd92fa705870e35a49ddcb2a3afa29c028d3ebe060",
+  "complete_goal": false,
+  "remaining": "Full platform/native/module/dump/thread/GC validation, physical accounting and counters, allocated symbols, real intervals/pure storage, internal soundness, final audit and calibrated performance acceptance remain open."
+}

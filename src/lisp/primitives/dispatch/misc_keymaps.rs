@@ -1642,6 +1642,7 @@ define_dispatch!(
                     Kind::Terminal(_) => "terminal",
                     Kind::LispRecord(_) => return cl_type_value(interp, &args[0]),
                     Kind::NativeFunction(_) => "subr",
+                    Kind::NativeCompUnit(_) => "native-comp-unit",
                     Kind::Record(id) => {
                         let _record = interp.find_record(id).ok_or_else(|| {
                             LispError::TypeError("record".into(), format!("record<{}>", id.id))

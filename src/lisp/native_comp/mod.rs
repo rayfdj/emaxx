@@ -164,26 +164,12 @@ pub(crate) fn function_documentation(
 ) -> Result<Value, LispError> {
     let index = usize::try_from(function.doc_index())
         .map_err(|_| lisp::native_ice("negative native documentation index"))?;
-    let Kind::Record(unit_id) = function.unit().kind() else {
+    let Kind::NativeCompUnit(unit) = function.unit().kind() else {
         return Err(lisp::native_ice("native function has no compilation unit"));
     };
-    let docs = interpreter
-        .find_record(unit_id)
-        .filter(|record| record.kind == crate::lisp::eval::RecordKind::NativeCompUnit)
-        .and_then(|record| record.slots.get(4))
-        .cloned()
-        .ok_or_else(|| lisp::native_ice("native function compilation unit is missing"))?;
+    let docs = unit.field(4);
     let docs = if docs.is_nil() {
-        if let Some(result) =
-            loader::active_unit_documentation(interpreter, environment, unit_id.id)
-        {
-            result?
-        } else {
-            let state = std::mem::take(&mut interpreter.native_compiler);
-            let result = state.unit_documentation(interpreter, environment, unit_id.id);
-            interpreter.native_compiler = state;
-            result?
-        }
+        loader::unit_documentation(interpreter, environment, unit)?
     } else {
         docs
     };
@@ -198,7 +184,7 @@ pub(crate) fn function_documentation(
 /// native compilation units and native functions of a loaded image.
 pub(crate) fn load_dumped_code(
     interpreter: &mut Interpreter,
-    units: &[u64],
+    units: &[crate::lisp::types::NativeUnitRef],
     functions: &[loader::DumpedNativeFunction],
 ) -> Result<(), LispError> {
     let mut environment = Env::new();

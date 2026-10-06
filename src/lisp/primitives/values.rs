@@ -238,6 +238,7 @@ fn values_equal_recursive_with_env(
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
         (Kind::NativeFunction(a), Kind::NativeFunction(b)) => a.ptr_eq(&b),
+        (Kind::NativeCompUnit(a), Kind::NativeCompUnit(b)) => a.ptr_eq(&b),
         (Kind::Buffer(a), Kind::Buffer(b)) => a.ptr_eq(&b),
         (Kind::Marker(a), Kind::Marker(b)) => markers_equal(a, b),
         (Kind::HashTable(a), Kind::HashTable(b)) => a == b,
@@ -285,7 +286,6 @@ fn values_equal_recursive_with_env(
                     | crate::lisp::eval::RecordKind::Thread
                     | crate::lisp::eval::RecordKind::Mutex
                     | crate::lisp::eval::RecordKind::ConditionVariable
-                    | crate::lisp::eval::RecordKind::NativeCompUnit
                     | crate::lisp::eval::RecordKind::ModuleFunction
                     | crate::lisp::eval::RecordKind::UserPointer
                     | crate::lisp::eval::RecordKind::TreeSitterParser
@@ -385,6 +385,7 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
         (Kind::NativeFunction(a), Kind::NativeFunction(b)) => a.ptr_eq(&b),
+        (Kind::NativeCompUnit(a), Kind::NativeCompUnit(b)) => a.ptr_eq(&b),
         (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
         (Kind::Cons(left), Kind::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)
@@ -458,6 +459,7 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
         (Kind::NativeFunction(a), Kind::NativeFunction(b)) => a.ptr_eq(&b),
+        (Kind::NativeCompUnit(a), Kind::NativeCompUnit(b)) => a.ptr_eq(&b),
         (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
         (Kind::Cons(left), Kind::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)
@@ -738,7 +740,6 @@ pub(crate) fn values_equal_including_properties_recursive(
                     | crate::lisp::eval::RecordKind::Thread
                     | crate::lisp::eval::RecordKind::Mutex
                     | crate::lisp::eval::RecordKind::ConditionVariable
-                    | crate::lisp::eval::RecordKind::NativeCompUnit
                     | crate::lisp::eval::RecordKind::ModuleFunction
                     | crate::lisp::eval::RecordKind::UserPointer
                     | crate::lisp::eval::RecordKind::TreeSitterParser
@@ -1038,7 +1039,6 @@ pub(crate) fn compare_record_values(
         | crate::lisp::eval::RecordKind::Thread
         | crate::lisp::eval::RecordKind::Mutex
         | crate::lisp::eval::RecordKind::ConditionVariable
-        | crate::lisp::eval::RecordKind::NativeCompUnit
         | crate::lisp::eval::RecordKind::ModuleFunction
         | crate::lisp::eval::RecordKind::UserPointer
         | crate::lisp::eval::RecordKind::TreeSitterParser
@@ -1100,12 +1100,18 @@ pub(crate) fn value_ordering(
     // fns.c:value_cmp treats distinct pseudovectors without a dedicated
     // ordering (including hash and character tables) as unordered. Their
     // contents do not order them; different pseudovector types still signal.
-    if matches!(left.kind(), Kind::CharTable(_) | Kind::HashTable(_))
-        || matches!(right.kind(), Kind::CharTable(_) | Kind::HashTable(_))
-    {
+    if matches!(
+        left.kind(),
+        Kind::CharTable(_) | Kind::HashTable(_) | Kind::NativeCompUnit(_)
+    ) || matches!(
+        right.kind(),
+        Kind::CharTable(_) | Kind::HashTable(_) | Kind::NativeCompUnit(_)
+    ) {
         return if matches!(
             (left.kind(), right.kind()),
-            (Kind::CharTable(_), Kind::CharTable(_)) | (Kind::HashTable(_), Kind::HashTable(_))
+            (Kind::CharTable(_), Kind::CharTable(_))
+                | (Kind::HashTable(_), Kind::HashTable(_))
+                | (Kind::NativeCompUnit(_), Kind::NativeCompUnit(_))
         ) {
             Ok(ValueOrder::Unordered)
         } else {
@@ -1702,6 +1708,10 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_mix(state, 16);
             hash_mix(state, vector.identity() as u64);
         }
+        Kind::NativeCompUnit(unit) => {
+            hash_mix(state, 54);
+            hash_mix(state, unit.identity() as u64);
+        }
         Kind::NativeFunction(function) => {
             hash_mix(state, 53);
             hash_mix(state, function.identity() as u64);
@@ -1911,6 +1921,10 @@ pub(crate) fn hash_value_equal_at(
                 );
             }
         }
+        Kind::NativeCompUnit(unit) => {
+            hash_mix(state, 54);
+            hash_mix(state, unit.identity() as u64);
+        }
         Kind::NativeFunction(function) => {
             hash_mix(state, 53);
             hash_mix(state, function.identity() as u64);
@@ -2088,7 +2102,6 @@ pub(crate) fn hash_record_equal(
         | crate::lisp::eval::RecordKind::Thread
         | crate::lisp::eval::RecordKind::Mutex
         | crate::lisp::eval::RecordKind::ConditionVariable
-        | crate::lisp::eval::RecordKind::NativeCompUnit
         | crate::lisp::eval::RecordKind::ModuleFunction
         | crate::lisp::eval::RecordKind::UserPointer
         | crate::lisp::eval::RecordKind::TreeSitterParser

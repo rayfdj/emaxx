@@ -184,6 +184,20 @@ fn native_subr_consumers_preserve_commands_completion_properties_and_substitutio
 }
 
 #[test]
+fn native_unit_fields_preserve_gnu_printing_identity_properties_and_errors() {
+    let program = include_str!("../../../tests/fixtures/native-unit-authority.el");
+    // GNU prints the unit's real compiler-version optimization metadata.
+    // Compare the complete live output, including that build-owned field;
+    // do not hard-code one platform's libgccjit version or normalize it.
+    let expected = upstream_oracle_stdout(&format!("(prin1 {program})"));
+    assert_oracle_contract_matches_interpreter(
+        program,
+        &expected,
+        "native unit authoritative fields, native GC, identity, properties, printing and errors",
+    );
+}
+
+#[test]
 fn native_subr_authority_preserves_gnu_metadata_calls_and_identity() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/native-subr-authority.el"),

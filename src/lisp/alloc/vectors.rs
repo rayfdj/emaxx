@@ -26,6 +26,8 @@ pub(crate) mod hash_tables;
 pub use hash_tables::HashTableRef;
 pub(crate) mod native_functions;
 pub use native_functions::NativeFunctionRef;
+pub(crate) mod native_units;
+pub use native_units::NativeUnitRef;
 mod symbols_with_pos;
 pub use symbols_with_pos::SymbolWithPosRef;
 
@@ -96,6 +98,7 @@ pub enum VectorTag {
     HashTable = 14,
     Terminal = 16,
     Subr = 18,
+    NativeCompUnit = 26,
     Closure = 31,
     CharTable = 32,
     SubCharTable = 33,
@@ -119,6 +122,7 @@ impl VectorTag {
             14 => Self::HashTable,
             16 => Self::Terminal,
             18 => Self::Subr,
+            26 => Self::NativeCompUnit,
             31 => Self::Closure,
             32 => Self::CharTable,
             33 => Self::SubCharTable,
@@ -936,7 +940,8 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
             | VectorTag::CharTable
             | VectorTag::SubCharTable
             | VectorTag::HashTable
-            | VectorTag::Subr => {
+            | VectorTag::Subr
+            | VectorTag::NativeCompUnit => {
                 if (*header).tag() == VectorTag::Buffer {
                     raise(&LIVE_BUFFERS, 1);
                 } else if (*header).tag() == VectorTag::Overlay {
@@ -982,6 +987,9 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
             }
             VectorTag::Subr => {
                 std::ptr::drop_in_place(body.cast::<native_functions::NativeFunctionState>())
+            }
+            VectorTag::NativeCompUnit => {
+                std::ptr::drop_in_place(body.cast::<native_units::NativeUnitState>())
             }
             VectorTag::Free => {}
             VectorTag::Bignum => std::ptr::drop_in_place(body.cast::<LispBignum>()),
@@ -1076,7 +1084,8 @@ impl SweepStats {
                 | VectorTag::CharTable
                 | VectorTag::SubCharTable
                 | VectorTag::HashTable
-                | VectorTag::Subr => {
+                | VectorTag::Subr
+                | VectorTag::NativeCompUnit => {
                     self.buffers += usize::from((*header).tag() == VectorTag::Buffer);
                     self.overlays += usize::from((*header).tag() == VectorTag::Overlay);
                     self.vectors += 1;
@@ -1095,6 +1104,33 @@ impl SweepStats {
                     }
                 }
                 VectorTag::Free | VectorTag::ReaderForm => {}
+            }
+        }
+    }
+}
+
+/// Close native libraries owned by a host editor that is ending. The
+/// allocator already owns the complete object inventory; walking it here
+/// avoids permanent roots or a duplicate unit registry on ordinary paths.
+pub(crate) fn close_native_units_for_runtime(thread_cell: *mut std::ffi::c_void) {
+    for kind in [BlockKind::VectorBlock, BlockKind::LargeVector] {
+        for block in blocks_of(kind) {
+            let mut header = block as *mut VectorHeader;
+            loop {
+                // SAFETY: registered blocks are tiled by initialized headers.
+                // Closing an ELN changes no Lisp allocation and runs no Lisp.
+                unsafe {
+                    if (*header).tag() == VectorTag::NativeCompUnit {
+                        NativeUnitRef::from_raw(header).close_for_runtime(thread_cell);
+                    }
+                    if matches!(kind, BlockKind::LargeVector) {
+                        break;
+                    }
+                    header = advance(header, (*header).nbytes());
+                    if !vector_in_block(header, block) {
+                        break;
+                    }
+                }
             }
         }
     }
@@ -1340,6 +1376,7 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             }
             VectorTag::Record => Value::Record(VectorlikeRef::from_raw(header)),
             VectorTag::Subr => Value::NativeFunction(NativeFunctionRef::from_raw(header)),
+            VectorTag::NativeCompUnit => Value::NativeCompUnit(NativeUnitRef::from_raw(header)),
             VectorTag::Free => unreachable!("a free vector is not a value"),
         }
     }

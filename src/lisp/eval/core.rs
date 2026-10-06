@@ -433,6 +433,7 @@ impl Interpreter {
             | Kind::Frame(_)
             | Kind::Terminal(_)
             | Kind::SymbolWithPos(_)
+            | Kind::NativeCompUnit(_)
             | Kind::Record(_)
             | Kind::Finalizer(_)
             | Kind::Unbound => Ok(*expr),

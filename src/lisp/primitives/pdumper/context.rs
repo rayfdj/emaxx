@@ -36,6 +36,7 @@ pub(crate) enum ObjectKey {
     WideInteger(i64),
     Subr(u32),
     NativeFunction(usize),
+    NativeCompUnit(usize),
     Lambda(usize),
     /// A buffer's identity is its id (`eq' compares ids): every
     /// `Value::Buffer' naming one buffer is one object.
@@ -75,6 +76,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         }
         Kind::BuiltinFunc(name) => ObjectKey::Subr(name.id()),
         Kind::NativeFunction(function) => ObjectKey::NativeFunction(function.identity()),
+        Kind::NativeCompUnit(unit) => ObjectKey::NativeCompUnit(unit.identity()),
         Kind::Nil | Kind::T | Kind::Unbound => return None,
         // dump_object_needs_dumping_p: everything but a fixnum is queued,
         // and dump_object refuses what it cannot write.
@@ -111,6 +113,7 @@ pub(crate) fn self_representing_word(value: &Value) -> Option<u64> {
 // The serialized native-subr discriminator is retained for image compatibility.
 // It never names a RecordKind or installs a detached runtime record.
 pub(crate) const NATIVE_SUBR_CODE: u32 = 15;
+pub(crate) const NATIVE_UNIT_CODE: u32 = 14;
 
 /// The record kinds the image distinguishes (eval.rs:RecordKind), as
 /// stable codes.
@@ -125,7 +128,6 @@ pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
         RecordKind::Thread => 11,
         RecordKind::Mutex => 12,
         RecordKind::ConditionVariable => 13,
-        RecordKind::NativeCompUnit => 14,
         RecordKind::TreeSitterParser => 16,
         RecordKind::TreeSitterNode => 17,
         RecordKind::TreeSitterCompiledQuery => 18,
@@ -150,7 +152,6 @@ pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
         11 => RecordKind::Thread,
         12 => RecordKind::Mutex,
         13 => RecordKind::ConditionVariable,
-        14 => RecordKind::NativeCompUnit,
         // Code 15 is the native subr codec, not a runtime host record.
         16 => RecordKind::TreeSitterParser,
         17 => RecordKind::TreeSitterNode,
@@ -548,7 +549,7 @@ impl DumpContext {
             Kind::Float(_) => DumpType::Float,
             Kind::BigInteger(_) | Kind::Integer(_) => DumpType::Bignum,
             Kind::BuiltinFunc(_) => DumpType::Subr,
-            Kind::NativeFunction(_) => DumpType::Record,
+            Kind::NativeFunction(_) | Kind::NativeCompUnit(_) => DumpType::Record,
             Kind::Closure(_) => DumpType::Closure,
             Kind::CharTable(_) => DumpType::CharTable,
             Kind::HashTable(_) => DumpType::HashTable,
@@ -1050,6 +1051,10 @@ impl DumpContext {
             Kind::Float(float) => (self.dump_float(*float)?, DumpType::Float),
             Kind::BigInteger(_) | Kind::Integer(_) => (self.dump_bignum(object)?, DumpType::Bignum),
             Kind::BuiltinFunc(name) => (self.dump_subr(&name)?, DumpType::Subr),
+            Kind::NativeCompUnit(unit) => {
+                let offset = self.dump_native_comp_unit(unit)?;
+                (offset, DumpType::Record)
+            }
             Kind::NativeFunction(function) => {
                 (self.dump_native_function(function)?, DumpType::Record)
             }
@@ -1354,10 +1359,6 @@ impl DumpContext {
             }
             RecordKind::Mutex => Err(self.unsupported(object, "mutex")),
             RecordKind::ConditionVariable => Err(self.unsupported(object, "condition variable")),
-            RecordKind::NativeCompUnit => {
-                let offset = self.dump_native_comp_unit(id, &type_tag, &slots)?;
-                Ok((offset, DumpType::Record))
-            }
             RecordKind::TreeSitterParser => Err(self.unsupported(object, "tree-sitter parser")),
             RecordKind::TreeSitterNode => Err(self.unsupported(object, "tree-sitter node")),
             RecordKind::TreeSitterCompiledQuery => {
@@ -1375,21 +1376,31 @@ impl DumpContext {
     /// the handle left to the late relocation that reopens the unit.
     fn dump_native_comp_unit(
         &mut self,
-        id: u64,
-        type_tag: &Value,
-        slots: &[Value],
+        unit: crate::lisp::types::NativeUnitRef,
     ) -> Result<u32, DumpError> {
-        if !matches!(slots.first().map(|v| v.kind()), Some(Kind::Cons(_))) {
+        if !matches!(unit.field(0).kind(), Kind::Cons(_)) {
             return Err(DumpError::Lisp(LispError::Signal(
                 "trying to dump non fixed-up eln file".into(),
             )));
         }
-        let mut slots = slots.to_vec();
-        if let Some(docs) = slots.get_mut(4) {
-            *docs = Value::Nil;
+        let mut slots = unit.fields();
+        slots[4] = Value::Nil;
+        // Legacy codec 14 carries seven Lisp fields. No runtime record/id
+        // is reconstructed; object offsets retain sharing and cycles.
+        let start = self.object_start()?;
+        let mut words = vec![0, u64::from(NATIVE_UNIT_CODE), 0, slots.len() as u64];
+        words.resize(slots.len() + 4, WORD_NIL);
+        self.field_lv(
+            start,
+            &mut words,
+            2,
+            &Value::symbol("native-comp-unit"),
+            WEIGHT_STRONG,
+        );
+        for (index, field) in slots.iter().enumerate() {
+            self.field_lv(start, &mut words, index + 4, field, WEIGHT_STRONG);
         }
-        let offset =
-            self.dump_record_slots(id, RecordKind::NativeCompUnit, type_tag, &slots, false)?;
+        let offset = self.object_finish(&words)?;
         if self.flags.dump_object_contents {
             self.dump_relocs[LATE_RELOCS].push((offset, DumpRelocKind::NativeCompUnit));
         }

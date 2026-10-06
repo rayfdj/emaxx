@@ -1194,7 +1194,6 @@ pub(crate) enum RecordKind {
     Thread,
     Mutex,
     ConditionVariable,
-    NativeCompUnit,
     ModuleFunction,
     UserPointer,
     TreeSitterParser,
@@ -1210,8 +1209,6 @@ impl RecordKind {
             Self::BoolVector => 2_usize.saturating_add(logical_slots.div_ceil(64)),
             // Verified from the configured GNU headers: 72 and 24 bytes.
             Self::Obarray => 3,
-            // comp.h:Lisp_Native_Comp_Unit is 88 bytes on this GNU ABI.
-            Self::NativeCompUnit => 11,
             // alloc.c:allocate_process uses VECSIZE(struct Lisp_Process),
             // which is 42 words on the configured GNU 64-bit ABI.
             Self::Process => 42,
@@ -2963,6 +2960,21 @@ impl ImageGraphCopier {
                 }
                 copied
             }
+            Kind::NativeCompUnit(unit) => {
+                assert!(
+                    !unit.is_loaded(),
+                    "cannot clone live native relocation pointers"
+                );
+                let key = unit.identity();
+                if let Some(copied) = self.vectors.get(&key) {
+                    return *copied;
+                }
+                let copy = crate::lisp::types::NativeUnitRef::new();
+                let copied = Value::NativeCompUnit(copy);
+                self.vectors.insert(key, copied);
+                copy.set_fields(unit.fields().map(|field| self.copy(&field)));
+                copied
+            }
             Kind::NativeFunction(function) => {
                 let key = function.identity();
                 if let Some(copied) = self.vectors.get(&key) {
@@ -3259,6 +3271,7 @@ impl LispReachability {
             Kind::Vector(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Closure(value) => value.mark_bit().is_marked(self.epoch),
             Kind::NativeFunction(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::NativeCompUnit(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Buffer(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().is_marked(self.epoch),
             Kind::Overlay(overlay) => overlay.mark_bit().is_marked(self.epoch),
@@ -3345,6 +3358,7 @@ impl LispReachability {
             Kind::Vector(value) => value.mark_bit().mark(self.epoch),
             Kind::Closure(value) => value.mark_bit().mark(self.epoch),
             Kind::NativeFunction(value) => value.mark_bit().mark(self.epoch),
+            Kind::NativeCompUnit(value) => value.mark_bit().mark(self.epoch),
             Kind::Buffer(value) => value.mark_bit().mark(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().mark(self.epoch),
             Kind::Overlay(overlay) => overlay.mark_bit().mark(self.epoch),
@@ -3363,6 +3377,11 @@ impl LispReachability {
 
     fn trace_fields(&mut self, interp: &Interpreter, value: &Value) {
         match value.kind() {
+            Kind::NativeCompUnit(unit) => {
+                for field in unit.fields() {
+                    self.enqueue(&field);
+                }
+            }
             Kind::NativeFunction(function) => {
                 for field in function.fields() {
                     self.enqueue(&field);
@@ -4018,8 +4037,8 @@ impl Interpreter {
     /// thread.c, lread.c and window.c mark theirs): the windows the
     /// minibuffer state remembers (`minibuf_selected_window',
     /// `Vminibuf_scroll_window'), the previously selected window, the
-    /// native compilation units and subrs the loader holds (comp.c's
-    /// loaded-units table and the subrs' unit slots).
+    /// windows. Native units are reached through actual Lisp roots, as the
+    /// loaded-units table has weak values in GNU.
     /// A mutex, a condition variable, a tree-sitter object or a module
     /// function is not held here: C collects them when nothing reaches
     /// them, and the side tables that know them by id are purged with
@@ -4035,9 +4054,6 @@ impl Interpreter {
             hold(id);
         }
         if let Some(id) = self.minibuffer_runtime.active_window_id {
-            hold(id);
-        }
-        for id in self.native_compiler.held_record_ids() {
             hold(id);
         }
     }

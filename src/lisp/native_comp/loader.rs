@@ -13,11 +13,11 @@ use super::backend::{
 };
 use super::runtime::{NativeCallingConvention, NativeRuntime, NativeWord};
 use crate::lisp::alloc::vectors::native_functions::NativeFunctionSpec;
-use crate::lisp::eval::{Interpreter, RecordKind};
+use crate::lisp::eval::Interpreter;
 use crate::lisp::primitives::{
     is_vector_value, read_from_lisp_source, string_like, string_storage_error, values_equal,
 };
-use crate::lisp::types::{Env, Kind, LispError, NativeFunctionRef, Value};
+use crate::lisp::types::{Env, Kind, LispError, NativeFunctionRef, NativeUnitRef, Value};
 use libloading::Library;
 use std::cell::{Cell, RefCell};
 use std::ffi::{CString, c_void};
@@ -33,26 +33,6 @@ struct StaticObjectHeader {
 
 pub(crate) type UnitLibrary = Library;
 pub(super) type SharedCompiler = Rc<RefCell<Option<Compiler>>>;
-
-struct LoadedUnit {
-    library: Library,
-    record_id: u64,
-    /// comp.c sets this when the shared object's saved unit pointer was
-    /// already non-nil.  Repeated top-level runs must not recreate anonymous
-    /// native lambdas.
-    loaded_once: Cell<bool>,
-    /// comp.c's `load_ongoing`: a unit whose top-level code is still running
-    /// on this thread must not have its ephemeral relocations rewritten by
-    /// a nested load of the same file.
-    load_ongoing: Cell<bool>,
-    _data: Value,
-    _impure_data: Value,
-    _optimization_qualities: Value,
-    data_relocations: *mut NativeWord,
-    data_relocation_count: usize,
-    impure_relocations: *mut NativeWord,
-    impure_relocation_count: usize,
-}
 
 struct EphemeralRelocations {
     _guard: Value,
@@ -159,102 +139,31 @@ fn native_function_signature(
     }
 }
 
-/// A loader execution shell. Its code registry may move to another shell
-/// while the original loader frame is suspended. Loaded units have separate
-/// stable ownership, so a callback can grow the registry without invalidating
-/// the library whose static data the original frame is reading.
-pub(crate) struct NativeRegistry {
-    shared: Option<Box<RegisteredNativeCode>>,
-}
-
-#[derive(Default)]
-pub(crate) struct RegisteredNativeCode {
-    units: Vec<Rc<LoadedUnit>>,
-}
-
-impl Default for NativeRegistry {
-    fn default() -> Self {
-        Self {
-            shared: Some(Box::default()),
-        }
-    }
-}
-
-impl std::ops::Deref for NativeRegistry {
-    type Target = RegisteredNativeCode;
-
-    fn deref(&self) -> &Self::Target {
-        self.shared
-            .as_deref()
-            .expect("native registry shell is parked")
-    }
-}
-
-impl std::ops::DerefMut for NativeRegistry {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.shared
-            .as_deref_mut()
-            .expect("native registry shell is parked")
-    }
-}
-
-impl NativeRegistry {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.units.is_empty()
-    }
-
-    /// The records the loader holds by id: every unit's and every native
-    /// subr's (comp.c's `Vcomp_loaded_comp_units' and the subrs' unit
-    /// slots keep them reachable in GNU).
-    pub(crate) fn held_record_ids(&self) -> Vec<u64> {
-        self.units.iter().map(|unit| unit.record_id).collect()
-    }
-
-    fn unit(&self, record_id: u64) -> Option<Rc<LoadedUnit>> {
-        self.units
-            .iter()
-            .find(|unit| unit.record_id == record_id)
-            .cloned()
-    }
-}
-
 pub(super) struct LoaderState<'a> {
     compiler: &'a SharedCompiler,
-    registry: &'a mut NativeRegistry,
     runtime: &'a mut NativeRuntime,
 }
 
 impl<'a> LoaderState<'a> {
-    pub(super) fn new(
-        compiler: &'a SharedCompiler,
-        registry: &'a mut NativeRegistry,
-        runtime: &'a mut NativeRuntime,
-    ) -> Self {
-        Self {
-            compiler,
-            registry,
-            runtime,
-        }
+    pub(super) fn new(compiler: &'a SharedCompiler, runtime: &'a mut NativeRuntime) -> Self {
+        Self { compiler, runtime }
     }
 }
 
 thread_local! {
-    static ACTIVE_REGISTRY: Cell<*mut NativeRegistry> = const { Cell::new(std::ptr::null_mut()) };
     static ACTIVE_REGISTERED_RUNTIME: Cell<*mut NativeRuntime> =
         const { Cell::new(std::ptr::null_mut()) };
     static ACTIVE_COMPILER: Cell<*const SharedCompiler> =
         const { Cell::new(std::ptr::null()) };
 }
 
-struct RegistryGuard {
-    previous_registry: *mut NativeRegistry,
+struct NativeStateGuard {
     previous_runtime: *mut NativeRuntime,
     previous_compiler: *const SharedCompiler,
 }
 
-impl Drop for RegistryGuard {
+impl Drop for NativeStateGuard {
     fn drop(&mut self) {
-        ACTIVE_REGISTRY.set(self.previous_registry);
         ACTIVE_REGISTERED_RUNTIME.set(self.previous_runtime);
         ACTIVE_COMPILER.set(self.previous_compiler);
     }
@@ -262,46 +171,30 @@ impl Drop for RegistryGuard {
 
 pub(super) fn with_native_state<R>(
     compiler: &SharedCompiler,
-    registry: &mut NativeRegistry,
     runtime: &mut NativeRuntime,
     body: impl FnOnce(&mut NativeRuntime) -> R,
 ) -> R {
-    let previous_registry = ACTIVE_REGISTRY.replace(registry);
     let previous_runtime = ACTIVE_REGISTERED_RUNTIME.replace(runtime);
     let previous_compiler = ACTIVE_COMPILER.replace(compiler);
-    let _guard = RegistryGuard {
-        previous_registry,
+    let _guard = NativeStateGuard {
         previous_runtime,
         previous_compiler,
     };
     body(runtime)
 }
 
-/// Move loaded-code ownership out of a paused loader/backend frame. The
+/// Park a paused loader/backend frame while another Lisp thread runs. The
 /// compiler RefCell itself is shared, so a live backend borrow continues to
 /// exclude re-entry even while this thread is suspended.
 pub(super) fn with_suspended_state<R>(
     interpreter: &mut Interpreter,
     body: impl FnOnce(&mut Interpreter, *mut NativeRuntime) -> R,
 ) -> R {
-    let registry = ACTIVE_REGISTRY.replace(std::ptr::null_mut());
     let runtime = ACTIVE_REGISTERED_RUNTIME.replace(std::ptr::null_mut());
     let compiler = ACTIVE_COMPILER.replace(std::ptr::null());
-    let _guard = RegistryGuard {
-        previous_registry: registry,
+    let _guard = NativeStateGuard {
         previous_runtime: runtime,
         previous_compiler: compiler,
-    };
-    // SAFETY: this private scope is entered from the currently executing
-    // loader callback. The old shell stays parked until body returns; only
-    // its separately owned registry allocation crosses the suspension.
-    let placeholder_registry = if registry.is_null() {
-        None
-    } else {
-        Some(std::mem::replace(
-            &mut interpreter.native_compiler.registry.shared,
-            unsafe { &mut *registry }.shared.take(),
-        ))
     };
     let placeholder_compiler = if compiler.is_null() {
         None
@@ -313,12 +206,6 @@ pub(super) fn with_suspended_state<R>(
     };
     let result =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(interpreter, runtime)));
-    if let Some(placeholder) = placeholder_registry {
-        unsafe { &mut *registry }.shared = std::mem::replace(
-            &mut interpreter.native_compiler.registry.shared,
-            placeholder,
-        );
-    }
     if let Some(placeholder) = placeholder_compiler {
         interpreter.native_compiler.compiler = placeholder;
     }
@@ -328,24 +215,13 @@ pub(super) fn with_suspended_state<R>(
     }
 }
 
-fn with_active_registry<R>(body: impl FnOnce(&mut NativeRegistry) -> R) -> Option<R> {
-    ACTIVE_REGISTRY.with(|registry| {
-        let registry = registry.get();
-        (!registry.is_null()).then(|| {
-            // SAFETY: `with_registry` installs the pointer only while its
-            // boxed registry remains alive. Native callbacks are synchronous.
-            body(unsafe { &mut *registry })
-        })
-    })
-}
-
 pub(super) fn with_active_registered_runtime<R>(
     body: impl FnOnce(&mut NativeRuntime) -> R,
 ) -> Option<R> {
     ACTIVE_REGISTERED_RUNTIME.with(|runtime| {
         let runtime = runtime.get();
         (!runtime.is_null()).then(|| {
-            // SAFETY: `with_registry_and_runtime` installs this pointer only
+            // SAFETY: `with_native_state` installs this pointer only
             // while the owning compiler state remains live.  Native and
             // backend callbacks are synchronous on the Lisp thread.
             body(unsafe { &mut *runtime })
@@ -360,7 +236,7 @@ pub(super) fn with_active_compiler<R>(body: impl FnOnce(&SharedCompiler) -> R) -
             // SAFETY: `with_native_state` installs a pointer to the compiler
             // cell only while its owning NativeCompilerState is live.  The
             // RefCell enforces the compiler context's non-reentrant mutable
-            // access independently of the active runtime and registry.
+            // access independently of the active runtime.
             body(unsafe { &*compiler })
         })
     })
@@ -378,7 +254,7 @@ mod suspension_tests {
         fn relocation(runtime: &mut NativeRuntime) -> (Vec<NativeWord>, usize) {
             let value = Value::buffer(731, "loader-collection-root");
             let words = runtime.encode_relocations(&[value]).expect("encode buffer");
-            runtime.register_permanent_root_range(words.as_ptr(), words.len());
+            runtime.push_ephemeral_root_range(words.as_ptr(), words.len());
             (words, value.word() ^ HIDE)
         }
 
@@ -397,12 +273,11 @@ mod suspension_tests {
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
         let compiler = SharedCompiler::default();
-        let mut registry = NativeRegistry::default();
         let mut runtime = NativeRuntime::default();
         let (words, hidden) = relocation(&mut runtime);
         for _ in 0..3 {
             crate::lisp::alloc::clobber_stack();
-            with_native_state(&compiler, &mut registry, &mut runtime, |_runtime| {
+            with_native_state(&compiler, &mut runtime, |_runtime| {
                 // The loader/backend can run Lisp and collect before any
                 // generated function installs an ACTIVE_CALL frame.
                 super::super::begin_garbage_collection(&mut interpreter, &environment);
@@ -426,78 +301,59 @@ mod suspension_tests {
     fn suspended_loader_restores_owners_and_tls_after_a_rust_panic() {
         let mut interpreter = Interpreter::new();
         let compiler = SharedCompiler::default();
-        let mut registry = NativeRegistry::default();
         let mut runtime = NativeRuntime::default();
-        // The function-name maps have gone. Exercise the registry's real
-        // remaining owners: stable loaded-unit allocations across suspension.
-        let unit = |record_id| {
-            Rc::new(LoadedUnit {
-                library: libloading::os::unix::Library::this().into(),
-                record_id,
-                loaded_once: Cell::new(false),
-                load_ongoing: Cell::new(false),
-                _data: Value::Nil,
-                _impure_data: Value::Nil,
-                _optimization_qualities: Value::Nil,
-                data_relocations: std::ptr::null_mut(),
-                data_relocation_count: 0,
-                impure_relocations: std::ptr::null_mut(),
-                impure_relocation_count: 0,
-            })
-        };
-        let before = unit(23);
-        let suspended = unit(29);
-        registry.units.push(Rc::clone(&before));
-
-        with_native_state(&compiler, &mut registry, &mut runtime, |_runtime| {
-            let registry_pointer = ACTIVE_REGISTRY.get();
-            let runtime_pointer = ACTIVE_REGISTERED_RUNTIME.get();
-            let compiler_pointer = ACTIVE_COMPILER.get();
-            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                super::super::runtime::with_thread_suspended(&mut interpreter, |interpreter| {
-                    assert!(ACTIVE_REGISTRY.get().is_null());
-                    assert!(ACTIVE_REGISTERED_RUNTIME.get().is_null());
-                    assert!(ACTIVE_COMPILER.get().is_null());
-                    assert!(Rc::ptr_eq(&interpreter.native_compiler.compiler, &compiler));
-                    assert!(Rc::ptr_eq(
-                        &interpreter
-                            .native_compiler
-                            .registry
-                            .unit(23)
-                            .expect("registered unit survives suspension"),
-                        &before
-                    ));
-                    interpreter
-                        .native_compiler
-                        .registry
-                        .units
-                        .push(Rc::clone(&suspended));
-                    panic!("loader-suspension-test");
-                })
-            }))
-            .expect_err("the Rust panic must propagate after owner restoration");
+        let before = NativeUnitRef::new();
+        before.set_field(0, Value::string("before-suspension"));
+        before.install_library(
+            libloading::os::unix::Library::this().into(),
+            std::ptr::null_mut(),
+        );
+        let suspended = NativeUnitRef::new();
+        suspended.set_field(0, Value::string("during-suspension"));
+        suspended.install_library(
+            libloading::os::unix::Library::this().into(),
+            std::ptr::null_mut(),
+        );
+        let owners = [
+            Value::NativeCompUnit(before),
+            Value::NativeCompUnit(suspended),
+        ];
+        interpreter.with_lisp_stack_roots(&owners.as_slice(), |interpreter| {
+            with_native_state(&compiler, &mut runtime, |_runtime| {
+                let runtime_pointer = ACTIVE_REGISTERED_RUNTIME.get();
+                let compiler_pointer = ACTIVE_COMPILER.get();
+                let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    super::super::runtime::with_thread_suspended(interpreter, |interpreter| {
+                        assert!(ACTIVE_REGISTERED_RUNTIME.get().is_null());
+                        assert!(ACTIVE_COMPILER.get().is_null());
+                        assert!(Rc::ptr_eq(&interpreter.native_compiler.compiler, &compiler));
+                        super::super::begin_garbage_collection(interpreter, &Env::new());
+                        assert!(before.is_loaded());
+                        assert!(suspended.is_loaded());
+                        suspended.set_field(1, Value::Integer(29));
+                        panic!("loader-suspension-test");
+                    })
+                }))
+                .expect_err("the Rust panic must propagate after owner restoration");
+                assert_eq!(
+                    panic.downcast_ref::<&str>(),
+                    Some(&"loader-suspension-test")
+                );
+                assert_eq!(ACTIVE_REGISTERED_RUNTIME.get(), runtime_pointer);
+                assert_eq!(ACTIVE_COMPILER.get(), compiler_pointer);
+            });
             assert_eq!(
-                panic.downcast_ref::<&str>(),
-                Some(&"loader-suspension-test")
+                before.field(0).as_string().expect("unit file"),
+                "before-suspension"
             );
-            assert_eq!(ACTIVE_REGISTRY.get(), registry_pointer);
-            assert_eq!(ACTIVE_REGISTERED_RUNTIME.get(), runtime_pointer);
-            assert_eq!(ACTIVE_COMPILER.get(), compiler_pointer);
+            assert_eq!(
+                suspended.field(0).as_string().expect("unit file"),
+                "during-suspension"
+            );
+            assert_eq!(suspended.field(1), Value::Integer(29));
+            assert!(before.is_loaded() && suspended.is_loaded());
         });
-        assert!(Rc::ptr_eq(
-            &registry
-                .unit(23)
-                .expect("registered unit survives suspension"),
-            &before
-        ));
-        assert!(Rc::ptr_eq(
-            &registry
-                .unit(29)
-                .expect("registered unit survives suspension"),
-            &suspended
-        ));
         assert!(runtime.is_pristine());
-        assert!(ACTIVE_REGISTRY.get().is_null());
         assert!(ACTIVE_REGISTERED_RUNTIME.get().is_null());
         assert!(ACTIVE_COMPILER.get().is_null());
     }
@@ -580,19 +436,23 @@ fn vector_values(value: &Value) -> Result<Vec<Value>, LispError> {
 }
 
 fn comp_unit_relocations_match(
-    unit: &LoadedUnit,
+    unit: NativeUnitRef,
     runtime: &mut NativeRuntime,
     interpreter: &Interpreter,
     environment: &Env,
 ) -> bool {
-    let Ok(data_values) = vector_values(&unit._data) else {
+    let Ok(data_values) = vector_values(&unit.field(5)) else {
         return false;
     };
-    if data_values.len() != unit.data_relocation_count {
+    let Some(library) = unit.library() else {
         return false;
-    }
+    };
+    let Ok(data_relocations) = (unsafe { data_symbol::<NativeWord>(&library, DATA_RELOC_SYM) })
+    else {
+        return false;
+    };
     for (index, expected) in data_values.iter().enumerate() {
-        let word = unsafe { std::ptr::read(unit.data_relocations.add(index)) };
+        let word = unsafe { std::ptr::read(data_relocations.add(index)) };
         let Ok(actual) = runtime.decode_relocation(word) else {
             return false;
         };
@@ -601,20 +461,12 @@ fn comp_unit_relocations_match(
         }
     }
 
-    let Ok(impure_values) = vector_values(&unit._impure_data) else {
+    let Ok(impure_values) = vector_values(&unit.field(6)) else {
         return false;
     };
-    if impure_values.len() != unit.impure_relocation_count {
-        return false;
-    }
-    let Some(guard) = interpreter
-        .find_record(unit.record_id)
-        .and_then(|record| record.slots.get(2))
-    else {
-        return false;
-    };
+    let guard = unit.field(2);
     for (index, expected) in impure_values.iter().enumerate() {
-        let word = unsafe { std::ptr::read(unit.impure_relocations.add(index)) };
+        let word = unsafe { std::ptr::read(unit.impure_relocations().add(index)) };
         let Ok(actual) = runtime.decode_relocation(word) else {
             return false;
         };
@@ -693,11 +545,7 @@ pub(super) fn load(
     candidate_unit: &Value,
     late: bool,
 ) -> Result<Value, LispError> {
-    let LoaderState {
-        compiler,
-        registry,
-        runtime,
-    } = state;
+    let LoaderState { compiler, runtime } = state;
     let saved_unit = unsafe { data_symbol::<NativeWord>(&library, COMP_UNIT_SYM) }
         .map_err(|_| inconsistent(filename))?;
     if saved_unit.is_null() {
@@ -705,24 +553,23 @@ pub(super) fn load(
     }
     let saved_word = unsafe { std::ptr::read(saved_unit) };
 
-    let (record_id, unit, top_level) = if saved_word != 0 {
+    let (unit, top_level) = if saved_word != 0 {
         // The dynamic loader handed back a unit this session already loaded
         // (dlopen returns the same handle for the same file).  Its static
         // relocations may be live in running frames and are never touched
         // again; only the top-level code runs.
-        let unit = runtime.decode_relocation(saved_word)?;
-        let Kind::Record(record_id) = unit.kind() else {
+        let Kind::NativeCompUnit(unit) = runtime.decode_relocation(saved_word)?.kind() else {
             return Err(inconsistent(filename));
         };
-        let loaded = registry
-            .unit(record_id.id)
-            .ok_or_else(|| inconsistent(filename))?;
-        loaded.loaded_once.set(true);
-        let unit_file = interpreter
-            .find_record(record_id)
-            .and_then(|record| record.slots.first())
-            .cloned()
-            .unwrap_or(*filename);
+        // Unlike GNU's one editor per process, two Rust editors may be
+        // alive in this host. Their dlopen image still has only one runtime
+        // relocation. Preserve the former registry's owner check using that
+        // actual field before running code or changing any unit state.
+        if !unit.belongs_to_runtime(runtime.current_thread_relocation_address()) {
+            return Err(inconsistent(filename));
+        }
+        unit.loaded_once.set(true);
+        let unit_file = unit.field(0);
         let top_level_name = if late {
             LATE_TOP_LEVEL_RUN_SYM
         } else {
@@ -730,10 +577,9 @@ pub(super) fn load(
         };
         let top_level = unsafe { function_symbol(&library, top_level_name) }
             .map_err(|_| inconsistent(&unit_file))?;
-        (record_id.id, unit, top_level)
+        (unit, top_level)
     } else {
         first_load(
-            registry,
             runtime,
             interpreter,
             environment,
@@ -746,75 +592,68 @@ pub(super) fn load(
         )?
     };
 
-    let loaded = registry
-        .unit(record_id)
-        .expect("unit registered before its top-level code runs");
-    let recursive_load = loaded.load_ongoing.replace(true);
-    let unit_file = interpreter
-        .find_record(record_id)
-        .and_then(|record| record.slots.first())
-        .cloned()
-        .unwrap_or(*filename);
-    let ephemeral = if recursive_load {
-        // Another load of this unit is active on the stack and holds the
-        // ephemeral data; rewriting it would clobber objects in use.
-        Ok(None)
-    } else {
-        fill_ephemeral_relocations(
-            &loaded.library,
-            &unit_file,
-            runtime,
-            interpreter,
-            environment,
-        )
-    };
-    let result = match ephemeral {
-        Ok(ephemeral) => {
-            if let Some(ephemeral) = &ephemeral {
-                runtime.push_ephemeral_root_range(ephemeral.start, ephemeral.len);
+    let unit_value = Value::NativeCompUnit(unit);
+    interpreter.with_lisp_stack_roots(&unit_value, |interpreter| {
+        let recursive_load = unit.load_ongoing.replace(true);
+        let unit_file = unit.field(0);
+        let library = unit
+            .library()
+            .expect("unit owns its handle before top-level code");
+        let ephemeral = if recursive_load {
+            // Another load of this unit is active on the stack and holds the
+            // ephemeral data; rewriting it would clobber objects in use.
+            Ok(None)
+        } else {
+            fill_ephemeral_relocations(&library, &unit_file, runtime, interpreter, environment)
+        };
+        let result = match ephemeral {
+            Ok(ephemeral) => {
+                if let Some(ephemeral) = &ephemeral {
+                    runtime.push_ephemeral_root_range(ephemeral.start, ephemeral.len);
+                }
+                let result = with_native_state(compiler, runtime, |runtime| {
+                    runtime.invoke(
+                        interpreter,
+                        environment,
+                        top_level,
+                        NativeCallingConvention::Fixed,
+                        std::slice::from_ref(&unit_value),
+                    )
+                });
+                // comp.c keeps data_ephemeral_vec in the load_comp_unit frame
+                // until top_level_run returns.  The explicit drop is Rust's
+                // counterpart of GNU's post-call volatile self-assignment.
+                if let Some(ephemeral) = &ephemeral {
+                    runtime.pop_ephemeral_root_range(ephemeral.len);
+                }
+                result
             }
-            let result = with_native_state(compiler, registry, runtime, |runtime| {
-                runtime.invoke(
-                    interpreter,
-                    environment,
-                    top_level,
-                    NativeCallingConvention::Fixed,
-                    std::slice::from_ref(&unit),
-                )
-            });
-            // comp.c keeps data_ephemeral_vec in the load_comp_unit frame
-            // until top_level_run returns.  The explicit drop is Rust's
-            // counterpart of GNU's post-call volatile self-assignment.
-            if let Some(ephemeral) = &ephemeral {
-                runtime.pop_ephemeral_root_range(ephemeral.len);
-            }
-            result
+            Err(error) => Err(error),
+        };
+        if result.is_ok() {
+            debug_assert!(comp_unit_relocations_match(
+                unit,
+                runtime,
+                interpreter,
+                environment,
+            ));
         }
-        Err(error) => Err(error),
-    };
-    if result.is_ok() {
-        debug_assert!(comp_unit_relocations_match(
-            &loaded,
-            runtime,
+        if !recursive_load {
+            unit.load_ongoing.set(false);
+        }
+        let result = result?;
+        // comp.c:register_native_comp_unit.
+        let loaded_units = interpreter
+            .lookup_var("comp-loaded-comp-units-h", environment)
+            .unwrap_or(Value::Nil);
+        super::lisp::call_c_primitive(
             interpreter,
             environment,
-        ));
-    }
-    if !recursive_load {
-        loaded.load_ongoing.set(false);
-    }
-    let result = result?;
-    // comp.c:register_native_comp_unit.
-    let loaded_units = interpreter
-        .lookup_var("comp-loaded-comp-units-h", environment)
-        .unwrap_or(Value::Nil);
-    super::lisp::call_c_primitive(
-        interpreter,
-        environment,
-        "puthash",
-        &[unit_file, unit, loaded_units],
-    )?;
-    Ok(result)
+            "puthash",
+            &[unit_file, unit_value, loaded_units],
+        )?;
+        Ok(result)
+    })
 }
 
 /// The `!loaded_once` half of comp.c:load_comp_unit: verify the ABI hash,
@@ -828,33 +667,22 @@ struct FirstLoadInput<'a> {
 }
 
 fn first_load(
-    registry: &mut NativeRegistry,
     runtime: &mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
     input: FirstLoadInput<'_>,
-) -> Result<(u64, Value, *const c_void), LispError> {
+) -> Result<(NativeUnitRef, *const c_void), LispError> {
     let FirstLoadInput {
         library,
         saved_unit,
         candidate_unit,
         late,
     } = input;
-    let Kind::Record(record_id) = candidate_unit.kind() else {
+    let Kind::NativeCompUnit(unit) = candidate_unit.kind() else {
         unreachable!("native load candidate is a native compilation unit")
     };
-    debug_assert!(
-        interpreter
-            .find_record(record_id)
-            .is_some_and(|record| record.kind == RecordKind::NativeCompUnit)
-    );
-    let unit = Value::Record(record_id);
-    let file = interpreter
-        .find_record(record_id)
-        .and_then(|record| record.slots.first())
-        .cloned()
-        .unwrap_or(Value::Nil);
-    let unit_word = runtime.encode_relocations(std::slice::from_ref(&unit))?[0];
+    let file = unit.field(0);
+    let unit_word = candidate_unit.word();
     unsafe { std::ptr::write(saved_unit, unit_word) };
     let mut saved_unit_rollback = SavedUnitRollback::new(saved_unit);
 
@@ -935,6 +763,7 @@ fn first_load(
             environment,
         )?
     };
+    unit.set_field(1, optimization_qualities);
     let mut data = unsafe {
         read_static_object(
             &library,
@@ -944,6 +773,7 @@ fn first_load(
             environment,
         )?
     };
+    unit.set_field(5, data);
     let impure_data = unsafe {
         read_static_object(
             &library,
@@ -953,45 +783,22 @@ fn first_load(
             environment,
         )?
     };
+    unit.set_field(6, impure_data);
     if interpreter
         .lookup_var("purify-flag", environment)
         .is_some_and(|value| value.is_truthy())
     {
         data = crate::lisp::primitives::purecopy_value(interpreter, &data, environment)?;
+        unit.set_field(5, data);
     }
     let data_values = vector_values(&data)?;
     let impure_values = vector_values(&impure_data)?;
-    {
-        let record = interpreter
-            .find_record_mut(record_id)
-            .expect("new native compilation unit remains live");
-        record.slots[1] = optimization_qualities;
-        record.slots[5] = data;
-        record.slots[6] = impure_data;
-    }
-    let data_relocations =
-        unsafe { fill_relocations(&library, DATA_RELOC_SYM, runtime, &data_values)? };
+    unsafe { fill_relocations(&library, DATA_RELOC_SYM, runtime, &data_values)? };
     let impure_relocations =
         unsafe { fill_relocations(&library, DATA_RELOC_IMPURE_SYM, runtime, &impure_values)? };
-    runtime.register_permanent_root_range(data_relocations, data_values.len());
-    runtime.register_permanent_root_range(impure_relocations, impure_values.len());
-
-    registry.units.push(Rc::new(LoadedUnit {
-        library,
-        record_id: record_id.id,
-        loaded_once: Cell::new(false),
-        load_ongoing: Cell::new(false),
-        _data: data,
-        _impure_data: impure_data,
-        _optimization_qualities: optimization_qualities,
-        data_relocations,
-        data_relocation_count: data_values.len(),
-        impure_relocations,
-        impure_relocation_count: impure_values.len(),
-    }));
-    runtime.register_permanent_root_range(saved_unit, 1);
+    unit.install_library(library, impure_relocations);
     saved_unit_rollback.disarm();
-    Ok((record_id.id, unit, top_level))
+    Ok((unit, top_level))
 }
 
 /// Ephemeral data is read and installed on every non-recursive load; GNU
@@ -1031,7 +838,7 @@ fn fill_ephemeral_relocations(
 /// Load a compilation unit into the native state already executing on this
 /// thread.  A unit's top-level function can run arbitrary Lisp, including a
 /// `require' that loads another `.eln'.  GNU's `comp.c' has one process-wide
-/// loader/runtime state, so that nested unit must join the active registry and
+/// loader/runtime state, so that nested unit must join the active compiler and
 /// heap rather than a temporary default state on `Interpreter'.
 pub(crate) fn load_active(
     interpreter: &mut Interpreter,
@@ -1041,35 +848,28 @@ pub(crate) fn load_active(
     candidate_unit: &Value,
     late: bool,
 ) -> Result<Result<Value, LispError>, Library> {
-    if ACTIVE_REGISTRY.with(Cell::get).is_null() {
+    if ACTIVE_COMPILER.with(Cell::get).is_null() {
         return Err(library);
     }
-    Ok(with_active_registry(|registry| {
-        with_active_compiler(|compiler| {
-            super::runtime::with_current_runtime(|runtime| {
-                load(
-                    LoaderState::new(compiler, registry, runtime),
-                    interpreter,
-                    environment,
-                    filename,
-                    library,
-                    candidate_unit,
-                    late,
-                )
-            })
-            .unwrap_or_else(|| {
-                Err(super::lisp::native_ice(
-                    "active native registry has no active runtime",
-                ))
-            })
+    Ok(with_active_compiler(|compiler| {
+        super::runtime::with_current_runtime(|runtime| {
+            load(
+                LoaderState::new(compiler, runtime),
+                interpreter,
+                environment,
+                filename,
+                library,
+                candidate_unit,
+                late,
+            )
         })
         .unwrap_or_else(|| {
             Err(super::lisp::native_ice(
-                "active native registry has no active compiler state",
+                "active loader has no active runtime",
             ))
         })
     })
-    .expect("active registry checked above"))
+    .expect("active compiler checked above"))
 }
 
 #[derive(Clone, Copy)]
@@ -1080,7 +880,6 @@ pub(crate) enum RegistrationKind {
 }
 
 pub(super) fn register_with_state(
-    registry: &mut NativeRegistry,
     runtime: &mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
@@ -1142,7 +941,7 @@ pub(super) fn register_with_state(
         (arguments[2].as_integer()?, arguments[3], Value::Nil)
     };
     let (min_args, _, _) = native_arity(dynamic, min_args, &max_value)?;
-    let Kind::Record(unit_record_id) = arguments[6].kind() else {
+    let Kind::NativeCompUnit(unit) = arguments[6].kind() else {
         return Err(crate::lisp::primitives::wrong_type_argument(
             "native-comp-unit-p",
             arguments[6],
@@ -1150,13 +949,13 @@ pub(super) fn register_with_state(
     };
 
     let registered = (|| {
-        let unit = registry.unit(unit_record_id.id).ok_or_else(|| {
+        let library = unit.library().ok_or_else(|| {
             LispError::SignalValue(Value::list([Value::symbol("wrong-register-subr-call")]))
         })?;
         if matches!(kind, RegistrationKind::Lambda) && unit.loaded_once.get() {
             return Ok(Value::Nil);
         }
-        let target = unsafe { function_symbol(&unit.library, &c_name) }
+        let target = unsafe { function_symbol(&library, &c_name) }
             .map_err(|error| super::lisp::native_ice(&error))?;
         let symbol_name = if matches!(kind, RegistrationKind::Lambda) {
             c_name.clone()
@@ -1189,19 +988,8 @@ pub(super) fn register_with_state(
         roots.push(function);
 
         if matches!(kind, RegistrationKind::Lambda) {
-            let (lambda_guard, lambda_name_index) = {
-                let unit = interpreter
-                    .find_record(unit_record_id)
-                    .filter(|record| record.kind == RecordKind::NativeCompUnit)
-                    .ok_or_else(|| super::lisp::native_ice("missing native compilation unit"))?;
-                let guard = unit.slots.get(2).cloned().ok_or_else(|| {
-                    super::lisp::native_ice("native compilation unit has no lambda guard")
-                })?;
-                let index = unit.slots.get(3).cloned().ok_or_else(|| {
-                    super::lisp::native_ice("native compilation unit has no lambda name index")
-                })?;
-                (guard, index)
-            };
+            let lambda_guard = unit.field(2);
+            let lambda_name_index = unit.field(3);
             super::lisp::call_c_primitive(
                 interpreter,
                 environment,
@@ -1228,15 +1016,12 @@ pub(super) fn register_with_state(
             let relocation = usize::try_from(arguments[0].as_integer()?)
                 .map_err(|_| super::lisp::native_ice("negative lambda relocation index"))?;
             let word = runtime.encode_relocations(std::slice::from_ref(&function))?[0];
-            let unit = registry
-                .unit(unit_record_id.id)
-                .expect("unit checked before registration");
-            if relocation >= unit.impure_relocation_count {
+            if relocation >= unit.impure_relocation_count() {
                 return Err(super::lisp::native_ice(
                     "native lambda relocation index is out of range",
                 ));
             }
-            unsafe { std::ptr::write(unit.impure_relocations.add(relocation), word) };
+            unsafe { std::ptr::write(unit.impure_relocations().add(relocation), word) };
         } else {
             interpreter.defalias_value(&[arguments[0], function, Value::Nil], environment)?;
         }
@@ -1257,21 +1042,18 @@ pub(crate) fn register_active(
     arguments: &[Value],
     kind: RegistrationKind,
 ) -> Option<Result<Value, LispError>> {
-    if ACTIVE_REGISTRY.with(Cell::get).is_null() {
+    if ACTIVE_COMPILER.with(Cell::get).is_null() {
         return None;
     }
     Some(
-        with_active_registry(|registry| {
-            super::runtime::with_current_runtime(|runtime| {
-                register_with_state(registry, runtime, interpreter, environment, arguments, kind)
-            })
-            .unwrap_or_else(|| {
-                Err(super::lisp::native_ice(
-                    "active native registry has no active runtime",
-                ))
-            })
+        super::runtime::with_current_runtime(|runtime| {
+            register_with_state(runtime, interpreter, environment, arguments, kind)
         })
-        .expect("active registry checked above"),
+        .unwrap_or_else(|| {
+            Err(super::lisp::native_ice(
+                "active loader has no active runtime",
+            ))
+        }),
     )
 }
 
@@ -1297,7 +1079,6 @@ pub(crate) fn call_active_function(
 
 pub(crate) fn call_function(
     compiler: &SharedCompiler,
-    registry: &mut NativeRegistry,
     runtime: &mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
@@ -1306,7 +1087,7 @@ pub(crate) fn call_function(
 ) -> Result<Value, LispError> {
     let function = descriptor(native);
     check_arity(function, arguments.len())?;
-    with_native_state(compiler, registry, runtime, |runtime| {
+    with_native_state(compiler, runtime, |runtime| {
         invoke_function(
             function,
             native,
@@ -1499,31 +1280,17 @@ fn dump_load_error(message: String) -> LispError {
 /// the dumped data vectors (no serialized object is read again, no
 /// top-level code runs), the unit registered.
 pub(super) fn load_dumped_unit(
-    registry: &mut NativeRegistry,
     runtime: &mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
-    record_id: u64,
+    unit: NativeUnitRef,
     execdir: &str,
     installation_state: &mut InstallationState,
 ) -> Result<(), LispError> {
-    let unit = interpreter.record_value(record_id);
-    let file = {
-        let record = interpreter
-            .find_record(record_id)
-            .filter(|record| record.kind == RecordKind::NativeCompUnit)
-            .ok_or_else(|| {
-                dump_load_error("incoherent compilation unit for dump was dumped".into())
-            })?;
-        record.slots.first().cloned().unwrap_or(Value::Nil)
-    };
-    // comp_u->lambda_gc_guard_h = CALLN (Fmake_hash_table, QCtest, Qeq).
+    let unit_value = Value::NativeCompUnit(unit);
+    let file = unit.field(0);
     let lambda_guard = crate::lisp::json::make_hash_table(interpreter, "eq", Vec::new());
-    if let Some(record) = interpreter.find_record_mut(record_id)
-        && let Some(slot) = record.slots.get_mut(2)
-    {
-        *slot = lambda_guard;
-    }
+    unit.set_field(2, lambda_guard);
     if let Some(text) = string_like(&file).map(|string| string.text) {
         return Err(dump_load_error(format!(
             "trying to load incoherent dumped eln file {text}"
@@ -1561,11 +1328,7 @@ pub(super) fn load_dumped_unit(
         format!("{execdir}{cu_file2}")
     };
     let eln_file = Value::string(&eln_fname);
-    if let Some(record) = interpreter.find_record_mut(record_id)
-        && let Some(slot) = record.slots.first_mut()
-    {
-        *slot = eln_file;
-    }
+    unit.set_field(0, eln_file);
     let library = match unsafe { Library::new(Path::new(&eln_fname)) } {
         Ok(library) => library,
         Err(error) => {
@@ -1587,7 +1350,7 @@ pub(super) fn load_dumped_unit(
             "dumped compilation unit {eln_fname} is already loaded in this process"
         )));
     }
-    let unit_word = runtime.encode_relocations(std::slice::from_ref(&unit))?[0];
+    let unit_word = unit_value.word();
     unsafe { std::ptr::write(saved_unit, unit_word) };
     let mut saved_unit_rollback = SavedUnitRollback::new(saved_unit);
     for symbol in [
@@ -1648,38 +1411,12 @@ pub(super) fn load_dumped_unit(
     }
     // Imported data: the dumped data_vec and data_impure_vec, not the
     // serialized objects (`if (!loading_dump)' skips load_static_obj).
-    let (optimization_qualities, data, impure_data) = {
-        let record = interpreter
-            .find_record(record_id)
-            .expect("dumped native compilation unit remains live");
-        (
-            record.slots.get(1).cloned().unwrap_or(Value::Nil),
-            record.slots.get(5).cloned().unwrap_or(Value::Nil),
-            record.slots.get(6).cloned().unwrap_or(Value::Nil),
-        )
-    };
-    let data_values = vector_values(&data)?;
-    let impure_values = vector_values(&impure_data)?;
-    let data_relocations =
-        unsafe { fill_relocations(&library, DATA_RELOC_SYM, runtime, &data_values)? };
+    let data_values = vector_values(&unit.field(5))?;
+    let impure_values = vector_values(&unit.field(6))?;
+    unsafe { fill_relocations(&library, DATA_RELOC_SYM, runtime, &data_values)? };
     let impure_relocations =
         unsafe { fill_relocations(&library, DATA_RELOC_IMPURE_SYM, runtime, &impure_values)? };
-    runtime.register_permanent_root_range(data_relocations, data_values.len());
-    runtime.register_permanent_root_range(impure_relocations, impure_values.len());
-    registry.units.push(Rc::new(LoadedUnit {
-        library,
-        record_id,
-        loaded_once: Cell::new(false),
-        load_ongoing: Cell::new(false),
-        _data: data,
-        _impure_data: impure_data,
-        _optimization_qualities: optimization_qualities,
-        data_relocations,
-        data_relocation_count: data_values.len(),
-        impure_relocations,
-        impure_relocation_count: impure_values.len(),
-    }));
-    runtime.register_permanent_root_range(saved_unit, 1);
+    unit.install_library(library, impure_relocations);
     saved_unit_rollback.disarm();
     // comp.c:register_native_comp_unit.
     let loaded_units = interpreter
@@ -1689,7 +1426,7 @@ pub(super) fn load_dumped_unit(
         interpreter,
         environment,
         "puthash",
-        &[eln_file, unit, loaded_units],
+        &[eln_file, unit_value, loaded_units],
     )?;
     Ok(())
 }
@@ -1753,44 +1490,33 @@ pub(crate) struct DumpedNativeFunction {
 /// anonymous lambda additionally replaces its `lambda-fixup' impure
 /// relocation and enters the unit's GC guard.
 pub(super) fn resolve_dumped_function(
-    registry: &mut NativeRegistry,
     runtime: &mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
     function: &DumpedNativeFunction,
 ) -> Result<(), LispError> {
     let function = function.function;
-    let Kind::Record(unit_record_id) = function.unit().kind() else {
+    let Kind::NativeCompUnit(unit) = function.unit().kind() else {
         return Err(dump_load_error(
             "dumped native function has no compilation unit".into(),
         ));
     };
-    let unit_file = interpreter
-        .find_record(unit_record_id)
-        .and_then(|record| record.slots.first())
-        .and_then(|file| string_like(file).map(|string| string.text))
+    let unit_file = string_like(&unit.field(0))
+        .map(|string| string.text)
         .unwrap_or_default();
-    let unit = registry
-        .unit(unit_record_id.id)
+    let library = unit
+        .library()
         .ok_or_else(|| dump_load_error(format!("NULL handle in compilation unit {unit_file}")))?;
     let c_name = function.c_name();
-    let target = unsafe { function_symbol(&unit.library, c_name) }.map_err(|_| {
+    let target = unsafe { function_symbol(&library, c_name) }.map_err(|_| {
         dump_load_error(format!(
             "can't find function \"{c_name}\" in compilation unit {unit_file}"
         ))
     })?;
     function.set_target(target);
 
-    let (lambda_guard, lambda_name_index) = {
-        let record = interpreter
-            .find_record(unit_record_id)
-            .filter(|record| record.kind == RecordKind::NativeCompUnit)
-            .ok_or_else(|| dump_load_error("dumped native compilation unit is missing".into()))?;
-        (
-            record.slots.get(2).cloned().unwrap_or(Value::Nil),
-            record.slots.get(3).cloned().unwrap_or(Value::Nil),
-        )
-    };
+    let lambda_guard = unit.field(2);
+    let lambda_name_index = unit.field(3);
     let lambda_data_index = super::lisp::call_c_primitive(
         interpreter,
         environment,
@@ -1802,13 +1528,13 @@ pub(super) fn resolve_dumped_function(
         // lambda can be referenced by code.
         let index = usize::try_from(lambda_data_index.as_integer()?)
             .map_err(|_| super::lisp::native_ice("negative lambda relocation index"))?;
-        if index >= unit.impure_relocation_count {
+        if index >= unit.impure_relocation_count() {
             return Err(super::lisp::native_ice(
                 "native lambda relocation index is out of range",
             ));
         }
         let current = runtime
-            .decode_relocation(unsafe { std::ptr::read(unit.impure_relocations.add(index)) })?;
+            .decode_relocation(unsafe { std::ptr::read(unit.impure_relocations().add(index)) })?;
         if current.as_symbol().ok() != Some("lambda-fixup") {
             return Err(super::lisp::native_ice(
                 "dumped lambda relocation is not a lambda-fixup placeholder",
@@ -1816,7 +1542,7 @@ pub(super) fn resolve_dumped_function(
         }
         let subr = Value::NativeFunction(function);
         let word = runtime.encode_relocations(std::slice::from_ref(&subr))?[0];
-        unsafe { std::ptr::write(unit.impure_relocations.add(index), word) };
+        unsafe { std::ptr::write(unit.impure_relocations().add(index), word) };
         super::lisp::call_c_primitive(
             interpreter,
             environment,
@@ -1831,54 +1557,27 @@ pub(super) fn resolve_dumped_function(
 /// vector is installed in the compilation unit before its indexed element is
 /// read, so every later request reuses the same Lisp object.
 pub(crate) fn unit_documentation(
-    registry: &NativeRegistry,
     interpreter: &mut Interpreter,
     environment: &mut Env,
-    record_id: u64,
+    unit: NativeUnitRef,
 ) -> Result<Value, LispError> {
-    let unit = registry
-        .unit(record_id)
-        .ok_or_else(|| super::lisp::native_ice("native compilation unit is not loaded"))?;
-    let file = interpreter
-        .find_record(record_id)
-        .filter(|record| record.kind == RecordKind::NativeCompUnit)
-        .and_then(|record| record.slots.first())
-        .cloned()
-        .ok_or_else(|| super::lisp::native_ice("native compilation unit record is missing"))?;
-    let docs = unsafe {
-        read_static_object(
-            &unit.library,
-            &file,
-            TEXT_FDOC_SYM,
-            interpreter,
-            environment,
-        )?
-    };
-    if !is_vector_value(&docs) {
-        return Err(LispError::SignalValue(Value::list([
-            Value::symbol("native-lisp-file-inconsistent"),
-            file,
-            Value::string("missing documentation vector"),
-        ])));
-    }
-    let record = interpreter
-        .find_record_mut(record_id)
-        .filter(|record| record.kind == RecordKind::NativeCompUnit)
-        .ok_or_else(|| super::lisp::native_ice("native compilation unit record is missing"))?;
-    let slot = record.slots.get_mut(4).ok_or_else(|| {
-        super::lisp::native_ice("native compilation unit has no documentation slot")
-    })?;
-    *slot = docs;
-    Ok(docs)
-}
-
-pub(crate) fn active_unit_documentation(
-    interpreter: &mut Interpreter,
-    environment: &mut Env,
-    record_id: u64,
-) -> Option<Result<Value, LispError>> {
-    with_active_registry(|registry| {
-        unit_documentation(registry, interpreter, environment, record_id)
+    interpreter.with_lisp_stack_roots(&Value::NativeCompUnit(unit), |interpreter| {
+        let library = unit
+            .library()
+            .ok_or_else(|| super::lisp::native_ice("native compilation unit is not loaded"))?;
+        let file = unit.field(0);
+        let docs = unsafe {
+            read_static_object(&library, &file, TEXT_FDOC_SYM, interpreter, environment)?
+        };
+        if !is_vector_value(&docs) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("native-lisp-file-inconsistent"),
+                file,
+                Value::string("missing documentation vector"),
+            ])));
+        }
+        unit.set_field(4, docs);
+        Ok(docs)
     })
 }
 
@@ -1895,6 +1594,129 @@ pub(crate) fn direct_function(native: NativeFunctionRef) -> Option<DirectNativeF
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_unit_reloads_preserve_the_owning_runtime_until_its_shutdown() {
+        // GNU has one editor per process. Emaxx's host can retain two editor
+        // instances, but one dlopen image still has only one set of runtime
+        // relocations. Reject a foreign live owner before top_level_run,
+        // retaining the old loader registry's ownership contract.
+        assert!(super::super::NativeCompilerState::available());
+        let directory =
+            std::env::temp_dir().join(format!("emaxx-native-unit-owner-{}", std::process::id()));
+        std::fs::create_dir(&directory).expect("fresh native owner fixture directory");
+        let source = directory.join("owner-worker.el");
+        let eln = directory.join("owner-worker.eln");
+        std::fs::write(&source,
+            ";; -*- lexical-binding: t; -*-\n(defun runtime-unit-owner-worker (input) (garbage-collect) (+ input 41))\n"
+        ).expect("write native owner worker");
+        let mut first = crate::test_support::initialized_upstream_batch_interpreter();
+        let mut first_env = Env::new();
+        let function = crate::test_support::eval_lisp(&mut first, &mut first_env,
+            &format!("(progn (require 'comp) (native-compile {:?} {:?}) (load {:?} nil t) (symbol-function 'runtime-unit-owner-worker))",
+                source.display(), eln.display(), eln.display()))
+            .expect("first editor compiles and loads its unit");
+        let Kind::NativeFunction(native) = function.kind() else {
+            panic!("worker must execute native code")
+        };
+        let Kind::NativeCompUnit(unit) = native.unit().kind() else {
+            panic!("worker must own an actual native unit")
+        };
+        let mut roots = crate::lisp::alloc::RootedVec::new();
+        roots.push(function);
+        // Loading a second dump would independently reject its preloaded
+        // ELNs before this control reaches the worker under examination.
+        // A fresh C runtime already supplies the native ABI and loader; no
+        // additional GNU Lisp is needed to load and call this simple unit.
+        let mut second = Interpreter::new();
+        second.set_global_binding("purify-flag", Value::Nil);
+        let mut second_env = Env::new();
+        let outcome = crate::test_support::eval_lisp(
+            &mut second,
+            &mut second_env,
+            &format!(
+                "(condition-case data (progn (load {:?} nil t) 'accepted) (error (car data)))",
+                eln.display()
+            ),
+        )
+        .expect("foreign-owner load returns a Lisp outcome");
+        assert_eq!(
+            outcome,
+            Value::symbol("native-lisp-file-inconsistent"),
+            "a live unit cannot adopt the second editor's runtime"
+        );
+        assert_eq!(
+            crate::test_support::eval_lisp(
+                &mut second,
+                &mut second_env,
+                "(fboundp 'runtime-unit-owner-worker)"
+            )
+            .expect("check foreign publication"),
+            Value::Nil
+        );
+        assert_eq!(
+            crate::test_support::eval_lisp(
+                &mut first,
+                &mut first_env,
+                &format!(
+                    "(progn (load {:?} nil t) (runtime-unit-owner-worker 23))",
+                    eln.display()
+                )
+            )
+            .expect("original owner reloads and executes after collection"),
+            Value::Integer(64)
+        );
+        assert!(unit.is_loaded());
+        drop(first);
+        assert!(
+            !unit.is_loaded(),
+            "host shutdown closes its live library reference"
+        );
+        assert_eq!(
+            crate::test_support::eval_lisp(
+                &mut second,
+                &mut second_env,
+                &format!(
+                    "(progn (load {:?} nil t) (runtime-unit-owner-worker 79))",
+                    eln.display()
+                )
+            )
+            .expect("new editor loads the released image with its own relocations"),
+            Value::Integer(120)
+        );
+        drop(second);
+        drop(roots);
+        std::fs::remove_dir_all(directory).expect("remove native owner fixture");
+    }
+
+    #[test]
+    fn native_unit_relocations_decode_the_actual_allocation_without_a_registry() {
+        let unit = NativeUnitRef::new();
+        let value = Value::NativeCompUnit(unit);
+        let mut runtime = NativeRuntime::default();
+        let words = runtime
+            .encode_relocations(&[value])
+            .expect("encode actual unit");
+        assert_eq!(words, [value.word()]);
+        assert!(
+            runtime
+                .decode_relocation(words[0])
+                .expect("decode actual unit")
+                .eq_value(value)
+        );
+        unit.set_field(0, Value::string("changed-unit-file"));
+        let decoded = runtime
+            .decode_relocation(words[0])
+            .expect("decode after field store");
+        let Kind::NativeCompUnit(same) = decoded.kind() else {
+            panic!("native unit kind")
+        };
+        assert!(same.ptr_eq(&unit));
+        assert_eq!(
+            same.field(0).as_string().expect("current unit file"),
+            "changed-unit-file"
+        );
+    }
 
     #[test]
     fn native_subr_calls_read_actual_target_and_arity_fields() {
@@ -1919,7 +1741,6 @@ mod tests {
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
         let compiler = SharedCompiler::default();
-        let mut registry = NativeRegistry::default();
         let mut runtime = NativeRuntime::default();
         let words = runtime
             .encode_relocations(&[value])
@@ -1940,7 +1761,6 @@ mod tests {
             assert_eq!(
                 call_function(
                     &compiler,
-                    &mut registry,
                     &mut runtime,
                     &mut interpreter,
                     &mut environment,
@@ -1956,16 +1776,11 @@ mod tests {
                     .target,
                 target
             );
-            assert!(
-                registry.is_empty(),
-                "calls must not reconstruct a function registry"
-            );
         }
         native.set_arity(2, 2);
         assert!(matches!(
             call_function(
                 &compiler,
-                &mut registry,
                 &mut runtime,
                 &mut interpreter,
                 &mut environment,

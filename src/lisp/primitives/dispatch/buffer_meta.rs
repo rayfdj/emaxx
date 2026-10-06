@@ -1028,48 +1028,23 @@ define_dispatch!(
             }
             "native-comp-unit-file" => {
                 need_args(name, args, 1)?;
-                let Kind::Record(id) = args[0].kind() else {
-                    return Err(LispError::TypeError(
+                let Kind::NativeCompUnit(unit) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument(
                         "native-comp-unit".into(),
-                        args[0].type_name(),
+                        args[0],
                     ));
                 };
-                let record = interp.find_record(id).ok_or_else(|| {
-                    LispError::TypeError("native-comp-unit".into(), args[0].type_name())
-                })?;
-                if record.kind != crate::lisp::eval::RecordKind::NativeCompUnit {
-                    return Err(LispError::TypeError(
-                        "native-comp-unit".into(),
-                        args[0].type_name(),
-                    ));
-                }
-                Ok(record.slots.first().cloned().unwrap_or(Value::Nil))
+                Ok(unit.field(0))
             }
             "native-comp-unit-set-file" => {
                 need_args(name, args, 2)?;
-                let Kind::Record(id) = args[0].kind() else {
-                    return Err(LispError::TypeError(
+                let Kind::NativeCompUnit(unit) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument(
                         "native-comp-unit".into(),
-                        args[0].type_name(),
+                        args[0],
                     ));
                 };
-                let Some(record) = interp.find_record_mut(id) else {
-                    return Err(LispError::TypeError(
-                        "native-comp-unit".into(),
-                        args[0].type_name(),
-                    ));
-                };
-                if record.kind != crate::lisp::eval::RecordKind::NativeCompUnit {
-                    return Err(LispError::TypeError(
-                        "native-comp-unit".into(),
-                        args[0].type_name(),
-                    ));
-                }
-                if record.slots.is_empty() {
-                    record.slots.push(args[1]);
-                } else {
-                    record.slots[0] = args[1];
-                }
+                unit.set_field(0, args[1]);
                 Ok(args[0])
             }
             "decode-char" => {

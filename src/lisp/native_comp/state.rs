@@ -1,12 +1,6 @@
 //! Process state owned by GNU `comp.c`'s Rust replacement.
 
-use super::{
-    backend::Compiler,
-    gccjit,
-    lisp::UnitData,
-    loader::{self, NativeRegistry},
-    runtime::NativeRuntime,
-};
+use super::{backend::Compiler, gccjit, lisp::UnitData, loader, runtime::NativeRuntime};
 use crate::lisp::eval::Interpreter;
 use crate::lisp::types::{Env, LispError};
 use std::cell::RefCell;
@@ -23,7 +17,6 @@ pub(crate) struct NativeCompilerState {
     // that single RefCell (and its re-entry check) across execution owners.
     pub(super) compiler: loader::SharedCompiler,
     pub(super) runtime: NativeRuntime,
-    pub(super) registry: Box<NativeRegistry>,
 }
 
 impl Clone for NativeCompilerState {
@@ -38,7 +31,7 @@ impl Clone for NativeCompilerState {
 
 impl NativeCompilerState {
     pub(crate) fn can_clone_image(&self) -> bool {
-        self.compiler.borrow().is_none() && self.runtime.is_pristine() && self.registry.is_empty()
+        self.compiler.borrow().is_none() && self.runtime.is_pristine()
     }
 
     pub(crate) fn available() -> bool {
@@ -70,12 +63,6 @@ impl NativeCompilerState {
 
     pub(crate) fn garbage_collection_might_be_due(&mut self) -> bool {
         self.runtime.garbage_collection_might_be_due()
-    }
-
-    /// The counter as the image load begins.
-    /// The records the loader holds by id (see `NativeRegistry').
-    pub(crate) fn held_record_ids(&self) -> Vec<u64> {
-        self.registry.held_record_ids()
     }
 
     pub(crate) fn garbage_collection_note_image_load_start(&mut self) {
@@ -146,7 +133,7 @@ impl NativeCompilerState {
         late: bool,
     ) -> Result<crate::lisp::types::Value, LispError> {
         loader::load(
-            loader::LoaderState::new(&self.compiler, &mut self.registry, &mut self.runtime),
+            loader::LoaderState::new(&self.compiler, &mut self.runtime),
             interp,
             env,
             filename,
@@ -165,7 +152,6 @@ impl NativeCompilerState {
     ) -> Result<crate::lisp::types::Value, LispError> {
         loader::call_function(
             &self.compiler,
-            &mut self.registry,
             &mut self.runtime,
             interp,
             env,
@@ -181,14 +167,7 @@ impl NativeCompilerState {
         arguments: &[crate::lisp::types::Value],
         kind: loader::RegistrationKind,
     ) -> Result<crate::lisp::types::Value, LispError> {
-        loader::register_with_state(
-            &mut self.registry,
-            &mut self.runtime,
-            interp,
-            env,
-            arguments,
-            kind,
-        )
+        loader::register_with_state(&mut self.runtime, interp, env, arguments, kind)
     }
 
     /// The image loader's LATE_RELOCS and VERY_LATE_RELOCS phases: every
@@ -198,42 +177,40 @@ impl NativeCompilerState {
         &mut self,
         interp: &mut Interpreter,
         env: &mut Env,
-        units: &[u64],
+        units: &[crate::lisp::types::NativeUnitRef],
         functions: &[loader::DumpedNativeFunction],
     ) -> Result<(), LispError> {
+        // During late restoration anonymous functions may not yet be in a
+        // unit's GC guard. Keep the actual constructed objects live until all
+        // relocation phases finish, matching the mapped image's live storage.
+        let mut roots = crate::lisp::alloc::RootedVec::new();
+        roots.extend(
+            units
+                .iter()
+                .map(|unit| crate::lisp::types::Value::NativeCompUnit(*unit)),
+        );
+        roots.extend(
+            functions
+                .iter()
+                .map(|function| crate::lisp::types::Value::NativeFunction(function.function)),
+        );
         let execdir = crate::lisp::primitives::current_invocation_directory()
             .unwrap_or_else(crate::lisp::primitives::default_directory);
         let mut installation_state = loader::InstallationState::default();
-        for &record_id in units {
+        for &unit in units {
             loader::load_dumped_unit(
-                &mut self.registry,
                 &mut self.runtime,
                 interp,
                 env,
-                record_id,
+                unit,
                 &execdir,
                 &mut installation_state,
             )?;
         }
         for function in functions {
-            loader::resolve_dumped_function(
-                &mut self.registry,
-                &mut self.runtime,
-                interp,
-                env,
-                function,
-            )?;
+            loader::resolve_dumped_function(&mut self.runtime, interp, env, function)?;
         }
         Ok(())
-    }
-
-    pub(crate) fn unit_documentation(
-        &self,
-        interp: &mut Interpreter,
-        env: &mut Env,
-        record_id: u64,
-    ) -> Result<crate::lisp::types::Value, LispError> {
-        loader::unit_documentation(&self.registry, interp, env, record_id)
     }
 
     pub(crate) fn install_trampoline(
@@ -253,14 +230,12 @@ impl NativeCompilerState {
         env: &mut Env,
         output_filename: &str,
     ) -> Result<String, LispError> {
-        let Self {
-            runtime, registry, ..
-        } = self;
+        let runtime = &mut self.runtime;
         // comp.c calls Lisp accessors while its global compiler context is
         // live.  Those accessors can themselves already be native compiled,
-        // so the process-wide native function registry and runtime must stay
+        // so the shared compiler context and runtime must stay
         // reachable throughout the backend call just as they do in GNU.
-        loader::with_native_state(&self.compiler, registry, runtime, |_| {
+        loader::with_native_state(&self.compiler, runtime, |_| {
             Self::compile_current_unit_with(&self.compiler, interp, env, output_filename)
         })
     }
