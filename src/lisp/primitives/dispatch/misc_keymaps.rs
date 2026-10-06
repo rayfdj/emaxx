@@ -1641,16 +1641,11 @@ define_dispatch!(
                     Kind::Frame(_) => "frame",
                     Kind::Terminal(_) => "terminal",
                     Kind::LispRecord(_) => return cl_type_value(interp, &args[0]),
+                    Kind::NativeFunction(_) => "subr",
                     Kind::Record(id) => {
-                        let record = interp.find_record(id).ok_or_else(|| {
+                        let _record = interp.find_record(id).ok_or_else(|| {
                             LispError::TypeError("record".into(), format!("record<{}>", id.id))
                         })?;
-                        // data.c:Ftype_of answers `subr' for every
-                        // PVEC_SUBR; only `cl-type-of' distinguishes native
-                        // functions, special forms, and primitives.
-                        if record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction {
-                            return Ok(Value::symbol("subr"));
-                        }
                         return cl_type_value(interp, &args[0]);
                     }
                     Kind::Finalizer(_) => "finalizer",

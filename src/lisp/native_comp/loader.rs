@@ -12,15 +12,15 @@ use super::backend::{
     TEXT_DATA_RELOC_IMPURE_SYM, TEXT_DATA_RELOC_SYM, TEXT_FDOC_SYM, TEXT_OPTIM_QLY_SYM,
 };
 use super::runtime::{NativeCallingConvention, NativeRuntime, NativeWord};
+use crate::lisp::alloc::vectors::native_functions::NativeFunctionSpec;
 use crate::lisp::eval::{Interpreter, RecordKind};
 use crate::lisp::primitives::{
     is_vector_value, read_from_lisp_source, string_like, string_storage_error, values_equal,
 };
-use crate::lisp::types::{Env, Kind, LispError, Value};
+use crate::lisp::types::{Env, Kind, LispError, NativeFunctionRef, Value};
 use libloading::Library;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::ffi::c_void;
+use std::ffi::{CString, c_void};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -170,12 +170,6 @@ pub(crate) struct NativeRegistry {
 #[derive(Default)]
 pub(crate) struct RegisteredNativeCode {
     units: Vec<Rc<LoadedUnit>>,
-    functions: HashMap<u64, NativeFunction>,
-    function_names: HashMap<u64, Box<str>>,
-    /// Lisp_Subr.native_c_name: the symbol the function is resolved by in
-    /// its unit, which the portable dumper writes (COLD_OP_NATIVE_SUBR)
-    /// and its loader resolves again (RELOC_NATIVE_SUBR).
-    function_c_names: HashMap<u64, Box<str>>,
 }
 
 impl Default for NativeRegistry {
@@ -207,20 +201,13 @@ impl std::ops::DerefMut for NativeRegistry {
 impl NativeRegistry {
     pub(crate) fn is_empty(&self) -> bool {
         self.units.is_empty()
-            && self.functions.is_empty()
-            && self.function_names.is_empty()
-            && self.function_c_names.is_empty()
     }
 
     /// The records the loader holds by id: every unit's and every native
     /// subr's (comp.c's `Vcomp_loaded_comp_units' and the subrs' unit
     /// slots keep them reachable in GNU).
     pub(crate) fn held_record_ids(&self) -> Vec<u64> {
-        self.units
-            .iter()
-            .map(|unit| unit.record_id)
-            .chain(self.functions.keys().copied())
-            .collect()
+        self.units.iter().map(|unit| unit.record_id).collect()
     }
 
     fn unit(&self, record_id: u64) -> Option<Rc<LoadedUnit>> {
@@ -228,18 +215,6 @@ impl NativeRegistry {
             .iter()
             .find(|unit| unit.record_id == record_id)
             .cloned()
-    }
-
-    fn function(&self, record_id: u64) -> Option<NativeFunction> {
-        self.functions.get(&record_id).copied()
-    }
-
-    pub(crate) fn function_name(&self, record_id: u64) -> Option<&str> {
-        self.function_names.get(&record_id).map(AsRef::as_ref)
-    }
-
-    pub(crate) fn function_c_name(&self, record_id: u64) -> Option<&str> {
-        self.function_c_names.get(&record_id).map(AsRef::as_ref)
     }
 }
 
@@ -453,9 +428,27 @@ mod suspension_tests {
         let compiler = SharedCompiler::default();
         let mut registry = NativeRegistry::default();
         let mut runtime = NativeRuntime::default();
-        registry
-            .function_names
-            .insert(23, "before-suspension".into());
+        // The function-name maps have gone. Exercise the registry's real
+        // remaining owners: stable loaded-unit allocations across suspension.
+        let unit = |record_id| {
+            Rc::new(LoadedUnit {
+                library: libloading::os::unix::Library::this().into(),
+                record_id,
+                loaded_once: Cell::new(false),
+                load_ongoing: Cell::new(false),
+                _data: Value::Nil,
+                _impure_data: Value::Nil,
+                _optimization_qualities: Value::Nil,
+                data_relocations: std::ptr::null_mut(),
+                data_relocation_count: 0,
+                impure_relocations: std::ptr::null_mut(),
+                impure_relocation_count: 0,
+            })
+        };
+        let before = unit(23);
+        let suspended = unit(29);
+        registry.units.push(Rc::clone(&before));
+
         with_native_state(&compiler, &mut registry, &mut runtime, |_runtime| {
             let registry_pointer = ACTIVE_REGISTRY.get();
             let runtime_pointer = ACTIVE_REGISTERED_RUNTIME.get();
@@ -466,15 +459,19 @@ mod suspension_tests {
                     assert!(ACTIVE_REGISTERED_RUNTIME.get().is_null());
                     assert!(ACTIVE_COMPILER.get().is_null());
                     assert!(Rc::ptr_eq(&interpreter.native_compiler.compiler, &compiler));
-                    assert_eq!(
-                        interpreter.native_compiler.registry.function_name(23),
-                        Some("before-suspension")
-                    );
+                    assert!(Rc::ptr_eq(
+                        &interpreter
+                            .native_compiler
+                            .registry
+                            .unit(23)
+                            .expect("registered unit survives suspension"),
+                        &before
+                    ));
                     interpreter
                         .native_compiler
                         .registry
-                        .function_names
-                        .insert(29, "while-suspended".into());
+                        .units
+                        .push(Rc::clone(&suspended));
                     panic!("loader-suspension-test");
                 })
             }))
@@ -487,8 +484,18 @@ mod suspension_tests {
             assert_eq!(ACTIVE_REGISTERED_RUNTIME.get(), runtime_pointer);
             assert_eq!(ACTIVE_COMPILER.get(), compiler_pointer);
         });
-        assert_eq!(registry.function_name(23), Some("before-suspension"));
-        assert_eq!(registry.function_name(29), Some("while-suspended"));
+        assert!(Rc::ptr_eq(
+            &registry
+                .unit(23)
+                .expect("registered unit survives suspension"),
+            &before
+        ));
+        assert!(Rc::ptr_eq(
+            &registry
+                .unit(29)
+                .expect("registered unit survives suspension"),
+            &suspended
+        ));
         assert!(runtime.is_pristine());
         assert!(ACTIVE_REGISTRY.get().is_null());
         assert!(ACTIVE_REGISTERED_RUNTIME.get().is_null());
@@ -614,9 +621,7 @@ fn comp_unit_relocations_match(
         if actual.as_symbol().ok() == Some("lambda-fixup") {
             return false;
         }
-        let native_function = matches!(actual.kind(), Kind::Record(id)
-            if interpreter.find_record(id).is_some_and(|record|
-                record.kind == RecordKind::NativeCompiledFunction));
+        let native_function = matches!(actual.kind(), Kind::NativeFunction(_));
         if native_function {
             let Kind::HashTable(guard_id) = guard.kind() else {
                 return false;
@@ -1136,7 +1141,7 @@ pub(super) fn register_with_state(
     } else {
         (arguments[2].as_integer()?, arguments[3], Value::Nil)
     };
-    let (min_args, convention, max_args) = native_arity(dynamic, min_args, &max_value)?;
+    let (min_args, _, _) = native_arity(dynamic, min_args, &max_value)?;
     let Kind::Record(unit_record_id) = arguments[6].kind() else {
         return Err(crate::lisp::primitives::wrong_type_argument(
             "native-comp-unit-p",
@@ -1159,44 +1164,29 @@ pub(super) fn register_with_state(
             arguments[0].as_symbol()?.to_string()
         };
         let rest = arguments[5].to_vec()?;
-        let function = interpreter.create_pseudovector(
-            RecordKind::NativeCompiledFunction,
-            "subr",
-            vec![
-                // GNU keeps both names as C strings in Lisp_Subr.  Keeping a
-                // Lisp string here would invent two GC-visible objects.
-                Value::Nil,
-                Value::Integer(min_args as i64),
-                max_value,
-                Value::Nil,
-                arguments[4],
-                rest.first().cloned().unwrap_or(Value::Nil),
-                rest.get(1).cloned().unwrap_or(Value::Nil),
-                rest.get(2).cloned().unwrap_or(Value::Nil),
+        let function = Value::NativeFunction(NativeFunctionRef::new(NativeFunctionSpec {
+            target,
+            min_args: min_args as i16,
+            max_args: max_value.as_integer().map_or(-2, |n| n as i16),
+            // comp.c:make_subr uses xstrdup(SSDATA(symbol_name)): an
+            // embedded NUL terminates the subr's C name, not the Lisp symbol.
+            name: CString::new(symbol_name.split('\0').next().unwrap_or_default())
+                .expect("C name prefix contains no NUL"),
+            c_name: CString::new(c_name)
+                .map_err(|_| super::lisp::native_ice("NUL in native C name"))?,
+            doc: rest.first().copied().unwrap_or(Value::Nil).as_integer()? as isize,
+            fields: [
+                rest.get(1).copied().unwrap_or(Value::Nil),
+                rest.get(2).copied().unwrap_or(Value::Nil),
                 arguments[6],
                 lambda_list,
-                if dynamic { Value::T } else { Value::Nil },
+                arguments[4],
             ],
-        );
-        let Kind::Record(function_record_id) = function.kind() else {
-            unreachable!("native function is a pseudovector")
-        };
-        registry.functions.insert(
-            function_record_id.id,
-            NativeFunction {
-                target,
-                convention,
-                min_args,
-                max_args,
-                dynamic,
-            },
-        );
-        registry
-            .function_names
-            .insert(function_record_id.id, symbol_name.into_boxed_str());
-        registry
-            .function_c_names
-            .insert(function_record_id.id, c_name.into_boxed_str());
+        }));
+        // Registration can call Lisp before fset or the unit lambda guard owns
+        // the subr. Keep the actual object rooted for that publication interval.
+        let mut roots = crate::lisp::alloc::RootedVec::new();
+        roots.push(function);
 
         if matches!(kind, RegistrationKind::Lambda) {
             let (lambda_guard, lambda_name_index) = {
@@ -1288,17 +1278,21 @@ pub(crate) fn register_active(
 pub(crate) fn call_active_function(
     interpreter: &mut Interpreter,
     environment: &mut Env,
-    record_id: u64,
+    native: NativeFunctionRef,
     arguments: &[Value],
 ) -> Option<Result<Value, LispError>> {
-    let function = with_active_registry(|registry| registry.function(record_id)).flatten()?;
-    Some(call_function_with_runtime(
-        function,
-        record_id,
-        interpreter,
-        environment,
-        arguments,
-    ))
+    let function = descriptor(native);
+    super::runtime::with_current_runtime(|runtime| {
+        check_arity(function, arguments.len())?;
+        invoke_function(
+            function,
+            native,
+            runtime,
+            interpreter,
+            environment,
+            arguments,
+        )
+    })
 }
 
 pub(crate) fn call_function(
@@ -1307,67 +1301,26 @@ pub(crate) fn call_function(
     runtime: &mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
-    record_id: u64,
+    native: NativeFunctionRef,
     arguments: &[Value],
 ) -> Result<Value, LispError> {
-    let function = registry
-        .function(record_id)
-        .ok_or_else(|| {
-            let mut registered = registry.functions.keys().copied().collect::<Vec<_>>();
-            registered.sort_unstable();
-            super::lisp::native_ice(&format!(
-                "native function record {record_id} is not registered; registered records: {registered:?}"
-            ))
-    })?;
+    let function = descriptor(native);
     check_arity(function, arguments.len())?;
     with_native_state(compiler, registry, runtime, |runtime| {
         invoke_function(
             function,
-            record_id,
+            native,
             runtime,
             interpreter,
             environment,
             arguments,
         )
     })
-}
-
-fn call_function_with_runtime(
-    function: NativeFunction,
-    record_id: u64,
-    interpreter: &mut Interpreter,
-    environment: &mut Env,
-    arguments: &[Value],
-) -> Result<Value, LispError> {
-    check_arity(function, arguments.len())?;
-    if let Some(result) = super::runtime::with_current_runtime(|runtime| {
-        invoke_function(
-            function,
-            record_id,
-            runtime,
-            interpreter,
-            environment,
-            arguments,
-        )
-    }) {
-        return result;
-    }
-    with_active_registered_runtime(|runtime| {
-        invoke_function(
-            function,
-            record_id,
-            runtime,
-            interpreter,
-            environment,
-            arguments,
-        )
-    })
-    .ok_or_else(|| super::lisp::native_ice("active native function has no runtime"))?
 }
 
 fn invoke_function(
     function: NativeFunction,
-    record_id: u64,
+    native: NativeFunctionRef,
     runtime: &mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
@@ -1386,15 +1339,7 @@ fn invoke_function(
     // eval.c:funcall_lambda owns the calling convention for Lisp/d native
     // functions.  It binds the recorded lambda list dynamically and enters
     // the generated function through its zero-argument machine entry.
-    let record = interpreter
-        .find_record(record_id)
-        .filter(|record| record.kind == RecordKind::NativeCompiledFunction)
-        .ok_or_else(|| super::lisp::native_ice("missing dynamic native function record"))?;
-    let lambda_list = record
-        .slots
-        .get(9)
-        .cloned()
-        .ok_or_else(|| super::lisp::native_ice("dynamic native function has no lambda list"))?;
+    let lambda_list = native.lambda_list();
     let parameters = lambda_list.to_vec()?;
     let mut argument_index = 0;
     let mut optional = false;
@@ -1408,18 +1353,18 @@ fn invoke_function(
                 .unwrap_or(parameter);
             let name = parameter
                 .as_symbol()
-                .map_err(|_| invalid_function(interpreter.record_value(record_id)))?;
+                .map_err(|_| invalid_function(Value::NativeFunction(native)))?;
             match name {
                 "&rest" => {
                     if rest || previous_rest {
-                        return Err(invalid_function(interpreter.record_value(record_id)));
+                        return Err(invalid_function(Value::NativeFunction(native)));
                     }
                     rest = true;
                     previous_rest = true;
                 }
                 "&optional" => {
                     if optional || rest || previous_rest {
-                        return Err(invalid_function(interpreter.record_value(record_id)));
+                        return Err(invalid_function(Value::NativeFunction(native)));
                     }
                     optional = true;
                 }
@@ -1451,7 +1396,7 @@ fn invoke_function(
             }
         }
         if previous_rest {
-            return Err(invalid_function(interpreter.record_value(record_id)));
+            return Err(invalid_function(Value::NativeFunction(native)));
         }
         if argument_index < arguments.len() {
             return Err(LispError::WrongNumberOfArgs(
@@ -1500,28 +1445,35 @@ fn check_arity(function: NativeFunction, count: usize) -> Result<(), LispError> 
     Ok(())
 }
 
+fn descriptor(function: NativeFunctionRef) -> NativeFunction {
+    let dynamic = function.is_dynamic();
+    let maximum = function.max_args_word();
+    let (convention, max_args) = if maximum < 0 {
+        (
+            if dynamic {
+                NativeCallingConvention::Fixed
+            } else {
+                NativeCallingConvention::Many
+            },
+            None,
+        )
+    } else {
+        native_function_signature(dynamic, maximum as usize)
+    };
+    NativeFunction {
+        target: function.target(),
+        convention,
+        min_args: function.min_args() as usize,
+        max_args,
+        dynamic,
+    }
+}
+
 pub(crate) fn function_target(
-    registry: &NativeRegistry,
-    record_id: u64,
-) -> Option<(*mut c_void, NativeCallingConvention)> {
-    registry
-        .function(record_id)
-        .map(|function| (function.target.cast_mut(), function.convention))
-}
-
-pub(crate) fn active_function_target(
-    record_id: u64,
-) -> Option<(*mut c_void, NativeCallingConvention)> {
-    with_active_registry(|registry| function_target(registry, record_id)).flatten()
-}
-
-pub(crate) fn active_function_name(record_id: u64) -> Option<String> {
-    with_active_registry(|registry| registry.function_name(record_id).map(str::to_owned)).flatten()
-}
-
-pub(crate) fn active_function_c_name(record_id: u64) -> Option<String> {
-    with_active_registry(|registry| registry.function_c_name(record_id).map(str::to_owned))
-        .flatten()
+    function: NativeFunctionRef,
+) -> (*mut c_void, NativeCallingConvention) {
+    let descriptor = descriptor(function);
+    (descriptor.target.cast_mut(), descriptor.convention)
 }
 
 /// pdumper.c:dump_do_dump_relocation's `installation_state': whether the
@@ -1793,9 +1745,7 @@ fn fixup_eln_load_path(
 /// The names the portable dumper keeps for a native function: GNU's
 /// Lisp_Subr.symbol_name and native_c_name, both C strings.
 pub(crate) struct DumpedNativeFunction {
-    pub(crate) record_id: u64,
-    pub(crate) name: String,
-    pub(crate) c_name: String,
+    pub(crate) function: NativeFunctionRef,
 }
 
 /// pdumper.c:dump_do_dump_relocation for RELOC_NATIVE_SUBR: the function
@@ -1809,31 +1759,11 @@ pub(super) fn resolve_dumped_function(
     environment: &mut Env,
     function: &DumpedNativeFunction,
 ) -> Result<(), LispError> {
-    let record_id = function.record_id;
-    let (min_args, max_value, dynamic, unit_record_id) = {
-        let record = interpreter
-            .find_record(record_id)
-            .filter(|record| record.kind == RecordKind::NativeCompiledFunction)
-            .ok_or_else(|| dump_load_error("dumped native function record is missing".into()))?;
-        let unit_record_id = match record.slots.get(8).map(|v| v.kind()) {
-            Some(Kind::Record(id)) => id,
-            _ => {
-                return Err(dump_load_error(
-                    "dumped native function has no compilation unit".into(),
-                ));
-            }
-        };
-        (
-            record
-                .slots
-                .get(1)
-                .cloned()
-                .unwrap_or(Value::Nil)
-                .as_integer()?,
-            record.slots.get(2).cloned().unwrap_or(Value::Nil),
-            record.slots.get(10).is_some_and(Value::is_truthy),
-            unit_record_id,
-        )
+    let function = function.function;
+    let Kind::Record(unit_record_id) = function.unit().kind() else {
+        return Err(dump_load_error(
+            "dumped native function has no compilation unit".into(),
+        ));
     };
     let unit_file = interpreter
         .find_record(unit_record_id)
@@ -1843,29 +1773,13 @@ pub(super) fn resolve_dumped_function(
     let unit = registry
         .unit(unit_record_id.id)
         .ok_or_else(|| dump_load_error(format!("NULL handle in compilation unit {unit_file}")))?;
-    let c_name = function.c_name.as_str();
+    let c_name = function.c_name();
     let target = unsafe { function_symbol(&unit.library, c_name) }.map_err(|_| {
         dump_load_error(format!(
             "can't find function \"{c_name}\" in compilation unit {unit_file}"
         ))
     })?;
-    let (min_args, convention, max_args) = native_arity(dynamic, min_args, &max_value)?;
-    registry.functions.insert(
-        record_id,
-        NativeFunction {
-            target,
-            convention,
-            min_args,
-            max_args,
-            dynamic,
-        },
-    );
-    registry
-        .function_names
-        .insert(record_id, function.name.clone().into_boxed_str());
-    registry
-        .function_c_names
-        .insert(record_id, function.c_name.clone().into_boxed_str());
+    function.set_target(target);
 
     let (lambda_guard, lambda_name_index) = {
         let record = interpreter
@@ -1900,7 +1814,7 @@ pub(super) fn resolve_dumped_function(
                 "dumped lambda relocation is not a lambda-fixup placeholder",
             ));
         }
-        let subr = interpreter.record_value(record_id);
+        let subr = Value::NativeFunction(function);
         let word = runtime.encode_relocations(std::slice::from_ref(&subr))?[0];
         unsafe { std::ptr::write(unit.impure_relocations.add(index), word) };
         super::lisp::call_c_primitive(
@@ -1968,22 +1882,107 @@ pub(crate) fn active_unit_documentation(
     })
 }
 
-pub(crate) fn active_direct_function(record_id: u64) -> Option<DirectNativeFunction> {
-    with_active_registry(|registry| {
-        let function = registry.function(record_id)?;
-        (!function.dynamic).then_some(DirectNativeFunction {
-            target: function.target,
-            convention: function.convention,
-            min_args: function.min_args,
-            max_args: function.max_args,
-        })
+pub(crate) fn direct_function(native: NativeFunctionRef) -> Option<DirectNativeFunction> {
+    let function = descriptor(native);
+    (!function.dynamic).then_some(DirectNativeFunction {
+        target: function.target,
+        convention: function.convention,
+        min_args: function.min_args,
+        max_args: function.max_args,
     })
-    .flatten()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_subr_calls_read_actual_target_and_arity_fields() {
+        extern "C" fn first(left: NativeWord, _right: NativeWord) -> NativeWord {
+            left
+        }
+        extern "C" fn second(_left: NativeWord, right: NativeWord) -> NativeWord {
+            right
+        }
+        let native = NativeFunctionRef::new(NativeFunctionSpec {
+            target: first as *const c_void,
+            min_args: 1,
+            max_args: 2,
+            name: CString::new("native-direct-fields").expect("NUL-free fixture name"),
+            c_name: CString::new("Fnative_direct_fields_37").expect("NUL-free fixture C name"),
+            doc: 0,
+            fields: [Value::Nil; 5],
+        });
+        let value = Value::NativeFunction(native);
+        let mut roots = crate::lisp::alloc::RootedVec::new();
+        roots.push(value);
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let compiler = SharedCompiler::default();
+        let mut registry = NativeRegistry::default();
+        let mut runtime = NativeRuntime::default();
+        let words = runtime
+            .encode_relocations(&[value])
+            .expect("encode actual subr");
+        assert_eq!(words, [value.word()]);
+        assert!(
+            runtime
+                .decode_relocation(words[0])
+                .expect("actual subr relocation")
+                .eq_value(value)
+        );
+        let arguments = [Value::Integer(23), Value::Integer(79)];
+        for (target, expected) in [
+            (first as *const c_void, arguments[0]),
+            (second as *const c_void, arguments[1]),
+        ] {
+            native.set_target(target);
+            assert_eq!(
+                call_function(
+                    &compiler,
+                    &mut registry,
+                    &mut runtime,
+                    &mut interpreter,
+                    &mut environment,
+                    native,
+                    &arguments
+                )
+                .expect("native call reads its current target"),
+                expected
+            );
+            assert_eq!(
+                direct_function(native)
+                    .expect("non-dynamic native descriptor")
+                    .target,
+                target
+            );
+            assert!(
+                registry.is_empty(),
+                "calls must not reconstruct a function registry"
+            );
+        }
+        native.set_arity(2, 2);
+        assert!(matches!(
+            call_function(
+                &compiler,
+                &mut registry,
+                &mut runtime,
+                &mut interpreter,
+                &mut environment,
+                native,
+                &arguments[..1]
+            ),
+            Err(error) if matches!(error.kind(), crate::lisp::types::LispErrorKind::WrongNumberOfArgs(_, 1))
+        ));
+        assert_eq!(
+            direct_function(native)
+                .expect("non-dynamic native descriptor")
+                .min_args,
+            2
+        );
+        assert_eq!(interpreter.backtrace_frames_len(), 0);
+        assert_eq!(interpreter.lisp_eval_depth, 0);
+    }
 
     #[test]
     fn finite_native_nadic_signature_matches_funcall_subr() {

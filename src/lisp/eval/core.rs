@@ -423,6 +423,7 @@ impl Interpreter {
             }
 
             Kind::BuiltinFunc(_)
+            | Kind::NativeFunction(_)
             | Kind::Closure(_)
             | Kind::Buffer(_)
             | Kind::Marker(_)
@@ -558,13 +559,10 @@ impl Interpreter {
             // the original callee, not the object found in that cell.
             match function.kind() {
                 Kind::BuiltinFunc(subr) => break FunctionResolution::DirectBuiltin(subr),
-                Kind::Closure(_) => break resolution,
+                Kind::Closure(_) | Kind::NativeFunction(_) => break resolution,
                 Kind::Record(id)
                     if self.find_record(id).is_some_and(|record| {
-                        matches!(
-                            record.kind,
-                            RecordKind::NativeCompiledFunction | RecordKind::ModuleFunction
-                        )
+                        matches!(record.kind, RecordKind::ModuleFunction)
                     }) =>
                 {
                     break resolution;
@@ -1450,14 +1448,10 @@ impl Interpreter {
                     interp.settle_frame_result(result, env)
                 })
             }
-            Kind::Record(id)
-                if self
-                    .find_record(id)
-                    .is_some_and(|record| record.kind == RecordKind::NativeCompiledFunction) =>
-            {
+            Kind::NativeFunction(function) => {
                 let backtrace_function = original_name
                     .map(CallName::original_symbol_value)
-                    .unwrap_or(Value::Record(id));
+                    .unwrap_or(Value::NativeFunction(function));
                 self.with_backtrace_frame(backtrace_function, args, |interp| {
                     interp.capture_current_backtrace_context(
                         original_name.map(CallName::as_str),
@@ -1465,7 +1459,8 @@ impl Interpreter {
                         None,
                     );
                     crate::lisp::native_comp::maybe_gc(interp, env);
-                    let result = crate::lisp::native_comp::call_function(interp, env, id.id, args);
+                    let result =
+                        crate::lisp::native_comp::call_function(interp, env, function, args);
                     interp.settle_frame_result(result, env)
                 })
             }

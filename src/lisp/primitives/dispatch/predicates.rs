@@ -275,13 +275,7 @@ define_dispatch!(
                 // is a subr; disguising any as Lisp forged provenance.
                 Ok(match args[0].kind() {
                     Kind::BuiltinFunc(_) => Value::T,
-                    Kind::Record(id)
-                        if interp.find_record(id).is_some_and(|record| {
-                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
-                        }) =>
-                    {
-                        Value::T
-                    }
+                    Kind::NativeFunction(_) => Value::T,
                     _ => Value::Nil,
                 })
             }
@@ -333,6 +327,12 @@ define_dispatch!(
                 match function.kind() {
                     Kind::BuiltinFunc(builtin) => {
                         if generated_builtin_arities::generated_builtin_command_p(&builtin) {
+                            return Ok(Value::T);
+                        }
+                    }
+                    Kind::NativeFunction(function) => {
+                        // eval.c:Fcommandp tests the actual subr interactive field.
+                        if function.interactive().is_truthy() {
                             return Ok(Value::T);
                         }
                     }

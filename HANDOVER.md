@@ -16,6 +16,46 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
+## Applied native function objects — 6 October 2026
+
+**Source308 is applied; the full goal remains incomplete.** Native functions now
+use one actual 88-byte GNU-layout subr for calls, metadata, identity and GC. The
+old native-function record and three persistent descriptor/name maps are removed.
+Direct calls read the function pointer and arities from the object. Five Lisp
+fields are traced explicitly; unreachable subrs release their C names.
+
+The [closed selected evidence](docs/handover/2026-09-30-shared-reader-draft/source308-native-object-selected-manifest.json)
+verifies all 541 source inputs/modes, fresh warning-free strict checks,
+**1,031 passes per profile**, including all 24 audit tests, and **52 ordinary GNU
+comparisons**, including 198 generated printer rows. Original fixtures, assertions
+and expected bytes remain. The original dabbrev regression is repaired by making
+`commandp` recognize the native object's interactive field; native reader and
+property identity and exact GNU C-name printing are covered too.
+
+The [closed full16 diagnostic](docs/handover/2026-09-30-shared-reader-draft/source308-native-object-performance-manifest.json)
+verifies all **384 actual process answers and execution modes**. The raw body
+geometric ratio to304 is **0.951094**;
+individual changes range from **-25.891% to +5.656%**.
+308's paired GNU aggregate is **2.710317×**.
+Every sample remains, including the first cohort’s slower undo and interpreted
+cases. These six complementary pilots do not establish statistical
+significance or GNU parity. Real counters, calibration, nine rounds and every-case
+upper95% ratio at most1.03 remain required.
+
+Predecessor304 platform results are closed and preserved: Linux frozen passes
+519 files /7,928 equal outcomes; macOS Rust passes3,139 tests with two existing
+ignores; [macOS terminal](docs/handover/2026-09-30-shared-reader-draft/source304-macos-terminal-results-manifest.json)
+passes all226 scenarios /686 screen and filesystem comparisons. Linux Rust stays
+failed after2,291 passes at the GNU first-record census (-7 instead of2), leaving
+758 library names and both Cargo stages unstarted. macOS frozen stays failed with
+7,915 exact matches and six existing build-feature skip-diagnostic differences.
+These results certify304 only. Exact308 full platform checks are next.
+
+Main remains `21d20f0e`, PR79 stays draft. Symbol/unit authority, real intervals and
+pure storage, physical accounting, final ownership/borrow review, final adversarial
+review, complete final-source validation and the full performance criterion remain
+open. See the native continuation for failed drafts and exact-source launch receipts.
+
 ## Applied column and native-audit repair — 6 October 2026
 
 **Source304 is applied; the full goal is incomplete.** Ordinary buffer columns

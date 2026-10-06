@@ -486,14 +486,9 @@ define_dispatch!(
                 let Kind::Symbol(symbol) = args[0].kind() else {
                     return Err(wrong_type_argument("symbolp", args[0]));
                 };
-                let Kind::Record(trampoline_id) = args[1].kind() else {
+                let Kind::NativeFunction(trampoline) = args[1].kind() else {
                     return Err(wrong_type_argument("subrp", args[1]));
                 };
-                if !interp.find_record(trampoline_id).is_some_and(|record| {
-                    record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
-                }) {
-                    return Err(wrong_type_argument("subrp", args[1]));
-                }
                 let original = interp.lookup_function(&symbol, env)?;
                 let Kind::BuiltinFunc(original_name) = original.kind() else {
                     return Err(wrong_type_argument("subrp", original));
@@ -506,11 +501,7 @@ define_dispatch!(
                         args[0],
                     ]))
                 })?;
-                crate::lisp::native_comp::install_trampoline(
-                    interp,
-                    subroutine_index,
-                    trampoline_id.id,
-                )?;
+                crate::lisp::native_comp::install_trampoline(interp, subroutine_index, trampoline)?;
                 let installed = interp
                     .lookup_var("comp-installed-trampolines-h", env)
                     .unwrap_or(Value::Nil);

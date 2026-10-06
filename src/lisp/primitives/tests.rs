@@ -166,6 +166,33 @@ fn native_loader_interns_symbols_inside_relocation_vectors() {
 }
 
 #[test]
+fn native_subr_c_names_follow_gnu_nul_termination_without_changing_symbols() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/native-subr-c-names.el"),
+        include_str!("../../../tests/fixtures/native-subr-c-names.expected").trim(),
+        "native C names terminate at NUL while actual Lisp symbol identity remains intact",
+    );
+}
+
+#[test]
+fn native_subr_consumers_preserve_commands_completion_properties_and_substitution() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/native-subr-consumers.el"),
+        include_str!("../../../tests/fixtures/native-subr-consumers.expected").trim(),
+        "native command recognition, direct completion tables, property identity and reader substitution",
+    );
+}
+
+#[test]
+fn native_subr_authority_preserves_gnu_metadata_calls_and_identity() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/native-subr-authority.el"),
+        include_str!("../../../tests/fixtures/native-subr-authority.expected").trim(),
+        "native subr fields, lexical and dynamic calls, GC, identity and ordering",
+    );
+}
+
+#[test]
 fn native_vector_words_preserve_mixed_elements_and_cyclic_closures() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/shared-vector-native-words.el"),
@@ -3354,9 +3381,10 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let has_native_functions = interp.known_symbol_names().iter().any(|name| {
-        matches!(interp.raw_function_binding(name, &env).map(|v| v.kind()), Some(Kind::Record(id))
-            if interp.find_record(id).is_some_and(|record|
-                record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction))
+        matches!(
+            interp.raw_function_binding(name, &env).map(|v| v.kind()),
+            Some(Kind::NativeFunction(_))
+        )
     });
     let path = std::env::temp_dir().join(format!("emaxx-d11-boundary-{}.pdmp", std::process::id()));
     let _ = std::fs::remove_file(&path);
@@ -3640,9 +3668,12 @@ fn batch_startup_image_round_trip_or_explicit_native_image_limit() {
     })
     .expect("the loadup state");
     let has_native_functions = temacs.known_symbol_names().iter().any(|name| {
-        matches!(temacs.raw_function_binding(name, &crate::lisp::types::Env::new()).map(|v| v.kind()), Some(Kind::Record(id))
-            if temacs.find_record(id).is_some_and(|record|
-                record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction))
+        matches!(
+            temacs
+                .raw_function_binding(name, &crate::lisp::types::Env::new())
+                .map(|v| v.kind()),
+            Some(Kind::NativeFunction(_))
+        )
     });
     let path = std::env::temp_dir().join(format!("emaxx-d16-startup-{}.pdmp", std::process::id()));
     let _ = std::fs::remove_file(&path);

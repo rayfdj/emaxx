@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub use crate::lisp::alloc::vectors::NativeFunctionRef;
+
 pub use crate::lisp::alloc::vectors::{CharTableRef, HashTableRef, SubCharTableRef};
 pub use crate::lisp::native_comp::abi::BuiltinRef;
 use num_bigint::BigInt;
@@ -1519,6 +1521,8 @@ pub enum Kind {
     Vector(VectorRef),
     /// A static GNU-layout subr containing its arity and native entry point.
     BuiltinFunc(BuiltinRef),
+    /// An allocated GNU-layout native subr, distinct from immutable DEFUN storage.
+    NativeFunction(NativeFunctionRef),
     /// GNU PVEC_CLOSURE: argument descriptor, code/body, constants/environment.
     Closure(ClosureRef),
     /// A buffer object: (id, name). The id is used for `eq` identity.
@@ -1628,6 +1632,10 @@ impl Value {
     #[inline]
     pub fn BuiltinFunc(subr: BuiltinRef) -> Value {
         Value::from_bits(subr.identity_ptr() | TAG_VECTORLIKE)
+    }
+    #[inline]
+    pub fn NativeFunction(function: NativeFunctionRef) -> Value {
+        Value::from_bits(function.identity() | TAG_VECTORLIKE)
     }
     #[inline]
     pub fn Closure(lambda: ClosureRef) -> Value {
@@ -1758,7 +1766,11 @@ impl Value {
                             Kind::SymbolWithPos(SymbolWithPosRef::from_raw(header))
                         }
                         crate::lisp::alloc::VectorTag::Subr => {
-                            Kind::BuiltinFunc(BuiltinRef::from_raw(header as usize))
+                            if crate::lisp::alloc::vectors::subr_is_allocated(header) {
+                                Kind::NativeFunction(NativeFunctionRef::from_raw(header))
+                            } else {
+                                Kind::BuiltinFunc(BuiltinRef::from_raw(header as usize))
+                            }
                         }
                         crate::lisp::alloc::VectorTag::Buffer => {
                             Kind::Buffer(crate::lisp::alloc::VectorlikeRef::from_raw(header))
@@ -1866,6 +1878,7 @@ impl Kind {
             Kind::Cons(v) => Value::Cons(v),
             Kind::Vector(v) => Value::Vector(v),
             Kind::BuiltinFunc(v) => Value::BuiltinFunc(v),
+            Kind::NativeFunction(v) => Value::NativeFunction(v),
             Kind::Closure(v) => Value::Closure(v),
             Kind::Buffer(v) => Value::Buffer(v),
             Kind::Marker(v) => Value::Marker(v),
@@ -2509,6 +2522,7 @@ impl Value {
             Kind::Cons(_) => "cons".into(),
             Kind::Vector(_) => "vector".into(),
             Kind::BuiltinFunc(name) => format!("builtin<{}>", name),
+            Kind::NativeFunction(function) => format!("native-function<{}>", function.name()),
             Kind::Closure(closure) => if closure.is_bytecode() {
                 "byte-code-function"
             } else {
@@ -2599,6 +2613,7 @@ fn values_equal_recursive(
             a.len() == b.len() && a.zip(b).all(|(a, b)| values_equal_recursive(&a, &b, seen))
         }
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
+        (Kind::NativeFunction(a), Kind::NativeFunction(b)) => a.ptr_eq(&b),
         (Kind::Closure(a), Kind::Closure(b)) => {
             if a.ptr_eq(&b)
                 || !seen
@@ -2744,6 +2759,7 @@ fn format_value(
             write!(f, ")")
         }
         Kind::BuiltinFunc(name) => write!(f, "#<builtin {}>", name),
+        Kind::NativeFunction(function) => write!(f, "#<subr {}>", function.name()),
         Kind::Closure(lambda) => write!(f, "#<lambda {}>", lambda.parameters()),
         Kind::Buffer(buffer) => write!(f, "#<buffer {}>", buffer.borrow().name),
         Kind::Marker(id) => write!(f, "#<marker id:{}>", id),

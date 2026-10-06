@@ -1195,7 +1195,6 @@ pub(crate) enum RecordKind {
     Mutex,
     ConditionVariable,
     NativeCompUnit,
-    NativeCompiledFunction,
     ModuleFunction,
     UserPointer,
     TreeSitterParser,
@@ -1211,9 +1210,8 @@ impl RecordKind {
             Self::BoolVector => 2_usize.saturating_add(logical_slots.div_ceil(64)),
             // Verified from the configured GNU headers: 72 and 24 bytes.
             Self::Obarray => 3,
-            // Both configured structs are 88 bytes on the supported GNU
-            // 64-bit ABI (comp.h and lisp.h:Lisp_Subr).
-            Self::NativeCompUnit | Self::NativeCompiledFunction => 11,
+            // comp.h:Lisp_Native_Comp_Unit is 88 bytes on this GNU ABI.
+            Self::NativeCompUnit => 11,
             // alloc.c:allocate_process uses VECSIZE(struct Lisp_Process),
             // which is 42 words on the configured GNU 64-bit ABI.
             Self::Process => 42,
@@ -2965,6 +2963,28 @@ impl ImageGraphCopier {
                 }
                 copied
             }
+            Kind::NativeFunction(function) => {
+                let key = function.identity();
+                if let Some(copied) = self.vectors.get(&key) {
+                    return *copied;
+                }
+                let copy = crate::lisp::types::NativeFunctionRef::new(
+                    crate::lisp::alloc::vectors::native_functions::NativeFunctionSpec {
+                        target: function.target(),
+                        min_args: function.min_args(),
+                        max_args: function.max_args_word(),
+                        doc: function.doc_index(),
+                        name: std::ffi::CString::new(function.name()).expect("valid stored C name"),
+                        c_name: std::ffi::CString::new(function.c_name())
+                            .expect("valid stored C name"),
+                        fields: [Value::Nil; 5],
+                    },
+                );
+                let copied = Value::NativeFunction(copy);
+                self.vectors.insert(key, copied);
+                copy.set_fields(function.fields().map(|field| self.copy(&field)));
+                copied
+            }
             Kind::LispRecord(record) => {
                 let key = record.identity();
                 if let Some(copied) = self.vectors.get(&key) {
@@ -3238,6 +3258,7 @@ impl LispReachability {
             Kind::Cons(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Vector(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Closure(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::NativeFunction(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Buffer(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().is_marked(self.epoch),
             Kind::Overlay(overlay) => overlay.mark_bit().is_marked(self.epoch),
@@ -3323,6 +3344,7 @@ impl LispReachability {
             Kind::Cons(value) => value.mark_bit().mark(self.epoch),
             Kind::Vector(value) => value.mark_bit().mark(self.epoch),
             Kind::Closure(value) => value.mark_bit().mark(self.epoch),
+            Kind::NativeFunction(value) => value.mark_bit().mark(self.epoch),
             Kind::Buffer(value) => value.mark_bit().mark(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().mark(self.epoch),
             Kind::Overlay(overlay) => overlay.mark_bit().mark(self.epoch),
@@ -3341,6 +3363,11 @@ impl LispReachability {
 
     fn trace_fields(&mut self, interp: &Interpreter, value: &Value) {
         match value.kind() {
+            Kind::NativeFunction(function) => {
+                for field in function.fields() {
+                    self.enqueue(&field);
+                }
+            }
             Kind::SymbolWithPos(object) => {
                 self.enqueue(&object.position());
                 self.enqueue(&object.symbol());

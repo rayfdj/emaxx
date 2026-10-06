@@ -143,16 +143,16 @@ pub(crate) fn load(
 pub(crate) fn call_function(
     interpreter: &mut Interpreter,
     environment: &mut Env,
-    record_id: u64,
+    function: crate::lisp::types::NativeFunctionRef,
     arguments: &[Value],
 ) -> Result<Value, LispError> {
     if let Some(result) =
-        loader::call_active_function(interpreter, environment, record_id, arguments)
+        loader::call_active_function(interpreter, environment, function, arguments)
     {
         return result;
     }
     let mut state = std::mem::take(&mut interpreter.native_compiler);
-    let result = state.call_function(interpreter, environment, record_id, arguments);
+    let result = state.call_function(interpreter, environment, function, arguments);
     interpreter.native_compiler = state;
     result
 }
@@ -160,27 +160,12 @@ pub(crate) fn call_function(
 pub(crate) fn function_documentation(
     interpreter: &mut Interpreter,
     environment: &mut Env,
-    record_id: u64,
+    function: crate::lisp::types::NativeFunctionRef,
 ) -> Result<Value, LispError> {
-    let (index, unit_id) = {
-        let function = interpreter
-            .find_record(record_id)
-            .filter(|record| record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction)
-            .ok_or_else(|| lisp::native_ice("native documentation requested for a non-function"))?;
-        let index = function
-            .slots
-            .get(5)
-            .ok_or_else(|| lisp::native_ice("native function has no documentation index"))?
-            .as_integer()
-            .and_then(|index| {
-                usize::try_from(index)
-                    .map_err(|_| lisp::native_ice("negative native documentation index"))
-            })?;
-        let unit_id = match function.slots.get(8).map(|v| v.kind()) {
-            Some(Kind::Record(unit_id)) => unit_id,
-            _ => return Err(lisp::native_ice("native function has no compilation unit")),
-        };
-        (index, unit_id)
+    let index = usize::try_from(function.doc_index())
+        .map_err(|_| lisp::native_ice("negative native documentation index"))?;
+    let Kind::Record(unit_id) = function.unit().kind() else {
+        return Err(lisp::native_ice("native function has no compilation unit"));
     };
     let docs = interpreter
         .find_record(unit_id)
@@ -207,25 +192,6 @@ pub(crate) fn function_documentation(
     docs.get(index)
         .cloned()
         .ok_or_else(|| lisp::native_ice("native documentation index is out of range"))
-}
-
-pub(crate) fn function_name(interpreter: &Interpreter, record_id: u64) -> Option<String> {
-    loader::active_function_name(record_id).or_else(|| {
-        interpreter
-            .native_compiler
-            .function_name(record_id)
-            .map(str::to_owned)
-    })
-}
-
-/// Lisp_Subr.native_c_name of a registered native function.
-pub(crate) fn function_c_name(interpreter: &Interpreter, record_id: u64) -> Option<String> {
-    loader::active_function_c_name(record_id).or_else(|| {
-        interpreter
-            .native_compiler
-            .function_c_name(record_id)
-            .map(str::to_owned)
-    })
 }
 
 /// pdumper.c:pdumper_load's late and very-late relocation phases for the
@@ -266,18 +232,16 @@ pub(crate) fn subroutine_index(name: &str) -> Option<usize> {
 pub(crate) fn install_trampoline(
     interpreter: &mut Interpreter,
     subroutine_index: usize,
-    record_id: u64,
+    function: crate::lisp::types::NativeFunctionRef,
 ) -> Result<(), LispError> {
-    if let Some((target, _convention)) = loader::active_function_target(record_id) {
-        return runtime::with_current_runtime(|runtime| {
-            runtime.install_trampoline(subroutine_index, target)
-        })
-        .ok_or_else(|| lisp::native_ice("active native trampoline has no runtime"))?
-        .map_err(|error| lisp::native_ice(&error));
+    if let Some(result) = runtime::with_current_runtime(|runtime| {
+        runtime.install_trampoline(subroutine_index, function.target().cast_mut())
+    }) {
+        return result.map_err(|error| lisp::native_ice(&error));
     }
     interpreter
         .native_compiler
-        .install_trampoline(subroutine_index, record_id)
+        .install_trampoline(subroutine_index, function)
 }
 
 pub(crate) fn call_lisp(

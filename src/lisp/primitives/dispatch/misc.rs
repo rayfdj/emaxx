@@ -1429,13 +1429,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 match args[0].kind() {
                     Kind::BuiltinFunc(_) => Ok(Value::Nil),
-                    Kind::Record(id)
-                        if interp.find_record(id).is_some_and(|record| {
-                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
-                        }) =>
-                    {
-                        Ok(interp.find_record(id).expect("record checked above").slots[4])
-                    }
+                    Kind::NativeFunction(function) => Ok(function.native_type()),
                     other => Err(wrong_type_argument("subrp", other.value())),
                 }
             }
@@ -2058,12 +2052,8 @@ fn internal_subr_documentation(
         Kind::BuiltinFunc(name) => Ok(Value::Integer(ensure_builtin_doc_offset(
             interp, &name, env,
         )?)),
-        Kind::Record(id)
-            if interp.find_record(id).is_some_and(|record| {
-                record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
-            }) =>
-        {
-            crate::lisp::native_comp::function_documentation(interp, env, id.id)
+        Kind::NativeFunction(function) => {
+            crate::lisp::native_comp::function_documentation(interp, env, function)
         }
         _ => Ok(Value::T),
     }

@@ -1298,12 +1298,28 @@ pub(crate) fn render_prin1_body(
             }
             Ok(PrintOutput::join(&fields, " ").enclosed("#^^[", "]"))
         }
-        Kind::BuiltinFunc(_) | Kind::Buffer(_) | Kind::Marker(_) | Kind::Overlay(_) => {
+        Kind::BuiltinFunc(_)
+        | Kind::NativeFunction(_)
+        | Kind::Buffer(_)
+        | Kind::Marker(_)
+        | Kind::Overlay(_) => {
             if let Some(rendered) = unreadable_override(interp, value, env)? {
                 return Ok(rendered);
             }
             match value.kind() {
                 Kind::BuiltinFunc(name) => Ok(format!("#<subr {name}>").into()),
+                Kind::NativeFunction(function) => {
+                    let mut rendered = PrintOutput::from("#<subr ");
+                    if context.options.output_is_function {
+                        for byte in function.name().bytes() {
+                            rendered.push_c_function_byte(byte);
+                        }
+                    } else {
+                        rendered.push_c_string(function.name());
+                    }
+                    rendered.push('>');
+                    Ok(rendered)
+                }
                 Kind::Buffer(buffer) => Ok(PrintOutput::from(
                     match interp.get_buffer_by_id(buffer.id) {
                         Some(live) if context.options.escape => format!("#<buffer {}>", live.name),

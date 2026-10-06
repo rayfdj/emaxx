@@ -13,12 +13,21 @@ use crate::lisp::types::string_data::{
 #[derive(Default)]
 pub(crate) struct PrintOutput {
     bytes: Vec<u8>,
+    // print.c:strout counts unibyte C-string octets as characters. Keep
+    // that origin when no multibyte character has joined the output.
+    multibyte: bool,
+    // strout's C char -> int -> unsigned printchar conversion can pass
+    // values outside the Lisp character range to a function stream. These
+    // sparse callback arguments are not encoded into Lisp string storage.
+    function_codes: Vec<(usize, u32)>,
 }
 
 impl PrintOutput {
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
             bytes: Vec::with_capacity(capacity),
+            multibyte: false,
+            function_codes: Vec::new(),
         }
     }
 
@@ -31,6 +40,7 @@ impl PrintOutput {
     }
 
     pub(crate) fn push_code(&mut self, code: u32) {
+        self.multibyte |= code >= 128;
         let (bytes, count) = encode_character(code).expect("printer emits valid Emacs characters");
         self.bytes.extend_from_slice(&bytes[..count]);
     }
@@ -45,12 +55,43 @@ impl PrintOutput {
         if text.is_ascii() {
             self.bytes.extend_from_slice(text.as_bytes());
         } else {
+            self.multibyte = true;
             self.bytes
                 .extend_from_slice(&encode_text(text, true, &[]).expect("valid host printer text"));
         }
     }
 
+    /// print.c:print_c_string sends each C byte as one unibyte character.
+    /// Preserve its octets through the canonical stream, then restore an
+    /// unibyte Lisp string if the complete output never became multibyte.
+    pub(crate) fn push_c_string(&mut self, text: &str) {
+        for byte in text.bytes() {
+            let code = if byte < 128 {
+                u32::from(byte)
+            } else {
+                0x3fff00 + u32::from(byte)
+            };
+            let (bytes, count) = encode_character(code).expect("valid C-string byte");
+            self.bytes.extend_from_slice(&bytes[..count]);
+        }
+    }
+
+    pub(crate) fn push_c_function_byte(&mut self, byte: u8) {
+        let argument = byte as std::ffi::c_char as i32 as u32;
+        if argument != u32::from(byte) {
+            self.function_codes.push((self.bytes.len(), argument));
+        }
+        self.push_code(u32::from(byte));
+    }
+
     pub(crate) fn append(&mut self, other: &Self) {
+        self.multibyte |= other.multibyte;
+        self.function_codes.extend(
+            other
+                .function_codes
+                .iter()
+                .map(|(offset, code)| (self.bytes.len() + offset, *code)),
+        );
         self.bytes.extend_from_slice(other.bytes());
     }
 
@@ -83,13 +124,21 @@ impl PrintOutput {
 
     pub(crate) fn codes(&self) -> impl Iterator<Item = u32> + '_ {
         let mut remaining = self.bytes();
+        let mut function_codes = self.function_codes.iter().peekable();
         std::iter::from_fn(move || {
             if remaining.is_empty() {
                 return None;
             }
+            let offset = self.bytes.len() - remaining.len();
             let (code, width) = decode_character(remaining).expect("canonical printer output");
             remaining = &remaining[width..];
-            Some(code)
+            Some(
+                if function_codes.peek().is_some_and(|(at, _)| *at == offset) {
+                    function_codes.next().expect("matching C byte position").1
+                } else {
+                    code
+                },
+            )
         })
     }
 
@@ -107,8 +156,21 @@ impl PrintOutput {
 
     pub(crate) fn into_value(self, interp: &Interpreter, env: &Env) -> Result<Value, LispError> {
         let characters = self.codes().count();
-        let multibyte = !self.bytes.is_ascii();
-        crate::lisp::types::StringObjectRef::from_storage(self.bytes, characters, multibyte)
+        let multibyte = self.multibyte;
+        let bytes = if multibyte || self.bytes.is_ascii() {
+            self.bytes
+        } else {
+            self.codes()
+                .map(|code| {
+                    if code >= 0x3fff80 {
+                        (code - 0x3fff00) as u8
+                    } else {
+                        code as u8
+                    }
+                })
+                .collect()
+        };
+        crate::lisp::types::StringObjectRef::from_storage(bytes, characters, multibyte)
             .map(Value::StringObject)
             .map_err(|error| string_storage_error(interp, env, error))
     }
@@ -127,6 +189,8 @@ impl From<String> for PrintOutput {
         if text.is_ascii() {
             Self {
                 bytes: text.into_bytes(),
+                multibyte: false,
+                function_codes: Vec::new(),
             }
         } else {
             Self::from(text.as_str())

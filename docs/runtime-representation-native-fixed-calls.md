@@ -1,5 +1,128 @@
 # Native call routing and argument boundaries — 5 October 2026
 
+## Applied native function objects — 6 October 2026
+
+**Source308 is applied; the full goal remains incomplete.** Native functions now
+use one actual 88-byte GNU-layout subr for calls, metadata, identity and GC. The
+old native-function record and three persistent descriptor/name maps are removed.
+Direct calls read the function pointer and arities from the object. Five Lisp
+fields are traced explicitly; unreachable subrs release their C names.
+
+The [closed selected evidence](handover/2026-09-30-shared-reader-draft/source308-native-object-selected-manifest.json)
+verifies all 541 source inputs/modes, fresh warning-free strict checks,
+**1,031 passes per profile**, including all 24 audit tests, and **52 ordinary GNU
+comparisons**, including 198 generated printer rows. Original fixtures, assertions
+and expected bytes remain. The original dabbrev regression is repaired by making
+`commandp` recognize the native object's interactive field; native reader and
+property identity and exact GNU C-name printing are covered too.
+
+The [closed full16 diagnostic](handover/2026-09-30-shared-reader-draft/source308-native-object-performance-manifest.json)
+verifies all **384 actual process answers and execution modes**. The raw body
+geometric ratio to304 is **0.951094**;
+individual changes range from **-25.891% to +5.656%**.
+308's paired GNU aggregate is **2.710317×**.
+Every sample remains, including the first cohort’s slower undo and interpreted
+cases. These six complementary pilots do not establish statistical
+significance or GNU parity. Real counters, calibration, nine rounds and every-case
+upper95% ratio at most1.03 remain required.
+
+Predecessor304 platform results are closed and preserved: Linux frozen passes
+519 files /7,928 equal outcomes; macOS Rust passes3,139 tests with two existing
+ignores; [macOS terminal](handover/2026-09-30-shared-reader-draft/source304-macos-terminal-results-manifest.json)
+passes all226 scenarios /686 screen and filesystem comparisons. Linux Rust stays
+failed after2,291 passes at the GNU first-record census (-7 instead of2), leaving
+758 library names and both Cargo stages unstarted. macOS frozen stays failed with
+7,915 exact matches and six existing build-feature skip-diagnostic differences.
+These results certify304 only. Exact308 full platform checks are next.
+
+Main remains `21d20f0e`, PR79 stays draft. Symbol/unit authority, real intervals and
+pure storage, physical accounting, final ownership/borrow review, final adversarial
+review, complete final-source validation and the full performance criterion remain
+open. See the native continuation for failed drafts and exact-source launch receipts.
+
+## Source308 implementation and preserved failures
+
+The validated source remains frozen at
+`target/runtime-goal/recovered-2026-10-06/native-subr-callbacks/emaxx`.
+The new payload follows `lisp.h:Lisp_Subr` and `comp.c:make_subr`: function pointer,
+short arities, two owned C names, documentation index and the five actual Lisp
+fields. Header/tag decoding distinguishes allocated subrs from static DEFUN
+objects before making a Rust typed reference. `alloc.c` supplies the explicit
+marking and C-name cleanup model. Direct/general calls, metadata, image copying,
+dump restoration and native relocation decoding use the same object. The old
+`NativeCompiledFunction` record kind and persistent function/name/C-name maps are
+gone. The legacy dump discriminator remains a codec only; it creates a real subr.
+Compilation-unit ownership and internal GC/borrow review remain open. Public
+host entries already serialize through one process lock, and raw Lisp handles are
+private. `source308-public-boundary-review.json` records that implemented boundary
+and the unchanged304 concurrency evidence; final308 validation remains required.
+
+The [source305 failure](handover/2026-09-30-shared-reader-draft/source305-native-object-decoder-failure-manifest.json)
+passes actual layout and five-field survival/cyclic reclamation, but two focused
+controls fail because checked word decoding omitted allocated subrs. Source306
+adds that exact allocator-checked tag. The
+[preserved306/307 results](handover/2026-09-30-shared-reader-draft/source306307-native-object-consumer-failures-manifest.json)
+retain306's four focused passes and **821 broader passes / seven failures**.
+Six failures are denied local sockets; one is a real dabbrev regression. An exact
+original-build-location replay passes304 and fails306. Earlier retained-binary
+replays fail during relative native-library setup and certify no semantic result.
+307's four focused passes/one failure isolate GNU's signed C-char function-stream
+arguments; no release or ordinary candidate comparison ran for306/307.
+
+308 fixes that callback byte conversion while keeping Lisp string bytes valid,
+NUL termination and exact GNU unibyte printing. The transient printer tracks
+sparse exceptional callback arguments; its larger stack value and extra checks
+are included in the ordinary full16 timing above; their separate contribution has not been isolated. This is a Rust encoding constraint, not persistent
+Lisp storage. A temporary trace then proves `commandp` returned nil for actual
+native commands, causing unchanged GNU isearch Lisp to exit after the first key.
+The native arm now reads the actual interactive field (`eval.c:Fcommandp`).
+Native identity is also recognized by interval property equality and reader
+substitution (`intervals.c`, `lread.c`), and direct completion-table dispatch.
+A non-placeholder subr correctly signals `sequencep` after prior substitutions,
+as the preserved actual GNU probe shows. The added consumer fixture covers
+native/bytecode calls, aliases/redefinition, property errors, varied prefixes,
+cycles and partial mutation. Original dabbrev assertions and existing fixtures
+remain. The temporary diagnostic test was removed before the final source freeze.
+
+The first ordinary runner passed50 comparisons; its native C-name comparison
+produced identical bytes in both editors but failed the saved expectation because
+raw UTF-8 argv was decoded under the C locale. The unchanged fixture, loaded from
+one UTF-8 file through normal `-l`, matches every original expected byte. No runtime
+or fixture changed. The initial audit also used the gate inventory count in release;
+the final audit verifies exactly all predecessor names plus six new controls:
+3,048 gate /3,047 release, differing only by the unchanged debug-only descriptor
+test. Both stopped coordinators and the audit path preflight error remain retained.
+
+All selected and timing coordinators are closed under
+`target/runtime-goal/resume-2026-09-28`. Inspect `source308-applied-commit.json`,
+`source308-full-validation-launch.json` and `source308-full-launch.json` before
+continuing exact-source Linux/macOS work. Do not restart write-once jobs or edit
+frozen checkouts. A launch is not a validation result. The native units' host
+ownership and final internal GC/borrow review remain unfinished; this subr change
+does not certify them. Public host entry serialization and private handles are
+already implemented; the recorded source308 boundary review separates that repair
+from final-source validation and internal soundness. Earlier GNU census failures and source276's Emaxx negative
+remain unresolved.
+
+| Workload | Published304 / GNU | Native-object308 / GNU | 308 body vs304 |
+| --- | ---: | ---: | ---: |
+| interpreted-lexical | 2.4314× | 2.3307× | +0.812% |
+| interpreted-dynamic | 2.1229× | 2.2378× | +1.861% |
+| interpreted-calls | 2.6617× | 2.6628× | -5.446% |
+| bytecode-calls | 4.1182× | 4.0067× | -6.246% |
+| native-execution | 2.1660× | 1.7074× | -25.064% |
+| interpreted-to-native | 2.4663× | 2.2500× | -9.976% |
+| bytecode-to-native | 8.6302× | 6.6034× | -25.891% |
+| native-to-interpreted | 2.7361× | 2.6103× | -5.207% |
+| native-to-bytecode | 2.9144× | 2.7036× | -7.387% |
+| cons-allocation | 1.7632× | 1.7938× | +1.450% |
+| list-traversal | 2.0335× | 2.0784× | -2.163% |
+| mapcar | 2.2957× | 2.3530× | +4.487% |
+| explicit-gc | 1.0222× | 1.0169× | -0.498% |
+| upstream-sort | 5.0352× | 5.0067× | -0.326% |
+| upstream-undo | 5.4584× | 5.6685× | +5.656% |
+| upstream-bindat | 3.3560× | 3.3616× | +3.249% |
+
 ## Applied column and native-audit repair — 6 October 2026
 
 **Source304 is applied; the full goal is incomplete.** Ordinary buffer columns

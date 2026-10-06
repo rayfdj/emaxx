@@ -1947,7 +1947,7 @@ fn native_subr_address(index: usize) -> *mut c_void {
 enum DirectFuncallTarget {
     Builtin(crate::lisp::types::BuiltinRef),
     Native {
-        record_id: u64,
+        native: crate::lisp::types::NativeFunctionRef,
         function: super::loader::DirectNativeFunction,
     },
     ByteCode {
@@ -2046,16 +2046,12 @@ impl DirectFuncallTarget {
                     Value::BuiltinFunc(subr),
                 )
             }
-            Self::Native {
-                record_id,
-                function,
-            } => (
+            Self::Native { native, function } => (
                 function.target,
                 function.convention,
                 function.min_args,
                 function.max_args,
-                // SAFETY: the active call's interpreter, live for the call.
-                unsafe { &*active.interpreter }.record_value(record_id),
+                Value::NativeFunction(native),
             ),
             Self::ByteCode { .. } => unreachable!("handled above"),
         };
@@ -2099,14 +2095,8 @@ fn direct_funcall_target(
     };
     match resolved.kind() {
         Kind::BuiltinFunc(subr) => Some(DirectFuncallTarget::Builtin(subr)),
-        Kind::Record(record_id) => {
-            super::loader::active_direct_function(record_id.id).map(|function| {
-                DirectFuncallTarget::Native {
-                    record_id: record_id.id,
-                    function,
-                }
-            })
-        }
+        Kind::NativeFunction(native) => super::loader::direct_function(native)
+            .map(|function| DirectFuncallTarget::Native { native, function }),
         Kind::Closure(closure) if closure.is_bytecode() => {
             Some(DirectFuncallTarget::ByteCode { closure })
         }
@@ -4093,6 +4083,7 @@ impl NativeHeap {
                 && matches!(
                     unsafe { crate::lisp::alloc::vectors::header_tag(header) },
                     crate::lisp::alloc::VectorTag::Normal
+                        | crate::lisp::alloc::VectorTag::Subr
                         | crate::lisp::alloc::VectorTag::Closure
                         | crate::lisp::alloc::VectorTag::Bignum
                         | crate::lisp::alloc::VectorTag::Record

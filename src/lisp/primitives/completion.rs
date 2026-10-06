@@ -353,6 +353,7 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
+        (Kind::NativeFunction(a), Kind::NativeFunction(b)) => a.ptr_eq(&b),
         (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
         (Kind::Cons(left), Kind::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)
@@ -392,6 +393,15 @@ pub(crate) fn substitute_object_recurse(
 ) -> Result<Value, LispError> {
     if values_eq_for_substitution(subtree, placeholder) {
         return Ok(*object);
+    }
+
+    // lread.c:substitute_object_recurse cannot traverse Lisp_Subr's C fields.
+    // EQ replacement happens first; a different subr signals sequencep.
+    if matches!(
+        subtree.kind(),
+        Kind::BuiltinFunc(_) | Kind::NativeFunction(_)
+    ) {
+        return Err(wrong_type_argument("sequencep", *subtree));
     }
 
     let Some(key) = substitution_visit_key(subtree) else {
@@ -1521,23 +1531,18 @@ pub(crate) fn callable_interactive_form_items(
 ) -> Option<Vec<Value>> {
     if let Kind::Record(id) = func.kind()
         && let Some(record) = interp.find_record(id)
+        && record.kind == crate::lisp::eval::RecordKind::ModuleFunction
     {
-        if record.kind == crate::lisp::eval::RecordKind::ModuleFunction {
-            return record
-                .slots
-                .get(1)?
-                .to_vec()
-                .ok()
-                .filter(|items| !items.is_empty());
-        }
-        if record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction {
-            return record
-                .slots
-                .get(6)
-                .filter(|spec| !spec.is_nil())
-                .cloned()
-                .and_then(|form| form.to_vec().ok());
-        }
+        return record
+            .slots
+            .get(1)?
+            .to_vec()
+            .ok()
+            .filter(|items| !items.is_empty());
+    }
+    if let Kind::NativeFunction(function) = func.kind() {
+        let spec = function.interactive();
+        return (!spec.is_nil()).then(|| spec.to_vec().ok()).flatten();
     }
     // callint.c's cons-lambda branch: a spec without MODES entries is
     // answered verbatim (`(interactive)' stays bare, `(interactive "p")'
@@ -1598,7 +1603,7 @@ pub(crate) fn completion_table_is_function(
     env: &Env,
 ) -> bool {
     match collection.kind() {
-        Kind::Symbol(_) | Kind::Closure(_) | Kind::BuiltinFunc(_) => true,
+        Kind::Symbol(_) | Kind::Closure(_) | Kind::BuiltinFunc(_) | Kind::NativeFunction(_) => true,
         Kind::Record(_) => callable_value_p(interp, collection, env),
         Kind::Cons(_) => matches!(
             collection.car().map(|v| v.kind()),

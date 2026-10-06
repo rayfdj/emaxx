@@ -1599,6 +1599,7 @@ fn vectorlike_is_marked(value: &super::types::Value, epoch: u32) -> Option<bool>
     match value.kind() {
         Kind::Vector(vector) => Some(vector.mark_bit().is_marked(epoch)),
         Kind::Closure(lambda) => Some(lambda.mark_bit().is_marked(epoch)),
+        Kind::NativeFunction(function) => Some(function.mark_bit().is_marked(epoch)),
         Kind::Buffer(buffer) => Some(buffer.mark_bit().is_marked(epoch)),
         Kind::Marker(marker) => Some(marker.mark_bit().is_marked(epoch)),
         Kind::Overlay(overlay) => Some(overlay.mark_bit().is_marked(epoch)),

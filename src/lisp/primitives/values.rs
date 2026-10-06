@@ -237,6 +237,7 @@ fn values_equal_recursive_with_env(
         (Kind::StringObject(a), Kind::StringObject(b)) => a == b,
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
+        (Kind::NativeFunction(a), Kind::NativeFunction(b)) => a.ptr_eq(&b),
         (Kind::Buffer(a), Kind::Buffer(b)) => a.ptr_eq(&b),
         (Kind::Marker(a), Kind::Marker(b)) => markers_equal(a, b),
         (Kind::HashTable(a), Kind::HashTable(b)) => a == b,
@@ -383,6 +384,7 @@ pub(crate) fn values_eql(left: &Value, right: &Value) -> bool {
         (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
+        (Kind::NativeFunction(a), Kind::NativeFunction(b)) => a.ptr_eq(&b),
         (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
         (Kind::Cons(left), Kind::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)
@@ -455,6 +457,7 @@ pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
         (Kind::Float(a), Kind::Float(b)) => a.ptr_eq(&b),
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
+        (Kind::NativeFunction(a), Kind::NativeFunction(b)) => a.ptr_eq(&b),
         (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
         (Kind::Cons(left), Kind::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)
@@ -736,7 +739,6 @@ pub(crate) fn values_equal_including_properties_recursive(
                     | crate::lisp::eval::RecordKind::Mutex
                     | crate::lisp::eval::RecordKind::ConditionVariable
                     | crate::lisp::eval::RecordKind::NativeCompUnit
-                    | crate::lisp::eval::RecordKind::NativeCompiledFunction
                     | crate::lisp::eval::RecordKind::ModuleFunction
                     | crate::lisp::eval::RecordKind::UserPointer
                     | crate::lisp::eval::RecordKind::TreeSitterParser
@@ -1037,7 +1039,6 @@ pub(crate) fn compare_record_values(
         | crate::lisp::eval::RecordKind::Mutex
         | crate::lisp::eval::RecordKind::ConditionVariable
         | crate::lisp::eval::RecordKind::NativeCompUnit
-        | crate::lisp::eval::RecordKind::NativeCompiledFunction
         | crate::lisp::eval::RecordKind::ModuleFunction
         | crate::lisp::eval::RecordKind::UserPointer
         | crate::lisp::eval::RecordKind::TreeSitterParser
@@ -1076,6 +1077,24 @@ pub(crate) fn value_ordering(
             );
         }
         return Err(type_mismatch_signal(left, right));
+    }
+
+    // fns.c:value_cmp gives all PVEC_SUBR objects the same unordered
+    // relation, including a native subr compared with a static DEFUN subr.
+    if matches!(left.kind(), Kind::BuiltinFunc(_) | Kind::NativeFunction(_))
+        || matches!(right.kind(), Kind::BuiltinFunc(_) | Kind::NativeFunction(_))
+    {
+        return if matches!(left.kind(), Kind::BuiltinFunc(_) | Kind::NativeFunction(_))
+            && matches!(right.kind(), Kind::BuiltinFunc(_) | Kind::NativeFunction(_))
+        {
+            Ok(if left.eq_value(*right) {
+                ValueOrder::Equal
+            } else {
+                ValueOrder::Unordered
+            })
+        } else {
+            Err(type_mismatch_signal(left, right))
+        };
     }
 
     // fns.c:value_cmp treats distinct pseudovectors without a dedicated
@@ -1683,6 +1702,10 @@ pub(crate) fn hash_value_eq(state: &mut u64, value: &Value) {
             hash_mix(state, 16);
             hash_mix(state, vector.identity() as u64);
         }
+        Kind::NativeFunction(function) => {
+            hash_mix(state, 53);
+            hash_mix(state, function.identity() as u64);
+        }
         Kind::BuiltinFunc(name) => {
             hash_mix(state, 6);
             hash_str(state, &name);
@@ -1888,6 +1911,10 @@ pub(crate) fn hash_value_equal_at(
                 );
             }
         }
+        Kind::NativeFunction(function) => {
+            hash_mix(state, 53);
+            hash_mix(state, function.identity() as u64);
+        }
         Kind::BuiltinFunc(name) => {
             hash_mix(state, 39);
             hash_str(state, &name);
@@ -2062,7 +2089,6 @@ pub(crate) fn hash_record_equal(
         | crate::lisp::eval::RecordKind::Mutex
         | crate::lisp::eval::RecordKind::ConditionVariable
         | crate::lisp::eval::RecordKind::NativeCompUnit
-        | crate::lisp::eval::RecordKind::NativeCompiledFunction
         | crate::lisp::eval::RecordKind::ModuleFunction
         | crate::lisp::eval::RecordKind::UserPointer
         | crate::lisp::eval::RecordKind::TreeSitterParser
@@ -2179,15 +2205,16 @@ pub(crate) fn is_lambda_expression(interp: &Interpreter, value: &Value, env: &En
 }
 
 pub(crate) fn callable_value_p(interp: &Interpreter, value: &Value, env: &Env) -> bool {
-    matches!(value.kind(), Kind::BuiltinFunc(_) | Kind::Closure(_))
-        || is_lambda_expression(interp, value, env)
+    matches!(
+        value.kind(),
+        Kind::BuiltinFunc(_) | Kind::NativeFunction(_) | Kind::Closure(_)
+    ) || is_lambda_expression(interp, value, env)
         || matches!(
             value.kind(),
             Kind::Record(id)
                 if interp.find_record(id).is_some_and(|record| matches!(
                     record.kind,
-                    crate::lisp::eval::RecordKind::NativeCompiledFunction
-                    | crate::lisp::eval::RecordKind::ModuleFunction
+                    crate::lisp::eval::RecordKind::ModuleFunction
                 ))
         )
 }

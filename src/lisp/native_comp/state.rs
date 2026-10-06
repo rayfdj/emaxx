@@ -160,7 +160,7 @@ impl NativeCompilerState {
         &mut self,
         interp: &mut Interpreter,
         env: &mut Env,
-        record_id: u64,
+        function: crate::lisp::types::NativeFunctionRef,
         arguments: &[crate::lisp::types::Value],
     ) -> Result<crate::lisp::types::Value, LispError> {
         loader::call_function(
@@ -169,7 +169,7 @@ impl NativeCompilerState {
             &mut self.runtime,
             interp,
             env,
-            record_id,
+            function,
             arguments,
         )
     }
@@ -189,14 +189,6 @@ impl NativeCompilerState {
             arguments,
             kind,
         )
-    }
-
-    pub(crate) fn function_name(&self, record_id: u64) -> Option<&str> {
-        self.registry.function_name(record_id)
-    }
-
-    pub(crate) fn function_c_name(&self, record_id: u64) -> Option<&str> {
-        self.registry.function_c_name(record_id)
     }
 
     /// The image loader's LATE_RELOCS and VERY_LATE_RELOCS phases: every
@@ -247,12 +239,9 @@ impl NativeCompilerState {
     pub(crate) fn install_trampoline(
         &mut self,
         subroutine_index: usize,
-        record_id: u64,
+        function: crate::lisp::types::NativeFunctionRef,
     ) -> Result<(), LispError> {
-        let (target, _convention): (*mut c_void, _) =
-            loader::function_target(&self.registry, record_id).ok_or_else(|| {
-                super::lisp::native_ice("trampoline is not a registered native function")
-            })?;
+        let (target, _convention): (*mut c_void, _) = loader::function_target(function);
         self.runtime
             .install_trampoline(subroutine_index, target)
             .map_err(|error| super::lisp::native_ice(&error))

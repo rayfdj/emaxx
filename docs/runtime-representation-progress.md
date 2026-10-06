@@ -1,5 +1,45 @@
 # Current goal status — 5 October 2026
 
+## Applied native function objects — 6 October 2026
+
+**Source308 is applied; the full goal remains incomplete.** Native functions now
+use one actual 88-byte GNU-layout subr for calls, metadata, identity and GC. The
+old native-function record and three persistent descriptor/name maps are removed.
+Direct calls read the function pointer and arities from the object. Five Lisp
+fields are traced explicitly; unreachable subrs release their C names.
+
+The [closed selected evidence](handover/2026-09-30-shared-reader-draft/source308-native-object-selected-manifest.json)
+verifies all 541 source inputs/modes, fresh warning-free strict checks,
+**1,031 passes per profile**, including all 24 audit tests, and **52 ordinary GNU
+comparisons**, including 198 generated printer rows. Original fixtures, assertions
+and expected bytes remain. The original dabbrev regression is repaired by making
+`commandp` recognize the native object's interactive field; native reader and
+property identity and exact GNU C-name printing are covered too.
+
+The [closed full16 diagnostic](handover/2026-09-30-shared-reader-draft/source308-native-object-performance-manifest.json)
+verifies all **384 actual process answers and execution modes**. The raw body
+geometric ratio to304 is **0.951094**;
+individual changes range from **-25.891% to +5.656%**.
+308's paired GNU aggregate is **2.710317×**.
+Every sample remains, including the first cohort’s slower undo and interpreted
+cases. These six complementary pilots do not establish statistical
+significance or GNU parity. Real counters, calibration, nine rounds and every-case
+upper95% ratio at most1.03 remain required.
+
+Predecessor304 platform results are closed and preserved: Linux frozen passes
+519 files /7,928 equal outcomes; macOS Rust passes3,139 tests with two existing
+ignores; [macOS terminal](handover/2026-09-30-shared-reader-draft/source304-macos-terminal-results-manifest.json)
+passes all226 scenarios /686 screen and filesystem comparisons. Linux Rust stays
+failed after2,291 passes at the GNU first-record census (-7 instead of2), leaving
+758 library names and both Cargo stages unstarted. macOS frozen stays failed with
+7,915 exact matches and six existing build-feature skip-diagnostic differences.
+These results certify304 only. Exact308 full platform checks are next.
+
+Main remains `21d20f0e`, PR79 stays draft. Symbol/unit authority, real intervals and
+pure storage, physical accounting, final ownership/borrow review, final adversarial
+review, complete final-source validation and the full performance criterion remain
+open. See the native continuation for failed drafts and exact-source launch receipts.
+
 ## Applied column and native-audit repair — 6 October 2026
 
 **Source304 is applied; the full goal is incomplete.** Ordinary buffer columns
@@ -861,23 +901,23 @@ source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 
 ## Full-goal requirements — current
 
-This map reflects applied source304 (534 inputs). Its warning-free selected
+This map reflects applied source308 (541 inputs). Its warning-free selected
 validation and paired full16 diagnostic are closed. All338 original column probe
-rows match GNU. Source302 full platform attempts failed the exact-contract audit;
-304 repairs the omission without relaxing that gate. Exact304 Linux and full macOS
-validation follow. Earlier failures remain. A checkpoint does not complete the goal.
+rows still match GNU. Source304 platform results and failures remain explicit
+above; exact308 full platform validation follows. A checkpoint does not complete
+the goal.
 
 | Full-goal requirement | Current evidence and remaining work |
 | --- | --- |
 | 1. Reproducible starting point | Original and corrected baselines and failures remain archived. Exact source/executable/image identities accompany each measurement. GNU adoption at `3dcf5351` settled the replacement oracle; final corrected-baseline measurement and complete provenance remain required. |
 | 2. GNU architectural reference | Cons/closure/string storage, comparison/allocation, canonical printing, direct opcode dispatch and native/VM call entry have recorded C mappings. The final complete review and justification/cost of every necessary Rust deviation remain open. |
-| 3. Compact authoritative objects | Values are one word, cons payloads two words, four-slot closures 40 inline bytes. Source270 supplies direct compact string headers; source272 roots active borrows; source279 implements pooled sblocks. Source284 carries canonical bytes through printing/reading. Real intervals, unified pure storage, allocated-symbol authority and remaining host adapters are unfinished. |
-| 4. Allocation, GC and ownership | Required live-root and reclamation controls remain and pass selected source304. Seven category variables still initialize to zero; `memory-use-counts` is unsupported. GNU-shaped charges do not establish actual Rust capacities/retention. Physical accounting, real counters, public ownership/serialization and collection-cost explanations remain required. GNU census reference failures and source276's Emaxx census failure remain unresolved. |
+| 3. Compact authoritative objects | Values are one word, cons payloads two words, four-slot closures 40 inline bytes. Source270 supplies direct compact string headers; source272 roots active borrows; source279 implements pooled sblocks. Source284 carries canonical bytes through printing/reading. Source308 replaces native function records and three descriptor/name maps with one actual GNU-layout subr. Real intervals, unified pure storage, allocated-symbol authority, native-unit ownership and remaining host adapters are unfinished. |
+| 4. Allocation, GC and ownership | Required live-root and reclamation controls remain and pass selected source308; actual native subrs add five-field survival and cyclic reclamation coverage. Seven category variables still initialize to zero; `memory-use-counts` is unsupported. GNU-shaped charges do not establish actual Rust capacities/retention. Public host entries already enforce a process lock and private heap handles; unchanged boundary files and304 concurrency controls are reviewed in source308-public-boundary-review.json. Physical accounting, real counters, internal GC/borrow review, final-source ownership validation and collection-cost explanations remain required. GNU census reference failures and source276's Emaxx census failure remain unresolved. |
 | 5. VM/function-call work | Source286 removes repeated decoding on hot opcodes; source289 removes repeated closure reads, a transient activation copy, Bcall decoding and fixed native argument staging. Source290 removes duplicate optimistic dispatch, redundant operand stack changes and immediate Integer calls. Source296 removes fixed-call copying unless padding is needed; source297 avoids unrelated primitive checks before funcall and repairs null/empty slice construction. Measured bytecode-call gains are recorded. VM still reserves 256K value slots plus separate frames versus GNU's 512K words including headers. Stack layout/capacity, remaining frame/call work and actual accounting remain open; closed297 profiles led to the native arithmetic change. Sources300/301 are rejected after both complete cohorts retain slower native transitions despite targeted bytecode-to-native gains. Source302 is applied: in-range two-fixnum +/− avoids argument staging, repeated dispatch, coercion and normalization after the same handler synchronization; other types and bignum results retain general fallback. |
 | 6. Adversarial audit | Existing evaluator/root/reporting controls and failed runs remain. New call-width and native ABI/GC controls use actual same-input GNU output; no expectations or original assertions are weakened. Final actual-source review of runtime, startup/images, loading, selection/comparison/reporting and deliberate evidence corruption remains required. |
-| 7. Equivalent performance | All16 workloads and the3% ceiling remain locked. The302/304 diagnostic verifies192 actual answers/modes; raw body geometric ratio is1.022383, paired GNU aggregate for304 is2.880732×. Every original/corrected baseline, unfavorable sample and rejected candidate remains. Real counters, calibration, prescribed repetitions/distributions and every-case acceptance remain open. |
-| 8. Complete validation | Source304 strict checks are warning-free;506 selected tests/profile and49 actual GNU comparisons pass. All338 original probe rows match.302 full Rust attempts fail only the missing native audit inventory (macOS3037pass/1fail/2ignore; Linux3045pass/1fail/2ignore); bins/integration and all frozen/TTY cases did not run.304 restores that contract inventory; exact-source full Linux/macOS validation follows. Predecessor297 Linux3148passes/2ignores and519frozen files/7928matches do not certify304. Prior census negatives remain unresolved. Final-source platform/release/frozen/terminal validation remains required. |
-| 9. Independently checkable delivery | Portable304 patches, raw commands/results and timing samples are retained;302 full failures and303 unapplied draft/stopped timing are separately packaged.304 is applied; exact-source platform validation follows. Main remains21d20f0e and PR79 is draft. Final source/evidence review and every architectural/performance requirement remain outstanding. |
+| 7. Equivalent performance | All16 workloads and the3% ceiling remain locked. The304/308 diagnostic verifies384 actual answers/modes; raw body geometric ratio is0.951094, paired GNU aggregate for308 is2.710317×. Every original/corrected baseline, unfavorable sample and rejected candidate remains. Real counters, calibration, prescribed repetitions/distributions and every-case acceptance remain open. |
+| 8. Complete validation | Source308 strict checks are warning-free;1031 selected tests/profile and52 actual GNU comparisons pass, including198 generated printer rows and all338 original column rows.304 Linux frozen and macOS Rust/TTY pass their complete inventories; Linux Rust retains a GNU census failure and758 unstarted library names, and macOS frozen retains six existing strict skip-diagnostic differences. Exact308 full platform validation follows. Final-source platform/release/frozen/terminal validation remains required. |
+| 9. Independently checkable delivery | Portable308 patches, raw commands/results and all384 timing answers/modes are retained.305/306/307 and308 development failures are separately preserved.308 is applied; exact-source platform validation follows. Main remains21d20f0e and PR79 is draft. Final source/evidence review and the remaining architecture/performance requirements are open. |
 
 Optional inlining291 and buffer lookups294/295 remain unapplied after their
 complete comparisons. Source293's reused-build validation is rejected. LF-only292

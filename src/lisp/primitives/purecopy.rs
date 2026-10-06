@@ -137,20 +137,13 @@ fn purecopy_inner(
         // so alloc.c:Fpurecopy returns it unchanged with ordinary symbols.
         return Ok(*value);
     }
-    if matches!(value.kind(), Kind::Record(id)
-        if interp.find_record(id).is_some_and(|record|
-            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction))
-    {
-        // Native compiled functions use GNU's PVEC_SUBR representation and
-        // therefore take alloc.c:Fpurecopy's SUBRP already-pure return.
-        return Ok(*value);
-    }
     match value.kind() {
         Kind::Nil
         | Kind::T
         | Kind::Integer(_)
         | Kind::Symbol(_)
         | Kind::BuiltinFunc(_)
+        | Kind::NativeFunction(_)
         | Kind::Marker(_)
         | Kind::Overlay(_) => return Ok(*value),
         _ => {}
@@ -232,6 +225,7 @@ fn purecopy_inner(
         | Kind::Integer(_)
         | Kind::Symbol(_)
         | Kind::BuiltinFunc(_)
+        | Kind::NativeFunction(_)
         | Kind::Marker(_)
         | Kind::Overlay(_) => unreachable!("returned before hash-cons lookup"),
     };

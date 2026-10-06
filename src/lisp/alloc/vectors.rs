@@ -24,6 +24,8 @@ pub(crate) mod generic_records;
 pub use generic_records::LispRecordRef;
 pub(crate) mod hash_tables;
 pub use hash_tables::HashTableRef;
+pub(crate) mod native_functions;
+pub use native_functions::NativeFunctionRef;
 mod symbols_with_pos;
 pub use symbols_with_pos::SymbolWithPosRef;
 
@@ -933,7 +935,8 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
             | VectorTag::Overlay
             | VectorTag::CharTable
             | VectorTag::SubCharTable
-            | VectorTag::HashTable => {
+            | VectorTag::HashTable
+            | VectorTag::Subr => {
                 if (*header).tag() == VectorTag::Buffer {
                     raise(&LIVE_BUFFERS, 1);
                 } else if (*header).tag() == VectorTag::Overlay {
@@ -955,7 +958,6 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                     raise(&LIVE_RECORD_SLOTS, slots);
                 }
             }
-            VectorTag::Subr => unreachable!("static subrs do not enter vector allocation"),
             VectorTag::Normal | VectorTag::Free | VectorTag::ReaderForm => {}
         }
     }
@@ -978,7 +980,9 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
                     (*header).size,
                 ));
             }
-            VectorTag::Subr => unreachable!("static subrs are not swept"),
+            VectorTag::Subr => {
+                std::ptr::drop_in_place(body.cast::<native_functions::NativeFunctionState>())
+            }
             VectorTag::Free => {}
             VectorTag::Bignum => std::ptr::drop_in_place(body.cast::<LispBignum>()),
             VectorTag::Buffer => std::ptr::drop_in_place(body.cast::<BufferValue>()),
@@ -1071,7 +1075,8 @@ impl SweepStats {
                 | VectorTag::Overlay
                 | VectorTag::CharTable
                 | VectorTag::SubCharTable
-                | VectorTag::HashTable => {
+                | VectorTag::HashTable
+                | VectorTag::Subr => {
                     self.buffers += usize::from((*header).tag() == VectorTag::Buffer);
                     self.overlays += usize::from((*header).tag() == VectorTag::Overlay);
                     self.vectors += 1;
@@ -1089,7 +1094,6 @@ impl SweepStats {
                         self.record_slots += slots;
                     }
                 }
-                VectorTag::Subr => unreachable!("static subrs are not swept"),
                 VectorTag::Free | VectorTag::ReaderForm => {}
             }
         }
@@ -1297,6 +1301,16 @@ pub(crate) unsafe fn header_tag(header: *mut VectorHeader) -> VectorTag {
     unsafe { (*header).tag() }
 }
 
+/// An allocated native subr has its actual ten payload words in the size
+/// header. Static DEFUN subrs have zero Lisp/rest counts. This classification
+/// uses only the shared header, before borrowing either different payload.
+///
+/// # Safety
+/// HEADER names a live PVEC_SUBR.
+pub(crate) unsafe fn subr_is_allocated(header: *mut VectorHeader) -> bool {
+    unsafe { (*header).size & ((1 << PSEUDOVECTOR_AREA_BITS) - 1) != 0 }
+}
+
 /// The value naming an allocated vector (for the conservative scan).
 ///
 /// # Safety
@@ -1325,7 +1339,7 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
                 Value::LispRecord(LispRecordRef::from_raw(header))
             }
             VectorTag::Record => Value::Record(VectorlikeRef::from_raw(header)),
-            VectorTag::Subr => unreachable!("static subrs do not live in vector allocations"),
+            VectorTag::Subr => Value::NativeFunction(NativeFunctionRef::from_raw(header)),
             VectorTag::Free => unreachable!("a free vector is not a value"),
         }
     }

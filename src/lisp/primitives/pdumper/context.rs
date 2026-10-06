@@ -35,6 +35,7 @@ pub(crate) enum ObjectKey {
     /// values are one bignum record.
     WideInteger(i64),
     Subr(u32),
+    NativeFunction(usize),
     Lambda(usize),
     /// A buffer's identity is its id (`eq' compares ids): every
     /// `Value::Buffer' naming one buffer is one object.
@@ -73,6 +74,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
             ObjectKey::WideInteger(integer)
         }
         Kind::BuiltinFunc(name) => ObjectKey::Subr(name.id()),
+        Kind::NativeFunction(function) => ObjectKey::NativeFunction(function.identity()),
         Kind::Nil | Kind::T | Kind::Unbound => return None,
         // dump_object_needs_dumping_p: everything but a fixnum is queued,
         // and dump_object refuses what it cannot write.
@@ -106,6 +108,10 @@ pub(crate) fn self_representing_word(value: &Value) -> Option<u64> {
     }
 }
 
+// The serialized native-subr discriminator is retained for image compatibility.
+// It never names a RecordKind or installs a detached runtime record.
+pub(crate) const NATIVE_SUBR_CODE: u32 = 15;
+
 /// The record kinds the image distinguishes (eval.rs:RecordKind), as
 /// stable codes.
 pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
@@ -120,7 +126,6 @@ pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
         RecordKind::Mutex => 12,
         RecordKind::ConditionVariable => 13,
         RecordKind::NativeCompUnit => 14,
-        RecordKind::NativeCompiledFunction => 15,
         RecordKind::TreeSitterParser => 16,
         RecordKind::TreeSitterNode => 17,
         RecordKind::TreeSitterCompiledQuery => 18,
@@ -146,7 +151,7 @@ pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
         12 => RecordKind::Mutex,
         13 => RecordKind::ConditionVariable,
         14 => RecordKind::NativeCompUnit,
-        15 => RecordKind::NativeCompiledFunction,
+        // Code 15 is the native subr codec, not a runtime host record.
         16 => RecordKind::TreeSitterParser,
         17 => RecordKind::TreeSitterNode,
         18 => RecordKind::TreeSitterCompiledQuery,
@@ -543,6 +548,7 @@ impl DumpContext {
             Kind::Float(_) => DumpType::Float,
             Kind::BigInteger(_) | Kind::Integer(_) => DumpType::Bignum,
             Kind::BuiltinFunc(_) => DumpType::Subr,
+            Kind::NativeFunction(_) => DumpType::Record,
             Kind::Closure(_) => DumpType::Closure,
             Kind::CharTable(_) => DumpType::CharTable,
             Kind::HashTable(_) => DumpType::HashTable,
@@ -1044,6 +1050,9 @@ impl DumpContext {
             Kind::Float(float) => (self.dump_float(*float)?, DumpType::Float),
             Kind::BigInteger(_) | Kind::Integer(_) => (self.dump_bignum(object)?, DumpType::Bignum),
             Kind::BuiltinFunc(name) => (self.dump_subr(&name)?, DumpType::Subr),
+            Kind::NativeFunction(function) => {
+                (self.dump_native_function(function)?, DumpType::Record)
+            }
             Kind::Closure(lambda) => (self.dump_closure(&lambda)?, DumpType::Closure),
             Kind::CharTable(table) => (self.dump_char_table(table)?, DumpType::CharTable),
             Kind::HashTable(table) => (self.dump_hash_table(table, object)?, DumpType::HashTable),
@@ -1349,10 +1358,6 @@ impl DumpContext {
                 let offset = self.dump_native_comp_unit(id, &type_tag, &slots)?;
                 Ok((offset, DumpType::Record))
             }
-            RecordKind::NativeCompiledFunction => {
-                let offset = self.dump_native_function(interp, id, object, &type_tag, &slots)?;
-                Ok((offset, DumpType::Record))
-            }
             RecordKind::TreeSitterParser => Err(self.unsupported(object, "tree-sitter parser")),
             RecordKind::TreeSitterNode => Err(self.unsupported(object, "tree-sitter node")),
             RecordKind::TreeSitterCompiledQuery => {
@@ -1398,25 +1403,40 @@ impl DumpContext {
     /// the function in its reopened unit.
     fn dump_native_function(
         &mut self,
-        interp: &Interpreter,
-        id: u64,
-        object: &Value,
-        type_tag: &Value,
-        slots: &[Value],
+        function: crate::lisp::types::NativeFunctionRef,
     ) -> Result<u32, DumpError> {
-        let Some(c_name) = crate::lisp::native_comp::function_c_name(interp, id) else {
-            return Err(self.unsupported(object, "native compiled function without a C name"));
-        };
-        let name = crate::lisp::native_comp::function_name(interp, id).unwrap_or_default();
-        let start = self.object_start()?;
-        let mut words = vec![
-            id,
-            u64::from(record_kind_code(RecordKind::NativeCompiledFunction)),
-            0,
-            slots.len() as u64,
+        // Keep the existing native-subr image codec, including old images.
+        // Its obsolete host-record id is zero; object offsets own identity.
+        // No record or name registry is created while executing or loading it.
+        let id = 0;
+        let type_tag = Value::symbol("subr");
+        let slots = [
+            Value::Nil,
+            Value::Integer(i64::from(function.min_args())),
+            if function.max_args_word() < 0 {
+                Value::symbol("many")
+            } else {
+                Value::Integer(i64::from(function.max_args_word()))
+            },
+            Value::Nil,
+            function.native_type(),
+            Value::Integer(function.doc_index() as i64),
+            function.interactive(),
+            function.command_modes(),
+            function.unit(),
+            function.lambda_list(),
+            if function.is_dynamic() {
+                Value::T
+            } else {
+                Value::Nil
+            },
         ];
+        let name = function.name();
+        let c_name = function.c_name();
+        let start = self.object_start()?;
+        let mut words = vec![id, u64::from(NATIVE_SUBR_CODE), 0, slots.len() as u64];
         words.resize(slots.len() + 6, WORD_NIL);
-        self.field_lv(start, &mut words, 2, type_tag, WEIGHT_STRONG);
+        self.field_lv(start, &mut words, 2, &type_tag, WEIGHT_STRONG);
         for (index, slot) in slots.iter().enumerate() {
             self.field_lv(start, &mut words, index + 4, slot, WEIGHT_STRONG);
         }
@@ -1425,14 +1445,14 @@ impl DumpContext {
             start,
             &mut words,
             name_index,
-            &Value::string(&name),
+            &Value::string(name),
             WEIGHT_STRONG,
         );
         self.field_lv(
             start,
             &mut words,
             name_index + 1,
-            &Value::string(&c_name),
+            &Value::string(c_name),
             WEIGHT_STRONG,
         );
         let offset = self.object_finish(&words)?;
