@@ -3,6 +3,11 @@
   (let ((gc-cons-threshold most-positive-fixnum)
         (gc-cons-percentage 0)
         (native-comp-jit-compilation nil))
+    ;; This is a whole-heap census. Finish startup reclamation before
+    ;; measuring a new object: the first two GNU collections can otherwise
+    ;; differ by an unrelated closure and its constants vector.
+    (garbage-collect)
+    (garbage-collect)
     (list
      (mapcar
       (lambda (size)
