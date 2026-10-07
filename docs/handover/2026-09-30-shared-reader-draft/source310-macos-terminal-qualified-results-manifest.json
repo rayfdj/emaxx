@@ -1,0 +1,151 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "executable identity limitation; raw failures and matches retained",
+    "goal_complete": false,
+    "terminal": {
+      "status": "raw terminal comparisons pass; executable identity changed and exact-artifact acceptance is not established",
+      "raw_comparisons_passed": true,
+      "execution_input_drift": {
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-06/native-unit-full/emaxx/target/compat-subject/gate/emaxx": {
+          "recorded": "28ab0011d29b3dbea27fef16a64fe284f11f7c6cf535984b10d0ad05bcbf19c9",
+          "current": "0dcadc0d74835e8c47593d79b6f476182c9e885fbdec79545659d665a5c96fd1"
+        }
+      },
+      "goal_complete": false,
+      "inputs_verified": 546,
+      "execution_inputs_verified": 9,
+      "fully_matching_scenarios": 226,
+      "matching_comparisons": 686,
+      "matching_screen_comparisons": 658,
+      "matching_filesystem_comparisons": 28,
+      "divergent_labels": [],
+      "partial_scenarios": [],
+      "unstarted_scenarios": [],
+      "unexecuted_comparisons": 0,
+      "log_sha256": "52942150f73feec1b80c0bfb786e4085dcf94335d4c4f1526e77c8631eb14e1c",
+      "gate_artifacts": {
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-06/native-unit-full/emaxx/target/compat-subject/gate/emaxx": {
+          "source": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-06/native-unit-full/emaxx/target/compat-subject/gate/emaxx",
+          "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source310-macos-frozen-failed-inputs/emaxx",
+          "sha256": "0dcadc0d74835e8c47593d79b6f476182c9e885fbdec79545659d665a5c96fd1",
+          "bytes": 17817216
+        },
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-06/native-unit-full/emaxx/target/compat-subject/gate/emaxx.pdmp": {
+          "source": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-06/native-unit-full/emaxx/target/compat-subject/gate/emaxx.pdmp",
+          "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source310-macos-frozen-failed-inputs/emaxx.pdmp",
+          "sha256": "ac2a47f3dfaede70162f8da9476620a5513667d5ba545ed02a62e14e53c84fbf",
+          "bytes": 21784144
+        }
+      },
+      "qualification": "Complete source310 terminal run after local Rust exited, with unchanged source and image; the executable identity limitation below is material. Harness, actions, fixtures, timeouts and comparison rules match source248. Every raw comparison is checked against all original 226 scenarios/686 labels; Nine execution inputs are unchanged. The executable changed from its pre-run hash; the separate ERC compat-harness replay started during this run and rebuilt that same target path. Per-scenario executable hashes were not captured, so these matches do not establish one unchanged executable across the entire run. The source312 repair and later drafts require their own validation; this audit establishes the source310 raw terminal inventory and preserves the artifact limitation. The source310 partial frozen ERC crash and all earlier failed runs remain preserved. No frozen completion is inferred from this separate terminal pass. No performance or full-goal completion claim."
+    },
+    "initial_audit_failure": "The first independent terminal audit stopped at the recorded executable hash mismatch; no passing receipt was emitted.",
+    "frozen_retention_limit": "The source310-macos-frozen-abort archive retains the executable available after the separate ERC harness replay (0dcadc0d...), not the earlier executable recorded when terminal validation began (28ab0011...). Treat that retained binary as the later crashing replay input, not proven retention of the original full-frozen process image. Source and dump are unchanged; the old runtime crash is independently reproduced with recorded executable identities in source312-erc-repair.",
+    "cause": "An ERC diagnostic invoked compat-harness in the same checkout while the terminal suite ran. Its build step reused target/compat-subject/gate/emaxx. The current and retained post-replay binary hashes agree, but differ from the terminal command receipt. Per-scenario executable hashes were not captured.",
+    "consequence": "No unchanged-artifact terminal certification is claimed. Exact-source final validation must use an isolated build directory with no diagnostic rebuilds during execution."
+  },
+  "archive": {
+    "path": "source310-macos-terminal-qualified-results.tar.gz",
+    "bytes": 151005,
+    "sha256": "8e44179dc034c6e9e47a7ffe0ffbba9bd935eff126263ced65b424b22aaf04c9"
+  },
+  "files": [
+    {
+      "path": "audit-source310-macos-terminal-qualified.py",
+      "bytes": 6497,
+      "sha256": "66bea187cea36a4a4ae75216f5736c46a58a118f3d3fd934c35ea5a105f874fc"
+    },
+    {
+      "path": "audit-source310-macos-terminal.py",
+      "bytes": 5902,
+      "sha256": "5023bebaf48ec9efae400f4dc09480bc4f665b31b883c8124bc00093132a2c2c"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source310-terminal-qualified.py",
+      "bytes": 3002,
+      "sha256": "1f847a1aa8fdcf1fe53df133bc7f593755cbc05601972dbae34789eb6287026e"
+    },
+    {
+      "path": "queue-source310-full-macos.py",
+      "bytes": 10671,
+      "sha256": "f9e56104386f5f07bb09d69a9078a63f0a005cf88b603af805c783bae348a155"
+    },
+    {
+      "path": "source248-full-ttydiff-retry-command.json",
+      "bytes": 9201,
+      "sha256": "247ff4780a46dec41b0bf2e5d6e4762efc2ea734282c4cde0a8522bd50c82ccd"
+    },
+    {
+      "path": "source248-manifest.json",
+      "bytes": 54099,
+      "sha256": "686003776613cdc0825d9575e630e7b39fdbe0674dcdeea893f9f3620caef92f"
+    },
+    {
+      "path": "source310-erc-replay-command.json",
+      "bytes": 500,
+      "sha256": "693a076f3dc51110a5e630ed9136dd54684db846ab42f65c2cf997d628a97ac8"
+    },
+    {
+      "path": "source310-erc-replay-result.json",
+      "bytes": 55,
+      "sha256": "86e687f00f530df88786a64197febe8f364663f9f38edec7acc6d8a498a59646"
+    },
+    {
+      "path": "source310-erc-replay.log",
+      "bytes": 1116,
+      "sha256": "b67aa1ad87cbe4bc3df199edda8bcbc4d38912f3f28566fe9e1c0a9fcb993edd"
+    },
+    {
+      "path": "source310-executable-retention-correction.json",
+      "bytes": 4405,
+      "sha256": "e9f75afcc351cd2094bb9fe984a9640d0ceede2e46e503bf2b8063bba9605bc7"
+    },
+    {
+      "path": "source310-full-queue-result.json",
+      "bytes": 4656,
+      "sha256": "3cefd8172dd2f06e1e131dff8a50d94675af6199b7399dca02e89bfc3390beb9"
+    },
+    {
+      "path": "source310-full-queue-state.json",
+      "bytes": 4657,
+      "sha256": "9a0a43cfa4f6c9cf4c7b4782242211d092da2f7feadd34948f14e968c02d5fff"
+    },
+    {
+      "path": "source310-full-tty-command.json",
+      "bytes": 9098,
+      "sha256": "2714a362bd6eec22d15f4fdc44f45699eaccc76d05e20f3105d6c8bdd6754ddf"
+    },
+    {
+      "path": "source310-full-tty-result.json",
+      "bytes": 200,
+      "sha256": "bd795edfcd32466e796d1a3d4c4b70a321abc31d49e82d1ba416f83f8a0015a9"
+    },
+    {
+      "path": "source310-full-tty.log",
+      "bytes": 62615,
+      "sha256": "52942150f73feec1b80c0bfb786e4085dcf94335d4c4f1526e77c8631eb14e1c"
+    },
+    {
+      "path": "source310-macos-frozen-abort-audit.json",
+      "bytes": 391230,
+      "sha256": "15dc542c536fd82903f56f65b04399b75abc9dccd03014bfa6060091ead9fcf0"
+    },
+    {
+      "path": "source310-macos-terminal-audit.json",
+      "bytes": 3044,
+      "sha256": "20c1679d48cef29af3652939e75794b27effc91d410756f9cef3ccd373344c7a"
+    },
+    {
+      "path": "source310-manifest.json",
+      "bytes": 63015,
+      "sha256": "660f7654e2a09a6adc8e1587ce30b014aa60617e8c39c17ddd1310e7f2ad93b9"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

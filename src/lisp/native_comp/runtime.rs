@@ -622,12 +622,6 @@ pub(crate) fn gc_tuning(interpreter: &Interpreter, environment: &Env) -> (i64, O
     (threshold, percentage)
 }
 
-thread_local! {
-    /// alloc.c's gc_in_progress: a collection's own Lisp (post-gc-hook)
-    /// must not start another.
-    static ORDINARY_GC_IN_PROGRESS: Cell<bool> = const { Cell::new(false) };
-}
-
 /// lisp.h:maybe_gc at eval_sub for the ordinary interpreter: when the
 /// consing counter has gone negative, alloc.c:maybe_garbage_collect retunes
 /// it from the Lisp variables and collects if it is still negative.  An
@@ -661,7 +655,7 @@ pub(crate) fn maybe_gc(interpreter: &mut Interpreter, environment: &mut Env) {
 #[cold]
 #[inline(never)]
 fn maybe_garbage_collect(interpreter: &mut Interpreter, environment: &mut Env) {
-    if ORDINARY_GC_IN_PROGRESS.with(Cell::get) {
+    if interpreter.garbage_collection_is_inhibited() {
         return;
     }
     let (threshold, percentage) = gc_tuning(interpreter, environment);
@@ -674,9 +668,7 @@ fn maybe_garbage_collect(interpreter: &mut Interpreter, environment: &mut Env) {
     if !due && !crate::lisp::alloc::stress_collections() {
         return;
     }
-    ORDINARY_GC_IN_PROGRESS.with(|flag| flag.set(true));
     let _ = super::garbage_collect_now(interpreter, environment);
-    ORDINARY_GC_IN_PROGRESS.with(|flag| flag.set(false));
 }
 
 pub(crate) fn decode_active_backtrace_arguments(
@@ -930,21 +922,6 @@ impl NativeRuntime {
             pending_error: None,
             escape_buffer,
         });
-    }
-
-    fn collect_native_heap(
-        &mut self,
-        stack_top: *const NativeWord,
-        threshold: i64,
-        percentage: Option<f64>,
-        interpreter: &mut Interpreter,
-        environment: &Env,
-    ) -> bool {
-        if !self.heap.collection_due(threshold, percentage) {
-            return false;
-        }
-        self.collect_native_heap_now(stack_top, interpreter, environment);
-        true
     }
 
     fn collect_native_heap_now(
@@ -2123,7 +2100,6 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
     let interpreter = unsafe { &mut *active.interpreter };
     let environment = unsafe { &mut *active.environment };
     let original_function = unsafe { runtime.heap.decode_live(function_word) }.ok()?;
-    let target = direct_funcall_target(interpreter, environment, &original_function)?;
 
     // do_debug_on_call needs the full debugger/specpdl path.  Keep that cold
     // state on the general evaluator path until that C lifecycle is shared by
@@ -2143,7 +2119,33 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
 
             // Ffuncall calls maybe_gc after record_in_backtrace and before dispatch.
             unsafe { emaxx_native_gc_trampoline() };
-            let result = target.invoke(active, call_arguments);
+            // The collection's hooks/finalizers may replace the function cell.
+            // Resolve it only after collection, including changes of callable
+            // kind. The fallback reuses this same Ffuncall frame and depth.
+            let result = match direct_funcall_target(interpreter, environment, &original_function) {
+                Some(target) => target.invoke(active, call_arguments),
+                None => {
+                    let decoded = call_arguments
+                        .iter()
+                        .map(|word| {
+                            runtime
+                                .heap
+                                .decode(*word)
+                                .map_err(|error| super::lisp::native_ice(&error))
+                        })
+                        .collect::<Result<smallvec::SmallVec<[Value; 8]>, _>>();
+                    decoded
+                        .and_then(|args| {
+                            interpreter.funcall_body(original_function, &args, environment)
+                        })
+                        .and_then(|value| {
+                            runtime
+                                .heap
+                                .encode(&value)
+                                .map_err(|error| super::lisp::native_ice(&error))
+                        })
+                }
+            };
             let result = match result.map_err(LispError::into_kind) {
                 Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
                     // eval.c:Ffuncall calls call_debugger with (exit VALUE) before
@@ -3557,12 +3559,18 @@ extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
 
 #[unsafe(no_mangle)]
 extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
-    with_active(|active| {
-        let interpreter = unsafe { &mut *active.interpreter };
+    // Do not hold an ActiveCall or NativeRuntime reference across callbacks:
+    // finalizers/hooks can reenter native Lisp in this same activation.
+    let (interpreter, environment, runtime) =
+        with_active(|active| (active.interpreter, active.environment, active.runtime));
+    let started = {
+        // SAFETY: the synchronous native activation owns these pointers. This
+        // scope ends before the shared completion path can invoke Lisp.
+        let interpreter = unsafe { &mut *interpreter };
         if interpreter.garbage_collection_is_inhibited() {
             return;
         }
-        let runtime = unsafe { &mut *active.runtime };
+        let runtime = unsafe { &mut *runtime };
         if !runtime.heap.collection_might_be_due() {
             return;
         }
@@ -3578,17 +3586,20 @@ extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
             Ok(Kind::Float(value)) => Some(value.get()),
             _ => None,
         };
-        if runtime.collect_native_heap(stack_top, threshold, percentage, interpreter, unsafe {
-            &*active.environment
-        }) {
-            let live_bytes = interpreter
-                .live_object_census()
-                .total_bytes_of_live_objects();
-            runtime
-                .heap
-                .collection_finished(live_bytes, threshold, percentage);
+        if !runtime.heap.collection_due(threshold, percentage) {
+            return;
         }
-    });
+        let started = std::time::Instant::now();
+        runtime.collect_native_heap_now(stack_top, interpreter, unsafe { &*environment });
+        started
+    };
+    // SAFETY: these are the same owning activation's pointers, reborrowed
+    // after the collecting runtime reference has ended.
+    let result =
+        unsafe { super::finish_garbage_collection(&mut *interpreter, &mut *environment, started) };
+    if let Err(error) = result {
+        with_active(|active| remember_helper_error(active, error));
+    }
 }
 
 extern "C" fn runtime_maybe_quit() {
@@ -8575,6 +8586,58 @@ mod tests {
     }
 
     #[test]
+    fn native_automatic_gc_runs_statistics_and_hooks_under_gnu_inhibition() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let setup = crate::lisp::reader::Reader::new(
+            "(setq native-auto-hook-count 0 native-auto-hook-gcs nil \
+             native-auto-hook-nested 'not-run gcs-done 0 gc-elapsed nil \
+             post-gc-hook (list '(lambda () \
+               (setq native-auto-hook-count (1+ native-auto-hook-count) \
+                     native-auto-hook-gcs gcs-done \
+                     native-auto-hook-nested (garbage-collect)))))",
+        )
+        .read()
+        .expect("hook setup parses")
+        .expect("hook setup is one form");
+        interpreter
+            .eval(&setup, &mut environment)
+            .expect("install hook");
+        let mut runtime = NativeRuntime::default();
+        runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                eval_form_triggers_maybe_gc as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[],
+            )
+            .expect("automatic collection finishes through native entry");
+        assert_eq!(runtime.heap.gc.collections, 2);
+        assert_eq!(
+            interpreter.lookup_var("gcs-done", &environment),
+            Some(Value::Integer(1))
+        );
+        assert_eq!(
+            interpreter.lookup_var("native-auto-hook-count", &environment),
+            Some(Value::Integer(1))
+        );
+        assert_eq!(
+            interpreter.lookup_var("native-auto-hook-gcs", &environment),
+            Some(Value::Integer(1))
+        );
+        assert_eq!(
+            interpreter.lookup_var("native-auto-hook-nested", &environment),
+            Some(Value::Nil)
+        );
+        assert_eq!(
+            interpreter.lookup_var("gc-elapsed", &environment),
+            Some(Value::Nil)
+        );
+        assert!(!interpreter.garbage_collection_is_inhibited());
+    }
+
+    #[test]
     fn eval_sub_runs_maybe_gc_before_form_dispatch() {
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
@@ -11965,6 +12028,36 @@ mod tests {
         fn make_strings() -> (Vec<Value>, Vec<Vec<u8>>) {
             let mut roots = Vec::new();
             let mut expected = Vec::new();
+            // alloc.c:compact_small_strings need not move data already at
+            // its destination. Guarantee a retired entry before the borrowed
+            // string, independent of the arena's state after previous tests.
+            // Two adjacent 37-byte entries are 48 bytes apart; crossing an
+            // sblock adds its header, so this also proves a shared block.
+            let mut preceding = StringObjectRef::repeated_character(u32::from(b'p'), 37, true)
+                .expect("valid predecessor");
+            let mut pinned = None;
+            for _ in 0..2 {
+                let next = StringObjectRef::repeated_character(u32::from(b'q'), 37, true)
+                    .expect("valid guarded string");
+                let before = preceding.borrow().bytes().as_ptr() as usize;
+                let after = next.borrow().bytes().as_ptr() as usize;
+                if after.checked_sub(before) == Some(48) {
+                    // Five-byte character storage outgrows the old 48-byte
+                    // entry. Retiring it guarantees an actual compaction hole
+                    // even if the old string header is conservatively marked.
+                    preceding
+                        .borrow_mut()
+                        .store_character(0, 0x20_0000)
+                        .expect("expand the predecessor's data");
+                    assert_ne!(preceding.borrow().bytes().as_ptr() as usize, before);
+                    pinned = Some(next);
+                    break;
+                }
+                preceding = next;
+            }
+            let pinned = pinned.expect("two consecutive entries share one small block");
+            roots.push(Value::StringObject(pinned));
+            expected.push(vec![b'q'; 37]);
             for index in 0..768 {
                 let length = if index % 41 == 0 { 1025 } else { 37 };
                 let code = (index % 26 + usize::from(b'a')) as u32;

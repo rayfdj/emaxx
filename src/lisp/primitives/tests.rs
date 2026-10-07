@@ -19522,6 +19522,15 @@ fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
 }
 
 #[test]
+fn bytecode_calls_observe_gc_hook_redefinition_and_gnu_collection_completion() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/call-after-gc-redefinition.el"),
+        include_str!("../../../tests/fixtures/call-after-gc-redefinition.expected").trim(),
+        "bytecode calls resolve after hooks, including callable-kind changes and void functions",
+    );
+}
+
+#[test]
 fn bytecode_stack_capacity_and_nested_reservations_match_gnu() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/bytecode-stack-layout.el"),
@@ -22573,6 +22582,15 @@ fn redisplay_dispatches_an_already_due_timer() {
             .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("evaluate redisplay timer program"),
         Value::T
+    );
+}
+
+#[test]
+fn timer_snapshot_survives_canceling_and_collecting_later_entries() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/timer-snapshot-gc.el"),
+        include_str!("../../../tests/fixtures/timer-snapshot-gc.expected").trim(),
+        "timer dispatch retains its snapshot when a callback cancels and collects later entries",
     );
 }
 

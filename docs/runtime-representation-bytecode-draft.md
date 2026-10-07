@@ -45,6 +45,74 @@ string-byte handover is authoritative for that job and the remaining
 plain-string/header/stack-capacity/accounting limitations. The
 source216 results below remain a preserved closure-only baseline.
 
+## GC completion, call order and timer lifetime — 7 October 2026
+
+**Source312 is applied; the full goal remains incomplete.** Native automatic GC
+now runs finalizers, updates collection statistics and runs the inhibited
+post-GC hook through the same completion path as ordinary collection
+(GNU alloc.c:garbage_collect, lines 6698–6731). Interpreter, bytecode and native
+funcall entries root their unresolved function/arguments, collect, then resolve
+the current function cell (eval.c:Ffuncall, bytecode.c:Bcall). This also
+removes duplicate dispatch-specific call frames. A callback can replace a
+bytecode function with an interpreted function, primitive, alias or void cell;
+the actual next call now agrees with GNU.
+
+The source310 macOS ERC crash was a timer snapshot retaining unrooted Lisp
+words across callbacks. A callback could cancel later timers and collect their
+vectors; the later snapshot access read freed memory. The snapshot now uses
+the existing RootedVec, retaining remaining entries until iteration consumes
+them, corresponding to GNU's reachable copied timer lists in
+keyboard.c:timer_check. The original crash, its layout dependence, instrumented
+diagnosis and subsequent ordinary reproductions remain preserved.
+
+The [selected evidence](handover/2026-09-30-shared-reader-draft/source312-gc-call-timer-selected-manifest.json)
+verifies **552 runtime inputs and modes**, **94 auxiliary inputs**, warning-free
+strict checks, **1,068 passes and eight focused passes per profile**, and
+**60 ordinary GNU comparisons**, including 198 generated rows. Three additional
+call probes match actual GNU output, including native compilation, and the
+unchanged upstream ERC case passes in GNU and312 across three environment
+layouts. Both portable replays reproduce every runtime byte and mode.
+All 1,065 predecessor selectors, 24 audit controls and original fixture/expected
+bytes remain. The compaction test now guarantees an actual retired data entry
+before the borrowed string; every original string and assertion remains.
+The old setup incorrectly required movement even when data could already be at
+its destination, which GNU's compact_small_strings does not require.
+Both earlier broad failures and the smaller unchanged passing replay remain.
+
+This is a [correctness publication](handover/2026-09-30-shared-reader-draft/source312-application-decision.json)
+with [exact applied-source verification](handover/2026-09-30-shared-reader-draft/source312-applied-source-verification.json).
+Full exact-source Linux/macOS validation and312 timing remain separate;
+inspect the saved launch/queue receipts before starting another run.
+
+Predecessor311's [Linux Rust run](handover/2026-09-30-shared-reader-draft/source311-linux-rust-results-manifest.json)
+passes **3,164 tests with two existing ignores**. Its
+[full Linux frozen run](handover/2026-09-30-shared-reader-draft/source311-linux-frozen-results-manifest.json)
+matches **519 files / 7,928 outcomes / 1,038 successful processes**:
+each editor reports 7,670 passes, 47 expected failures and 211 skips.
+Its [paired full16 diagnostic](handover/2026-09-30-shared-reader-draft/source311-linux-stack-performance-results-manifest.json)
+verifies all 192 actual answers/modes. The raw body geometric ratio311/310
+is **1.006777**; paired GNU aggregates are 2.903372× and 2.841965× respectively.
+These were measured before the native GC completion repair: reported GC counts
+and elapsed GC time omitted native automatic collections. Keep the timings and
+regressions visible, but do not call them equivalent-work performance acceptance.
+
+Source310's [macOS frozen run](handover/2026-09-30-shared-reader-draft/source310-macos-frozen-abort-manifest.json)
+remains failed: 182 complete comparisons / 2,951 matching outcomes, followed by
+the ERC crash; 336 files never started. Its
+[terminal raw audit](handover/2026-09-30-shared-reader-draft/source310-macos-terminal-qualified-results-manifest.json)
+finds 226 scenarios / 686 matching comparisons, but a diagnostic rebuild changed
+the executable during the run, so unchanged-artifact acceptance is unestablished.
+The [original frozen executable/image](handover/2026-09-30-shared-reader-draft/source310-original-frozen-retention-verified.json)
+are retained separately from the later crashing replay binary. The new full
+validation checkout is isolated and its terminal stage uses retained copies.
+
+Main remains 21d20f0e, PR79 remains draft. Allocated-symbol authority, real
+intervals and unified pure storage, remaining adapters, physical accounting and
+allocation counters, internal native borrow/ownership review, final adversarial
+review, complete final-source validation and the unchanged calibrated nine-round
+every-workload performance criterion remain open. No GNU performance parity or
+full-goal completion is claimed. Earlier sections preserve historical states.
+
 ## Applied bytecode stack — 6 October 2026
 
 **Source311 is applied; the full goal remains incomplete.** The VM now has GNU's

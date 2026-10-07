@@ -4352,8 +4352,13 @@ impl Interpreter {
     pub(crate) fn note_collection_done(&mut self, elapsed: std::time::Duration) {
         // alloc.c accumulates its own timespec and stores the total, so a
         // value Lisp stored in `gc-elapsed' is replaced by the true total.
-        self.gc_elapsed_total += elapsed.as_secs_f64();
-        self.set_symbol_value_cell("gc-elapsed", Value::float(self.gc_elapsed_total));
+        if self
+            .symbol_value_cell("gc-elapsed")
+            .is_ok_and(|value| matches!(value.kind(), Kind::Float(_)))
+        {
+            self.gc_elapsed_total += elapsed.as_secs_f64();
+            self.set_symbol_value_cell("gc-elapsed", Value::float(self.gc_elapsed_total));
+        }
         // `gcs_done++' on the C int the variable forwards to.
         let done = match self
             .forwarded_c_value("gcs-done", &Env::new())

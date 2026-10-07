@@ -1,0 +1,28 @@
+{
+  "status": "apply source312 selected correctness repair; full goal remains open",
+  "base_commit": "447c84c13017f47878855273a2a0609f9f9edeb1",
+  "selected_audit_sha256": "909230c14c9979185fbc1bbe97002bf155a33e9770aae3613f3c5a03ae11da53",
+  "rationale": "Repair native automatic GC completion, function-cell resolution after GC, and a reproduced upstream timer use-after-free. Preserve every predecessor selector, all fixture expectations, all compaction assertions and failed development results.",
+  "gnu_reference": {
+    "source": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+    "mechanisms": [
+      "alloc.c:garbage_collect",
+      "eval.c:Ffuncall",
+      "bytecode.c:Bcall",
+      "keyboard.c:timer_check",
+      "alloc.c:compact_small_strings"
+    ]
+  },
+  "performance": "Not yet measured for312; previous paired311/310 raw timings and GC-accounting limitations are retained. No speedup or GNU-parity claim.",
+  "remaining": [
+    "complete exact-source platform validation",
+    "allocated symbol authority",
+    "real intervals and unified pure storage",
+    "remaining adapters",
+    "physical allocation accounting and public counters",
+    "internal native ownership/borrow audit",
+    "final adversarial review",
+    "calibrated locked16 nine-round every-case GNU performance criterion"
+  ],
+  "goal_complete": false
+}

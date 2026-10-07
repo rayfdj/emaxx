@@ -1633,39 +1633,30 @@ fn run_frames(
                     // stay on the stack until the call returns (GNU keeps
                     // them rooted the same way).
                     let func = interp.bc_stack[args_start - 1];
-                    // A packed byte-code function's frame lies above the
-                    // arguments and the loop continues in it (bytecode.c's
-                    // `goto setup_frame').  Anything else takes Ffuncall.
+                    interp.begin_funcall(env)?;
+                    if let Some(termination) = interp.pending_termination().cloned() {
+                        interp.end_funcall();
+                        return Err(LispError::Terminate(termination));
+                    }
+                    let backtrace_depth = interp.backtrace_frames_len();
+                    // Bcall records the unresolved function and rooted arguments
+                    // before maybe_gc, which may redefine the function cell.
+                    // SAFETY: the stack buffer never moves and these slots stay
+                    // below the callee's disjoint storage until return/unwind.
+                    let call_args = unsafe { interp.bc_stack.slice_from(args_start, argc) };
+                    interp.push_backtrace_frame_borrowed(func, call_args);
+                    interp.capture_current_backtrace_context(
+                        match func.kind() {
+                            Kind::Symbol(_) => func.as_symbol().ok(),
+                            _ => None,
+                        },
+                        env,
+                        None,
+                    );
+                    crate::lisp::native_comp::maybe_gc(interp, env);
+                    // Only now inspect the live cell/code slots, just as GNU's
+                    // packed-closure setup_frame branch does after maybe_gc.
                     if let Some((callee, callee_function)) = interp.bytecode_callee(&func) {
-                        interp.begin_funcall(env)?;
-                        if let Some(termination) = interp.pending_termination().cloned() {
-                            interp.end_funcall();
-                            return Err(LispError::Terminate(termination));
-                        }
-                        let backtrace_depth = interp.backtrace_frames_len();
-                        // record_in_backtrace with the arguments in place.
-                        // SAFETY: the stack buffer never moves, and the
-                        // slots stay below every truncation until this
-                        // frame returns or unwinds.
-                        let call_args = unsafe { interp.bc_stack.slice_from(args_start, argc) };
-                        interp.push_backtrace_frame_borrowed(
-                            match func.kind() {
-                                Kind::Symbol(_) => func,
-                                _ => callee_function,
-                            },
-                            call_args,
-                        );
-                        interp.capture_current_backtrace_context(
-                            match func.kind() {
-                                Kind::Symbol(_) => func.as_symbol().ok(),
-                                _ => None,
-                            },
-                            env,
-                            None,
-                        );
-                        interp.with_lisp_stack_roots(&callee_function, |interp| {
-                            crate::lisp::native_comp::maybe_gc(interp, env);
-                        });
                         if let Err(error) =
                             interp
                                 .bc_stack
@@ -1731,11 +1722,11 @@ fn run_frames(
                         continue;
                     }
                     let trace_call = trace_errors.then(|| func.to_string());
-                    // SAFETY: as above; the callee's own frames grow above
-                    // these slots and every truncation below them waits
-                    // for the call to return.
-                    let call_args = unsafe { interp.bc_stack.slice_from(args_start, argc) };
-                    let value = match interp.funcall_from_bytecode(&func, call_args, env) {
+                    let result = interp.funcall_body(func, call_args, env);
+                    let result = interp.settle_frame_result(result, env);
+                    interp.truncate_backtrace_frames(backtrace_depth);
+                    interp.end_funcall();
+                    let value = match result {
                         Ok(value) => value,
                         Err(error) => {
                             // Expected conditions such as `scan-error' are

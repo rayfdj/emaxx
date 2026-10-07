@@ -278,9 +278,8 @@ pub(crate) fn garbage_collect_now(
 }
 
 /// alloc.c:Fgarbage_collect's temporary `symbols-with-pos-enabled' binding
-/// surrounds only the mark/sweep.  Keep the shared finalization and hook path
-/// outside that binding, just as Fgarbage_collect restores its specpdl before
-/// reading gcstat.
+/// surrounds garbage_collect, including finalizers and post-GC hooks. Restore
+/// the caller's binding after the complete collection before returning gcstat.
 pub(crate) fn garbage_collect_now_with_symbols_disabled(
     interpreter: &mut Interpreter,
     environment: &mut Env,
@@ -324,13 +323,23 @@ fn garbage_collect_now_below_top(
     };
     let started = std::time::Instant::now();
     begin_garbage_collection(interpreter, environment);
-    let census = interpreter.live_object_census();
+    let result = finish_garbage_collection(interpreter, environment, started).map(Some);
     if let Some(restore) = symbols_with_pos_restore {
         interpreter.restore_special_dynamic(restore, environment)?;
     }
-    // "GC is complete: now we can run our finalizer callbacks."  Before
-    // Fgarbage_collect's post-gc-hook, after the specpdl is restored.
-    interpreter.run_doomed_finalizers(environment)?;
+    result
+}
+
+/// alloc.c:garbage_collect after marking/sweeping. Both automatic native
+/// collections and explicit/interpreted collections must run this same tail.
+/// Reset the allocation allowance before finalizers can allocate or collect;
+/// report the completed collection before invoking the inhibited post-GC hook.
+pub(super) fn finish_garbage_collection(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    started: std::time::Instant,
+) -> Result<crate::lisp::eval::LiveObjectCensus, LispError> {
+    let census = interpreter.live_object_census();
     let (threshold, percentage) = gc_tuning(interpreter, environment);
     garbage_collection_finished(
         interpreter,
@@ -338,14 +347,24 @@ fn garbage_collect_now_below_top(
         threshold,
         percentage,
     );
+    interpreter.run_doomed_finalizers(environment)?;
     interpreter.note_collection_done(started.elapsed());
-    let _ = crate::lisp::primitives::call(
-        interpreter,
-        "run-hooks",
-        &[Value::symbol("post-gc-hook")],
-        environment,
-    );
-    Ok(Some(census))
+    // GNU inhibits collection, including explicit garbage-collect, for the
+    // hook's dynamic extent. Hook errors follow the existing safe-run path.
+    if interpreter
+        .lookup_var("post-gc-hook", environment)
+        .is_some_and(|hook| hook.is_truthy())
+    {
+        interpreter.inhibit_garbage_collection();
+        let _ = crate::lisp::primitives::call(
+            interpreter,
+            "run-hooks",
+            &[Value::symbol("post-gc-hook")],
+            environment,
+        );
+        interpreter.allow_garbage_collection();
+    }
+    Ok(census)
 }
 
 pub(crate) fn begin_garbage_collection(interpreter: &mut Interpreter, environment: &Env) {

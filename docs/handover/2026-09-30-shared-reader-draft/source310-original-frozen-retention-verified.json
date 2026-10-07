@@ -1,0 +1,18 @@
+{
+  "status": "original full-frozen executable and image were retained before the diagnostic rebuild",
+  "original_inputs": {
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-06/native-unit-full/emaxx/target/compat-subject/gate/emaxx": {
+      "sha256": "28ab0011d29b3dbea27fef16a64fe284f11f7c6cf535984b10d0ad05bcbf19c9",
+      "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source310-full-frozen-subject/emaxx",
+      "bytes": 17731744
+    },
+    "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-06/native-unit-full/emaxx/target/compat-subject/gate/emaxx.pdmp": {
+      "sha256": "ac2a47f3dfaede70162f8da9476620a5513667d5ba545ed02a62e14e53c84fbf",
+      "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source310-full-frozen-subject/emaxx.pdmp",
+      "bytes": 21784144
+    }
+  },
+  "retention_receipt_sha256": "af0933c3ba8aef4fd3a1ab500005e6ee3a4089d31b7daafa62c8a6bc939866e1",
+  "goal_complete": false,
+  "qualification": "This supplements the later-replay retention in source310-macos-frozen-abort and the terminal executable-change qualification. The original28ab0011 executable and ac2a47f3 image exist unchanged at the paths above. The later0dcadc0d executable is separately retained and reproduced the crash. Terminal raw686 matches remain uncertified for a single unchanged executable because diagnostic rebuilding occurred during that suite."
+}

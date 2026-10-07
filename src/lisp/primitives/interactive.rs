@@ -1329,6 +1329,10 @@ pub(crate) fn run_due_timers(
         let Some(timers) = interp
             .lookup_var(list_name, env)
             .and_then(|value| value.to_vec().ok())
+            // keyboard.c:timer_check keeps its copied lists reachable across
+            // callbacks. A Rust heap Vec is outside the conservative stack:
+            // cancel-timer followed by GC must not free its remaining entries.
+            .map(crate::lisp::alloc::RootedVec::from_vec)
         else {
             continue;
         };
