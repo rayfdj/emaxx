@@ -1,0 +1,1731 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "fixture-only correction validated on Linux and macOS",
+    "source_commit": "6ab3346049f08a08c5fbb842fc3f737c22c40c75",
+    "local": {
+      "status": "passed",
+      "source_commit": "6ab3346049f08a08c5fbb842fc3f737c22c40c75",
+      "source_inputs": 552,
+      "source_manifest": "source313-manifest.json",
+      "modes_manifest": "source313-modes.json",
+      "changed_inputs": [
+        "tests/fixtures/vector-closure-rounded-census.el",
+        "tests/fixtures/vector-pseudovector-word-census.el"
+      ],
+      "strict_checks": [
+        "fmt",
+        "check",
+        "clippy"
+      ],
+      "profiles": {
+        "gate": {
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "inventory": 3058,
+          "binary": {
+            "original": "/Users/nbmhqa186/projects/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+            "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source313-gate-libtest",
+            "sha256": "cc374887685cc2bdd26f222acfcdb514e42366aebb479255978bdb1262073bb0"
+          }
+        },
+        "release": {
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "inventory": 3057,
+          "binary": {
+            "original": "/Users/nbmhqa186/projects/emaxx/target/release/deps/emaxx-e17fcfe01baaf180",
+            "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source313-release-libtest",
+            "sha256": "a0ce111ed072f45f0cabbe57a5d8bccb1c006ce0a8400436394fa91b48bb6424"
+          }
+        }
+      },
+      "ordinary_processes": 40,
+      "goal_complete": false,
+      "qualification": "Only two fixture preambles differ from312; production, original constructors/sizes/assertions/expectations are byte-identical. Strict checks and fresh gate/release embedded-fixture controls passed; complete predecessor312 macOS Rust coverage remains separately bound to its exact source and artifacts. Linux313 and terminal312 have separate pending audits. This is not full-goal completion."
+    },
+    "linux_rust": {
+      "status": "passed",
+      "source_commit": "6ab3346049f08a08c5fbb842fc3f737c22c40c75",
+      "source_manifest": "source313-manifest.json",
+      "incremental_patch_sha256": "7eb9707601a79c9116361c5b6b756f9c7eec7916b049541d5e070fcbd608b2f2",
+      "validation_checkout": {
+        "dirty": false,
+        "head": "6ab3346049f08a08c5fbb842fc3f737c22c40c75"
+      },
+      "verified_source_equivalent_inputs": 552,
+      "verified_auxiliary_inputs": 94,
+      "verified_unique_inputs": 642,
+      "library_passed": 3064,
+      "library_ignored": 2,
+      "cargo_passed": {
+        "bins": 61,
+        "integration": 42
+      },
+      "total_passed": 3167,
+      "native_artifact_identity": "passed",
+      "native_identity_raw_lines": [
+        "test unchanged_gnu_sources_produce_identical_native_artifacts ... ok"
+      ],
+      "retained_files_verified": 4,
+      "test_binary_sha256": "7549f34bb815c8bb4aa67caf15a32bdcbd7514dd9a45000c7b58e57934960562",
+      "summary_sha256": "890807a4cda93a613172fefd7644e49701d67e45780ece2298682f62b8b6db66",
+      "qualification": "Complete group and Cargo result summaries cross-checked with raw logs and unchanged inventory counts. Post-run retained images do not establish which individual test used each file. Frozen and terminal runs are separate."
+    },
+    "linux_census": {
+      "status": "passed",
+      "run_id": 37606558967,
+      "gnu_processes": 18,
+      "rust_processes": 3,
+      "rust_passes": 693,
+      "primitive_group": 691,
+      "complete_library_inventory": 3066,
+      "qualification": "All eighteen GNU actual outputs and every raw Rust name/verdict verified across single/group/single. Both census controls pass in the full primitives group. The fixture adds two unconditional collections before measurement; no constructor, size, expected byte, timeout or selector is removed. Retained executables/images and source hashes verified. This bounded diagnostic is not the full Linux gate and does not erase312 failures."
+    },
+    "portable": {
+      "status": "passed",
+      "base_commit": "7e894a667b0bc0076dcf0555fb1d1f6fcbfb648c",
+      "source_commit": "6ab3346049f08a08c5fbb842fc3f737c22c40c75",
+      "verified_inputs": 552,
+      "all_modes_verified": true,
+      "changed_inputs": [
+        "tests/fixtures/vector-closure-rounded-census.el",
+        "tests/fixtures/vector-pseudovector-word-census.el"
+      ],
+      "incremental_patch_sha256": "7eb9707601a79c9116361c5b6b756f9c7eec7916b049541d5e070fcbd608b2f2",
+      "preceding_complete_patch_sha256": "3609044245e5fd610b9c6e72a1ba6b121bdd9735729b8b214e57f7034c29486c",
+      "replay_directory": "/private/tmp/source313-portable-f3o8bfo_",
+      "goal_complete": false,
+      "qualification": "The only313 source changes replay onto the exact312 Git archive and reproduce all552 runtime/test/build bytes and modes. All production sources and original expected outputs remain unchanged.The isolated replay uses the recorded312 file permissions before patch application; Git tracks only executable bits. An earlier in-repository replay incorrectly let parent Git skip the fixture paths and is preserved as a setup failure.312 complete portable replay is separately preserved; no unexecuted runtime change is included."
+    },
+    "excluded_binaries": [
+      {
+        "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/oracle-inputs/emacs.pdmp",
+        "bytes": 17723936,
+        "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae"
+      },
+      {
+        "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/oracle-inputs/emacs",
+        "bytes": 30924408,
+        "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf"
+      },
+      {
+        "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/retained-inputs/libtest",
+        "bytes": 34679712,
+        "sha256": "7549f34bb815c8bb4aa67caf15a32bdcbd7514dd9a45000c7b58e57934960562"
+      },
+      {
+        "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/retained-inputs/fixture-images/loadup-7549f34b-988ea42f.pdmp",
+        "bytes": 21843224,
+        "sha256": "a3a006a670cdbc281a44d5ac45f7b5604b516f2fecf64115d9d1bd5594bbb4e9"
+      },
+      {
+        "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/retained-inputs/fixture-images/loadup-233a3a2f-988ea42f.pdmp",
+        "bytes": 21846360,
+        "sha256": "3969d9ee80454590eec19e2f698bcdbe85805689d1731463e770d0058ff46b4d"
+      },
+      {
+        "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/retained-inputs/fixture-images/loadup-bc4a57f7-988ea42f.pdmp",
+        "bytes": 21846368,
+        "sha256": "4bff2d526abb6d871cef0b3b144e63bd3d9722aee624b62109de07e8cc3bc4e1"
+      },
+      {
+        "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/libtest",
+        "bytes": 34679712,
+        "sha256": "7549f34bb815c8bb4aa67caf15a32bdcbd7514dd9a45000c7b58e57934960562"
+      },
+      {
+        "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/fixture-images/group/loadup-7549f34b-988ea42f.pdmp",
+        "bytes": 21843280,
+        "sha256": "241d679bbf9a7bc14164361a3a0504aab20f7ea730f1c4ca5b2c3c9d7202c59d"
+      },
+      {
+        "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/fixture-images/single-before/loadup-7549f34b-988ea42f.pdmp",
+        "bytes": 21843280,
+        "sha256": "241d679bbf9a7bc14164361a3a0504aab20f7ea730f1c4ca5b2c3c9d7202c59d"
+      },
+      {
+        "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/fixture-images/single-after/loadup-7549f34b-988ea42f.pdmp",
+        "bytes": 21843280,
+        "sha256": "241d679bbf9a7bc14164361a3a0504aab20f7ea730f1c4ca5b2c3c9d7202c59d"
+      },
+      {
+        "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-inputs/emacs.pdmp",
+        "bytes": 17723936,
+        "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae"
+      },
+      {
+        "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-inputs/emacs",
+        "bytes": 30924408,
+        "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf"
+      },
+      {
+        "path": "source313-gate-libtest",
+        "bytes": 29674208,
+        "sha256": "cc374887685cc2bdd26f222acfcdb514e42366aebb479255978bdb1262073bb0"
+      },
+      {
+        "path": "source313-release-libtest",
+        "bytes": 22855936,
+        "sha256": "a0ce111ed072f45f0cabbe57a5d8bccb1c006ce0a8400436394fa91b48bb6424"
+      }
+    ],
+    "goal_complete": false,
+    "qualification": "Two unconditional pre-measurement collections remove startup reclamation from the object-footprint delta. Every original allocation size/constructor/expectation/assertion is preserved; production312 bytes are unchanged.40 local GNU/Emaxx runs, gate/release controls,18 Linux GNU runs,693 bounded Rust passes and the complete3167-pass Linux gate all audited. Earlier312 GNU-reference failures remain separately preserved.312 frozen/macOS/terminal results have their own exact artifact identities. Remaining architecture/accounting/soundness and calibrated every-case performance requirements are not complete."
+  },
+  "archive": {
+    "path": "source313-census-setup-results.tar.gz",
+    "bytes": 757524,
+    "sha256": "b5c9195057f6a1f43a9609e87d6d923cd2236f467753dd0db195be184d928f70"
+  },
+  "files": [
+    {
+      "path": "audit-source313-census-setup.py",
+      "bytes": 3497,
+      "sha256": "f8b85944ff1203640c3426ee68f8d2af54c6e9a4c024250bc7c8157f08372e4a"
+    },
+    {
+      "path": "audit-source313-linux-census.py",
+      "bytes": 4927,
+      "sha256": "91a4cf8d015e9c863a31070de043025323d5eaba13610a4bc26af811f06ab1c1"
+    },
+    {
+      "path": "audit-source313-linux-rust.py",
+      "bytes": 3448,
+      "sha256": "b79599862e1204a95c7273a1510fd48e89b8fc558e03ea383f5431c39b57b9cf"
+    },
+    {
+      "path": "audit-source313-local-validation.py",
+      "bytes": 3730,
+      "sha256": "73de5bc42d3cb7f923b704208b58cd57dca390da9db77b008ceb7dce299cf638"
+    },
+    {
+      "path": "audit-source313-portable-initial.py",
+      "bytes": 2357,
+      "sha256": "c0f0e0f2201f910deedb6ef5846a8e59712457b02d9530670a3397ab8e57e868"
+    },
+    {
+      "path": "audit-source313-portable.py",
+      "bytes": 2803,
+      "sha256": "7e1c115c69fb6e92ed1b4f36645174624f1531cb3e25f928aa9ab26d43504c4f"
+    },
+    {
+      "path": "collect-source313-linux.py",
+      "bytes": 2690,
+      "sha256": "cbe7c55c418d3499628c12b498a2320ef593b2f17206a4db17e4d808c7fffa93"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source313-validated.py",
+      "bytes": 3438,
+      "sha256": "d2b735fef5862981b35333913658f8e9671c54292b0b11c3b0aa2a27ef45fc8a"
+    },
+    {
+      "path": "probe-source313-census-setup.py",
+      "bytes": 2987,
+      "sha256": "8ac35e4d121f6a498bde37baa19fb3fa4d065ab541672749e68f7513f6ce9cf7"
+    },
+    {
+      "path": "source310-validation-input-recovery.json",
+      "bytes": 124984,
+      "sha256": "e9c2d009ebae1775ade22431152fde8c269b363234e46dd214ab8eb9ebbd7d05"
+    },
+    {
+      "path": "source313-census-setup-audit.json",
+      "bytes": 46248,
+      "sha256": "2798e0aa1275ffa70e06a6921ccfe53ce31e655beb4c1bfb597c0a009970400b"
+    },
+    {
+      "path": "source313-census-setup-macos-result.json",
+      "bytes": 17889,
+      "sha256": "a15ac07ba7fb4ec389b5bf2c1abb9e24d0315a3f16959c4be8c56107fa239379"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-0-emaxx.command.json",
+      "bytes": 2914,
+      "sha256": "36e2caa0bb42391ad7a62083b4ebafcdf20fc7c597763d8f6a7967e146176049"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-0-emaxx.result.json",
+      "bytes": 411,
+      "sha256": "da25aa81c07b6df727f546b220677747a59523ab7df275c7d32d56414fe2713a"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-0-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-0-emaxx.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-0-gnu.command.json",
+      "bytes": 2794,
+      "sha256": "71ac129dbaec128b8a9ccc7ae366904f63667189acc210923f0e0421d22f5d3b"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-0-gnu.result.json",
+      "bytes": 417,
+      "sha256": "8322611dc1de1435a1c7b3bdaf437020c9c0625934576530b1876afb97cdfb10"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-0-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-0-gnu.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-1024-emaxx.command.json",
+      "bytes": 3938,
+      "sha256": "65419251e709e377f32faecae5aa06ca496c830bee2dcccba8bd1a3c6bb68c9d"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-1024-emaxx.result.json",
+      "bytes": 422,
+      "sha256": "09591634d294a6730ce9cb8e1bb10f2ff3509db55ec3da88a45aaef1db83e9f8"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-1024-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-1024-emaxx.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-1024-gnu.command.json",
+      "bytes": 3818,
+      "sha256": "c702e8e5dabeaacd08e287945cd279ec5f75e53a14e91c90bc8dba02b88a0932"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-1024-gnu.result.json",
+      "bytes": 420,
+      "sha256": "cc873f7f3b155d47b4b75693d774729c4e4e4745a7e8866706a4ad48aaeedf70"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-1024-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-1024-gnu.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-128-emaxx.command.json",
+      "bytes": 3042,
+      "sha256": "cf11c3622dee38c7ee7f4f0e41d05b8dc618611d59f1b547f85257eb3567e2c3"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-128-emaxx.result.json",
+      "bytes": 413,
+      "sha256": "101a83d12e217dfdfa1497286000064e1cf2cfab7a7a3ede854615702fd18859"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-128-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-128-emaxx.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-128-gnu.command.json",
+      "bytes": 2922,
+      "sha256": "8c54583938a046765c6fe4245141db09d5a94aa8809b5bc77d7880e12f65900b"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-128-gnu.result.json",
+      "bytes": 418,
+      "sha256": "81fe0103bb0a291b082ec2a20a683ac134a064ce028302f3036cf71787dc0edd"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-128-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-128-gnu.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-16-emaxx.command.json",
+      "bytes": 2930,
+      "sha256": "c859f9b00d8566089be0a31d02455d4c0e81ac0bcef9ffa27b03c833dc9f4864"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-16-emaxx.result.json",
+      "bytes": 420,
+      "sha256": "8806aee14f2f7666477d522d3ceb2a2db3bc255f8c19246e6d194cdd2a671463"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-16-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-16-emaxx.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-16-gnu.command.json",
+      "bytes": 2810,
+      "sha256": "96dbae2e60cde3651cf54862461b49f950bdaf73b822f5ae77fcfd629ef8ca2d"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-16-gnu.result.json",
+      "bytes": 418,
+      "sha256": "6c5b6e99afa028a4aacc66ba6a6db4f614afb182079fc8d38c59d7a69084e5e8"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-16-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-16-gnu.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-256-emaxx.command.json",
+      "bytes": 3170,
+      "sha256": "a1cd95598d1590bc9a75b6e179d5306cd9520ad1be5d89137826c9e0cbcfc69c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-256-emaxx.result.json",
+      "bytes": 420,
+      "sha256": "bba5e04127f1dc3936ae1fbf3ccaeb739dee256c3fc50ce96e855128a9a9ede2"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-256-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-256-emaxx.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-256-gnu.command.json",
+      "bytes": 3050,
+      "sha256": "f83e2272c5f0b00ba2adc26fdb294dac389c25d3d37da1223aaa051f09bde90f"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-256-gnu.result.json",
+      "bytes": 418,
+      "sha256": "87878f0bcc8e30ccd8b290c300ab33403186de132e1436ce0e178d61c57e6732"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-256-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-256-gnu.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-32-emaxx.command.json",
+      "bytes": 2946,
+      "sha256": "c36ac876ede35b63d20bbcfdf2395e4a8eff7bd257ba53a9229d499802f77571"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-32-emaxx.result.json",
+      "bytes": 420,
+      "sha256": "d956ac01954cc2995aba3073d1cfda7df040267f39aa197b96631a30968f452a"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-32-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-32-emaxx.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-32-gnu.command.json",
+      "bytes": 2826,
+      "sha256": "cd4973d341fe41abd04462f8345d64fc5bede7d61cd3363b0444874bbe3a621b"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-32-gnu.result.json",
+      "bytes": 418,
+      "sha256": "02a230952417ebe8052cef77535aa9189392b6c7e4919bd7c15515032c9a17c6"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-32-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-32-gnu.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-4096-emaxx.command.json",
+      "bytes": 7010,
+      "sha256": "4c0f3766e0a490c926859279f34a5bb841ac3672faa8e1571f3626186b69dee4"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-4096-emaxx.result.json",
+      "bytes": 421,
+      "sha256": "37bd4bfd6da7bac9fd9b0101cf3746c46a62fe041ee04caea8f13f1f82ac0e2f"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-4096-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-4096-emaxx.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-4096-gnu.command.json",
+      "bytes": 6890,
+      "sha256": "35b57bf23144d78cd5d40a3f482c5d1141ac9a1de4898039e6f451c9681276ff"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-4096-gnu.result.json",
+      "bytes": 419,
+      "sha256": "6d5dc64f4c4c6dddfaf1dd7046ded31d4d73648a6fc8e41b115d75edac922c4d"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-4096-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-4096-gnu.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-64-emaxx.command.json",
+      "bytes": 2978,
+      "sha256": "7d271710ca5f41538a82200fe99aa9cec281bb2ed2ca7e01562a5c538d0874b8"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-64-emaxx.result.json",
+      "bytes": 419,
+      "sha256": "83d75bc66a12dcf057956caf31c4ffb4ca015c3b5fccec41d76d9307c3c1f86d"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-64-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-64-emaxx.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-64-gnu.command.json",
+      "bytes": 2858,
+      "sha256": "3d9c8927745c3d96e41a083fbd3ec297be9de0eae2662752a692b21bd60482ca"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-64-gnu.result.json",
+      "bytes": 418,
+      "sha256": "49331e264a0c8fb295fa581b9307fb8dab71565d37bd9e65bfb0ea27fbc5ae8e"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-64-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-64-gnu.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8-emaxx.command.json",
+      "bytes": 2922,
+      "sha256": "99bbecbb43e9bd147f2f16f8d971fcfeb0b096962cec5254fa4e8045742b7151"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8-emaxx.result.json",
+      "bytes": 418,
+      "sha256": "b36a8c8c64538e88bf7c545b4012e0358e20903130f657962b327f7548bcb52f"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8-emaxx.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8-gnu.command.json",
+      "bytes": 2802,
+      "sha256": "67718126b9488293cea0684a537a91aeeecd8083844119e19d1a73ff6dd1994d"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8-gnu.result.json",
+      "bytes": 417,
+      "sha256": "1a894e6435b440924902723922617033c977ba97e1e6768612aa065134b89234"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8-gnu.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8192-emaxx.command.json",
+      "bytes": 11106,
+      "sha256": "8a993ed225d8eaa90158d510217165c281e01739b7abdd57219e5e7ef5a5b9f0"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8192-emaxx.result.json",
+      "bytes": 414,
+      "sha256": "35c6aa0de21dd90bfcd60986a599726dbabb40b02884228fb711470ff90d4aa0"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8192-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8192-emaxx.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8192-gnu.command.json",
+      "bytes": 10986,
+      "sha256": "0845234739550813e9953ca7fdb847eb765331c7d790229b53ed60250b49a4b5"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8192-gnu.result.json",
+      "bytes": 420,
+      "sha256": "7675a532951417315975c503594c794df55f1da2d77f5e3f6fd0201369080c9f"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8192-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-closure-rounded-census-8192-gnu.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-0-emaxx.command.json",
+      "bytes": 3353,
+      "sha256": "511205cd88773cfc60ea4799217d31bfbedaf92183392919bed2ae087e83a599"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-0-emaxx.result.json",
+      "bytes": 420,
+      "sha256": "9520d91029ecd32ff4fd40a02642d96c8af4f696d6aaf8c68f2f317e6e7345f8"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-0-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-0-emaxx.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-0-gnu.command.json",
+      "bytes": 3233,
+      "sha256": "b890ec617aaf7895e0cadb01d8bd80416a908ae253838381074d5b309fddb472"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-0-gnu.result.json",
+      "bytes": 411,
+      "sha256": "a7d6e3df14414cd98cdd5a838d47cd00208a7c88f47c7941eee326b9bdb27b7d"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-0-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-0-gnu.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-1024-emaxx.command.json",
+      "bytes": 4377,
+      "sha256": "1f3200d737be9b87c1ed8c50c2a003a3058f6aac6064aa16a154b3c8fbcaf6eb"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-1024-emaxx.result.json",
+      "bytes": 423,
+      "sha256": "38c09bd8885eb9e13c092951528c8040ce862a6168c6d8927a20cd4136c230ae"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-1024-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-1024-emaxx.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-1024-gnu.command.json",
+      "bytes": 4257,
+      "sha256": "5ae49223e3f0cf42ec7408e0076a92c3aa813a853fb34711bdc416237acd46fd"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-1024-gnu.result.json",
+      "bytes": 421,
+      "sha256": "7c52b3932c9d907e24d5128e95bd48273f348bf4b10909a0470dd2191ac1cfff"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-1024-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-1024-gnu.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-128-emaxx.command.json",
+      "bytes": 3481,
+      "sha256": "4c92f14ed3728ff31eb3475f5ec57bc37e8ef3dc9687867532c09bc4cb05dac6"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-128-emaxx.result.json",
+      "bytes": 422,
+      "sha256": "647720fa30fdff0307212bea0bc2aae248188466924d00a3a6187c947f4fba20"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-128-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-128-emaxx.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-128-gnu.command.json",
+      "bytes": 3361,
+      "sha256": "bbcc4ca68e3e68786f293afd288ca032f8f506ffbe646643bee7205d2ed769b8"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-128-gnu.result.json",
+      "bytes": 421,
+      "sha256": "804e9350cf7b17b001054e83610511e831037d4c8f42216108f6e88dffb69c6b"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-128-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-128-gnu.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-16-emaxx.command.json",
+      "bytes": 3369,
+      "sha256": "8a000b07a0bfe7f98e25e4f57a364785265b7e1e7b05cc4c0b784c42a2c4891f"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-16-emaxx.result.json",
+      "bytes": 421,
+      "sha256": "8a04ece41a7e7a2d3d3a5c9db819d65792eb512e421c6ea9d46bddf23c906f6d"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-16-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-16-emaxx.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-16-gnu.command.json",
+      "bytes": 3249,
+      "sha256": "abd54a5017737c5c08aa4772d316f73da3e9eafe5845ab058c2c5d3c9aa6ba0c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-16-gnu.result.json",
+      "bytes": 419,
+      "sha256": "cbc8f005c32d446d4143f3c1b7729b4ed48e38cbac61238c1c4ca46d5c6abb6c"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-16-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-16-gnu.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-256-emaxx.command.json",
+      "bytes": 3609,
+      "sha256": "e8e80a64f1630ccb5646889e42b4dc56e94c0411734163755c520acbee753200"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-256-emaxx.result.json",
+      "bytes": 422,
+      "sha256": "d1bf4b12c126853e62056e0c8d465c158a87b7c1535bb6aa14426d52ae4bc608"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-256-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-256-emaxx.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-256-gnu.command.json",
+      "bytes": 3489,
+      "sha256": "b036228c4d1098849b8ff9fd5ab7a736d43d8e1ab67070ea6ee5e9fc31a4cd88"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-256-gnu.result.json",
+      "bytes": 420,
+      "sha256": "7ec9f6b5f540bdb530c5f5ad5242d1265a5132856f719a98a91046b82c80aa1f"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-256-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-256-gnu.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-32-emaxx.command.json",
+      "bytes": 3385,
+      "sha256": "633f13853371ada018bca2ee2ac7989cd84d06e3bf4a18af817ac166780a9554"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-32-emaxx.result.json",
+      "bytes": 421,
+      "sha256": "da32434ab3cce1c99b554560d562062b556179023ab7a58557f3403d491332ba"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-32-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-32-emaxx.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-32-gnu.command.json",
+      "bytes": 3265,
+      "sha256": "113c06b59dc627770dc654c22900119f1a4e9d22859b2e32606e1acfda2aa9fc"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-32-gnu.result.json",
+      "bytes": 419,
+      "sha256": "157c87d043cd0913e4613172e3de4a508bf7355b8c761056bb1fbe0a6e337f81"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-32-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-32-gnu.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-4096-emaxx.command.json",
+      "bytes": 7449,
+      "sha256": "817ad7250f09902274c8d6bbf01341e96e25c55596b837fb6274b8f7eec7c479"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-4096-emaxx.result.json",
+      "bytes": 423,
+      "sha256": "5e7b36b7f26738ad686ab5cce614c9f365615ca352beea6902bb73fb364fa62f"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-4096-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-4096-emaxx.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-4096-gnu.command.json",
+      "bytes": 7329,
+      "sha256": "81680fd6322935a45dfbd2de5973753fc5d6ee7f197ea99917bff95499096e21"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-4096-gnu.result.json",
+      "bytes": 420,
+      "sha256": "903472259ef1a51188a2ac0d9a4ed56475b063e7a37e725895d78aed8a112fb3"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-4096-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-4096-gnu.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-64-emaxx.command.json",
+      "bytes": 3417,
+      "sha256": "0f1e2ff1a3a5351e12e4974d0ead9f66dd66c5de094279edc94e55085ecd8ae2"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-64-emaxx.result.json",
+      "bytes": 421,
+      "sha256": "55b844501d4c12fdaa7cc79791ea548dabd75a3aaa4e1096d83770c8351b6361"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-64-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-64-emaxx.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-64-gnu.command.json",
+      "bytes": 3297,
+      "sha256": "c1fa3e7b4da363428d66e174c1bc9fafc92256ffa2638c1461e7b970f92564b2"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-64-gnu.result.json",
+      "bytes": 419,
+      "sha256": "239e59bd2276a87ebf8f3e4669aafee85e06de1774ad0ec9ffba807d3745645b"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-64-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-64-gnu.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8-emaxx.command.json",
+      "bytes": 3361,
+      "sha256": "f4d62caccde221e19fad9c0e960ad15dfd12e26ea263103498e5cca9d6a073b8"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8-emaxx.result.json",
+      "bytes": 420,
+      "sha256": "9081b426e5e6c6773933147361094fa226b7e9a7609cb0c5276b171cdaf7e96e"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8-emaxx.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8-gnu.command.json",
+      "bytes": 3241,
+      "sha256": "e2fa97fc89eaea3dc8b81bb4c89a4846085467627a9ab9f02d7af3ae20f46b91"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8-gnu.result.json",
+      "bytes": 418,
+      "sha256": "7a578af7a9a7a6487ee69df842d9ee2a6ad8a1cc5ecb41248a0c9399f251c6ce"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8-gnu.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8192-emaxx.command.json",
+      "bytes": 11545,
+      "sha256": "e90393621bf7bebb113b36096bcebce0b86642a748d38998b35b65464da15804"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8192-emaxx.result.json",
+      "bytes": 423,
+      "sha256": "1ccf522869391d65411ac8a18a2af88a5986529274d71291852cb6f0015a37a0"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8192-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8192-emaxx.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8192-gnu.command.json",
+      "bytes": 11425,
+      "sha256": "7db38edc1b8419424d6214c56c754257c35a727b0c933f97b36f20465a458fb3"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8192-gnu.result.json",
+      "bytes": 422,
+      "sha256": "3b33f13c9edb24e697b117746de16d3c0067a961193fbdd24aeaf76e2bb37f9e"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8192-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-census-setup-macos/vector-pseudovector-word-census-8192-gnu.stdout",
+      "bytes": 298,
+      "sha256": "053bbf2027704f618b1ac7464ce823f1df2f3278a4235b8ec742b0e48dedbd32"
+    },
+    {
+      "path": "source313-census-setup.patch",
+      "bytes": 1396,
+      "sha256": "7eb9707601a79c9116361c5b6b756f9c7eec7916b049541d5e070fcbd608b2f2"
+    },
+    {
+      "path": "source313-check-command.json",
+      "bytes": 872,
+      "sha256": "8ffbcb9cffd9c617760769ccb612576d1ebb20ebb73a85843782810af4bcf924"
+    },
+    {
+      "path": "source313-check.log",
+      "bytes": 316,
+      "sha256": "4693c636c43bb26b8d4fbee36bd58dc1a094981c26aa5d2db75d868388e48668"
+    },
+    {
+      "path": "source313-clippy-command.json",
+      "bytes": 909,
+      "sha256": "1b5f5d15430a1f97296c477c19d6b5409bcca36092bcb340f32925e3f3faa343"
+    },
+    {
+      "path": "source313-clippy.log",
+      "bytes": 134,
+      "sha256": "d7c60ca881ec1d30d35c322eaac0fe932a7a8aff50a73134e0407e6e685c3bfb"
+    },
+    {
+      "path": "source313-fmt-command.json",
+      "bytes": 849,
+      "sha256": "580ddcf4fe3802a57a9ac0a6b04cb9174eef2551f6d52a2cdc2f1fc14b686b4b"
+    },
+    {
+      "path": "source313-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-gate-binary.json",
+      "bytes": 281,
+      "sha256": "e1d57f693a8b30bc917032181082a5544128f672a01c088f10dda547de47e75c"
+    },
+    {
+      "path": "source313-gate-build-command.json",
+      "bytes": 937,
+      "sha256": "387f17b49e8e780bb84015ded4745e0102a53a748055d3427b1574998bdd9088"
+    },
+    {
+      "path": "source313-gate-build.log",
+      "bytes": 181490,
+      "sha256": "30522040b46ae2b520b3c65740a04d94a3cc12e456c814777f5c63714df3d5be"
+    },
+    {
+      "path": "source313-gate-focused-command.json",
+      "bytes": 1077,
+      "sha256": "6681d8e120828184001e6c0c52778ebd35499a11e07080f914cbdae32c66e621"
+    },
+    {
+      "path": "source313-gate-focused.log",
+      "bytes": 298,
+      "sha256": "a7fc2728f5ce21f7d3ae2b83ddaea9ece05a68c75a622ddc787953e72ee2f199"
+    },
+    {
+      "path": "source313-gate-inventory-command.json",
+      "bytes": 880,
+      "sha256": "6344e4ff2c8b9bd17418cbfb6e5c0d10125d27b06ec330e0d39068be366e0fcb"
+    },
+    {
+      "path": "source313-gate-inventory.log",
+      "bytes": 270530,
+      "sha256": "9ea88cab9254bacec3b270b1987f1db8552d45e776ea264deaa742e5cd0e913d"
+    },
+    {
+      "path": "source313-linux-census-audit.json",
+      "bytes": 6302,
+      "sha256": "90682ae6e0875a934ae1355a73224fd5609a4be49f155b5bc38ebec75b16d87e"
+    },
+    {
+      "path": "source313-linux-collection-result.json",
+      "bytes": 1503,
+      "sha256": "684dc5365e70e25ccfdabd94f4d08583e594dd0ac71d978a866ecc5bcf64d70d"
+    },
+    {
+      "path": "source313-linux-collection-state.json",
+      "bytes": 1503,
+      "sha256": "684dc5365e70e25ccfdabd94f4d08583e594dd0ac71d978a866ecc5bcf64d70d"
+    },
+    {
+      "path": "source313-linux-collector-launch.json",
+      "bytes": 130,
+      "sha256": "8df9ec770dcbca8f64834c65fb24c762a83b30b6958a3f5c7000fef2343a152f"
+    },
+    {
+      "path": "source313-linux-collector.log",
+      "bytes": 1336,
+      "sha256": "6cabf60c059d125bf05c138dad8255f080668c6d542a53f0a78c3a8955000400"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/build.log",
+      "bytes": 174715,
+      "sha256": "6c2db1fcefa73de1791aa7733a3e2ee69591b70abf4848ddc18bcccfd3207819"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/full-inventory.log",
+      "bytes": 271219,
+      "sha256": "25760fcdc78f1a1a92358bc7e1af8e3017bf8cdd6c3a110a6046a913f2994a64"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-1-full.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-1-full.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-1-group.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-1-group.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-1-single.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-1-single.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-2-full.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-2-full.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-2-group.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-2-group.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-2-single.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-2-single.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-3-full.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-3-full.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-3-group.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-3-group.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-3-single.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-after-3-single.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-1-full.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-1-full.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-1-group.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-1-group.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-1-single.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-1-single.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-2-full.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-2-full.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-2-group.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-2-group.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-2-single.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-2-single.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-3-full.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-3-full.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-3-group.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-3-group.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-3-single.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-before-3-single.stdout",
+      "bytes": 137,
+      "sha256": "5fae002c7aeecd099b17756d3f1ea46c76c6106e084e7b121460de0a4362099c"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-inputs/Makefile",
+      "bytes": 36149,
+      "sha256": "cea4d24bdbe0eaf186951ee60a82e6c61f9fd73461afcb13abb06df8b751df03"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/gnu-inputs/config.h",
+      "bytes": 115890,
+      "sha256": "ad0a1b9de2bc321faa4c92425a632884ef2bbdf9fd2917591cb1c833438539a0"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/group-ignored.log",
+      "bytes": 22,
+      "sha256": "414c144fa67f1df75f7b14a69af5641637772e81c4c3fa0a171e3228adbb922e"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/group-inventory.log",
+      "bytes": 62100,
+      "sha256": "2efd6d4c4dd5823b867cd2c8d5ae9f1fbe3a4f07624d1f1235c0a768a13cbcf2"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/rust-group.log",
+      "bytes": 67383,
+      "sha256": "b1bdeac6dc3a8a87fc171139a514488d9af8cad6bfad4c87dd5af37daed689a3"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/rust-single-after.log",
+      "bytes": 209,
+      "sha256": "9372fa93133c106c88e754040a7c031697c73cb9169d2cb8af33f691c7be7dc8"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/rust-single-before.log",
+      "bytes": 209,
+      "sha256": "6cfef3e8f902e40141396bff6e962ed1e96a35eaa751e6564e8045ceb9158813"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/single-ignored.log",
+      "bytes": 22,
+      "sha256": "414c144fa67f1df75f7b14a69af5641637772e81c4c3fa0a171e3228adbb922e"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/single-inventory.log",
+      "bytes": 110,
+      "sha256": "b91981778d74e5d2d783eb7580ce32eddb468d5b4e2d162136675c18d2ad22b1"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/source-before.json",
+      "bytes": 62964,
+      "sha256": "960167f052b758b44683adad6466899a1e998ff564a4709b53d6bf1f7e8560d1"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/gnu-census/summary.json",
+      "bytes": 453198,
+      "sha256": "6e8d5c0e0522be23b43cb2795b11fc9aef18737c448b1fbb7a1220a46af4484b"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/metadata/ci-bwrap.apparmor",
+      "bytes": 335,
+      "sha256": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782"
+    },
+    {
+      "path": "source313-linux-gnu-census-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/metadata/oracle.txt",
+      "bytes": 449,
+      "sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4"
+    },
+    {
+      "path": "source313-linux-gnu-census-download.json",
+      "bytes": 322,
+      "sha256": "aea359d3cf044eedeb523757c6d4c2f1f6575e57bfe0064feea7a1b92138ba6e"
+    },
+    {
+      "path": "source313-linux-gnu-census-download.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source313-linux-gnu-census-terminal.json",
+      "bytes": 5967,
+      "sha256": "29e499b36106de228f64e1fff56a4f1d466aead60d982def6d1d344eec35aa4f"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/metadata/ci-bwrap.apparmor",
+      "bytes": 335,
+      "sha256": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/metadata/oracle.txt",
+      "bytes": 449,
+      "sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/oracle-inputs/Makefile",
+      "bytes": 36149,
+      "sha256": "cea4d24bdbe0eaf186951ee60a82e6c61f9fd73461afcb13abb06df8b751df03"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/oracle-inputs/config.h",
+      "bytes": 115890,
+      "sha256": "ad0a1b9de2bc321faa4c92425a632884ef2bbdf9fd2917591cb1c833438539a0"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/oracle-inputs/manifest.json",
+      "bytes": 1189,
+      "sha256": "9d701f9f847eea35d34fef0b774d18e07aac8936bfb370a18d9f67aff279c55f"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/oracle-inputs/verification.json",
+      "bytes": 254,
+      "sha256": "0506932035e0ca004a498d7577da86aa5b723adf0dca66ee9fc70460abdd01f8"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/bins.log",
+      "bytes": 5518,
+      "sha256": "da3ebd55bc08f1424a135b840229f99dfa3d5e8abe0ea774c08bfcf6e4a53a18"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/build.log",
+      "bytes": 174715,
+      "sha256": "66ec72c06a05d84c367e5ea93411746eef6708bbd92a8d2f752fcf67766c5a6c"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/ignored-inventory.txt",
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/integration.log",
+      "bytes": 4973,
+      "sha256": "9e0077fcd1333abfb9d6558f26bfa109d244e2790090c97dc5b6498360da903a"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/inventory.txt",
+      "bytes": 271193,
+      "sha256": "b04760bfd2bc485267faaa04881c5cc033c1649186ea0010cd9ce7eb2420d538"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/metadata.log",
+      "bytes": 13885,
+      "sha256": "e0cd5d232bced5aa889c292618a702c9b9172757f1b7799cd398fbc6bba16774"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-batch.json",
+      "bytes": 439,
+      "sha256": "5c80f66ce819be79eeb4e49b0ccd5b03abe03a9569a6062f873f9adaf37f6856"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-batch.log",
+      "bytes": 4237,
+      "sha256": "45b8f2c1b661ac254764fb77f710a9395670e480c190c5dd7d5227a289b9ed5d"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-compat_runtime.json",
+      "bytes": 483,
+      "sha256": "84bc2d05005737b6982efd94d45e75b0ca07e18df7e103f19bd46901ae9965ce"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-compat_runtime.log",
+      "bytes": 10196,
+      "sha256": "01e2509649184eb7ad53c19fd1d4c3b6e31eabcc66abd75821ae3659da0e91bb"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-eval_01.json",
+      "bytes": 458,
+      "sha256": "231cb8c97a894e29507a11a13392ab48c97384b99a15211dac86e23361a19a19"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-eval_01.log",
+      "bytes": 36578,
+      "sha256": "100a365d9e9f7565d15a28cc7538a42182a9275f5da063bef1de604780748e10"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-eval_02.json",
+      "bytes": 458,
+      "sha256": "1dbfa015d570c92c068ae8f5db948cc412d8a7eeb5091ec217bd8011b8f69624"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-eval_02.log",
+      "bytes": 66512,
+      "sha256": "c5e0c1e5503113605e66af8667503358af3cfcfe7688f6a52612a8e3839ae06f"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-eval_03.json",
+      "bytes": 453,
+      "sha256": "d10b6db50262dd6fa87cd96c5d59015324c41b45beaa4a342e040fd3d8391dad"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-eval_03.log",
+      "bytes": 30494,
+      "sha256": "e77db5d27a57fa85326c0192d5d07975a41f59cb2cb9e3d6bcef929daa2e3cf5"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-eval_04.json",
+      "bytes": 457,
+      "sha256": "b815bbaedba3257b0fdee23f372b15f1b71a870905c62b0555601cbc09d0e3e2"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-eval_04.log",
+      "bytes": 24397,
+      "sha256": "7d810cf2a3f962f4205819da427ead9e94f74f4d8d5b9d7443e6c0c44aa92d07"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-eval_05.json",
+      "bytes": 458,
+      "sha256": "c8afd4834759c7f08a227a5370879e255285e74ac620bef04978c02f0d03aedd"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-eval_05.log",
+      "bytes": 69335,
+      "sha256": "abb40760b4d597993239b529c3ae57379e42cb122d4f7043c79920412fed6409"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-lightweight.json",
+      "bytes": 852,
+      "sha256": "90e7aca568a8bf295101ec16cc5b9d817726bc3656f78cda53ef2834ca36cf02"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-lightweight.log",
+      "bytes": 53468,
+      "sha256": "c99a370dd013248da9d7efdc1279b461a320e32dc11434c9625086a8f62f36e8"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-primitives.json",
+      "bytes": 455,
+      "sha256": "e1856d7f7ea33333895715739a72a54aaac64f302980682de62b56cc464c17ae"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-primitives.log",
+      "bytes": 67383,
+      "sha256": "38bb70fae5dba35069aecd18ea20f3332e08f065b47e9655fac62ae07da989eb"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-tty.json",
+      "bytes": 426,
+      "sha256": "f6506c48ca6a47a4d73f89076163e95c1d637b35d231355abb733a004e4b108c"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/repeat-01-tty.log",
+      "bytes": 5167,
+      "sha256": "1245acdb97c8df615752cf5a8ee985ec303d447d509d33b40d1cedbe97e3b75a"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/retained-inputs/manifest.json",
+      "bytes": 1315,
+      "sha256": "3c7cc07468dc159a0aad35a9672da07f6d2e41ffac4a9785dc6aaca4ccb97d4b"
+    },
+    {
+      "path": "source313-linux-rust-artifacts/ordinary-linux-6ab3346049f08a08c5fbb842fc3f737c22c40c75/rust/summary.json",
+      "bytes": 14326,
+      "sha256": "890807a4cda93a613172fefd7644e49701d67e45780ece2298682f62b8b6db66"
+    },
+    {
+      "path": "source313-linux-rust-audit.json",
+      "bytes": 1198,
+      "sha256": "97ca6c9fbd3285eb737a9a95b2f789696bc806a1c7e59a81173e843531a3b992"
+    },
+    {
+      "path": "source313-linux-rust-connector-download.json",
+      "bytes": 557,
+      "sha256": "06b42bcf433a51ea036030f1fdb648153077fdb260188ef68937cdb4bc009200"
+    },
+    {
+      "path": "source313-linux-rust-download-files.json",
+      "bytes": 6468,
+      "sha256": "094b0db5da74994af50f49d849a2473cae5a11f02b38a69201faf3775036e3dc"
+    },
+    {
+      "path": "source313-linux-rust-download-retry-redacted.log",
+      "bytes": 190,
+      "sha256": "f1b1d806f5cd860cb1133b778d7b6e3841b5be692902a8825ee9bd75541c8d4d"
+    },
+    {
+      "path": "source313-linux-rust-download-retry.json",
+      "bytes": 443,
+      "sha256": "84a8433c43e6bb78b3835418262d06aab3b6232a2a9ff3f077488b32223d89c6"
+    },
+    {
+      "path": "source313-linux-rust-download.json",
+      "bytes": 315,
+      "sha256": "bcdc8f55f06f2d5c2588e474114a6543e407c78f0bb14d89a4a7bf17e05c03ca"
+    },
+    {
+      "path": "source313-linux-rust-download.log",
+      "bytes": 180,
+      "sha256": "cab2b34a3c71fbbc05e63ba102d2b6d4bf63ac4aea5c56f3a17182af76be7724"
+    },
+    {
+      "path": "source313-linux-rust-name-audit.json",
+      "bytes": 305136,
+      "sha256": "6e11810c674bb12eface22514e876005b41510e3a530e15eba9e856cb1a4657b"
+    },
+    {
+      "path": "source313-linux-rust-oracle-audit.json",
+      "bytes": 1952,
+      "sha256": "800c59ecc3ad03f09a1eac5878f35543f8780705ba39cd3ebb06aa55027eebf3"
+    },
+    {
+      "path": "source313-linux-rust-terminal.json",
+      "bytes": 5967,
+      "sha256": "a3b91425996373d10e1201d5e652d9c885550e2b7ea584714f6067c1eeda2efb"
+    },
+    {
+      "path": "source313-linux-validation-launch.json",
+      "bytes": 1314,
+      "sha256": "8a02a1b123313e9ed452a78af941cf4dea8fee6c17c2f40c27cb00c15586952f"
+    },
+    {
+      "path": "source313-local-validation-audit.json",
+      "bytes": 1752,
+      "sha256": "d68bd926e0b2a688faad303355ffdbdf3cb65dee0b420573fc76c41c362c6f3e"
+    },
+    {
+      "path": "source313-local-validation-result.json",
+      "bytes": 1827,
+      "sha256": "5215447402079a9df08bd773ea9012d5176706a43ea971c56ef74db742231630"
+    },
+    {
+      "path": "source313-local-validation-state.json",
+      "bytes": 1827,
+      "sha256": "5215447402079a9df08bd773ea9012d5176706a43ea971c56ef74db742231630"
+    },
+    {
+      "path": "source313-manifest.json",
+      "bytes": 63713,
+      "sha256": "5a7aacba4464bf49dc971c317b719c1ce57069d2aab1dba972071366f155459a"
+    },
+    {
+      "path": "source313-modes.json",
+      "bytes": 28937,
+      "sha256": "dc744f6af337206efa9358d9ad88bff8f60c8b1416e22d52bcff085dbd9ff41c"
+    },
+    {
+      "path": "source313-portable-archive-mode-failure.json",
+      "bytes": 82512,
+      "sha256": "4b9ce9b289e476517ddb2a116c6537a613c91f4b427777a14b5138c887fc8149"
+    },
+    {
+      "path": "source313-portable-audit.json",
+      "bytes": 1181,
+      "sha256": "4200455c3c10ef212d2f410d8e96beae94b78b928e7725c0e478cbaf94eb39cb"
+    },
+    {
+      "path": "source313-release-binary.json",
+      "bytes": 287,
+      "sha256": "e71c6ca82f1fc1fe0ff9e60015ecb2a8b4f7a1180c47c0ec0e348b3c4b4ce846"
+    },
+    {
+      "path": "source313-release-build-command.json",
+      "bytes": 940,
+      "sha256": "a486b585259925d9c0c12c53d0f1c8fb0ac05b617fd036ee306c610453f346ed"
+    },
+    {
+      "path": "source313-release-build.log",
+      "bytes": 183223,
+      "sha256": "0c3925c32ed67f4e841fe25a72177a1f907b0449fcc943b574d05f36ec796b68"
+    },
+    {
+      "path": "source313-release-focused-command.json",
+      "bytes": 1080,
+      "sha256": "f41f924faba7dd2daabc0524a2ca71c971a89cc042a39c093266c936b58c388c"
+    },
+    {
+      "path": "source313-release-focused.log",
+      "bytes": 298,
+      "sha256": "4775137c0de8505a2afccaa1e810e015c175f819035dd9d9a926714d6c96fe3f"
+    },
+    {
+      "path": "source313-release-inventory-command.json",
+      "bytes": 883,
+      "sha256": "cc779b87b8973108857a6d816e9df109d301875a4f3878fc655152e91f6918ba"
+    },
+    {
+      "path": "source313-release-inventory.log",
+      "bytes": 270441,
+      "sha256": "161f259f697aa0d96e939199af1a251e42f4970972e9c98510e214d06e7b0598"
+    },
+    {
+      "path": "source313-vector-closure-rounded-census.el",
+      "bytes": 1181,
+      "sha256": "128298ffba96c080f9c39d27d1df37838e7126a923d3e21906e8c35278e95b83"
+    },
+    {
+      "path": "source313-vector-pseudovector-word-census.el",
+      "bytes": 1607,
+      "sha256": "168edf13fe62e3707b4fb4bac4af0c0dc682d7e0d22366da3c92462b90553a41"
+    },
+    {
+      "path": "validate-source313-local.py",
+      "bytes": 4515,
+      "sha256": "224c0a81fc6048cfeb9359160ee6077dceca01c8234133b4337a5041635c6058"
+    },
+    {
+      "path": "verify-source313-linux-rust.py",
+      "bytes": 5667,
+      "sha256": "085c0663e950ac76a0d705415ef8626a6dd2ab3d1025de63983b37e006a1b951"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

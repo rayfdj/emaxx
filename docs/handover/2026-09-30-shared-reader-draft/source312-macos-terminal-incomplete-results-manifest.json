@@ -1,0 +1,185 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "failed",
+    "goal_complete": false,
+    "source_commit": "7e894a667b0bc0076dcf0555fb1d1f6fcbfb648c",
+    "inputs_verified": 552,
+    "execution_inputs_verified": 11,
+    "fully_matching_scenarios": 173,
+    "matching_comparisons": 374,
+    "matching_screen_comparisons": 370,
+    "matching_filesystem_comparisons": 4,
+    "divergent_labels": [],
+    "partial_scenarios": [
+      {
+        "scenario": "dired-batch-overwrite-decline",
+        "missing": [
+          "dired-batch-overwrite-decline::3:center-alpha",
+          "dired-batch-overwrite-decline::4:mark-alpha",
+          "dired-batch-overwrite-decline::5:mark-beta",
+          "dired-batch-overwrite-decline::11:verify-overwrite-decline",
+          "dired-batch-overwrite-decline::11:verify-overwrite-decline filesystem"
+        ],
+        "raw_tail": "\nTraceback (most recent call last):\n  File \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-07/gc-call-timer-full/emaxx/tools/ttydiff.py\", line 5403, in <module>\n    main()\n  File \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-07/gc-call-timer-full/emaxx/tools/ttydiff.py\", line 5380, in main\n    ok = compare(\n  File \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-07/gc-call-timer-full/emaxx/tools/ttydiff.py\", line 748, in compare\n    gnu.wait_for_screen_text(\n  File \"/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-07/gc-call-timer-full/emaxx/tools/ttydiff.py\", line 473, in wait_for_screen_text\n    raise RuntimeError(\nRuntimeError: editor did not display startup target 'ttydiff-dired-ba'; visible screen: ['File Edit Options Buffers Tools Lisp-Interaction Help', '-=--:---  F1  *scratch*      All   L1     (Lisp Interaction ElDoc) -------------']\n"
+      }
+    ],
+    "unstarted_scenarios": [
+      "dired-batch-overwrite-accept",
+      "dired-batch-copy-cancel",
+      "dired-batch-copy-missing-target",
+      "dired-batch-copy-partial-failure",
+      "dired-batch-copy-permission-failure",
+      "dired-refresh-after-external-delete",
+      "package-menu-filter-install-cancel",
+      "package-menu-install-refresh-remove",
+      "eglot-connect-diagnostics-completion-hover",
+      "eglot-xref-rename-edits",
+      "eglot-reconnect-shutdown",
+      "org-fieldnotes-todo-cycle",
+      "org-fieldnotes-priority",
+      "org-fieldnotes-table-motion",
+      "org-fieldnotes-heading-insert",
+      "org-fieldnotes-narrow-widen",
+      "org-fieldnotes-heading-motion",
+      "undo-kill-line-coalescing",
+      "undo-kill-line-boundaries",
+      "undo-word-kill-order",
+      "undo-yank-pop-cycle",
+      "undo-yank-pop-invalid",
+      "undo-redo-divergent",
+      "undo-keyboard-macro-boundaries",
+      "undo-region-limited",
+      "undo-repeat-c-slash",
+      "undo-repeat-c-x-u",
+      "regexp-isearch-forward",
+      "regexp-isearch-backward",
+      "regexp-isearch-edit-fail-wrap",
+      "regexp-isearch-abort",
+      "regexp-isearch-other-key-exit",
+      "regexp-isearch-invalid-recovery",
+      "query-replace-regexp-captures",
+      "query-replace-regexp-choices-undo",
+      "save-some-buffers-selective",
+      "overwrite-decline",
+      "overwrite-accept-revisit",
+      "overwrite-write-failure",
+      "supersession-decline",
+      "supersession-accept-revisit",
+      "find-alternate-file-success",
+      "find-alternate-file-cancel",
+      "find-alternate-file-missing-revisit",
+      "find-alternate-file-modified-decline",
+      "find-alternate-file-modified-accept",
+      "seeded-safe-17",
+      "seeded-safe-2309",
+      "seeded-safe-7595",
+      "reader-live-prefix-filters",
+      "reader-translation-pipeline-raw-keys",
+      "reader-minibuffer-input-translation"
+    ],
+    "unexecuted_comparisons": 312,
+    "log_sha256": "6405faa92e3d8c435b89205e7baffc84eaa82a70dc0296474af8a40a6c83faa1",
+    "gate_artifacts": {
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-07/gc-call-timer-full/emaxx/target/compat-subject/gate/emaxx": {
+        "sha256": "189b8cdf262a558e219b56d673fd9fe7e895a14879eb650382ad53e5ff2ccfc8",
+        "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source312-full-frozen-subject/emaxx",
+        "bytes": 17863872
+      },
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-07/gc-call-timer-full/emaxx/target/compat-subject/gate/emaxx.pdmp": {
+        "sha256": "82d377811c55970f7660b52af05a73b31d8cde8527dc4b3159e2b33531d22ef3",
+        "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source312-full-frozen-subject/emaxx.pdmp",
+        "bytes": 21784160
+      }
+    },
+    "qualification": "Every raw screen/filesystem verdict verified against all unchanged226 scenarios/686 labels. Same frozen executable/image bytes retained at original path depth; every execution input unchanged. Original moved-image startup failure and six separately scoped macOS frozen diagnostic differences remain failed. No performance or full-goal completion claim."
+  },
+  "archive": {
+    "path": "source312-macos-terminal-incomplete-results.tar.gz",
+    "bytes": 70920,
+    "sha256": "e3b702472610a9f172964f1e77b8f9389dec584cfbd3edd2f8bcb8ec2f8f8dea"
+  },
+  "files": [
+    {
+      "path": "audit-source312-macos-terminal.py",
+      "bytes": 5192,
+      "sha256": "c5850931f6c0cab23442b208a161a8fa135f7ba43d5e147dd0a4120ef4847038"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source312-terminal-incomplete.py",
+      "bytes": 1424,
+      "sha256": "454890a4847c976fee3cbdcf2814645c3397078dd160e23e1469f0184511c09a"
+    },
+    {
+      "path": "retry-source312-terminal.py",
+      "bytes": 2669,
+      "sha256": "2f53bb01b78836a5e5ebc00546dcb3cf7fb9498e3f6b529ea17d80e2a4cba2fe"
+    },
+    {
+      "path": "source248-manifest.json",
+      "bytes": 54099,
+      "sha256": "686003776613cdc0825d9575e630e7b39fdbe0674dcdeea893f9f3620caef92f"
+    },
+    {
+      "path": "source312-final-manifest.json",
+      "bytes": 63713,
+      "sha256": "038e216d86fa620e995dd356461f1adee7b4c67ee9d941aa37d7c77ac112264a"
+    },
+    {
+      "path": "source312-final-modes.json",
+      "bytes": 28937,
+      "sha256": "dc744f6af337206efa9358d9ad88bff8f60c8b1416e22d52bcff085dbd9ff41c"
+    },
+    {
+      "path": "source312-full-tty-command.json",
+      "bytes": 9043,
+      "sha256": "c2f9050c98dfa3d7e147ef46b3d4ed51ae2f07dfe68044b21e5cda7d52ca4cc8"
+    },
+    {
+      "path": "source312-full-tty-result.json",
+      "bytes": 199,
+      "sha256": "0cd4d14a0a63b3c4a9fe4bf51c0a663988b303f6e8e9074651ec368cec25e1e8"
+    },
+    {
+      "path": "source312-full-tty.log",
+      "bytes": 2131,
+      "sha256": "666b1a9ddfb07a0cc658457623b4d5ea3327a4087f197038d82ce3fcb19477bd"
+    },
+    {
+      "path": "source312-macos-frozen-audit.json",
+      "bytes": 7809,
+      "sha256": "9fad8a7bc5bd772ee2fd1f97b193d7e36c23ac229abcdf59e199821ecebdbe8f"
+    },
+    {
+      "path": "source312-macos-terminal-audit.json",
+      "bytes": 4878,
+      "sha256": "7fe74717f1e1e0a76e85998e2416bab996972e036b4c960606ab545502a50f0f"
+    },
+    {
+      "path": "source312-terminal-retry-command.json",
+      "bytes": 9417,
+      "sha256": "64679270b6bfcb3c341b912737b47d44bdd3bdf14cc61b2e52f3eee14b9c6ea4"
+    },
+    {
+      "path": "source312-terminal-retry-result.json",
+      "bytes": 166,
+      "sha256": "77a6d575f1e35fe789048ef1f9f5d93aad5a67434a5124e38b68f10e8cc6d7db"
+    },
+    {
+      "path": "source312-terminal-retry.log",
+      "bytes": 33935,
+      "sha256": "6405faa92e3d8c435b89205e7baffc84eaa82a70dc0296474af8a40a6c83faa1"
+    },
+    {
+      "path": "source312-terminal-startup-failure-audit.json",
+      "bytes": 1214,
+      "sha256": "a79316ee81b4a59afecb16556f95b57b1ec7564b40b25dfa7dd071924b4356d1"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

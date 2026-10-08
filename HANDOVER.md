@@ -16,6 +16,79 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
+## Checkpoint for main — 8 October 2026
+
+**Source313 is validated; the full goal remains active and incomplete.** The
+current user instruction authorizes merging this checkpoint to main. PR79 carries
+the implemented runtime work and the portable continuation; the remaining full-goal
+requirements below continue after that merge. Earlier dated sections retain their
+historical branch states and failures.
+
+Production sources are unchanged from source312 (`7e894a66`). Source313 (`6ab33460`) only
+adds two unconditional collections before each of the two object-census fixtures
+starts measuring. The old whole-heap delta could include GNU reclaiming an
+unrelated nine-word closure/constants pair. Every original constructor, size,
+assertion and expected byte remains. No runtime special case, output adjustment,
+retry-until-pass or coverage reduction was introduced. The original312 Linux
+failure remains **2,297 passes / two GNU reference failures / 767 unstarted library
+tests**, with both Cargo stages unstarted.
+
+The [census correction evidence](docs/handover/2026-09-30-shared-reader-draft/source313-census-setup-results-manifest.json)
+reproduces all 552 source bytes and modes, verifies fresh zero-warning strict checks,
+both original controls in gate and release, **40 ordinary macOS GNU/Emaxx processes**,
+and **18 Linux GNU processes plus 693 bounded Rust passes**. The complete new Linux
+gate verifies **3,167 passes and two existing ignores**, including native artifact
+identity and every one of the 3,066 library names. Production-byte identity connects
+this fixture-only correction to source312's separately identified platform artifacts.
+
+The [closed source312 platform evidence](docs/handover/2026-09-30-shared-reader-draft/source312-closed-platform-results-manifest.json)
+independently verifies:
+
+- Linux frozen: **519 files / 7,928 matching outcomes / 1,038 successful processes**;
+  each editor has 7,670 passes, 47 expected failures and 211 skips.
+- macOS Rust: **3,155 passes / two existing ignores**, including native artifact identity.
+- macOS frozen: **519 files / 7,915 matching outcomes / six mismatches** across 1,038
+  successful processes. Each editor has 7,623 passes, 46 expected failures and 252 skips.
+  The six existing `system-configuration-features` skip diagnostics remain strict
+  failures. They are neither passes nor new capability claims. The previous ERC
+  crash is repaired; the complete ordinary run reaches every file.
+
+The [terminal evidence](docs/handover/2026-09-30-shared-reader-draft/source312-macos-terminal-incomplete-results-manifest.json)
+remains **incomplete: 173 scenarios / 374 comparisons match, 312 comparisons are
+unexecuted**. GNU failed to display its startup target within the existing
+120-second readiness deadline at scenario 174; no output divergence was reported.
+The executable/image and all 11 execution inputs are unchanged. The original
+relocated-image startup failure also remains preserved. Its retry changed only
+the retained copies' location to the image's required directory depth.
+
+The [separate tail attempt](docs/handover/2026-09-30-shared-reader-draft/source312-terminal-tail-incomplete-results-manifest.json)
+adds 62 matches, but **package installation confirmation differs**: GNU displays
+an installed package while Emaxx still displays the marked available entry. Its
+six later checkpoints do not execute. GNU then misses startup readiness at
+`org-fieldnotes-todo-cycle`. The cause of the package divergence remains open;
+no later passing result is substituted for it.
+
+Together the two attempts account for all 686 labels: **436 match, one differs,
+249 remain unexecuted**. 184 scenarios fully match; 42 do not have a complete passing
+result. Both processes have exited. Keep the original harness, artifacts, actions
+and 120-second readiness deadline when continuing the outstanding terminal work.
+This is an explicitly incomplete checkpoint for the requested main merge.
+
+All 192 actual answers and execution modes in the three alternating full 16 timing
+pilots match. The raw body geometric ratio312/311 is **1.034546** (3.45% slower);
+paired GNU ratios are **2.829352× for source312** and 2.812642× for source311. The largest raw
+regression is bindat (+13.57%); bytecode calls improve 4.60%. Every sample remains.
+The predecessor omitted native automatic-GC completion and its statistics; source312
+repairs it. These diagnostics preserve the correctness-repair cost and establish
+neither equivalent baseline GC accounting nor calibrated GNU parity.
+
+Allocated-symbol authority, real property intervals and unified pure storage,
+remaining adapters, physical allocation/GC accounting and real counters, the
+internal native borrow/ownership review, final adversarial review and final-source
+validation remain required. The locked 16 workloads, calibration, nine rounds and
+every-workload upper 95% GNU ratio at most 1.03 are unchanged. **Merging this checkpoint
+does not complete the runtime or performance goal.**
+
 ## GC completion, call order and timer lifetime — 7 October 2026
 
 **Source312 is applied; the full goal remains incomplete.** Native automatic GC
