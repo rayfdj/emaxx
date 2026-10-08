@@ -16,6 +16,33 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
+## Main merge and terminal continuation — 8 October 2026
+
+PR [#79](https://github.com/rayfdj/emaxx/pull/79) is **merged into main** as
+`6ff4931467fa70acfe837d91245e5c76ddc6515f`. No new login was needed: the `gh` CLI's
+stored token failed, but normal Git fetch/push worked. The full goal remains active.
+
+The [post-merge terminal evidence](docs/handover/2026-09-30-shared-reader-draft/source313-postmerge-terminal-results-manifest.json)
+retains an unchanged ordinary package replay with all **11 comparisons matching**,
+followed by all **42 previously incomplete scenarios / 254 comparisons matching**.
+The latter cohort observes the original harness and retains all 238 complete screen
+snapshots: every row, cell attribute and cursor coordinate agrees; the other 16
+comparisons check filesystem state. Both editors visibly install and remove the
+package. Actions, deadlines, executable/image bytes and all 552 source inputs are
+unchanged. All continuation processes have exited.
+
+Across the separate attempts, all **226 scenarios / 686 distinct comparison labels**
+now have matching observations. This is not one complete passing ordinary run.
+The original full run and first tail remain failed; the intermittent package
+divergence and GNU readiness failures remain unexplained. No runtime repair is
+inferred from the later passes. Raw failed logs accompany the new results.
+
+The requirement map now reflects the merged source312/313 checkpoint, including
+the completed stack-capacity and native-GC repairs. Allocated-symbol authority,
+intervals/pure storage, real allocation accounting/counters, remaining adapters
+and internal ownership review still precede final validation and the unchanged
+calibrated performance criterion. No performance or full-goal completion is claimed.
+
 ## Checkpoint for main — 8 October 2026
 
 **Source313 is validated; the full goal remains active and incomplete.** The

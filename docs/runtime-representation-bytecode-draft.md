@@ -49,8 +49,10 @@ source216 results below remain a preserved closure-only baseline.
 
 The [current handover](../HANDOVER.md) closes source312 platform validation and the
 fixture-only source313 census correction, including the complete 3,167-pass Linux gate
-and the incomplete terminal comparison with its failed remaining-scenario run. The user has requested merging this checkpoint
-to main. The full goal remains active; allocated symbols, intervals/pure storage,
+and the incomplete terminal comparison with its failed remaining-scenario run.
+PR #79 is now merged into main as `6ff49314`. The separate post-merge continuation
+matches all 42 previously incomplete scenarios, while preserving the original
+failures and their unresolved causes. The full goal remains active; allocated symbols, intervals/pure storage,
 physical accounting/counters, remaining adapters, internal ownership review and
 the unchanged final validation/performance requirements continue after the merge.
 The dated sections below preserve their original failures and evidence limits.
