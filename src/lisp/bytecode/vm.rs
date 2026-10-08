@@ -1,4 +1,4 @@
-//! Execution of decoded GNU 30.2 bytecode (exec_byte_code port).
+//! Execution of GNU 30.2 bytecode from its authoritative string bytes (exec_byte_code port).
 //!
 //! Runs a validated [`ByteCodeObject`] against the interpreter: operand
 //! stack, argument prologue, dynamic binds with a specpdl-style unwind
@@ -10,91 +10,194 @@
 use super::super::eval::roots::{LispRootMarker, TraceLispRoots};
 use super::super::eval::{Interpreter, LabeledRestriction};
 use super::super::primitives;
-use super::super::types::{Env, LispError, Value, VectorRef};
+use super::super::types::{Env, LispError, Value};
 use super::{ArgSpec, ByteCodeObject, Op};
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
-use std::rc::Rc;
 
-/// bytecode.c's per-thread bytecode stack (`bc_thread_state'): one
-/// contiguous operand stack for every live activation, allocated once
-/// and never moved, so an activation's arguments are read in place by
-/// the callee (Bcall's `&TOP + 1') and by its backtrace frame while the
-/// callee's own frame grows above them.  Every push is checked against
-/// the capacity (GNU checks a frame's declared depth at `setup_frame');
-/// an overflow signals as GNU's "Bytecode stack overflow" does.
+/// bytecode.c's `bc_thread_state': one stable 512K-word allocation containing
+/// both operand slots and the four-word footer of every active frame. A callee
+/// begins after its caller's declared depth, not after its current stack top.
+/// Only initialized live slots are exposed as Rust values or traced precisely.
 pub(crate) struct BcStack {
-    values: Vec<Value>,
+    words: Vec<std::mem::MaybeUninit<usize>>,
+    frame: usize,
+    base: usize,
+    top: usize,
 }
 
-/// GNU's BC_STACK_SIZE is 512K words; a Value is two words.
-const BC_STACK_VALUES: usize = 1 << 18;
+const BC_STACK_WORDS: usize = 512 * 1024;
+const BC_HEADER_WORDS: usize = 4;
+
+/// GNU's `bc_frame', using allocation-relative offsets instead of interior
+/// pointers so a suspended stack can be moved with its owning thread state.
+/// The saved top includes outgoing arguments, which remain roots and borrowed
+/// backtrace arguments until the callee returns. The function is the actual
+/// closure, so no parallel function-root vector is necessary.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct BcHeader {
+    saved_frame: usize,
+    saved_top: usize,
+    saved_pc: usize,
+    function: Value,
+}
+
+const _: () = assert!(std::mem::size_of::<BcHeader>() == BC_HEADER_WORDS * 8);
+const _: () = assert!(std::mem::size_of::<Value>() == 8);
 
 impl BcStack {
     pub(crate) const fn new() -> Self {
-        Self { values: Vec::new() }
-    }
-
-    /// The stack's storage, allocated on the first activation; the
-    /// buffer is never reallocated afterwards.
-    fn ensure_allocated(&mut self) {
-        if self.values.capacity() == 0 {
-            self.values.reserve_exact(BC_STACK_VALUES);
+        Self {
+            words: Vec::new(),
+            frame: 0,
+            base: 0,
+            top: 0,
         }
     }
 
-    #[inline(always)]
-    fn has_room(&self, count: usize) -> bool {
-        self.values.len() + count <= self.values.capacity()
+    fn ensure_allocated(&mut self) {
+        if self.words.capacity() == 0 {
+            self.words.reserve_exact(BC_STACK_WORDS);
+            // SAFETY: the allocation is word-aligned and has room for the
+            // dummy footer. No operand slice refers to these first four words.
+            unsafe {
+                self.words.as_mut_ptr().cast::<BcHeader>().write(BcHeader {
+                    saved_frame: 0,
+                    saved_top: 0,
+                    saved_pc: 0,
+                    function: Value::Nil,
+                });
+            }
+        }
+    }
+
+    #[inline]
+    fn header(&self, frame: usize) -> BcHeader {
+        // SAFETY: FRAME is zero or a footer installed by enter_frame and
+        // retained in the live frame chain. Reading copies its four words.
+        unsafe { self.words.as_ptr().add(frame).cast::<BcHeader>().read() }
+    }
+
+    fn enter_frame(&mut self, depth: usize, function: Value, pc: usize) -> Result<(), LispError> {
+        let base = self.frame + BC_HEADER_WORDS;
+        let frame = base
+            .checked_add(depth)
+            .filter(|end| *end <= BC_STACK_WORDS - BC_HEADER_WORDS)
+            .ok_or_else(stack_overflow)?;
+        // SAFETY: the checked footer lies after the caller's entire declared
+        // frame. Its slots are disjoint from all caller/backtrace slices.
+        unsafe {
+            self.words
+                .as_mut_ptr()
+                .add(frame)
+                .cast::<BcHeader>()
+                .write(BcHeader {
+                    saved_frame: self.frame,
+                    saved_top: self.top,
+                    saved_pc: pc,
+                    function,
+                });
+        }
+        self.frame = frame;
+        self.base = base;
+        self.top = base;
+        Ok(())
+    }
+
+    fn leave_frame(&mut self) -> usize {
+        assert_ne!(self.frame, 0, "cannot pop the dummy bytecode frame");
+        let header = self.header(self.frame);
+        self.frame = header.saved_frame;
+        self.top = header.saved_top;
+        self.base = if self.frame == 0 {
+            0
+        } else {
+            self.header(self.frame).saved_frame + BC_HEADER_WORDS
+        };
+        header.saved_pc
+    }
+
+    #[cfg(test)]
+    fn frame_count(&self) -> usize {
+        let (mut frame, mut count) = (self.frame, 0);
+        while frame != 0 {
+            count += 1;
+            frame = self.header(frame).saved_frame;
+        }
+        count
     }
 
     #[inline(always)]
     pub(crate) fn push(&mut self, value: Value) -> Result<(), LispError> {
-        if self.values.len() == self.values.capacity() {
+        if self.top == self.frame {
             return Err(stack_overflow());
         }
-        self.values.push(value);
+        self.push_within_frame(value);
         Ok(())
     }
 
-    /// The loop's push: the frame's declared depth was checked at its
-    /// setup, so this fails only for a program that exceeds it.
     #[inline(always)]
     fn push_within_frame(&mut self, value: Value) {
         assert!(
-            self.values.len() < self.values.capacity(),
+            self.top < self.frame,
             "byte code exceeded its declared stack depth"
         );
-        self.values.push(value);
+        // SAFETY: this free operand word precedes the active footer and is
+        // disjoint from the live operand prefix and every caller's arguments.
+        unsafe {
+            self.words
+                .as_mut_ptr()
+                .add(self.top)
+                .cast::<Value>()
+                .write(value);
+        }
+        self.top += 1;
     }
 
     #[inline(always)]
     pub(crate) fn pop(&mut self) -> Option<Value> {
-        self.values.pop()
+        if self.top == self.base {
+            return None;
+        }
+        self.top -= 1;
+        // SAFETY: push initialized this word; Value is Copy and has no drop.
+        Some(unsafe { self.words.as_ptr().add(self.top).cast::<Value>().read() })
     }
 
     #[inline(always)]
     pub(crate) fn truncate(&mut self, len: usize) {
-        self.values.truncate(len);
+        self.top = self.base + len.min(self.top - self.base);
     }
 
     #[inline(always)]
-    fn drain_from(&mut self, start: usize) -> std::vec::Drain<'_, Value> {
-        self.values.drain(start..)
+    fn drain_from(&mut self, start: usize) -> impl Iterator<Item = Value> + '_ {
+        let len = self.top - self.base;
+        assert!(start <= len);
+        self.top = self.base + start;
+        // SAFETY: these removed slots are initialized and the iterator's
+        // borrow prevents stack mutation until the caller finishes copying.
+        unsafe {
+            std::slice::from_raw_parts(
+                self.words.as_ptr().add(self.top).cast::<Value>(),
+                len - start,
+            )
+        }
+        .iter()
+        .copied()
     }
 
-    pub(crate) fn values(&self) -> &[Value] {
-        &self.values
-    }
-
-    /// The values from START on, as bytecode.c reads a call's arguments
-    /// off the stack; the buffer itself never moves.
-    ///
     /// # Safety
-    /// The caller must not truncate the stack below START + LEN while
-    /// the slice is in use.
+    /// The caller must keep these initialized caller slots intact until the
+    /// returned slice is no longer used. Callee frames occupy disjoint storage.
     unsafe fn slice_from(&self, start: usize, len: usize) -> &'static [Value] {
-        unsafe { std::slice::from_raw_parts(self.values.as_ptr().add(start), len) }
+        assert!(start <= self.len() && len <= self.len() - start);
+        unsafe {
+            std::slice::from_raw_parts(
+                self.words.as_ptr().add(self.base + start).cast::<Value>(),
+                len,
+            )
+        }
     }
 }
 
@@ -102,14 +205,52 @@ impl std::ops::Deref for BcStack {
     type Target = [Value];
     #[inline(always)]
     fn deref(&self) -> &[Value] {
-        &self.values
+        // SAFETY: only the initialized prefix of the current frame is exposed;
+        // reserved slots and raw footer words are never reinterpreted as values.
+        unsafe {
+            std::slice::from_raw_parts(
+                self.words.as_ptr().add(self.base).cast::<Value>(),
+                self.top - self.base,
+            )
+        }
     }
 }
 
 impl std::ops::DerefMut for BcStack {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut [Value] {
-        &mut self.values
+        // SAFETY: exclusive access to the active initialized operand prefix.
+        // A borrowed caller's arguments are in an earlier, disjoint frame.
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.words.as_mut_ptr().add(self.base).cast::<Value>(),
+                self.top - self.base,
+            )
+        }
+    }
+}
+
+impl TraceLispRoots for BcStack {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
+        let (mut frame, mut top) = (self.frame, self.top);
+        while frame != 0 {
+            let header = self.header(frame);
+            let base = header.saved_frame + BC_HEADER_WORDS;
+            // SAFETY: TOP is the current top or the initialized caller prefix
+            // recorded on entry. Reserved holes and footers are not scanned.
+            let values = unsafe {
+                std::slice::from_raw_parts(
+                    self.words.as_ptr().add(base).cast::<Value>(),
+                    top - base,
+                )
+            };
+            for value in values {
+                marker.value(value);
+            }
+            marker.value(&header.function);
+            frame = header.saved_frame;
+            top = header.saved_top;
+        }
     }
 }
 
@@ -120,18 +261,36 @@ impl Default for BcStack {
 }
 
 impl Clone for BcStack {
-    /// A copy with the stack's full capacity (the interpreter template's
-    /// copy is reset before it runs anything).
     fn clone(&self) -> Self {
-        let mut values = Vec::with_capacity(BC_STACK_VALUES.max(self.values.len()));
-        values.extend(self.values.iter().cloned());
-        Self { values }
+        let mut copy = Self::new();
+        if self.words.capacity() != 0 {
+            copy.ensure_allocated();
+            // SAFETY: copying MaybeUninit words preserves initialized headers
+            // and operands without reading unused storage as initialized data.
+            // All links are offsets, not pointers into the original allocation.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    self.words.as_ptr(),
+                    copy.words.as_mut_ptr(),
+                    BC_STACK_WORDS,
+                );
+            }
+            copy.frame = self.frame;
+            copy.base = self.base;
+            copy.top = self.top;
+        }
+        copy
     }
 }
 
 impl std::fmt::Debug for BcStack {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "BcStack({} values)", self.values.len())
+        write!(
+            f,
+            "BcStack({} active values, footer at {})",
+            self.len(),
+            self.frame
+        )
     }
 }
 
@@ -156,7 +315,7 @@ fn packed_arity_error(mandatory: usize, nonrest: usize, nargs: usize) -> LispErr
 /// itself and NARGS (the old spelling when the object is not a record).
 fn legacy_arity_error(function: &Value, nargs: usize) -> LispError {
     match function.kind() {
-        Kind::Record(_) => LispError::SignalValue(Value::list([
+        Kind::Closure(_) => LispError::SignalValue(Value::list([
             Value::Symbol("wrong-number-of-arguments".into()),
             *function,
             Value::Integer(nargs as i64),
@@ -169,8 +328,7 @@ fn legacy_arity_error(function: &Value, nargs: usize) -> LispError {
 /// `bc_frame': the caller's program and pc, its stack top, and the
 /// watermarks the callee's return or error restores).
 struct BcFrame {
-    program: Rc<CachedProgram>,
-    pc: usize,
+    program: ByteCodeObject,
     /// The caller's slot holding the callee (Bcall's TOP after DISCARD):
     /// the callee's arguments and frame lie above it, and the return
     /// value replaces it.
@@ -420,7 +578,8 @@ fn prim(
 /// signals), the function returned, or 256 backward jumps have passed
 /// (exec_byte_code's `quitcounter': maybe_gc and maybe_quit are due).
 enum FastExit {
-    Slow,
+    Slow(super::Instr),
+    Error(super::ByteCodeError),
     Return(Value),
     QuitCheck,
 }
@@ -428,29 +587,44 @@ enum FastExit {
 /// exec_byte_code's dispatch loop for the ops that need nothing but the
 /// operand stack and the program: stack shuffles, constants, jumps,
 /// car/cdr, cons, eq, fixnum arithmetic and comparison, vector aref/aset.
-/// The stack is held directly for the whole run (bytecode.c's `top'
-/// pointer), so an op costs its work and one predicted jump, not a
-/// `RefCell' round trip and a pass through the fallible dispatch.  An op
+/// Dispatches directly on the canonical opcode, as bytecode.c's FETCH/NEXT,
+/// without first building an Instr and switching on its Op a second time.
+/// The operand stack is held directly for the whole run. An op
 /// that cannot complete here (a call, a variable, a signal, an operand of
 /// another kind) is left untouched at PC for the full dispatch.
 #[inline(never)]
 fn run_fast(
-    object: &CachedProgram,
+    object: &ByteCodeObject,
+    code: &[u8],
     ops: &mut BcStack,
     pc: &mut usize,
     quitcounter: &mut u8,
 ) -> FastExit {
-    let instrs = &object.decoded.instrs;
     let mut at = *pc;
+    let mut offset;
+    macro_rules! operand {
+        ($value:expr) => {
+            match $value {
+                Ok(value) => value,
+                Err(error) => {
+                    *pc = offset;
+                    return FastExit::Error(error);
+                }
+            }
+        };
+    }
     macro_rules! slow {
         () => {{
-            *pc = at - 1;
-            return FastExit::Slow;
+            *pc = offset;
+            return match super::fetch_instruction(code, offset, object.constants.len()) {
+                Ok(instruction) => FastExit::Slow(instruction),
+                Err(error) => FastExit::Error(error),
+            };
         }};
     }
     macro_rules! jump {
         ($target:expr) => {{
-            let destination = object.instr_at($target as usize);
+            let destination = $target as usize;
             if destination < at {
                 *quitcounter = quitcounter.wrapping_add(1);
                 if *quitcounter == 0 {
@@ -468,35 +642,67 @@ fn run_fast(
         };
     }
     loop {
-        let Some(instr) = instrs.get(at) else {
+        offset = at;
+        let Some(&byte) = code.get(at) else {
             *pc = at;
-            return FastExit::Slow;
+            return FastExit::Error(super::ByteCodeError::EndOfCode { offset: at });
         };
-        let op = instr.op;
         at += 1;
-        match op {
-            Op::StackRef(n) => {
+        // bytecode.c's FETCH/NEXT dispatches the actual opcode directly.
+        // Only the interpreter fallback needs a decoded Instr. Neither
+        // representation nor an instruction cache survives this borrow.
+        let mut reader = super::OperandReader {
+            code,
+            cursor: at,
+            offset,
+            byte,
+        };
+        match byte {
+            // Bcall's argument count uses the same checked operand reader
+            // as the other packed families. Keep the instruction needed
+            // by the full call/error path without decoding the opcode again.
+            super::B_CALL..=0o047 => {
+                let count = operand!(reader.family_operand(super::B_CALL));
+                *pc = offset;
+                return FastExit::Slow(super::Instr {
+                    offset,
+                    len: reader.cursor - offset,
+                    op: Op::Call(count),
+                });
+            }
+            0o001..=0o007 => {
+                let n = operand!(reader.family_operand(super::B_STACK_REF));
+                at = reader.cursor;
                 let index = ops.len() - 1 - n as usize;
                 let value = ops[index];
                 ops.push_within_frame(value);
             }
-            Op::StackSet(n) => {
+            super::B_STACK_SET | super::B_STACK_SET2 => {
+                let n = operand!(if byte == super::B_STACK_SET {
+                    reader.fetch()
+                } else {
+                    reader.fetch2()
+                });
+                at = reader.cursor;
                 let value = pop!();
                 // stack-set N stores relative to the pre-pop top.
                 let slot = ops.len() - 1 - (n as usize - 1);
                 std::mem::replace(&mut ops[slot], value).discard();
             }
-            Op::Dup => {
+            // Bdup.
+            0o211 => {
                 let top = *ops.last().expect("validated bytecode");
                 ops.push_within_frame(top);
             }
-            Op::Discard => {
+            // Bdiscard.
+            0o210 => {
                 pop!().discard();
             }
-            Op::DiscardN {
-                count,
-                preserve_tos,
-            } => {
+            super::B_DISCARDN => {
+                let raw = operand!(reader.fetch()) as u8;
+                at = reader.cursor;
+                let count = raw & 0x7f;
+                let preserve_tos = raw & 0x80 != 0;
                 if preserve_tos {
                     let top = pop!();
                     for _ in 0..count {
@@ -509,13 +715,29 @@ fn run_fast(
                     }
                 }
             }
-            Op::Constant(index) | Op::Constant2(index) => {
+            super::B_CONSTANT2 | 0o300..=0o377 => {
+                let index = if byte == super::B_CONSTANT2 {
+                    let index = operand!(reader.fetch2());
+                    at = reader.cursor;
+                    index
+                } else {
+                    u16::from(byte - super::B_CONSTANT)
+                };
+                operand!(super::check_constant_index(
+                    offset,
+                    index,
+                    object.constants.len()
+                ));
                 ops.push_within_frame(object.constant(index));
             }
-            Op::Goto { target } => {
+            0o202 => {
+                let target = operand!(reader.fetch2());
+                at = reader.cursor;
                 jump!(target);
             }
-            Op::GotoIfNil { target } => {
+            0o203 => {
+                let target = operand!(reader.fetch2());
+                at = reader.cursor;
                 let value = pop!();
                 let is_nil = value.is_nil();
                 value.discard();
@@ -523,7 +745,9 @@ fn run_fast(
                     jump!(target);
                 }
             }
-            Op::GotoIfNonNil { target } => {
+            0o204 => {
+                let target = operand!(reader.fetch2());
+                at = reader.cursor;
                 let value = pop!();
                 let is_nil = value.is_nil();
                 value.discard();
@@ -531,35 +755,41 @@ fn run_fast(
                     jump!(target);
                 }
             }
-            Op::GotoIfNilElsePop { target } => {
+            0o205 => {
+                let target = operand!(reader.fetch2());
+                at = reader.cursor;
                 if ops.last().expect("validated bytecode").is_nil() {
                     jump!(target);
                 } else {
                     pop!().discard();
                 }
             }
-            Op::GotoIfNonNilElsePop { target } => {
+            0o206 => {
+                let target = operand!(reader.fetch2());
+                at = reader.cursor;
                 if !ops.last().expect("validated bytecode").is_nil() {
                     jump!(target);
                 } else {
                     pop!().discard();
                 }
             }
-            Op::Return => {
+            // Breturn.
+            0o207 => {
                 return FastExit::Return(pop!());
             }
-            Op::Not => {
-                let value = pop!();
-                let is_nil = value.is_nil();
-                value.discard();
-                ops.push_within_frame(if is_nil { Value::T } else { Value::Nil });
+            // Bnot.
+            0o77 => {
+                let top = ops.last_mut().expect("validated bytecode");
+                *top = if top.is_nil() { Value::T } else { Value::Nil };
             }
-            Op::Cons => {
+            // Bcons.
+            0o102 => {
                 let b = pop!();
-                let a = pop!();
-                ops.push_within_frame(Value::cons(a, b));
+                let top = ops.last_mut().expect("validated bytecode");
+                *top = Value::cons(*top, b);
             }
-            Op::Eq => {
+            // Beq.
+            0o75 => {
                 let len = ops.len();
                 if matches!(ops[len - 1].kind(), Kind::SymbolWithPos(_))
                     || matches!(ops[len - 2].kind(), Kind::SymbolWithPos(_))
@@ -567,21 +797,21 @@ fn run_fast(
                     slow!();
                 }
                 let equal = crate::lisp::primitives::values_eq_plain(&ops[len - 2], &ops[len - 1]);
-                pop!().discard();
-                pop!().discard();
-                ops.push_within_frame(if equal { Value::T } else { Value::Nil });
+                ops[len - 2] = if equal { Value::T } else { Value::Nil };
+                ops.truncate(len - 1);
             }
-            Op::Consp => {
+            // Bconsp.
+            0o72 => {
                 let is_cons = match ops.last().expect("validated bytecode").kind() {
                     Kind::Cons(_) => true,
                     // A keymap record reads as a cons; the full arm asks.
                     Kind::Record(_) => slow!(),
                     _ => false,
                 };
-                pop!().discard();
-                ops.push_within_frame(if is_cons { Value::T } else { Value::Nil });
+                *ops.last_mut().expect("validated bytecode") =
+                    if is_cons { Value::T } else { Value::Nil };
             }
-            Op::Plus | Op::Diff | Op::Mult | Op::Quo | Op::Rem => {
+            0o134 | 0o132 | 0o137 | 0o245 | 0o246 => {
                 let len = ops.len();
                 let (Kind::Integer(x), Kind::Integer(y)) =
                     (ops[len - 2].kind(), ops[len - 1].kind())
@@ -591,47 +821,51 @@ fn run_fast(
                 // checked_div/checked_rem refuse y == 0 and the MIN/-1
                 // overflow, which fall through to the full arithmetic
                 // (and its arith-error); overflow falls through to bignums.
-                let fast = match op {
-                    Op::Plus => x.checked_add(y),
-                    Op::Diff => x.checked_sub(y),
-                    Op::Mult => x.checked_mul(y),
-                    Op::Quo => x.checked_div(y),
+                let fast = match byte {
+                    0o134 => x.checked_add(y),
+                    0o132 => x.checked_sub(y),
+                    0o137 => x.checked_mul(y),
+                    0o245 => x.checked_div(y),
                     _ => x.checked_rem(y),
                 };
                 let Some(n) = fast else { slow!() };
-                ops.truncate(len - 2);
-                ops.push_within_frame(Value::Integer(n));
+                // bytecode.c pops the right operand and overwrites TOP.
+                // The result occupies an existing slot: no push, capacity
+                // check or extra length update is needed.
+                ops[len - 2] = Value::Integer(n);
+                ops.truncate(len - 1);
             }
-            Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
+            0o125..=0o131 => {
                 let len = ops.len();
                 let (Kind::Integer(x), Kind::Integer(y)) =
                     (ops[len - 2].kind(), ops[len - 1].kind())
                 else {
                     slow!();
                 };
-                let holds = match op {
-                    Op::Eqlsign => x == y,
-                    Op::Gtr => x > y,
-                    Op::Lss => x < y,
-                    Op::Leq => x <= y,
+                let holds = match byte {
+                    0o125 => x == y,
+                    0o126 => x > y,
+                    0o127 => x < y,
+                    0o130 => x <= y,
                     _ => x >= y,
                 };
-                ops.truncate(len - 2);
-                ops.push_within_frame(if holds { Value::T } else { Value::Nil });
+                ops[len - 2] = if holds { Value::T } else { Value::Nil };
+                ops.truncate(len - 1);
             }
-            Op::Add1 | Op::Sub1 | Op::Negate => {
+            0o124 | 0o123 | 0o133 => {
                 let Kind::Integer(x) = ops.last().expect("validated bytecode").kind() else {
                     slow!();
                 };
-                let fast = match op {
-                    Op::Add1 => x.checked_add(1),
-                    Op::Sub1 => x.checked_sub(1),
+                let fast = match byte {
+                    0o124 => x.checked_add(1),
+                    0o123 => x.checked_sub(1),
                     _ => x.checked_neg(),
                 };
                 let Some(n) = fast else { slow!() };
                 *ops.last_mut().expect("validated bytecode") = Value::Integer(n);
             }
-            Op::Aref => {
+            // Baref.
+            0o110 => {
                 let len = ops.len();
                 let Kind::Integer(index) = ops[len - 1].kind() else {
                     slow!()
@@ -644,11 +878,11 @@ fn run_fast(
                 else {
                     slow!();
                 };
-                pop!().discard();
-                pop!().discard();
-                ops.push_within_frame(value);
+                ops[len - 2] = value;
+                ops.truncate(len - 1);
             }
-            Op::Aset => {
+            // Baset.
+            0o111 => {
                 // Stack: [.. vector index value]; aset returns the value.
                 let len = ops.len();
                 let Kind::Integer(index) = ops[len - 2].kind() else {
@@ -664,25 +898,23 @@ fn run_fast(
                 {
                     slow!();
                 }
-                let value = pop!();
-                pop!().discard();
-                pop!().discard();
-                ops.push_within_frame(value);
+                ops[len - 3] = ops[len - 1];
+                ops.truncate(len - 2);
             }
-            Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => {
+            0o100 | 0o101 | 0o242 | 0o243 => {
                 // bytecode.c reads the car or cdr of the object on the stack
                 // top and stores it there: the operand is read in place,
                 // never copied first.
                 let replacement = match ops.last().expect("validated bytecode").kind() {
                     Kind::Cons(cell) => {
-                        if matches!(op, Op::Car | Op::CarSafe) {
+                        if matches!(byte, 0o100 | 0o242) {
                             cell.car.get()
                         } else {
                             cell.cdr.get()
                         }
                     }
                     Kind::Nil => continue,
-                    _ if matches!(op, Op::CarSafe | Op::CdrSafe) => Value::Nil,
+                    _ if matches!(byte, 0o242 | 0o243) => Value::Nil,
                     // The full arm signals wrong-type-argument.
                     _ => slow!(),
                 };
@@ -694,20 +926,9 @@ fn run_fast(
     }
 }
 
-/// A byte-code function decoded and validated once:
-/// instructions, an O(1) byte-offset -> instruction-index table for
-/// jumps, and live constants.  Cached per record so repeated calls skip
-/// instruction decoding (GNU decodes inside its dispatch loop). Constants
-/// remain the original live vector supplied by the reader or make-byte-code.
-pub struct CachedProgram {
-    pub argspec: ArgSpec,
-    pub decoded: Rc<super::DecodedCode>,
-    pub constants: VectorRef,
-    pub stack_depth: usize,
-}
-
-impl TraceLispRoots for CachedProgram {
+impl TraceLispRoots for ByteCodeObject {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
+        marker.value(&self.code.original());
         marker.value(&Value::Vector(self.constants));
         if let ArgSpec::Legacy(arguments) = &self.argspec {
             marker.value(arguments);
@@ -715,12 +936,7 @@ impl TraceLispRoots for CachedProgram {
     }
 }
 
-impl CachedProgram {
-    #[inline]
-    fn instr_at(&self, byte_offset: usize) -> usize {
-        self.decoded.offset_index[byte_offset] as usize
-    }
-
+impl ByteCodeObject {
     #[inline]
     fn constant(&self, index: u16) -> Value {
         // bytecode.c reads vectorp[index] at the instruction, not a copy
@@ -731,65 +947,40 @@ impl CachedProgram {
     }
 }
 
-fn build_cached(object: &ByteCodeObject) -> Result<CachedProgram, LispError> {
-    // lread.c constructs reader objects before execution. The existing
-    // reader boundary owns that work; the VM neither rebuilds its graph nor
-    // copies CLOSURE_CONSTANTS into another vector, and the decoded code
-    // is the prototype's.
-    Ok(CachedProgram {
-        argspec: object.argspec.clone(),
-        decoded: Rc::clone(&object.decoded),
-        constants: object.constants,
-        stack_depth: object.stack_depth,
-    })
-}
-
-/// Execute the genuine byte-code function stored in RECORD_ID, decoding
-/// its instructions once and reusing the decoded program afterwards.
-#[inline(always)]
-pub fn execute_record(
-    interp: &mut Interpreter,
-    record_id: u64,
-    args: &[Value],
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    // Mutation of a record's slots goes through find_record_mut, which
-    // drops the cached program, so a cache hit is always current.  Ids are
-    // dense from 1, so id-1 indexes the slot vector directly.
-    let index = (record_id as usize).saturating_sub(1);
-    if let Some(Some(program)) = interp.bytecode_program_cache.get(index) {
-        let program = std::rc::Rc::clone(program);
-        return run(interp, program, interp.record_value(record_id), args, env);
-    }
-    let record = interp
-        .find_record(record_id)
-        .ok_or_else(|| LispError::Signal("byte-code record vanished".into()))?;
-    // GNU reads the closure fields directly. Decoding retains its own
-    // handles and needs no mutable interpreter or copied outer slot array.
-    let object = super::ByteCodeObject::from_slots(&record.slots)
+pub(crate) fn closure_program(
+    closure: crate::lisp::types::ClosureRef,
+) -> Result<ByteCodeObject, LispError> {
+    ByteCodeObject::from_closure(closure)
         .map_err(|error| LispError::Signal(error.to_string()))?
         .ok_or_else(|| {
             LispError::SignalValue(Value::list([
-                Value::Symbol("invalid-function".into()),
-                interp.record_value(record_id),
+                Value::symbol("invalid-function"),
+                Value::Closure(closure),
             ]))
-        })?;
-    let program = std::rc::Rc::new(build_cached(&object)?);
-    if interp.bytecode_program_cache.len() <= index {
-        interp.bytecode_program_cache.resize(index + 1, None);
-    }
-    interp.bytecode_program_cache[index] = Some(std::rc::Rc::clone(&program));
-    run(interp, program, interp.record_value(record_id), args, env)
+        })
+}
+
+/// Read the actual PVEC_CLOSURE fields and dispatch from its code bytes.
+#[inline(always)]
+pub fn execute_closure(
+    interp: &mut Interpreter,
+    closure: crate::lisp::types::ClosureRef,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let program = closure_program(closure)?;
+    run(interp, program, Value::Closure(closure), args, env)
 }
 
 /// Execute OBJECT with ARGS, returning the value of Breturn.
+#[cfg(test)]
 pub fn execute(
     interp: &mut Interpreter,
     object: &ByteCodeObject,
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let program = Rc::new(build_cached(object)?);
+    let program = object.clone();
     run(interp, program, Value::Nil, args, env)
 }
 
@@ -799,20 +990,30 @@ pub fn execute(
 /// and the stack cut back to the entry mark on the way out.
 fn run(
     interp: &mut Interpreter,
-    program: Rc<CachedProgram>,
+    program: ByteCodeObject,
     function: Value,
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
     interp.bc_stack.ensure_allocated();
-    let base = interp.bc_stack.len();
+    let stack_at_entry = (
+        interp.bc_stack.frame,
+        interp.bc_stack.base,
+        interp.bc_stack.top,
+    );
     let unwinds_at_entry = interp.bc_unwinds.len();
     let frames_at_entry = interp.backtrace_frames_len();
     // The activation's program is a root while it runs (alloc.c marks the
     // thread's bytecode stack, whose frames hold their functions).
-    interp.bc_live_programs.push(program.constants);
-    let result = run_frames(interp, program, function, args, env);
-    interp.bc_live_programs.pop();
+    let result = if function.is_nil() {
+        // Direct Rust execution also roots the code and legacy arglist; a
+        // constants-only root cannot keep them alive across a callback.
+        interp.with_lisp_stack_roots(&program, |interp| {
+            run_frames(interp, program.clone(), function, args, env)
+        })
+    } else {
+        run_frames(interp, program, function, args, env)
+    };
     // A signaling byte op recorded itself as a backtrace frame
     // (bytecode.c's record_in_backtrace) so handler-bind handlers saw it;
     // the handlers have run by now, so unwind it like GNU's specpdl does.
@@ -842,7 +1043,11 @@ fn run(
     } else {
         result
     };
-    interp.bc_stack.truncate(base);
+    (
+        interp.bc_stack.frame,
+        interp.bc_stack.base,
+        interp.bc_stack.top,
+    ) = stack_at_entry;
     result
 }
 
@@ -852,17 +1057,20 @@ fn run(
 /// loop (`goto setup_frame'), its return pops it.
 fn run_frames(
     interp: &mut Interpreter,
-    mut program: Rc<CachedProgram>,
+    mut program: ByteCodeObject,
     function: Value,
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if !interp
-        .bc_stack
-        .has_room(program.stack_depth + args.len() + 1)
-    {
-        return Err(stack_overflow());
-    }
+    interp.bc_stack.enter_frame(
+        program.stack_depth,
+        if function.is_nil() {
+            Value::Vector(program.constants)
+        } else {
+            function
+        },
+        0,
+    )?;
     // Argument prologue (exec_byte_code's ARGS_TEMPLATE handling).
     match &program.argspec {
         ArgSpec::Packed {
@@ -950,6 +1158,7 @@ fn run_frames(
     let mut handlers: Vec<Handler> = Vec::new();
     let mut frames: Vec<BcFrame> = Vec::new();
     let mut pc = 0usize;
+    let mut last_instruction = None;
     let trace_errors = trace_load_errors();
     // Frames pushed by signaling byte ops (record_in_backtrace); an
     // in-frame condition-case that catches must unwind them, and the
@@ -981,7 +1190,7 @@ fn run_frames(
     // it with the value.
     macro_rules! branch {
         ($target:expr) => {{
-            let destination = program.instr_at($target as usize);
+            let destination = $target as usize;
             if destination < pc {
                 quitcounter = quitcounter.wrapping_add(1);
                 if quitcounter == 0 {
@@ -1006,10 +1215,10 @@ fn run_frames(
                         frames.push(frame);
                         return Err(error);
                     }
+                    pc = interp.bc_stack.leave_frame();
                     interp.bc_stack.truncate(frame.base);
                     push!(value);
                     program = frame.program;
-                    pc = frame.pc;
                     op_error_frames = frame.op_error_frames;
                     handlers.truncate(frame.handlers_len);
                     continue;
@@ -1023,274 +1232,39 @@ fn run_frames(
         let step: Result<Value, LispError> = (|| loop {
             // The hot loop first; it leaves PC at the instruction it could
             // not run, which the full dispatch below runs once.
-            let exit = run_fast(&program, &mut interp.bc_stack, &mut pc, &mut quitcounter);
-            match exit {
+            // No Lisp callback, collection, or string store occurs in the
+            // fast loop. Release its byte borrow before the full dispatch.
+            let exit = program.code.with_bytes(|code| {
+                run_fast(
+                    &program,
+                    code,
+                    &mut interp.bc_stack,
+                    &mut pc,
+                    &mut quitcounter,
+                )
+            });
+            last_instruction = None;
+            // Carry the already fetched instruction into the slow dispatch.
+            // No callback runs between these loops, so fetching it again
+            // would add work without observing another Lisp mutation.
+            let instr = match exit {
                 FastExit::Return(value) => breturn!(value),
                 FastExit::QuitCheck => {
                     crate::lisp::native_comp::maybe_gc(interp, env);
                     interp.maybe_quit(env)?;
                     continue;
                 }
-                FastExit::Slow => {}
-            }
-            let Some(instr) = program.decoded.instrs.get(pc) else {
-                return Err(LispError::Signal(
-                    "byte code ran off the end of its program".into(),
-                ));
+                FastExit::Slow(instr) => instr,
+                FastExit::Error(error) => return Err(LispError::Signal(error.to_string())),
             };
+            last_instruction = Some(instr);
             let op = instr.op;
             let offset = instr.offset;
-            pc += 1;
+            pc += instr.len;
 
-            // Hot pre-dispatch: the ops below either cannot fail or only take
-            // this path when their operands make failure impossible, so they
-            // skip the fallible arms (and their Result plumbing) entirely.
-            // Anything that falls through runs the full arm below.
-            match op {
-                Op::StackRef(n) => {
-                    let value = interp.bc_stack[interp.bc_stack.len() - 1 - n as usize];
-                    push!(value);
-                    continue;
-                }
-                Op::StackSet(n) => {
-                    let value = pop!();
-                    let slot = interp.bc_stack.len() - 1 - (n as usize - 1);
-                    std::mem::replace(&mut interp.bc_stack[slot], value).discard();
-                    continue;
-                }
-                Op::Dup => {
-                    let top = *interp.bc_stack.last().expect("validated bytecode");
-                    push!(top);
-                    continue;
-                }
-                Op::Discard => {
-                    pop!().discard();
-                    continue;
-                }
-                Op::Constant(index) | Op::Constant2(index) => {
-                    push!(program.constant(index));
-                    continue;
-                }
-                Op::Goto { target } => {
-                    branch!(target);
-                    continue;
-                }
-                Op::GotoIfNil { target } => {
-                    let value = pop!();
-                    let is_nil = value.is_nil();
-                    value.discard();
-                    if is_nil {
-                        branch!(target);
-                    }
-                    continue;
-                }
-                Op::GotoIfNonNil { target } => {
-                    let value = pop!();
-                    let is_nil = value.is_nil();
-                    value.discard();
-                    if !is_nil {
-                        branch!(target);
-                    }
-                    continue;
-                }
-                Op::GotoIfNilElsePop { target } => {
-                    if interp.bc_stack.last().expect("validated bytecode").is_nil() {
-                        branch!(target);
-                    } else {
-                        pop!();
-                    }
-                    continue;
-                }
-                Op::GotoIfNonNilElsePop { target } => {
-                    if !interp.bc_stack.last().expect("validated bytecode").is_nil() {
-                        branch!(target);
-                    } else {
-                        pop!();
-                    }
-                    continue;
-                }
-                Op::Return => {
-                    breturn!(pop!());
-                }
-                Op::Not => {
-                    let value = pop!();
-                    push!(if value.is_nil() { Value::T } else { Value::Nil });
-                    continue;
-                }
-                Op::Cons => {
-                    let b = pop!();
-                    let a = pop!();
-                    push!(Value::cons(a, b));
-                    continue;
-                }
-                Op::Eq => {
-                    let b = pop!();
-                    let a = pop!();
-                    let equal = crate::lisp::primitives::values_eq_in_env(interp, &a, &b, env);
-                    push!(if equal { Value::T } else { Value::Nil });
-                    continue;
-                }
-                Op::Consp => {
-                    let a = pop!();
-                    push!(if primitives::is_cons_value(interp, &a) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    });
-                    continue;
-                }
-                Op::Plus | Op::Diff | Op::Mult => {
-                    let len = interp.bc_stack.len();
-                    if let (Kind::Integer(x), Kind::Integer(y)) = {
-                        let operands = &interp.bc_stack;
-                        (operands[len - 2].kind(), operands[len - 1].kind())
-                    } {
-                        let fast = match op {
-                            Op::Plus => x.checked_add(y),
-                            Op::Diff => x.checked_sub(y),
-                            _ => x.checked_mul(y),
-                        };
-                        if let Some(n) = fast {
-                            interp.bc_stack.truncate(len - 2);
-                            push!(Value::Integer(n));
-                            continue;
-                        }
-                    }
-                }
-                Op::Quo | Op::Rem => {
-                    let len = interp.bc_stack.len();
-                    if let (Kind::Integer(x), Kind::Integer(y)) = {
-                        let operands = &interp.bc_stack;
-                        (operands[len - 2].kind(), operands[len - 1].kind())
-                    } {
-                        // checked_div/checked_rem refuse y == 0 and the MIN/-1
-                        // overflow, which fall through to the full arithmetic
-                        // (and its arith-error).
-                        let fast = match op {
-                            Op::Quo => x.checked_div(y),
-                            _ => x.checked_rem(y),
-                        };
-                        if let Some(n) = fast {
-                            interp.bc_stack.truncate(len - 2);
-                            push!(Value::Integer(n));
-                            continue;
-                        }
-                    }
-                }
-                Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
-                    let len = interp.bc_stack.len();
-                    if let (Kind::Integer(x), Kind::Integer(y)) = {
-                        let operands = &interp.bc_stack;
-                        (operands[len - 2].kind(), operands[len - 1].kind())
-                    } {
-                        let holds = match op {
-                            Op::Eqlsign => x == y,
-                            Op::Gtr => x > y,
-                            Op::Lss => x < y,
-                            Op::Leq => x <= y,
-                            _ => x >= y,
-                        };
-                        interp.bc_stack.truncate(len - 2);
-                        push!(if holds { Value::T } else { Value::Nil });
-                        continue;
-                    }
-                }
-                Op::Add1 | Op::Sub1 | Op::Negate => {
-                    if let Some(Kind::Integer(x)) =
-                        ({ interp.bc_stack.last().cloned() }).map(|v| v.kind())
-                    {
-                        let fast = match op {
-                            Op::Add1 => x.checked_add(1),
-                            Op::Sub1 => x.checked_sub(1),
-                            _ => x.checked_neg(),
-                        };
-                        if let Some(n) = fast {
-                            *interp.bc_stack.last_mut().expect("validated bytecode") =
-                                Value::Integer(n);
-                            continue;
-                        }
-                    }
-                }
-                Op::Aref => {
-                    let len = interp.bc_stack.len();
-                    if let Kind::Integer(index) = ({ interp.bc_stack[len - 1] }).kind()
-                        && index >= 0
-                        && let Some(value) = {
-                            let operands = &interp.bc_stack;
-                            crate::lisp::primitives::vector_aref_fast(
-                                &operands[len - 2],
-                                index as usize,
-                            )
-                        }
-                    {
-                        interp.bc_stack.truncate(len - 2);
-                        push!(value);
-                        continue;
-                    }
-                }
-                Op::Aset => {
-                    // Stack: [.. vector index value]; aset returns the value.
-                    let len = interp.bc_stack.len();
-                    if let Kind::Integer(index) = ({ interp.bc_stack[len - 2] }).kind()
-                        && index >= 0
-                        && {
-                            let operands = &interp.bc_stack;
-                            crate::lisp::primitives::vector_aset_fast(
-                                &operands[len - 3],
-                                index as usize,
-                                &operands[len - 1],
-                            )
-                            .is_some()
-                        }
-                    {
-                        let value = pop!();
-                        interp.bc_stack.truncate(len - 3);
-                        push!(value);
-                        continue;
-                    }
-                }
-                Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => {
-                    // bytecode.c reads the car or cdr of the object on the
-                    // stack top and stores it there: the operand is read in
-                    // place, never copied first (a copy cost the cell two
-                    // reference-count round trips and a drop per op).
-                    enum Step {
-                        Replace(Value),
-                        Keep,
-                        Signal,
-                    }
-                    let step = {
-                        let operands = &interp.bc_stack;
-                        match operands.last().expect("validated bytecode").kind() {
-                            Kind::Cons(cell) => {
-                                Step::Replace(if matches!(op, Op::Car | Op::CarSafe) {
-                                    cell.car.get()
-                                } else {
-                                    cell.cdr.get()
-                                })
-                            }
-                            Kind::Nil => Step::Keep,
-                            _ if matches!(op, Op::CarSafe | Op::CdrSafe) => {
-                                Step::Replace(Value::Nil)
-                            }
-                            _ => Step::Signal,
-                        }
-                    };
-                    match step {
-                        Step::Replace(value) => {
-                            let operands = &mut interp.bc_stack;
-                            let top = operands.last_mut().expect("validated bytecode");
-                            std::mem::replace(top, value).discard();
-                            continue;
-                        }
-                        Step::Keep => continue,
-                        // The full arm signals wrong-type-argument.
-                        Step::Signal => {}
-                    }
-                }
-                _ => {}
-            }
-
+            // run_fast already handled the ordinary stack/value cases.
+            // A fallback goes directly to its complete operation; repeating
+            // the same fast predicates here only adds a third dispatch.
             // Every fallible operation funnels through the closure's result so
             // handler unwinding (GNU's sys_setjmp arm) is applied uniformly.
             match op {
@@ -1659,41 +1633,49 @@ fn run_frames(
                     // stay on the stack until the call returns (GNU keeps
                     // them rooted the same way).
                     let func = interp.bc_stack[args_start - 1];
-                    // The fast path for a lexbound byte-code function whose
-                    // program is cached: its frame is laid out above the
-                    // arguments and the loop continues in it (bytecode.c's
-                    // `goto setup_frame').  Anything else takes Ffuncall.
-                    if let Some((callee, callee_id)) = interp.bytecode_callee(&func) {
-                        interp.begin_funcall(env)?;
-                        if let Some(termination) = interp.pending_termination().cloned() {
+                    interp.begin_funcall(env)?;
+                    if let Some(termination) = interp.pending_termination().cloned() {
+                        interp.end_funcall();
+                        return Err(LispError::Terminate(termination));
+                    }
+                    let backtrace_depth = interp.backtrace_frames_len();
+                    // Bcall records the unresolved function and rooted arguments
+                    // before maybe_gc, which may redefine the function cell.
+                    // SAFETY: the stack buffer never moves and these slots stay
+                    // below the callee's disjoint storage until return/unwind.
+                    let call_args = unsafe { interp.bc_stack.slice_from(args_start, argc) };
+                    interp.push_backtrace_frame_borrowed(func, call_args);
+                    interp.capture_current_backtrace_context(
+                        match func.kind() {
+                            Kind::Symbol(_) => func.as_symbol().ok(),
+                            _ => None,
+                        },
+                        env,
+                        None,
+                    );
+                    crate::lisp::native_comp::maybe_gc(interp, env);
+                    // Only now inspect the live cell/code slots, just as GNU's
+                    // packed-closure setup_frame branch does after maybe_gc.
+                    if let Some((callee, callee_function)) = interp.bytecode_callee(&func) {
+                        if let Err(error) =
+                            interp
+                                .bc_stack
+                                .enter_frame(callee.stack_depth, callee_function, pc)
+                        {
+                            let result = interp.settle_frame_result(Err(error), env);
+                            interp.truncate_backtrace_frames(backtrace_depth);
                             interp.end_funcall();
-                            return Err(LispError::Terminate(termination));
+                            match result {
+                                Ok(value) => {
+                                    interp.bc_stack.truncate(args_start - 1);
+                                    push!(value);
+                                    continue;
+                                }
+                                Err(error) => return Err(error),
+                            }
                         }
-                        let backtrace_depth = interp.backtrace_frames_len();
-                        // record_in_backtrace with the arguments in place.
-                        // SAFETY: the stack buffer never moves, and the
-                        // slots stay below every truncation until this
-                        // frame returns or unwinds.
-                        let call_args = unsafe { interp.bc_stack.slice_from(args_start, argc) };
-                        interp.push_backtrace_frame_borrowed(
-                            match func.kind() {
-                                Kind::Symbol(_) => func,
-                                _ => interp.record_value(callee_id),
-                            },
-                            call_args,
-                        );
-                        interp.capture_current_backtrace_context(
-                            match func.kind() {
-                                Kind::Symbol(name) => Some(name.as_str()),
-                                _ => None,
-                            },
-                            env,
-                            None,
-                        );
-                        crate::lisp::native_comp::maybe_gc(interp, env);
                         frames.push(BcFrame {
-                            program: Rc::clone(&program),
-                            pc,
+                            program: program.clone(),
                             base: args_start - 1,
                             handlers_len: handlers.len(),
                             unwinds_len: interp.bc_unwinds.len(),
@@ -1723,19 +1705,11 @@ fn run_frames(
                             return Err(packed_arity_error(mandatory, nonrest, argc));
                         }
                         let pushed = argc.min(nonrest);
-                        if !interp.bc_stack.has_room(program.stack_depth + nonrest + 2) {
-                            return Err(stack_overflow());
-                        }
-                        for index in 0..pushed {
-                            let argument = interp.bc_stack[args_start + index];
-                            push!(argument);
+                        for argument in &call_args[..pushed] {
+                            push!(*argument);
                         }
                         if argc > nonrest {
-                            let rest_list = Value::list(
-                                interp.bc_stack[args_start + nonrest..args_start + argc]
-                                    .iter()
-                                    .cloned(),
-                            );
+                            let rest_list = Value::list(call_args[nonrest..].iter().cloned());
                             push!(rest_list);
                         } else {
                             for _ in argc..nonrest {
@@ -1748,11 +1722,11 @@ fn run_frames(
                         continue;
                     }
                     let trace_call = trace_errors.then(|| func.to_string());
-                    // SAFETY: as above; the callee's own frames grow above
-                    // these slots and every truncation below them waits
-                    // for the call to return.
-                    let call_args = unsafe { interp.bc_stack.slice_from(args_start, argc) };
-                    let value = match interp.funcall_from_bytecode(&func, call_args, env) {
+                    let result = interp.funcall_body(func, call_args, env);
+                    let result = interp.settle_frame_result(result, env);
+                    interp.truncate_backtrace_frames(backtrace_depth);
+                    interp.end_funcall();
+                    let value = match result {
                         Ok(value) => value,
                         Err(error) => {
                             // Expected conditions such as `scan-error' are
@@ -1846,7 +1820,7 @@ fn run_frames(
                     let value = pop!();
                     let dest = prim(interp, "gethash", &[value, table, Value::Nil], env)?;
                     if let Kind::Integer(dest) = dest.kind() {
-                        pc = program.instr_at(dest as usize);
+                        pc = dest as usize;
                     }
                 }
                 Op::ListN(n) => {
@@ -2231,7 +2205,7 @@ fn run_frames(
                             }
                             interp.bc_stack.truncate(handler.stack_len);
                             push!(value);
-                            pc = program.instr_at(handler.dest);
+                            pc = handler.dest;
                             handled = true;
                             break 'frames;
                         }
@@ -2252,10 +2226,10 @@ fn run_frames(
                             if let Err(error) = leave_frame(interp, env, &frame) {
                                 break 'run Err(error);
                             }
+                            pc = interp.bc_stack.leave_frame();
                             interp.bc_stack.truncate(frame.base);
                             push!(value);
                             program = frame.program;
-                            pc = frame.pc;
                             op_error_frames = frame.op_error_frames;
                             handlers.truncate(frame.handlers_len);
                             continue 'run;
@@ -2267,9 +2241,9 @@ fn run_frames(
                     {
                         error = unwind_error;
                     }
+                    pc = interp.bc_stack.leave_frame();
                     interp.bc_stack.truncate(frame.base);
                     program = frame.program;
-                    pc = frame.pc;
                     op_error_frames = frame.op_error_frames;
                 }
                 if !handled {
@@ -2289,7 +2263,7 @@ fn run_frames(
                     if trace_errors
                         && !matches!(error.kind(), LispErrorKind::Throw(_, _))
                         && !interp.some_active_handler_matches(&error)
-                        && let Some(instr) = program.decoded.instrs.get(pc.wrapping_sub(1))
+                        && let Some(instr) = last_instruction
                     {
                         eprintln!(
                             "bytecode operation {:?} failed at byte offset {}: {}",
@@ -2390,7 +2364,7 @@ mod tests {
             interp
                 .call_function_value(closure, None, &[], &mut env)
                 .map(|v| v.kind()),
-            Ok(Kind::Record(_))
+            Ok(Kind::Closure(_))
         ));
     }
 
@@ -2410,7 +2384,7 @@ mod tests {
 
         assert!(matches!(
             items.get(1).map(|v| v.kind()),
-            Some(Kind::Record(_))
+            Some(Kind::Closure(_))
         ));
     }
 
@@ -2752,7 +2726,7 @@ mod native_surface_tests {
         let object = ByteCodeObject::from_slots(&slots)
             .expect("valid bytecode")
             .expect("bytecode slots");
-        let program = build_cached(&object).expect("decoded program");
+        let program = object.clone();
         let Kind::Vector(vector) = constants.kind() else {
             panic!("constants vector")
         };
@@ -2778,13 +2752,20 @@ mod native_surface_tests {
         let mut interp = Interpreter::new();
         let mut env = Env::new();
         // argspec 257: one mandatory arg; code: dup; add1; return.
+        // alloc.c:Fmake_byte_code requires an unibyte string and a real
+        // constants vector, including when called through the Rust API.
+        let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "\u{89}\u{54}\u{87}".to_owned(),
+            Vec::new(),
+            false,
+        );
         let object = prim(
             &mut interp,
             "make-byte-code",
             &[
                 Value::Integer(257),
-                Value::String("\u{89}\u{54}\u{87}".into()),
-                Value::list([Value::symbol("vector-literal")]),
+                code,
+                Value::vector([]),
                 Value::Integer(3),
             ],
             &mut env,
@@ -2800,12 +2781,17 @@ mod native_surface_tests {
     fn byte_code_argument_prologue_preserves_string_identity() {
         let mut interp = Interpreter::new();
         let mut env = Env::new();
+        let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "\u{87}".to_owned(),
+            Vec::new(),
+            false,
+        );
         let object = prim(
             &mut interp,
             "make-byte-code",
             &[
                 Value::Integer(257),
-                Value::String("\u{87}".into()),
+                code,
                 Value::vector([]),
                 Value::Integer(1),
             ],
@@ -2833,13 +2819,18 @@ mod native_surface_tests {
         let mut interp = Interpreter::new();
         let mut env = Env::new();
         // argspec 257: one mandatory arg; code: return that argument.
+        let code = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+            "\u{87}".to_owned(),
+            Vec::new(),
+            false,
+        );
         let object = prim(
             &mut interp,
             "make-byte-code",
             &[
                 Value::Integer(257),
-                Value::String("\u{87}".into()),
-                Value::list([Value::symbol("vector-literal")]),
+                code,
+                Value::vector([]),
                 Value::Integer(1),
             ],
             &mut env,
@@ -2934,17 +2925,16 @@ mod native_surface_tests {
     fn byte_code_primitive_executes_program() {
         let mut interp = Interpreter::new();
         let mut env = Env::new();
-        // constant0; constant1; plus; return  with constants [40 2].
+        // constant0; constant1; plus; return with constants [40 2].
+        // bytecode.c:Fbyte_code converts multibyte input with
+        // string-as-unibyte. Actual Unicode U+00C0/U+00C1 encode as
+        // C3 80/C3 81, not the C0/C1 constant opcodes required here.
         let value = prim(
             &mut interp,
             "byte-code",
             &[
-                Value::String("\u{c0}\u{c1}\u{5c}\u{87}".into()),
-                Value::list([
-                    Value::symbol("vector-literal"),
-                    Value::Integer(40),
-                    Value::Integer(2),
-                ]),
+                primitives::bytes_to_shared_unibyte_value(&[192, 193, 92, 135]),
+                Value::vector([Value::Integer(40), Value::Integer(2)]),
                 Value::Integer(4),
             ],
             &mut env,
@@ -2956,4 +2946,109 @@ mod native_surface_tests {
             Value::Nil
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn canonical_bytecode_entry_borrows_the_actual_bytes_without_predecoding() {
+    let _interp = Interpreter::new();
+    let code = primitives::bytes_to_shared_unibyte_value(&[192, 135, 0]);
+    let Kind::StringObject(state) = code.kind() else {
+        panic!("canonical code string");
+    };
+    let function = Value::allocated_closure(&[
+        Value::Integer(0),
+        code,
+        Value::vector([Value::Integer(73)]),
+        Value::Integer(1),
+    ]);
+    let Kind::Closure(closure) = function.kind() else {
+        panic!("actual closure");
+    };
+    // The invalid dead byte must not be decoded when an ordinary activation
+    // starts. The separate diagnostic parser still rejects corrupt streams.
+    let program = closure_program(closure).expect("entry reads fields, not dead instructions");
+    assert_eq!(program.code.original().word(), code.word());
+    assert_eq!(
+        std::mem::size_of::<crate::lisp::bytecode::CodeBytes>(),
+        std::mem::size_of::<Value>()
+    );
+    program.code.with_bytes(|bytes| {
+        let state = state.borrow();
+        assert_eq!(bytes.as_ptr(), state.bytes().as_ptr());
+        assert_eq!(bytes, &[192, 135, 0]);
+    });
+}
+
+#[cfg(test)]
+#[test]
+fn taken_bytecode_branch_outside_storage_errors_without_leaking_a_frame() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let code = primitives::bytes_to_shared_unibyte_value(&[130, 255, 255]);
+    let function = Value::allocated_closure(&[
+        Value::Integer(0),
+        code,
+        Value::vector([]),
+        Value::Integer(0),
+    ]);
+    let Kind::Closure(closure) = function.kind() else {
+        panic!("actual closure");
+    };
+    let stack_before = interp.bc_stack.len();
+    let roots_before = interp.bc_stack.frame_count();
+    let error = execute_closure(&mut interp, closure, &[], &mut env)
+        .expect_err("the actual next fetch must check the string boundary");
+    assert!(matches!(error.kind(), LispErrorKind::Signal(message)
+        if message == "byte code ran off the end of its program"));
+    assert_eq!(interp.bc_stack.len(), stack_before);
+    assert_eq!(interp.bc_stack.frame_count(), roots_before);
+}
+
+#[cfg(test)]
+#[test]
+fn bytecode_stack_footers_share_storage_and_preserve_borrowed_caller_arguments() {
+    let mut stack = BcStack::new();
+    stack.ensure_allocated();
+    assert_eq!(stack.words.capacity(), BC_STACK_WORDS);
+    assert_eq!(std::mem::size_of::<BcHeader>(), 32);
+    stack
+        .enter_frame(5, Value::Integer(11), 0)
+        .expect("caller reservation");
+    stack.push(Value::Integer(17)).expect("caller argument");
+    // This is the same borrow retained by an ordinary backtrace while the
+    // callee writes its own operands and while the owning stack moves.
+    let arguments = unsafe { stack.slice_from(0, 1) };
+    assert_eq!(arguments.as_ptr().cast::<usize>(), unsafe {
+        stack.words.as_ptr().add(4).cast::<usize>()
+    });
+    assert_eq!(stack.frame, 9);
+    stack
+        .enter_frame(7, Value::Integer(23), 91)
+        .expect("callee reservation");
+    stack.push(Value::Integer(29)).expect("callee operand");
+    assert_eq!(stack.frame, 20);
+    assert_eq!(stack.header(stack.frame).function, Value::Integer(23));
+    let caller = stack.header(stack.frame).saved_frame;
+    assert_eq!(stack.header(caller).function, Value::Integer(11));
+    assert_eq!(arguments, &[Value::Integer(17)]);
+    assert_eq!(&*stack, &[Value::Integer(29)]);
+    let mut moved = stack;
+    assert_eq!(moved.leave_frame(), 91);
+    assert_eq!(&*moved, arguments);
+    assert_eq!(moved.leave_frame(), 0);
+    assert!(moved.is_empty());
+    assert_eq!(moved.frame_count(), 0);
+    moved
+        .enter_frame(BC_STACK_WORDS - 8, Value::Integer(31), 0)
+        .expect("GNU's largest single frame includes both footers");
+    assert!(moved.enter_frame(0, Value::Nil, 0).is_err());
+    assert_eq!(moved.frame_count(), 1);
+    moved.leave_frame();
+    assert!(
+        moved
+            .enter_frame(BC_STACK_WORDS - 7, Value::Nil, 0)
+            .is_err()
+    );
+    assert_eq!(moved.frame_count(), 0);
 }

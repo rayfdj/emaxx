@@ -1,0 +1,92 @@
+{
+  "status": "reject source295; no measured benefit sufficient to retain its added branch",
+  "applied": false,
+  "evidence": "single-line-performance-audit.json",
+  "evidence_sha256": "3ea20e8ce2557d3db287821ffa27433a6ce24f686e7ba9bf727d0c7cfe9ba311",
+  "body_geometric_ratio_over_corrected292": 0.9977110470623837,
+  "body_geometric_ratio_over_original290": 1.0075774491378933,
+  "case_changes_percent": [
+    {
+      "case": "interpreted-lexical",
+      "versus_corrected292": -1.0185660676331976,
+      "versus_original290": -0.286616000354345
+    },
+    {
+      "case": "interpreted-dynamic",
+      "versus_corrected292": 2.220311035718092,
+      "versus_original290": 3.648538443588567
+    },
+    {
+      "case": "interpreted-calls",
+      "versus_corrected292": 0.3809898671834011,
+      "versus_original290": 4.750864072250627
+    },
+    {
+      "case": "bytecode-calls",
+      "versus_corrected292": 4.842086287501424,
+      "versus_original290": 7.004009072593331
+    },
+    {
+      "case": "native-execution",
+      "versus_corrected292": -5.293028969365132,
+      "versus_original290": -6.557550502581222
+    },
+    {
+      "case": "interpreted-to-native",
+      "versus_corrected292": 0.3761162604230206,
+      "versus_original290": 2.198691316992085
+    },
+    {
+      "case": "bytecode-to-native",
+      "versus_corrected292": -0.1334786817540179,
+      "versus_original290": 1.1082281527412752
+    },
+    {
+      "case": "native-to-interpreted",
+      "versus_corrected292": -0.6456071148389531,
+      "versus_original290": 1.8362554202018488
+    },
+    {
+      "case": "native-to-bytecode",
+      "versus_corrected292": -1.2062156530009749,
+      "versus_original290": -1.4386822338196548
+    },
+    {
+      "case": "cons-allocation",
+      "versus_corrected292": 1.8706557266020774,
+      "versus_original290": 3.1443817399564367
+    },
+    {
+      "case": "list-traversal",
+      "versus_corrected292": -0.6324841672128878,
+      "versus_original290": 1.3476309448835044
+    },
+    {
+      "case": "mapcar",
+      "versus_corrected292": -2.188485999182055,
+      "versus_original290": -1.215438745851316
+    },
+    {
+      "case": "explicit-gc",
+      "versus_corrected292": -1.5030541181531798,
+      "versus_original290": 1.78199058648838
+    },
+    {
+      "case": "upstream-sort",
+      "versus_corrected292": -1.7358047854499459,
+      "versus_original290": -1.140599361838479
+    },
+    {
+      "case": "upstream-undo",
+      "versus_corrected292": 2.035947915151781,
+      "versus_original290": -3.6024301663453384
+    },
+    {
+      "case": "upstream-bindat",
+      "versus_corrected292": -0.6438649102586402,
+      "versus_original290": 0.3442511541718707
+    }
+  ],
+  "reason": "The whole-buffer no-LF shortcut passes selected correctness but has no demonstrated useful speed gain. Undo is 2.036% slower and bytecode calls 4.842% slower than the LF-only baseline in this diagnostic; its raw aggregate is 0.997711. Preserve all samples without a significance or causal claim. Leave this optional optimization unapplied and continue the already recorded native call-copy lead. The independently necessary LF separator correction remains eligible on its own evidence.",
+  "goal_complete": false
+}

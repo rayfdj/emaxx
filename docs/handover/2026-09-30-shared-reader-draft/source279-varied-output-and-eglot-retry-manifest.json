@@ -1,0 +1,1162 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "generated_probe": {
+      "status": "failed",
+      "exact_match": false,
+      "outcomes": {
+        "gnu": {
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 1.21517425,
+          "stdout_sha256": "fead906d4b0aa20e9ef90a98b3a696c73267423190766ed0d0c188293e663960",
+          "stderr_sha256": "ef3ac70813a50cb80764a386cbb41f3ff634884cf661163bc5d3c3016f393d48",
+          "stdout_bytes": 4088269,
+          "output_rows": 198,
+          "inputs_unchanged": true,
+          "source_unchanged": true
+        },
+        "emaxx": {
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 1.756921583,
+          "stdout_sha256": "7676755e88a79aea61dfcf5ebd77696201e3a6c93db263000ead26982b14c312",
+          "stderr_sha256": "ef3ac70813a50cb80764a386cbb41f3ff634884cf661163bc5d3c3016f393d48",
+          "stdout_bytes": 3814075,
+          "output_rows": 198,
+          "inputs_unchanged": true,
+          "source_unchanged": true
+        }
+      },
+      "seed": 20261002,
+      "cases": [
+        [
+          0,
+          15,
+          65536,
+          2047,
+          6809050
+        ],
+        [
+          1,
+          1024,
+          65,
+          2097152,
+          15017187
+        ],
+        [
+          2,
+          8191,
+          2047,
+          255,
+          8002857
+        ],
+        [
+          3,
+          255,
+          0,
+          2097152,
+          7548401
+        ],
+        [
+          4,
+          31,
+          255,
+          2048,
+          8669477
+        ],
+        [
+          5,
+          7,
+          65536,
+          2097152,
+          1918441
+        ],
+        [
+          6,
+          0,
+          128,
+          2097152,
+          1836584
+        ],
+        [
+          7,
+          15,
+          2047,
+          65,
+          16697312
+        ],
+        [
+          8,
+          1,
+          127,
+          2097151,
+          7618445
+        ],
+        [
+          9,
+          2039,
+          255,
+          2047,
+          8109171
+        ],
+        [
+          10,
+          127,
+          65535,
+          4194303,
+          6569507
+        ],
+        [
+          11,
+          1025,
+          127,
+          2048,
+          14616949
+        ],
+        [
+          12,
+          31,
+          0,
+          2097151,
+          16275652
+        ],
+        [
+          13,
+          127,
+          65535,
+          2047,
+          16686119
+        ],
+        [
+          14,
+          0,
+          2097152,
+          255,
+          16091032
+        ],
+        [
+          15,
+          15,
+          4194303,
+          2048,
+          785914
+        ],
+        [
+          16,
+          1024,
+          2097151,
+          65536,
+          3313700
+        ],
+        [
+          17,
+          1,
+          128,
+          255,
+          5670272
+        ],
+        [
+          18,
+          8193,
+          2097152,
+          255,
+          14221270
+        ],
+        [
+          19,
+          2039,
+          65535,
+          4194303,
+          3100747
+        ],
+        [
+          20,
+          2039,
+          65535,
+          65,
+          2230360
+        ],
+        [
+          21,
+          7,
+          65,
+          127,
+          16115058
+        ],
+        [
+          22,
+          1,
+          4194303,
+          65536,
+          12005880
+        ],
+        [
+          23,
+          1,
+          127,
+          128,
+          976626
+        ],
+        [
+          24,
+          8192,
+          65,
+          4194303,
+          16519037
+        ],
+        [
+          25,
+          8191,
+          127,
+          2048,
+          1734941
+        ],
+        [
+          26,
+          1023,
+          2048,
+          65535,
+          14763911
+        ],
+        [
+          27,
+          511,
+          0,
+          2048,
+          7365689
+        ],
+        [
+          28,
+          16,
+          2097151,
+          2097151,
+          9256915
+        ],
+        [
+          29,
+          16,
+          2048,
+          2048,
+          4328723
+        ],
+        [
+          30,
+          1025,
+          255,
+          2048,
+          12292538
+        ],
+        [
+          31,
+          8191,
+          2048,
+          65536,
+          5790511
+        ],
+        [
+          32,
+          1025,
+          2097152,
+          0,
+          8907943
+        ],
+        [
+          33,
+          16,
+          65536,
+          65535,
+          7723133
+        ],
+        [
+          34,
+          0,
+          255,
+          128,
+          6828345
+        ],
+        [
+          35,
+          31,
+          2097152,
+          65,
+          11753237
+        ],
+        [
+          36,
+          15,
+          2048,
+          2097151,
+          13630336
+        ],
+        [
+          37,
+          8,
+          2048,
+          0,
+          10318524
+        ],
+        [
+          38,
+          2039,
+          127,
+          65536,
+          16099322
+        ],
+        [
+          39,
+          0,
+          65535,
+          65535,
+          1846682
+        ],
+        [
+          40,
+          511,
+          2047,
+          2048,
+          14832017
+        ],
+        [
+          41,
+          255,
+          2097152,
+          127,
+          6963772
+        ],
+        [
+          42,
+          1023,
+          128,
+          4194303,
+          5026436
+        ],
+        [
+          43,
+          2039,
+          2097152,
+          2097151,
+          6135816
+        ],
+        [
+          44,
+          2039,
+          2048,
+          65535,
+          11166086
+        ],
+        [
+          45,
+          1,
+          65,
+          127,
+          12900880
+        ],
+        [
+          46,
+          1024,
+          2047,
+          2097152,
+          2233748
+        ],
+        [
+          47,
+          1023,
+          2047,
+          2097151,
+          4587964
+        ],
+        [
+          48,
+          1025,
+          65535,
+          2097151,
+          3056024
+        ],
+        [
+          49,
+          1023,
+          127,
+          2048,
+          10635238
+        ],
+        [
+          50,
+          127,
+          4194303,
+          2097152,
+          4392692
+        ],
+        [
+          51,
+          511,
+          2048,
+          2048,
+          15213905
+        ],
+        [
+          52,
+          15,
+          65536,
+          255,
+          10009132
+        ],
+        [
+          53,
+          7,
+          255,
+          0,
+          895312
+        ],
+        [
+          54,
+          8,
+          2048,
+          127,
+          4133149
+        ],
+        [
+          55,
+          1023,
+          65535,
+          2047,
+          11722712
+        ],
+        [
+          56,
+          127,
+          65536,
+          4194303,
+          8409168
+        ],
+        [
+          57,
+          2039,
+          2097151,
+          2047,
+          4857382
+        ],
+        [
+          58,
+          255,
+          65535,
+          255,
+          16090187
+        ],
+        [
+          59,
+          8192,
+          0,
+          65535,
+          14377953
+        ],
+        [
+          60,
+          255,
+          65535,
+          255,
+          8981466
+        ],
+        [
+          61,
+          511,
+          0,
+          2097151,
+          15636422
+        ],
+        [
+          62,
+          1024,
+          0,
+          2047,
+          15301463
+        ],
+        [
+          63,
+          1025,
+          2048,
+          4194303,
+          12442900
+        ],
+        [
+          64,
+          4095,
+          4194303,
+          2048,
+          8227334
+        ],
+        [
+          65,
+          1024,
+          2047,
+          127,
+          11902474
+        ],
+        [
+          66,
+          0,
+          2097151,
+          0,
+          16565851
+        ],
+        [
+          67,
+          1024,
+          65535,
+          65,
+          16228500
+        ],
+        [
+          68,
+          1023,
+          128,
+          2048,
+          14042578
+        ],
+        [
+          69,
+          0,
+          2048,
+          65536,
+          10950463
+        ],
+        [
+          70,
+          1024,
+          2047,
+          65,
+          693503
+        ],
+        [
+          71,
+          8192,
+          65,
+          2097152,
+          14106145
+        ],
+        [
+          72,
+          8193,
+          2048,
+          65535,
+          16739884
+        ],
+        [
+          73,
+          0,
+          255,
+          2097152,
+          12989292
+        ],
+        [
+          74,
+          255,
+          65535,
+          4194303,
+          14303291
+        ],
+        [
+          75,
+          1023,
+          65,
+          2047,
+          3012234
+        ],
+        [
+          76,
+          1023,
+          65535,
+          4194303,
+          16644008
+        ],
+        [
+          77,
+          8193,
+          0,
+          2047,
+          6046482
+        ],
+        [
+          78,
+          8191,
+          127,
+          127,
+          2480275
+        ],
+        [
+          79,
+          4095,
+          0,
+          65536,
+          5008429
+        ],
+        [
+          80,
+          1,
+          128,
+          0,
+          14001016
+        ],
+        [
+          81,
+          2039,
+          65,
+          65535,
+          305778
+        ],
+        [
+          82,
+          2039,
+          2047,
+          2097151,
+          15398513
+        ],
+        [
+          83,
+          255,
+          65535,
+          2047,
+          11847390
+        ],
+        [
+          84,
+          1023,
+          0,
+          4194303,
+          3189070
+        ],
+        [
+          85,
+          4095,
+          65536,
+          2047,
+          6743023
+        ],
+        [
+          86,
+          0,
+          255,
+          128,
+          8140840
+        ],
+        [
+          87,
+          31,
+          65,
+          0,
+          9656235
+        ],
+        [
+          88,
+          8192,
+          65535,
+          65535,
+          10424835
+        ],
+        [
+          89,
+          1025,
+          0,
+          2048,
+          11952295
+        ],
+        [
+          90,
+          1024,
+          65535,
+          65,
+          2619705
+        ],
+        [
+          91,
+          1025,
+          255,
+          0,
+          8891066
+        ],
+        [
+          92,
+          1025,
+          65535,
+          4194303,
+          6144572
+        ],
+        [
+          93,
+          31,
+          65535,
+          4194303,
+          9534803
+        ],
+        [
+          94,
+          8191,
+          2097152,
+          0,
+          8734013
+        ],
+        [
+          95,
+          8192,
+          65,
+          65,
+          15579140
+        ]
+      ],
+      "fixture": {
+        "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source279-varied-v2-293638f0.el",
+        "sha256": "af90e17f823f2a7c23ca2e2e877a7b50d4472d1c539668fdcac241d0c0c94d85"
+      },
+      "coverage": "96 varied size/content/mutation/property/alias/copy cases in each of interpreted and checked bytecode mode, with forced GC; six changed allocation condition payloads and bounds. Full printed contents and conditions are compared, not only success counts.",
+      "qualification": "Additional bounded differential evidence on unchanged frozen source279, outside its original37 selected comparisons. No native-mode or timing claim; not a universal absence-of-cheating proof.",
+      "goal_complete": false
+    },
+    "earlier_baseline": {
+      "exit_code": 0,
+      "timed_out": false,
+      "elapsed_seconds": 1.8533110419999999,
+      "source_unchanged": true,
+      "inputs_unchanged": true,
+      "stdout_sha256": "045c1e8e9d79e8c7dad5f7a7e7d348ec6d0b311e6988991ff55b386701b7c509",
+      "stderr_sha256": "ef3ac70813a50cb80764a386cbb41f3ff634884cf661163bc5d3c3016f393d48",
+      "output_rows": 198,
+      "old_wrong_rows": [
+        1,
+        3,
+        5,
+        6,
+        8,
+        12,
+        14,
+        16,
+        18,
+        28,
+        32,
+        35,
+        36,
+        41,
+        43,
+        46,
+        47,
+        48,
+        50,
+        57,
+        61,
+        66,
+        71,
+        73,
+        82,
+        94,
+        97,
+        99,
+        101,
+        102,
+        104,
+        108,
+        110,
+        112,
+        114,
+        124,
+        128,
+        131,
+        132,
+        137,
+        139,
+        142,
+        143,
+        144,
+        146,
+        153,
+        157,
+        162,
+        167,
+        169,
+        178,
+        190,
+        192,
+        193,
+        194,
+        195,
+        196,
+        197
+      ],
+      "latest_wrong_rows": [
+        1,
+        3,
+        5,
+        6,
+        8,
+        12,
+        14,
+        16,
+        18,
+        28,
+        32,
+        35,
+        36,
+        41,
+        43,
+        46,
+        47,
+        48,
+        50,
+        57,
+        61,
+        66,
+        71,
+        73,
+        82,
+        94,
+        97,
+        99,
+        101,
+        102,
+        104,
+        108,
+        110,
+        112,
+        114,
+        124,
+        128,
+        131,
+        132,
+        137,
+        139,
+        142,
+        143,
+        144,
+        146,
+        153,
+        157,
+        162,
+        167,
+        169,
+        178,
+        190,
+        196
+      ],
+      "old_vs_latest_differing_rows": [
+        192,
+        193,
+        194,
+        195,
+        196,
+        197
+      ],
+      "qualification": "Same frozen generated input on retained earlier source270 executable/image. Differences remain failures; this diagnostic brackets pre-existing printer defects separately from changed allocation error semantics.",
+      "goal_complete": false
+    },
+    "bounded_eglot": {
+      "status": "passed",
+      "records": {
+        "gnu": {
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 5.344639583,
+          "stdout_sha256": "fb3a85cd297aacb976a843a7a21df19eec92701e4e67a41d1a406e0498c7d307",
+          "stderr_sha256": "b6501cf01f7a06b95dfa95af287b555ef5a4e565bbc08a16928f44204794c1a1",
+          "inputs_unchanged": true,
+          "source_unchanged": true,
+          "report_sha256": "c8a01e37e95bcf2c1618697bf68c5333d900016f7496c13dd54c822ff9944cb9",
+          "answer_sha256": "fb07314235e7f7e01ec0637aad3452e29113e6d7dda19cf84094fa46fa8da455",
+          "ert_summary": {
+            "total": 1,
+            "passed": 1,
+            "failed": 0,
+            "skipped": 0,
+            "unexpected": 0
+          },
+          "ert_results": [
+            {
+              "name": "eglot-test-rust-completion-exit-function",
+              "status": "passed",
+              "expected": true,
+              "condition_type": null,
+              "message": null,
+              "duration_ns": 4335947000,
+              "infos": []
+            }
+          ]
+        },
+        "emaxx": {
+          "exit_code": 0,
+          "timed_out": false,
+          "elapsed_seconds": 6.615945582999999,
+          "stdout_sha256": "537f3fb69ba01fc388a3a5c920c485b2873d5f327305c3dd2004d6a04451659b",
+          "stderr_sha256": "ab5689028c24ac2ad1edb0166946cc5763cd5839fc9dde213e2be786ffeb1d5e",
+          "inputs_unchanged": true,
+          "source_unchanged": true,
+          "report_sha256": "9c89102841386ffbd08d969ae980f538d360686987c812d68ef94394440793ec",
+          "answer_sha256": "fb07314235e7f7e01ec0637aad3452e29113e6d7dda19cf84094fa46fa8da455",
+          "ert_summary": {
+            "total": 1,
+            "passed": 1,
+            "failed": 0,
+            "skipped": 0,
+            "unexpected": 0
+          },
+          "ert_results": [
+            {
+              "name": "eglot-test-rust-completion-exit-function",
+              "status": "passed",
+              "expected": true,
+              "condition_type": null,
+              "message": null,
+              "duration_ns": 4382447000,
+              "infos": []
+            }
+          ]
+        }
+      },
+      "identical_final_buffer": true,
+      "expected_answer": "fn test() -> i32 { let v: usize = 1; v.count_ones.1234567890;",
+      "platform": "macOS arm64",
+      "qualification": "Bounded local diagnostic only, original upstream assertions and real Rust1.75 LSP. Original Linux timeout remains a timeout; full validation and performance remain open.",
+      "goal_complete": false
+    },
+    "qualification": "Generated probe is FAILED, not rolled into selected pass counts. Preserve initial malformed-input failure and successor raw values including identical bytecompiler warnings. Source270 and279 have identical first192 mutation/copy rows;279 improves allocation conditions but53 output rows remain wrong. Separately, user-authorized macOS Eglot retry permits60s JSON-RPC/180s process waits for both editors, keeps original upstream test assertions, uses real Rust1.75 and captures identical final buffer bytes. This does not reclassify the original Linux timeout or establish a performance result or universal absence of cheating."
+  },
+  "archive": {
+    "path": "source279-varied-output-and-eglot-retry.tar.gz",
+    "bytes": 298895,
+    "sha256": "89d56e5ab398195919961fe7ded2ebdcb79686587492aeeabbb00c0cc2b86401"
+  },
+  "files": [
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source279-selected-and-diagnostics.py",
+      "bytes": 6759,
+      "sha256": "a49cc11eade8ae68458ca38ea20fec68845b7794d1c16982b615463e23894073"
+    },
+    {
+      "path": "probe-source270-varied-string-baseline.py",
+      "bytes": 3099,
+      "sha256": "e09ba950927f3450992b0c817f8b30607a0c6b65229ea2cafdb45bbe214cc6c5"
+    },
+    {
+      "path": "probe-source279-varied-strings-v2.py",
+      "bytes": 6855,
+      "sha256": "ed83551267d72696cc222515af0b7678ae6c4300fc312abc63484563cbdc587d"
+    },
+    {
+      "path": "probe-source279-varied-strings.py",
+      "bytes": 6845,
+      "sha256": "0469309651f9cafd468c5e8dbfd6678e6dd31beaa6b3e376e36d43ea7c123ffd"
+    },
+    {
+      "path": "retry-source279-eglot-bounded.py",
+      "bytes": 7027,
+      "sha256": "162402da5d81ce77721773aed2eab0ef43b0f976c8432508b33fcdca2cfc040f"
+    },
+    {
+      "path": "source270-manifest.json",
+      "bytes": 58772,
+      "sha256": "590e81465e9b4d20cef78f67c4eef01560fe4fcfd8d5c37c29f6eddfaddf48b7"
+    },
+    {
+      "path": "source270-varied-strings-baseline.command.json",
+      "bytes": 1350,
+      "sha256": "444f9c43c393caf40ccfa6367ac81fcbbc3a4ca61870e9bd593347f5232ef5ca"
+    },
+    {
+      "path": "source270-varied-strings-baseline.result.json",
+      "bytes": 1676,
+      "sha256": "dd2c985cb7dcb536dff031513afb3011e9306f3650613f4749d7f16991da649c"
+    },
+    {
+      "path": "source270-varied-strings-baseline.stderr",
+      "bytes": 85,
+      "sha256": "ef3ac70813a50cb80764a386cbb41f3ff634884cf661163bc5d3c3016f393d48"
+    },
+    {
+      "path": "source270-varied-strings-baseline.stdout",
+      "bytes": 3813755,
+      "sha256": "045c1e8e9d79e8c7dad5f7a7e7d348ec6d0b311e6988991ff55b386701b7c509"
+    },
+    {
+      "path": "source279-eglot-bounded-comparison.json",
+      "bytes": 2348,
+      "sha256": "57f08b05fbb93a56786d638df72f12728c484dbd8713427c12c2d82383d9cda4"
+    },
+    {
+      "path": "source279-eglot-bounded-emaxx-answer.txt",
+      "bytes": 61,
+      "sha256": "fb07314235e7f7e01ec0637aad3452e29113e6d7dda19cf84094fa46fa8da455"
+    },
+    {
+      "path": "source279-eglot-bounded-emaxx-command.json",
+      "bytes": 336287,
+      "sha256": "01bf9686706453b1c5ddce2645c111f243c301231d55e25e3e39d99a49ddc6f5"
+    },
+    {
+      "path": "source279-eglot-bounded-emaxx-ert.json",
+      "bytes": 5053,
+      "sha256": "9c89102841386ffbd08d969ae980f538d360686987c812d68ef94394440793ec"
+    },
+    {
+      "path": "source279-eglot-bounded-emaxx-result.json",
+      "bytes": 846,
+      "sha256": "811881f84af10ccfb7743f72a3bd2c6303b4c991b6e0b07d8aff7b8bb0f61f78"
+    },
+    {
+      "path": "source279-eglot-bounded-emaxx.stderr",
+      "bytes": 1710,
+      "sha256": "ab5689028c24ac2ad1edb0166946cc5763cd5839fc9dde213e2be786ffeb1d5e"
+    },
+    {
+      "path": "source279-eglot-bounded-emaxx.stdout",
+      "bytes": 10,
+      "sha256": "537f3fb69ba01fc388a3a5c920c485b2873d5f327305c3dd2004d6a04451659b"
+    },
+    {
+      "path": "source279-eglot-bounded-gnu-answer.txt",
+      "bytes": 61,
+      "sha256": "fb07314235e7f7e01ec0637aad3452e29113e6d7dda19cf84094fa46fa8da455"
+    },
+    {
+      "path": "source279-eglot-bounded-gnu-command.json",
+      "bytes": 336078,
+      "sha256": "998698d5c81b127448971c62cec79e8f1d0d11d933e16295a9b4a41a9e6af574"
+    },
+    {
+      "path": "source279-eglot-bounded-gnu-ert.json",
+      "bytes": 5051,
+      "sha256": "c8a01e37e95bcf2c1618697bf68c5333d900016f7496c13dd54c822ff9944cb9"
+    },
+    {
+      "path": "source279-eglot-bounded-gnu-result.json",
+      "bytes": 840,
+      "sha256": "841c3b66ad1651fcd80002f9f684792a90f7ce1d964670bbd2ad261c1c5866e1"
+    },
+    {
+      "path": "source279-eglot-bounded-gnu.stderr",
+      "bytes": 1708,
+      "sha256": "b6501cf01f7a06b95dfa95af287b555ef5a4e565bbc08a16928f44204794c1a1"
+    },
+    {
+      "path": "source279-eglot-bounded-gnu.stdout",
+      "bytes": 12,
+      "sha256": "fb3a85cd297aacb976a843a7a21df19eec92701e4e67a41d1a406e0498c7d307"
+    },
+    {
+      "path": "source279-eglot-bounded-observation.el",
+      "bytes": 364,
+      "sha256": "01f83434b5bac124d5eb54e3869d619629a36481f961bfa597ae902f0609af3b"
+    },
+    {
+      "path": "source279-manifest.json",
+      "bytes": 58876,
+      "sha256": "273845e53c06f6c85768eb99fab690abff493fd2c5c47bbffd6fdddfb72cac2e"
+    },
+    {
+      "path": "source279-varied-293638f0.el",
+      "bytes": 5096,
+      "sha256": "905daf20b3252d49b59014f297bd0b11558eb858a93dc28cc70370dc45cd5895"
+    },
+    {
+      "path": "source279-varied-strings-comparison.json",
+      "bytes": 8633,
+      "sha256": "fb6c8b4a24c43d5598ed2524e3e8b6da5a34d0b34f4740419a5d7fc91c8822d3"
+    },
+    {
+      "path": "source279-varied-strings-emaxx.command.json",
+      "bytes": 1369,
+      "sha256": "ea296d9fa52d0ddcd2892ae56edc82840134e8ca4e5d0d7708cd2587eddc5cc8"
+    },
+    {
+      "path": "source279-varied-strings-emaxx.result.json",
+      "bytes": 359,
+      "sha256": "1cf040da69ac95e98091e965f6449a7c555b0ed67e2f1e1451a30e3599ed6449"
+    },
+    {
+      "path": "source279-varied-strings-emaxx.stderr",
+      "bytes": 27,
+      "sha256": "ac20f08fba51934ccad229ee19dd5bda5fd405e4c8ddb775a4efc2373f31ed45"
+    },
+    {
+      "path": "source279-varied-strings-emaxx.stdout",
+      "bytes": 425,
+      "sha256": "84d2bcd9fb9793813687fac15b449f6cc818e7d720724e6d13c5b60fc563c794"
+    },
+    {
+      "path": "source279-varied-strings-fixture-correction.json",
+      "bytes": 469,
+      "sha256": "692cd6ab254be6fde2420ff429c73d8fa480ed2b00d918ded800032f2154bc3b"
+    },
+    {
+      "path": "source279-varied-strings-gnu.command.json",
+      "bytes": 1174,
+      "sha256": "b1a892bd78d22305a7965cd9567eb17158c0b989df4ab1b6c2f80607e344b48c"
+    },
+    {
+      "path": "source279-varied-strings-gnu.result.json",
+      "bytes": 351,
+      "sha256": "fa25c6bc3721a28434fd038e255d86baf172d69e1de47b628fe0defb43c9dc78"
+    },
+    {
+      "path": "source279-varied-strings-gnu.stderr",
+      "bytes": 127,
+      "sha256": "3fda33e33a477f48e9c20976d9bdcce79095db1dc9dbc36024a3d72a060de43f"
+    },
+    {
+      "path": "source279-varied-strings-gnu.stdout",
+      "bytes": 550,
+      "sha256": "3037b0c64fa78f38a9547ba0e15b456150a9e0b90c0f18eb532bb0905ddc1574"
+    },
+    {
+      "path": "source279-varied-strings-v2-comparison.json",
+      "bytes": 8635,
+      "sha256": "2dc5951dc8de7d853a3f253c0775b9782dbfb73e08bce65a0e1d38d3443b1124"
+    },
+    {
+      "path": "source279-varied-strings-v2-emaxx.command.json",
+      "bytes": 1378,
+      "sha256": "7e94f4b95e6a30a6d56cf6d90485d93e586962f33fea59d2396667068f45b60d"
+    },
+    {
+      "path": "source279-varied-strings-v2-emaxx.result.json",
+      "bytes": 355,
+      "sha256": "fd2674c537ecc47714a66d005c695dccd79db314fc6121afca4a0eb2493ce452"
+    },
+    {
+      "path": "source279-varied-strings-v2-emaxx.stderr",
+      "bytes": 85,
+      "sha256": "ef3ac70813a50cb80764a386cbb41f3ff634884cf661163bc5d3c3016f393d48"
+    },
+    {
+      "path": "source279-varied-strings-v2-emaxx.stdout",
+      "bytes": 3814075,
+      "sha256": "7676755e88a79aea61dfcf5ebd77696201e3a6c93db263000ead26982b14c312"
+    },
+    {
+      "path": "source279-varied-strings-v2-gnu.command.json",
+      "bytes": 1183,
+      "sha256": "801794b06c19ea5a32bb16065317939cf7083b5fa3ac12f9f7eb9ea394ef9eba"
+    },
+    {
+      "path": "source279-varied-strings-v2-gnu.result.json",
+      "bytes": 354,
+      "sha256": "759ba2fa7d2531fed52c2efd47825d768317c515c2df42fe0502f86720f1e3b0"
+    },
+    {
+      "path": "source279-varied-strings-v2-gnu.stderr",
+      "bytes": 85,
+      "sha256": "ef3ac70813a50cb80764a386cbb41f3ff634884cf661163bc5d3c3016f393d48"
+    },
+    {
+      "path": "source279-varied-strings-v2-gnu.stdout",
+      "bytes": 4088269,
+      "sha256": "fead906d4b0aa20e9ef90a98b3a696c73267423190766ed0d0c188293e663960"
+    },
+    {
+      "path": "source279-varied-v2-293638f0.el",
+      "bytes": 5097,
+      "sha256": "af90e17f823f2a7c23ca2e2e877a7b50d4472d1c539668fdcac241d0c0c94d85"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

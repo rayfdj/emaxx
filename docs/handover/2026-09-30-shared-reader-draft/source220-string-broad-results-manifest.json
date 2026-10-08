@@ -1,0 +1,104 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "complete broader inventory with two retained failures",
+    "passed": 925,
+    "failed": 2,
+    "ignored": 0,
+    "inputs_verified": 421,
+    "inventory_verified": 927,
+    "failing_names": [
+      "lisp::primitives::tests::bytecode_code_mutation_during_active_call_matches_gnu",
+      "lisp::primitives::tests::canonical_string_bytes_preserve_gnu_characters_mutation_and_clear"
+    ],
+    "retained_files": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source220-gate-libtest",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source220-retained-inputs/source220-gate-libtest",
+        "sha256": "657e635f76c4d7e75ce9c834e41ac676a1f7152a32cd0332aec99e1d6e2a8470",
+        "bytes": 29372944
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source220/loadup-657e635f-44409a21.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source220-retained-inputs/loadup-657e635f-44409a21.pdmp",
+        "sha256": "8def02917bb659789cfaffd7e11a4bd18f93e2f8d993472357d5b3482a07fded",
+        "bytes": 22343936
+      }
+    ],
+    "qualification": "Source220 gate only, not release or full validation. The original active-call mutation and surrogate-constructor assertions both fail unchanged. Supervisor 68772 has exited. No performance result.",
+    "raw_hashes": {
+      "source220-gate-broad-command.json": "4b63dc809d6cf898f36d27453a14532db191cc6eb2464a22e6ecd44d4b0a5bce",
+      "source220-gate-broad-result.json": "49677c4fb9dc61aee1a27462f3da1712d56843c8a812c4cf442c2123fa929902",
+      "source220-gate-broad.log": "4c242e3837a5543e644b1c6c13b64a00ff934135ac27c7d486a7c4c948572b16",
+      "source220-broad-driver-result.json": "1d6a149e0e5ee5fa694883501c105bc6ead2facc7e69107de595dc5b9750c29c"
+    }
+  },
+  "archive": {
+    "path": "source220-string-broad-results.tar.gz",
+    "bytes": 83842,
+    "sha256": "58e6900ab5cdb3129f1561b813326c138baeee30a51c8158a766d9825e096f0f"
+  },
+  "files": [
+    {
+      "path": "audit-source220-broad.py",
+      "bytes": 2877,
+      "sha256": "f2e0ea32bb65ecf9afdbef216ef4582bb478857b78e13b36077a93fd47b36208"
+    },
+    {
+      "path": "package-source220-broad-and221.py",
+      "bytes": 2123,
+      "sha256": "868552ad0bf9fc311832a0b54acf14d8d1c6158d0853cbf2a0f4d8c9c1141754"
+    },
+    {
+      "path": "run-source220-broad.py",
+      "bytes": 799,
+      "sha256": "f32fc7e440d6a27f10c43fbe836803e500a01aad08803f5d4e3c64e8c87fb797"
+    },
+    {
+      "path": "source220-broad-audit.json",
+      "bytes": 1867,
+      "sha256": "e811e406bfde22f03874ee2e5d8d37e3c2006fc8eb9bd72d72d346b9ecc2d6d2"
+    },
+    {
+      "path": "source220-broad-driver-result.json",
+      "bytes": 473,
+      "sha256": "1d6a149e0e5ee5fa694883501c105bc6ead2facc7e69107de595dc5b9750c29c"
+    },
+    {
+      "path": "source220-broad-driver.log",
+      "bytes": 16134,
+      "sha256": "d72d75a38fa7c5f4b74b2bbfa75442b553f739ea3652fd95a1347a621d4fd9df"
+    },
+    {
+      "path": "source220-broad-launch.json",
+      "bytes": 462,
+      "sha256": "fbd744935004bf7522536dd8e75bd29653168f8328c2f0d8f31c493bd46e99c5"
+    },
+    {
+      "path": "source220-gate-broad-command.json",
+      "bytes": 168734,
+      "sha256": "4b63dc809d6cf898f36d27453a14532db191cc6eb2464a22e6ecd44d4b0a5bce"
+    },
+    {
+      "path": "source220-gate-broad-result.json",
+      "bytes": 87,
+      "sha256": "49677c4fb9dc61aee1a27462f3da1712d56843c8a812c4cf442c2123fa929902"
+    },
+    {
+      "path": "source220-gate-broad.log",
+      "bytes": 93638,
+      "sha256": "4c242e3837a5543e644b1c6c13b64a00ff934135ac27c7d486a7c4c948572b16"
+    },
+    {
+      "path": "source220-manifest.json",
+      "bytes": 47840,
+      "sha256": "74474ddd5484e8a2a87ba526019fd0561955400ec1b318d592642706439ec9b7"
+    },
+    {
+      "path": "test-string-broad219.py",
+      "bytes": 3059,
+      "sha256": "cb4be313f99f997d571bdc0aa77f964ab5475ba9d6477127471c9d59c3b7154f"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

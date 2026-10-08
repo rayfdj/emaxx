@@ -1,0 +1,102 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "failed and incomplete terminal coverage",
+    "source_commit": "7e894a667b0bc0076dcf0555fb1d1f6fcbfb648c",
+    "fully_matching_scenarios": 184,
+    "matching_comparisons": 436,
+    "divergent_comparisons": 1,
+    "divergent_labels": [
+      "package-menu-install-refresh-remove::5:confirm-install"
+    ],
+    "unexecuted_comparisons": 249,
+    "scenarios_not_fully_matching": 42,
+    "original_full_result": "failed",
+    "tail_result": "failed",
+    "goal_complete": false,
+    "qualification": "The full run matched173 scenarios/374 comparisons before GNU startup failed at174. The tail adds62 matching comparisons but diverges at package installation confirmation; six later checkpoints in that scenario do not run. GNU startup later fails at org-fieldnotes-todo-cycle. Neither run completed its inventory.436 matches+one divergence+249 unexecuted comparisons account for all686 labels; no complete terminal pass. Same retained executables/images/harness and120-second readiness deadline. The package divergence cause is unresolved."
+  },
+  "archive": {
+    "path": "source312-terminal-tail-incomplete-results.tar.gz",
+    "bytes": 67571,
+    "sha256": "7851fcaf3b8c303750825ed40063f3cb86e579948a93a193cd9d0cf30c23590c"
+  },
+  "files": [
+    {
+      "path": "audit-source312-terminal-tail.py",
+      "bytes": 5314,
+      "sha256": "0ebba61a63191428cb4f806c88da3f6d21f39b884d41d275cb96af7627499b7c"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "resume-source312-terminal-tail.py",
+      "bytes": 2198,
+      "sha256": "dacde5621450fcec1df5e9ff6c062b02b4428646178850f2dd8f4b91d08541fc"
+    },
+    {
+      "path": "source248-manifest.json",
+      "bytes": 54099,
+      "sha256": "686003776613cdc0825d9575e630e7b39fdbe0674dcdeea893f9f3620caef92f"
+    },
+    {
+      "path": "source312-final-manifest.json",
+      "bytes": 63713,
+      "sha256": "038e216d86fa620e995dd356461f1adee7b4c67ee9d941aa37d7c77ac112264a"
+    },
+    {
+      "path": "source312-macos-frozen-audit.json",
+      "bytes": 7809,
+      "sha256": "9fad8a7bc5bd772ee2fd1f97b193d7e36c23ac229abcdf59e199821ecebdbe8f"
+    },
+    {
+      "path": "source312-macos-terminal-audit.json",
+      "bytes": 4878,
+      "sha256": "7fe74717f1e1e0a76e85998e2416bab996972e036b4c960606ab545502a50f0f"
+    },
+    {
+      "path": "source312-terminal-coverage-audit.json",
+      "bytes": 1027,
+      "sha256": "940f0f8d27c3a51762e44a6d95c85268111bba1822661450feb1c139c9a60995"
+    },
+    {
+      "path": "source312-terminal-retry.log",
+      "bytes": 33935,
+      "sha256": "6405faa92e3d8c435b89205e7baffc84eaa82a70dc0296474af8a40a6c83faa1"
+    },
+    {
+      "path": "source312-terminal-tail-audit.json",
+      "bytes": 6580,
+      "sha256": "316f8b290f0d4af115b4b54260f7d8837c6ce6ac1ac35ca651a0423f17214682"
+    },
+    {
+      "path": "source312-terminal-tail-command.json",
+      "bytes": 7066,
+      "sha256": "e64ce4dae225499c80ba52b5cef3c5e8676917489eab198444d40deb523ab705"
+    },
+    {
+      "path": "source312-terminal-tail-driver.log",
+      "bytes": 152,
+      "sha256": "0ef50ded7fd5f5986ea4c1566476eb939d7532eaa2b22235d483c06eb6caee09"
+    },
+    {
+      "path": "source312-terminal-tail-launch.json",
+      "bytes": 137,
+      "sha256": "0955714f6f9947edded914935d17e2cf655f54c8f49ae6b7a8134da30a338a9c"
+    },
+    {
+      "path": "source312-terminal-tail-result.json",
+      "bytes": 165,
+      "sha256": "52aaec99c4fd67248c402c9dfb74b974791d7de9a5c8cda04ebc1d7356f0e4df"
+    },
+    {
+      "path": "source312-terminal-tail.log",
+      "bytes": 8547,
+      "sha256": "287e58ece5822d931dbcb9fc39f603e344866a73d7c52209b349d2107d6b0464"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

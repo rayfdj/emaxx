@@ -1,0 +1,455 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "failed focused native-object draft; unapplied",
+    "passed": 2,
+    "failed": 2,
+    "ignored": 0,
+    "source_inputs": 537,
+    "fixture_images_produced": 0,
+    "audit": {
+      "path": "source305-focused-failure-audit.json",
+      "sha256": "84d4274a33d3fa0676e55211e207265dd3be3e10f1c21434bcf2def8e04ffcc5"
+    },
+    "goal_complete": false,
+    "qualification": "Physical88-byte GNU subr layout, direct tagged identity and all-five-field GC survival/eventual cyclic reclamation pass. Checked native relocation decoding rejects the new allocated Subr because its exact-allocator-header whitelist omitted that tag; the unchanged loader agreement assertion also fails. All4 contracts and assertions remain. No failed305 binary is promoted. The original304 same-input ordinary metadata probe also fails GNU value< against a static subr; that baseline failure is separate from these305 decoder failures. GNU actual output is retained. Source306 adds only the omitted allocated tag to the checked boundary; it must validate independently."
+  },
+  "archive": {
+    "path": "source305-native-object-decoder-failure.tar.gz",
+    "bytes": 543307,
+    "sha256": "10550c4befc9b6927bed4f3f56537a035878d5f05f88344dc75cb3bbc5b6d523"
+  },
+  "files": [
+    {
+      "path": "audit-native-subr-failure305-fixed.py",
+      "bytes": 4014,
+      "sha256": "58a1b73c7d8bbd7abd451aa664ec26ee327b96def629935928c1af41fc606741"
+    },
+    {
+      "path": "audit-native-subr-failure305.py",
+      "bytes": 3872,
+      "sha256": "aa3c3260c1e5051f97f1be5a9a997f24e95be2d1a7aa0ff75617498722dd4b8f"
+    },
+    {
+      "path": "edit-native-subr-authority305-fixed.py",
+      "bytes": 14568,
+      "sha256": "6b85f5a48d1fd30ec44fdf98723ee6928e7fbc1b97a16583fed9f49a05e6c5e1"
+    },
+    {
+      "path": "edit-native-subr-authority305.py",
+      "bytes": 14406,
+      "sha256": "533c8d6ff40630719a375412d50e81c51bd677d98fca7f6de3b25bbcb446e8f7"
+    },
+    {
+      "path": "edit-native-subr-consumers305.py",
+      "bytes": 7432,
+      "sha256": "91ced6810477c1db16a36b9ec0ffa7c40a81862fa4c67b0d48ef6e64a35bbee1"
+    },
+    {
+      "path": "edit-native-subr-dumping305.py",
+      "bytes": 9094,
+      "sha256": "484360b98f6d15316afd4477c57f633a4c8aa298482e270f48c90d61edad36b8"
+    },
+    {
+      "path": "finish-native-object-review305.py",
+      "bytes": 4124,
+      "sha256": "08eef21d7c40b192ff0e3d9f107e92700926aeac5c7d5775ec01045a096ce8ce"
+    },
+    {
+      "path": "native_fixed_validation_support.py",
+      "bytes": 1038,
+      "sha256": "87efc148e2141fba558e6b13998d0573d43882954c2b4d0dbe3b0d71abcce94f"
+    },
+    {
+      "path": "package-native-subr-failure305.py",
+      "bytes": 1857,
+      "sha256": "bffb3a2bee2d1dc0ec00766e9bc42b27ac1998737d4d49b095f75d4a306e33a0"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "prepare-native-subr-validation305.py",
+      "bytes": 3870,
+      "sha256": "79b1ed205807a50f110387423df8dbdfe6245b21e6c708e958cdff722a8d65b5"
+    },
+    {
+      "path": "probe-native-subr-gnu305.py",
+      "bytes": 1069,
+      "sha256": "70b13e917f2e676d0e5a12558b1e4916a896a13c2d825dbfba5c269252614f1c"
+    },
+    {
+      "path": "replay-native-subr305.py",
+      "bytes": 2719,
+      "sha256": "a288cf84cd592a4595bea631d1cf7f7ae6c6e182f4f9414ee173ee6b9dc57952"
+    },
+    {
+      "path": "run-source305-validation.py",
+      "bytes": 10288,
+      "sha256": "494db6fe039683ded093cd4a3b8aee7aacb032501c10c007d16e970cdfcec149"
+    },
+    {
+      "path": "source304-gate-inventory.log",
+      "bytes": 268886,
+      "sha256": "8bc41e8037750f78ec7f6ae04f5c1d14c9fa9fcf3829e1a4429172283517d157"
+    },
+    {
+      "path": "source304-manifest.json",
+      "bytes": 61623,
+      "sha256": "20cad034b4e437251809e5da6af2346dfc0dbc1029f70909c5e974a8a56968e3"
+    },
+    {
+      "path": "source304-native-object-authority-review.json",
+      "bytes": 3799,
+      "sha256": "2052c5e5df9368f08ff27ee11138d8d6852bad35654e6792744a505c412b0f89"
+    },
+    {
+      "path": "source304-native-subr-negative.json",
+      "bytes": 3247,
+      "sha256": "5f11d92d125c49f7d8c82c1ed8e9613e6df20426b0f37710a795a686cdf9e6bd"
+    },
+    {
+      "path": "source304-native-subr-negative.stderr",
+      "bytes": 458,
+      "sha256": "42946f4ad940f351640a938f9564ff12f6ad5a0edbee4458aa6c209c5da62b38"
+    },
+    {
+      "path": "source304-native-subr-negative.stdout",
+      "bytes": 10287,
+      "sha256": "96c7a5dd2df2a2eb972cbf9b29b9af6429032325ec54705e5d9d214379e1ddb9"
+    },
+    {
+      "path": "source305-audit-preflight.json",
+      "bytes": 398,
+      "sha256": "f10becc71c5c04199a42bf7c983c37bde33135c606d75500adf7a140868676c7"
+    },
+    {
+      "path": "source305-cache-clone-command.json",
+      "bytes": 1371,
+      "sha256": "b5f98309b04c3eab34fc290f95e5bc8230ccb9b46bae17f340613831f837e08e"
+    },
+    {
+      "path": "source305-cache-clone-result.json",
+      "bytes": 130,
+      "sha256": "e24c1f74910e5ab6fa645b08bbbfefa531c496a248a8f345b27b6f6c2b2e8ad7"
+    },
+    {
+      "path": "source305-cache-clone.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source305-check-command.json",
+      "bytes": 1154,
+      "sha256": "48fdd088cc45b6e5cc22a0fed573dd48e127fcd61f714aee64bac96ef6c31d24"
+    },
+    {
+      "path": "source305-check-result.json",
+      "bytes": 125,
+      "sha256": "b821915a81952a7bda059c6e2624897d28c3557c608fa60cfa87ac5310493fd2"
+    },
+    {
+      "path": "source305-check.log",
+      "bytes": 201,
+      "sha256": "11478684c8c8e5e5c9d7b7dd8cac942962fab706a342b9e95b518d676a9ba09f"
+    },
+    {
+      "path": "source305-clippy-command.json",
+      "bytes": 1191,
+      "sha256": "cb3fda66ac46d1663e05bec3c2cfcac5aca7fb1c9c2eb31ad8c8a5c4a5e7c910"
+    },
+    {
+      "path": "source305-clippy-result.json",
+      "bytes": 126,
+      "sha256": "baf0155950120584a77710a16d92fe63606506bcb85bc01c8b77d30da83caa4e"
+    },
+    {
+      "path": "source305-clippy.log",
+      "bytes": 201,
+      "sha256": "ce024561d7ba8abf16191fdb1a98c55ba814f67860b986b4e6e9dc6c66aff6d2"
+    },
+    {
+      "path": "source305-development-check-1.log",
+      "bytes": 2996,
+      "sha256": "dab3f805f09662837d12d0f4974e64c38135d731b37f7477f7f42db6f850a97e"
+    },
+    {
+      "path": "source305-development-check-2.log",
+      "bytes": 201,
+      "sha256": "167a61ed14a7084065a3dac72d97c84dbc7651ad91c0575e098cc1c2ae57eeae"
+    },
+    {
+      "path": "source305-development-check-3.log",
+      "bytes": 1219,
+      "sha256": "7e738f89cb333dc78a9230bef3f6e9c0920cd0dc4a464566f2723cf4e0fd1a0c"
+    },
+    {
+      "path": "source305-development-clippy-1.log",
+      "bytes": 3378,
+      "sha256": "95b94a45cee63156494c60f1e1adc38a705546514220db522df16162fcafba18"
+    },
+    {
+      "path": "source305-development-clippy-2.log",
+      "bytes": 8344,
+      "sha256": "41ffd8467e7f0f58ffec1d8cdea15e65180403870e7ec2b94a28b97ae539f1d1"
+    },
+    {
+      "path": "source305-development-clippy-3.log",
+      "bytes": 4874,
+      "sha256": "309f88ef42c7f5efdad03cf0da571b2d1a2370f30d16b98e466aaf49730cd9bb"
+    },
+    {
+      "path": "source305-development-clippy-4.log",
+      "bytes": 201,
+      "sha256": "52899e74513d669803531bb0ce971f6d75358d33f3f35a17e19526d919e3b7ca"
+    },
+    {
+      "path": "source305-development-fmt-1.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source305-development-fmt-2.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source305-development-fmt-3.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source305-development-fmt-4.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source305-development-fmt-5.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source305-development-fmt-6.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source305-development-fmt-7.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source305-development-fmt-8.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source305-diff-command.json",
+      "bytes": 1107,
+      "sha256": "7741efe86e12462c8761af26916e01110be7e5bb7da2bf76176ccfcf73c14fef"
+    },
+    {
+      "path": "source305-diff-result.json",
+      "bytes": 130,
+      "sha256": "2a56f26d8dba24326d3c19a03d91db40deef3d49c8670fa9079897bd4c3ae221"
+    },
+    {
+      "path": "source305-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source305-draft.patch",
+      "bytes": 103449,
+      "sha256": "b2ea6b867001666a52278af25b6eb5a1fe7fbf38158117aeaa53753e2daa21e5"
+    },
+    {
+      "path": "source305-dump-edit-preflight.json",
+      "bytes": 303,
+      "sha256": "837a78d18d97fcf420623468230901cecc705e8b84b836d01a2e2404678c21ed"
+    },
+    {
+      "path": "source305-failed-retained-inputs.json",
+      "bytes": 372,
+      "sha256": "1bc2fbcb4ae73e9b2adb07a84ae61119d73009a1e602af51610431df881a9f8d"
+    },
+    {
+      "path": "source305-first-edit-preflight.json",
+      "bytes": 375,
+      "sha256": "ecf53e48d6a4725583f01259430f13d2920bd38f70140f9c30adcab7069670d7"
+    },
+    {
+      "path": "source305-fmt-command.json",
+      "bytes": 1131,
+      "sha256": "6132f617a2507987db9b1c52d9a55085a40aa24288213e2fcc6239c55f0c5b04"
+    },
+    {
+      "path": "source305-fmt-result.json",
+      "bytes": 129,
+      "sha256": "a758f1a6003bc8e92211e354c81f57de7659aa606319e384b25654603e361e8f"
+    },
+    {
+      "path": "source305-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source305-focused-failure-audit.json",
+      "bytes": 6658,
+      "sha256": "84d4274a33d3fa0676e55211e207265dd3be3e10f1c21434bcf2def8e04ffcc5"
+    },
+    {
+      "path": "source305-fresh-crate-command.json",
+      "bytes": 1125,
+      "sha256": "6ffee5c7d76bbdde8775459d6401587dba984f81f45abba3d3be104136c980a2"
+    },
+    {
+      "path": "source305-fresh-crate-result.json",
+      "bytes": 138,
+      "sha256": "996e65e0c02a1ae7d9700a1b3435995d32ae72760c970d91a2fc3ca558ae20b2"
+    },
+    {
+      "path": "source305-fresh-crate.log",
+      "bytes": 39,
+      "sha256": "ecb570f4d7322c9d5d4ed9fabe9224cfaf8162f6d6f391edd7cc6acfc7ccb6b8"
+    },
+    {
+      "path": "source305-fresh-gate-crate-command.json",
+      "bytes": 1154,
+      "sha256": "0f8bc75c41c774d683efc0450554ed3ff29af4a254c31bafb37ae85fe99685ef"
+    },
+    {
+      "path": "source305-fresh-gate-crate-result.json",
+      "bytes": 142,
+      "sha256": "5bdd516bddcf4d6a8d679707dc506fecddd2a9708126a19160e97447261de56c"
+    },
+    {
+      "path": "source305-fresh-gate-crate.log",
+      "bytes": 37,
+      "sha256": "475534319c11ea5b88b700d019b0093ea298f6016064af1c464cb9ef571e3c72"
+    },
+    {
+      "path": "source305-fresh-release-crate-command.json",
+      "bytes": 1157,
+      "sha256": "1c10a933c73075e96cc9fa0e991377a0205bb5c6b7b39954b76f469e94e78665"
+    },
+    {
+      "path": "source305-fresh-release-crate-result.json",
+      "bytes": 146,
+      "sha256": "2beac339b0142b76ecc761e89e5792f5d9b8e3dbbc9a7f91eb08b8b4770d9f0c"
+    },
+    {
+      "path": "source305-fresh-release-crate.log",
+      "bytes": 38,
+      "sha256": "a59691f46521fe4a797a4dc0078a6f800019a79d26731f40fbcbf2d183d186f8"
+    },
+    {
+      "path": "source305-gate-build-command.json",
+      "bytes": 1219,
+      "sha256": "7361b7b00db76a460601aa23fc7723ad76a1b679754fa15cfb4dd9c101a8e7c1"
+    },
+    {
+      "path": "source305-gate-build-result.json",
+      "bytes": 130,
+      "sha256": "17b63aacebe9013a834c205840384117567cddbcbbe133bf39d2b76c90ec6b19"
+    },
+    {
+      "path": "source305-gate-build.log",
+      "bytes": 219908,
+      "sha256": "a6956bad0cd44fc647d8304f00a4849149dd9fccd4a55e8a648f2bf38ebb26e1"
+    },
+    {
+      "path": "source305-gate-focused-command.json",
+      "bytes": 1671,
+      "sha256": "15bbbe75f60367a58f56d79fe6af136901fc57fa26b69509e5dd36c8b02cdd8a"
+    },
+    {
+      "path": "source305-gate-focused-result.json",
+      "bytes": 139,
+      "sha256": "b691cf35d094c824ce177276ff61945c4b5e83eaac4b1a12f8d9a788a3d41f3d"
+    },
+    {
+      "path": "source305-gate-focused.log",
+      "bytes": 1899,
+      "sha256": "01fe66d28e9f67419f080f2e24f41217f89c1902728279fec53e3d6184fda639"
+    },
+    {
+      "path": "source305-gate-inventory-command.json",
+      "bytes": 1252,
+      "sha256": "8b60a2433c0cf2fba33a69fd0591795918944e9ffa93f187d9025641d3a78b13"
+    },
+    {
+      "path": "source305-gate-inventory-result.json",
+      "bytes": 140,
+      "sha256": "b6f11db589ea171c50030804b8564e4a16cd92b8e7cd5a6d4916455f438f9102"
+    },
+    {
+      "path": "source305-gate-inventory.log",
+      "bytes": 269276,
+      "sha256": "aac8fe4916c49d59f64f8e87253eba686f0e0d5f9d7c3a4866def8314c5eb1d2"
+    },
+    {
+      "path": "source305-gnu-subr-probe.json",
+      "bytes": 3013,
+      "sha256": "d6b417bb6cd8e383067e7f54a066e592c05d9dc9599c1ba94ac772a9c52e3841"
+    },
+    {
+      "path": "source305-gnu-subr-probe.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source305-gnu-subr-probe.stdout",
+      "bytes": 348,
+      "sha256": "d7bb71b6391d6bfa18dd780e34bcf747d89d37e81be57dc6e1eee825b0c13430"
+    },
+    {
+      "path": "source305-manifest.json",
+      "bytes": 61971,
+      "sha256": "5cbffb6029a6ebcdc53852c54e7fd925bb65cec9700a562fb49052d881f3dca3"
+    },
+    {
+      "path": "source305-portable-complete.patch",
+      "bytes": 1509423,
+      "sha256": "f32c4b8062d2b493718a1bcc8c54ff0813e6ebfc95acb186567d13e92918ff6c"
+    },
+    {
+      "path": "source305-portable-draft-audit.json",
+      "bytes": 1394,
+      "sha256": "4c9f0940ac6f84d0f47f5e57bd6cea49733c123226e93e887446919a791e7582"
+    },
+    {
+      "path": "source305-portable-incremental.patch",
+      "bytes": 103449,
+      "sha256": "b2ea6b867001666a52278af25b6eb5a1fe7fbf38158117aeaa53753e2daa21e5"
+    },
+    {
+      "path": "source305-portable-replay.log",
+      "bytes": 446,
+      "sha256": "38e878aa6bcdd302f1de75ae33fcd4684e2676b1ed1200ded92719ff58979ad3"
+    },
+    {
+      "path": "source305-validation-result.json",
+      "bytes": 3414,
+      "sha256": "4b1f25db650e2d913963a02b584bda112cc54c26c21f30aca09628b05d9a017a"
+    },
+    {
+      "path": "source305-validation-state.json",
+      "bytes": 3415,
+      "sha256": "5527da1aa296cdd7901129e5b190f0b842e55a195f90c9a955f3edb2daa9595f"
+    },
+    {
+      "path": "source305-validation-supervisor.log",
+      "bytes": 1559,
+      "sha256": "157d3ff11fee5fc0c063941d634cd463637119dffe5f5bead7245ef31d4a6f72"
+    },
+    {
+      "path": "source305-working-init.json",
+      "bytes": 299,
+      "sha256": "b0767e0e7eff3ccd34f4baf4b476759ac228eb53ee712a0bfd9933484bd93901"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

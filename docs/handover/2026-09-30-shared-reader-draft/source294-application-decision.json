@@ -1,0 +1,16 @@
+{
+  "status": "reject indexed lookup; retain LF-only corrected baseline and every result",
+  "runtime_applied": false,
+  "performance_audit_sha256": "4fa8b360e092ced2ebd0f70efcccb333d62de190861309b7bd84588d4c55e459",
+  "optimized_over_corrected": 1.021072525345273,
+  "optimized_over_original": 1.0168902497278134,
+  "corrected_over_original": 0.9959040366735503,
+  "undo_over_corrected": 1.3769117623799958,
+  "gnu_geometric_ratios": {
+    "source290": 2.9969409281450576,
+    "source292": 2.979074708037479,
+    "source294": 3.041214829232448
+  },
+  "reason": "All288 actual answers/modes verify, but indexed lookup increases undo median37.691% versus the LF-only baseline and raw aggregate2.107%. Do not apply this regression. Keep source292 correction separately and evaluate an O(1) no-LF buffer check using existing rope metadata with the original scan as fallback. No new fixture scope or relaxed criterion.",
+  "goal_complete": false
+}

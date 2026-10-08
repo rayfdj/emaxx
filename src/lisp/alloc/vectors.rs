@@ -24,20 +24,28 @@ pub(crate) mod generic_records;
 pub use generic_records::LispRecordRef;
 pub(crate) mod hash_tables;
 pub use hash_tables::HashTableRef;
+pub(crate) mod native_functions;
+pub use native_functions::NativeFunctionRef;
+pub(crate) mod native_units;
+pub use native_units::NativeUnitRef;
 mod symbols_with_pos;
 pub use symbols_with_pos::SymbolWithPosRef;
 
-use super::super::types::{BufferValue, LispBignum, MarkBit, ReaderForm, SharedStringState, Value};
+#[cfg(test)]
+mod tests;
+
+use super::super::types::{BufferValue, LispBignum, MarkBit, ReaderForm, Value};
 use super::{BlockKind, blocks_of, register_block, unregister_block};
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 /// alloc.c's `VECTOR_BLOCK_SIZE'.
 pub(crate) const VECTOR_BLOCK_SIZE: usize = 4096;
-/// alloc.c's `roundup_size': every vector's footprint is a multiple.
-const ROUNDUP_SIZE: usize = 16;
+/// alloc.c's `roundup_size': the common alignment of object fields and Lisp
+/// words. Three tag bits and all allocated payloads require one word here.
+const ROUNDUP_SIZE: usize = WORD_SIZE;
 
 const fn vroundup(bytes: usize) -> usize {
     (bytes + ROUNDUP_SIZE - 1) & !(ROUNDUP_SIZE - 1)
@@ -47,7 +55,11 @@ const fn vroundup(bytes: usize) -> usize {
 /// per-vector epoch words; no Lisp payload contains this metadata.
 const VECTOR_BLOCK_BYTES: usize =
     (VECTOR_BLOCK_SIZE - std::mem::size_of::<VectorBlockMarks>()) & !(ROUNDUP_SIZE - 1);
-const VECTOR_MARK_WORDS: usize = (VECTOR_BLOCK_SIZE / ROUNDUP_SIZE).div_ceil(usize::BITS as usize);
+// Distinct objects are at least VBLOCK_BYTES_MIN bytes apart even when their
+// starts have only word alignment. One bit per minimum footprint is sufficient;
+// reducing allocation padding need not enlarge the block bitmap.
+const VECTOR_MARK_WORDS: usize =
+    (VECTOR_BLOCK_SIZE / VBLOCK_BYTES_MIN).div_ceil(usize::BITS as usize);
 const LARGE_MARK_BYTES: usize = vroundup(std::mem::size_of::<MarkBit>());
 const HEADER_SIZE: usize = std::mem::size_of::<VectorHeader>();
 const WORD_SIZE: usize = std::mem::size_of::<usize>();
@@ -86,13 +98,13 @@ pub enum VectorTag {
     HashTable = 14,
     Terminal = 16,
     Subr = 18,
+    NativeCompUnit = 26,
     Closure = 31,
     CharTable = 32,
     SubCharTable = 33,
     /// lisp.h's PVEC_RECORD: a record, and the pseudovector kinds this
     /// implementation keeps as records (the kind is in the state).
     Record = 34,
-    StringObject = 40,
     ReaderForm = 41,
 }
 
@@ -110,11 +122,11 @@ impl VectorTag {
             14 => Self::HashTable,
             16 => Self::Terminal,
             18 => Self::Subr,
+            26 => Self::NativeCompUnit,
             31 => Self::Closure,
             32 => Self::CharTable,
             33 => Self::SubCharTable,
             34 => Self::Record,
-            40 => Self::StringObject,
             41 => Self::ReaderForm,
             _ => Self::Normal,
         }
@@ -129,7 +141,13 @@ pub struct VectorHeader {
     size: usize,
 }
 
-const _: () = assert!(HEADER_SIZE == WORD_SIZE);
+const _: () = {
+    assert!(HEADER_SIZE == WORD_SIZE);
+    assert!(std::mem::align_of::<Value>() <= ROUNDUP_SIZE);
+    assert!(std::mem::align_of::<VectorHeader>() <= ROUNDUP_SIZE);
+    assert!(std::mem::align_of::<MarkBit>() <= ROUNDUP_SIZE);
+    assert!(std::mem::align_of::<VectorBlockMarks>() <= ROUNDUP_SIZE);
+};
 
 struct VectorBlockMarks {
     epoch: Cell<u32>,
@@ -207,7 +225,7 @@ impl VectorHeader {
             }));
         }
         let base = address & !(VECTOR_BLOCK_SIZE - 1);
-        let index = (address - base) / ROUNDUP_SIZE;
+        let index = (address - base) / VBLOCK_BYTES_MIN;
         // SAFETY: small vector blocks are aligned to VECTOR_BLOCK_SIZE;
         // their initialized bitmap occupies the reserved tail of the block.
         let block = unsafe { &*((base + VECTOR_BLOCK_BYTES) as *const VectorBlockMarks) };
@@ -348,9 +366,6 @@ pub(crate) fn take_freed_records() -> Vec<FreedRecord> {
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
     )
 }
-static LIVE_STRING_OBJECTS: AtomicUsize = AtomicUsize::new(0);
-static LIVE_STRING_OBJECT_BYTES: AtomicUsize = AtomicUsize::new(0);
-static LIVE_STRING_OBJECT_SPANS: AtomicUsize = AtomicUsize::new(0);
 
 fn raise(counter: &AtomicUsize, by: usize) {
     counter.store(counter.load(Ordering::Relaxed) + by, Ordering::Relaxed);
@@ -555,6 +570,31 @@ impl VectorRef {
         Self(unsafe { NonNull::new_unchecked(header) })
     }
 
+    pub(crate) fn shallow_copy(&self) -> Self {
+        let len = self.len();
+        if len == 0 {
+            return *self;
+        }
+        let nbytes = HEADER_SIZE + len * WORD_SIZE;
+        crate::lisp::native_comp::note_lisp_allocation(nbytes);
+        let header = allocate_vectorlike(nbytes);
+        // SAFETY: fresh word-aligned storage for this header and LEN cells.
+        // Read each source Cell without exposing a shared Value reference.
+        unsafe {
+            (*header).size = len;
+            (*header)
+                .mark_bit()
+                .mark(super::super::types::current_mark_epoch());
+            let target = payload(header).cast::<Cell<Value>>();
+            for (index, field) in self.cells().iter().enumerate() {
+                target.add(index).write(Cell::new(field.get()));
+            }
+            raise(&LIVE_VECTORS, 1);
+            raise(&LIVE_VECTOR_SLOTS, len + 1);
+            Self(NonNull::new_unchecked(header))
+        }
+    }
+
     /// # Safety
     /// HEADER is an allocated ordinary vector's header.
     pub(crate) unsafe fn from_raw(header: *mut VectorHeader) -> Self {
@@ -624,31 +664,42 @@ impl std::fmt::Debug for VectorRef {
     }
 }
 
-/// An interpreted PVEC_CLOSURE: its header followed by the actual Lisp
-/// slots. No copied parameter/body representation accompanies the object.
+/// GNU PVEC_CLOSURE: its header followed by the authoritative Lisp slots.
+/// Interpreted and byte-code functions use this same allocation.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct ClosureRef(NonNull<VectorHeader>);
 
 impl ClosureRef {
     pub(crate) fn allocate(slots: &[Value]) -> Self {
-        assert!((3..=6).contains(&slots.len()));
-        let nbytes = vroundup(HEADER_SIZE + slots.len() * WORD_SIZE);
-        // Account for the Lisp allocation, including the one-word header
-        // and allocator rounding. Block metadata is shared by small vectors.
+        Self::from_fields(slots.len(), |index| slots[index])
+    }
+
+    pub(crate) fn filled(len: usize, value: Value) -> Self {
+        Self::from_fields(len, |_| value)
+    }
+
+    pub(crate) fn shallow_copy(&self) -> Self {
+        Self::from_fields(self.public_len(), |index| self.cells()[index].get())
+    }
+
+    fn from_fields(len: usize, mut field: impl FnMut(usize) -> Value) -> Self {
+        assert!(len <= PSEUDOVECTOR_SIZE_MASK);
+        let nbytes = vroundup(HEADER_SIZE + len * WORD_SIZE);
+        // GNU allocate_vectorlike charges the header and actual Lisp words.
+        // Word alignment adds no payload padding; block metadata is separate.
         crate::lisp::native_comp::note_lisp_allocation(nbytes);
         let header = allocate_vectorlike(nbytes);
         // SAFETY: freshly allocated NBYTES, aligned for the header and slots.
         // Every traced slot is initialized before the object is published.
         unsafe {
-            (*header).size =
-                VectorHeader::pseudovector_slots_word(VectorTag::Closure, nbytes, slots.len());
+            (*header).size = VectorHeader::pseudovector_slots_word(VectorTag::Closure, nbytes, len);
             (*header)
                 .mark_bit()
                 .mark(super::super::types::current_mark_epoch());
             let target = payload(header).cast::<Cell<Value>>();
-            for (index, value) in slots.iter().enumerate() {
-                target.add(index).write(Cell::new(*value));
+            for index in 0..len {
+                target.add(index).write(Cell::new(field(index)));
             }
             census_on_allocate(header);
             Self(NonNull::new_unchecked(header))
@@ -656,7 +707,7 @@ impl ClosureRef {
     }
 
     /// # Safety
-    /// HEADER names a live interpreted closure allocated by this allocator.
+    /// HEADER names a live PVEC_CLOSURE allocated by this allocator.
     pub(crate) unsafe fn from_raw(header: *mut VectorHeader) -> Self {
         Self(unsafe { NonNull::new_unchecked(header) })
     }
@@ -691,6 +742,12 @@ impl ClosureRef {
 
     pub(crate) fn slots(&self) -> impl DoubleEndedIterator<Item = Value> + ExactSizeIterator + '_ {
         self.cells().iter().map(Cell::get)
+    }
+
+    #[inline]
+    pub(crate) fn is_bytecode(&self) -> bool {
+        // data.c:Fbyte_code_function_p checks the actual code field only.
+        self.get(1).is_some_and(|code| code.is_string())
     }
 
     /// Fill a slot while reconstructing an object graph. Lisp cannot aset
@@ -754,10 +811,6 @@ impl Vectorlike for crate::lisp::types::OverlayValue {
 
 impl Vectorlike for BufferValue {
     const TAG: VectorTag = VectorTag::Buffer;
-}
-
-impl Vectorlike for RefCell<SharedStringState> {
-    const TAG: VectorTag = VectorTag::StringObject;
 }
 
 impl Vectorlike for ReaderForm {
@@ -886,7 +939,9 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
             | VectorTag::Overlay
             | VectorTag::CharTable
             | VectorTag::SubCharTable
-            | VectorTag::HashTable => {
+            | VectorTag::HashTable
+            | VectorTag::Subr
+            | VectorTag::NativeCompUnit => {
                 if (*header).tag() == VectorTag::Buffer {
                     raise(&LIVE_BUFFERS, 1);
                 } else if (*header).tag() == VectorTag::Overlay {
@@ -908,13 +963,6 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                     raise(&LIVE_RECORD_SLOTS, slots);
                 }
             }
-            VectorTag::StringObject => {
-                let state = (*payload(header).cast::<RefCell<SharedStringState>>()).borrow();
-                raise(&LIVE_STRING_OBJECTS, 1);
-                raise(&LIVE_STRING_OBJECT_BYTES, state.storage_bytes());
-                raise(&LIVE_STRING_OBJECT_SPANS, state.props.len());
-            }
-            VectorTag::Subr => unreachable!("static subrs do not enter vector allocation"),
             VectorTag::Normal | VectorTag::Free | VectorTag::ReaderForm => {}
         }
     }
@@ -937,7 +985,12 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
                     (*header).size,
                 ));
             }
-            VectorTag::Subr => unreachable!("static subrs are not swept"),
+            VectorTag::Subr => {
+                std::ptr::drop_in_place(body.cast::<native_functions::NativeFunctionState>())
+            }
+            VectorTag::NativeCompUnit => {
+                std::ptr::drop_in_place(body.cast::<native_units::NativeUnitState>())
+            }
             VectorTag::Free => {}
             VectorTag::Bignum => std::ptr::drop_in_place(body.cast::<LispBignum>()),
             VectorTag::Buffer => std::ptr::drop_in_place(body.cast::<BufferValue>()),
@@ -962,9 +1015,6 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
             | VectorTag::CharTable
             | VectorTag::SubCharTable
             | VectorTag::SymbolWithPos => {}
-            VectorTag::StringObject => {
-                std::ptr::drop_in_place(body.cast::<RefCell<SharedStringState>>())
-            }
             VectorTag::ReaderForm => std::ptr::drop_in_place(body.cast::<ReaderForm>()),
             VectorTag::HashTable => hash_tables::cleanup(header),
             VectorTag::Record if generic_records::record_has_inline_slots(header) => {}
@@ -1003,9 +1053,6 @@ struct SweepStats {
     overlays: usize,
     records: usize,
     record_slots: usize,
-    string_objects: usize,
-    string_object_bytes: usize,
-    string_object_spans: usize,
 }
 
 impl SweepStats {
@@ -1036,7 +1083,9 @@ impl SweepStats {
                 | VectorTag::Overlay
                 | VectorTag::CharTable
                 | VectorTag::SubCharTable
-                | VectorTag::HashTable => {
+                | VectorTag::HashTable
+                | VectorTag::Subr
+                | VectorTag::NativeCompUnit => {
                     self.buffers += usize::from((*header).tag() == VectorTag::Buffer);
                     self.overlays += usize::from((*header).tag() == VectorTag::Overlay);
                     self.vectors += 1;
@@ -1054,19 +1103,34 @@ impl SweepStats {
                         self.record_slots += slots;
                     }
                 }
-                VectorTag::StringObject => {
-                    self.string_objects += 1;
-                    // A string object the collection found mutably borrowed
-                    // (its mutator allocating) is counted without its bytes.
-                    if let Ok(state) =
-                        (*payload(header).cast::<RefCell<SharedStringState>>()).try_borrow()
-                    {
-                        self.string_object_bytes += state.storage_bytes();
-                        self.string_object_spans += state.props.len();
+                VectorTag::Free | VectorTag::ReaderForm => {}
+            }
+        }
+    }
+}
+
+/// Close native libraries owned by a host editor that is ending. The
+/// allocator already owns the complete object inventory; walking it here
+/// avoids permanent roots or a duplicate unit registry on ordinary paths.
+pub(crate) fn close_native_units_for_runtime(thread_cell: *mut std::ffi::c_void) {
+    for kind in [BlockKind::VectorBlock, BlockKind::LargeVector] {
+        for block in blocks_of(kind) {
+            let mut header = block as *mut VectorHeader;
+            loop {
+                // SAFETY: registered blocks are tiled by initialized headers.
+                // Closing an ELN changes no Lisp allocation and runs no Lisp.
+                unsafe {
+                    if (*header).tag() == VectorTag::NativeCompUnit {
+                        NativeUnitRef::from_raw(header).close_for_runtime(thread_cell);
+                    }
+                    if matches!(kind, BlockKind::LargeVector) {
+                        break;
+                    }
+                    header = advance(header, (*header).nbytes());
+                    if !vector_in_block(header, block) {
+                        break;
                     }
                 }
-                VectorTag::Subr => unreachable!("static subrs are not swept"),
-                VectorTag::Free | VectorTag::ReaderForm => {}
             }
         }
     }
@@ -1178,9 +1242,6 @@ pub(crate) fn sweep_vectors(epoch: u32) {
     LIVE_OVERLAYS.store(stats.overlays, Ordering::Relaxed);
     LIVE_RECORDS.store(stats.records, Ordering::Relaxed);
     LIVE_RECORD_SLOTS.store(stats.record_slots, Ordering::Relaxed);
-    LIVE_STRING_OBJECTS.store(stats.string_objects, Ordering::Relaxed);
-    LIVE_STRING_OBJECT_BYTES.store(stats.string_object_bytes, Ordering::Relaxed);
-    LIVE_STRING_OBJECT_SPANS.store(stats.string_object_spans, Ordering::Relaxed);
 }
 
 /// The vector census (gcstat's `total_vectors' and `total_vector_slots'
@@ -1207,15 +1268,6 @@ pub(crate) fn live_record_census() -> (usize, usize) {
     (
         LIVE_RECORDS.load(Ordering::Relaxed),
         LIVE_RECORD_SLOTS.load(Ordering::Relaxed),
-    )
-}
-
-/// The string objects' census: count, storage bytes, property spans.
-pub(crate) fn live_string_object_census() -> (usize, usize, usize) {
-    (
-        LIVE_STRING_OBJECTS.load(Ordering::Relaxed),
-        LIVE_STRING_OBJECT_BYTES.load(Ordering::Relaxed),
-        LIVE_STRING_OBJECT_SPANS.load(Ordering::Relaxed),
     )
 }
 
@@ -1285,6 +1337,16 @@ pub(crate) unsafe fn header_tag(header: *mut VectorHeader) -> VectorTag {
     unsafe { (*header).tag() }
 }
 
+/// An allocated native subr has its actual ten payload words in the size
+/// header. Static DEFUN subrs have zero Lisp/rest counts. This classification
+/// uses only the shared header, before borrowing either different payload.
+///
+/// # Safety
+/// HEADER names a live PVEC_SUBR.
+pub(crate) unsafe fn subr_is_allocated(header: *mut VectorHeader) -> bool {
+    unsafe { (*header).size & ((1 << PSEUDOVECTOR_AREA_BITS) - 1) != 0 }
+}
+
 /// The value naming an allocated vector (for the conservative scan).
 ///
 /// # Safety
@@ -1304,17 +1366,17 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             VectorTag::Terminal => Value::Terminal(VectorlikeRef::from_raw(header)),
             VectorTag::Finalizer => Value::Finalizer(VectorlikeRef::from_raw(header)),
             VectorTag::SymbolWithPos => Value::SymbolWithPos(SymbolWithPosRef::from_raw(header)),
-            VectorTag::Closure => Value::Lambda(ClosureRef::from_raw(header)),
+            VectorTag::Closure => Value::Closure(ClosureRef::from_raw(header)),
             VectorTag::CharTable => Value::CharTable(CharTableRef::from_raw(header)),
             VectorTag::SubCharTable => Value::SubCharTable(SubCharTableRef::from_raw(header)),
             VectorTag::HashTable => Value::HashTable(HashTableRef::from_raw(header)),
-            VectorTag::StringObject => Value::StringObject(VectorlikeRef::from_raw(header)),
             VectorTag::ReaderForm => Value::ReaderForm(VectorlikeRef::from_raw(header)),
             VectorTag::Record if generic_records::record_has_inline_slots(header) => {
                 Value::LispRecord(LispRecordRef::from_raw(header))
             }
             VectorTag::Record => Value::Record(VectorlikeRef::from_raw(header)),
-            VectorTag::Subr => unreachable!("static subrs do not live in vector allocations"),
+            VectorTag::Subr => Value::NativeFunction(NativeFunctionRef::from_raw(header)),
+            VectorTag::NativeCompUnit => Value::NativeCompUnit(NativeUnitRef::from_raw(header)),
             VectorTag::Free => unreachable!("a free vector is not a value"),
         }
     }

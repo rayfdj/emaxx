@@ -1,0 +1,444 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "portable unapplied native-object draft; formal validation in progress",
+    "source_inputs": 541,
+    "development_tests": {
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0
+    },
+    "portable": {
+      "status": "portable unapplied draft verified",
+      "candidate": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-06/native-subr-callbacks/emaxx",
+      "patches": [
+        {
+          "patch": "source308-portable-incremental.patch",
+          "sha256": "0113c37e5c85f2f4ed60939eeaad482abb4ec93e9b0b47565d1f69f22b47c423",
+          "base": "2b561470516c519f2198d2551c7b85b474defcfc",
+          "inputs": 541,
+          "bytes_and_modes": "exact"
+        },
+        {
+          "patch": "source308-portable-complete.patch",
+          "sha256": "fc4d08a7b4c8a0ddd5a32b353c52bba85357b94a3b7fb7651f51bbd1e1392918",
+          "base": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199",
+          "inputs": 541,
+          "bytes_and_modes": "exact"
+        }
+      ],
+      "goal_complete": false,
+      "qualification": "Source308 removes the native-function RecordKind and persistent descriptor/name/C-name maps in favor of the actual 88-byte GNU-layout subr. It carries the checked decoder repair, exact C-name termination and byte printing, and the command/completion/substitution/property consumers. Six new controls retain actual GNU answers; the original dabbrev failure is fixed without changing its test. All source305/306/307 failures and source308 development negatives remain preserved. The temporary trace test has been removed. Formal selected validation, physical accounting, public ownership, unit reclamation and performance remain separate requirements."
+    },
+    "goal_complete": false,
+    "qualification": "The development control closes the unchanged dabbrev regression and passes6 focused storage/GC/ABI/actual-GNU controls. Its failed predecessors remain preserved. Source308 fixes command recognition and native function identity in text properties and reader substitution, and C-name byte callbacks. No original frozen fixture, expected outcome or audit deviation changed. The temporary diagnostic test was removed. This archive certifies portable code and the closed development run only, not the ongoing gate/release selection, ordinary comparisons, platform validation or performance. Development1 reconstructs by applying its delta after the complete307 patch; development2 adds the trace-test delta. Their complete manifests identify every input."
+  },
+  "archive": {
+    "path": "source308-native-object-draft.tar.gz",
+    "bytes": 874863,
+    "sha256": "107544294c6ab3007f15823f6681a88932026916f6dc91a1f28420d2bf30d64e"
+  },
+  "files": [
+    {
+      "path": "native-subr-dabbrev-gnu-trace.json",
+      "bytes": 2124,
+      "sha256": "dfa589448f3eff6ceefce11c39cc830020344834f2201757a54bd1179cff3595"
+    },
+    {
+      "path": "native-subr-dabbrev-gnu-trace.stderr",
+      "bytes": 138,
+      "sha256": "5981568b8ba08203d8bf6ba5e12f99892e0a7b404b928190b9d6081d056d1d05"
+    },
+    {
+      "path": "native-subr-dabbrev-gnu-trace.stdout",
+      "bytes": 21546,
+      "sha256": "3412dfed90f65dc99a7a3486538eb602addf22bb4e888758dd0959631d3bca4b"
+    },
+    {
+      "path": "native-subr-dabbrev-real-location-comparison.json",
+      "bytes": 313,
+      "sha256": "28b3965268d16f67d0fa1d7e4d00379f4a178dc97a8683dc1d61b169d18e4034"
+    },
+    {
+      "path": "native-subr-dabbrev-trace.el",
+      "bytes": 1003,
+      "sha256": "4ec14dfee545d2cf016d7b74acb1a5868c824b9e6922ce81ff08c131e01814c9"
+    },
+    {
+      "path": "native_fixed_validation_support.py",
+      "bytes": 1038,
+      "sha256": "87efc148e2141fba558e6b13998d0573d43882954c2b4d0dbe3b0d71abcce94f"
+    },
+    {
+      "path": "package-native-subr-draft308.py",
+      "bytes": 4402,
+      "sha256": "398f0d94b0760842dadee4911f3c0cb53d23efbb3327c427dd70b907f5837cb2"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "prepare-native-subr-callbacks308-fixed.py",
+      "bytes": 5861,
+      "sha256": "1d0b12f6f8c72a00c2b1efbf4902665fb875d68c2a3e757b7c1ba9530ac420af"
+    },
+    {
+      "path": "prepare-native-subr-callbacks308.py",
+      "bytes": 6128,
+      "sha256": "6b704ea69301a9d18c06acc597d1610e8c04527a2df30ee071bee0f22a7be3df"
+    },
+    {
+      "path": "prepare-native-subr-development2.py",
+      "bytes": 1266,
+      "sha256": "b9bb2248ed5fd5904fe1238c581a0a477956bfe34b69c433dc0d84e700b626c5"
+    },
+    {
+      "path": "prepare-native-subr-development3.py",
+      "bytes": 2070,
+      "sha256": "9b51332522f2f80a90b8ee25af2caa171b8a7ebb7948a49b84fca1478297043f"
+    },
+    {
+      "path": "probe-native-subr-consumers308-reviewed.py",
+      "bytes": 2410,
+      "sha256": "f6a0d8a6f69211dd21bbdef96a024a18d527e16e4cc772054095bf394cae75e7"
+    },
+    {
+      "path": "probe-native-subr-consumers308.py",
+      "bytes": 2392,
+      "sha256": "892d7e4b1b5edee53e6d7557be67377dd7aaa9151b55c9e0fae864d37537f5ae"
+    },
+    {
+      "path": "repair-native-subr-consumers308.py",
+      "bytes": 2320,
+      "sha256": "6c22dac805cae4489a6c914689dcbafbfcada261ee05bf96106cc860723da175"
+    },
+    {
+      "path": "replay-native-subr308.py",
+      "bytes": 2703,
+      "sha256": "0d531d388b095d8d6bfa19b20a02115597fc050f277e089efb33adb0d8cd819d"
+    },
+    {
+      "path": "run-native-subr-development2.py",
+      "bytes": 2612,
+      "sha256": "93184aa06df592153f3602ea2822dd4b35d797062ed863be868b83ea23a57994"
+    },
+    {
+      "path": "run-native-subr-development3.py",
+      "bytes": 2855,
+      "sha256": "9adc1c5e0ad79cf8023d5820b43caba6cacafa246ce5622bffcea20d89dc17de"
+    },
+    {
+      "path": "run-native-subr-development308.py",
+      "bytes": 2828,
+      "sha256": "31de3215f0e8a6a9efaba7927c02e3e7d2e14ee9bb92a139009aff69cc1a4aaa"
+    },
+    {
+      "path": "source304-dabbrev-native-object-real-location.log",
+      "bytes": 1982,
+      "sha256": "4ba65c8d47a95df9ef14f48da39519d5b28130900d182ddfd1ceda59df66fbd7"
+    },
+    {
+      "path": "source306-dabbrev-native-object-real-location.log",
+      "bytes": 2321,
+      "sha256": "42af23d3ef342ff5bc3b04f1aea827c1e3829c1b1c787b3f44fe37df4613df9b"
+    },
+    {
+      "path": "source307-manifest.json",
+      "bytes": 62199,
+      "sha256": "f8096335c1cee636bc80f2f46da25ff04d38bb848660bfde33909d1a2d66bdb5"
+    },
+    {
+      "path": "source307-portable-complete.patch",
+      "bytes": 1515166,
+      "sha256": "a65f48ea2174e8bda170ef0a65d3ffa2570084551d56250bfd6464a555474945"
+    },
+    {
+      "path": "source307-portable-draft-audit.json",
+      "bytes": 1676,
+      "sha256": "28fecb0171cbcfb2ee1accc33690f6d2c5fb963200e59a34d7456ecf66d8cca4"
+    },
+    {
+      "path": "source307-portable-incremental.patch",
+      "bytes": 112081,
+      "sha256": "dff472882ee73a91827b23bd7ddad3ef736dbc4a0606da0d9853439a0d187e17"
+    },
+    {
+      "path": "source308-consumers-negative-return.el",
+      "bytes": 3127,
+      "sha256": "0d80d140db062c0b64ef8521b7453a5912868b4558a3379feb4156861b8614a5"
+    },
+    {
+      "path": "source308-consumers-negative-return.json",
+      "bytes": 1864,
+      "sha256": "a1547f9fe96a66a5401bb1c310fc43467f2dbae3f304083e657d41876958dc62"
+    },
+    {
+      "path": "source308-consumers-negative-return.log",
+      "bytes": 5180,
+      "sha256": "2f8ab1c4f548b244b759b653c1c7065ea628bdc4015d0a872bf74c9651f18685"
+    },
+    {
+      "path": "source308-consumers-negative.el",
+      "bytes": 3180,
+      "sha256": "9ea33a7f73ef20a5189e8b4572ec08ac6ad7f752bdef923fe08339cfdbd955aa"
+    },
+    {
+      "path": "source308-consumers-negative.json",
+      "bytes": 2073,
+      "sha256": "41da756930b444a518d78081767d1e639b18e83b6c14429800240ff546734580"
+    },
+    {
+      "path": "source308-consumers-negative.log",
+      "bytes": 205,
+      "sha256": "943a2c1a5cf92978ce43299619bf00ceccce4426c8f7f9216d6e217a6b612939"
+    },
+    {
+      "path": "source308-consumers-oracle-condition-note.json",
+      "bytes": 441,
+      "sha256": "97e1e5b360d141aa6b202c49c2cef5bb1967190b7016af3b57b230cd1aab6c83"
+    },
+    {
+      "path": "source308-consumers-probe-supervisor.log",
+      "bytes": 12742,
+      "sha256": "800906ea408bf3d0c3ec48f29fc327481aeb2c6a5eb93b1a566ef7f6a76e11a3"
+    },
+    {
+      "path": "source308-consumers-reviewed-supervisor.log",
+      "bytes": 301,
+      "sha256": "306941ac840732c5550154fd33506c65b011d028294d3068703feb5f19ab3b2b"
+    },
+    {
+      "path": "source308-consumers-unhandled-condition.el",
+      "bytes": 2708,
+      "sha256": "a73de72ba1f3cfd633e2c6973a4148d482360bb5202adc21c907668d5da595f3"
+    },
+    {
+      "path": "source308-development1-build-command.json",
+      "bytes": 1196,
+      "sha256": "f09d7f6c31550fdafcab1d8352c377ecd263ad45438d9147bb1c58d9768d8027"
+    },
+    {
+      "path": "source308-development1-build.log",
+      "bytes": 221187,
+      "sha256": "b9c17ae5bf5c6598840b11293b584dbdf7492bba7f5a56fabb5385a68562416d"
+    },
+    {
+      "path": "source308-development1-cache-command.json",
+      "bytes": 1345,
+      "sha256": "286c2cd6e662cc4b0130ef122364ff7f06d1f4760ee8e6b1e6e2301666797766"
+    },
+    {
+      "path": "source308-development1-cache.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source308-development1-focused-and-dabbrev-command.json",
+      "bytes": 1859,
+      "sha256": "736844709a04836b1d43764d7c81f9d9da814173b82ce6237f9cccfcea741357"
+    },
+    {
+      "path": "source308-development1-focused-and-dabbrev.log",
+      "bytes": 2962,
+      "sha256": "79702f0ea704663b49b9c66e8590b183102c83d234fc1c332cff6ee4bbaf1bba"
+    },
+    {
+      "path": "source308-development1-incremental.patch",
+      "bytes": 3220,
+      "sha256": "c1a350d1cde543468dda614daba2a1dbbebe15a94941b42d9dec3a1d18f64d15"
+    },
+    {
+      "path": "source308-development1-manifest.json",
+      "bytes": 62199,
+      "sha256": "0d2588a506ca3b6e9648caab79508f3c496a31231b5e3726fa1a86e77054fe0b"
+    },
+    {
+      "path": "source308-development1-result.json",
+      "bytes": 992,
+      "sha256": "2fd6e153110bc8b409cf13901a1db52015d0292db84b3be8fd96c8094f19699c"
+    },
+    {
+      "path": "source308-development1-snapshot.json",
+      "bytes": 320,
+      "sha256": "9bdaf65297d8153106c016814b6a008e8a9ba36f839ae0e62cae51a43a1a6e75"
+    },
+    {
+      "path": "source308-development1-state.json",
+      "bytes": 992,
+      "sha256": "2fd6e153110bc8b409cf13901a1db52015d0292db84b3be8fd96c8094f19699c"
+    },
+    {
+      "path": "source308-development1-supervisor.log",
+      "bytes": 303,
+      "sha256": "b7b3b8fd5506cd255ee370f04051ae4507f4c22b107d699c68825b6799e62934"
+    },
+    {
+      "path": "source308-development1-tracked.patch",
+      "bytes": 100995,
+      "sha256": "3c1eb50762ff44737f37c11c9d46335288733d8816b4c4d37cad423bf889e7be"
+    },
+    {
+      "path": "source308-development2-build-command.json",
+      "bytes": 1328,
+      "sha256": "e594f48029b1c699d12ff1d7e295b5a393e086bd12b0e40233fcd80770336c5c"
+    },
+    {
+      "path": "source308-development2-build.log",
+      "bytes": 221187,
+      "sha256": "091266a966e25e615e9e83009873b651773be415a11fbd81f5974a87048400e9"
+    },
+    {
+      "path": "source308-development2-incremental.patch",
+      "bytes": 708,
+      "sha256": "f18eed06b67e5f27faafe580b2b5d3ac9c59a4e2b04eea21edd801420fec50a1"
+    },
+    {
+      "path": "source308-development2-manifest.json",
+      "bytes": 62199,
+      "sha256": "97b6c03e7e3468f356436d1b0211008654ed276640928f4c6c8e6fffe520fb22"
+    },
+    {
+      "path": "source308-development2-result.json",
+      "bytes": 848,
+      "sha256": "00ad7a69701636c65612abd45a28fafb5ed1e80297bc7b796925192817b9d10c"
+    },
+    {
+      "path": "source308-development2-snapshot.json",
+      "bytes": 344,
+      "sha256": "04c7e3d3b471474ade20207120afbbba4b07008927e0fdb17632954e8e89c79e"
+    },
+    {
+      "path": "source308-development2-state.json",
+      "bytes": 848,
+      "sha256": "00ad7a69701636c65612abd45a28fafb5ed1e80297bc7b796925192817b9d10c"
+    },
+    {
+      "path": "source308-development2-supervisor.log",
+      "bytes": 194,
+      "sha256": "a5153c9d9911b26b500855b4ff1ad126c3ec345a31330d4ca126dbdf64fb1b0d"
+    },
+    {
+      "path": "source308-development2-trace-command.json",
+      "bytes": 1480,
+      "sha256": "12a41d631b01dc4d2637f6cd2ab1a258712dc86dadf9ffbafe7cf0fd5ce335e7"
+    },
+    {
+      "path": "source308-development2-trace.log",
+      "bytes": 22524,
+      "sha256": "fe9bd78c0644f5df500c90c258f00035036a4e8014a3fe1ae42037744441ce69"
+    },
+    {
+      "path": "source308-development3-build-command.json",
+      "bytes": 1196,
+      "sha256": "fd5f2583f5169320a74182586d4ac5230f73dac877069fe63d9e9a56e7287c98"
+    },
+    {
+      "path": "source308-development3-build.log",
+      "bytes": 221187,
+      "sha256": "e60ee3dbd616c279995d20b559648e496ce5caaee3498547866f66a9c43bc066"
+    },
+    {
+      "path": "source308-development3-focused-and-dabbrev-command.json",
+      "bytes": 1970,
+      "sha256": "1353eac3871aee406b569aad8c6051275ed92427263862ab042abadb6c8f8d1c"
+    },
+    {
+      "path": "source308-development3-focused-and-dabbrev.log",
+      "bytes": 2623,
+      "sha256": "025b45dfcf1395de5afe93f648e6e0c2501b2e15dd8e50fe401dfaff9928e573"
+    },
+    {
+      "path": "source308-development3-manifest.json",
+      "bytes": 62431,
+      "sha256": "6eeb25fbc6ab8856c4fa9a856e1598346668307c04e7ef7c2ba0735620354504"
+    },
+    {
+      "path": "source308-development3-result.json",
+      "bytes": 857,
+      "sha256": "2e75f2dcb02f218f99dac14ac4834e61c5ba4260cb33337de99d77a6e9629477"
+    },
+    {
+      "path": "source308-development3-state.json",
+      "bytes": 857,
+      "sha256": "2e75f2dcb02f218f99dac14ac4834e61c5ba4260cb33337de99d77a6e9629477"
+    },
+    {
+      "path": "source308-development3-supervisor.log",
+      "bytes": 203,
+      "sha256": "ffd3b35d425c55ab65d570c2d33fc64eff4bad55c7fb1fdaed717acfefccb3e6"
+    },
+    {
+      "path": "source308-draft.patch",
+      "bytes": 121067,
+      "sha256": "0113c37e5c85f2f4ed60939eeaad482abb4ec93e9b0b47565d1f69f22b47c423"
+    },
+    {
+      "path": "source308-gnu-consumers-reviewed.json",
+      "bytes": 4029,
+      "sha256": "6af8167a9af1a58deb05692ef5b1e06a030ee65e0ecba9e1743d802c23a942b8"
+    },
+    {
+      "path": "source308-gnu-consumers-reviewed.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source308-gnu-consumers-reviewed.stdout",
+      "bytes": 264,
+      "sha256": "7673751514a8227741d4bd568b7347f8c1f228cf91179ff94b86cfd852d5d73b"
+    },
+    {
+      "path": "source308-gnu-consumers.json",
+      "bytes": 3606,
+      "sha256": "41432d5266b8a480eb6fd76b7c315d80a911bbf2df23e36688432c60501f65e3"
+    },
+    {
+      "path": "source308-gnu-consumers.stderr",
+      "bytes": 59,
+      "sha256": "c86c0144964bf5d17c964c70b99e8bd32cca657a04f07714b97f0f9b65cccebc"
+    },
+    {
+      "path": "source308-gnu-consumers.stdout",
+      "bytes": 12042,
+      "sha256": "cfbffdbabb5b4157983c5e90838540a36eca76da819a7ac937154953d714a2bf"
+    },
+    {
+      "path": "source308-manifest.json",
+      "bytes": 62431,
+      "sha256": "6eeb25fbc6ab8856c4fa9a856e1598346668307c04e7ef7c2ba0735620354504"
+    },
+    {
+      "path": "source308-portable-complete.patch",
+      "bytes": 1522690,
+      "sha256": "fc4d08a7b4c8a0ddd5a32b353c52bba85357b94a3b7fb7651f51bbd1e1392918"
+    },
+    {
+      "path": "source308-portable-draft-audit.json",
+      "bytes": 1412,
+      "sha256": "78e2d931d317d5ca983f7d5f56053b76965f10fb7cd451a4c3b061df5cde4b05"
+    },
+    {
+      "path": "source308-portable-incremental.patch",
+      "bytes": 121067,
+      "sha256": "0113c37e5c85f2f4ed60939eeaad482abb4ec93e9b0b47565d1f69f22b47c423"
+    },
+    {
+      "path": "source308-portable-replay.log",
+      "bytes": 446,
+      "sha256": "4ebcfc89a4caadcca7d1a9f41300b5cf6bf01f754a98639dc4a325dda968ca48"
+    },
+    {
+      "path": "source308-preparation-preflight.json",
+      "bytes": 416,
+      "sha256": "e86e0e68488d05ab55d920470e2f062c265656c11b63826a0f5752c7291a9278"
+    },
+    {
+      "path": "source308-working-init.json",
+      "bytes": 1124,
+      "sha256": "5fa55a670e09a54542d5d5819fa371313d33e9c5ba928a26a7a8f11f12c97a5c"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

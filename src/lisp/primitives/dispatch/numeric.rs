@@ -36,6 +36,32 @@ fn checked_integer_fold(
     Ok(Some(accumulator))
 }
 
+/// data.c:Frem/Fmod coerce operands in order before calculating a remainder.
+/// `%` accepts integers/markers; only `mod` also accepts floating point.
+fn remainder_argument(
+    interp: &Interpreter,
+    value: Value,
+    modulo: bool,
+) -> Result<Value, LispError> {
+    match value.kind() {
+        Kind::Integer(_) | Kind::BigInteger(_) => Ok(value),
+        Kind::Float(_) if modulo => Ok(value),
+        Kind::Marker(marker) => interp
+            .marker_position(marker)
+            .map(|position| Value::Integer(position as i64))
+            .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into())),
+        _ => Err(LispError::WrongTypeArgument(
+            if modulo {
+                "number-or-marker-p"
+            } else {
+                "integer-or-marker-p"
+            }
+            .into(),
+            value,
+        )),
+    }
+}
+
 define_dispatch!(
     pub(super) fn call(
         interp: &mut Interpreter,
@@ -102,6 +128,11 @@ define_dispatch!(
             }
             "%" | "mod" => {
                 need_args(name, args, 2)?;
+                let numbers = [
+                    remainder_argument(interp, args[0], name == "mod")?,
+                    remainder_argument(interp, args[1], name == "mod")?,
+                ];
+                let args = &numbers;
                 if has_float(args) {
                     let a = numeric_to_f64(interp, &args[0])?;
                     let b = numeric_to_f64(interp, &args[1])?;
@@ -489,20 +520,13 @@ define_dispatch!(
             }
             "string-equal" => {
                 need_args(name, args, 2)?;
-                let a = string_comparison_text(&args[0])?;
-                let b = string_comparison_text(&args[1])?;
-                // fns.c's Fstring_equal compares the character count, the
-                // byte count and the bytes: the same non-ASCII characters
-                // in a unibyte and a multibyte string are not equal.
-                let equal = a == b
-                    && (a.is_ascii()
-                        || crate::lisp::primitives::string_argument_multibyte(&args[0])
-                            == crate::lisp::primitives::string_argument_multibyte(&args[1]));
-                Ok(if equal { Value::T } else { Value::Nil })
+                let a = string_comparison_object(interp, &args[0], env)?;
+                let b = string_comparison_object(interp, &args[1], env)?;
+                Ok(if a == b { Value::T } else { Value::Nil })
             }
             "string-lessp" => {
                 need_args(name, args, 2)?;
-                let order = crate::lisp::primitives::string_order(&args[0], &args[1])?;
+                let order = crate::lisp::primitives::string_order(interp, &args[0], &args[1], env)?;
                 let matches = if name == "string>" {
                     order == Ordering::Greater
                 } else {
@@ -512,25 +536,21 @@ define_dispatch!(
             }
             "string-version-lessp" => {
                 need_args(name, args, 2)?;
-                let a = string_comparison_text(&args[0])?;
-                let b = string_comparison_text(&args[1])?;
-                Ok(if string_version_compare(&a, &b) == Ordering::Less {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
+                let a = string_comparison_object(interp, &args[0], env)?;
+                let b = string_comparison_object(interp, &args[1], env)?;
+                Ok(
+                    if string_version_compare(a.borrow().bytes(), b.borrow().bytes())
+                        == Ordering::Less
+                    {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    },
+                )
             }
             "compare-strings" => {
                 need_arg_range(name, args, 6, 7)?;
-                compare_strings_value(
-                    &args[0],
-                    args.get(1),
-                    args.get(2),
-                    &args[3],
-                    args.get(4),
-                    args.get(5),
-                    args.get(6).is_some_and(Value::is_truthy),
-                )
+                compare_strings_value(interp, args, env)
             }
             "string-distance" => {
                 need_arg_range(name, args, 2, 3)?;

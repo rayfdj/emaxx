@@ -1,6 +1,80 @@
 use super::*;
 use crate::lisp::types::Kind;
 
+/// alloc.c:memory_full signals with the existing Vmemory_signal_data. Rust
+/// storage builders have no interpreter, so resolve their typed failure at
+/// the primitive body, including generated direct and native dispatch.
+pub(crate) fn string_storage_error(
+    interp: &Interpreter,
+    env: &Env,
+    error: crate::lisp::types::string_data::StringError,
+) -> LispError {
+    use crate::lisp::types::string_data::StringError;
+    match error {
+        StringError::Condition(error) => error,
+        StringError::AllocationFailed => LispError::SignalValue(
+            interp
+                .lookup_var("memory-signal-data", env)
+                .unwrap_or(Value::Nil),
+        ),
+    }
+}
+
+/// fns.c:validate_subarray checks both index types before their joint range.
+pub(crate) fn validate_subarray(
+    array: Value,
+    from: Value,
+    to: Value,
+    length: usize,
+) -> Result<(usize, usize), LispError> {
+    let index = |value: Value, default: i64| match value.kind() {
+        Kind::Nil => Ok(default),
+        Kind::Integer(index) => Ok(if index < 0 {
+            length as i64 + index
+        } else {
+            index
+        }),
+        _ => Err(LispError::WrongTypeArgument("integerp".into(), value)),
+    };
+    let start = index(from, 0)?;
+    let end = index(to, length as i64)?;
+    if !(0 <= start && start <= end && end <= length as i64) {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            array,
+            from,
+            to,
+        ])));
+    }
+    Ok((start as usize, end as usize))
+}
+
+pub(crate) fn substring_value(
+    array: Value,
+    from: Value,
+    to: Value,
+    properties: bool,
+) -> Result<Value, LispError> {
+    match array.kind() {
+        Kind::Vector(vector) if properties => {
+            let (from, to) = validate_subarray(array, from, to, vector.len())?;
+            Ok(Value::vector(vector.slots().skip(from).take(to - from)))
+        }
+        Kind::StringObject(state) => {
+            let result = {
+                let state = state.borrow();
+                let (from, to) = validate_subarray(array, from, to, state.len())?;
+                state.substring(from, to, properties)
+            };
+            Ok(Value::StringObject(result))
+        }
+        _ => Err(LispError::WrongTypeArgument(
+            if properties { "arrayp" } else { "stringp" }.into(),
+            array,
+        )),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct StringLike {
     pub(crate) text: String,
@@ -11,17 +85,17 @@ pub(crate) struct StringLike {
 
 impl StringLike {
     pub(crate) fn character_codes(&self) -> Vec<i64> {
-        self.text
-            .chars()
-            .enumerate()
-            .map(|(index, ch)| {
-                self.extended_chars
-                    .binary_search_by_key(&index, |(position, _)| *position)
-                    .ok()
-                    .map(|position| i64::from(self.extended_chars[position].1))
-                    .unwrap_or_else(|| string_character_code(self.multibyte, ch))
-            })
-            .collect()
+        self.character_codes_iter().collect()
+    }
+
+    pub(crate) fn character_codes_iter(&self) -> impl Iterator<Item = i64> + '_ {
+        self.text.chars().enumerate().map(|(index, ch)| {
+            self.extended_chars
+                .binary_search_by_key(&index, |(position, _)| *position)
+                .ok()
+                .map(|position| i64::from(self.extended_chars[position].1))
+                .unwrap_or_else(|| string_character_code(self.multibyte, ch))
+        })
     }
 
     pub(crate) fn byte_len(&self) -> Result<usize, LispError> {
@@ -71,13 +145,6 @@ pub(crate) fn lisp_string_storage_byte_len(
             emacs_multibyte_char_len(code).unwrap_or(1)
         })
         .sum()
-}
-
-pub(crate) fn immutable_lisp_string_storage_byte_len(text: &str) -> usize {
-    let multibyte = text
-        .chars()
-        .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7f);
-    lisp_string_storage_byte_len(text, multibyte, &[])
 }
 
 pub(crate) fn emacs_multibyte_char_len(code: u32) -> Result<usize, LispError> {
@@ -139,34 +206,22 @@ pub(crate) fn string_character_code(multibyte: bool, ch: char) -> i64 {
     }
 }
 
-/// The text of a string VALUE without copying it when the string is a
-/// shared text (`Value::String'): what a primitive reads and never keeps.
-/// A `StringObject' is copied out of its cell as `string_like' copies it.
+/// A transient Rust text view of canonical bytes. It is never retained as
+/// mutable string state; consumers needing characters or bytes use the payload.
 pub(crate) fn borrowed_text(value: &Value) -> Option<std::borrow::Cow<'_, str>> {
     match value.kind() {
-        Kind::String(text) => Some(std::borrow::Cow::Borrowed(text.as_str())),
-        Kind::StringObject(state) => Some(std::borrow::Cow::Owned(state.borrow().text.clone())),
+        Kind::StringObject(state) => Some(std::borrow::Cow::Owned(state.borrow().text())),
         _ => None,
     }
 }
 
 pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
     match value.kind() {
-        Kind::String(text) => Some(StringLike {
-            text: text.to_string(),
-            props: Vec::new(),
-            extended_chars: Vec::new(),
-            // The byte scan first: ASCII text (most stored strings) never
-            // walks its characters.
-            multibyte: !text.is_ascii()
-                && text
-                    .chars()
-                    .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F),
-        }),
         Kind::StringObject(state) => {
             let state = state.borrow();
+            let (text, extended_chars) = state.text_parts();
             Some(StringLike {
-                text: state.text.clone(),
+                text,
                 props: state
                     .props
                     .iter()
@@ -176,8 +231,8 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
                         props: span.props.clone(),
                     })
                     .collect(),
-                multibyte: state.multibyte,
-                extended_chars: state.extended_chars.clone(),
+                multibyte: state.is_multibyte(),
+                extended_chars,
             })
         }
         // lisp.h:CHECK_STRING rejects every other object class. The reader
@@ -191,34 +246,8 @@ pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
 /// string: no copy of the text).  `None' for a non-string or an index past
 /// the end.
 pub(crate) fn string_char_code_at_in_place(value: &Value, index: usize) -> Option<i64> {
-    fn code_in(
-        text: &str,
-        multibyte: bool,
-        extended: &[(usize, u32)],
-        index: usize,
-    ) -> Option<i64> {
-        if let Ok(position) = extended.binary_search_by_key(&index, |(position, _)| *position) {
-            return Some(i64::from(extended[position].1));
-        }
-        if text.is_ascii() {
-            return text.as_bytes().get(index).map(|byte| i64::from(*byte));
-        }
-        text.chars()
-            .nth(index)
-            .map(|ch| string_character_code(multibyte, ch))
-    }
     match value.kind() {
-        Kind::String(text) => {
-            let text = text.as_str();
-            let multibyte = text
-                .chars()
-                .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
-            code_in(text, multibyte, &[], index)
-        }
-        Kind::StringObject(state) => {
-            let state = state.borrow();
-            code_in(&state.text, state.multibyte, &state.extended_chars, index)
-        }
+        Kind::StringObject(state) => state.borrow().character_at(index),
         _ => None,
     }
 }
@@ -229,35 +258,32 @@ pub(crate) fn string_char_code_at_in_place(value: &Value, index: usize) -> Optio
 /// other multibyte and any character is not ASCII (a raw byte is one
 /// byte unibyte and two multibyte).  `None' when either is not a string.
 pub(crate) fn string_texts_equal_in_place(left: &Value, right: &Value) -> Option<bool> {
-    fn with_parts<R>(
-        value: &Value,
-        f: impl FnOnce(&str, &[(usize, u32)], Option<bool>) -> R,
-    ) -> Option<R> {
-        match value.kind() {
-            Kind::String(text) => Some(f(text.as_str(), &[], None)),
-            Kind::StringObject(state) => {
-                let state = state.borrow();
-                Some(f(&state.text, &state.extended_chars, Some(state.multibyte)))
-            }
-            _ => None,
+    let (Kind::StringObject(left), Kind::StringObject(right)) = (left.kind(), right.kind()) else {
+        return None;
+    };
+    Some(left == right)
+}
+
+/// fns.c:Fstring_equal accepts SYMBOLP arguments and reads SYMBOL_NAME,
+/// which is the original Lisp string, not the symbol's host lookup key.
+/// lisp.h:SYMBOLP accepts positioned symbols only while the C flag is set.
+pub(crate) fn string_comparison_object(
+    interp: &Interpreter,
+    value: &Value,
+    env: &Env,
+) -> Result<crate::lisp::types::StringObjectRef, LispError> {
+    let symbol = match value.kind() {
+        Kind::StringObject(string) => return Ok(string),
+        Kind::Nil | Kind::T | Kind::Symbol(_) | Kind::SymbolWithPos(_) => {
+            checked_symbol_identity(interp, value, env)
+                .map_err(|_| LispError::WrongTypeArgument("stringp".into(), *value))?
         }
-    }
-    fn multibyte_of(text: &str, known: Option<bool>) -> bool {
-        known.unwrap_or_else(|| {
-            text.chars()
-                .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F)
-        })
-    }
-    with_parts(left, |left_text, left_extended, left_multibyte| {
-        with_parts(right, |right_text, right_extended, right_multibyte| {
-            left_text == right_text
-                && left_extended == right_extended
-                && (left_text.is_ascii()
-                    || multibyte_of(left_text, left_multibyte)
-                        == multibyte_of(right_text, right_multibyte))
-        })
-    })
-    .flatten()
+        _ => return Err(LispError::WrongTypeArgument("stringp".into(), *value)),
+    };
+    let Kind::StringObject(string) = symbol.lisp_name().kind() else {
+        unreachable!("a symbol's name is a Lisp string")
+    };
+    Ok(string)
 }
 
 pub(crate) fn string_text(value: &Value) -> Result<String, LispError> {
@@ -281,10 +307,7 @@ pub(crate) fn char_from_integer(code: i64) -> Result<char, LispError> {
 /// non-ASCII characters have different bytes in the two representations.
 pub(crate) fn string_argument_multibyte(value: &Value) -> bool {
     match value.kind() {
-        Kind::StringObject(state) => state.borrow().multibyte,
-        Kind::String(text) => text
-            .chars()
-            .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F),
+        Kind::StringObject(state) => state.borrow().is_multibyte(),
         Kind::Symbol(name) => !name.as_str().is_ascii(),
         _ => false,
     }
@@ -295,33 +318,15 @@ pub(crate) fn string_argument_multibyte(value: &Value) -> bool {
 /// its bytes (0 to 255) and a multibyte string's its decoded characters
 /// (a raw byte among them is 0x3FFF80 and above).  Symbols compare by
 /// their names.
-pub(crate) fn string_order(left: &Value, right: &Value) -> Result<std::cmp::Ordering, LispError> {
-    let left_text = string_comparison_text(left)?;
-    let right_text = string_comparison_text(right)?;
-    if left_text.is_ascii() && right_text.is_ascii() {
-        return Ok(left_text.as_bytes().cmp(right_text.as_bytes()));
-    }
-    let codes = |value: &Value, text: &str| -> Vec<i64> {
-        match string_like(value) {
-            Some(string) => string.character_codes(),
-            None => {
-                let multibyte = !text.is_ascii();
-                text.chars()
-                    .map(|ch| string_character_code(multibyte, ch))
-                    .collect()
-            }
-        }
-    };
-    Ok(codes(left, &left_text).cmp(&codes(right, &right_text)))
-}
-
-pub(crate) fn string_comparison_text(value: &Value) -> Result<String, LispError> {
-    match value.kind() {
-        Kind::Nil => Ok("nil".into()),
-        Kind::T => Ok("t".into()),
-        Kind::Symbol(name) => Ok(crate::lisp::types::visible_symbol_name(&name).to_string()),
-        _ => string_text(value),
-    }
+pub(crate) fn string_order(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+    env: &Env,
+) -> Result<std::cmp::Ordering, LispError> {
+    let left = string_comparison_object(interp, left, env)?;
+    let right = string_comparison_object(interp, right, env)?;
+    Ok(left.borrow().compare_contents(&right.borrow()))
 }
 
 pub(crate) fn fold_string_compare_code(code: i64, ignore_case: bool) -> i64 {
@@ -334,27 +339,11 @@ pub(crate) fn fold_string_compare_code(code: i64, ignore_case: bool) -> i64 {
     simple_upcase_char(codepoint) as i64
 }
 
-pub(crate) fn normalize_compare_strings_end(
-    arg: Option<&Value>,
-    len: i64,
-) -> Result<i64, LispError> {
-    let Some(value) = arg else {
-        return Ok(len);
-    };
-    if value.is_nil() {
-        return Ok(len);
-    }
-    let raw = value.as_integer()?;
-    let index = if raw < 0 { len + raw } else { raw };
-    Ok(index.clamp(0, len))
-}
-
 pub(crate) fn string_compare_codes(
     value: &Value,
     start: Option<&Value>,
     end: Option<&Value>,
     ignore_case: bool,
-    clamp_end: bool,
 ) -> Result<Vec<i64>, LispError> {
     let string =
         string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
@@ -364,11 +353,7 @@ pub(crate) fn string_compare_codes(
         .collect::<Result<Vec<_>, _>>()?;
     let len = codes.len() as i64;
     let start = normalize_string_index(start, 0, len)? as usize;
-    let end = if clamp_end {
-        normalize_compare_strings_end(end, len)?
-    } else {
-        normalize_string_index(end, len, len)?
-    } as usize;
+    let end = normalize_string_index(end, len, len)? as usize;
     if start > end {
         return Err(LispError::Signal("Args out of range".into()));
     }
@@ -388,63 +373,85 @@ pub(crate) fn string_compare_ordering(
     ignore_case: bool,
 ) -> Result<Ordering, LispError> {
     Ok(
-        string_compare_codes(left, None, None, ignore_case, false)?.cmp(&string_compare_codes(
+        string_compare_codes(left, None, None, ignore_case)?.cmp(&string_compare_codes(
             right,
             None,
             None,
             ignore_case,
-            false,
         )?),
     )
 }
 
 pub(crate) fn compare_strings_value(
-    left: &Value,
-    left_start: Option<&Value>,
-    left_end: Option<&Value>,
-    right: &Value,
-    right_start: Option<&Value>,
-    right_end: Option<&Value>,
-    ignore_case: bool,
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
 ) -> Result<Value, LispError> {
-    // fns.c reads both strings with fetch_string_char_as_multibyte_advance:
-    // a unibyte string's byte above 127 is the raw-byte character.
-    let promote = |codes: Vec<i64>, value: &Value| -> Vec<i64> {
-        if string_argument_multibyte(value) {
-            return codes;
-        }
-        codes
-            .into_iter()
-            .map(|code| {
-                if (0x80..=0xFF).contains(&code) {
-                    RAW_BYTE8_BASE as i64 + code
-                } else {
-                    code
-                }
-            })
-            .collect()
+    // fns.c:Fcompare_strings checks both string types before either
+    // range, then clamps only too-large positive fixnum end arguments.
+    // The dispatch caller has already checked the six/seven argument arity.
+    let Kind::StringObject(left) = args[0].kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
     };
-    let left = promote(
-        string_compare_codes(left, left_start, left_end, ignore_case, true)?,
-        left,
-    );
-    let right = promote(
-        string_compare_codes(right, right_start, right_end, ignore_case, true)?,
-        right,
-    );
-    let common_len = left.len().min(right.len());
-
-    for index in 0..common_len {
-        match left[index].cmp(&right[index]) {
-            Ordering::Less => return Ok(Value::Integer(-((index + 1) as i64))),
-            Ordering::Greater => return Ok(Value::Integer((index + 1) as i64)),
+    let Kind::StringObject(right) = args[3].kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), args[3]));
+    };
+    let clamp_end = |end: Value, length: usize| match end.kind() {
+        Kind::Integer(index) if index > length as i64 => Value::Integer(length as i64),
+        _ => end,
+    };
+    let left_end = clamp_end(args[2], left.borrow().len());
+    let right_end = clamp_end(args[5], right.borrow().len());
+    let (left_start, left_end, mut left_byte) = {
+        let state = left.borrow();
+        let (from, to) = validate_subarray(args[0], args[1], left_end, state.len())?;
+        (
+            from,
+            to,
+            state.byte_offset(from).expect("validated string index"),
+        )
+    };
+    let (right_start, right_end, mut right_byte) = {
+        let state = right.borrow();
+        let (from, to) = validate_subarray(args[3], args[4], right_end, state.len())?;
+        (
+            from,
+            to,
+            state.byte_offset(from).expect("validated string index"),
+        )
+    };
+    let ignore_case = args.get(6).is_some_and(Value::is_truthy);
+    let left_length = left_end - left_start;
+    let right_length = right_end - right_start;
+    let common_length = left_length.min(right_length);
+    for matched in 0..common_length {
+        let mut a = left
+            .borrow()
+            .character_as_multibyte_advance(&mut left_byte)
+            .expect("validated string range");
+        let mut b = right
+            .borrow()
+            .character_as_multibyte_advance(&mut right_byte)
+            .expect("validated string range");
+        if a == b {
+            continue;
+        }
+        if ignore_case {
+            // GNU calls Fupcase on the promoted character only after a
+            // mismatch. Use the same live buffer case tables and numeric
+            // casing path, releasing string borrows before either call.
+            a = casify_value(interp, &Value::Integer(a), CaseAction::Up, env)?.as_integer()?;
+            b = casify_value(interp, &Value::Integer(b), CaseAction::Up, env)?.as_integer()?;
+        }
+        match a.cmp(&b) {
+            Ordering::Less => return Ok(Value::Integer(-((matched + 1) as i64))),
+            Ordering::Greater => return Ok(Value::Integer((matched + 1) as i64)),
             Ordering::Equal => {}
         }
     }
-
-    match left.len().cmp(&right.len()) {
-        Ordering::Less => Ok(Value::Integer(-((common_len + 1) as i64))),
-        Ordering::Greater => Ok(Value::Integer((common_len + 1) as i64)),
+    match left_length.cmp(&right_length) {
+        Ordering::Less => Ok(Value::Integer(-((common_length + 1) as i64))),
+        Ordering::Greater => Ok(Value::Integer((common_length + 1) as i64)),
         Ordering::Equal => Ok(Value::T),
     }
 }
@@ -496,7 +503,7 @@ fn collate_operand_codes(value: &Value) -> Result<Vec<i64>, LispError> {
         }
         other => &other.value(),
     };
-    string_compare_codes(value, None, None, false, false)
+    string_compare_codes(value, None, None, false)
 }
 
 /// sysdep.c str_collate (GNU/Linux): widen both strings to code-point
@@ -661,73 +668,28 @@ pub(crate) fn aset_string_value(
     target: &Value,
     index: usize,
     new_value: &Value,
-) -> Result<Value, LispError> {
-    if !matches!(target.kind(), Kind::String(_) | Kind::StringObject(_)) {
-        return Err(LispError::WrongTypeArgument("stringp".into(), *target));
-    }
-    let code = new_value.as_integer()?;
-    // data.c's Faset stores an ASCII character into an ASCII string in
-    // place, one byte; the general case below rebuilds the text.
-    // hex-util.el's `encode-hex-string' sets every byte of its result.
-    if (0..=0x7F).contains(&code)
-        && let Kind::StringObject(state) = target.kind()
-    {
-        let mut state = state.borrow_mut();
-        if state.extended_chars.is_empty() && state.text.is_ascii() {
-            if index >= state.text.len() {
-                drop(state);
-                return Err(args_out_of_range_for_aset(target, index));
-            }
-            // SAFETY: the text is ASCII and the stored byte is ASCII, so
-            // the result remains valid UTF-8.
-            unsafe { state.text.as_bytes_mut()[index] = code as u8 };
-            return Ok(*target);
-        }
-    }
-    let mut string = string_like(target)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *target))?;
-    let mut chars: Vec<char> = string.text.chars().collect();
-    if index >= chars.len() {
-        return Err(args_out_of_range_for_aset(target, index));
-    }
-    let ch = if string.multibyte {
-        char_from_integer(code)?
-    } else if (0..=255).contains(&code) {
-        let byte = code as u8;
-        if byte <= 0x7F {
-            byte as char
-        } else {
-            raw_byte_regex_char(byte)
-        }
-    } else {
-        // GNU can promote an all-ASCII unibyte string in place when the new
-        // character needs multibyte storage.  Raw non-ASCII bytes cannot be
-        // reinterpreted during that promotion, so they keep the documented
-        // args-out-of-range failure instead.
-        if chars.iter().any(|ch| !ch.is_ascii()) {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("args-out-of-range".into()),
-                *target,
-                Value::Integer(code),
-            ])));
-        }
-        string.multibyte = true;
-        char_from_integer(code)?
+) -> Result<Value, crate::lisp::types::string_data::StringError> {
+    let Kind::StringObject(state) = target.kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), *target).into());
     };
-    chars[index] = ch;
-    string.text = chars.into_iter().collect();
-    if let Kind::StringObject(state) = target.kind() {
-        let mut state = state.borrow_mut();
-        state.text = string.text;
-        state.props = shared_string_props(&string.props);
-        state.multibyte = string.multibyte;
-        return Ok(*target);
+    state.check_impure()?;
+    let mut state = state.borrow_mut();
+    // data.c:Faset checks the existing index before NEWELT.
+    if index >= state.len() {
+        drop(state);
+        return Err(args_out_of_range_for_aset(target, index).into());
     }
-    Ok(make_shared_string_value_with_multibyte(
-        string.text,
-        string.props,
-        string.multibyte,
-    ))
+    let code = crate::lisp::types::string_data::character_code(*new_value)?;
+    if !state.store_character(index, code)? {
+        drop(state);
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            *target,
+            *new_value,
+        ]))
+        .into());
+    }
+    Ok(*target)
 }
 
 pub(crate) fn shared_string_props(props: &[TextPropertySpan]) -> Vec<StringPropertySpan> {
@@ -755,30 +717,12 @@ pub(crate) fn make_shared_string_value_with_extended_chars(
     multibyte: bool,
     extended_chars: Vec<(usize, u32)>,
 ) -> Value {
-    crate::lisp::types::string_object_value(SharedStringState {
+    Value::StringObject(StringObjectRef::from_text(
         text,
-        props: shared_string_props(&props),
+        shared_string_props(&props),
         multibyte,
         extended_chars,
-    })
-}
-
-/// A string object from the image, whose storage size the image records.
-pub(crate) fn make_loaded_string_object_value(
-    text: String,
-    multibyte: bool,
-    extended_chars: Vec<(usize, u32)>,
-    storage_bytes: usize,
-) -> Value {
-    crate::lisp::types::string_object_value_with_storage_bytes(
-        SharedStringState {
-            text,
-            props: shared_string_props(&[]),
-            multibyte,
-            extended_chars,
-        },
-        storage_bytes,
-    )
+    ))
 }
 
 pub(crate) fn string_like_value_with_extended_chars(
@@ -1341,29 +1285,21 @@ pub(crate) fn modify_shared_string_properties<F>(
     start: usize,
     end: usize,
     mut f: F,
-) -> Result<(), LispError>
+) -> Result<bool, LispError>
 where
     F: FnMut(Vec<(String, Value)>) -> Vec<(String, Value)>,
 {
     let Kind::StringObject(state) = value.kind() else {
-        // A plain interned string has no shared property state to mutate.
-        // GNU mutates any string in place; Emaxx's immutable representation
-        // drops the write instead of signaling, mirroring the existing
-        // `set-text-properties' policy for this case.
-        if matches!(value.kind(), Kind::String(_)) {
-            return Ok(());
-        }
         return Err(LispError::WrongTypeArgument("stringp".into(), *value));
     };
-    let mut state = state.borrow_mut();
-    let len = state.text.chars().count();
+    let len = state.borrow().len();
     let start = start.min(len);
     let end = end.min(len);
     if start >= end {
-        return Ok(());
+        return Ok(false);
     }
 
-    let original = state.props.clone();
+    let original = state.borrow().props.to_vec();
     let mut updated = Vec::new();
     for span in &original {
         if span.end <= start || span.start >= end {
@@ -1397,6 +1333,7 @@ where
     boundaries.sort_unstable();
     boundaries.dedup();
 
+    let mut changed = false;
     for window in boundaries.windows(2) {
         let seg_start = window[0];
         let seg_end = window[1];
@@ -1404,7 +1341,8 @@ where
             continue;
         }
         let current = string_object_properties_at(&original, seg_start);
-        let next = f(current);
+        let next = f(current.clone());
+        changed |= !crate::buffer::text_property_plists_eq(&current, &next);
         if !next.is_empty() {
             updated.push(StringPropertySpan {
                 start: seg_start,
@@ -1414,6 +1352,13 @@ where
         }
     }
 
-    state.props = merge_string_object_props(updated);
-    Ok(())
+    let updated = merge_string_object_props(updated);
+    // A pure string has no intervals. GNU soft removal therefore returns
+    // without writing; creating intervals invokes CHECK_IMPURE instead.
+    if state.is_pure() && updated.is_empty() {
+        return Ok(false);
+    }
+    state.check_impure()?;
+    state.borrow_mut().props = updated.into();
+    Ok(changed)
 }

@@ -1120,8 +1120,17 @@ define_dispatch!(
                 let coding = checked_coding_name(interp, &args[1])?
                     .map(|_| args[1].as_symbol().expect("validated symbol").to_string());
                 let nocopy = args.get(2).is_some_and(Value::is_truthy);
-                let decoded =
-                    decode_coding_text(interp, &args[0], coding.as_deref(), nocopy, false, env)?;
+                // code_convert_string's ASCII shortcut applies only when
+                // returning a string, never when inserting into a buffer.
+                let buffer_destination = args.get(3).is_some_and(|buffer| !buffer.is_nil());
+                let decoded = decode_coding_text(
+                    interp,
+                    &args[0],
+                    coding.as_deref(),
+                    nocopy,
+                    buffer_destination,
+                    env,
+                )?;
                 if let Some(buffer) = args.get(3)
                     && !buffer.is_nil()
                 {

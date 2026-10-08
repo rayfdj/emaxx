@@ -1,0 +1,182 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "original_broad": {
+      "status": "failed",
+      "passed": 839,
+      "failed": 9,
+      "ignored": 0,
+      "inputs_verified": 418,
+      "failing_names": [
+        "lisp::bytecode::vm::native_surface_tests::byte_code_argument_prologue_preserves_string_identity",
+        "lisp::bytecode::vm::native_surface_tests::byte_code_direct_string_arguments_are_mutable_lisp_objects",
+        "lisp::bytecode::vm::native_surface_tests::make_byte_code_object_is_callable",
+        "lisp::primitives::tests::bytecode_code_mutation_during_active_call_matches_gnu",
+        "lisp::primitives::tests::char_charset_family_follows_charset_c",
+        "lisp::primitives::tests::char_charset_restriction_narrows_to_charset_list_or_coding_system",
+        "lisp::primitives::tests::commandp_follows_fcommandp_order_and_property_error",
+        "lisp::primitives::tests::defvaralias_follows_eval_c",
+        "lisp::primitives::tests::quoting_style_reaches_message_error_text_and_display_table"
+      ],
+      "inventory_verified": 848,
+      "retained_files": [
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source215-gate-libtest",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source215-broad-retained-inputs/source215-gate-libtest",
+          "sha256": "dd5a53cfa026b7d820d0963d82290488647c915509c9903a4099490ecdbe5f89",
+          "bytes": 29299424
+        },
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source215/loadup-dd5a53cf-44409a21.pdmp",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source215-broad-retained-inputs/loadup-dd5a53cf-44409a21.pdmp",
+          "sha256": "9c37726023b86a8ad792b2295f0780208120fc6cb5e74d929030b77bad3b270a",
+          "bytes": 22343520
+        }
+      ],
+      "raw_hashes": {
+        "source215-gate-broad.log": "4d5e2e8229566e4055e37d32aa44a03227ce2496789db73fa8252aa1221da8e1",
+        "source215-gate-broad-command.json": "b7bfc72e9f9e4d1fdfbaaa22adac9501ba48e54286da78d0beff72431354f8ce",
+        "source215-gate-broad-result.json": "59c6d58cd3934df94f4332cb3dadc2f4e304bc13db3705fc83a13b3325a4a018",
+        "source215-validation-result.json": "cdf3bf0b9dae19a7d771d05a8990c39e73dec4ebc3628271cf3f4113b6523fe0"
+      },
+      "qualification": "Original broader draft run, with all raw names/verdicts checked. Five failures occur at the GNU expected-output check before testing Emaxx; the helper omitted the ordinary grouped gate LANG=C/LC_ALL=C settings, requiring a separate controlled replay. Three bytecode unit fixtures supply multibyte code strings and two also supply obsolete list-form vector literals; validity must be checked against GNU before repair. The active-call code mutation failure remains a runtime defect. Retained image is a post-run file, not a per-test use transcript. No complete validation or performance claim."
+    },
+    "diagnosis": {
+      "locale_replay": "five passed, unchanged source and assertions",
+      "invalid_constructor_cases": 4,
+      "valid_original_contracts": "increment, repeated identity, shared text/property mutation",
+      "original_wrapper": "failed: expected string print omitted its newly installed text property; raw GNU output and failed expectation preserved",
+      "verified_actual_output": "((t t nil nil) ((error \"Invalid byte-code object\") (error \"Invalid byte-code object\") (error \"Invalid byte-code object\") (error \"Invalid byte-code object\")) 42 (t t) (#(\"Original\" 0 1 (field shared)) shared))",
+      "inputs_verified": 418,
+      "qualification": "Separate controlled replay establishes the helper locale omission. GNU rejects all three legacy unit-test constructor inputs and the unibyte/list-vector variant; proper unibyte strings and ordinary vectors preserve the original call/identity/mutation contracts. No runtime constructor relaxation is justified. Active-call mutation remains failed; no complete validation or performance claim."
+    }
+  },
+  "archive": {
+    "path": "source215-broad-failure-and-diagnosis.tar.gz",
+    "bytes": 229830,
+    "sha256": "8d4d1ceee483188406912140474f7089ac6a7b60d8674cb6b195f03506f99c37"
+  },
+  "files": [
+    {
+      "path": "audit-source215-broad.py",
+      "bytes": 2917,
+      "sha256": "f921dbd392d54f6912e8d643f958a3bcf7ad833e497258d4f0e42e8df9832f73"
+    },
+    {
+      "path": "audit-source215-diagnosis.py",
+      "bytes": 2670,
+      "sha256": "1641cc6256ca493a2d483f17a30fdf6b095fb6345500cdd47163ac29d674c195"
+    },
+    {
+      "path": "diagnose-source215-broad.py",
+      "bytes": 4589,
+      "sha256": "c67cc7fea8b19cc50a093b35f155250725e8f42e143005c242f2ce8ae2222e1a"
+    },
+    {
+      "path": "package-source207-frozen-and216-draft.py",
+      "bytes": 3755,
+      "sha256": "6bca116224a98ad01566c6e753cdd2037895abc9325e7272f166f6de234e970c"
+    },
+    {
+      "path": "source215-base.json",
+      "bytes": 1057,
+      "sha256": "afa24c9ead6885a851c9ab1028555040a7c518f89b7da7b0f115ce71a2865f79"
+    },
+    {
+      "path": "source215-broad-diagnosis-audit.json",
+      "bytes": 1033,
+      "sha256": "81d5940bf7ff289f347255ec40ce20155c9b4a5b97664926e1eb7b9e40428c1d"
+    },
+    {
+      "path": "source215-broad-failure-audit.json",
+      "bytes": 2824,
+      "sha256": "f6c8711196815fedc4d60ac235e8322fa3e8df405c6d25ac048453a548a608be"
+    },
+    {
+      "path": "source215-complete.patch",
+      "bytes": 387486,
+      "sha256": "482a101becc574b928a744a9191fc1460183f2558a808171520001086020b45b"
+    },
+    {
+      "path": "source215-constructor-fixtures-command.json",
+      "bytes": 1159,
+      "sha256": "118b6a190dcb522275c5621a95932807ed7015294db3e9130bc6bab0643f69b7"
+    },
+    {
+      "path": "source215-constructor-fixtures-result.json",
+      "bytes": 517,
+      "sha256": "9df1875f77a1c1bad6b7f281752994f4665ec2052bd619f280794717d6103649"
+    },
+    {
+      "path": "source215-constructor-fixtures.el",
+      "bytes": 1308,
+      "sha256": "29928990db741f05945641e0380c7bf2fb6bb72e2636168a4849e885a113e5de"
+    },
+    {
+      "path": "source215-constructor-fixtures.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source215-constructor-fixtures.stdout",
+      "bytes": 208,
+      "sha256": "e0be4214a5861dc4bdefdcbe4255719bcd72c7ddca62e001bbacb6a569d5041e"
+    },
+    {
+      "path": "source215-gate-broad-command.json",
+      "bytes": 157299,
+      "sha256": "b7bfc72e9f9e4d1fdfbaaa22adac9501ba48e54286da78d0beff72431354f8ce"
+    },
+    {
+      "path": "source215-gate-broad-result.json",
+      "bytes": 85,
+      "sha256": "59c6d58cd3934df94f4332cb3dadc2f4e304bc13db3705fc83a13b3325a4a018"
+    },
+    {
+      "path": "source215-gate-broad.log",
+      "bytes": 104849,
+      "sha256": "4d5e2e8229566e4055e37d32aa44a03227ce2496789db73fa8252aa1221da8e1"
+    },
+    {
+      "path": "source215-gate-inventory.txt",
+      "bytes": 261840,
+      "sha256": "e93074ac14510a10231ac1fbbf9d42eea2a41effc35c5b27e16047b0d52e4301"
+    },
+    {
+      "path": "source215-locale-replay-command.json",
+      "bytes": 2691,
+      "sha256": "83713daae2582da66c5a930d47bee56ef72fc67e9dd57aca70e4292f3d6d9c1e"
+    },
+    {
+      "path": "source215-locale-replay-result.json",
+      "bytes": 111,
+      "sha256": "ea3c2ed08e0a550b192c557dfa7999b34269d7366ec534b1d7c171b7d9278d8e"
+    },
+    {
+      "path": "source215-locale-replay.log",
+      "bytes": 634,
+      "sha256": "92e990d0bd8fccd8ab8d0e042d3205c633cead40aa5d8b1e5b4736f080b61407"
+    },
+    {
+      "path": "source215-manifest.json",
+      "bytes": 47503,
+      "sha256": "25c2a87de5d00ef60769ce767209638da05b8f349f2353eb9a1255ec215bf784"
+    },
+    {
+      "path": "source215-validation-driver.log",
+      "bytes": 18873,
+      "sha256": "f8c435ed407da0dcf3608019c7ef942c9cd1de05036fc2645c295347116310f8"
+    },
+    {
+      "path": "source215-validation-result.json",
+      "bytes": 1036,
+      "sha256": "cdf3bf0b9dae19a7d771d05a8990c39e73dec4ebc3628271cf3f4113b6523fe0"
+    },
+    {
+      "path": "test-bytecode-broad215.py",
+      "bytes": 2995,
+      "sha256": "3c637d5fd8ccd97e6484b39cff72a93c25524aab306156d891a2e75bb2ca49a4"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

@@ -1,0 +1,67 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "source_inputs": 410,
+    "macos_full_rust_pid": 43352,
+    "macos_full_terminal_pid": 43354,
+    "qualification": "Launch records only, not results. Source checkout, helpers and artifacts must remain frozen until associated children finish. Exact published-head Linux validation still required."
+  },
+  "archive": {
+    "path": "source204-complete-validation-start.tar.gz",
+    "bytes": 28493,
+    "sha256": "f64ace6462e6cdbd6122b6e63b8cf69b0734ec938f9f2a2fe6ad69804183a197"
+  },
+  "files": [
+    {
+      "path": "package-source204-selected-and-source201-completion.py",
+      "bytes": 3915,
+      "sha256": "1d680d5a8f2a6b0f85cd715bf6c7c56d5b9b1bbbce17506d6b54804189699f8f"
+    },
+    {
+      "path": "run-source204-full-gate.py",
+      "bytes": 3207,
+      "sha256": "e08e372d932c8e3df0b7915f5f6f3640a40f89ad8760aea012e1a86f1843901f"
+    },
+    {
+      "path": "run-source204-full-tty.py",
+      "bytes": 3344,
+      "sha256": "0763914c210ff1005c6fbafd21e99b549f23da5407e1d68e2a7f88617b542941"
+    },
+    {
+      "path": "source204-applied-source-audit.json",
+      "bytes": 382,
+      "sha256": "47263127df36e7f5c82c9d3bc34c3807682082c7e52914c91881ba7e13eba2b9"
+    },
+    {
+      "path": "source204-correct-mode-selected-evidence-audit.json",
+      "bytes": 4766,
+      "sha256": "4abda22799229270b07fb5137b6cabf4d0b542cc5e35e88974a53c32d51b64b1"
+    },
+    {
+      "path": "source204-full-gate-command.json",
+      "bytes": 1417,
+      "sha256": "55c516d7a3072b9af88feb1b84dc89a13775a1db24211bb2bbed79d6fd00616e"
+    },
+    {
+      "path": "source204-full-gate-launch.json",
+      "bytes": 976,
+      "sha256": "4ec5248cd25cc12409193151cabf3fb8875dfe8cfb842e6a0d8bb6f37aba8f2f"
+    },
+    {
+      "path": "source204-full-tty-launch.json",
+      "bytes": 975,
+      "sha256": "d5dbcb53a26596c8e3c6f9b85db9c1b32684f86b53897e1b03b2e67f02df7a75"
+    },
+    {
+      "path": "source204-full-ttydiff-command.json",
+      "bytes": 8859,
+      "sha256": "7a1aa45ce34c63414148013abca96138369bd8e38d907b9de019d4663cd469e5"
+    },
+    {
+      "path": "source204-manifest.json",
+      "bytes": 46477,
+      "sha256": "3703327bef6ff1f287a91fc505e8ae8439902e00381af8061357a5963f62050c"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

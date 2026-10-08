@@ -1,0 +1,110 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "all focused gate controls passed",
+    "passed": 17,
+    "failed": 0,
+    "ignored": 0,
+    "inputs_verified": 425,
+    "binary_sha256": "bea1d8843bf42d98f59b899a89e89645d441c7da3bfb53de163835ffd1d2e1a1",
+    "qualification": "Original active-call mutation and string surrogate assertions pass unchanged, alongside new live-fetch and actual-payload controls. Gate broader and release results are separate; no complete validation or performance claim.",
+    "raw_hashes": {
+      "source223-gate-controls-command.json": "dc08314fd1e6b547d3de74a38ef6d16a32bd68fb917de304b9ca5d390555dfdc",
+      "source223-gate-controls-result.json": "ad9dbd3f2dd8871f9a1b641732b4fb156947efb262906480bc502d7162b012c1",
+      "source223-gate-controls.log": "ab68154529bf36e6865c84fa75b8b22c6c815909c5e4c36fa2c419c876bc4dc7"
+    }
+  },
+  "archive": {
+    "path": "source223-direct-bytecode-focused.tar.gz",
+    "bytes": 133463,
+    "sha256": "72df81b0a347c02d3e77a6f5ebeaaae7fda2f58c80bee61a3ee1601c3783eacd"
+  },
+  "files": [
+    {
+      "path": "package-source223-focused.py",
+      "bytes": 1887,
+      "sha256": "9babb123e8de83c833c04d10848cfcc6641baa726fac5b1e04e1c7f99cd221a2"
+    },
+    {
+      "path": "run-source223-release.py",
+      "bytes": 993,
+      "sha256": "1439b452173dce4da4fcbc7e48ddbdadf168369f84c116b5d13ed3fc57f5e483"
+    },
+    {
+      "path": "run-string-validation222.py",
+      "bytes": 1342,
+      "sha256": "416ed61740b0af28d8966c0d5413be95017760ec388c4459b3840ab2a974c019"
+    },
+    {
+      "path": "source223-gate-broad-command.json",
+      "bytes": 169338,
+      "sha256": "c6f3c184bffa0c71c3cc3ec3219acd7f5a3ea18e06f91a99cc998fa874258bb3"
+    },
+    {
+      "path": "source223-gate-build-command.json",
+      "bytes": 1152,
+      "sha256": "4437d670d42dc436726102e4c1b0e767017b7eb935d757950e6e6cc2a64e08eb"
+    },
+    {
+      "path": "source223-gate-build-result.json",
+      "bytes": 85,
+      "sha256": "23929b2cb9393484ae9edd61054f1902800d6c78b31223df885af4bcd980b11d"
+    },
+    {
+      "path": "source223-gate-build.log",
+      "bytes": 214391,
+      "sha256": "4695a8fc7f0f1170d3a594b29dd625fa37a1272b9e288e6132638e387ad24392"
+    },
+    {
+      "path": "source223-gate-controls-audit.json",
+      "bytes": 805,
+      "sha256": "84b2c516fa6c0539352632173ef35fbd59b34875367a1b736bbfa2b513f4c4e3"
+    },
+    {
+      "path": "source223-gate-controls-command.json",
+      "bytes": 4546,
+      "sha256": "dc08314fd1e6b547d3de74a38ef6d16a32bd68fb917de304b9ca5d390555dfdc"
+    },
+    {
+      "path": "source223-gate-controls-result.json",
+      "bytes": 90,
+      "sha256": "ad9dbd3f2dd8871f9a1b641732b4fb156947efb262906480bc502d7162b012c1"
+    },
+    {
+      "path": "source223-gate-controls.log",
+      "bytes": 1848,
+      "sha256": "ab68154529bf36e6865c84fa75b8b22c6c815909c5e4c36fa2c419c876bc4dc7"
+    },
+    {
+      "path": "source223-gate-inventory.txt",
+      "bytes": 262325,
+      "sha256": "b45c3c2e460c4ebf82f9dbdfc710e06d05ef00ed73911bcba8cef9016e21093f"
+    },
+    {
+      "path": "source223-launch.json",
+      "bytes": 271,
+      "sha256": "03d1e35f55ae69dcf48d579892aa7fb5032f9608fbb1def7da1350530305bffe"
+    },
+    {
+      "path": "source223-manifest.json",
+      "bytes": 48316,
+      "sha256": "33e17bcfde82cd00564edc6ad429a0c6a90a54027c004019d8f409bc80d5a602"
+    },
+    {
+      "path": "source223-release-launch.json",
+      "bytes": 406,
+      "sha256": "5c5069e6363495de170f8b837c99f209e1dba0d200b55d1789e6699c8497b6fc"
+    },
+    {
+      "path": "test-string-broad219.py",
+      "bytes": 3059,
+      "sha256": "cb4be313f99f997d571bdc0aa77f964ab5475ba9d6477127471c9d59c3b7154f"
+    },
+    {
+      "path": "test-string-controls222.py",
+      "bytes": 4261,
+      "sha256": "f2a4e001511a6a64362e89164ecba5e03d6e9ebe4ad935168bc5e5f3b38d715e"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

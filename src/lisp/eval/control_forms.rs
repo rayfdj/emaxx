@@ -279,7 +279,7 @@ impl Interpreter {
                 if self.binding_is_dynamic_symbol(&name, env) {
                     self.specbind_symbol(&name, *value, env)?;
                 } else {
-                    lexenv = Self::cons_binding(name, Self::stored_value(*value), lexenv);
+                    lexenv = Self::cons_binding(name, *value, lexenv);
                 }
             }
             // Flet compares the constructed environment with the current
@@ -352,7 +352,7 @@ impl Interpreter {
                 } else {
                     let newenv = Self::cons_binding(
                         name,
-                        Self::stored_value(value),
+                        value,
                         crate::lisp::types::current_environment_value(env),
                     );
                     // `EQ (Vinternal_interpreter_environment, lexenv)': the

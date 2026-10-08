@@ -662,57 +662,13 @@ pub(crate) fn string_sequence_value(string: &StringLike, ch: char) -> Value {
     Value::Integer(code)
 }
 
-pub(crate) fn concat_character_value(value: &Value) -> Result<(char, bool), LispError> {
-    let Kind::Integer(code) = value.kind() else {
-        return Err(LispError::SignalValue(Value::list([
-            Value::Symbol("wrong-type-argument".into()),
-            Value::Symbol("characterp".into()),
-            *value,
-        ])));
-    };
-    if code < 0 {
-        return Err(LispError::SignalValue(Value::list([
-            Value::Symbol("wrong-type-argument".into()),
-            Value::Symbol("characterp".into()),
-            *value,
-        ])));
-    }
-    if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&code) {
-        let byte = (code - RAW_BYTE8_BASE as i64) as u8;
-        return Ok((raw_byte_regex_char(byte), false));
-    }
-    let Some(ch) = char::from_u32(code as u32) else {
-        return Err(LispError::SignalValue(Value::list([
-            Value::Symbol("wrong-type-argument".into()),
-            Value::Symbol("characterp".into()),
-            *value,
-        ])));
-    };
-    Ok((ch, !is_raw_byte_regex_char(ch) && (code as u32) > 0x7F))
-}
-
-pub(crate) fn concat_sequence_string(
-    interp: &Interpreter,
-    value: &Value,
-) -> Result<(String, bool), LispError> {
-    let items = sequence_values(interp, value)?;
-    let mut text = String::new();
-    let mut multibyte = false;
-    for item in items {
-        let (ch, char_multibyte) = concat_character_value(&item)?;
-        text.push(ch);
-        multibyte |= char_multibyte;
-    }
-    Ok((text, multibyte))
-}
-
 pub(crate) fn sequence_string_like(value: &Value) -> Option<StringLike> {
     match value.kind() {
-        Kind::String(_) | Kind::StringObject(_) => string_like(value),
+        Kind::StringObject(_) => string_like(value),
         Kind::Cons(_) => {
             let items = value.to_vec().ok()?;
             if matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "vector-literal")
-                && matches!(items.get(1).map(|v| v.kind()), Some(Kind::String(_)))
+                && matches!(items.get(1).map(|v| v.kind()), Some(Kind::StringObject(_)))
             {
                 string_like(value)
             } else {
@@ -732,8 +688,7 @@ pub(crate) fn single_key_description_text(
         Kind::Integer(code) => Ok(describe_key_code(code)),
         Kind::Symbol(symbol) => Ok(describe_symbolic_key(&symbol, no_angles)),
         Kind::T => Ok(describe_symbolic_key("t", no_angles)),
-        Kind::String(text) => Ok(text.to_string()),
-        Kind::StringObject(state) => Ok(state.borrow().text.clone()),
+        Kind::StringObject(state) => Ok(state.borrow().text()),
         Kind::Cons(_) => list_event_key_description_text(key, no_angles),
         _ => Err(LispError::TypeError(
             "integer, symbol, or string".into(),
@@ -784,20 +739,8 @@ pub(crate) fn list_event_key_description_text(
                 ))
             }
         }
-        Kind::String(text) => {
-            if let Some(ch) = event_name_character(&text) {
-                Ok(describe_key_code(ch as i64 | bits))
-            } else if bits == 0 {
-                Ok(text.to_string())
-            } else {
-                Ok(describe_symbolic_key(
-                    &symbolic_kbd_event(bits, &text),
-                    no_angles,
-                ))
-            }
-        }
         Kind::StringObject(state) => {
-            let text = state.borrow().text.clone();
+            let text = state.borrow().text();
             if let Some(ch) = event_name_character(&text) {
                 Ok(describe_key_code(ch as i64 | bits))
             } else if bits == 0 {

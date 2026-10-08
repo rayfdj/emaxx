@@ -1,0 +1,78 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "selected_scenarios": 17,
+    "screen_comparisons": 34,
+    "raw_inventory_and_artifact_hashes_audited": true,
+    "full_terminal_supervisor": 24260,
+    "qualification": "Selected terminal results pass; the full 226-scenario run is still in progress. GNU source/native ABI match does not establish frozen Darwin executable identity or performance."
+  },
+  "archive": {
+    "path": "source198-selected-terminal.tar.gz",
+    "bytes": 27745,
+    "sha256": "ad5c5dddc74f06b25e354d5750fc2917fbf0b78179c3f8a0d53360393bc9e615"
+  },
+  "files": [
+    {
+      "path": "audit-source198-selected-tty.py",
+      "bytes": 1929,
+      "sha256": "66b2456f5bf5d02fee6d0cb24141bb7cdaa35fee7c32f99bfb97f3e695d554af"
+    },
+    {
+      "path": "run-source198-full-tty.py",
+      "bytes": 3308,
+      "sha256": "b97b64cb4e929a713f06d733581201c717136b507008e4fa17bb5a325a9a60ee"
+    },
+    {
+      "path": "run-source198-selected-tty.py",
+      "bytes": 3204,
+      "sha256": "29a97aeb461141177338003c8525b6a246665d4e8903c8446ae172d6cb89c9cb"
+    },
+    {
+      "path": "source198-full-tty-launch.json",
+      "bytes": 323,
+      "sha256": "33d779214f3386dd86c91be9e4d8a59bd573ef1f540b6bd2cb0f0acfb9aec138"
+    },
+    {
+      "path": "source198-full-ttydiff-command.json",
+      "bytes": 8865,
+      "sha256": "580eda3504f6a66e09380ac137fd6f9d5f4371c2ce1d65a743293e3c91d6ee21"
+    },
+    {
+      "path": "source198-manifest.json",
+      "bytes": 45871,
+      "sha256": "a9000dc6326ee5667f30d82920a29764c98e1dd782fcd71d3efd5c7b0c980922"
+    },
+    {
+      "path": "source198-selected-tty-command.json",
+      "bytes": 3419,
+      "sha256": "57e0f07327be27cf79316c044c5da946c07a35c74957a4d20743fa9067b09f56"
+    },
+    {
+      "path": "source198-selected-tty-driver.log",
+      "bytes": 102,
+      "sha256": "d08b5c094db77de99011bc2053fb2580b877596f42fd1f6af014858a381fc3ce"
+    },
+    {
+      "path": "source198-selected-tty-evidence-audit.json",
+      "bytes": 2281,
+      "sha256": "873c3e695d78c406083cb20b26e48e430946ddb5c64146b5839e34ba4d7f245f"
+    },
+    {
+      "path": "source198-selected-tty-result.json",
+      "bytes": 111,
+      "sha256": "b0fa16bd9c84589168608e59bf11c6ff56a60b8c2afe55f228c5655cf5b56512"
+    },
+    {
+      "path": "source198-selected-tty-supervisor.json",
+      "bytes": 327,
+      "sha256": "0c8b02b16fca0ae308a2701695c1850a62d60fde674fc89850f7b44e1e985c9d"
+    },
+    {
+      "path": "source198-selected-tty.log",
+      "bytes": 3152,
+      "sha256": "1324f9c0344f3e0188a9f01f3613ca36f683db257d0df1f67cc7901ee06b1fe5"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

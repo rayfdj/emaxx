@@ -797,13 +797,7 @@ define_dispatch!(
                     };
                 }
                 Ok(match function.kind() {
-                    Kind::Lambda(lambda) => lambda.command_modes().unwrap_or(Value::Nil),
-                    Kind::Record(id) => interp
-                        .find_record(id)
-                        .filter(|record| record.kind == crate::lisp::eval::RecordKind::Closure)
-                        .and_then(|record| record.slots.get(5))
-                        .and_then(crate::lisp::types::LambdaValue::command_modes_from_slot)
-                        .unwrap_or(Value::Nil),
+                    Kind::Closure(lambda) => lambda.command_modes().unwrap_or(Value::Nil),
                     _ => Value::Nil,
                 })
             }
@@ -861,14 +855,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 match args[0].kind() {
                     Kind::BuiltinFunc(subr) => Ok(subr.arity_value()),
-                    Kind::Record(id)
-                        if interp.find_record(id).is_some_and(|record| {
-                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
-                        }) =>
-                    {
-                        let record = interp.find_record(id).expect("record checked above");
-                        Ok(Value::cons(record.slots[1], record.slots[2]))
-                    }
+                    Kind::NativeFunction(function) => Ok(function.arity_value()),
                     // GNU data.c CHECK_SUBR signals the subrp predicate with
                     // the offending value itself.
                     other => Err(crate::lisp::primitives::wrong_type_argument(
@@ -897,17 +884,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 match args[0].kind() {
                     Kind::BuiltinFunc(symbol) => Ok(Value::string(symbol.as_str())),
-                    Kind::Record(id)
-                        if interp.find_record(id).is_some_and(|record| {
-                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
-                        }) =>
-                    {
-                        let name = crate::lisp::native_comp::function_name(interp, id.id)
-                            .ok_or_else(|| {
-                                LispError::Signal("native subr is not registered".into())
-                            })?;
-                        Ok(Value::string(&name))
-                    }
+                    Kind::NativeFunction(function) => Ok(Value::string(function.name())),
                     other => Err(crate::lisp::primitives::wrong_type_argument(
                         "subrp",
                         other.value(),
@@ -918,18 +895,11 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 match args[0].kind() {
                     Kind::BuiltinFunc(_) => Ok(Value::T),
-                    Kind::Record(id)
-                        if interp.find_record(id).is_some_and(|record| {
-                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
-                        }) =>
-                    {
-                        let record = interp.find_record(id).expect("record checked above");
-                        Ok(if record.slots[10].is_truthy() {
-                            record.slots[9]
-                        } else {
-                            Value::T
-                        })
-                    }
+                    Kind::NativeFunction(function) => Ok(if function.is_dynamic() {
+                        function.lambda_list()
+                    } else {
+                        Value::T
+                    }),
                     other => Err(crate::lisp::primitives::wrong_type_argument(
                         "subrp",
                         other.value(),
@@ -1039,26 +1009,17 @@ define_dispatch!(
             }
             "native-comp-function-p" => {
                 need_args(name, args, 1)?;
-                Ok(
-                    if matches!(args[0].kind(), Kind::Record(id) if interp.find_record(id).is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction))
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                Ok(if matches!(args[0].kind(), Kind::NativeFunction(_)) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "subr-native-comp-unit" => {
                 need_args(name, args, 1)?;
                 match args[0].kind() {
                     Kind::BuiltinFunc(_) => Ok(Value::Nil),
-                    Kind::Record(id)
-                        if interp.find_record(id).is_some_and(|record| {
-                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
-                        }) =>
-                    {
-                        Ok(interp.find_record(id).expect("record checked above").slots[8])
-                    }
+                    Kind::NativeFunction(function) => Ok(function.unit()),
                     other => Err(crate::lisp::primitives::wrong_type_argument(
                         "subrp",
                         other.value(),
@@ -1067,48 +1028,23 @@ define_dispatch!(
             }
             "native-comp-unit-file" => {
                 need_args(name, args, 1)?;
-                let Kind::Record(id) = args[0].kind() else {
-                    return Err(LispError::TypeError(
+                let Kind::NativeCompUnit(unit) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument(
                         "native-comp-unit".into(),
-                        args[0].type_name(),
+                        args[0],
                     ));
                 };
-                let record = interp.find_record(id).ok_or_else(|| {
-                    LispError::TypeError("native-comp-unit".into(), args[0].type_name())
-                })?;
-                if record.kind != crate::lisp::eval::RecordKind::NativeCompUnit {
-                    return Err(LispError::TypeError(
-                        "native-comp-unit".into(),
-                        args[0].type_name(),
-                    ));
-                }
-                Ok(record.slots.first().cloned().unwrap_or(Value::Nil))
+                Ok(unit.field(0))
             }
             "native-comp-unit-set-file" => {
                 need_args(name, args, 2)?;
-                let Kind::Record(id) = args[0].kind() else {
-                    return Err(LispError::TypeError(
+                let Kind::NativeCompUnit(unit) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument(
                         "native-comp-unit".into(),
-                        args[0].type_name(),
+                        args[0],
                     ));
                 };
-                let Some(record) = interp.find_record_mut(id) else {
-                    return Err(LispError::TypeError(
-                        "native-comp-unit".into(),
-                        args[0].type_name(),
-                    ));
-                };
-                if record.kind != crate::lisp::eval::RecordKind::NativeCompUnit {
-                    return Err(LispError::TypeError(
-                        "native-comp-unit".into(),
-                        args[0].type_name(),
-                    ));
-                }
-                if record.slots.is_empty() {
-                    record.slots.push(args[1]);
-                } else {
-                    record.slots[0] = args[1];
-                }
+                unit.set_field(0, args[1]);
                 Ok(args[0])
             }
             "decode-char" => {
@@ -1727,7 +1663,13 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                find_coding_systems_region_internal_value(interp, &args[0], &args[1], args.get(2))
+                find_coding_systems_region_internal_value(
+                    interp,
+                    &args[0],
+                    &args[1],
+                    args.get(2),
+                    env,
+                )
             }
             "decode-sjis-char" => {
                 // coding.c Fdecode_sjis_char, converting through the

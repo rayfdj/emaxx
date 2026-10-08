@@ -1,0 +1,71 @@
+{
+  "status": "Source197 cargo check --locked --all-targets --all-features, fmt, Clippy -D warnings and diff checks pass.",
+  "qualification": "Compiler/static evidence only. Runtime tests and ordinary comparisons are queued behind source196 selected validation. No performance or full-goal completion claim.",
+  "archive": {
+    "path": "source197-strict.tar.gz",
+    "bytes": 2639,
+    "sha256": "01c8e13c03ec5230f2a6ca095e7d34188dcb8eab4f3c62d9de19d17139c0763b"
+  },
+  "files": [
+    {
+      "path": "source197-check-command.json",
+      "bytes": 487,
+      "sha256": "88bae3065ec78f9ec4a9a8c701983e0252053e54831bab93be9b5c8171a19ebd"
+    },
+    {
+      "path": "source197-check-result.json",
+      "bytes": 89,
+      "sha256": "56768c56bd68752b479014f00420dfa9636b709ae61cc2234555f318210e5b5a"
+    },
+    {
+      "path": "source197-check.log",
+      "bytes": 5125,
+      "sha256": "469aea8814965b328b0396a939980dbff600d888914310f8ca8e809b3536ecc9"
+    },
+    {
+      "path": "source197-fmt-command.json",
+      "bytes": 415,
+      "sha256": "9b63c4d3424bfd9028abcd2bd3e44b278185ecf4f13b8d1c4f87f09dd7bb0e43"
+    },
+    {
+      "path": "source197-fmt-result.json",
+      "bytes": 89,
+      "sha256": "ec9b3322bb6336baeeafefe78f6ac064f4cacf400ba58ab25d52b2d393aa1989"
+    },
+    {
+      "path": "source197-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source197-clippy-command.json",
+      "bytes": 475,
+      "sha256": "6ecc922bcb253b24e83eaca14d1c2518e95e9ecf8187e575fa9a3f88f126aa1d"
+    },
+    {
+      "path": "source197-clippy-result.json",
+      "bytes": 83,
+      "sha256": "87bb2a02126ed1268e8f86b8125b4ca4bf05b597a873fb67bed19afecf6981e6"
+    },
+    {
+      "path": "source197-clippy.log",
+      "bytes": 199,
+      "sha256": "dbe93d6c02629b03aa5a2da170f0da97e493af9ae5e9467c32413435f5901cb5"
+    },
+    {
+      "path": "source197-diff-command.json",
+      "bytes": 391,
+      "sha256": "dabffa14af01cdf7e26b3c2d035ef8a530f3bee606fb2c168e508e7c724ce9cd"
+    },
+    {
+      "path": "source197-diff-result.json",
+      "bytes": 90,
+      "sha256": "b2beee0e09ecea18776652067ad35676339c0411c724304befba84ea42b7235e"
+    },
+    {
+      "path": "source197-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

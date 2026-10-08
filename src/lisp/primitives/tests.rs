@@ -23,6 +23,42 @@ fn call_via_lisp(
 }
 
 #[test]
+fn read_from_string_preserves_gnu_range_error_arguments_and_order() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/read-from-string-range-errors.el"),
+        include_str!("../../../tests/fixtures/read-from-string-range-errors.expected").trim_end(),
+        "reader bounds, negative indices, error argument identity and type-check order",
+    );
+}
+
+#[test]
+fn reader_consumes_internal_character_bytes_without_host_text_loss() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-internal-character-codes.el"),
+        include_str!("../../../tests/fixtures/reader-internal-character-codes.expected").trim_end(),
+        "string and character reads, byte offsets, symbol identity and cyclic data",
+    );
+}
+
+#[test]
+fn native_printed_string_constants_keep_full_character_codes_and_sharing() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/native-printed-string-constants.el"),
+        include_str!("../../../tests/fixtures/native-printed-string-constants.expected").trim_end(),
+        "native relocation printing and reload preserve actual strings and shared constants",
+    );
+}
+
+#[test]
+fn printer_preserves_full_character_codes_in_strings_buffers_and_callbacks() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/printer-full-range-streams.el"),
+        include_str!("../../../tests/fixtures/printer-full-range-streams.expected").trim_end(),
+        "printer codes, escaping, round-trip reading and real output destinations",
+    );
+}
+
+#[test]
 fn native_numeric_predicates_and_sorting_recognize_all_bignums() {
     assert_oracle_contract_matches_interpreter(
         r#"(progn
@@ -126,6 +162,47 @@ fn native_loader_interns_symbols_inside_relocation_vectors() {
                 (delete-directory output t))))"#,
         "(t t)",
         "native relocation vectors register their read symbols",
+    );
+}
+
+#[test]
+fn native_subr_c_names_follow_gnu_nul_termination_without_changing_symbols() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/native-subr-c-names.el"),
+        include_str!("../../../tests/fixtures/native-subr-c-names.expected").trim(),
+        "native C names terminate at NUL while actual Lisp symbol identity remains intact",
+    );
+}
+
+#[test]
+fn native_subr_consumers_preserve_commands_completion_properties_and_substitution() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/native-subr-consumers.el"),
+        include_str!("../../../tests/fixtures/native-subr-consumers.expected").trim(),
+        "native command recognition, direct completion tables, property identity and reader substitution",
+    );
+}
+
+#[test]
+fn native_unit_fields_preserve_gnu_printing_identity_properties_and_errors() {
+    let program = include_str!("../../../tests/fixtures/native-unit-authority.el");
+    // GNU prints the unit's real compiler-version optimization metadata.
+    // Compare the complete live output, including that build-owned field;
+    // do not hard-code one platform's libgccjit version or normalize it.
+    let expected = upstream_oracle_stdout(&format!("(prin1 {program})"));
+    assert_oracle_contract_matches_interpreter(
+        program,
+        &expected,
+        "native unit authoritative fields, native GC, identity, properties, printing and errors",
+    );
+}
+
+#[test]
+fn native_subr_authority_preserves_gnu_metadata_calls_and_identity() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/native-subr-authority.el"),
+        include_str!("../../../tests/fixtures/native-subr-authority.expected").trim(),
+        "native subr fields, lexical and dynamic calls, GC, identity and ordering",
     );
 }
 
@@ -601,14 +678,19 @@ fn character_table_literal_materializes_nested_bytecode_decoder() {
     else {
         panic!("character-table syntax must produce a typed table");
     };
-    let Some(Kind::Record(decoder_id)) =
-        interp.char_table_extra_slot(table_id, 1).map(|v| v.kind())
+    let Some(Kind::Closure(decoder)) = interp.char_table_extra_slot(table_id, 1).map(|v| v.kind())
     else {
         panic!("the nested decoder must be a typed byte-code-function object");
     };
-    assert_eq!(
-        interp.find_record(decoder_id).map(|record| record.kind),
-        Some(crate::lisp::eval::RecordKind::Closure)
+    assert!(decoder.is_bytecode());
+}
+
+#[test]
+fn bytecode_constructor_preserves_gnu_field_validation_and_sharing() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-constructor-gnu-fields.el"),
+        include_str!("../../../tests/fixtures/bytecode-constructor-gnu-fields.expected").trim(),
+        "bytecode constructor field errors, shared slots, descriptors and extras",
     );
 }
 
@@ -670,11 +752,12 @@ fn func_arity_uses_gnu_symbolp_for_positioned_symbols() {
 
     let optional = positioned(&mut interp, "&optional", 2, &mut env);
     let argument = positioned(&mut interp, "argument", 3, &mut env);
-    let closure = interp.create_pseudovector(
-        crate::lisp::eval::RecordKind::Closure,
-        "byte-code-function",
-        vec![Value::list([optional, argument])],
-    );
+    let closure = Value::allocated_closure(&[
+        Value::list([optional, argument]),
+        Value::string("unexecuted argument descriptor probe"),
+        Value::vector([]),
+        Value::Integer(1),
+    ]);
     assert_eq!(
         call(&mut interp, "func-arity", &[closure], &mut env)
             .expect("read positioned byte-code argument descriptors"),
@@ -704,10 +787,10 @@ fn func_arity_uses_gnu_symbolp_for_positioned_symbols() {
         &mut env,
     )
     .expect("construct an interpreted closure with positioned parameters");
-    let Kind::Lambda(lambda) = interpreted.kind() else {
+    let Kind::Closure(lambda) = interpreted.kind() else {
         panic!("make-interpreted-closure must return a lambda")
     };
-    let visible_parameters = interp.interpreted_closure_slots(&lambda)[0];
+    let visible_parameters = lambda.parameters();
     assert_eq!(
         call(
             &mut interp,
@@ -887,7 +970,10 @@ fn subr_frontier_compare_strings_uses_gnu_simple_upcase_canonicalization() {
       (compare-strings "ẞ" nil nil "ß" nil nil t)))"#;
     assert_upstream_primitive_contract(program, "(t t)");
 
-    let mut interp = Interpreter::new();
+    // GNU loadup installs Unicode case mappings through characters.el.
+    // Bare C initialization contains only ASCII; the same buffer tables
+    // must drive both numeric upcase and compare-strings.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let form = Reader::new(&program[7..program.len() - 1])
         .read()
         .expect("comparison contract should parse")
@@ -897,6 +983,22 @@ fn subr_frontier_compare_strings_uses_gnu_simple_upcase_canonicalization() {
             .eval(&form, &mut crate::lisp::types::Env::new())
             .expect("comparison contract should evaluate"),
         Value::list([Value::T, Value::T])
+    );
+    drop(interp);
+    let mut bare = Interpreter::new();
+    assert_eq!(
+        bare.eval(&form, &mut crate::lisp::types::Env::new())
+            .expect("comparison under bare ASCII case tables"),
+        Value::list([Value::Integer(2), Value::Integer(1)]),
+    );
+    drop(bare);
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-comparison-case-table-initialization.el"),
+        include_str!(
+            "../../../tests/fixtures/string-comparison-case-table-initialization.expected"
+        )
+        .trim_end(),
+        "string-comparison-case-table-initialization",
     );
 }
 
@@ -3293,9 +3395,10 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let has_native_functions = interp.known_symbol_names().iter().any(|name| {
-        matches!(interp.raw_function_binding(name, &env).map(|v| v.kind()), Some(Kind::Record(id))
-            if interp.find_record(id).is_some_and(|record|
-                record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction))
+        matches!(
+            interp.raw_function_binding(name, &env).map(|v| v.kind()),
+            Some(Kind::NativeFunction(_))
+        )
     });
     let path = std::env::temp_dir().join(format!("emaxx-d11-boundary-{}.pdmp", std::process::id()));
     let _ = std::fs::remove_file(&path);
@@ -3579,9 +3682,12 @@ fn batch_startup_image_round_trip_or_explicit_native_image_limit() {
     })
     .expect("the loadup state");
     let has_native_functions = temacs.known_symbol_names().iter().any(|name| {
-        matches!(temacs.raw_function_binding(name, &crate::lisp::types::Env::new()).map(|v| v.kind()), Some(Kind::Record(id))
-            if temacs.find_record(id).is_some_and(|record|
-                record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction))
+        matches!(
+            temacs
+                .raw_function_binding(name, &crate::lisp::types::Env::new())
+                .map(|v| v.kind()),
+            Some(Kind::NativeFunction(_))
+        )
     });
     let path = std::env::temp_dir().join(format!("emaxx-d16-startup-{}.pdmp", std::process::id()));
     let _ = std::fs::remove_file(&path);
@@ -13850,6 +13956,51 @@ fn timers_run_inside_a_child_threads_sleep_with_its_bindings() {
     );
 }
 
+#[test]
+fn input_decode_general_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-general.el"),
+        include_str!("../../../tests/fixtures/input-decode-general.expected").trim(),
+        "live input decoding, long and symbolic sequences, callbacks and invalid returns",
+    );
+}
+
+#[test]
+fn input_decode_extra_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-extra.el"),
+        include_str!("../../../tests/fixtures/input-decode-extra.expected").trim(),
+        "nil and multi-event translations, idle fallback, defaults and collecting prefix mutation",
+    );
+}
+
+#[test]
+fn input_decode_pipeline_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-pipeline.el"),
+        include_str!("../../../tests/fixtures/input-decode-pipeline.expected").trim(),
+        "translation ordering, multi-event results, live command prefixes and length limits",
+    );
+}
+
+#[test]
+fn input_decode_reader_contract_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-reader-contract.el"),
+        include_str!("../../../tests/fixtures/input-decode-reader-contract.expected").trim(),
+        "generated suffixes, case fallback, prompt errors and nonlocal translator exits",
+    );
+}
+
+#[test]
+fn input_decode_case_state_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-case-state.el"),
+        include_str!("../../../tests/fixtures/input-decode-case-state.expected").trim(),
+        "returned event case, recorded command keys and shift translation state",
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn special_event_maps_use_live_lookup_through_collecting_filters() {
@@ -16824,8 +16975,8 @@ fn intern_uses_gnu_name_copy_and_type_check_boundaries() {
     )
     .expect("symbol-name returns the copied name");
     assert!(
-        matches!(copied.kind(), Kind::String(_)),
-        "Fpurecopy strips mutable string storage"
+        matches!(copied.kind(), Kind::StringObject(_)),
+        "Fpurecopy retains canonical string storage"
     );
     assert_eq!(string_text(&copied).expect("pure name string"), "pure-name");
     let hit = intern_in_obarray_with_name(&mut interp, &table, "pure-name", |_| {
@@ -16893,7 +17044,7 @@ fn make_symbol_creates_distinct_symbols_with_stable_visible_names() {
         &mut env,
     )
     .expect("symbol-name should preserve the visible name");
-    let (Kind::String(supplied), Kind::String(left), Kind::String(right)) =
+    let (Kind::StringObject(supplied), Kind::StringObject(left), Kind::StringObject(right)) =
         (supplied_name.kind(), left_name.kind(), right_name.kind())
     else {
         unreachable!("immutable symbol names")
@@ -18210,6 +18361,69 @@ fn completion_predicates_preserve_string_list_membership() {
 }
 
 #[test]
+fn substring_copies_canonical_bytes_properties_and_vector_fields() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/substring-character-storage.el"),
+        include_str!("../../../tests/fixtures/substring-character-storage.expected").trim(),
+        "substring character storage",
+    );
+}
+
+#[test]
+fn substring_validates_gnu_array_types_and_index_error_order() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/substring-argument-validation.el"),
+        include_str!("../../../tests/fixtures/substring-argument-validation.expected").trim(),
+        "substring argument validation",
+    );
+}
+
+#[test]
+fn substring_reversed_bounds_signal_without_host_panics() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/substring-reversed-bounds.el"),
+        include_str!("../../../tests/fixtures/substring-reversed-bounds.expected").trim(),
+        "substring reversed bounds",
+    );
+}
+
+#[test]
+fn mapconcat_preserves_canonical_bytes_and_character_sequences() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/canonical-mapconcat-storage.el"),
+        include_str!("../../../tests/fixtures/canonical-mapconcat-storage.expected").trim(),
+        "canonical mapconcat sequences, properties and callback mutation",
+    );
+}
+
+#[test]
+fn reader_hex_escapes_preserve_the_raw_byte_boundary_and_digit_count() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/reader-hex-byte-boundary.el"),
+        include_str!("../../../tests/fixtures/reader-hex-byte-boundary.expected").trim(),
+        "reader hexadecimal byte boundary",
+    );
+}
+
+#[test]
+fn concat_preserves_canonical_bytes_properties_and_sequence_characters() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/canonical-concat-storage.el"),
+        include_str!("../../../tests/fixtures/canonical-concat-storage.expected").trim(),
+        "canonical concatenation and Unicode buffer completion",
+    );
+}
+
+#[test]
+fn completion_results_preserve_gnu_encoding_properties_and_identity() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/completion-result-storage.el"),
+        include_str!("../../../tests/fixtures/completion-result-storage.expected").trim(),
+        "completion result storage and candidate selection",
+    );
+}
+
+#[test]
 fn case_folded_try_completion_preserves_unextended_input_spelling() {
     let program = r#"(let ((completion-ignore-case t))
                        (list
@@ -19296,8 +19510,7 @@ fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
         after.vector_slots - before.vector_slots,
         (std::mem::size_of::<crate::lisp::alloc::vectors::VectorHeader>()
             + std::mem::size_of::<crate::lisp::types::BufferValue>())
-        .next_multiple_of(16)
-            / std::mem::size_of::<Value>()
+        .div_ceil(std::mem::size_of::<Value>())
             + 6 // configured GNU Lisp_Marker: header plus five payload words
     );
     interp.kill_buffer_id(id);
@@ -19306,6 +19519,116 @@ fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
     assert_eq!(killed.vectors, after.vectors);
     assert_eq!(killed.vector_slots, after.vector_slots);
     assert!(matches!(buffer.kind(), Kind::Buffer(_)));
+}
+
+#[test]
+fn bytecode_calls_observe_gc_hook_redefinition_and_gnu_collection_completion() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/call-after-gc-redefinition.el"),
+        include_str!("../../../tests/fixtures/call-after-gc-redefinition.expected").trim(),
+        "bytecode calls resolve after hooks, including callable-kind changes and void functions",
+    );
+}
+
+#[test]
+fn bytecode_stack_capacity_and_nested_reservations_match_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-stack-layout.el"),
+        include_str!("../../../tests/fixtures/bytecode-stack-layout.expected").trim(),
+        "bytecode frame reservations include actual footers, arguments and error recovery",
+    );
+}
+
+#[test]
+fn native_vector_and_closure_census_matches_gnu_word_layout() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/vector-closure-rounded-census.el"),
+        include_str!("../../../tests/fixtures/vector-closure-rounded-census.expected").trim(),
+        "vector and closure word counts across allocation boundaries",
+    );
+}
+
+#[test]
+fn coding_candidates_use_all_registered_bases_and_actual_charsets() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/coding-candidate-inventory.el"),
+        include_str!("../../../tests/fixtures/coding-candidate-inventory.expected").trim(),
+        "safe coding candidates include every base and preserve full character codes",
+    );
+}
+
+#[test]
+fn coding_candidates_apply_live_translation_tables_and_registration_lists() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/coding-candidate-translation.el"),
+        include_str!("../../../tests/fixtures/coding-candidate-translation.expected").trim(),
+        "safe coding candidates apply live GNU translation and registry state",
+    );
+}
+
+#[test]
+fn coding_candidates_preserve_private_use_characters_and_symbol_identity() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/coding-candidate-character-identities.el"),
+        include_str!("../../../tests/fixtures/coding-candidate-character-identities.expected")
+            .trim(),
+        "safe coding candidates preserve actual characters, identities and duplicates",
+    );
+}
+
+#[test]
+fn coding_candidates_resolve_translation_symbols_through_live_properties() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/coding-candidate-symbol-properties.el"),
+        include_str!("../../../tests/fixtures/coding-candidate-symbol-properties.expected").trim(),
+        "safe coding candidates use GNU symbol and overriding property semantics",
+    );
+}
+
+#[test]
+fn symbol_properties_preserve_override_order_and_identity() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/overriding-property-identity.el"),
+        include_str!("../../../tests/fixtures/overriding-property-identity.expected").trim(),
+        "symbol property overrides retain first-match order and identity",
+    );
+}
+
+#[test]
+fn bytecode_code_mutation_between_calls_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-code-mutation-baseline.el"),
+        include_str!("../../../tests/fixtures/bytecode-code-mutation-baseline.expected").trim(),
+        "code-string mutation between calls reads current instructions",
+    );
+}
+
+#[test]
+fn bytecode_code_mutation_during_active_call_matches_gnu() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-code-active-mutation-baseline.el"),
+        include_str!("../../../tests/fixtures/bytecode-code-active-mutation-baseline.expected")
+            .trim(),
+        "a callback can mutate the next bytecode instruction",
+    );
+}
+
+#[test]
+fn bytecode_closure_constants_and_clone_share_gnu_slots() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-closure-shared-constants.el"),
+        include_str!("../../../tests/fixtures/bytecode-closure-shared-constants.expected").trim(),
+        "closure fields, shared constants, clone, collection and rejected aset",
+    );
+}
+
+#[test]
+fn native_pseudovector_census_matches_gnu_word_layout() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/vector-pseudovector-word-census.el"),
+        include_str!("../../../tests/fixtures/vector-pseudovector-word-census.expected").trim(),
+        "records, char tables, positioned symbols and hash tables use their actual word counts",
+    );
 }
 
 #[test]
@@ -19322,7 +19645,7 @@ fn native_overlay_and_char_table_census_uses_gnu_layouts() {
     assert_eq!(after.vectors - before.vectors, 2);
     assert_eq!(
         after.vector_slots - before.vector_slots,
-        70 + 4 // char-table header + 68 Lisp slots, rounded to 16 bytes
+        69 + 4 // char-table header + 68 Lisp slots; GNU uses word alignment
     );
 }
 
@@ -19959,7 +20282,10 @@ fn native_keyboard_input_family_matches_gnu_kboard_contracts() {
     for (program, expected) in contracts {
         assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
 
-        let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+        // The oracle uses its dumped batch runtime, including mouse.el's
+        // global bindings. Early Lisp alone leaves down-mouse-1 unbound;
+        // the reader must not invent that binding to satisfy this fixture.
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
         let mut env = crate::lisp::types::Env::new();
         let form = Reader::new(program)
             .read()
@@ -22260,6 +22586,15 @@ fn redisplay_dispatches_an_already_due_timer() {
 }
 
 #[test]
+fn timer_snapshot_survives_canceling_and_collecting_later_entries() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/timer-snapshot-gc.el"),
+        include_str!("../../../tests/fixtures/timer-snapshot-gc.expected").trim(),
+        "timer dispatch retains its snapshot when a callback cancels and collects later entries",
+    );
+}
+
+#[test]
 fn input_pending_check_timers_dispatches_an_already_due_timer() {
     let program = r#"
         (let ((timer-ran nil))
@@ -22395,7 +22730,11 @@ fn live_minibuffer_recursive_commands_restore_the_outer_command_identity() {
 }
 
 #[test]
-fn write_region_mustbenew_consumes_a_full_negative_answer() {
+fn write_region_mustbenew_uses_gnu_short_answer_and_preserves_remaining_events() {
+    // fileio.c:barf_or_query_if_file_exists is called with QUICK=true.
+    // An ordinary GNU PTY with unread-command-events = n o RET consumes
+    // only n and leaves (111 13); the preceding full-answer assertion was
+    // invalid. Preserve both the declining error and unchanged file bytes.
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
@@ -22437,9 +22776,10 @@ fn write_region_mustbenew_consumes_a_full_negative_answer() {
     set_tty_event_reader(None);
 
     assert!(result.is_err(), "declining overwrite must signal");
-    assert!(
-        script.borrow().is_empty(),
-        "the overwrite prompt must consume the full `no RET` answer"
+    assert_eq!(
+        script.borrow().iter().rev().copied().collect::<Vec<_>>(),
+        vec![Value::Integer(111), Value::Integer(13)],
+        "GNU's short-answer overwrite prompt leaves unrelated input queued"
     );
     assert_eq!(
         std::fs::read(&path).expect("read declined-overwrite fixture"),
@@ -23621,11 +23961,11 @@ fn emaxx_batch_output(program: &str) -> String {
     let value = interp
         .lookup_var("contract-out", &env)
         .expect("program sets contract-out");
-    let Kind::String(text) = value.kind() else {
+    let Kind::StringObject(text) = value.kind() else {
         let text = format!("{value}");
         return text.trim_matches('"').to_string();
     };
-    text.to_string()
+    text.borrow().text()
 }
 
 const SCROLL_CONTRACT_PROGRAM: &str = "(progn (setq contract-out \"\")
@@ -26646,5 +26986,601 @@ fn regexp_table_cache_observes_shared_leaf_mutation_and_replaced_edges_after_gc(
         include_str!("../../../tests/fixtures/regexp-table-snapshot-mutation.el"),
         include_str!("../../../tests/fixtures/regexp-table-snapshot-mutation.expected"),
         "regexp table snapshots across shared leaves, replaced edges and collection",
+    );
+}
+
+#[test]
+fn input_decode_command_reader_preserves_reached_prefix_and_live_remapping() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-command-reader.el"),
+        include_str!("../../../tests/fixtures/input-decode-command-reader.expected").trim(),
+        "collecting prefix/leaf filters run once while the active map is replaced",
+    );
+}
+
+#[test]
+fn input_decode_keyboard_macro_uses_the_same_live_translation_pipeline() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-macro-shared.el"),
+        include_str!("../../../tests/fixtures/input-decode-macro-shared.expected").trim(),
+        "ordinary execute-kbd-macro input passes through all three live translation maps",
+    );
+}
+
+#[test]
+fn input_decode_autoloaded_prefix_collects_before_the_next_input_event() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-autoload-prefix.el"),
+        include_str!("../../../tests/fixtures/input-decode-autoload-prefix.expected").trim(),
+        "ordinary and macro readers follow an autoloaded prefix map across collection",
+    );
+}
+
+#[test]
+fn input_decode_restarts_after_an_unbound_prefix_loses_all_translations() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-first-unbound.el"),
+        include_str!("../../../tests/fixtures/input-decode-first-unbound.expected").trim(),
+        "all three translation stages restart at the remaining suffix, with ordinary keys as controls",
+    );
+}
+
+#[test]
+fn input_decode_shifted_tab_character_and_function_key_follow_distinct_maps() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-shift-tab-variants.el"),
+        include_str!("../../../tests/fixtures/input-decode-shift-tab-variants.expected").trim(),
+        "S-TAB uses character case fallback; S-<tab> follows the live function-key-map",
+    );
+}
+
+#[test]
+fn input_decode_function_keys_consult_live_undefined_command_remapping() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-remapped-undefined.el"),
+        include_str!("../../../tests/fixtures/input-decode-remapped-undefined.expected").trim(),
+        "remap filters run at GNU's two decision points and may change between calls",
+    );
+}
+
+#[test]
+fn input_decode_initial_maps_keep_identity_and_the_shared_function_parent() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-map-authority.el"),
+        include_str!("../../../tests/fixtures/input-decode-map-authority.expected").trim(),
+        "initial keyboard maps survive collection and inherit the original live parent without synthetic prompts",
+    );
+}
+
+#[test]
+fn input_decode_default_function_map_supplies_shifted_tab_translation() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-tab-map-installation.el"),
+        include_str!("../../../tests/fixtures/input-decode-tab-map-installation.expected").trim(),
+        "ordinary kbd/read-kbd-macro events and initial local-function-key-map inheritance",
+    );
+}
+
+#[test]
+fn input_decode_minibuffer_shares_macro_and_unread_translation_state() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-minibuffer-shared.el"),
+        include_str!("../../../tests/fixtures/input-decode-minibuffer-shared.expected").trim(),
+        "recursive minibuffer reads preserve prefixes across unread and macro input with live collecting translators",
+    );
+}
+
+#[test]
+fn input_decode_minibuffer_preserves_live_queue_mutation_and_return_binding() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-minibuffer-queue.el"),
+        include_str!("../../../tests/fixtures/input-decode-minibuffer-queue.expected").trim(),
+        "a translator mutates the actual unread spine and RET runs the minibuffer's own command",
+    );
+}
+
+#[test]
+fn input_decode_down_events_follow_live_bindings_without_bootstrap_fallbacks() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-down-event-binding.el"),
+        include_str!("../../../tests/fixtures/input-decode-down-event-binding.expected").trim(),
+        "unbound down events are discarded and live binding changes take effect",
+    );
+}
+
+#[test]
+fn input_decode_mouse_menu_uses_unchanged_lisp_translation() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-mouse-menu-cases.el"),
+        include_str!("../../../tests/fixtures/input-decode-mouse-menu-cases.expected").trim(),
+        "menu clicks with actual event-kind and shared or distinct positions use mouse.el",
+    );
+}
+
+#[test]
+fn input_decode_mouse_translation_preserves_raw_spine_and_live_event_kind() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-mouse-raw-mutation.el"),
+        include_str!("../../../tests/fixtures/input-decode-mouse-raw-mutation.expected").trim(),
+        "collecting translators mutate the actual event while raw keys keep its original head",
+    );
+}
+
+#[test]
+fn input_decode_non_mouse_menu_events_mark_the_shared_position() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-menu-bar.el"),
+        include_str!("../../../tests/fixtures/input-decode-menu-bar.expected").trim(),
+        "parameterized events without mouse-click metadata expand external menu input once",
+    );
+}
+
+#[test]
+fn input_decode_positions_follow_display_motion_without_moving_point() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-position-lookup.el"),
+        include_str!("../../../tests/fixtures/input-decode-position-lookup.expected").trim(),
+        "coordinate lookup returns live buffer positions across tabs, lines and end of buffer",
+    );
+}
+
+#[test]
+fn input_decode_macro_reads_the_live_array_and_stops_on_t() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-macro-live-array.el"),
+        include_str!("../../../tests/fixtures/input-decode-macro-live-array.expected").trim(),
+        "macro mutation, replacement and immediate termination use the public array and index",
+    );
+}
+
+#[test]
+fn input_decode_macro_raw_readers_observe_directly_bound_arrays() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-macro-raw-array.el"),
+        include_str!("../../../tests/fixtures/input-decode-macro-raw-array.expected").trim(),
+        "timed raw input reads real macro arrays, preserves meta bits and sets the macro event frame",
+    );
+}
+
+#[test]
+fn input_decode_macro_nested_state_survives_collecting_commands_and_errors() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-macro-nested-roots.el"),
+        include_str!("../../../tests/fixtures/input-decode-macro-nested-roots.expected").trim(),
+        "nested execution restores the actual outer array and index across collecting termination hooks",
+    );
+}
+
+#[test]
+fn input_decode_macro_timed_reads_preserve_queue_order_and_errors() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-macro-read-order.el"),
+        include_str!("../../../tests/fixtures/input-decode-macro-read-order.expected").trim(),
+        "unread input precedes live macro input and timed readers preserve inhibition and bounds errors",
+    );
+}
+
+#[test]
+fn input_decode_raw_reads_unwrap_pending_events_before_terminal_polling() {
+    struct ClearPoller;
+    impl Drop for ClearPoller {
+        fn drop(&mut self) {
+            set_tty_event_poller(None);
+        }
+    }
+    let _poller = ClearPoller;
+    set_tty_event_poller(Some(Box::new(|_| Some(None))));
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-unread-wrapper.el"),
+        include_str!("../../../tests/fixtures/input-decode-unread-wrapper.expected").trim(),
+        "pending character and function-key wrappers are consumed before a live timed wait without losing modifiers",
+    );
+}
+
+#[test]
+fn input_decode_macro_roots_survive_callbacks_then_release_completed_arrays() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/input-decode-macro-reclamation.el"),
+        include_str!("../../../tests/fixtures/input-decode-macro-reclamation.expected").trim(),
+        "the original macro survives replacement and collecting callbacks, then is reclaimed after completion and errors",
+    );
+}
+
+#[test]
+fn canonical_string_bytes_preserve_gnu_characters_mutation_and_clear() {
+    let fixture = include_str!("../../../tests/fixtures/canonical-string-bytes.el");
+    let program = fixture
+        .trim()
+        .strip_prefix("(prin1")
+        .expect("ordinary fixture starts with prin1")
+        .strip_suffix(')')
+        .expect("ordinary fixture closes prin1");
+    let expected =
+        include_str!("../../../tests/fixtures/canonical-string-bytes.expected").trim_end();
+    assert_oracle_contract_matches_interpreter(program, expected, "canonical string bytes");
+}
+
+#[test]
+fn string_constructors_preserve_gnu_full_character_range_and_errors() {
+    let fixture = include_str!("../../../tests/fixtures/canonical-string-constructors.el");
+    let program = fixture
+        .trim()
+        .strip_prefix("(prin1")
+        .expect("ordinary fixture starts with prin1")
+        .strip_suffix(')')
+        .expect("ordinary fixture closes prin1");
+    let expected =
+        include_str!("../../../tests/fixtures/canonical-string-constructors.expected").trim_end();
+    assert_oracle_contract_matches_interpreter(program, expected, "canonical string constructors");
+}
+
+#[test]
+fn shared_string_bytes_are_the_authoritative_unibyte_payload() {
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    for len in [1, 17, 257, 4097] {
+        let mut bytes: Vec<u8> = (0..len).map(|index| (index * 73 + 19) as u8).collect();
+        let value = bytes_to_shared_unibyte_value(&bytes);
+        let Kind::StringObject(object) = value.kind() else {
+            panic!("mutable string object");
+        };
+        let address = object.borrow().bytes().as_ptr() as usize;
+        assert_eq!(object.borrow().bytes(), bytes);
+        assert_eq!(object.borrow().len(), len);
+        for index in [0, len / 2, len - 1] {
+            let byte = bytes[index].wrapping_add(91);
+            call(
+                &mut interp,
+                "aset",
+                &[
+                    value,
+                    Value::Integer(index as i64),
+                    Value::Integer(byte as i64),
+                ],
+                &mut env,
+            )
+            .expect("Faset stores one byte in the original string");
+            bytes[index] = byte;
+            let state = object.borrow();
+            assert_eq!(state.bytes(), bytes);
+            assert_eq!(
+                state.bytes().as_ptr() as usize,
+                address,
+                "unibyte Faset stores in existing data"
+            );
+            assert_eq!(state.storage_bytes(), len);
+        }
+    }
+}
+
+#[test]
+fn bytecode_live_fetch_preserves_changed_widths_operands_and_suspended_callers() {
+    let fixture = include_str!("../../../tests/fixtures/bytecode-live-fetch.el");
+    let program = fixture
+        .trim()
+        .strip_prefix("(prin1")
+        .expect("ordinary fixture starts with prin1")
+        .strip_suffix(')')
+        .expect("ordinary fixture closes prin1");
+    let expected = include_str!("../../../tests/fixtures/bytecode-live-fetch.expected").trim_end();
+    assert_oracle_contract_matches_interpreter(program, expected, "live bytecode byte cursor");
+}
+
+#[test]
+fn unused_bytecode_destinations_follow_actual_control_flow() {
+    let fixture = include_str!("../../../tests/fixtures/bytecode-unused-destinations.el");
+    let program = fixture
+        .trim()
+        .strip_prefix("(prin1")
+        .expect("ordinary fixture starts with prin1")
+        .strip_suffix(')')
+        .expect("ordinary fixture closes prin1");
+    let expected =
+        include_str!("../../../tests/fixtures/bytecode-unused-destinations.expected").trim_end();
+    assert_oracle_contract_matches_interpreter(program, expected, "unused bytecode destinations");
+}
+
+#[test]
+fn interactive_closures_use_the_gnu_metadata_environment() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/interactive-closure-environments.el"),
+        include_str!("../../../tests/fixtures/interactive-closure-environments.expected")
+            .trim_end(),
+        "interactive closure environments",
+    );
+}
+
+#[test]
+fn coding_errors_preserve_the_offending_symbol_object() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/coding-error-object-storage.el"),
+        include_str!("../../../tests/fixtures/coding-error-object-storage.expected").trim(),
+        "coding errors retain the actual uninterned symbol instead of its printed name",
+    );
+}
+
+#[test]
+fn coding_encoders_preserve_full_character_codes_and_file_bytes() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/canonical-coding-character-storage.el"),
+        include_str!("../../../tests/fixtures/canonical-coding-character-storage.expected")
+            .trim_end(),
+        "canonical-coding-character-storage",
+    );
+}
+
+#[test]
+fn coding_encoders_preserve_gnu_identity_properties_and_byte_results() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/canonical-coding-identity-storage.el"),
+        include_str!("../../../tests/fixtures/canonical-coding-identity-storage.expected")
+            .trim_end(),
+        "canonical-coding-identity-storage",
+    );
+}
+
+#[test]
+fn coding_conversions_preserve_extended_characters_regions_and_eol() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/canonical-coding-conversion-storage.el"),
+        include_str!("../../../tests/fixtures/canonical-coding-conversion-storage.expected")
+            .trim_end(),
+        "canonical-coding-conversion-storage",
+    );
+}
+
+#[test]
+fn coding_post_read_conversion_receives_character_counts() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/coding-post-read-character-count.el"),
+        include_str!("../../../tests/fixtures/coding-post-read-character-count.expected")
+            .trim_end(),
+        "post-read conversion counts decoded characters instead of Rust text bytes",
+    );
+}
+
+#[test]
+fn coding_post_read_ascii_shortcut_preserves_identity_and_hook_order() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/coding-post-read-fast-path.el"),
+        include_str!("../../../tests/fixtures/coding-post-read-fast-path.expected").trim_end(),
+        "post-read conversion is bypassed only for an ASCII string result",
+    );
+}
+
+#[test]
+fn copied_and_propertized_strings_preserve_canonical_bytes_and_properties() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/copied-canonical-string-storage.el"),
+        include_str!("../../../tests/fixtures/copied-canonical-string-storage.expected").trim_end(),
+        "canonical string copies and propertize",
+    );
+}
+
+#[test]
+fn file_write_coding_selection_preserves_lisp_policy_callbacks_and_restrictions() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/file-write-coding-selection.el"),
+        include_str!("../../../tests/fixtures/file-write-coding-selection.expected").trim_end(),
+        "file coding selection and callback mutation",
+    );
+}
+
+#[test]
+fn new_file_coding_lifecycle_matches_gnu_after_save_and_revisit() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/new-file-coding-lifecycle.el"),
+        include_str!("../../../tests/fixtures/new-file-coding-lifecycle.expected").trim_end(),
+        "new file coding lifecycle",
+    );
+}
+
+#[test]
+fn file_write_coding_selection_preserves_overwrite_order_and_exclusive_creation() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/file-write-order.el"),
+        include_str!("../../../tests/fixtures/file-write-order.expected").trim_end(),
+        "file coding overwrite and exclusive creation order",
+    );
+}
+
+#[test]
+fn host_created_strings_preserve_mutation_properties_and_fill_errors() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/host-string-mutation.el"),
+        include_str!("../../../tests/fixtures/host-string-mutation.expected").trim_end(),
+        "host-created strings share canonical mutation and fill contracts",
+    );
+}
+
+#[test]
+fn vector_held_host_strings_preserve_binding_identity_and_mutation() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/host-string-vector-mutation.el"),
+        include_str!("../../../tests/fixtures/host-string-vector-mutation.expected").trim_end(),
+        "vector-held host strings retain identity through binding, stores and GC",
+    );
+}
+
+#[test]
+fn string_equality_compares_actual_storage_with_and_without_properties() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-equality-storage.el"),
+        include_str!("../../../tests/fixtures/string-equality-storage.expected").trim_end(),
+        "string equality compares actual bytes and character counts",
+    );
+}
+
+#[test]
+fn string_equality_uses_lisp_symbol_names_and_positioned_symbol_policy() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-equality-symbol-names-positioned.el"),
+        include_str!("../../../tests/fixtures/string-equality-symbol-names-positioned.expected")
+            .trim_end(),
+        "string equality uses original name objects and the symbol position flag",
+    );
+}
+
+#[test]
+fn string_property_values_use_equal_across_mutation_gc_and_interval_boundaries() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-equality-property-values.el"),
+        include_str!("../../../tests/fixtures/string-equality-property-values.expected").trim_end(),
+        "string intervals compare property values with ordinary equal",
+    );
+}
+
+#[test]
+fn string_property_hashes_follow_equal_through_nested_mutation_and_lookup() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-equality-property-hashes.el"),
+        include_str!("../../../tests/fixtures/string-equality-property-hashes.expected").trim_end(),
+        "equal string property values preserve hashes and custom table lookup",
+    );
+}
+
+#[test]
+fn string_ordering_uses_canonical_storage_and_lisp_symbol_names() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-ordering-symbol-storage.el"),
+        include_str!("../../../tests/fixtures/string-ordering-symbol-storage.expected").trim_end(),
+        "string ordering reads actual name objects and the positioned-symbol policy",
+    );
+}
+
+#[test]
+fn string_versions_follow_gnu_filenvercmp() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-version-ordering.el"),
+        include_str!("../../../tests/fixtures/string-version-ordering.expected").trim_end(),
+        "version ordering follows GNU suffix, tilde, dot and leading-zero rules",
+    );
+}
+
+#[test]
+fn compare_strings_preserves_gnu_range_errors_and_validation_order() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/compare-strings-ranges.el"),
+        include_str!("../../../tests/fixtures/compare-strings-ranges.expected").trim_end(),
+        "both string types precede index validation, with GNU end clamping and error data",
+    );
+}
+
+#[test]
+fn compare_strings_promotes_bytes_before_casing_actual_characters() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/compare-strings-character-storage.el"),
+        include_str!("../../../tests/fixtures/compare-strings-character-storage.expected")
+            .trim_end(),
+        "actual byte8, Unicode and extended characters stay distinct in both buffer modes",
+    );
+}
+
+#[test]
+fn compare_strings_observes_live_case_table_mutation_and_gc() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/compare-strings-live-case-table.el"),
+        include_str!("../../../tests/fixtures/compare-strings-live-case-table.expected").trim_end(),
+        "comparison follows current-buffer upcase tables through mutation and collection",
+    );
+}
+
+#[test]
+fn numeric_casing_uses_exact_character_table_keys() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-case-character-identities.el"),
+        include_str!("../../../tests/fixtures/string-case-character-identities.expected")
+            .trim_end(),
+        "numeric casing uses actual byte8 and Unicode keys without host-text aliases",
+    );
+}
+
+#[test]
+fn string_empty_constructors_preserve_gnu_storage_identities() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-empty-identities.el"),
+        include_str!("../../../tests/fixtures/string-empty-identities.expected").trim_end(),
+        "string-empty-identities",
+    );
+}
+
+#[test]
+fn pure_strings_preserve_gnu_identity_write_protection_and_error_order() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-pure-storage-values.el"),
+        include_str!("../../../tests/fixtures/string-pure-storage-values.expected").trim_end(),
+        "string-pure-storage-values",
+    );
+}
+
+#[test]
+fn pure_string_properties_preserve_gnu_noop_and_readonly_behavior() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/string-pure-property-storage.el"),
+        include_str!("../../../tests/fixtures/string-pure-property-storage.expected").trim_end(),
+        "string-pure-property-storage",
+    );
+}
+
+#[test]
+fn bytecode_direct_dispatch_preserves_gnu_stack_arithmetic_and_branches() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-direct-dispatch.el"),
+        include_str!("../../../tests/fixtures/bytecode-direct-dispatch.expected").trim_end(),
+        "direct byte dispatch, slow arithmetic, branches and array effects",
+    );
+}
+
+#[test]
+fn native_argument_words_preserve_gnu_order_identity_and_optional_slots() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/native-argument-words.el"),
+        include_str!("../../../tests/fixtures/native-argument-words.expected").trim_end(),
+        "native fixed, many, optional and rest argument words across collection",
+    );
+}
+
+#[test]
+fn bytecode_call_widths_preserve_gnu_arguments_across_execution_modes() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-call-widths.el"),
+        include_str!("../../../tests/fixtures/bytecode-call-widths.expected").trim_end(),
+        "packed, byte and word call operands with live arguments across collection",
+    );
+}
+
+#[test]
+fn bytecode_integer_boundaries_preserve_gnu_results_types_and_errors() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/bytecode-integer-boundaries.el"),
+        include_str!("../../../tests/fixtures/bytecode-integer-boundaries.expected").trim_end(),
+        "bytecode integer boundaries, bignum allocation, operand errors and GC",
+    );
+}
+
+#[test]
+fn buffer_line_indexes_preserve_gnu_lf_motion_narrowing_and_edits() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/buffer-lf-line-motion.el"),
+        include_str!("../../../tests/fixtures/buffer-lf-line-motion.expected").trim_end(),
+        "LF-only line counts and motion, CR/Unicode separators, chunk boundaries, narrowing and edits",
+    );
+}
+
+#[test]
+fn native_binary_arithmetic_preserves_gnu_boundaries_types_and_errors() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/native-binary-arithmetic.el"),
+        include_str!("../../../tests/fixtures/native-binary-arithmetic.expected").trim_end(),
+        "native addition and subtraction across fixnum, bignum, float, marker and error boundaries",
+    );
+}
+
+#[test]
+fn buffer_display_columns_match_gnu_original_line_motion_probe() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/buffer-lf-line-index.el"),
+        include_str!("../../../tests/fixtures/buffer-lf-line-index.expected").trim_end(),
+        "original 338-row line/column probe across controls, multibyte text, narrowing and edits",
     );
 }

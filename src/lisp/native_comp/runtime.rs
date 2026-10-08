@@ -622,12 +622,6 @@ pub(crate) fn gc_tuning(interpreter: &Interpreter, environment: &Env) -> (i64, O
     (threshold, percentage)
 }
 
-thread_local! {
-    /// alloc.c's gc_in_progress: a collection's own Lisp (post-gc-hook)
-    /// must not start another.
-    static ORDINARY_GC_IN_PROGRESS: Cell<bool> = const { Cell::new(false) };
-}
-
 /// lisp.h:maybe_gc at eval_sub for the ordinary interpreter: when the
 /// consing counter has gone negative, alloc.c:maybe_garbage_collect retunes
 /// it from the Lisp variables and collects if it is still negative.  An
@@ -661,7 +655,7 @@ pub(crate) fn maybe_gc(interpreter: &mut Interpreter, environment: &mut Env) {
 #[cold]
 #[inline(never)]
 fn maybe_garbage_collect(interpreter: &mut Interpreter, environment: &mut Env) {
-    if ORDINARY_GC_IN_PROGRESS.with(Cell::get) {
+    if interpreter.garbage_collection_is_inhibited() {
         return;
     }
     let (threshold, percentage) = gc_tuning(interpreter, environment);
@@ -674,9 +668,7 @@ fn maybe_garbage_collect(interpreter: &mut Interpreter, environment: &mut Env) {
     if !due && !crate::lisp::alloc::stress_collections() {
         return;
     }
-    ORDINARY_GC_IN_PROGRESS.with(|flag| flag.set(true));
     let _ = super::garbage_collect_now(interpreter, environment);
-    ORDINARY_GC_IN_PROGRESS.with(|flag| flag.set(false));
 }
 
 pub(crate) fn decode_active_backtrace_arguments(
@@ -830,8 +822,20 @@ pub(crate) struct NativeSharedState {
     heap: NativeHeap,
     thread_pointer: Box<*mut NativeThreadState>,
     link_table: Box<[*mut c_void]>,
-    permanent_root_ranges: Vec<NativeRootRange>,
+    linked_code: bool,
     suspended_stacks: suspension::SuspendedNativeStacks,
+}
+
+impl Drop for NativeSharedState {
+    fn drop(&mut self) {
+        if self.linked_code {
+            // Only the final shared owner runs this, after native frames have
+            // ended. Empty parked/default shells have no attached code.
+            crate::lisp::alloc::vectors::close_native_units_for_runtime(
+                std::ptr::from_mut(&mut *self.thread_pointer).cast(),
+            );
+        }
+    }
 }
 
 impl std::ops::Deref for NativeRuntime {
@@ -877,7 +881,7 @@ impl Default for NativeRuntime {
                 heap: NativeHeap::new(),
                 thread_pointer,
                 link_table: runtime_link_table().into_boxed_slice(),
-                permanent_root_ranges: Vec::new(),
+                linked_code: false,
                 suspended_stacks: suspension::SuspendedNativeStacks::default(),
             })),
             thread,
@@ -894,7 +898,7 @@ impl NativeRuntime {
         self.handlers.is_empty()
             && self.unwind.is_empty()
             && self.calls.is_empty()
-            && self.permanent_root_ranges.is_empty()
+            && !self.linked_code
             && self.ephemeral_root_ranges.is_empty()
             && self.suspended_stacks.is_empty()
             && self.thread.handler().is_null()
@@ -920,41 +924,21 @@ impl NativeRuntime {
         });
     }
 
-    fn collect_native_heap(
-        &mut self,
-        stack_top: *const NativeWord,
-        threshold: i64,
-        percentage: Option<f64>,
-        interpreter: &mut Interpreter,
-        environment: &Env,
-    ) -> bool {
-        if !self.heap.collection_due(threshold, percentage) {
-            return false;
-        }
-        self.collect_native_heap_now(stack_top, interpreter, environment);
-        true
-    }
-
     fn collect_native_heap_now(
         &mut self,
         stack_top: *const NativeWord,
         interpreter: &mut Interpreter,
         environment: &Env,
     ) {
-        // comp.c keeps loaded units' relocation objects alive between
-        // generated calls too. Use the same mark/sweep path in both states:
-        // the absence of a native stack removes only that stack's roots,
-        // not relocation roots or the bridge edges needed to reach them.
+        // Persistent native data is reached through each live unit's seven
+        // Lisp fields, as in comp.c. Only active ephemeral load ranges and
+        // active/suspended execution stacks are additional native roots.
         let mut roots = self
             .handlers
             .iter()
             .map(|handler| handler.storage.value())
             .collect::<Vec<_>>();
-        for range in self
-            .permanent_root_ranges
-            .iter()
-            .chain(&self.ephemeral_root_ranges)
-        {
+        for range in &self.ephemeral_root_ranges {
             if range.len != 0 {
                 roots.extend(unsafe { std::slice::from_raw_parts(range.start, range.len) });
             }
@@ -1028,13 +1012,6 @@ impl NativeRuntime {
             .collection_finished(live_bytes, threshold, percentage);
     }
 
-    pub(crate) fn register_permanent_root_range(&mut self, start: *const NativeWord, len: usize) {
-        if len != 0 {
-            self.permanent_root_ranges
-                .push(NativeRootRange { start, len });
-        }
-    }
-
     pub(crate) fn push_ephemeral_root_range(&mut self, start: *const NativeWord, len: usize) {
         if len != 0 {
             self.ephemeral_root_ranges
@@ -1050,7 +1027,15 @@ impl NativeRuntime {
         }
     }
 
+    pub(crate) fn current_thread_relocation_address(&self) -> *const c_void {
+        std::ptr::from_ref(&*self.thread_pointer).cast()
+    }
+
     pub(crate) fn current_thread_relocation(&mut self) -> *mut c_void {
+        // Rust image templates cannot duplicate live machine-code pointers
+        // into this stable runtime cell. This is a host clone constraint,
+        // not an object registry or a GC root.
+        self.linked_code = true;
         (&mut *self.thread_pointer as *mut *mut NativeThreadState).cast()
     }
 
@@ -1129,24 +1114,30 @@ impl NativeRuntime {
         let mut invocation = NativeInvocation::new(target);
         self.begin_call(invocation.jump_buffer(), interpreter);
 
-        // GNU passes each Lisp_Object to generated code unchanged.
+        // eval.c:funcall_subr passes the authoritative Lisp_Object words
+        // directly to a fixed-arity entry. Fill the trampoline's register
+        // slots once, without first staging the same words in a SmallVec.
+        // MANY retains owned, writable argument storage for its pointer ABI;
+        // no native pointer aliases the caller's shared Rust Value slice.
         let mut encoded = smallvec::SmallVec::<[NativeWord; 8]>::new();
-        for argument in arguments {
-            let word = match self.heap.encode(argument) {
-                Ok(word) => word,
-                Err(error) => {
-                    let finish = self.finish_call(interpreter);
-                    finish?;
-                    return Err(super::lisp::native_ice(&error));
-                }
-            };
-            encoded.push(word);
-        }
         match convention {
             NativeCallingConvention::Fixed => {
-                invocation.arguments[..encoded.len()].copy_from_slice(&encoded);
+                for (slot, argument) in invocation.arguments.iter_mut().zip(arguments) {
+                    *slot = argument.word();
+                }
             }
             NativeCallingConvention::Many => {
+                for argument in arguments {
+                    let word = match self.heap.encode(argument) {
+                        Ok(word) => word,
+                        Err(error) => {
+                            let finish = self.finish_call(interpreter);
+                            finish?;
+                            return Err(super::lisp::native_ice(&error));
+                        }
+                    };
+                    encoded.push(word);
+                }
                 invocation.arguments[0] = encoded.len();
                 invocation.arguments[1] = encoded.as_ptr() as NativeWord;
             }
@@ -1506,6 +1497,13 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             remember_helper_error(active, error);
             return 0;
         }
+        // GNU native code enters Ffuncall directly. After synchronizing
+        // handlers, use the same call path before unrelated primitive checks.
+        if subroutine.name == "funcall"
+            && let Some(result) = invoke_native_funcall(active, arguments)
+        {
+            return result;
+        }
         if arguments.len() == 2
             && let (Some(left), Some(right)) =
                 (decode_fixnum(arguments[0]), decode_fixnum(arguments[1]))
@@ -1520,6 +1518,20 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             };
             if let Some(result) = result {
                 return native_boolean(result);
+            }
+            // data.c:arith_driver keeps integer addition/subtraction in its
+            // machine accumulator. Two fixnums cannot overflow i64; return
+            // their immediate result without staging or decoding Values.
+            // Bignum results and every other operand use the general path.
+            let integer = match subroutine.name {
+                "+" => Some(left + right),
+                "-" => Some(left - right),
+                _ => None,
+            };
+            if let Some(integer) = integer
+                && (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&integer)
+            {
+                return ((integer as NativeWord) << FIXNUM_BITS) | TAG_FIXNUM_LOW;
             }
         }
         if subroutine.name == "cons" && arguments.len() == 2 {
@@ -1623,11 +1635,6 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
         }
         if subroutine.name == "get" && arguments.len() == 2 {
             return invoke_native_get(active, arguments[0], arguments[1]);
-        }
-        if subroutine.name == "funcall"
-            && let Some(result) = invoke_native_funcall(active, arguments)
-        {
-            return result;
         }
         if subroutine.name == "apply"
             && let Some(result) = invoke_native_apply(active, arguments)
@@ -1925,11 +1932,11 @@ fn native_subr_address(index: usize) -> *mut c_void {
 enum DirectFuncallTarget {
     Builtin(crate::lisp::types::BuiltinRef),
     Native {
-        record_id: u64,
+        native: crate::lisp::types::NativeFunctionRef,
         function: super::loader::DirectNativeFunction,
     },
     ByteCode {
-        record_id: u64,
+        closure: crate::lisp::types::ClosureRef,
     },
 }
 
@@ -1981,7 +1988,7 @@ impl DirectFuncallTarget {
         active: &mut ActiveCall,
         arguments: &[NativeWord],
     ) -> Result<NativeWord, LispError> {
-        if let Self::ByteCode { record_id } = self {
+        if let Self::ByteCode { closure } = self {
             let mut decoded = smallvec::SmallVec::<[Value; 8]>::new();
             for word in arguments {
                 decoded.push(
@@ -1992,7 +1999,7 @@ impl DirectFuncallTarget {
                 );
             }
             let result = unsafe { &mut *active.interpreter }.execute_bytecode_funcall_body(
-                record_id,
+                closure,
                 &decoded,
                 unsafe { &mut *active.environment },
             );
@@ -2024,16 +2031,12 @@ impl DirectFuncallTarget {
                     Value::BuiltinFunc(subr),
                 )
             }
-            Self::Native {
-                record_id,
-                function,
-            } => (
+            Self::Native { native, function } => (
                 function.target,
                 function.convention,
                 function.min_args,
                 function.max_args,
-                // SAFETY: the active call's interpreter, live for the call.
-                unsafe { &*active.interpreter }.record_value(record_id),
+                Value::NativeFunction(native),
             ),
             Self::ByteCode { .. } => unreachable!("handled above"),
         };
@@ -2048,13 +2051,16 @@ impl DirectFuncallTarget {
 
         if matches!(convention, NativeCallingConvention::Fixed) {
             let maximum = maximum.expect("a fixed subr has a finite maximum arity");
-            let mut padded = smallvec::SmallVec::<[NativeWord; 8]>::new();
-            padded.extend_from_slice(arguments);
-            padded.resize(maximum, 0);
-            Ok(unsafe { call_word_target(target, convention, &padded) })
-        } else {
-            Ok(unsafe { call_word_target(target, convention, arguments) })
+            // eval.c:funcall_subr copies only to supply omitted optional
+            // arguments. Fully supplied fixed calls use the original words.
+            if arguments.len() < maximum {
+                let mut padded = smallvec::SmallVec::<[NativeWord; 8]>::new();
+                padded.extend_from_slice(arguments);
+                padded.resize(maximum, 0);
+                return Ok(unsafe { call_word_target(target, convention, &padded) });
+            }
         }
+        Ok(unsafe { call_word_target(target, convention, arguments) })
     }
 }
 
@@ -2074,18 +2080,11 @@ fn direct_funcall_target(
     };
     match resolved.kind() {
         Kind::BuiltinFunc(subr) => Some(DirectFuncallTarget::Builtin(subr)),
-        Kind::Record(record_id) => super::loader::active_direct_function(record_id.id)
-            .map(|function| DirectFuncallTarget::Native {
-                record_id: record_id.id,
-                function,
-            })
-            .or_else(|| {
-                interpreter
-                    .is_genuine_bytecode_function(record_id.id)
-                    .then_some(DirectFuncallTarget::ByteCode {
-                        record_id: record_id.id,
-                    })
-            }),
+        Kind::NativeFunction(native) => super::loader::direct_function(native)
+            .map(|function| DirectFuncallTarget::Native { native, function }),
+        Kind::Closure(closure) if closure.is_bytecode() => {
+            Some(DirectFuncallTarget::ByteCode { closure })
+        }
         _ => None,
     }
 }
@@ -2101,7 +2100,6 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
     let interpreter = unsafe { &mut *active.interpreter };
     let environment = unsafe { &mut *active.environment };
     let original_function = unsafe { runtime.heap.decode_live(function_word) }.ok()?;
-    let target = direct_funcall_target(interpreter, environment, &original_function)?;
 
     // do_debug_on_call needs the full debugger/specpdl path.  Keep that cold
     // state on the general evaluator path until that C lifecycle is shared by
@@ -2121,7 +2119,33 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
 
             // Ffuncall calls maybe_gc after record_in_backtrace and before dispatch.
             unsafe { emaxx_native_gc_trampoline() };
-            let result = target.invoke(active, call_arguments);
+            // The collection's hooks/finalizers may replace the function cell.
+            // Resolve it only after collection, including changes of callable
+            // kind. The fallback reuses this same Ffuncall frame and depth.
+            let result = match direct_funcall_target(interpreter, environment, &original_function) {
+                Some(target) => target.invoke(active, call_arguments),
+                None => {
+                    let decoded = call_arguments
+                        .iter()
+                        .map(|word| {
+                            runtime
+                                .heap
+                                .decode(*word)
+                                .map_err(|error| super::lisp::native_ice(&error))
+                        })
+                        .collect::<Result<smallvec::SmallVec<[Value; 8]>, _>>();
+                    decoded
+                        .and_then(|args| {
+                            interpreter.funcall_body(original_function, &args, environment)
+                        })
+                        .and_then(|value| {
+                            runtime
+                                .heap
+                                .encode(&value)
+                                .map_err(|error| super::lisp::native_ice(&error))
+                        })
+                }
+            };
             let result = match result.map_err(LispError::into_kind) {
                 Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
                     // eval.c:Ffuncall calls call_debugger with (exit VALUE) before
@@ -3170,9 +3194,15 @@ pub(crate) unsafe fn invoke_subr_many(
     if argument_count != 0 && arguments.is_null() {
         return invoke_subr_error("native subroutine arguments are null");
     }
-    // SAFETY: Generated code passes the count and pointer pair used by GNU's
-    // MANY ABI.  The zero-length case permits a null pointer.
-    let arguments = unsafe { std::slice::from_raw_parts(arguments, argument_count) };
+    let arguments = if argument_count == 0 {
+        // GNU's MANY ABI may supply null for no arguments. Even an empty
+        // Rust slice must have a nonnull aligned address.
+        &[]
+    } else {
+        // SAFETY: Generated code supplies the GNU MANY count/pointer pair;
+        // the nonempty pointer was checked above.
+        unsafe { std::slice::from_raw_parts(arguments, argument_count) }
+    };
     invoke_subr(index, arguments)
 }
 
@@ -3529,12 +3559,18 @@ extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
 
 #[unsafe(no_mangle)]
 extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
-    with_active(|active| {
-        let interpreter = unsafe { &mut *active.interpreter };
+    // Do not hold an ActiveCall or NativeRuntime reference across callbacks:
+    // finalizers/hooks can reenter native Lisp in this same activation.
+    let (interpreter, environment, runtime) =
+        with_active(|active| (active.interpreter, active.environment, active.runtime));
+    let started = {
+        // SAFETY: the synchronous native activation owns these pointers. This
+        // scope ends before the shared completion path can invoke Lisp.
+        let interpreter = unsafe { &mut *interpreter };
         if interpreter.garbage_collection_is_inhibited() {
             return;
         }
-        let runtime = unsafe { &mut *active.runtime };
+        let runtime = unsafe { &mut *runtime };
         if !runtime.heap.collection_might_be_due() {
             return;
         }
@@ -3550,17 +3586,20 @@ extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
             Ok(Kind::Float(value)) => Some(value.get()),
             _ => None,
         };
-        if runtime.collect_native_heap(stack_top, threshold, percentage, interpreter, unsafe {
-            &*active.environment
-        }) {
-            let live_bytes = interpreter
-                .live_object_census()
-                .total_bytes_of_live_objects();
-            runtime
-                .heap
-                .collection_finished(live_bytes, threshold, percentage);
+        if !runtime.heap.collection_due(threshold, percentage) {
+            return;
         }
-    });
+        let started = std::time::Instant::now();
+        runtime.collect_native_heap_now(stack_top, interpreter, unsafe { &*environment });
+        started
+    };
+    // SAFETY: these are the same owning activation's pointers, reborrowed
+    // after the collecting runtime reference has ended.
+    let result =
+        unsafe { super::finish_garbage_collection(&mut *interpreter, &mut *environment, started) };
+    if let Err(error) = result {
+        with_active(|active| remember_helper_error(active, error));
+    }
 }
 
 extern "C" fn runtime_maybe_quit() {
@@ -4040,11 +4079,6 @@ impl NativeHeap {
             if !live_word {
                 let allocated = match unsafe { crate::lisp::alloc::mem_find(address) } {
                     Some(crate::lisp::alloc::Found::String(cell)) => cell as usize == address,
-                    Some(crate::lisp::alloc::Found::Vectorlike(header)) => {
-                        header as usize == address
-                            && unsafe { crate::lisp::alloc::vectors::header_tag(header) }
-                                == crate::lisp::alloc::VectorTag::StringObject
-                    }
                     _ => false,
                 };
                 if !allocated {
@@ -4068,6 +4102,8 @@ impl NativeHeap {
                 && matches!(
                     unsafe { crate::lisp::alloc::vectors::header_tag(header) },
                     crate::lisp::alloc::VectorTag::Normal
+                        | crate::lisp::alloc::VectorTag::Subr
+                        | crate::lisp::alloc::VectorTag::NativeCompUnit
                         | crate::lisp::alloc::VectorTag::Closure
                         | crate::lisp::alloc::VectorTag::Bignum
                         | crate::lisp::alloc::VectorTag::Record
@@ -4268,7 +4304,7 @@ mod tests {
             symbol_with_position_pointer(&dead).expect("expose unreachable native fields");
             let words = [live, live_symbol, dead, dead_symbol].map(Value::word);
             let roots = Box::new([words[0]]);
-            runtime.register_permanent_root_range(roots.as_ptr(), roots.len());
+            runtime.push_ephemeral_root_range(roots.as_ptr(), roots.len());
             (roots, words.map(|word| word ^ HIDE))
         }
 
@@ -4380,6 +4416,83 @@ mod tests {
         assert_eq!(second.encode(&value).expect("second live heap"), word);
         assert_eq!(first.decode(word).expect("first reader").word(), word);
         assert_eq!(second.decode(word).expect("second reader").word(), word);
+    }
+
+    #[test]
+    fn retained_cons_field_addresses_survive_collection_and_then_reclaim() {
+        #[inline(never)]
+        fn make_field(cdr: bool) -> (crate::lisp::types::ConsSlot, usize) {
+            let pair = Value::cons(Value::Integer(37), Value::Integer(59));
+            let (car_slot, cdr_slot) = pair.cons_cells().expect("cons");
+            (if cdr { cdr_slot } else { car_slot }, pair.word() ^ HIDE)
+        }
+
+        #[inline(never)]
+        fn use_field(
+            heap: &mut NativeHeap,
+            interpreter: &mut Interpreter,
+            environment: &Env,
+            stack_top: *const NativeWord,
+            cdr: bool,
+        ) -> usize {
+            let (slot, hidden) = make_field(cdr);
+            crate::lisp::alloc::clobber_stack();
+            heap.collect(stack_top, &[], interpreter, environment);
+            assert_eq!(slot.get(), Value::Integer(if cdr { 59 } else { 37 }));
+            slot.set(Value::Integer(71));
+            assert_eq!(slot.get(), Value::Integer(71));
+            assert!(hidden_cons_is_live(heap, hidden));
+            hidden
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeap::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        for cdr in [false, true] {
+            let hidden = use_field(
+                &mut heap,
+                &mut interpreter,
+                &environment,
+                std::ptr::from_ref(&stack_marker),
+                cdr,
+            );
+            crate::lisp::alloc::clobber_stack();
+            heap.collect(
+                std::ptr::from_ref(&stack_marker),
+                &[],
+                &mut interpreter,
+                &environment,
+            );
+            assert!(
+                !hidden_cons_is_live(&heap, hidden),
+                "released field must not retain its cons"
+            );
+        }
+    }
+
+    #[test]
+    fn conservative_cons_roots_accept_only_gnu_field_and_tag_offsets() {
+        // alloc.c:live_cons_holding accepts the object, its Lisp tag and
+        // the cdr field. Arbitrary bytes inside a cons are not roots.
+        for contents in [0, 17, -91, 4097] {
+            let pair = Value::cons(Value::Integer(contents), Value::Integer(contents + 1));
+            let base = pair.word() & !TAG_MASK;
+            for offset in 0..std::mem::size_of::<crate::lisp::types::ConsCell>() {
+                let found = crate::lisp::alloc::conservative_value(base + offset);
+                if [0, TAG_CONS, std::mem::size_of::<Value>()].contains(&offset) {
+                    assert_eq!(found.map(|value| value.word()), Some(pair.word()));
+                } else {
+                    assert!(
+                        found.is_none(),
+                        "non-pointer byte offset {offset} retained a cons"
+                    );
+                }
+            }
+            std::hint::black_box(pair);
+        }
     }
 
     #[test]
@@ -5099,11 +5212,7 @@ mod tests {
             Value::Nil,
         ];
         let ordinary = interpreter.create_record("byte-code-function", slots.clone());
-        let closure = interpreter.create_pseudovector(
-            crate::lisp::eval::RecordKind::Closure,
-            "closure",
-            slots,
-        );
+        let closure = Value::allocated_closure(&slots);
         classify(
             &mut interpreter,
             &mut runtime,
@@ -5118,18 +5227,17 @@ mod tests {
             closure,
             Value::T,
         );
-        let Kind::Record(id) = closure.kind() else {
+        let Kind::Closure(fields) = closure.kind() else {
             panic!("closure is a pseudovector")
         };
-        assert!(interpreter.is_genuine_bytecode_function(id.id));
-        interpreter.find_record_mut(id).expect("closure").slots[1] =
-            Value::list([Value::Integer(42)]);
-        assert!(!interpreter.is_genuine_bytecode_function(id.id));
+        assert!(fields.is_bytecode());
+        fields.initialize_slot(1, Value::list([Value::Integer(42)]));
+        assert!(!fields.is_bytecode());
         classify(
             &mut interpreter,
             &mut runtime,
             &mut environment,
-            Value::Record(id),
+            closure,
             Value::Nil,
         );
     }
@@ -5480,16 +5588,12 @@ mod tests {
             Value::symbol("placeholder"),
             retained,
         ]);
-        let prototype = interpreter.create_pseudovector(
-            crate::lisp::eval::RecordKind::Closure,
-            "byte-code-function",
-            vec![
-                Value::Nil,
-                Value::string("bytecode"),
-                prototype_constants,
-                Value::Integer(2),
-            ],
-        );
+        let prototype = Value::allocated_closure(&[
+            Value::Nil,
+            Value::string("bytecode"),
+            prototype_constants,
+            Value::Integer(2),
+        ]);
         let captured = Value::cons(Value::symbol("captured"), Value::Nil);
         let closure = runtime
             .invoke(
@@ -5502,18 +5606,16 @@ mod tests {
             .expect("copy closure");
 
         assert_ne!(closure, prototype);
-        let Kind::Record(closure_id) = closure.kind() else {
-            panic!("make-closure returns a closure record")
+        let Kind::Closure(closure) = closure.kind() else {
+            panic!("make-closure returns an inline closure")
         };
-        let closure = interpreter
-            .find_record(closure_id)
-            .expect("returned closure record");
-        assert_eq!(closure.kind, crate::lisp::eval::RecordKind::Closure);
-        let constants = crate::lisp::primitives::vector_items(&closure.slots[2])
+        assert!(closure.is_bytecode());
+        let constants_value = closure.get(2).expect("constant field");
+        let constants = crate::lisp::primitives::vector_items(&constants_value)
             .expect("fresh constants vector");
         assert_eq!(constants, vec![captured, retained]);
         let (Kind::Vector(closure_constants), Kind::Vector(prototype_constants_identity)) =
-            (closure.slots[2].kind(), prototype_constants.kind())
+            (constants_value.kind(), prototype_constants.kind())
         else {
             panic!("make-closure constants remain ordinary vectors")
         };
@@ -6324,6 +6426,128 @@ mod tests {
                 .expect("eq strips a symbol position while enabled"),
             Value::T
         );
+    }
+
+    #[test]
+    fn native_arithmetic_follows_data_c_fixnum_and_fallback_paths() {
+        // data.c:Fplus/Fminus/arith_driver: all arities, immediate results,
+        // promotion, existing bignums and floats use the installed MANY ABI.
+        // The separate native-binary-arithmetic GNU fixture checks 108 actual
+        // native results and condition values, plus marker coercion and GC.
+        let cases = [
+            ("+", vec![], Value::Integer(0)),
+            ("-", vec![], Value::Integer(0)),
+            ("+", vec![Value::Integer(17)], Value::Integer(17)),
+            ("-", vec![Value::Integer(17)], Value::Integer(-17)),
+            (
+                "+",
+                vec![
+                    Value::Integer(MOST_NEGATIVE_FIXNUM),
+                    Value::Integer(MOST_POSITIVE_FIXNUM),
+                ],
+                Value::Integer(-1),
+            ),
+            (
+                "+",
+                vec![Value::Integer(MOST_POSITIVE_FIXNUM), Value::Integer(1)],
+                Value::Integer(2_305_843_009_213_693_952),
+            ),
+            (
+                "-",
+                vec![Value::Integer(MOST_NEGATIVE_FIXNUM), Value::Integer(1)],
+                Value::Integer(-2_305_843_009_213_693_953),
+            ),
+            (
+                "+",
+                vec![
+                    Value::Integer(2_305_843_009_213_693_952),
+                    Value::Integer(MOST_NEGATIVE_FIXNUM),
+                ],
+                Value::Integer(0),
+            ),
+            (
+                "+",
+                vec![Value::Integer(31), Value::Integer(-7), Value::Integer(13)],
+                Value::Integer(37),
+            ),
+            (
+                "-",
+                vec![Value::Integer(31), Value::Integer(-7), Value::Integer(13)],
+                Value::Integer(25),
+            ),
+            (
+                "+",
+                vec![Value::float(1.25), Value::Integer(2)],
+                Value::float(3.25),
+            ),
+            (
+                "-",
+                vec![Value::float(3.5), Value::float(1.25)],
+                Value::float(2.25),
+            ),
+        ];
+        let mut roots = crate::lisp::alloc::RootedVec::new();
+        for (_, arguments, expected) in &cases {
+            for argument in arguments {
+                roots.push(*argument);
+            }
+            roots.push(*expected);
+        }
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        for (name, arguments, expected) in cases {
+            let index = super::super::abi::native_subrs()
+                .iter()
+                .position(|subroutine| subroutine.name == name)
+                .expect("arithmetic belongs to the native ABI");
+            let actual = runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    native_subr_address(index).cast_const(),
+                    NativeCallingConvention::Many,
+                    &arguments,
+                )
+                .expect("native arithmetic result");
+            assert_eq!(actual, expected, "{name} {arguments:?}");
+            assert_eq!(
+                actual.word() & 3 == TAG_FIXNUM_LOW,
+                expected.word() & 3 == TAG_FIXNUM_LOW
+            );
+            assert_eq!(interpreter.backtrace_frames_len(), 0);
+            assert_eq!(interpreter.lisp_eval_depth, 0);
+            assert!(runtime.calls.is_empty());
+        }
+        let invalid = Value::symbol("native-arithmetic-error");
+        for name in ["+", "-"] {
+            let index = super::super::abi::native_subrs()
+                .iter()
+                .position(|subroutine| subroutine.name == name)
+                .expect("arithmetic belongs to the native ABI");
+            for arguments in [[invalid, Value::Integer(1)], [Value::Integer(1), invalid]] {
+                let error = runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        native_subr_address(index).cast_const(),
+                        NativeCallingConvention::Many,
+                        &arguments,
+                    )
+                    .expect_err("invalid operands retain the general signaling path");
+                assert_eq!(
+                    crate::lisp::eval::error_condition_value(&error),
+                    Value::list([
+                        Value::symbol("wrong-type-argument"),
+                        Value::symbol("number-or-marker-p"),
+                        invalid,
+                    ]),
+                );
+                assert_eq!(interpreter.backtrace_frames_len(), 0);
+                assert_eq!(interpreter.lisp_eval_depth, 0);
+                assert!(runtime.calls.is_empty());
+            }
+        }
     }
 
     #[test]
@@ -7180,16 +7404,14 @@ mod tests {
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
         // GNU byte code for one mandatory argument: dup, add1, return.
-        let function = interpreter.create_pseudovector(
-            crate::lisp::eval::RecordKind::Closure,
-            "byte-code-function",
-            vec![
-                Value::Integer(257),
-                Value::String("\u{89}\u{54}\u{87}".into()),
-                Value::list([Value::symbol("vector-literal")]),
-                Value::Integer(3),
-            ],
-        );
+        let function = Value::allocated_closure(&[
+            Value::Integer(257),
+            Value::StringObject(crate::lisp::types::StringObjectRef::from_unibyte(vec![
+                0o211, 0o124, 0o207,
+            ])),
+            Value::list([Value::symbol("vector-literal")]),
+            Value::Integer(3),
+        ]);
         assert!(matches!(
             direct_funcall_target(&interpreter, &environment, &function),
             Some(DirectFuncallTarget::ByteCode { .. })
@@ -7209,6 +7431,19 @@ mod tests {
         );
         assert_eq!(interpreter.backtrace_frames_len(), 0);
         assert_eq!(interpreter.lisp_eval_depth, 0);
+
+        // alloc.c:Fmake_byte_code rejects the former Unicode fixture:
+        // those three characters occupy five bytes, not three opcodes.
+        assert_eq!(
+            crate::lisp::bytecode::ByteCodeObject::from_slots(&[
+                Value::Integer(257),
+                Value::String("\u{89}\u{54}\u{87}".into()),
+                Value::vector([]),
+                Value::Integer(3),
+            ])
+            .expect_err("GNU rejects Unicode text as byte-code storage"),
+            crate::lisp::bytecode::ByteCodeError::NonUnibyteCode { char_index: 0 }
+        );
     }
 
     #[test]
@@ -7428,6 +7663,40 @@ mod tests {
                     .expect("cleanup returns to generated code"),
                 Value::Nil
             );
+        }
+    }
+
+    #[test]
+    fn native_many_empty_and_negative_list_counts_accept_null_storage() {
+        extern "C" fn call_empty_list(count: NativeWord) -> NativeWord {
+            let index = super::super::abi::native_subrs()
+                .iter()
+                .position(|subroutine| subroutine.name == "list")
+                .expect("list belongs to the native ABI");
+            let count = decode_fixnum(count).expect("test count is a fixnum") as isize;
+            // alloc.c:Flist never reads args for any non-positive count.
+            unsafe { invoke_subr_many(index, count, std::ptr::null()) }
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        for count in [0, -1, -7] {
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        call_empty_list as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[Value::Integer(count)],
+                    )
+                    .expect("an empty native list does not read null storage"),
+                Value::Nil,
+            );
+            assert_eq!(interpreter.backtrace_frames_len(), 0);
+            assert_eq!(interpreter.lisp_eval_depth, 0);
+            assert!(runtime.calls.is_empty());
         }
     }
 
@@ -8314,6 +8583,58 @@ mod tests {
         assert!(!gc.collection_due(NATIVE_GC_DEFAULT_THRESHOLD, Some(0.1)));
         gc.tally_consing(1);
         assert!(gc.collection_due(NATIVE_GC_DEFAULT_THRESHOLD, Some(0.1)));
+    }
+
+    #[test]
+    fn native_automatic_gc_runs_statistics_and_hooks_under_gnu_inhibition() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let setup = crate::lisp::reader::Reader::new(
+            "(setq native-auto-hook-count 0 native-auto-hook-gcs nil \
+             native-auto-hook-nested 'not-run gcs-done 0 gc-elapsed nil \
+             post-gc-hook (list '(lambda () \
+               (setq native-auto-hook-count (1+ native-auto-hook-count) \
+                     native-auto-hook-gcs gcs-done \
+                     native-auto-hook-nested (garbage-collect)))))",
+        )
+        .read()
+        .expect("hook setup parses")
+        .expect("hook setup is one form");
+        interpreter
+            .eval(&setup, &mut environment)
+            .expect("install hook");
+        let mut runtime = NativeRuntime::default();
+        runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                eval_form_triggers_maybe_gc as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[],
+            )
+            .expect("automatic collection finishes through native entry");
+        assert_eq!(runtime.heap.gc.collections, 2);
+        assert_eq!(
+            interpreter.lookup_var("gcs-done", &environment),
+            Some(Value::Integer(1))
+        );
+        assert_eq!(
+            interpreter.lookup_var("native-auto-hook-count", &environment),
+            Some(Value::Integer(1))
+        );
+        assert_eq!(
+            interpreter.lookup_var("native-auto-hook-gcs", &environment),
+            Some(Value::Integer(1))
+        );
+        assert_eq!(
+            interpreter.lookup_var("native-auto-hook-nested", &environment),
+            Some(Value::Nil)
+        );
+        assert_eq!(
+            interpreter.lookup_var("gc-elapsed", &environment),
+            Some(Value::Nil)
+        );
+        assert!(!interpreter.garbage_collection_is_inhibited());
     }
 
     #[test]
@@ -10416,7 +10737,7 @@ mod tests {
         let after = crate::lisp::types::census_live_vectors();
         let bytes = (std::mem::size_of::<crate::lisp::alloc::vectors::VectorHeader>()
             + std::mem::size_of::<crate::lisp::types::TerminalValue>())
-        .next_multiple_of(16);
+        .next_multiple_of(std::mem::size_of::<Value>());
         assert_eq!(after.count, before.count + 1);
         assert_eq!(
             after.slots,
@@ -10728,7 +11049,7 @@ mod tests {
         assert_ne!(copied, object);
         assert_eq!(source.finalizer_objects(), vec![object]);
         assert_eq!(cloned.finalizer_objects(), vec![copied]);
-        let Kind::Lambda(function) = copied.function().kind() else {
+        let Kind::Closure(function) = copied.function().kind() else {
             panic!("copied callback")
         };
         assert_eq!(
@@ -11000,6 +11321,23 @@ mod tests {
     }
 
     #[test]
+    fn interpreted_closure_allocation_charges_its_gnu_lisp_words() {
+        let measured: Vec<_> = (3..=6)
+            .map(|len| {
+                let before = lisp_allocated_bytes();
+                let closure = crate::lisp::alloc::ClosureRef::allocate(&vec![Value::Nil; len]);
+                let charged = lisp_allocated_bytes() - before;
+                assert_eq!(closure.public_len(), len);
+                (len, charged)
+            })
+            .collect();
+        println!("closure allocation charge (slots, bytes): {measured:?}");
+        for (len, charged) in measured {
+            assert_eq!(charged as usize, (len + 1) * std::mem::size_of::<Value>());
+        }
+    }
+
+    #[test]
     fn native_vectors_and_interpreted_closures_share_words_across_heaps() {
         let mut first = NativeHeap::new();
         let mut second = NativeHeap::new();
@@ -11069,7 +11407,7 @@ mod tests {
             };
             assert!(vector.get(0).expect("closure slot").eq_value(closure));
             assert!(vector.get(1).expect("cycle slot").eq_value(value));
-            let Kind::Lambda(function) = closure.kind() else {
+            let Kind::Closure(function) = closure.kind() else {
                 panic!("retained interpreted closure")
             };
             assert!(
@@ -11152,10 +11490,7 @@ mod tests {
         for value in [
             Value::string(""),
             Value::string("plain λ\0text"),
-            Value::String(crate::lisp::alloc::allocate_string(
-                "internal-name".into(),
-                crate::lisp::alloc::UNTRACKED_TEXT,
-            )),
+            Value::string("internal-name"),
             crate::lisp::primitives::make_shared_string_value_with_multibyte(
                 "mutable λ\0text".into(),
                 Vec::new(),
@@ -11171,6 +11506,30 @@ mod tests {
             assert!(value.is_string());
             assert_eq!(word & TAG_MASK, TAG_STRING);
             assert_eq!(word, value.word());
+            let Kind::StringObject(string) = value.kind() else {
+                panic!("string header")
+            };
+            let contents = string.borrow();
+            // Native XSTRING, SCHARS, SBYTES and SDATA address these exact
+            // four header words, without a vector tag or RefCell prefix.
+            let header = (word & !TAG_MASK) as *const usize;
+            // SAFETY: VALUE roots the allocation, and the shared borrow
+            // excludes writes while the native-layout fields are examined.
+            unsafe {
+                assert_eq!(header.read(), contents.len());
+                assert_eq!(
+                    header.add(1).cast::<isize>().read(),
+                    if contents.is_multibyte() {
+                        contents.storage_bytes() as isize
+                    } else {
+                        -1
+                    }
+                );
+                let data = header.add(3).cast::<*const u8>().read();
+                assert_eq!(data, contents.bytes().as_ptr());
+                assert_eq!(*data.add(contents.storage_bytes()), 0);
+            }
+            drop(contents);
             assert_eq!(
                 second.encode(&value).expect("same string in another heap"),
                 word
@@ -11285,6 +11644,610 @@ mod tests {
             "dead property child"
         );
         assert!(heap.decode(hidden[2] ^ HIDE).is_err(), "dead string cycle");
+    }
+
+    #[test]
+    fn borrowed_string_properties_survive_off_stack_guards_and_are_reclaimed_after_release() {
+        type Guard = Box<dyn std::ops::Deref<Target = crate::lisp::types::SharedStringState>>;
+
+        #[inline(never)]
+        fn make_guard() -> (Guard, [usize; 3]) {
+            let child = Value::cons(Value::Integer(73), Value::Nil);
+            let string = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+                "borrowed".into(),
+                vec![crate::buffer::TextPropertySpan {
+                    start: 0,
+                    end: 8,
+                    props: vec![("child".into(), child)],
+                }],
+                false,
+            );
+            let Kind::StringObject(object) = string.kind() else {
+                panic!("property-bearing string")
+            };
+            // Keep the public borrow alive in a Rust allocation, whose payload
+            // the conservative stack walker does not scan. The stable owner
+            // is reclaimed after the guard below; no Lisp pointer escapes raw.
+            let owner = Box::leak(Box::new(object));
+            let owner_address = std::ptr::from_ref(owner) as usize;
+            let guard: Guard = Box::new(owner.borrow());
+            (
+                guard,
+                [
+                    string.word() ^ HIDE,
+                    child.word() ^ HIDE,
+                    owner_address ^ HIDE,
+                ],
+            )
+        }
+
+        #[inline(never)]
+        fn verify_and_release(heap: &mut NativeHeap, guard: Guard, hidden: [usize; 3]) {
+            let string = heap
+                .decode(hidden[0] ^ HIDE)
+                .expect("borrowed header survives");
+            let child = heap
+                .decode(hidden[1] ^ HIDE)
+                .expect("a string borrow also retains its property values");
+            assert_eq!(child.car().expect("property cons"), Value::Integer(73));
+            assert_eq!(guard.props[0].props[0].1.word(), child.word());
+            assert_eq!(string.as_string().expect("borrowed text"), "borrowed");
+            drop(guard);
+            // SAFETY: make_guard leaked this one Box to provide a stable
+            // borrow owner. Its sole guard is now dropped, and the copyable
+            // handle owns no GC allocation or other Rust resources.
+            unsafe {
+                drop(Box::from_raw(
+                    (hidden[2] ^ HIDE) as *mut crate::lisp::types::StringObjectRef,
+                ));
+            }
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeap::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        let (guard, hidden) = make_guard();
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        verify_and_release(&mut heap, std::hint::black_box(guard), hidden);
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        assert!(heap.decode(hidden[0] ^ HIDE).is_err(), "released string");
+        assert!(
+            heap.decode(hidden[1] ^ HIDE).is_err(),
+            "released property child"
+        );
+    }
+
+    #[test]
+    fn off_stack_string_borrows_enter_the_weak_table_fixed_point() {
+        type Guard = Box<dyn std::ops::Deref<Target = crate::lisp::types::SharedStringState>>;
+
+        #[inline(never)]
+        fn build(interpreter: &mut Interpreter, environment: &Env) -> (Guard, [usize; 5]) {
+            let child = Value::cons(Value::Integer(73), Value::Nil);
+            let string = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+                "borrowed".into(),
+                vec![crate::buffer::TextPropertySpan {
+                    start: 0,
+                    end: 8,
+                    props: vec![("child".into(), child)],
+                }],
+                false,
+            );
+            let values = [
+                Value::cons(Value::Integer(81), Value::Nil),
+                Value::cons(Value::Integer(82), Value::Nil),
+            ];
+            let table = crate::lisp::json::make_hash_table(interpreter, "eq", Vec::new());
+            let Kind::HashTable(table_ref) = table.kind() else {
+                panic!("weak table")
+            };
+            table_ref.set_weakness(1);
+            assert!(interpreter.equal_hash_put(table_ref, string, values[0], environment));
+            assert!(interpreter.equal_hash_put(table_ref, child, values[1], environment));
+            interpreter.set_global_binding("borrowed-string-weak-keys", table);
+            let Kind::StringObject(object) = string.kind() else {
+                panic!("property-bearing string")
+            };
+            let owner = Box::leak(Box::new(object));
+            let owner_address = std::ptr::from_ref(owner) as usize;
+            let guard: Guard = Box::new(owner.borrow());
+            (
+                guard,
+                [
+                    string.word() ^ HIDE,
+                    child.word() ^ HIDE,
+                    values[0].word() ^ HIDE,
+                    values[1].word() ^ HIDE,
+                    owner_address ^ HIDE,
+                ],
+            )
+        }
+
+        #[inline(never)]
+        fn check_and_release(heap: &mut NativeHeap, guard: Guard, hidden: [usize; 5]) {
+            for word in &hidden[..4] {
+                heap.decode(word ^ HIDE).expect("borrowed weak-key graph");
+            }
+            assert_eq!(guard.props[0].props[0].1.word(), hidden[1] ^ HIDE);
+            drop(guard);
+            // SAFETY: build leaked this owner; its only guard is now gone.
+            unsafe {
+                drop(Box::from_raw(
+                    (hidden[4] ^ HIDE) as *mut crate::lisp::types::StringObjectRef,
+                ));
+            }
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeap::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        let (guard, hidden) = build(&mut interpreter, &environment);
+        let Kind::HashTable(table) = interpreter
+            .global_binding_value("borrowed-string-weak-keys")
+            .expect("rooted table")
+            .kind()
+        else {
+            panic!("weak table")
+        };
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        assert_eq!(
+            table.count(),
+            2,
+            "both borrowed keys participate in marking"
+        );
+        check_and_release(&mut heap, std::hint::black_box(guard), hidden);
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        assert_eq!(
+            table.count(),
+            0,
+            "weak entries disappear after borrow release"
+        );
+        for word in &hidden[..4] {
+            assert!(heap.decode(word ^ HIDE).is_err(), "released weak-key graph");
+        }
+    }
+
+    #[test]
+    fn exclusive_string_borrows_reject_gc_before_marking_or_sweeping() {
+        type Guard = Box<dyn std::ops::DerefMut<Target = crate::lisp::types::SharedStringState>>;
+
+        #[inline(never)]
+        fn build() -> (Guard, [usize; 4]) {
+            let child = Value::cons(Value::Integer(73), Value::Nil);
+            let unrelated = Value::cons(Value::Integer(99), Value::Nil);
+            let string = crate::lisp::primitives::make_shared_string_value_with_multibyte(
+                "exclusive".into(),
+                vec![crate::buffer::TextPropertySpan {
+                    start: 0,
+                    end: 9,
+                    props: vec![("child".into(), child)],
+                }],
+                false,
+            );
+            let Kind::StringObject(object) = string.kind() else {
+                panic!("property-bearing string")
+            };
+            let owner = Box::leak(Box::new(object));
+            let owner_address = std::ptr::from_ref(owner) as usize;
+            let guard: Guard = Box::new(owner.borrow_mut());
+            (
+                guard,
+                [
+                    string.word() ^ HIDE,
+                    child.word() ^ HIDE,
+                    unrelated.word() ^ HIDE,
+                    owner_address ^ HIDE,
+                ],
+            )
+        }
+
+        #[inline(never)]
+        fn check_and_release(heap: &mut NativeHeap, mut guard: Guard, hidden: [usize; 4]) {
+            for word in &hidden[..3] {
+                heap.decode(word ^ HIDE)
+                    .expect("rejected collection preserves every allocation");
+            }
+            assert_eq!(guard.props[0].props[0].1.word(), hidden[1] ^ HIDE);
+            guard.props[0].props[0].1 = Value::Integer(74);
+            drop(guard);
+            // SAFETY: build leaked this owner; its only guard is now gone.
+            unsafe {
+                drop(Box::from_raw(
+                    (hidden[3] ^ HIDE) as *mut crate::lisp::types::StringObjectRef,
+                ));
+            }
+        }
+
+        fn rejected_collection(
+            heap: &mut NativeHeap,
+            interpreter: &mut Interpreter,
+            environment: &Env,
+            stack_marker: *const NativeWord,
+        ) {
+            let epoch = crate::lisp::types::current_mark_epoch();
+            let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                heap.collect(stack_marker, &[], interpreter, environment);
+            }));
+            let error = rejected.expect_err("exclusive borrow must prohibit collection");
+            assert_eq!(
+                error.downcast_ref::<&str>(),
+                Some(&"cannot collect while a string is mutably borrowed")
+            );
+            assert_eq!(
+                crate::lisp::types::current_mark_epoch(),
+                epoch,
+                "rejected before the mark epoch starts"
+            );
+        }
+
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeap::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        let (guard, hidden) = build();
+        crate::lisp::alloc::clobber_stack();
+        rejected_collection(
+            &mut heap,
+            &mut interpreter,
+            &environment,
+            std::ptr::from_ref(&stack_marker),
+        );
+        check_and_release(&mut heap, std::hint::black_box(guard), hidden);
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        for word in &hidden[..3] {
+            assert!(
+                heap.decode(word ^ HIDE).is_err(),
+                "released exclusive-borrow graph"
+            );
+        }
+        for multibyte in [false, true] {
+            let object =
+                crate::lisp::types::StringObjectRef::from_storage(Vec::new(), 0, multibyte)
+                    .expect("empty string");
+            let guard = object.borrow_mut();
+            rejected_collection(
+                &mut heap,
+                &mut interpreter,
+                &environment,
+                std::ptr::from_ref(&stack_marker),
+            );
+            drop(guard);
+        }
+    }
+
+    #[test]
+    fn string_sdata_allocation_failure_keeps_header_and_block_census() {
+        use crate::lisp::types::StringObjectRef;
+        let _interpreter = Interpreter::new();
+        for code in [97, 128, 0x20_0000] {
+            let headers = crate::lisp::alloc::live_string_object_census();
+            let blocks = crate::lisp::alloc::string_data_census();
+            let error = StringObjectRef::repeated_character(code, 1usize << 58, false)
+                .expect_err("an impossible address-space request must be recoverable");
+            assert_eq!(error.to_string(), "Memory exhausted");
+            assert_eq!(crate::lisp::alloc::live_string_object_census(), headers);
+            assert_eq!(crate::lisp::alloc::string_data_census(), blocks);
+            let small = StringObjectRef::repeated_character(code, 3, false)
+                .expect("allocation still works after the error");
+            assert_eq!(small.borrow().len(), 3);
+            assert_eq!(small.borrow().character_at(2), Some(i64::from(code)));
+        }
+    }
+
+    #[test]
+    fn string_allocation_failure_uses_bound_signal_and_native_exit() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let payload = Value::list([Value::symbol("error"), Value::string("allocation-probe-47")]);
+        interpreter.set_variable("memory-signal-data", payload, &mut environment);
+        interpreter.set_variable("memory-full", Value::Nil, &mut environment);
+        for code in [97, 128, 0x20_0000] {
+            let args = [Value::Integer(1_i64 << 58), Value::Integer(code)];
+            let error = crate::lisp::primitives::call(
+                &mut interpreter,
+                "make-string",
+                &args,
+                &mut environment,
+            )
+            .expect_err("ordinary primitive allocation failure");
+            assert!(crate::lisp::eval::error_condition_value(&error).eq_value(payload));
+            let error = runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    call_funcall_two as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    &[Value::symbol("make-string"), args[0], args[1]],
+                )
+                .expect_err("native nonlocal exit carries the same Lisp condition");
+            assert!(crate::lisp::eval::error_condition_value(&error).eq_value(payload));
+            assert_eq!(
+                interpreter.lookup_var("memory-full", &environment),
+                Some(Value::Nil)
+            );
+        }
+    }
+
+    #[test]
+    fn string_size_bound_is_gnu_fixnum_maximum() {
+        use crate::lisp::types::StringObjectRef;
+        let _interpreter = Interpreter::new();
+        for code in [128, 0x20_0000] {
+            let error =
+                StringObjectRef::repeated_character(code, MOST_POSITIVE_FIXNUM as usize, false)
+                    .expect_err(
+                        "GNU rejects a byte count beyond its fixnum bound before allocating",
+                    );
+            assert_eq!(error.to_string(), "Maximum string size exceeded");
+        }
+    }
+
+    #[test]
+    fn string_sblocks_compact_unborrowed_data_and_hold_borrowed_blocks() {
+        use crate::lisp::types::StringObjectRef;
+        #[inline(never)]
+        fn make_strings() -> (Vec<Value>, Vec<Vec<u8>>) {
+            let mut roots = Vec::new();
+            let mut expected = Vec::new();
+            // alloc.c:compact_small_strings need not move data already at
+            // its destination. Guarantee a retired entry before the borrowed
+            // string, independent of the arena's state after previous tests.
+            // Two adjacent 37-byte entries are 48 bytes apart; crossing an
+            // sblock adds its header, so this also proves a shared block.
+            let mut preceding = StringObjectRef::repeated_character(u32::from(b'p'), 37, true)
+                .expect("valid predecessor");
+            let mut pinned = None;
+            for _ in 0..2 {
+                let next = StringObjectRef::repeated_character(u32::from(b'q'), 37, true)
+                    .expect("valid guarded string");
+                let before = preceding.borrow().bytes().as_ptr() as usize;
+                let after = next.borrow().bytes().as_ptr() as usize;
+                if after.checked_sub(before) == Some(48) {
+                    // Five-byte character storage outgrows the old 48-byte
+                    // entry. Retiring it guarantees an actual compaction hole
+                    // even if the old string header is conservatively marked.
+                    preceding
+                        .borrow_mut()
+                        .store_character(0, 0x20_0000)
+                        .expect("expand the predecessor's data");
+                    assert_ne!(preceding.borrow().bytes().as_ptr() as usize, before);
+                    pinned = Some(next);
+                    break;
+                }
+                preceding = next;
+            }
+            let pinned = pinned.expect("two consecutive entries share one small block");
+            roots.push(Value::StringObject(pinned));
+            expected.push(vec![b'q'; 37]);
+            for index in 0..768 {
+                let length = if index % 41 == 0 { 1025 } else { 37 };
+                let code = (index % 26 + usize::from(b'a')) as u32;
+                let object = StringObjectRef::repeated_character(code, length, false)
+                    .expect("valid string pool input");
+                if index % 47 == 31 {
+                    roots.push(Value::StringObject(object));
+                    expected.push(vec![code as u8; length]);
+                }
+            }
+            for length in [1, 7, 8, 15, 16, 511, 1023, 1024, 1025, 8193] {
+                roots.push(Value::StringObject(
+                    StringObjectRef::repeated_character(u32::from(b'z'), length, false)
+                        .expect("valid size-boundary input"),
+                ));
+                expected.push(vec![b'z'; length]);
+            }
+            (roots, expected)
+        }
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeap::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        let (roots, expected) = make_strings();
+        let native_roots: Vec<_> = roots.iter().map(|value| value.word()).collect();
+        let before = crate::lisp::alloc::string_data_census();
+        let pointers: Vec<_> = roots
+            .iter()
+            .map(|value| {
+                let Kind::StringObject(object) = value.kind() else {
+                    panic!("string");
+                };
+                object.borrow().bytes().as_ptr() as usize
+            })
+            .collect();
+        let Kind::StringObject(pinned) = roots[0].kind() else {
+            panic!("string");
+        };
+        let guard = pinned.borrow();
+        let held_bytes = guard.bytes();
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &native_roots,
+            &mut interpreter,
+            &environment,
+        );
+        assert_eq!(held_bytes.as_ptr() as usize, pointers[0]);
+        assert_eq!(held_bytes, expected[0]);
+        let mut relocated = 0;
+        for ((&value, contents), &previous) in roots.iter().zip(&expected).zip(&pointers) {
+            let Kind::StringObject(object) = value.kind() else {
+                panic!("string");
+            };
+            assert_eq!(
+                heap.decode(value.word())
+                    .expect("rooted string remains allocated")
+                    .word(),
+                value.word()
+            );
+            let state = object.borrow();
+            assert_eq!(state.bytes(), contents);
+            let data = state.bytes().as_ptr();
+            assert_eq!(data as usize % 8, 0);
+            // SAFETY: live sdata owns its aligned back-pointer and NUL;
+            // neither access extends beyond this string's allocation.
+            unsafe {
+                assert_eq!(data.sub(8).cast::<usize>().read(), object.identity());
+                assert_eq!(data.add(contents.len()).read(), 0);
+            }
+            relocated += usize::from(data as usize != previous);
+        }
+        assert!(relocated > 0, "unborrowed live storage was compacted");
+        let after = crate::lisp::alloc::string_data_census();
+        assert!(
+            after.0 < before.0 && after.1 < before.1,
+            "actual data blocks and requested bytes are released"
+        );
+        drop(guard);
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &native_roots,
+            &mut interpreter,
+            &environment,
+        );
+        assert_ne!(
+            pinned.borrow().bytes().as_ptr() as usize,
+            pointers[0],
+            "the released borrow no longer pins its sparse block"
+        );
+        assert_eq!(pinned.borrow().bytes(), expected[0]);
+    }
+
+    #[test]
+    fn string_sdata_resize_reuses_alignment_slop_and_preserves_contents() {
+        use crate::lisp::types::StringObjectRef;
+        let _interpreter = Interpreter::new();
+        let object = StringObjectRef::repeated_character(u32::from(b'a'), 6, true)
+            .expect("valid multibyte resize input");
+        let original = object.borrow().bytes().as_ptr() as usize;
+        {
+            let mut state = object.borrow_mut();
+            assert!(state.store_character(2, 0x80).expect("two-byte character"));
+            assert_eq!(state.bytes(), b"aa\xc2\x80aaa");
+            assert_eq!(state.bytes().as_ptr() as usize, original);
+            assert_eq!(state.len(), 6);
+            assert!(
+                state
+                    .store_character(2, 0x20_0000)
+                    .expect("five-byte character")
+            );
+            assert_ne!(state.bytes().as_ptr() as usize, original);
+            assert_eq!(state.len(), 6);
+            assert_eq!(state.character_at(2), Some(0x20_0000));
+            assert_eq!(&state.bytes()[..2], b"aa");
+            assert_eq!(&state.bytes()[7..], b"aaa");
+            // SAFETY: the allocation includes its initialized trailing NUL.
+            unsafe {
+                assert_eq!(state.bytes().as_ptr().add(state.storage_bytes()).read(), 0);
+            }
+            assert!(
+                state
+                    .store_character(2, u32::from(b'a'))
+                    .expect("ASCII replacement")
+            );
+            assert_eq!(state.bytes(), b"aaaaaa");
+        }
+    }
+
+    #[test]
+    fn pure_string_headers_survive_unrooted_gc_outside_the_ordinary_census() {
+        #[inline(never)]
+        fn make_pure_strings() -> [usize; 3] {
+            use crate::lisp::types::StringObjectRef;
+            let before = crate::lisp::alloc::live_string_object_census();
+            let hidden = [
+                (Vec::new(), false),
+                (Vec::new(), true),
+                (b"pure bytes".to_vec(), false),
+            ]
+            .map(|(bytes, multibyte)| {
+                let characters = bytes.len();
+                Value::StringObject(
+                    StringObjectRef::from_storage_kind(
+                        bytes,
+                        characters,
+                        multibyte,
+                        crate::lisp::alloc::StringAllocation::Pure,
+                    )
+                    .expect("pure string storage"),
+                )
+                .word()
+                    ^ HIDE
+            });
+            assert_eq!(crate::lisp::alloc::live_string_object_census(), before);
+            hidden
+        }
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut heap = NativeHeap::new();
+        heap.begin_call();
+        let stack_marker = 0;
+        heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
+        let hidden = make_pure_strings();
+        crate::lisp::alloc::clobber_stack();
+        heap.collect(
+            std::ptr::from_ref(&stack_marker),
+            &[],
+            &mut interpreter,
+            &environment,
+        );
+        for (index, word) in hidden.into_iter().enumerate() {
+            let restored = heap
+                .decode(word ^ HIDE)
+                .expect("pure header survives without a root");
+            let Kind::StringObject(state) = restored.kind() else {
+                panic!("pure string")
+            };
+            assert!(state.is_pure());
+            assert_eq!(state.borrow().len(), if index == 2 { 10 } else { 0 });
+            assert_eq!(state.borrow().is_multibyte(), index == 1);
+            assert!(
+                state
+                    .mark_bit()
+                    .is_marked(crate::lisp::types::current_mark_epoch())
+            );
+        }
     }
 
     #[test]
@@ -11693,8 +12656,7 @@ mod tests {
         let after = crate::lisp::alloc::vectors::live_vector_census();
         let words = (std::mem::size_of::<crate::lisp::types::FrameValue>()
             + std::mem::size_of::<usize>())
-        .next_multiple_of(16)
-            / std::mem::size_of::<usize>();
+        .div_ceil(std::mem::size_of::<Value>());
         assert_eq!(after, (before.0 + 1, before.1 + words));
         assert!(!frame.is_live());
         assert!(
@@ -12069,7 +13031,7 @@ mod tests {
             let words = [live, child, dead, dead_child]
                 .map(|value| runtime.heap.encode(&value).expect("canonical native word"));
             let roots = Box::new([words[0]]);
-            runtime.register_permanent_root_range(roots.as_ptr(), roots.len());
+            runtime.push_ephemeral_root_range(roots.as_ptr(), roots.len());
             (roots, words.map(|word| word ^ HIDE))
         }
 

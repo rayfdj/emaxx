@@ -389,6 +389,16 @@ struct NativeCFastPathContract {
 
 const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
     NativeCFastPathContract {
+        primitive: "+",
+        owner: "data.c:Fplus",
+        contract_test: "native_arithmetic_follows_data_c_fixnum_and_fallback_paths",
+    },
+    NativeCFastPathContract {
+        primitive: "-",
+        owner: "data.c:Fminus",
+        contract_test: "native_arithmetic_follows_data_c_fixnum_and_fallback_paths",
+    },
+    NativeCFastPathContract {
         primitive: "stringp",
         owner: "data.c:Fstringp",
         contract_test: "native_stringp_is_a_tag_test_without_an_active_runtime",

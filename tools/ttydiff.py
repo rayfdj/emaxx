@@ -4912,6 +4912,71 @@ SCENARIOS += [
 ]
 
 
+# The ordinary frame and recursive minibuffer readers must share the same
+# live keymap/translation path as read-key-sequence. These actions cross
+# separate input reads and require a concrete callback/command result.
+def reader_setup(expression):
+    return b"\x1b:" + expression.encode("utf-8") + b"\r"
+
+
+SCENARIOS += [
+    (
+        "reader-live-prefix-filters",
+        CORE_EDIT_SAMPLE,
+        [
+            action("setup-reader", reader_setup(
+                "(progn (setq reader-trace nil reader-prefix (make-sparse-keymap)) "
+                "(defun reader-finish () (interactive) "
+                "(message \"reader filters %S\" (reverse reader-trace))) "
+                "(define-key reader-prefix [120] '(menu-item \"leaf\" reader-finish "
+                ":filter (lambda (value) (push 'leaf reader-trace) "
+                "(garbage-collect) value))) "
+                "(define-key global-map (kbd \"C-c v\") "
+                "(list 'menu-item \"prefix\" reader-prefix :filter "
+                "(lambda (value) (push 'prefix reader-trace) "
+                "(define-key global-map (kbd \"C-c v\") nil) "
+                "(setq reader-prefix nil) (garbage-collect) value))) "
+                "(message \"reader ready\"))"
+            ), require_text="reader ready"),
+            action("prefix", b"\x03v", checkpoint=False, settle=0.3),
+            action("leaf", b"x", require_text="reader filters (prefix leaf)"),
+        ],
+    ),
+    (
+        "reader-translation-pipeline-raw-keys",
+        CORE_EDIT_SAMPLE,
+        [
+            action("setup-reader", reader_setup(
+                "(progn (define-key input-decode-map (kbd \"C-c x y\") [f35]) "
+                "(define-key local-function-key-map [f35] [f36]) "
+                "(define-key key-translation-map [f36] [f37]) "
+                "(global-set-key [f37] (lambda () (interactive) "
+                "(message \"reader keys=%S raw=%S\" (this-command-keys-vector) "
+                "(this-single-command-raw-keys)))) (message \"reader ready\"))"
+            ), require_text="reader ready"),
+            action("prefix", b"\x03x", checkpoint=False, settle=0.3),
+            action("translated-command", b"y", require_text="reader keys=[f37] raw=[3 120 121]"),
+        ],
+    ),
+    (
+        "reader-minibuffer-input-translation",
+        CORE_EDIT_SAMPLE,
+        [
+            action("setup-reader", reader_setup(
+                "(progn (define-key input-decode-map (kbd \"C-c x y\") [113]) "
+                "(global-set-key (kbd \"C-c p\") (lambda () (interactive) "
+                "(let ((value (read-from-minibuffer \"Read: \"))) "
+                "(message \"reader minibuffer=%S\" value)))) "
+                "(message \"reader ready\"))"
+            ), require_text="reader ready"),
+            action("open-reader", b"\x03p", require_text="Read:"),
+            action("translated-prefix", b"\x03x", checkpoint=False, settle=0.3),
+            action("submit", b"y\r", require_text='reader minibuffer="q"'),
+        ],
+    ),
+]
+
+
 def select_scenarios(names):
     """Return built-in scenarios, or the named subset in command-line order.
 
@@ -5316,7 +5381,7 @@ def main():
                 name,
                 keys,
                 [gnu_binary, "-nw", "-Q", "--eval", gnu_setup, gnu_path],
-                [emaxx_binary, emaxx_path],
+                [emaxx_binary, "-Q", emaxx_path],
                 gnu_env,
                 emaxx_env,
                 # Cold Lisp loading can exceed twenty seconds on a busy CI

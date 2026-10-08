@@ -1,0 +1,1252 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "current_source": "source256",
+    "source_inputs": 480,
+    "frozen": {
+      "inputs": 480,
+      "patches": {
+        "portable-incremental": {
+          "base": "b8e5ad209e7ab05693a39eae2dc3a90408ef6871",
+          "sha256": "33afeaf04a707e31921062b91fe3ae0d781428de97c7d2d2968f85294b6488e8",
+          "bytes": 144677
+        },
+        "portable-complete": {
+          "base": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199",
+          "sha256": "63b2ea9031c751b4a93e3e4c08537961e9d5d4500d52679a754bad44635499cf",
+          "bytes": 809950
+        }
+      },
+      "candidate": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/common-strings/emaxx",
+      "goal_complete": false,
+      "qualification": "Isolated common-string draft. One canonical payload replaces the plain StringCell arena, binding copies and VM text adapter. Host symbol keys are owned by symbol cells; Lisp names retain canonical identity. Dumping preserves actual string bytes and flags. GNU-backed fillarray rules preserve properties and reject byte resizing. Strict checks pass. The original source255 selected failure is retained (181 passes, one multibyte bytecode fixture failure, two existing ignores). GNU confirms make-byte-code requires actual unibyte storage; source256 corrects that fixture and keeps every original assertion, adding the rejected Unicode case. Selected validation is queued after the complete source249 terminal run. Earlier compiler and lint failures, both original ordinary negatives and exact GNU expected bytes remain retained. This is not applied to the task runtime or a completion/performance claim."
+    },
+    "patch_replay": {
+      "status": "exact",
+      "replays": [
+        {
+          "source": "source256",
+          "patch": "portable-incremental",
+          "inputs": 480,
+          "base": "b8e5ad209e7ab05693a39eae2dc3a90408ef6871",
+          "patch_sha256": "33afeaf04a707e31921062b91fe3ae0d781428de97c7d2d2968f85294b6488e8",
+          "bytes_and_git_checkout_modes": "exact"
+        },
+        {
+          "source": "source256",
+          "patch": "portable-complete",
+          "inputs": 480,
+          "base": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199",
+          "patch_sha256": "63b2ea9031c751b4a93e3e4c08537961e9d5d4500d52679a754bad44635499cf",
+          "bytes_and_git_checkout_modes": "exact"
+        }
+      ],
+      "qualification": "Both incremental and complete patches reproduce all 480 inputs and Git checkout modes. Separate common-string draft; runtime validation is pending and source249 platform checkouts remain unchanged."
+    },
+    "strict_checks": "zero-warning pass",
+    "original_source255_focused_failure": {
+      "status": "failed",
+      "counts": {
+        "ok": 181,
+        "FAILED": 1,
+        "ignored": 2
+      },
+      "raw_verdicts": {
+        "lisp::bytecode::tests::from_slots_parses_genuine_object": "FAILED",
+        "lisp::bytecode::vm::canonical_bytecode_entry_borrows_the_actual_bytes_without_predecoding": "ok",
+        "lisp::bytecode::vm::native_surface_tests::byte_code_argument_prologue_preserves_string_identity": "ok",
+        "lisp::bytecode::vm::native_surface_tests::byte_code_direct_string_arguments_are_mutable_lisp_objects": "ok",
+        "lisp::bytecode::vm::native_surface_tests::byte_code_primitive_executes_program": "ok",
+        "lisp::bytecode::vm::native_surface_tests::make_byte_code_object_is_callable": "ok",
+        "lisp::bytecode::vm::taken_bytecode_branch_outside_storage_errors_without_leaking_a_frame": "ok",
+        "lisp::eval::tests::eval_01::file_remote_p_parses_tramp_style_names": "ok",
+        "lisp::eval::tests::eval_02::quoted_bytecode_reader_forms_are_materialized_as_records": "ok",
+        "lisp::eval::tests::eval_03::call_interactively_preserves_interactive_form_closure_mutations": "ok",
+        "lisp::eval::tests::eval_05::edebug_global_break_condition_preserves_the_complete_minibuffer_expression": "ok",
+        "lisp::eval::tests::eval_05::edebug_instrumented_cl_macrolet_preserves_expander_arguments": "ok",
+        "lisp::eval::tests::eval_05::edebug_recursive_command_loop_timer_and_macro_minibuffer_state_stay_coherent": "ok",
+        "lisp::eval::tests::eval_05::edebug_step_into_generic_method_uses_the_correct_source_stop_points": "ok",
+        "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_allocation_is_header_and_actual_lisp_slots": "ok",
+        "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_copy_counts_both_actual_allocations": "ok",
+        "lisp::native_comp::runtime::record_layout_tests::bytecode_closure_header_and_words_are_the_native_payload": "ok",
+        "lisp::native_comp::runtime::tests::native_gc_traces_string_properties_and_reclaims_string_cycles": "ok",
+        "lisp::native_comp::runtime::tests::native_strings_share_object_words_for_both_storage_forms": "ok",
+        "lisp::primitives::tests::all_completions_preserves_propertized_string_candidate_identity": "ok",
+        "lisp::primitives::tests::bootstrap_coding_plists_expose_gnu_display_and_keyboard_metadata": "ok",
+        "lisp::primitives::tests::bytecode_closure_constants_and_clone_share_gnu_slots": "ok",
+        "lisp::primitives::tests::bytecode_code_mutation_between_calls_matches_gnu": "ok",
+        "lisp::primitives::tests::bytecode_code_mutation_during_active_call_matches_gnu": "ok",
+        "lisp::primitives::tests::bytecode_constructor_preserves_gnu_field_validation_and_sharing": "ok",
+        "lisp::primitives::tests::bytecode_live_fetch_preserves_changed_widths_operands_and_suspended_callers": "ok",
+        "lisp::primitives::tests::canonical_string_bytes_preserve_gnu_characters_mutation_and_clear": "ok",
+        "lisp::primitives::tests::case_folded_try_completion_preserves_unextended_input_spelling": "ok",
+        "lisp::primitives::tests::char_charset_restriction_narrows_to_charset_list_or_coding_system": "ok",
+        "lisp::primitives::tests::char_table_compressed_unicode_slots_decode_into_the_canonical_tree": "ok",
+        "lisp::primitives::tests::character_table_literal_materializes_nested_bytecode_decoder": "ok",
+        "lisp::primitives::tests::charset_decoders_annotate_like_produce_charset_and_emacs_mule_encodes_like_coding_c": "ok",
+        "lisp::primitives::tests::coding_candidates_apply_live_translation_tables_and_registration_lists": "ok",
+        "lisp::primitives::tests::coding_candidates_preserve_private_use_characters_and_symbol_identity": "ok",
+        "lisp::primitives::tests::coding_candidates_resolve_translation_symbols_through_live_properties": "ok",
+        "lisp::primitives::tests::coding_candidates_use_all_registered_bases_and_actual_charsets": "ok",
+        "lisp::primitives::tests::coding_conversions_preserve_extended_characters_regions_and_eol": "ok",
+        "lisp::primitives::tests::coding_detection_follows_detect_coding_system": "ok",
+        "lisp::primitives::tests::coding_encoders_preserve_full_character_codes_and_file_bytes": "ok",
+        "lisp::primitives::tests::coding_encoders_preserve_gnu_identity_properties_and_byte_results": "ok",
+        "lisp::primitives::tests::coding_errors_preserve_the_offending_symbol_object": "ok",
+        "lisp::primitives::tests::coding_post_read_ascii_shortcut_preserves_identity_and_hook_order": "ok",
+        "lisp::primitives::tests::coding_post_read_conversion_receives_character_counts": "ok",
+        "lisp::primitives::tests::coding_system_eol_type_exposes_base_variant_vectors": "ok",
+        "lisp::primitives::tests::coding_system_mnemonics_match_the_oracle": "ok",
+        "lisp::primitives::tests::completion_predicates_preserve_string_list_membership": "ok",
+        "lisp::primitives::tests::completion_results_preserve_gnu_encoding_properties_and_identity": "ok",
+        "lisp::primitives::tests::composition_gstring_uses_the_effective_terminal_coding_system": "ok",
+        "lisp::primitives::tests::concat_preserves_canonical_bytes_properties_and_sequence_characters": "ok",
+        "lisp::primitives::tests::copied_and_propertized_strings_preserve_canonical_bytes_and_properties": "ok",
+        "lisp::primitives::tests::file_reads_consult_the_coding_alist_and_name_like_the_oracle": "ok",
+        "lisp::primitives::tests::file_write_coding_selection_preserves_lisp_policy_callbacks_and_restrictions": "ok",
+        "lisp::primitives::tests::file_write_coding_selection_preserves_overwrite_order_and_exclusive_creation": "ok",
+        "lisp::primitives::tests::generic_record_purecopy_message_preserves_coding_and_log_state": "ok",
+        "lisp::primitives::tests::host_created_strings_preserve_mutation_properties_and_fill_errors": "ok",
+        "lisp::primitives::tests::input_decode_autoloaded_prefix_collects_before_the_next_input_event": "ok",
+        "lisp::primitives::tests::input_decode_case_state_matches_gnu": "ok",
+        "lisp::primitives::tests::input_decode_command_reader_preserves_reached_prefix_and_live_remapping": "ok",
+        "lisp::primitives::tests::input_decode_default_function_map_supplies_shifted_tab_translation": "ok",
+        "lisp::primitives::tests::input_decode_down_events_follow_live_bindings_without_bootstrap_fallbacks": "ok",
+        "lisp::primitives::tests::input_decode_extra_matches_gnu": "ok",
+        "lisp::primitives::tests::input_decode_function_keys_consult_live_undefined_command_remapping": "ok",
+        "lisp::primitives::tests::input_decode_general_matches_gnu": "ok",
+        "lisp::primitives::tests::input_decode_initial_maps_keep_identity_and_the_shared_function_parent": "ok",
+        "lisp::primitives::tests::input_decode_keyboard_macro_uses_the_same_live_translation_pipeline": "ok",
+        "lisp::primitives::tests::input_decode_macro_nested_state_survives_collecting_commands_and_errors": "ok",
+        "lisp::primitives::tests::input_decode_macro_raw_readers_observe_directly_bound_arrays": "ok",
+        "lisp::primitives::tests::input_decode_macro_reads_the_live_array_and_stops_on_t": "ok",
+        "lisp::primitives::tests::input_decode_macro_roots_survive_callbacks_then_release_completed_arrays": "ok",
+        "lisp::primitives::tests::input_decode_macro_timed_reads_preserve_queue_order_and_errors": "ok",
+        "lisp::primitives::tests::input_decode_minibuffer_preserves_live_queue_mutation_and_return_binding": "ok",
+        "lisp::primitives::tests::input_decode_minibuffer_shares_macro_and_unread_translation_state": "ok",
+        "lisp::primitives::tests::input_decode_mouse_menu_uses_unchanged_lisp_translation": "ok",
+        "lisp::primitives::tests::input_decode_mouse_translation_preserves_raw_spine_and_live_event_kind": "ok",
+        "lisp::primitives::tests::input_decode_non_mouse_menu_events_mark_the_shared_position": "ok",
+        "lisp::primitives::tests::input_decode_pipeline_matches_gnu": "ok",
+        "lisp::primitives::tests::input_decode_positions_follow_display_motion_without_moving_point": "ok",
+        "lisp::primitives::tests::input_decode_raw_reads_unwrap_pending_events_before_terminal_polling": "ok",
+        "lisp::primitives::tests::input_decode_reader_contract_matches_gnu": "ok",
+        "lisp::primitives::tests::input_decode_restarts_after_an_unbound_prefix_loses_all_translations": "ok",
+        "lisp::primitives::tests::input_decode_shifted_tab_character_and_function_key_follow_distinct_maps": "ok",
+        "lisp::primitives::tests::interactive_closures_use_the_gnu_metadata_environment": "ok",
+        "lisp::primitives::tests::iso_2022_and_raw_text_encoders_follow_coding_c": "ok",
+        "lisp::primitives::tests::iso_2022_decoder_annotates_charsets_and_detection_reaches_regions_and_files": "ok",
+        "lisp::primitives::tests::make_network_process_coding_precedence_matches_gnu": "ok",
+        "lisp::primitives::tests::make_process_accepts_nil_coding_like_emacs": "ok",
+        "lisp::primitives::tests::make_string_and_aset_share_the_internal_character_encoding": "ok",
+        "lisp::primitives::tests::make_string_follows_alloc_c_for_the_multibyte_flag": "ok",
+        "lisp::primitives::tests::mapconcat_preserves_canonical_bytes_and_character_sequences": "ok",
+        "lisp::primitives::tests::md5_coding_endpoints_and_noerror_follow_gnu_in_native_calls": "ok",
+        "lisp::primitives::tests::native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model": "ok",
+        "lisp::primitives::tests::native_syntax_description_decodes_the_shared_descriptor_bits": "ok",
+        "lisp::primitives::tests::new_file_coding_lifecycle_matches_gnu_after_save_and_revisit": "ok",
+        "lisp::primitives::tests::nil_coding_system_queries_match_the_gnu_primitive_contract": "ok",
+        "lisp::primitives::tests::propertize_preserves_existing_string_properties": "ok",
+        "lisp::primitives::tests::read_coding_system_matches_the_gnu_coding_primitive_contract": "ok",
+        "lisp::primitives::tests::reader_callable_encoding_match_gnu": "ok",
+        "lisp::primitives::tests::reader_hex_escapes_preserve_the_raw_byte_boundary_and_digit_count": "ok",
+        "lisp::primitives::tests::shared_string_bytes_are_the_authoritative_unibyte_payload": "ok",
+        "lisp::primitives::tests::string_byte_conversions_use_the_internal_encoding": "ok",
+        "lisp::primitives::tests::string_constructors_preserve_gnu_full_character_range_and_errors": "ok",
+        "lisp::primitives::tests::string_decode_names_last_coding_system_used_like_the_oracle": "ok",
+        "lisp::primitives::tests::string_to_syntax_encodes_classes_flags_and_matching_characters": "ok",
+        "lisp::primitives::tests::subr_frontier_reader_decodes_the_complete_classic_string_escape_table": "ok",
+        "lisp::primitives::tests::substring_copies_canonical_bytes_properties_and_vector_fields": "ok",
+        "lisp::primitives::tests::substring_of_completion_result_accepts_text_properties": "ok",
+        "lisp::primitives::tests::substring_reversed_bounds_signal_without_host_panics": "ok",
+        "lisp::primitives::tests::substring_validates_gnu_array_types_and_index_error_order": "ok",
+        "lisp::primitives::tests::symbol_properties_preserve_override_order_and_identity": "ok",
+        "lisp::primitives::tests::text_property_copies_follow_add_text_properties_order": "ok",
+        "lisp::primitives::tests::undecided_decode_detects_shift_jis_like_coding_c": "ok",
+        "lisp::primitives::tests::unicode_property_internal_encoders_follow_gnu_decision_table": "ok",
+        "lisp::primitives::tests::unused_bytecode_destinations_follow_actual_control_flow": "ok",
+        "lisp::primitives::tests::vector_held_host_strings_preserve_binding_identity_and_mutation": "ok",
+        "lisp::primitives::tests::write_region_mustbenew_uses_gnu_short_answer_and_preserves_remaining_events": "ok",
+        "lisp::types::tests::cloning_string_reuses_the_text_allocation": "ok",
+        "lisp::types::tests::interned_symbol_names_reuse_one_text_allocation": "ok",
+        "lisp::types::tests::shared_text_equality_covers_shared_and_distinct_equal_allocations": "ok",
+        "lisp::types::tests::uninterned_symbol_keeps_its_supplied_lisp_name": "ok",
+        "lisp::types::tests::uninterned_symbol_names_remain_reclaimable": "ok",
+        "tty::tests::active_minibuffer_only_owns_cursor_while_its_window_is_selected": "ok",
+        "tty::tests::align_to_display_specs_lay_out_as_blank_columns": "ok",
+        "tty::tests::canonical_t_invisibility_spec_hides_true_overlay_regions": "ok",
+        "tty::tests::command_cycle_reselects_the_selected_windows_displayed_buffer": "ok",
+        "tty::tests::command_reader_retains_prefix_across_events_and_collecting_filters": "ok",
+        "tty::tests::control_characters_use_ascii_codes": "ok",
+        "tty::tests::display_columns_match_tab_expansion": "ok",
+        "tty::tests::display_glyph_codes_validate_both_representations_and_full_character_bits": "ok",
+        "tty::tests::display_string_cursor_property_selects_its_first_non_nil_cell": "ok",
+        "tty::tests::display_tables_select_one_valid_window_buffer_or_standard_table": "ok",
+        "tty::tests::display_tables_translate_echo_before_clipping_and_remap_minibuffer_point": "ok",
+        "tty::tests::display_vectors_remap_positions_and_faces_without_recursive_translation": "ok",
+        "tty::tests::embedded_display_newlines_are_hard_row_boundaries": "ok",
+        "tty::tests::function_keys_encode_as_symbols": "ok",
+        "tty::tests::glyphless_methods_follow_text_terminal_cons_and_width_rules": "ok",
+        "tty::tests::glyphless_wrap_restarts_a_split_display_element_like_gnu": "ok",
+        "tty::tests::graphical_fringe_overlay_strings_have_no_tty_text_glyph": "ok",
+        "tty::tests::hscroll_marker_precedes_the_requested_source_column": "ok",
+        "tty::tests::hscrolled_hidden_point_uses_the_last_line_number_gutter_cell": "ok",
+        "tty::tests::interactive_execution_inserts_through_lisp": "ok",
+        "tty::tests::interactive_startup_initializes_scratch_and_messages_buffers": "ok",
+        "tty::tests::invisible_properties_on_overlay_strings_remove_their_tty_cells": "ok",
+        "tty::tests::invisible_same_row_motion_defers_mode_line_point_until_input": "ok",
+        "tty::tests::isearch_dispatches_through_the_overriding_map_and_exits_on_other_keys": "ok",
+        "tty::tests::key_descriptions_follow_gnu_spellings": "ok",
+        "tty::tests::key_resolution_distinguishes_prefixes_commands_and_undefined": "ok",
+        "tty::tests::long_lines_wrap_exactly_like_a_gnu_tty": "ok",
+        "tty::tests::margin_default_foreground_preserves_an_extending_background": "ok",
+        "tty::tests::merged_attrs_keep_the_base_where_the_overlay_is_silent": "ok",
+        "tty::tests::meta_becomes_the_escape_prefix": "ok",
+        "tty::tests::minibuffer_before_string_inherits_its_prompt_anchor_face": "ok",
+        "tty::tests::minibuffer_cursor_follows_echo_wrapping": "ok",
+        "tty::tests::non_selected_windows_render_from_their_start_without_recentering": "ok",
+        "tty::tests::overlay_display_string_replaces_its_covered_buffer_range": "ok",
+        "tty::tests::paint_rows_compare_by_text_and_attribute": "ok",
+        "tty::tests::plain_characters_encode_as_their_codes": "ok",
+        "tty::tests::point_at_hidden_run_start_stays_before_the_ellipsis": "ok",
+        "tty::tests::point_max_overlay_before_string_contributes_hard_display_rows": "ok",
+        "tty::tests::point_precedes_a_point_max_overlay_after_string": "ok",
+        "tty::tests::prefix_echo_accumulates_like_gnu": "ok",
+        "tty::tests::propertized_string_display_specs_replace_the_covered_text": "ok",
+        "tty::tests::rendered_lines_expand_tabs_to_eight_column_stops": "ok",
+        "tty::tests::segment_counts_follow_the_wrap_geometry": "ok",
+        "tty::tests::selected_windows_recenter_around_an_off_window_point": "ok",
+        "tty::tests::sgr_sequences_reset_then_select_each_attribute": "ok",
+        "tty::tests::tabulated_list_glyphless_table_uses_tty_sort_indicators": "ok",
+        "tty::tests::terminal_editing_keys_use_gnu_codes": "ok",
+        "tty::tests::terminal_glyphless_expansion_tracks_coding_faces_and_point_columns": "ok",
+        "tty::tests::text_only_blits_preserve_an_extending_base_face": "ok",
+        "tty::tests::transient_printed_value_takes_precedence_over_an_active_minibuffer": "ok",
+        "tty::tests::truncated_rows_carry_the_dollar_marker_in_the_last_column": "ok",
+        "tty::tests::truncating_windows_keep_one_row_per_logical_line": "ok",
+        "tty::tests::tty_lisp_readers_preserve_mouse_events_and_keyboard_order": "ok",
+        "tty::tests::tty_redisplay_runs_the_lisp_pre_redisplay_coordinator_for_all_windows": "ok",
+        "tty::tests::universal_argument_prefixes_dispatch_through_simple_el": "ok",
+        "tty::tests::visual_row_positions_follow_wrap_geometry": "ok",
+        "tty::tests::width_display_specs_use_tty_cells_and_collapse_equal_runs": "ok",
+        "tty::tests::window_end_stops_before_a_wholly_invisible_buffer_tail": "ok",
+        "tty::tests::window_margin_display_strings_do_not_enter_the_text_body": "ok",
+        "tty::tests::window_overlay_after_strings_splice_before_hidden_newlines_with_faces": "ok",
+        "tty::tests::wrapped_echo_preserves_a_faced_trailing_space": "ok",
+        "tty::tests::wrapped_echo_trailing_newline_does_not_allocate_an_empty_row": "ok",
+        "tty::tty_differential_end_to_end": "ignored",
+        "tty::tty_smoke_end_to_end": "ignored"
+      },
+      "source_inputs_verified": 480,
+      "prior_selectors_preserved": 174,
+      "all_selectors": 184,
+      "strict_checks": "zero-warning pass",
+      "retained_inputs": [
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source255-gate-libtest",
+          "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source255-focused-retained-inputs/source255-gate-libtest",
+          "sha256": "0ce8aea99fe0098d90fe52a9790b800182c65ab270273286738f60619085f457",
+          "bytes": 29407264
+        },
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source255/loadup-0ce8aea9-d44829be.pdmp",
+          "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source255-focused-retained-inputs/loadup-0ce8aea9-d44829be.pdmp",
+          "sha256": "669ad97043f3989a56f0a286999bf7ca2a2b4c7adabe4af2777617d73e80851a",
+          "bytes": 22361712
+        }
+      ],
+      "failed_tests": [
+        "lisp::bytecode::tests::from_slots_parses_genuine_object"
+      ],
+      "qualification": "Raw focused verdicts and retained executable/image verified. No full Rust, frozen, terminal, release or performance result is inferred. Prior failures remain separate."
+    },
+    "c_reference": {
+      "source": "source256",
+      "inputs": 480,
+      "gnu_revision": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+      "gnu_references": {
+        "src/lisp.h": {
+          "sha256": "2b3adec8837ab75b3b075cffa37fad65f9f294617f06d423fe23c8bbb90a2a87",
+          "anchors": {
+            "struct Lisp_String": 490,
+            "STRING_MULTIBYTE (Lisp_Object str)": 1636
+          }
+        },
+        "src/alloc.c": {
+          "sha256": "0f777658357fa650edb63771682a7b30d86aafc90912e5785a5565974fd36711",
+          "anchors": {
+            "init_strings (void)": 1740,
+            "make_string (const char *contents": 2467,
+            "make_unibyte_string (const char *contents": 2486,
+            "make_multibyte_string (const char *contents": 2499,
+            "DEFUN (\"make-byte-code\"": 3798
+          }
+        },
+        "src/data.c": {
+          "sha256": "3c75a20c99ae0f5c809bc7f5a17401e85ba471d671a3de4ab70500a4ef49a179",
+          "anchors": {
+            "DEFUN (\"symbol-name\"": 818,
+            "DEFUN (\"aset\"": 2586
+          }
+        },
+        "src/fns.c": {
+          "sha256": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+          "anchors": {
+            "DEFUN (\"fillarray\"": 3218,
+            "DEFUN (\"clear-string\"": 3275
+          }
+        },
+        "src/bytecode.c": {
+          "sha256": "0383ce4f09d593468cbe01d31a22fa069a7817cef77672585ff494f6cb6e6ea2",
+          "anchors": {
+            "DEFUN (\"byte-code\"": 308
+          }
+        }
+      },
+      "implementation": [
+        "One StringObjectRef payload carries actual bytes, character count, multibyte flag and properties; SharedText is an alias, not another storage class.",
+        "The old plain-string arena, GC tracing, sweep and census are removed. Binding/callback/completion conversion copies and the bytecode text adapter are removed.",
+        "Ordinary string mutation uses the existing canonical payload. fillarray validates even empty strings, keeps properties, stores low bytes in unibyte strings and rejects a changed multibyte storage length, following fns.c.",
+        "Dumping writes actual bytes/counts/flag and one string object key/type. Loading both previous wire types creates the same canonical payload.",
+        "The supplied Lisp symbol-name object is retained. Immutable host lookup keys are owned by SymbolCell and dropped with it, instead of occupying a second GC string cell.",
+        "The source255 bytecode fixture failure is preserved. Source256 constructs actual unibyte opcodes, retains every original assertion and adds rejection of the previous Unicode form, as confirmed by ordinary GNU make-byte-code."
+      ],
+      "remaining": [
+        "This is not GNU's 32-byte Lisp_String layout or sblock allocator: RefCell, Vec headers/capacities, property spans and vector allocation overhead remain. The existing GNU-formula allocation charge is not physical Rust accounting.",
+        "Moving host symbol keys into SymbolCell grows that cell; it removes a separate key cell but establishes no net physical memory saving. Value/function/plist authority still lives in per-interpreter tables and symbol id/name registries.",
+        "Host-text construction retains the old raw-byte/private-use convention. Many consumers still allocate transient decoded Rust text. Performance effects are unmeasured.",
+        "The permanent empty unibyte string is canonical. The GNU empty multibyte singleton and general pure-string write protection remain unfinished.",
+        "Public runtime ownership, collection while values/borrows remain externally accessible, true cumulative counters, physical accounting, VM stack layout, locked workloads and final adversarial audit are unfinished.",
+        "Source256 strict checks pass; complete gate/release/ordinary validation is queued. Source255 focused failure is not a source256 passing result. No runtime draft is applied to the task branch."
+      ],
+      "changed_since_source255": [
+        "src/lisp/bytecode.rs"
+      ],
+      "prior_failure": {
+        "ok": 181,
+        "FAILED": 1,
+        "ignored": 2
+      },
+      "goal_complete": false,
+      "qualification": "Static mechanism review against the pristine configured GNU C source and unchanged ordinary negative fixtures. This is not a full correctness, layout, memory, performance or ownership certificate."
+    },
+    "queue_launch": {
+      "pid": 17749,
+      "command": [
+        "python3",
+        "-B",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-common-string256-validation.py"
+      ],
+      "helper_sha256": "9ab44a358b00a9f45ce61fd3ca9b3f615470df8dc53fce27928a275e2242295a"
+    },
+    "qualification": "Separately packaged unfinished common-string draft; task runtime remains source249. All negative fixture/GNU output bytes, intermediate check failures and the failed source255 runtime evidence are preserved. Source256 uses actual unibyte bytes in the demonstrably invalid local fixture and retains all original assertions plus a Unicode rejection control. Selected gate/release/broader/ordinary checks are queued after terminal12347. No complete runtime, performance, physical-layout or full-goal certificate."
+  },
+  "archive": {
+    "path": "source256-common-strings-draft.tar.gz",
+    "bytes": 1134881,
+    "sha256": "6c6af84f1330d52276edb61e87fc547fa972553d504a1e7c11f3cfb8f3e3ec3a"
+  },
+  "files": [
+    {
+      "path": "audit-common-string-c-reference.py",
+      "bytes": 5923,
+      "sha256": "1029f7455040f953979495f7f75b3795b74561f14fa6437ed039fbf7144c72a6"
+    },
+    {
+      "path": "audit-common-string-focused.py",
+      "bytes": 3622,
+      "sha256": "c39e316d3dd58948616ed5adba582a39ee5cd8e9defa08f66788a46886e287ae"
+    },
+    {
+      "path": "audit-common-string-release.py",
+      "bytes": 3653,
+      "sha256": "66d873882c1995f22546d7bc07baa94dd032e70f65f6f763a556a81b17b7ce89"
+    },
+    {
+      "path": "audit-source255-patches.py",
+      "bytes": 2890,
+      "sha256": "c730fdbd7732389672e5fbf05fa2402c25c8f57082a52b91930f2d9d9b8b84d6"
+    },
+    {
+      "path": "audit-source256-patches.py",
+      "bytes": 2890,
+      "sha256": "a1ccf5eeecd4717af46789d949bbda324186191d1ccfd9861e3b05b600f47e82"
+    },
+    {
+      "path": "build-common-string-ordinary.py",
+      "bytes": 2473,
+      "sha256": "165547c748fc8d2b5ee9a0bc34070308194f523e8ce8a4b215a8a4c261c8d075"
+    },
+    {
+      "path": "bytecode-unibyte-constructor.el",
+      "bytes": 464,
+      "sha256": "a708bd972b508f7c14bfcb229916340d72c3d92e109b346a5250762be0e2e8af"
+    },
+    {
+      "path": "check-common-string-draft.py",
+      "bytes": 2653,
+      "sha256": "6e934515560712a7402e06254fa930beda2ba1fcb4aee343620632f82986d841"
+    },
+    {
+      "path": "check-source250.py",
+      "bytes": 561,
+      "sha256": "244bf12a0fab79a24da6517fbd3929bc75f56f031392e147c86398516a58d7e7"
+    },
+    {
+      "path": "common-string-cleanup-helper-failure.json",
+      "bytes": 642,
+      "sha256": "c1b2de83af9b813f4445cdbfbd7bb44906e91a13014993f00d830369e57dba39"
+    },
+    {
+      "path": "common-string-edit-helper-failure.json",
+      "bytes": 387,
+      "sha256": "dbfe0ada69a4624bc67689b49bb3d04cbde132c553c6696458727bd1d6f9641c"
+    },
+    {
+      "path": "common-strings-draft-checkout.json",
+      "bytes": 332,
+      "sha256": "3274766ec9c87c4d20e413abab659354d2ec94a76bb9452bd9a59850293eead2"
+    },
+    {
+      "path": "compare-common-string-fixtures.py",
+      "bytes": 4025,
+      "sha256": "53b11a09b6a3af5dcd2e1f064da9ae6f6e5390519212b0bd44ae159df620e626"
+    },
+    {
+      "path": "draft-common-string-borrows.py",
+      "bytes": 5942,
+      "sha256": "5285cc503845ea0efb9157926d60f9914b1e074a25d900b19af6a9bb3b888384"
+    },
+    {
+      "path": "draft-common-string-cleanup.py",
+      "bytes": 4269,
+      "sha256": "4097c7538bda28168fae593276e2bbcd1efb41086e520c82f1d2b0e06028b741"
+    },
+    {
+      "path": "draft-common-string-consumers.py",
+      "bytes": 11586,
+      "sha256": "fb88e168cbbebfa5c2f7ca7484282b3d8e9fc45d59dda345cacbf19e161471d9"
+    },
+    {
+      "path": "draft-common-string-core-repaired.py",
+      "bytes": 12469,
+      "sha256": "23dd5a63a0ece89fac6f3fa6ef1fb0e3e002a7995b4c510785daadc547b94226"
+    },
+    {
+      "path": "draft-common-string-core.py",
+      "bytes": 12436,
+      "sha256": "1ade8b40def29bbddf76f06496830135af75707da302d7eb380f86d3effb48c7"
+    },
+    {
+      "path": "freeze-source255.py",
+      "bytes": 2631,
+      "sha256": "0f9aa02d8a1eaaa0b279d1751290e92b0ec2d263a2718856c24c6ae6e5b9e2c4"
+    },
+    {
+      "path": "freeze-source256.py",
+      "bytes": 2955,
+      "sha256": "3069b0dd9cf1ff34e30a5c4ae26b8bfd1351a9fa0b113577412bb8ba38585bb8"
+    },
+    {
+      "path": "host-string-mutation.el",
+      "bytes": 1280,
+      "sha256": "f426ceda077bf2c3eb4e8fd58d007bbe6165b99292b5771c332ac7cdacf05d57"
+    },
+    {
+      "path": "host-string-vector-mutation.el",
+      "bytes": 1121,
+      "sha256": "883ec3bfaa50a0ab09f610e667ced934f4190bb63af18d6941099bee4cc7a1fd"
+    },
+    {
+      "path": "package-common-string256-draft.py",
+      "bytes": 4756,
+      "sha256": "a1e4e99ce67ad876384f9a71410dcda49c78d7e2d4904d46ed0a70fedebf5d87"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "probe-bytecode-unibyte-constructor.py",
+      "bytes": 1935,
+      "sha256": "63b52e29d1c9cd5533923f66d643e8d71164e6227aad1ef6c0a61518501a7aee"
+    },
+    {
+      "path": "probe-host-string-mutation-source249.py",
+      "bytes": 2870,
+      "sha256": "a9217ea16bcf1544cf2b54de2e91ea288eec00bae8c908a0d5a596101efeedc3"
+    },
+    {
+      "path": "probe-host-string-vector-mutation-source249.py",
+      "bytes": 2891,
+      "sha256": "f713291c8a4c7d53fcf3b706756e2cce4eeb3551904857cbaa718dbbca7187d8"
+    },
+    {
+      "path": "queue-common-string256-validation.py",
+      "bytes": 4318,
+      "sha256": "9ab44a358b00a9f45ce61fd3ca9b3f615470df8dc53fce27928a275e2242295a"
+    },
+    {
+      "path": "run-common-string-focused.py",
+      "bytes": 5358,
+      "sha256": "e0491354206846dc2c65649780a4427085b31540ab07c10cc70a7a22d50ae4e4"
+    },
+    {
+      "path": "run-common-string-release.py",
+      "bytes": 5398,
+      "sha256": "8a099e3e01e23356031a870e0b30bb9eafc0b2629f33b1082cec95806c9cc28b"
+    },
+    {
+      "path": "source249-host-string-mutation-comparison.json",
+      "bytes": 624,
+      "sha256": "965eb2fec05e6c4f70836df9bd1d1d23427a2c9d8a4785bfbc16fde4c1f3dc44"
+    },
+    {
+      "path": "source249-host-string-mutation-emaxx-command.json",
+      "bytes": 3383,
+      "sha256": "b1d0b3e74c6360049d7f9960e2fbe9b40000007dadd21f1fd0a27804f06404e2"
+    },
+    {
+      "path": "source249-host-string-mutation-emaxx-result.json",
+      "bytes": 229,
+      "sha256": "7e91aa74edd2ffa0079cc7e1547f47220adc99a1a6820866561547d03c75a9bd"
+    },
+    {
+      "path": "source249-host-string-mutation-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source249-host-string-mutation-emaxx.stdout",
+      "bytes": 875,
+      "sha256": "9e9a110babb6c33e0be2958c5ab16901a20f04120587df1eb525181bdb6d8626"
+    },
+    {
+      "path": "source249-host-string-mutation-gnu-command.json",
+      "bytes": 3336,
+      "sha256": "6a257329a42fe583014c5e398307d4a2886aa452b1a4b820f6329bdeb401e05f"
+    },
+    {
+      "path": "source249-host-string-mutation-gnu-result.json",
+      "bytes": 229,
+      "sha256": "ccb0a6ec3a52d8053196d80e3589429bae7e9d9c2804f8baf874a10a81f545dd"
+    },
+    {
+      "path": "source249-host-string-mutation-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source249-host-string-mutation-gnu.stdout",
+      "bytes": 855,
+      "sha256": "cc44c4f5ad79ad32660157ceb56c4f71bdb0687fc1df72f2b5ca285db43773e6"
+    },
+    {
+      "path": "source249-host-string-vector-mutation-comparison.json",
+      "bytes": 624,
+      "sha256": "8227ac35ee8d0bd04058f353c94ce7c98b165fbf58104bd499016c052a13a8e5"
+    },
+    {
+      "path": "source249-host-string-vector-mutation-emaxx-command.json",
+      "bytes": 3229,
+      "sha256": "c399b395a70a25ea3fb17dce8377b70f0c31b15e44dcd7bc1c62baf60992ebd1"
+    },
+    {
+      "path": "source249-host-string-vector-mutation-emaxx-result.json",
+      "bytes": 229,
+      "sha256": "82867ebe38c22302343ee76a61e4480ca673d20b428df16c95d7e7ff93a5d8e9"
+    },
+    {
+      "path": "source249-host-string-vector-mutation-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source249-host-string-vector-mutation-emaxx.stdout",
+      "bytes": 394,
+      "sha256": "f148a8c8e0056c0db90bb73a4b6db59004e1c86e2913389d939678e0353e81dd"
+    },
+    {
+      "path": "source249-host-string-vector-mutation-gnu-command.json",
+      "bytes": 3182,
+      "sha256": "74bfeec17dfbfc55756b017104f1e1aae33b9924002a5c342d9534cdc95c862f"
+    },
+    {
+      "path": "source249-host-string-vector-mutation-gnu-result.json",
+      "bytes": 229,
+      "sha256": "84a078cd269e80d50ee522fdd8ab22baddc38a9597a6d1f59aef5a343e8f14e6"
+    },
+    {
+      "path": "source249-host-string-vector-mutation-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source249-host-string-vector-mutation-gnu.stdout",
+      "bytes": 370,
+      "sha256": "9e13ff2c0ced1f79cba53b0d7df16f248c8165d1e2e6979e5cf6192d3d1fa5cd"
+    },
+    {
+      "path": "source250-before-check-manifest.json",
+      "bytes": 62240,
+      "sha256": "38c071956be082595cf5bf02a3372fdd4b818f70a8f7f478ab399c4144221253"
+    },
+    {
+      "path": "source250-before-check.patch",
+      "bytes": 122666,
+      "sha256": "b316d73cfbbe487e75afb1053ae348f57abae61e1a463046c80ec8941558bd7a"
+    },
+    {
+      "path": "source250-check-command.json",
+      "bytes": 566,
+      "sha256": "8bd616fbeab139b769de88da11e768e886f5516c3a74b31b1a0f3aa7074c1378"
+    },
+    {
+      "path": "source250-check-driver.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source250-check-launch.json",
+      "bytes": 208,
+      "sha256": "bb1b458ab78aeceaf8c7622383c3f33345972fa5132170ecd680b71313a220ec"
+    },
+    {
+      "path": "source250-check-result.json",
+      "bytes": 57,
+      "sha256": "52d3116bca82a7532c1bb41124fc9b0bc2b71222fa81643f28a0683b0812c79a"
+    },
+    {
+      "path": "source250-check.log",
+      "bytes": 20903,
+      "sha256": "daea82f5e94c1f6131eb349e497e8f7ff41548e435491328f740ed5897223ebf"
+    },
+    {
+      "path": "source251-check-command.json",
+      "bytes": 554,
+      "sha256": "8be48148c21b7b7f48e54f21fad4985030c0e8a0fd4dd79b6a67abfe9e300575"
+    },
+    {
+      "path": "source251-check-driver.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source251-check-result.json",
+      "bytes": 85,
+      "sha256": "b71120d1e54e32713635e4ce4c6792a302cbcfc1ac93d1412a9e1f65826d4d63"
+    },
+    {
+      "path": "source251-check.log",
+      "bytes": 832,
+      "sha256": "ce569dc906ace96d400c38052271d12f3889d2150be28a74122af615bd8c191b"
+    },
+    {
+      "path": "source251-format-result.json",
+      "bytes": 20,
+      "sha256": "8f0c1c520d4343f54805dcdaa74287fb690f4d610186020a9343b1407654bdbd"
+    },
+    {
+      "path": "source251-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source251-incremental.patch",
+      "bytes": 131531,
+      "sha256": "0d0a6241442ed3ee18b75953e7bcce1572a08c3622a3390b345d979cf2792a2b"
+    },
+    {
+      "path": "source251-manifest.json",
+      "bytes": 55069,
+      "sha256": "56440d8ef73e923d910f517e12ddba5aa2d3ea81cb949eb53d05ccf25a7264aa"
+    },
+    {
+      "path": "source251-unformatted.patch",
+      "bytes": 131411,
+      "sha256": "fcec570709b52c5a81805ee94bc73c3720acaf71eca3d4d482e6a7fb031fd1ce"
+    },
+    {
+      "path": "source251-validation-launch.json",
+      "bytes": 266,
+      "sha256": "1597bf03e765c9de3b44b335860a7ccaee213fee3678220d537038151098cd6f"
+    },
+    {
+      "path": "source252-check-command.json",
+      "bytes": 554,
+      "sha256": "b72c9b51e0a5520a0c3fb71327ad7d72b9700047396f0f009ea928fd94b076cb"
+    },
+    {
+      "path": "source252-check-driver.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source252-check-result.json",
+      "bytes": 91,
+      "sha256": "3479b64554ae22e47a10ba44d14fe4e5993c274754507c5fc31c735241440ec4"
+    },
+    {
+      "path": "source252-check.log",
+      "bytes": 585,
+      "sha256": "3ad708d0ab950a0cae1633f8997123c2da55ff9bfe38f5e5e9461c6d776cd0b1"
+    },
+    {
+      "path": "source252-format-result.json",
+      "bytes": 20,
+      "sha256": "8f0c1c520d4343f54805dcdaa74287fb690f4d610186020a9343b1407654bdbd"
+    },
+    {
+      "path": "source252-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source252-incremental.patch",
+      "bytes": 132383,
+      "sha256": "e793ced349cd9b5f6047a6dfb0ac26b7f3b4b3dd40b0eb9c751444d11249df79"
+    },
+    {
+      "path": "source252-manifest.json",
+      "bytes": 55069,
+      "sha256": "8048d1ed27d32de98ac6e66a28a6ac8e9655fba45d00a447c40136424ac71947"
+    },
+    {
+      "path": "source252-unformatted.patch",
+      "bytes": 132357,
+      "sha256": "235189ba8a306c96df494dc0e96ef88136402905e1dede245432291e87e67809"
+    },
+    {
+      "path": "source252-validation-launch.json",
+      "bytes": 266,
+      "sha256": "5939573d0e9576744a2d6da02bdfa663013509f49db7476ad6b61323b11d8e2a"
+    },
+    {
+      "path": "source253-check-command.json",
+      "bytes": 554,
+      "sha256": "4db2d006f5c0575b673bf6d2e713efac8dec78ee71aca3b335b35a8d14be8167"
+    },
+    {
+      "path": "source253-check-driver.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source253-check-result.json",
+      "bytes": 89,
+      "sha256": "4dd525e1bda9efdd946e676e7cddcd754ed33769a83724097138d4d19b397973"
+    },
+    {
+      "path": "source253-check.log",
+      "bytes": 196,
+      "sha256": "c0fe187eec103ab4b047e3ae8979ed0fafc40777b078afaa399f28bf59f66a28"
+    },
+    {
+      "path": "source253-clippy-command.json",
+      "bytes": 591,
+      "sha256": "c80aa44a2dcb8fd228da31f0138779b793d9ee0e0f9cb5e3df9f126dca30772d"
+    },
+    {
+      "path": "source253-clippy-result.json",
+      "bytes": 85,
+      "sha256": "b600687a589eff9f7c5a3c37ca5cf249525685f951e7aabdf4a4f31c3334f4ce"
+    },
+    {
+      "path": "source253-clippy.log",
+      "bytes": 5899,
+      "sha256": "b8c33d26d00901d7c42b3c8daabc7aa83398675124d05b6ff973b61481b125d5"
+    },
+    {
+      "path": "source253-fmt-command.json",
+      "bytes": 531,
+      "sha256": "9443970e12af83006d337628d87811a2d996e6b3ccedf3866a31d3730b98674d"
+    },
+    {
+      "path": "source253-fmt-result.json",
+      "bytes": 89,
+      "sha256": "6d521c99cc545f9eb2fba2b27b249e00b9a6e724f5d737cd6e2bb1e5f5033f7e"
+    },
+    {
+      "path": "source253-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source253-format-result.json",
+      "bytes": 20,
+      "sha256": "8f0c1c520d4343f54805dcdaa74287fb690f4d610186020a9343b1407654bdbd"
+    },
+    {
+      "path": "source253-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source253-incremental.patch",
+      "bytes": 132406,
+      "sha256": "ab74e8344d7f7df109c5118efb2e0716a368af69818118617a5321f9f14df342"
+    },
+    {
+      "path": "source253-manifest.json",
+      "bytes": 55069,
+      "sha256": "700298eb810de40d6080c7621c5b438f092be59baad5abdc186ea767161a406a"
+    },
+    {
+      "path": "source253-unformatted.patch",
+      "bytes": 132406,
+      "sha256": "ab74e8344d7f7df109c5118efb2e0716a368af69818118617a5321f9f14df342"
+    },
+    {
+      "path": "source253-validation-launch.json",
+      "bytes": 266,
+      "sha256": "91eba633e01bd0675dfeebd059f49b86125c208144df71d4a25ba8658f75cecd"
+    },
+    {
+      "path": "source254-check-command.json",
+      "bytes": 554,
+      "sha256": "e56322b7a432d672aff475b75dacec2ed1887110a34f134b2c764dbbb798070c"
+    },
+    {
+      "path": "source254-check-driver.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source254-check-result.json",
+      "bytes": 82,
+      "sha256": "f5abb1ad6eae3687d31999fb8f48bf5484a8d88da461b1979b3578e59d9ae32a"
+    },
+    {
+      "path": "source254-check.log",
+      "bytes": 195,
+      "sha256": "b2198be40ba7734857cde72e6dce2c04e996535e1fa8f6178756ab471acfe170"
+    },
+    {
+      "path": "source254-clippy-command.json",
+      "bytes": 591,
+      "sha256": "ed2f1b50a82b69e57dabb3f2e0c05048170a8f9b3fa73e21fe17a93822548fd3"
+    },
+    {
+      "path": "source254-clippy-result.json",
+      "bytes": 85,
+      "sha256": "b6de6f4ff8edb58fb8f287aa2d3ceb2ff33c90c9d921b859a8480b40245f4458"
+    },
+    {
+      "path": "source254-clippy.log",
+      "bytes": 1028,
+      "sha256": "cb484a15f0865cf237f2695f58a4791146fa029734375d0e6505a8b6ccf0ccec"
+    },
+    {
+      "path": "source254-fmt-command.json",
+      "bytes": 531,
+      "sha256": "cce63abe3207869039d8eca67b5ac65ba9157a57fa360062b45182858b34f514"
+    },
+    {
+      "path": "source254-fmt-result.json",
+      "bytes": 82,
+      "sha256": "8f01b660ebd2ebeb7964c928a5970f89d3f7b7e2e5ff5159554a131782070480"
+    },
+    {
+      "path": "source254-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source254-format-result.json",
+      "bytes": 20,
+      "sha256": "8f0c1c520d4343f54805dcdaa74287fb690f4d610186020a9343b1407654bdbd"
+    },
+    {
+      "path": "source254-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source254-incremental.patch",
+      "bytes": 138319,
+      "sha256": "e58bbe4b8769533c4f2c9d2e29356f33aec996275e3266af960d941ea5795fcf"
+    },
+    {
+      "path": "source254-manifest.json",
+      "bytes": 55069,
+      "sha256": "e768feebeb393d7dbff1f2384bc397fb102032d22958974e921d38b6e89625a8"
+    },
+    {
+      "path": "source254-unformatted.patch",
+      "bytes": 137511,
+      "sha256": "5adf8617d454d515455cafd52f987b0852700caafb2da88ea7320e91149f0265"
+    },
+    {
+      "path": "source254-validation-launch.json",
+      "bytes": 266,
+      "sha256": "531444bd6bef174fb35c2e6a35059fb86537bba67ecabe25d8b1df576e009b6f"
+    },
+    {
+      "path": "source255-bytecode-constructor-gnu-command.json",
+      "bytes": 2203,
+      "sha256": "ef4966206f46db676b1b7245b9ceb0547af4916d8a1b151d3f4be2ee2ed1df64"
+    },
+    {
+      "path": "source255-bytecode-constructor-gnu-result.json",
+      "bytes": 529,
+      "sha256": "6cbabc9873ada0aaa6a9fe243451741386f8aad2a56e9795a24014942d5a3f00"
+    },
+    {
+      "path": "source255-bytecode-constructor-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source255-bytecode-constructor-gnu.stdout",
+      "bytes": 73,
+      "sha256": "909187009cd949dfc1afc2612860236724378a1470bac7f92d1976ecffae053e"
+    },
+    {
+      "path": "source255-check-command.json",
+      "bytes": 554,
+      "sha256": "fe7982a68e6bcfadf1092235585c26eef02cb050118880499ab49ea061a93172"
+    },
+    {
+      "path": "source255-check-driver.log",
+      "bytes": 33,
+      "sha256": "13e0a2a0693cc2c48795357155e6847ffe0babef9139064ad8d2cff0d7d97ccc"
+    },
+    {
+      "path": "source255-check-result.json",
+      "bytes": 82,
+      "sha256": "648309e363470b55c9817adc3c67a972d60fdeac35af8b976618a71129364374"
+    },
+    {
+      "path": "source255-check.log",
+      "bytes": 195,
+      "sha256": "4f9342efbcc9058698e27d1a8152b825a2d265091b6dbc03c7b284d41698d15c"
+    },
+    {
+      "path": "source255-clippy-command.json",
+      "bytes": 591,
+      "sha256": "0a5ba754a4c40e696a4187a3e0ded41f6bcbdc94e9c189c988c77d2a3a51703a"
+    },
+    {
+      "path": "source255-clippy-result.json",
+      "bytes": 83,
+      "sha256": "27ca99346293225b4b28b42264712ffbad6c2addd30b075a914a550f57d80c02"
+    },
+    {
+      "path": "source255-clippy.log",
+      "bytes": 196,
+      "sha256": "c90f242d0757efdac9664f3dc99d556bc729c8ae837859ef938e1c1422442ebe"
+    },
+    {
+      "path": "source255-diff-command.json",
+      "bytes": 507,
+      "sha256": "86b8a319c2c70adfe02c084e4a7c21a5a7f7be7e836ac7f5e4816cc98b1c8881"
+    },
+    {
+      "path": "source255-diff-result.json",
+      "bytes": 90,
+      "sha256": "1a87757034caabbd4b13b07a15a272ecd15713a0be678e78952afdfa2f7b0972"
+    },
+    {
+      "path": "source255-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source255-fmt-command.json",
+      "bytes": 531,
+      "sha256": "af74d7e373b1e91d3ba72c313b000c1e8e8c450efa656b22f2ac852698ab4fe9"
+    },
+    {
+      "path": "source255-fmt-result.json",
+      "bytes": 89,
+      "sha256": "b16e6bfdaa89485262047d4860aaf45bbc425e4244b635459b6460640b28892d"
+    },
+    {
+      "path": "source255-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source255-focused-audit.json",
+      "bytes": 18237,
+      "sha256": "112cab0aa6e0f8479b86e01dfc2e96d0c64e8473e389c87b690ce1ee7739a734"
+    },
+    {
+      "path": "source255-focused-driver.log",
+      "bytes": 82,
+      "sha256": "cb317b313ea849fce5f567b99afb239830f8b6fa22df133bb786959f31c16e15"
+    },
+    {
+      "path": "source255-focused-inventory.json",
+      "bytes": 15938,
+      "sha256": "8e390e4925d07589237abad9b7841f2256ee25ae7079dd6666512a88580f7061"
+    },
+    {
+      "path": "source255-focused-launch.json",
+      "bytes": 266,
+      "sha256": "cb563db7fea32b6ded529ab69740163e08fcf85bf4ef8c3b46b5aa5435948e72"
+    },
+    {
+      "path": "source255-focused-retained-inputs.json",
+      "bytes": 971,
+      "sha256": "cc22c7d616e18e5b9bfb4ebc8821c5884b942d64545a59c2006b2d7fd2fda811"
+    },
+    {
+      "path": "source255-format-result.json",
+      "bytes": 20,
+      "sha256": "8f0c1c520d4343f54805dcdaa74287fb690f4d610186020a9343b1407654bdbd"
+    },
+    {
+      "path": "source255-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source255-freeze.json",
+      "bytes": 1176,
+      "sha256": "b2c5ac5cf280f598f83688af13745ff20e0612b6c8d67218b038deded4a6fadf"
+    },
+    {
+      "path": "source255-gate-build-command.json",
+      "bytes": 1292,
+      "sha256": "c9c77c59031b83d197eb5e77f00ef90b74645638a6a7f7cbabf63f451f8bdda2"
+    },
+    {
+      "path": "source255-gate-build-result.json",
+      "bytes": 89,
+      "sha256": "e55df51204540709ba68232d4dc349a99f52752e3eaf643f906d873f20bd708f"
+    },
+    {
+      "path": "source255-gate-build.log",
+      "bytes": 223770,
+      "sha256": "79ebb0814c4f7b17f1e6aff8f6f6b1f0e16a6d200cf785fa254bc903523fe839"
+    },
+    {
+      "path": "source255-gate-controls-command.json",
+      "bytes": 32961,
+      "sha256": "9fc56add548abc30c45366241bdac8e50b6b6062fe85e61531f3b55f1f60b809"
+    },
+    {
+      "path": "source255-gate-controls-result.json",
+      "bytes": 91,
+      "sha256": "73f3d4daa3cee742da419061577ac2d9444ecf66e985d6fae62d7459e260dd86"
+    },
+    {
+      "path": "source255-gate-controls.log",
+      "bytes": 18600,
+      "sha256": "ac97040408ac21fb142d9cbd8a53ea5a6da9f7ea2e392bc5bc601b15e7b670ac"
+    },
+    {
+      "path": "source255-gate-inventory-command.json",
+      "bytes": 1266,
+      "sha256": "08082af59665955769639003c83b8c73ac6bf1da18865d78be10756ee086cacc"
+    },
+    {
+      "path": "source255-gate-inventory-result.json",
+      "bytes": 89,
+      "sha256": "83a271eb859949e7cd67c40d26052f63aed222dfba08a4dbdf796fab15838645"
+    },
+    {
+      "path": "source255-gate-inventory.log",
+      "bytes": 265251,
+      "sha256": "b6b275b9d7114a9a0034f6ea109f324362c37e3906340c029c2e19a3bb2fbee3"
+    },
+    {
+      "path": "source255-incremental.patch",
+      "bytes": 138303,
+      "sha256": "a60c068fbe1b666c1348ea1d8d3ed3c3cb8464adf8b5037f41c3a36661e681e2"
+    },
+    {
+      "path": "source255-manifest.json",
+      "bytes": 55069,
+      "sha256": "9d2df4b14dc7828b0e550c8fed72e15ef03e0ee98a59f0eae37c56e778ae835c"
+    },
+    {
+      "path": "source255-patch-replay-audit.json",
+      "bytes": 851,
+      "sha256": "b4dd21abe3b8eafa127c34797949875c49a5c2156de55ff6d706ee7510a7fbe2"
+    },
+    {
+      "path": "source255-portable-complete.patch",
+      "bytes": 808626,
+      "sha256": "590de0132bde7c7f6175c49b5761d1b997ff35abbd5b58b0ccb33be1ece134dd"
+    },
+    {
+      "path": "source255-portable-incremental.patch",
+      "bytes": 142970,
+      "sha256": "70bf22102a4d8f5ecf2e4102777e960f1c6b964e332d745c535ced4298ac81d4"
+    },
+    {
+      "path": "source255-unformatted.patch",
+      "bytes": 138303,
+      "sha256": "a60c068fbe1b666c1348ea1d8d3ed3c3cb8464adf8b5037f41c3a36661e681e2"
+    },
+    {
+      "path": "source255-validation-launch.json",
+      "bytes": 266,
+      "sha256": "92c657384696ed0ffbf088e63e02fa3d190ac9cb93967627e8abb247dadcedb9"
+    },
+    {
+      "path": "source256-c-reference-audit.json",
+      "bytes": 4103,
+      "sha256": "a2e852035526243703789e22b0e041e681a4da6b2845208ec956891f8c633510"
+    },
+    {
+      "path": "source256-check-command.json",
+      "bytes": 554,
+      "sha256": "476c01cf2e747ceef546fcf2d0bd3d84f5d25d570807f205f230069f826f1026"
+    },
+    {
+      "path": "source256-check-driver.log",
+      "bytes": 33,
+      "sha256": "826c0452ee505a40f8db6b67ac8133ac0a9bbb1b8556c24d90a3387e28844315"
+    },
+    {
+      "path": "source256-check-result.json",
+      "bytes": 82,
+      "sha256": "6d69f4bca520e9199847c9ebf52a619efb73d25a22352abc52a5c95e9610696e"
+    },
+    {
+      "path": "source256-check.log",
+      "bytes": 195,
+      "sha256": "468695e00dfd91631307eab211af3397687e9cf8198200c3554e278ae9d14800"
+    },
+    {
+      "path": "source256-clippy-command.json",
+      "bytes": 591,
+      "sha256": "8b8f5194571309574b564bde668684f23dc76b81bcefc6038c7925eaeed4e007"
+    },
+    {
+      "path": "source256-clippy-result.json",
+      "bytes": 83,
+      "sha256": "62cb706124ca10bb388a9d9eeba0ca2e7254f178f59fa023f34d7adfad5b8a24"
+    },
+    {
+      "path": "source256-clippy.log",
+      "bytes": 196,
+      "sha256": "1616e1844e948fd3360c422a43c6d6f27e763683a085a376d3301beccb5ab63a"
+    },
+    {
+      "path": "source256-diff-command.json",
+      "bytes": 507,
+      "sha256": "ca857fcd4663cb3b3ea63276d97dfe188c3d334d918604b1878d0a977aa58e4a"
+    },
+    {
+      "path": "source256-diff-result.json",
+      "bytes": 90,
+      "sha256": "fb0114c31eb2b67d503a22bb591ed4f162c747b45311417d6a30892569d69e35"
+    },
+    {
+      "path": "source256-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source256-draft-history.json",
+      "bytes": 3419,
+      "sha256": "51f1b4b356660c487567841540912d2cc74359b712dcc66d6d48423b9986f2b3"
+    },
+    {
+      "path": "source256-fixtures/host-string-mutation.el",
+      "bytes": 1280,
+      "sha256": "f426ceda077bf2c3eb4e8fd58d007bbe6165b99292b5771c332ac7cdacf05d57"
+    },
+    {
+      "path": "source256-fixtures/host-string-mutation.expected",
+      "bytes": 855,
+      "sha256": "cc44c4f5ad79ad32660157ceb56c4f71bdb0687fc1df72f2b5ca285db43773e6"
+    },
+    {
+      "path": "source256-fixtures/host-string-vector-mutation.el",
+      "bytes": 1121,
+      "sha256": "883ec3bfaa50a0ab09f610e667ced934f4190bb63af18d6941099bee4cc7a1fd"
+    },
+    {
+      "path": "source256-fixtures/host-string-vector-mutation.expected",
+      "bytes": 370,
+      "sha256": "9e13ff2c0ced1f79cba53b0d7df16f248c8165d1e2e6979e5cf6192d3d1fa5cd"
+    },
+    {
+      "path": "source256-fmt-command.json",
+      "bytes": 531,
+      "sha256": "e255cf7840dff5ae43ecb9616163fa20ee15919582de79ecda04565d8b5466b3"
+    },
+    {
+      "path": "source256-fmt-result.json",
+      "bytes": 89,
+      "sha256": "a3d617b1ddfdb8872f3f0841bc72cdbbe817fd841fcccccd5f38c000e9f11622"
+    },
+    {
+      "path": "source256-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source256-format-result.json",
+      "bytes": 20,
+      "sha256": "8f0c1c520d4343f54805dcdaa74287fb690f4d610186020a9343b1407654bdbd"
+    },
+    {
+      "path": "source256-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source256-freeze.json",
+      "bytes": 1500,
+      "sha256": "bb6fb8e1dc15fc30426767f7da7b7d84f7e7bbebef9ffc0af1961fbc81731245"
+    },
+    {
+      "path": "source256-incremental.patch",
+      "bytes": 140010,
+      "sha256": "2a71f1e148a52b03a7d518b78bff4b4cd3e04dc85b0cf933fa9404837a3ca1db"
+    },
+    {
+      "path": "source256-manifest.json",
+      "bytes": 55069,
+      "sha256": "2fd88741a0ac36f71742be4baa88a99b3a9a7f85960e0d29165b1899e7242731"
+    },
+    {
+      "path": "source256-patch-replay-audit.json",
+      "bytes": 851,
+      "sha256": "959cd1d62419b729fe36f36702603f9a7739f7fe98ff45450bb24d4daf7f729b"
+    },
+    {
+      "path": "source256-portable-complete.patch",
+      "bytes": 809950,
+      "sha256": "63b2ea9031c751b4a93e3e4c08537961e9d5d4500d52679a754bad44635499cf"
+    },
+    {
+      "path": "source256-portable-incremental.patch",
+      "bytes": 144677,
+      "sha256": "33afeaf04a707e31921062b91fe3ae0d781428de97c7d2d2968f85294b6488e8"
+    },
+    {
+      "path": "source256-unformatted.patch",
+      "bytes": 140010,
+      "sha256": "2a71f1e148a52b03a7d518b78bff4b4cd3e04dc85b0cf933fa9404837a3ca1db"
+    },
+    {
+      "path": "source256-validation-launch.json",
+      "bytes": 266,
+      "sha256": "fd650c7eb6df9badbf991aa856ad9fdf88d06cf548a5e3e918a70f679b91eb54"
+    },
+    {
+      "path": "source256-validation-queue-launch.json",
+      "bytes": 263,
+      "sha256": "e354657eedc0100714c4c3759a598f0d989af9fedf06a7ad4662ef005c46623e"
+    },
+    {
+      "path": "source256-validation-queue-state-snapshot-20261001T1606Z.json",
+      "bytes": 2754,
+      "sha256": "c82d1652023c8857ed75832d73566b11495b845106c0e38cd298d32abed278d2"
+    },
+    {
+      "path": "test-common-string-broad.py",
+      "bytes": 3277,
+      "sha256": "e6753cd7ab8c1232a33fd24ff0af73485c4e80c385e99a16d2bebed403d3b5fa"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

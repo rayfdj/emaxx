@@ -1,0 +1,119 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "failed on a fixture image made under the relocated selected-test binary",
+    "goal_complete": false,
+    "library_passed": 232,
+    "library_failed": 154,
+    "library_unexecuted": 2595,
+    "cargo_stages_unexecuted": [
+      "bins",
+      "integration"
+    ],
+    "raw_names_verified": 386,
+    "image": {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-ops/emaxx/target/grouped-gate/fixture-images/loadup-aa1a4993-44409a21.pdmp",
+      "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source232-full-gate-relocation-failure-inputs/loadup-aa1a4993-44409a21.pdmp",
+      "sha256": "e83c2a6b29f5cf2516c8d7b3e62da01438068c566959fc9d7f54198cee2929c6"
+    },
+    "binary": {
+      "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source232-full-gate-libtest",
+      "sha256": "aa1a499330f567514cc8b72cf7eec7783508a355c9748becd8d920f6e8cc6e10"
+    },
+    "source_unchanged": true,
+    "diagnosis": "The selected lightweight helper ran the immutable copy in the receipts directory while sharing the standard fixture-image cache. The image records native-library paths relative to that executable directory, so the normal full-gate executable cannot restore it. The first native-load error poisons the template mutex and causes later setup failures. Retain the image unchanged and let the normal full-gate executable create its own fresh image at the standard path. This does not certify runtime tests that failed during setup."
+  },
+  "archive": {
+    "path": "source232-fixture-relocation-failure.tar.gz",
+    "bytes": 115944,
+    "sha256": "5137d931fa623418232fa7bc3b96e565037be01f887e630fe47ab4877ea6330a"
+  },
+  "files": [
+    {
+      "path": "full-gate-source232/build.log",
+      "bytes": 213430,
+      "sha256": "48eea4b1c161497852bdf67033965618420ed9f239888e54764a6d1ccbd1e859"
+    },
+    {
+      "path": "full-gate-source232/ignored-inventory.txt",
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    {
+      "path": "full-gate-source232/inventory.txt",
+      "bytes": 262968,
+      "sha256": "afa0a63bda1fd4d731b86fbc836fdbc2c02e0b080845cfecae0565a640d53c59"
+    },
+    {
+      "path": "full-gate-source232/repeat-01-eval_01.json",
+      "bytes": 557,
+      "sha256": "8b8ea5e599f5eb289e6949aa194d6db53890c75f26d51274678be19cb0ad3aac"
+    },
+    {
+      "path": "full-gate-source232/repeat-01-eval_01.log",
+      "bytes": 210594,
+      "sha256": "f4d750c88f062d2515be5683bb6b1663bb6da2135722ef1705dde653433b79c9"
+    },
+    {
+      "path": "full-gate-source232/summary.json",
+      "bytes": 2109,
+      "sha256": "34b637b0292c95cea36ab90414ab4228e865551a69bd77ae4846f3ffa4abc6b4"
+    },
+    {
+      "path": "package-source234-focused.py",
+      "bytes": 2215,
+      "sha256": "08692cf5fa17c46a426d0ebc229233a08e63c377d1c613f42fccf3c61065b835"
+    },
+    {
+      "path": "run-source232-full-gate-fresh.py",
+      "bytes": 3930,
+      "sha256": "f14f353fa9b2b798c52a98fa7f2066375825f5197c842cbcd3da03ab83a47355"
+    },
+    {
+      "path": "run-source232-full-gate.py",
+      "bytes": 3752,
+      "sha256": "4063c24fce1ac7f3d2dd3878d0a5a070c262ce3edc2581d7fc97811921dd75dc"
+    },
+    {
+      "path": "source232-full-gate-command.json",
+      "bytes": 1734,
+      "sha256": "4afb4274d5bcfc2c555a752d398b619d4f633aaadfeda99f2885c445bdc6ce3a"
+    },
+    {
+      "path": "source232-full-gate-driver.log",
+      "bytes": 285,
+      "sha256": "71d6d2a9267efc1ea5a7b766a9aed458fc02dfcd306c830299444e9dc4809f33"
+    },
+    {
+      "path": "source232-full-gate-fresh-launch.json",
+      "bytes": 366,
+      "sha256": "51aedcfef54f51ff5c041f92f26ff44f1f3194e9bced179f0abf46d1db04b7d8"
+    },
+    {
+      "path": "source232-full-gate-launch.json",
+      "bytes": 360,
+      "sha256": "3af765c5b8da398b594d9992d3aa7cb10c313abf027df5a7e36042b46fce91be"
+    },
+    {
+      "path": "source232-full-gate-relocation-failure-audit.json",
+      "bytes": 1518,
+      "sha256": "0770265fee2365889fb4d6403551b386cfb926611a5e91c0427b7b0cf0a9881f"
+    },
+    {
+      "path": "source232-full-gate-result.json",
+      "bytes": 2596,
+      "sha256": "65544ce8ca57369c46edc58bf9f17354ea7e9eb7baff4463b8a9f2380b519f62"
+    },
+    {
+      "path": "source232-full-gate.log",
+      "bytes": 397,
+      "sha256": "46ec0c3f1ccf43e9c1e75fe757474889af4329ea869d80c5290fd91b4cc7aae7"
+    },
+    {
+      "path": "source232-manifest.json",
+      "bytes": 50132,
+      "sha256": "24a893704013fb2031816a06035bac105d719619044d1b6f7c20282c05b49021"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

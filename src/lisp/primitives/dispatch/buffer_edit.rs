@@ -393,7 +393,9 @@ define_dispatch!(
                 let ch = match event.kind() {
                     Kind::Integer(code) => char::from_u32(code as u32),
                     Kind::Symbol(symbol) if symbol.chars().count() == 1 => symbol.chars().next(),
-                    Kind::String(text) if text.chars().count() == 1 => text.chars().next(),
+                    Kind::StringObject(text) if text.borrow().len() == 1 => {
+                        text.borrow().text().chars().next()
+                    }
                     _ => None,
                 }
                 .ok_or_else(|| LispError::Signal("No self-insert character".into()))?;
@@ -2023,20 +2025,22 @@ define_dispatch!(
                     if string_like(object).is_some() {
                         let start = args[0].as_integer()?.max(0) as usize;
                         let end = args[1].as_integer()?.max(0) as usize;
-                        modify_shared_string_properties(object, start, end, |mut current| {
-                            // GNU replaces existing properties in place and
-                            // conses new ones onto the plist head.
-                            for (name, value) in &props {
-                                if let Some((_, existing)) =
-                                    current.iter_mut().find(|(key, _)| key == name)
-                                {
-                                    *existing = *value;
-                                } else {
-                                    current.insert(0, (name.clone(), *value));
+                        let changed =
+                            modify_shared_string_properties(object, start, end, |mut current| {
+                                // GNU replaces existing properties in place and
+                                // conses new ones onto the plist head.
+                                for (name, value) in &props {
+                                    if let Some((_, existing)) =
+                                        current.iter_mut().find(|(key, _)| key == name)
+                                    {
+                                        *existing = *value;
+                                    } else {
+                                        current.insert(0, (name.clone(), *value));
+                                    }
                                 }
-                            }
-                            current
-                        })?;
+                                current
+                            })?;
+                        return Ok(if changed { Value::T } else { Value::Nil });
                     } else {
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;
@@ -2059,13 +2063,19 @@ define_dispatch!(
                 }
                 let props = plist_pairs(&args[2])?;
                 if let Some(object) = args.get(3) {
-                    if matches!(object.kind(), Kind::String(_)) {
-                        return Ok(Value::T);
-                    }
                     if string_like(object).is_some() {
                         let start = args[0].as_integer()?.max(0) as usize;
                         let end = args[1].as_integer()?.max(0) as usize;
+                        let had_properties = match object.kind() {
+                            Kind::StringObject(state) => !state.borrow().props.is_empty(),
+                            _ => unreachable!("string checked above"),
+                        };
                         modify_shared_string_properties(object, start, end, |_| props.clone())?;
+                        return Ok(if start < end && (had_properties || !props.is_empty()) {
+                            Value::T
+                        } else {
+                            Value::Nil
+                        });
                     } else {
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;
@@ -2095,12 +2105,14 @@ define_dispatch!(
                     if string_like(object).is_some() {
                         let start = args[0].as_integer()?.max(0) as usize;
                         let end = args[1].as_integer()?.max(0) as usize;
-                        modify_shared_string_properties(object, start, end, |current| {
-                            current
-                                .into_iter()
-                                .filter(|(key, _)| !names.iter().any(|name| name == key))
-                                .collect()
-                        })?;
+                        let changed =
+                            modify_shared_string_properties(object, start, end, |current| {
+                                current
+                                    .into_iter()
+                                    .filter(|(key, _)| !names.iter().any(|name| name == key))
+                                    .collect()
+                            })?;
+                        return Ok(if changed { Value::T } else { Value::Nil });
                     } else {
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;
@@ -2129,12 +2141,14 @@ define_dispatch!(
                     if string_like(object).is_some() {
                         let start = args[0].as_integer()?.max(0) as usize;
                         let end = args[1].as_integer()?.max(0) as usize;
-                        modify_shared_string_properties(object, start, end, |current| {
-                            current
-                                .into_iter()
-                                .filter(|(key, _)| !names.iter().any(|name| name == key))
-                                .collect()
-                        })?;
+                        let changed =
+                            modify_shared_string_properties(object, start, end, |current| {
+                                current
+                                    .into_iter()
+                                    .filter(|(key, _)| !names.iter().any(|name| name == key))
+                                    .collect()
+                            })?;
+                        return Ok(if changed { Value::T } else { Value::Nil });
                     } else {
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;
@@ -2571,6 +2585,37 @@ fn compute_motion_value(
     env: &mut Env,
     args: &[Value],
 ) -> Result<Value, LispError> {
+    let motion = display_motion(interp, env, args, false)?;
+    Ok(Value::list([
+        Value::Integer(motion.position as i64),
+        Value::Integer(motion.hpos),
+        Value::Integer(motion.vpos),
+        Value::Integer(motion.previous_hpos),
+        if motion.continued {
+            Value::T
+        } else {
+            Value::Nil
+        },
+    ]))
+}
+
+pub(super) struct DisplayMotion {
+    pub(super) position: usize,
+    pub(super) hpos: i64,
+    pub(super) vpos: i64,
+    previous_hpos: i64,
+    continued: bool,
+}
+
+// dispnew.c:buffer_posn_from_coords stops on the glyph containing the
+// requested coordinate. Share the ordinary display-motion traversal,
+// rather than fabricating a nil buffer position for every coordinate.
+pub(super) fn display_motion(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    args: &[Value],
+    stop_on_glyph: bool,
+) -> Result<DisplayMotion, LispError> {
     let from = checked_motion_position(interp, &args[0])?;
     let (mut hpos, mut vpos) = motion_pair(&args[1])?;
     let to = checked_motion_position(interp, &args[2])?;
@@ -2681,6 +2726,9 @@ fn compute_motion_value(
         };
         previous_hpos = hpos;
         if character == '\n' {
+            if stop_on_glyph && vpos == target_vpos {
+                break;
+            }
             position += 1;
             vpos += 1;
             hpos = left_margin;
@@ -2692,6 +2740,13 @@ fn compute_motion_value(
 
         let character_width =
             display_motion_width(interp, env, position, character, hpos, hscroll, tab_offset);
+        if stop_on_glyph && vpos == target_vpos && hpos + character_width > target_hpos {
+            // Each expanded TAB cell has the tab's buffer position.
+            if character == '\t' {
+                hpos = target_hpos;
+            }
+            break;
+        }
         if !truncates
             && character != '\t'
             && character_width > 1
@@ -2744,13 +2799,13 @@ fn compute_motion_value(
     } else {
         previous_hpos
     };
-    Ok(Value::list([
-        Value::Integer(position as i64),
-        Value::Integer(hpos),
-        Value::Integer(vpos),
-        Value::Integer(previous_hpos),
-        if continued { Value::T } else { Value::Nil },
-    ]))
+    Ok(DisplayMotion {
+        position,
+        hpos,
+        vpos,
+        previous_hpos,
+        continued,
+    })
 }
 
 fn line_number_display_width_value(

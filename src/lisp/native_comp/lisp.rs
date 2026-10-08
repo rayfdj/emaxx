@@ -12,7 +12,7 @@ use super::backend::{
 };
 use crate::lisp::eval::{Interpreter, SpecialBindingRestore};
 use crate::lisp::json;
-use crate::lisp::primitives::{encode_internal_multibyte_bytes, render_prin1, string_like};
+use crate::lisp::primitives::{render_prin1_output, string_like};
 use crate::lisp::types::{Env, LispError, Value};
 
 pub(crate) struct UnitData {
@@ -370,11 +370,11 @@ fn print_static(
             }
         }
     }
-    let rendered = render_prin1(interp, value, env);
+    let rendered = render_prin1_output(interp, value, env);
     let restore = restore_bindings(interp, env, restores);
     let rendered = rendered?;
     restore?;
-    encode_internal_multibyte_bytes(&rendered)
+    Ok(rendered.into_bytes())
 }
 
 fn restore_bindings(

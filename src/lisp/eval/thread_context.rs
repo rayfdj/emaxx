@@ -17,7 +17,6 @@ pub(super) struct ThreadExecutionContext {
     pub(super) active_special_restores: Vec<SpecialBindingRestore>,
     bc_stack: crate::lisp::bytecode::vm::BcStack,
     bc_unwinds: Vec<crate::lisp::bytecode::vm::UnwindEntry>,
-    bc_live_programs: Vec<crate::lisp::types::VectorRef>,
     pub(super) backtrace_frames: Vec<BacktraceFrame>,
     batch_error_backtrace: Option<BatchErrorBacktrace>,
     active_handlers: Vec<ActiveHandler>,
@@ -44,7 +43,6 @@ impl ThreadExecutionContext {
             active_special_restores,
             bc_stack,
             bc_unwinds,
-            bc_live_programs,
             backtrace_frames,
             batch_error_backtrace,
             active_handlers,
@@ -61,14 +59,9 @@ impl TraceLispRoots for ThreadExecutionContext {
         for restore in &self.active_special_restores {
             restore.trace_lisp_roots(marker);
         }
-        for value in self.bc_stack.values() {
-            marker.value(value);
-        }
+        self.bc_stack.trace_lisp_roots(marker);
         for entry in &self.bc_unwinds {
             entry.trace_lisp_roots(marker);
-        }
-        for constants in &self.bc_live_programs {
-            marker.value(&Value::Vector(*constants));
         }
         for frame in &self.backtrace_frames {
             frame.function.with_value(|function| marker.value(function));

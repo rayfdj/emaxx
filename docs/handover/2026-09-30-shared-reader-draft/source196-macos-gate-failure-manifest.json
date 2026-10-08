@@ -1,0 +1,626 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "groups": [
+      {
+        "group": "eval_01",
+        "passed": 386,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "group": "eval_02",
+        "passed": 295,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "group": "eval_03",
+        "passed": 321,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "group": "eval_04",
+        "passed": 254,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "group": "eval_05",
+        "passed": 352,
+        "failed": 0,
+        "failures": []
+      },
+      {
+        "group": "primitives",
+        "passed": 613,
+        "failed": 1,
+        "failures": [
+          "lisp::primitives::tests::native_keyboard_input_family_matches_gnu_kboard_contracts"
+        ]
+      }
+    ],
+    "raw_passed": 2221,
+    "raw_failed": 1,
+    "unexecuted": [
+      "compat_runtime",
+      "tty",
+      "batch",
+      "lightweight",
+      "binary Cargo stage",
+      "integration Cargo stage"
+    ],
+    "ordinary_original_contracts_matched": 10,
+    "exact_test_replay": "failed with same missing-input error",
+    "qualification": "Failed full macOS run remains failed. Ordinary batch passes do not certify the partial-startup Rust fixture. Full terminal and Linux runs remain separate."
+  },
+  "archive": {
+    "path": "source196-macos-gate-failure.tar.gz",
+    "bytes": 202831,
+    "sha256": "0928f0b815975e76d73ba57e4d9e376490008dfcad1b9f499e1d472c9f016485"
+  },
+  "files": [
+    {
+      "path": "diagnose-source196-keyboard-contract.py",
+      "bytes": 4079,
+      "sha256": "18a992cef8257eb145be2c2360b9eb6c298f976b1335ce2b682c5d23ee54459c"
+    },
+    {
+      "path": "full-gate-source196-fresh/build.log",
+      "bytes": 214290,
+      "sha256": "b26dd6afc2cb82cc486492d8ea3855bc54bc425e467e6f907cf75e7393eb2e99"
+    },
+    {
+      "path": "full-gate-source196-fresh/ignored-inventory.txt",
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    {
+      "path": "full-gate-source196-fresh/inventory.txt",
+      "bytes": 260219,
+      "sha256": "5ae5a492704c43c3f467fa639d774344e3ae35d8429190bda3d4ea0301fa6513"
+    },
+    {
+      "path": "full-gate-source196-fresh/repeat-01-eval_01.json",
+      "bytes": 564,
+      "sha256": "015b910d0f087594d4924d9dda795d551fbf93d101005da2db2c9139019b7c10"
+    },
+    {
+      "path": "full-gate-source196-fresh/repeat-01-eval_01.log",
+      "bytes": 36578,
+      "sha256": "4c4a5bdb4dfc13d123f8ca45b3fa748f818400e5d00e3b9482bb3678bd25568a"
+    },
+    {
+      "path": "full-gate-source196-fresh/repeat-01-eval_02.json",
+      "bytes": 564,
+      "sha256": "637605d4cbef720fc30e1b085762a76998db26f9122eb1196c51eda2192cf236"
+    },
+    {
+      "path": "full-gate-source196-fresh/repeat-01-eval_02.log",
+      "bytes": 69468,
+      "sha256": "f0d2c50f2b821eba3f89cf5ade1f495db5580e3b670a5794ea7416dc3f82a2ed"
+    },
+    {
+      "path": "full-gate-source196-fresh/repeat-01-eval_03.json",
+      "bytes": 560,
+      "sha256": "1e4abb6986ead67393f04b83f6779a987730d193b50cb2cac22fdd9daa0b1185"
+    },
+    {
+      "path": "full-gate-source196-fresh/repeat-01-eval_03.log",
+      "bytes": 30516,
+      "sha256": "cf092186f0386d4f70075084425aa5b3693304dea447154640508022223c8556"
+    },
+    {
+      "path": "full-gate-source196-fresh/repeat-01-eval_04.json",
+      "bytes": 569,
+      "sha256": "ac86c160e8c4707ded26dbb506999bfda2e21b3077d37546162edbdf73ccf0f4"
+    },
+    {
+      "path": "full-gate-source196-fresh/repeat-01-eval_04.log",
+      "bytes": 24662,
+      "sha256": "e906dd05461fff351db423fce268761238ea4601cfa49152e7c8a74b091ff285"
+    },
+    {
+      "path": "full-gate-source196-fresh/repeat-01-eval_05.json",
+      "bytes": 563,
+      "sha256": "861d82fce3bb57417986494f54ea068304c6d50f96c26667a8c227d10d76270c"
+    },
+    {
+      "path": "full-gate-source196-fresh/repeat-01-eval_05.log",
+      "bytes": 79263,
+      "sha256": "e6122aaeb306a13e09f966e976582af5ee422a52ce201a739b5bdd2b08c56ddf"
+    },
+    {
+      "path": "full-gate-source196-fresh/repeat-01-primitives.json",
+      "bytes": 574,
+      "sha256": "746d28f13faacde233305c20ef733edf795f79ec57d1210c3ffa07d896a60b01"
+    },
+    {
+      "path": "full-gate-source196-fresh/repeat-01-primitives.log",
+      "bytes": 60705,
+      "sha256": "8672dfa0c40c2aca663be2da11d83b50e3c8108d8d8e44b0a19c4182a36eaea0"
+    },
+    {
+      "path": "full-gate-source196-fresh/summary.json",
+      "bytes": 2118,
+      "sha256": "3334878b97242dc6a74e045ffe943a14f54be96ca5969a7909050d29104d8da4"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "run-source196-fresh-full-gate.py",
+      "bytes": 3221,
+      "sha256": "38db300a6f74aee880bb2570e7636046e1402fa205a6c489ba0e6f9a7fb8492c"
+    },
+    {
+      "path": "source196-complete.patch",
+      "bytes": 217384,
+      "sha256": "efb539be2717cc66f5511724cf10bf01f3b07efe03a4692e19442be0cd7c95b8"
+    },
+    {
+      "path": "source196-fresh-full-gate-command.json",
+      "bytes": 1397,
+      "sha256": "c5a92590f52b4c6a8b10855e8e1a53d3c587e8c2e4b038a06736fee8f0d278db"
+    },
+    {
+      "path": "source196-fresh-full-gate-driver.log",
+      "bytes": 297,
+      "sha256": "a9e9ae1fdd55ae637186629c4c51652320f060f013575e6f97c162dfd783f667"
+    },
+    {
+      "path": "source196-fresh-full-gate-failure-audit.json",
+      "bytes": 1193,
+      "sha256": "ae1f3e10598332f8255d608ca9a14dffb20c53543f96e99e570550cbf4967823"
+    },
+    {
+      "path": "source196-fresh-full-gate-launch.json",
+      "bytes": 329,
+      "sha256": "2c12ab98d67f5ee5ef839efb1bf604234423080dcf2cfa91c974cbf0aa9ca562"
+    },
+    {
+      "path": "source196-fresh-full-gate-result.json",
+      "bytes": 2617,
+      "sha256": "54536139d104f9c47ccc38bfc4607bba653ddfb3e486066e8e67fb344a2cc50b"
+    },
+    {
+      "path": "source196-fresh-full-gate.log",
+      "bytes": 706,
+      "sha256": "62895a3b2d43b1667caef57a821effa256dadd435e21cd3ad51dc8c4bd86791b"
+    },
+    {
+      "path": "source196-fresh-manifest.json",
+      "bytes": 45370,
+      "sha256": "e77fa7396195d18d86ac902c27e7ade2d9a0bd4679524dbc7434a61e21cf3f8b"
+    },
+    {
+      "path": "source196-keyboard-contract-01-emaxx-command.json",
+      "bytes": 1489,
+      "sha256": "9c503eeddb8bd147d8d7b10cfc8598d95a990459b8564a287e5d19e6ba1c195f"
+    },
+    {
+      "path": "source196-keyboard-contract-01-emaxx-result.json",
+      "bytes": 313,
+      "sha256": "965ccbc4d19d2a5221aa5a8f9308547ff014ff4e8f98ce3a1cfd4578274603fe"
+    },
+    {
+      "path": "source196-keyboard-contract-01-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-01-emaxx.stdout",
+      "bytes": 47,
+      "sha256": "7dd5488422317ff88fbcabc195b4283e5307a786864f27498a8057cf064b406b"
+    },
+    {
+      "path": "source196-keyboard-contract-01-gnu-command.json",
+      "bytes": 1366,
+      "sha256": "5f8b6bbb7fe246b70a70629e8d830504b52718232c43b3159fe9bcce8b731c59"
+    },
+    {
+      "path": "source196-keyboard-contract-01-gnu-result.json",
+      "bytes": 314,
+      "sha256": "aa505cc6b70b896d011da9da728b06d8dfd1acd25ad97e036d93ebd2675fb956"
+    },
+    {
+      "path": "source196-keyboard-contract-01-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-01-gnu.stdout",
+      "bytes": 47,
+      "sha256": "7dd5488422317ff88fbcabc195b4283e5307a786864f27498a8057cf064b406b"
+    },
+    {
+      "path": "source196-keyboard-contract-02-emaxx-command.json",
+      "bytes": 1313,
+      "sha256": "59d711f950acc0dd2c453dc396bf2e75901862d3244f73bf07b0bdb84190aa10"
+    },
+    {
+      "path": "source196-keyboard-contract-02-emaxx-result.json",
+      "bytes": 313,
+      "sha256": "3fba5969be1fc9a2a3bd29a2097ec437f507c7e4381a796b1a4264b23324097b"
+    },
+    {
+      "path": "source196-keyboard-contract-02-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-02-emaxx.stdout",
+      "bytes": 63,
+      "sha256": "420c195efe6159a58595adb58083cbbaadf302f96a3d698e6f3b42601935d430"
+    },
+    {
+      "path": "source196-keyboard-contract-02-gnu-command.json",
+      "bytes": 1190,
+      "sha256": "9560e314e7337bde2316229cf0e93433b035d24058868e91db0471326ceeb84d"
+    },
+    {
+      "path": "source196-keyboard-contract-02-gnu-result.json",
+      "bytes": 314,
+      "sha256": "00d42496a7774ea7bcb5e4abc7e4dccab4033963796d74727bb6301980a7761c"
+    },
+    {
+      "path": "source196-keyboard-contract-02-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-02-gnu.stdout",
+      "bytes": 63,
+      "sha256": "420c195efe6159a58595adb58083cbbaadf302f96a3d698e6f3b42601935d430"
+    },
+    {
+      "path": "source196-keyboard-contract-03-emaxx-command.json",
+      "bytes": 1585,
+      "sha256": "296e0e021dbafdae08d8a883c78dcfd2f4b3ed020d8282569cfdd3ed1fd33591"
+    },
+    {
+      "path": "source196-keyboard-contract-03-emaxx-result.json",
+      "bytes": 314,
+      "sha256": "dbf7620db3966eb922f23aa0746671ae425147c399428310e559ea83568fce4c"
+    },
+    {
+      "path": "source196-keyboard-contract-03-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-03-emaxx.stdout",
+      "bytes": 28,
+      "sha256": "419e38e4a004200e0a7f6e4be5a3755c100d98b3e8a4962d0ae3b750ec6ccf0f"
+    },
+    {
+      "path": "source196-keyboard-contract-03-gnu-command.json",
+      "bytes": 1462,
+      "sha256": "003b09981ab48822eec5e9f6f08118c8928d4ca4d90be69a183e8d4fe85562c4"
+    },
+    {
+      "path": "source196-keyboard-contract-03-gnu-result.json",
+      "bytes": 314,
+      "sha256": "b9c624f6f3666c08374f88c7cc17cae270e06d7ba7c9a8aae3a70f52f3f36442"
+    },
+    {
+      "path": "source196-keyboard-contract-03-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-03-gnu.stdout",
+      "bytes": 28,
+      "sha256": "419e38e4a004200e0a7f6e4be5a3755c100d98b3e8a4962d0ae3b750ec6ccf0f"
+    },
+    {
+      "path": "source196-keyboard-contract-04-emaxx-command.json",
+      "bytes": 1462,
+      "sha256": "71fd0d7f06615a56ab00e1de02906e2fd3a7b7caf16a8f33710be330ae973c28"
+    },
+    {
+      "path": "source196-keyboard-contract-04-emaxx-result.json",
+      "bytes": 314,
+      "sha256": "27bf254ad665f05b7942668730bed483e71dec286cbaefe3408de03a21eaf958"
+    },
+    {
+      "path": "source196-keyboard-contract-04-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-04-emaxx.stdout",
+      "bytes": 31,
+      "sha256": "6fa3e0bf96522731de7f993b3d8279dd8ec2630117d65230a4cbcf6da86c229b"
+    },
+    {
+      "path": "source196-keyboard-contract-04-gnu-command.json",
+      "bytes": 1339,
+      "sha256": "23a7996b7435cec2aef32903ee657c11f692bd2d5ac335c769f37d83a3c0f5cb"
+    },
+    {
+      "path": "source196-keyboard-contract-04-gnu-result.json",
+      "bytes": 314,
+      "sha256": "ec98321bfc362941331d8121ff9df53de933724c79315290d6502e0c685de23d"
+    },
+    {
+      "path": "source196-keyboard-contract-04-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-04-gnu.stdout",
+      "bytes": 31,
+      "sha256": "6fa3e0bf96522731de7f993b3d8279dd8ec2630117d65230a4cbcf6da86c229b"
+    },
+    {
+      "path": "source196-keyboard-contract-05-emaxx-command.json",
+      "bytes": 1564,
+      "sha256": "0749f6bf3d72f66ba98f791c8731252b5bfaab29c0d77245d75145847bc07027"
+    },
+    {
+      "path": "source196-keyboard-contract-05-emaxx-result.json",
+      "bytes": 305,
+      "sha256": "c8b45175035fd1380a8a386acd789de38be17d90d8b2b035b0806a7a91ba2917"
+    },
+    {
+      "path": "source196-keyboard-contract-05-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-05-emaxx.stdout",
+      "bytes": 30,
+      "sha256": "02fab7d0e56f8a11a42f5eaff76fba74dc149707149310104d1ac66fc9554fa5"
+    },
+    {
+      "path": "source196-keyboard-contract-05-gnu-command.json",
+      "bytes": 1441,
+      "sha256": "a8b43d509d5fa9f67c8351e2fb4b7d79a5936df68c801fbf08c55926ab564f9b"
+    },
+    {
+      "path": "source196-keyboard-contract-05-gnu-result.json",
+      "bytes": 314,
+      "sha256": "b50c11d96ce4ffcec8423974405ffaf3e09ef21ab63a1af329e09a403400a9c8"
+    },
+    {
+      "path": "source196-keyboard-contract-05-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-05-gnu.stdout",
+      "bytes": 30,
+      "sha256": "02fab7d0e56f8a11a42f5eaff76fba74dc149707149310104d1ac66fc9554fa5"
+    },
+    {
+      "path": "source196-keyboard-contract-06-emaxx-command.json",
+      "bytes": 1397,
+      "sha256": "dacb6ae6e79ac582238965346f543a90040232d71cdec1a04d10e142658ce8a5"
+    },
+    {
+      "path": "source196-keyboard-contract-06-emaxx-result.json",
+      "bytes": 306,
+      "sha256": "366e6328bc3f443103fccab81b01e47a821e142f67238c74bcf29335fea44b60"
+    },
+    {
+      "path": "source196-keyboard-contract-06-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-06-emaxx.stdout",
+      "bytes": 29,
+      "sha256": "a68776ef05f6416a5d9d8700060ccf15b9fbe5147cc14deda55dd772400fe7b2"
+    },
+    {
+      "path": "source196-keyboard-contract-06-gnu-command.json",
+      "bytes": 1274,
+      "sha256": "6bcd617065b019134f269d2712271ff5a1f7471bf1fd6434a9760429a9f7f8c4"
+    },
+    {
+      "path": "source196-keyboard-contract-06-gnu-result.json",
+      "bytes": 314,
+      "sha256": "21ceb76a4384365fe6abb3229c1cc85ff0d080c05d866ad21d8fc9c12e6ae9e6"
+    },
+    {
+      "path": "source196-keyboard-contract-06-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-06-gnu.stdout",
+      "bytes": 29,
+      "sha256": "a68776ef05f6416a5d9d8700060ccf15b9fbe5147cc14deda55dd772400fe7b2"
+    },
+    {
+      "path": "source196-keyboard-contract-07-emaxx-command.json",
+      "bytes": 1358,
+      "sha256": "8a5ff6acc3a025b4786c11b4678740f9d7bac61fc93f039734c62c4913f2249c"
+    },
+    {
+      "path": "source196-keyboard-contract-07-emaxx-result.json",
+      "bytes": 314,
+      "sha256": "7c3284c96f33661a70ced109b9d1713602a644664c56ee8c1d2c57ee74d5c545"
+    },
+    {
+      "path": "source196-keyboard-contract-07-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-07-emaxx.stdout",
+      "bytes": 26,
+      "sha256": "8a19949c8d446cf4c17aa18678a6750202776b2481bfe131671a490c29aff749"
+    },
+    {
+      "path": "source196-keyboard-contract-07-gnu-command.json",
+      "bytes": 1235,
+      "sha256": "11125da9764c9cbe3bb68fafb753cf8c9fb72d6d81559e2eefbce2a8af946d4f"
+    },
+    {
+      "path": "source196-keyboard-contract-07-gnu-result.json",
+      "bytes": 313,
+      "sha256": "5a955a552027c17db26a0c9b3510e801dbe481d74e54615548b0498506af08a9"
+    },
+    {
+      "path": "source196-keyboard-contract-07-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-07-gnu.stdout",
+      "bytes": 26,
+      "sha256": "8a19949c8d446cf4c17aa18678a6750202776b2481bfe131671a490c29aff749"
+    },
+    {
+      "path": "source196-keyboard-contract-08-emaxx-command.json",
+      "bytes": 1195,
+      "sha256": "a707df5179a57a0b385649f31f8230f80f32410fdb5c81e597582a9abeee3499"
+    },
+    {
+      "path": "source196-keyboard-contract-08-emaxx-result.json",
+      "bytes": 314,
+      "sha256": "dc57a0b08d5659d7979ca9e953b26a2f30fa6d5fd22797e4fa4e0b87ef9eb5e4"
+    },
+    {
+      "path": "source196-keyboard-contract-08-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-08-emaxx.stdout",
+      "bytes": 12,
+      "sha256": "4f04f3d80df61aaf5aba11db5f903f8bb0d9289033c9ad560ef082082cca494f"
+    },
+    {
+      "path": "source196-keyboard-contract-08-gnu-command.json",
+      "bytes": 1072,
+      "sha256": "61a5fd7b577532ea9f6a04d8d64e39b182868791f2806406874fae075c9b2a09"
+    },
+    {
+      "path": "source196-keyboard-contract-08-gnu-result.json",
+      "bytes": 314,
+      "sha256": "291ee39782d28ce041150082ffb5b90e713c7b016b2d18b6b6a19effbf0e1ca7"
+    },
+    {
+      "path": "source196-keyboard-contract-08-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-08-gnu.stdout",
+      "bytes": 12,
+      "sha256": "4f04f3d80df61aaf5aba11db5f903f8bb0d9289033c9ad560ef082082cca494f"
+    },
+    {
+      "path": "source196-keyboard-contract-09-emaxx-command.json",
+      "bytes": 1423,
+      "sha256": "72f9f31fefef155729875a0c5b4af8fb35ccd150f3a247842b409c5f03d39d36"
+    },
+    {
+      "path": "source196-keyboard-contract-09-emaxx-result.json",
+      "bytes": 313,
+      "sha256": "92985817ef8f3f8dae2cdd6b08ddf2096dbc4800edf0e3d58c88b56bf8048ab9"
+    },
+    {
+      "path": "source196-keyboard-contract-09-emaxx.stderr",
+      "bytes": 26,
+      "sha256": "798bc0004f60d475f72f565c270b14b83286a49555dc7061b101ec10a35523ad"
+    },
+    {
+      "path": "source196-keyboard-contract-09-emaxx.stdout",
+      "bytes": 15,
+      "sha256": "ddc2cf6935001682306f2bae472db39659025d092e843bf61fae8bf12b27bfe2"
+    },
+    {
+      "path": "source196-keyboard-contract-09-gnu-command.json",
+      "bytes": 1300,
+      "sha256": "f9ba9793422c9a82cfa04b768993a6979ce2febc80cbb2a152b25cf6479335d4"
+    },
+    {
+      "path": "source196-keyboard-contract-09-gnu-result.json",
+      "bytes": 313,
+      "sha256": "e656b7016970086873892b2a8b3d6f0dbf45f86fe783dcddb6ece90e2c5f762a"
+    },
+    {
+      "path": "source196-keyboard-contract-09-gnu.stderr",
+      "bytes": 26,
+      "sha256": "798bc0004f60d475f72f565c270b14b83286a49555dc7061b101ec10a35523ad"
+    },
+    {
+      "path": "source196-keyboard-contract-09-gnu.stdout",
+      "bytes": 15,
+      "sha256": "ddc2cf6935001682306f2bae472db39659025d092e843bf61fae8bf12b27bfe2"
+    },
+    {
+      "path": "source196-keyboard-contract-10-emaxx-command.json",
+      "bytes": 1549,
+      "sha256": "b69f8ea9247ca2fcdcafc8b6aff1fbb13dcb206f412c40c3ef1b0b05bb0a1c3d"
+    },
+    {
+      "path": "source196-keyboard-contract-10-emaxx-result.json",
+      "bytes": 314,
+      "sha256": "7f64e3f139fc9f13975672e96b2619fe2e4f3c2cffe0952b900a468e2f091d39"
+    },
+    {
+      "path": "source196-keyboard-contract-10-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-10-emaxx.stdout",
+      "bytes": 45,
+      "sha256": "86d95459b4522a20f4cf7cc5220d5d9f38f8aafbc727c079b45765b22acf4278"
+    },
+    {
+      "path": "source196-keyboard-contract-10-gnu-command.json",
+      "bytes": 1426,
+      "sha256": "f998c06111cf8c88c75875617e8120c941f48adf456ffb45b4d6673ca5f17e50"
+    },
+    {
+      "path": "source196-keyboard-contract-10-gnu-result.json",
+      "bytes": 314,
+      "sha256": "09e2c091329c03e9adf326d899c58e35ce19d2ddf625f8a25e5b43dba2c6d39a"
+    },
+    {
+      "path": "source196-keyboard-contract-10-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source196-keyboard-contract-10-gnu.stdout",
+      "bytes": 45,
+      "sha256": "86d95459b4522a20f4cf7cc5220d5d9f38f8aafbc727c079b45765b22acf4278"
+    },
+    {
+      "path": "source196-keyboard-contract-diagnosis.json",
+      "bytes": 13696,
+      "sha256": "2d9496d4a20c16462555b40c3148dd6d1a7c44f10babd3ab5b53791e50332af8"
+    },
+    {
+      "path": "source196-keyboard-contract-exact-command.json",
+      "bytes": 1488,
+      "sha256": "8d56c8e634eff8e73b908883e1b7adbf17dbd65180f6054bd4ac38377c840723"
+    },
+    {
+      "path": "source196-keyboard-contract-exact-result.json",
+      "bytes": 308,
+      "sha256": "416e05b962c29ddd9f20562b7118ab8692afc72e54b1d58644dbe83af157cca8"
+    },
+    {
+      "path": "source196-keyboard-contract-exact.stderr",
+      "bytes": 339,
+      "sha256": "673ce56f383b4cd1e635e4899a0fb2949e7bd2e084baeb8fb97aa068bf5eec0b"
+    },
+    {
+      "path": "source196-keyboard-contract-exact.stdout",
+      "bytes": 327,
+      "sha256": "46d0733e0e4cfb5fbae42d118f9285777bb610f9e780eb95e7dcb73ac24e13cd"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

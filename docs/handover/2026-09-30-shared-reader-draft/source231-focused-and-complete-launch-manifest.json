@@ -1,0 +1,111 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "all 31 focused gate controls pass",
+    "passed": 31,
+    "failed": 0,
+    "ignored": 0,
+    "source_inputs_verified": 440,
+    "binary_sha256": "fc91edf09a69a0413b38792f0dd26f090ed4687e8959eca8370ed56f49c39a3a",
+    "goal_complete": false,
+    "qualification": "Exact same focused names as source230, with the added fixture setup corrected and all original bare-reader assertions retained. Production inputs are unchanged from source230, whose 937 affected-module gate tests and 54 ordinary comparisons passed. This does not relabel the failed source230 focused run. Fresh source231 complete Rust, release and ordinary runs are active; source229 complete terminal run is separate and has a known divergence."
+  },
+  "archive": {
+    "path": "source231-focused-and-complete-launch.tar.gz",
+    "bytes": 77936,
+    "sha256": "425a602b4ca0c16930a14b4e30f07e06b03d67c7479640a42d9c5763dbcebe3e"
+  },
+  "files": [
+    {
+      "path": "audit-shared-reader196-fresh-selected.py",
+      "bytes": 4819,
+      "sha256": "caf9923118da1572509baa64a90fc1099ed1be3b2332bc2ef0232ceb41977ccc"
+    },
+    {
+      "path": "package-source231-focused-and-launch.py",
+      "bytes": 3366,
+      "sha256": "8623ba775f93e6543a6fdd367c118bf9e9ee300d0b27a121ce552115b2674608"
+    },
+    {
+      "path": "run-source231-build-and-ordinary.py",
+      "bytes": 865,
+      "sha256": "181df32b8bb64ac20f331c246dae36a0daca8af37f56b17ccb5580eb4a1281a2"
+    },
+    {
+      "path": "run-source231-full-gate.py",
+      "bytes": 3777,
+      "sha256": "768661a4d4fe5e21dbad3078b9bb3589a32d8f708aea204e716ed93a8b0fea41"
+    },
+    {
+      "path": "run-source231-release.py",
+      "bytes": 993,
+      "sha256": "d6d57f66cef1d56fce9a63f0e0dfeabd1c1403767dbca7ad15ec63a355b57f3b"
+    },
+    {
+      "path": "source231-applied-to-task-worktree.json",
+      "bytes": 1322,
+      "sha256": "68f2bc9d739271da31961ac3c5c274656b6fda46f2032f9bee5f3a0898b2e838"
+    },
+    {
+      "path": "source231-focused-audit.json",
+      "bytes": 712,
+      "sha256": "e3030f2c9ed5190b2b912001c389cb11a023325bbc80163a0e86a1d35b4536ea"
+    },
+    {
+      "path": "source231-full-gate-launch.json",
+      "bytes": 577,
+      "sha256": "c150bb5ddb198d27cb8442fa2228a3c6186435f1d187c0cd59378c36a58d0d4b"
+    },
+    {
+      "path": "source231-gate-build-command.json",
+      "bytes": 1148,
+      "sha256": "8c8362eb535dcb664a3e449cd6caa579fecbcfbc292c90ee6d0c03217f357a77"
+    },
+    {
+      "path": "source231-gate-build-result.json",
+      "bytes": 82,
+      "sha256": "fecd192101fcf80157c43430c5983386687377ed1dba9944532c9ee6a95316cc"
+    },
+    {
+      "path": "source231-gate-build.log",
+      "bytes": 213529,
+      "sha256": "94b673d55d1af745bdc32425e71356b97a2ab885ed7f466430b8079415f40e50"
+    },
+    {
+      "path": "source231-gate-controls-command.json",
+      "bytes": 7074,
+      "sha256": "f3bbd08db34da94e7e6689ad729a8a98acd5621e56bd6e13cb5a269360942e3c"
+    },
+    {
+      "path": "source231-gate-controls-result.json",
+      "bytes": 90,
+      "sha256": "4b42f4aa55bc79a552b18f9ad12f242d035d7966d08e65fd7d71cba5bb7064b1"
+    },
+    {
+      "path": "source231-gate-controls.log",
+      "bytes": 3184,
+      "sha256": "1e2704beee888a2c80df3db6c5369e8c52259b609e56f273064d395ce88b212c"
+    },
+    {
+      "path": "source231-gate-inventory.txt",
+      "bytes": 262968,
+      "sha256": "afa0a63bda1fd4d731b86fbc836fdbc2c02e0b080845cfecae0565a640d53c59"
+    },
+    {
+      "path": "source231-ordinary-launch.json",
+      "bytes": 587,
+      "sha256": "6644321975364be44e82b532f4e59c5549231aef89d703f1ccf9e12e090b55fd"
+    },
+    {
+      "path": "source231-release-launch.json",
+      "bytes": 576,
+      "sha256": "958437db836fb551d7cf29111a396531be7dc148304dc16f76d7d97d6e51d7b1"
+    },
+    {
+      "path": "source231-validation-result.json",
+      "bytes": 748,
+      "sha256": "2c8bef0be6b7533160a5f51b8147522bcac765b6d23859dd0b39ce197d1052c2"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

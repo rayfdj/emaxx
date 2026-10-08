@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -20,10 +21,85 @@ import serial_grouped_gate
 
 
 EXPECTED_BINARY = '502ef50058a36ef75c8de7a2188a74469198ffc7452c68570eb02a94fa58a5a7'
+FULL_GATE_BINARY = '89058fe557e1d3138199c8c6d905c9ca502b03af38b218a6485c723254d19a65'
 
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def debugger_command(root, binary, test_name, original_environment):
+    # The observer's selector belongs to GDB's Python process. Exposing it
+    # through Lisp process-environment changes startup allocation before the
+    # reclamation control. GNU GDB's Environment/Starting documentation permits
+    # a separate inferior environment and direct startup without an extra shell.
+    command = ['gdb', '--batch', '--return-child-result',
+               '-ex', 'set startup-with-shell off',
+               '-ex', 'unset environment EMAXX_WATCH_KEY_HEAD']
+    # GDB may supply display dimensions. Preserve values that were actually
+    # inherited by the plain process; remove only newly introduced variables.
+    for name in ['LINES', 'COLUMNS']:
+        if name not in original_environment:
+            command += ['-ex', f'unset environment {name}']
+    return command + [
+        '-x', str(root / 'tools/diagnostics/exact-weak-root-watch.py'),
+        '--args', str(binary), '--exact', test_name, '--test-threads=1', '--nocapture',
+    ]
+
+
+def retained_full_gate(directory, revision, selector):
+    """Read a completed full gate without losing its original artifact identity."""
+    original = json.loads((directory / 'summary.json').read_text())
+    retained = directory / 'retained-inputs'
+    manifest = json.loads((retained / 'manifest.json').read_text())
+    if original['scope'] != 'full' or original['git'] != {'head': revision, 'dirty': False}:
+        raise RuntimeError('full gate source does not match the requested clean revision')
+    if original['status'] != 'failed' or manifest['gate_status'] != original['status']:
+        raise RuntimeError('expected the original failed full gate')
+    if manifest['status'] != 'retained' or manifest['gate_summary_sha256'] != sha(directory / 'summary.json'):
+        raise RuntimeError('retained manifest does not identify the original gate summary')
+    for entry in manifest['files']:
+        relative = Path(entry['artifact'])
+        if relative.is_absolute() or '..' in relative.parts:
+            raise RuntimeError('retained artifact path leaves its directory')
+        artifact = retained / relative
+        if artifact.stat().st_size != entry['bytes'] or sha(artifact) != entry['sha256']:
+            raise RuntimeError('retained full-gate artifact hash or size differs')
+    binary = next(entry for entry in manifest['files'] if entry['artifact'] == 'libtest')
+    if binary['sha256'] != FULL_GATE_BINARY or original['test_binary']['sha256'] != FULL_GATE_BINARY:
+        raise RuntimeError('full-gate executable does not match the inspected ABI')
+    if binary['original'] != original['test_binary']['path']:
+        raise RuntimeError('retained executable path differs from its gate')
+    inventory = serial_grouped_gate.gate.parse_inventory((directory / 'inventory.txt').read_text())
+    digest = hashlib.sha256(('\n'.join(inventory) + '\n').encode()).hexdigest()
+    if digest != original['inventory']['sha256']:
+        raise RuntimeError('full-gate test inventory differs')
+    names = [name for name in inventory if selector in name]
+    if names != ['lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots']:
+        raise RuntimeError('this inspected full-gate diagnosis requires the original reclamation test')
+    environment = serial_grouped_gate.gate.gate_environment(True)
+    images = []
+    for entry in manifest['files']:
+        if entry['artifact'] == 'libtest':
+            continue
+        source = Path(entry['original'])
+        expected = Path(environment['EMAXX_FIXTURE_IMAGE_DIR']) / source.name
+        if source.resolve() != expected.resolve():
+            raise RuntimeError('retained image has an unexpected original fixture path')
+        images.append({'artifact': entry['artifact'], 'sha256': entry['sha256']})
+    if not images:
+        raise RuntimeError('full-gate diagnosis requires its retained fixture image')
+    return {
+        **original,
+        'test_binary': {**original['test_binary'], 'artifact': 'libtest'},
+        'expected_tests': names,
+        'fixture_images': images,
+        'environment': {
+            **original['environment'],
+            'EMAXX_IMAGE_TEMPLATE': environment['EMAXX_IMAGE_TEMPLATE'],
+            'EMAXX_FIXTURE_IMAGE_DIR': environment['EMAXX_FIXTURE_IMAGE_DIR'],
+        },
+    }, retained
 
 
 def main():
@@ -33,6 +109,8 @@ def main():
     parser.add_argument('--revision', required=True)
     parser.add_argument('--filter', required=True)
     parser.add_argument('--key-head', required=True)
+    parser.add_argument('--debugger-runs', type=int, choices=range(1, 6), default=1,
+                        help='bounded separate debugger processes; retain every outcome')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     output = args.output.resolve()
@@ -48,13 +126,19 @@ def main():
     try:
         subprocess.run(['gh', 'run', 'download', args.artifact_run, '--repo', 'rayfdj/emaxx',
                         '--dir', str(output / 'original')], check=True)
-        summaries = list((output / 'original').rglob('rust-replay/summary.json'))
+        summaries = [*list((output / 'original').rglob('rust-replay/summary.json')),
+                     *list((output / 'original').rglob('rust/summary.json'))]
         if len(summaries) != 1:
-            raise RuntimeError('expected one original Rust replay summary')
-        original = json.loads(summaries[0].read_text())
-        original_dir = summaries[0].parent
+            raise RuntimeError('expected one original Rust replay or full-gate summary')
+        if summaries[0].parent.name == 'rust':
+            original, original_dir = retained_full_gate(summaries[0].parent, args.revision, args.filter)
+            expected_binary = FULL_GATE_BINARY
+        else:
+            original = json.loads(summaries[0].read_text())
+            original_dir = summaries[0].parent
+            expected_binary = EXPECTED_BINARY
         source_binary = original_dir / original['test_binary']['artifact']
-        if sha(source_binary) != EXPECTED_BINARY or original['test_binary']['sha256'] != EXPECTED_BINARY:
+        if sha(source_binary) != expected_binary or original['test_binary']['sha256'] != expected_binary:
             raise RuntimeError('retained executable does not match the inspected ABI')
         # Recreate the original execution path, not a renamed test executable.
         binary = Path(original['test_binary']['path'])
@@ -67,11 +151,14 @@ def main():
         if not fixture_directory.is_relative_to(root / 'target'):
             raise RuntimeError('original image directory is outside this CI checkout target')
         fixture_directory.mkdir(parents=True, exist_ok=True)
+        restored_images = {}
         for image in original['fixture_images']:
             source = original_dir / image['artifact']
             if sha(source) != image['sha256']:
                 raise RuntimeError('retained fixture image hash differs')
             shutil.copy2(source, fixture_directory / source.name)
+            restored_images[str(fixture_directory / source.name)] = image['sha256']
+        record['restored_images'] = restored_images
         # The selected binary embeds its original source paths. Restore only
         # its compiled inputs in this disposable diagnosis job; tools stay at
         # the current revision. No active validation checkout is modified.
@@ -103,32 +190,81 @@ def main():
         record['binary_sha256'] = sha(binary)
         record['original_environment'] = original['environment']
         record['plain'] = execute(command, environment, output / 'plain.log')
+        record['images_unchanged_after_plain'] = all(
+            sha(Path(name)) == digest for name, digest in restored_images.items()
+        )
+        if not record['images_unchanged_after_plain']:
+            raise RuntimeError('retained fixture image changed during the plain replay')
         save()
         names = original['expected_tests']
         if len(names) != 1:
             raise RuntimeError('this hardware diagnosis requires exactly one test')
-        # Execute the same fresh child that the original wrapper launches.
-        # This lets GDB watch Emaxx while its independent GNU child runs normally.
+        # Compare the wrapper's exact child invocation before changing its
+        # environment for the observer. Every process retains the assertions.
+        child_command = [str(binary), '--exact', names[0], '--test-threads=1', '--nocapture']
+        child_environment = {**environment, 'EMAXX_RECLAMATION_CONTRACT_CHILD': names[0]}
+        record['plain_child'] = execute(child_command, child_environment, output / 'plain-child.log')
+        record['plain_child_with_observer_environment'] = execute(
+            child_command, {**child_environment, 'EMAXX_WATCH_KEY_HEAD': args.key_head},
+            output / 'plain-child-with-observer.log',
+        )
+        record['images_unchanged_after_child_controls'] = all(
+            sha(Path(name)) == digest for name, digest in restored_images.items()
+        )
+        if not record['images_unchanged_after_child_controls']:
+            raise RuntimeError('retained fixture image changed during a direct-child control')
+        save()
+        # GDB sees the observer selector, but its inferior inherits the plain
+        # child's environment. The independent GNU subprocess runs normally.
         overrides = {'EMAXX_RECLAMATION_CONTRACT_CHILD': names[0],
                      'EMAXX_WATCH_KEY_HEAD': args.key_head}
         environment.update(overrides)
-        command = ['gdb', '--batch', '--return-child-result',
-                   '-x', str(root / 'tools/diagnostics/exact-weak-root-watch.py'),
-                   '--args', str(binary), '--exact', names[0], '--test-threads=1', '--nocapture']
+        command = debugger_command(root, binary, names[0], child_environment)
         record['debugger_environment_override'] = overrides
-        record['debugger'] = execute(command, environment, output / 'debugger.log')
+        record['inferior_environment_policy'] = (
+            'Original child environment; debugger-only EMAXX_WATCH_KEY_HEAD removed, '
+            'original LINES/COLUMNS preserved if present, no startup shell.'
+        )
+        record['debugger_runs'] = []
+        for index in range(args.debugger_runs):
+            label = 'debugger' if index == 0 else f'debugger-{index + 1:02d}'
+            log = output / f'{label}.log'
+            result = execute(command, environment, log)
+            raw = log.read_text(errors='replace')
+            traces = [json.loads(line.removeprefix('EXACT_ROOT '))
+                      for line in raw.splitlines() if line.startswith('EXACT_ROOT ')]
+            trace_name = 'trace-events.json' if index == 0 else f'{label}-trace-events.json'
+            (output / trace_name).write_text(json.dumps(traces, indent=2) + '\n')
+            result.update(
+                log=log.name, trace=trace_name, trace_events=len(traces),
+                callback_errors=re.findall(
+                    r'^(?:Python Exception|Traceback \(most recent call last\):).*$',
+                    raw, re.MULTILINE,
+                ),
+                watched_keys=[event['key'] for event in traces
+                              if event.get('event') == 'watch installed'],
+                images_unchanged=all(sha(Path(name)) == digest
+                                     for name, digest in restored_images.items()),
+            )
+            record['debugger_runs'].append(result)
+            if index == 0:
+                record['debugger'] = result
+                record['trace_events'] = len(traces)
+            save()
+            if not result['images_unchanged']:
+                raise RuntimeError('retained fixture image changed during a debugger process')
         record['source_unchanged'] = compiled_inputs(root) == inputs
-        record['binary_unchanged'] = sha(binary) == EXPECTED_BINARY
-        traces = [json.loads(line.removeprefix('EXACT_ROOT '))
-                  for line in (output / 'debugger.log').read_text(errors='replace').splitlines()
-                  if line.startswith('EXACT_ROOT ')]
-        (output / 'trace-events.json').write_text(json.dumps(traces, indent=2) + '\n')
-        record['trace_events'] = len(traces)
+        record['binary_unchanged'] = sha(binary) == expected_binary
         record['status'] = 'diagnosis recorded; inspect original failures and debugger trace'
         if not record['source_unchanged'] or not record['binary_unchanged']:
             raise RuntimeError('diagnostic inputs changed during execution')
         # Preserve the original failure as this diagnosis job's result.
-        return record['plain']['exit_code'] or record['debugger']['exit_code']
+        return (record['plain']['exit_code'] or record['plain_child']['exit_code']
+                or record['plain_child_with_observer_environment']['exit_code']) or next(
+            (result['exit_code'] or 2 for result in record['debugger_runs']
+             if result['exit_code'] or result['timed_out'] or result['callback_errors']
+             or len(result['watched_keys']) != 2), 0,
+        )
     except BaseException as error:
         record.update(status='diagnostic error', error=repr(error))
         raise

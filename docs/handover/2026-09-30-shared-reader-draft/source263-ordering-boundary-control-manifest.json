@@ -1,0 +1,193 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "baseline": {
+      "status": "matched unchanged source261 baseline",
+      "comparisons": 12600,
+      "prefix_lengths": [
+        0,
+        1,
+        7,
+        8,
+        9,
+        15,
+        16,
+        17,
+        31,
+        32,
+        33,
+        63,
+        64,
+        65
+      ],
+      "character_storage_cases": 30,
+      "fixture_sha256": "1a6f68474cc4d6e6920e0f1280f377cca1da166a7700454dddfebd32281541a2",
+      "stdout_sha256": "b9fe5ae756e0ca5bc2ca894d64217daa8c6a672613fb630e412181b94985fe5a",
+      "inputs": {
+        "gnu": {
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/string-ordering-prefix-boundaries.el": "1a6f68474cc4d6e6920e0f1280f377cca1da166a7700454dddfebd32281541a2",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-source261-string-prefix.py": "39d585fa7b3f37d004b3c751c3a3acdd0ad67aaa4450d6b6fcafbcf042de9647",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/config.h": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/Makefile": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/fns.c": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/lib/filevercmp.c": "1434d7b7b0afa7d009c42b19de41e8ac247631c1204ccd5a69ada85d0ade0c1f"
+        },
+        "source261": {
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/string-ordering-prefix-boundaries.el": "1a6f68474cc4d6e6920e0f1280f377cca1da166a7700454dddfebd32281541a2",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-source261-string-prefix.py": "39d585fa7b3f37d004b3c751c3a3acdd0ad67aaa4450d6b6fcafbcf042de9647",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-comparisons/emaxx/target/string-comparison-validation/release/emaxx": "332e1aaaf04e0534096f5719b1bc7ed76cbac59409fe2e59c54187da7a4a7a36",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-comparisons/emaxx/target/string-comparison-validation/release/emaxx.pdmp": "f2200c7191c029ec78f74aad8195f3ac5f6b23515667cf9a2d60b362dfa3b2db",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/config.h": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/Makefile": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/fns.c": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/lib/filevercmp.c": "1434d7b7b0afa7d009c42b19de41e8ac247631c1204ccd5a69ada85d0ade0c1f"
+        }
+      },
+      "goal_complete": false,
+      "qualification": "Ordinary full-range string-lessp control across14 prefix lengths around word boundaries and30 character/storage cases. All12600 GNU/source261 rows match. This is a baseline for the new word-prefix comparison path, not a source262/263 pass or a performance result."
+    },
+    "launch": {
+      "pid": 87187,
+      "command": [
+        "/Library/Developer/CommandLineTools/usr/bin/python3",
+        "-B",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-source263-boundary-control.py"
+      ],
+      "helper_sha256": "d1375670e91c933394584a6d6aa8c930125419642be095ce9f9ac491060a6300",
+      "started_at_unix": 1790882580.063908,
+      "qualification": "Waits for selected queue64601 to exit successfully, then owns the source263-selected audit and one additional12600-row ordinary prefix-boundary control. No executed helper/source/test expectation changes and no passing result yet.",
+      "goal_complete": false
+    },
+    "qualification": "All12600 GNU/source261 baseline comparisons match across14 word-boundary prefix lengths and30 actual character/storage cases. Supplementary queue87187 waits for successful selected source263 execution, then owns its complete selected audit and runs this exact ordinary control on its retained release executable/image. The source263 runtime/helper inputs and original28 ordinary fixtures remain unchanged. No source263 runtime or performance pass is claimed yet."
+  },
+  "archive": {
+    "path": "source263-ordering-boundary-control.tar.gz",
+    "bytes": 177408,
+    "sha256": "b8f08bd7d20652654dbb6726af6fa80d5a5d8a76e806e98d47889c4c5a63936e"
+  },
+  "files": [
+    {
+      "path": "audit-source261-compare-strings.py",
+      "bytes": 5115,
+      "sha256": "93074203ce74fcf4a06a10a8c9a584a13f0bf863a10b4f030ae5042be62e4e58"
+    },
+    {
+      "path": "audit-source263-selected.py",
+      "bytes": 8590,
+      "sha256": "8c12d1dd5f828db6552ab0e9d06b9bb5286a2bfa951ab85d4cf108040322589c"
+    },
+    {
+      "path": "compare-string-ranges-fixtures.py",
+      "bytes": 4037,
+      "sha256": "d8991e1f3ea698fb42d793a509e8fabe0915d733cba34bcaf276178c1607b1fd"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source261-macos-frozen-and263-boundary.py",
+      "bytes": 4919,
+      "sha256": "8ac8dfef7e7d9b669b4fdd0ecb4f67fa6be947f871653284819ed51214c41a67"
+    },
+    {
+      "path": "probe-source261-string-prefix.py",
+      "bytes": 3691,
+      "sha256": "39d585fa7b3f37d004b3c751c3a3acdd0ad67aaa4450d6b6fcafbcf042de9647"
+    },
+    {
+      "path": "queue-source263-boundary-control.py",
+      "bytes": 5455,
+      "sha256": "d1375670e91c933394584a6d6aa8c930125419642be095ce9f9ac491060a6300"
+    },
+    {
+      "path": "source261-manifest.json",
+      "bytes": 56077,
+      "sha256": "784c94f223f69f48250a2439c0981c2e8f38b667dfc7609f2058087f0f80eda1"
+    },
+    {
+      "path": "source261-ordinary-artifacts.json",
+      "bytes": 780,
+      "sha256": "62b3fc6baa8d99ab0871071843067f1b8e6e1905029194b8f8ff832d7bb40668"
+    },
+    {
+      "path": "source261-probe-string-ordering-prefix-boundaries-gnu-command.json",
+      "bytes": 3062,
+      "sha256": "897662a524781fd803043062624fd1631c7edf09e69da60cc24db27ed56605e2"
+    },
+    {
+      "path": "source261-probe-string-ordering-prefix-boundaries-gnu-result.json",
+      "bytes": 375,
+      "sha256": "d1a13916dbc766a38a6429590a08bdc71da089fbcbadc9f906a08c0e1b204a9c"
+    },
+    {
+      "path": "source261-probe-string-ordering-prefix-boundaries-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-string-ordering-prefix-boundaries-gnu.stdout",
+      "bytes": 259773,
+      "sha256": "b9fe5ae756e0ca5bc2ca894d64217daa8c6a672613fb630e412181b94985fe5a"
+    },
+    {
+      "path": "source261-probe-string-ordering-prefix-boundaries-source261-command.json",
+      "bytes": 3245,
+      "sha256": "250514266ad3a11086c269cd63ae3d84e1308a454e29cbae22c53a39818852c6"
+    },
+    {
+      "path": "source261-probe-string-ordering-prefix-boundaries-source261-result.json",
+      "bytes": 389,
+      "sha256": "7c0787b36effb444c9aaff40b3f711a0381e5a792be56c98e256086f06e0072f"
+    },
+    {
+      "path": "source261-probe-string-ordering-prefix-boundaries-source261.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-string-ordering-prefix-boundaries-source261.stdout",
+      "bytes": 259773,
+      "sha256": "b9fe5ae756e0ca5bc2ca894d64217daa8c6a672613fb630e412181b94985fe5a"
+    },
+    {
+      "path": "source261-string-prefix-audit.json",
+      "bytes": 3647,
+      "sha256": "0b74f4a4726368e188699d07a6b17dddc5afd33e5c7eebb1fb51d13335fbd81d"
+    },
+    {
+      "path": "source261-string-prefix-probes.json",
+      "bytes": 1052,
+      "sha256": "c0e5a21a86bc0ad57806cba8131ce8647fba1cb09e19d60f4cc8e72585eb9712"
+    },
+    {
+      "path": "source263-boundary-at-packaging.json",
+      "bytes": 910,
+      "sha256": "5d7d569df7af0af252e4c97bc5dca0ce56031d49bb19b127f44d5ebcee54badf"
+    },
+    {
+      "path": "source263-boundary-launch.json",
+      "bytes": 625,
+      "sha256": "6f7fefdf46b85073d5855d60708f0e8ad51b9e4b79490047ead459cd965ddc4a"
+    },
+    {
+      "path": "source263-manifest.json",
+      "bytes": 57559,
+      "sha256": "d42d920a4c2fe19b26fcbda8e557fab7bb3e3dc109d8aa009d939119ce6f7e7f"
+    },
+    {
+      "path": "string-ordering-prefix-boundaries.el",
+      "bytes": 1100,
+      "sha256": "1a6f68474cc4d6e6920e0f1280f377cca1da166a7700454dddfebd32281541a2"
+    },
+    {
+      "path": "string-ordering-prefix-boundaries.expected",
+      "bytes": 259774,
+      "sha256": "d5b883ee5a21f3334c9ae923ae32d8cf90eb5a24a77afbf84abeab1727d575fa"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

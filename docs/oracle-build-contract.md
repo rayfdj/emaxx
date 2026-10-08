@@ -86,8 +86,24 @@ baseline change rather than an ordinary compatibility fix.
 
 ## Darwin build
 
-Use `compat/build_emacs_homebrew.sh` from a clean checkout.  The pinned Darwin
-binary reports these effective options:
+Rebuild the Darwin reference with the recorded recipe:
+
+```sh
+python3 tools/build_macos_oracle.py /path/to/existing/gnu-checkout /path/to/new/gnu-build --jobs 2
+```
+
+The destination must not exist. The helper clones the local checkout, selects
+pristine revision `636f166c`, reads the exact configure options from the committed
+Darwin native ABI, and links Apple's system libxml2. This is the recipe used for
+the `591acf7b` reference described in [the frozen-run record](frozen-run-success.md#regexp-correction-and-shr-diagnosis).
+The general `compat/build_emacs_homebrew.sh` helper can select a different XML
+parser and does not reproduce that dependency contract.
+
+The helper writes `<destination>-build.json` beside the new checkout, including
+the actual executable hash, configuration and linked libraries. It never changes
+the oracle lock or native ABI. A rebuild can have different executable bytes;
+retain its executable, dump, configuration and Makefile, perform the checks below,
+and record any replacement pin explicitly. The recorded Darwin options are:
 
 ```text
 --with-native-compilation=aot --with-xml2 --with-gnutls --with-modules
@@ -105,6 +121,23 @@ PNG RSVG SQLITE3 THREADS TOOLKIT_SCROLL_BARS TREE_SITTER WEBP XIM ZLIB
 Compiler and linker paths are machine-specific and are printed by the helper;
 the finished binary and source revision, rather than Homebrew path strings,
 are pinned by the harness.
+
+The requested rebuild on 2026-10-01 produced executable
+`29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5`.
+The [recorded adoption](handover/2026-09-30-shared-reader-draft/source249-macos-and-oracle-adoption-manifest.json)
+replaces `591acf7b` explicitly, retaining the previous lock and local configuration.
+Source, configure/capability contract and Apple libxml2 are unchanged; regenerated
+native ABI, C primitive and DEFSYM files are byte-identical. The actual binary,
+dump, configuration and Makefile are retained and verified after validation.
+Fresh GNU discovery from all 519 full-run reports renders the existing canonical
+7,921-outcome inventory byte for byte. This uses the completed ordinary frozen
+run, not a separate `list` invocation. No inventory, selector or timeout changes.
+
+Source249's complete macOS Rust and native artifact identity checks pass against
+this reference. The full frozen comparison has 7,915 matching outcomes and six
+existing skip-message differences in build-feature reporting; those remain strict
+comparison failures. Rebuilding or repinning does not erase that evidence or
+establish completion of the runtime/performance goal.
 
 ## Linux build
 

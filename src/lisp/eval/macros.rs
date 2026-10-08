@@ -3,16 +3,29 @@ use crate::lisp::types::Kind;
 use crate::lisp::types::StringPropertySpan;
 
 /// lread.c:bytecode_from_rev_list, after resolving circular reader labels.
-fn validate_interpreted_closure_literal(slots: &[Value]) -> Result<(), LispError> {
+fn prepare_closure_literal(
+    interp: &mut Interpreter,
+    slots: &mut [Value],
+    env: &mut Env,
+) -> Result<(), LispError> {
+    // lread.c accepts both execution modes under the same PVEC_CLOSURE tag.
     if !(3..=6).contains(&slots.len())
         || !matches!(
             slots[0].kind(),
             Kind::Integer(_) | Kind::Cons(_) | Kind::Nil
         )
-        || !matches!(slots[1].kind(), Kind::Cons(_))
-        || !matches!(slots[2].kind(), Kind::Cons(_) | Kind::Nil)
+        || !((matches!(slots[1].kind(), Kind::Cons(_))
+            && matches!(slots[2].kind(), Kind::Cons(_) | Kind::Nil))
+            || (slots[1].is_string()
+                && matches!(slots[2].kind(), Kind::Vector(_))
+                && slots
+                    .get(3)
+                    .is_some_and(|depth| matches!(depth.kind(), Kind::Integer(n) if n >= 0))))
     {
         return Err(LispError::ReadError("Invalid byte-code object".into()));
+    }
+    if slots[1].is_string() && crate::lisp::primitives::string_argument_multibyte(&slots[1]) {
+        slots[1] = crate::lisp::primitives::call(interp, "string-as-unibyte", &[slots[1]], env)?;
     }
     Ok(())
 }
@@ -149,21 +162,18 @@ impl CircularReadMaterializer<'_> {
         // before reading its fields.  Allocate the Rust arena object first
         // for the same reason: comp.el's serialized IR contains records whose
         // predecessor/successor slots point back to the record itself.
-        let placeholder = if closure_kind == Some(ReaderClosureKind::Interpreted) {
+        let placeholder = if closure_kind.is_some() {
             if !(3..=6).contains(&slots.len()) {
                 return Err(LispError::ReadError("Invalid byte-code object".into()));
             }
-            Value::allocated_lambda(&[Value::Nil; 6][..slots.len()])
-        } else if ordinary_record {
+            Value::Closure(crate::lisp::types::ClosureRef::filled(
+                slots.len(),
+                Value::Nil,
+            ))
+        } else {
             self.interpreter.create_record_with_type(
                 Value::Nil,
                 vec![Value::Nil; slots.len().saturating_sub(1)],
-            )
-        } else {
-            self.interpreter.create_pseudovector(
-                RecordKind::Closure,
-                "byte-code-function",
-                vec![Value::Nil; slots.len()],
             )
         };
         self.records.insert(identity, placeholder);
@@ -192,8 +202,8 @@ impl CircularReadMaterializer<'_> {
             resolved.push(slot);
         }
 
-        if let Kind::Lambda(closure) = placeholder.kind() {
-            validate_interpreted_closure_literal(&resolved)?;
+        if let Kind::Closure(closure) = placeholder.kind() {
+            prepare_closure_literal(self.interpreter, &mut resolved, self.environment)?;
             for (index, value) in resolved.into_iter().enumerate() {
                 closure.initialize_slot(index, value);
             }
@@ -205,14 +215,7 @@ impl CircularReadMaterializer<'_> {
             }
             return Ok(Some(placeholder));
         }
-        let Kind::Record(record_id) = placeholder.kind() else {
-            unreachable!("byte-code placeholder allocation returns a host record")
-        };
-        self.interpreter
-            .find_record_mut(record_id)
-            .expect("new reader record must remain allocated")
-            .slots = resolved;
-        Ok(Some(Value::Record(record_id)))
+        unreachable!("reader allocated an inline closure or record")
     }
 
     fn fill_cons(&mut self, template: &Value, target: &Value) -> Result<(), LispError> {
@@ -304,7 +307,10 @@ impl CircularReadMaterializer<'_> {
                 Ok(*value)
             }
             Kind::StringObject(state) => {
-                let spans = state.borrow().props.clone();
+                let spans = state.borrow().props.to_vec();
+                if spans.is_empty() {
+                    return Ok(*value);
+                }
                 let mut resolved_spans = Vec::with_capacity(spans.len());
                 for span in spans {
                     let mut props = Vec::with_capacity(span.props.len());
@@ -313,7 +319,7 @@ impl CircularReadMaterializer<'_> {
                     }
                     resolved_spans.push(StringPropertySpan { props, ..span });
                 }
-                state.borrow_mut().props = resolved_spans;
+                state.borrow_mut().props = resolved_spans.into();
                 Ok(*value)
             }
             Kind::ReaderForm(form) => {
@@ -468,11 +474,14 @@ impl Interpreter {
             };
             // Install the real closure before descending into its slots.
             // A reader label can lead back through any of those objects.
-            let closure = if closure_kind == Some(ReaderClosureKind::Interpreted) {
+            let closure = if closure_kind.is_some() {
                 if !(3..=6).contains(&slots.len()) {
                     return Err(LispError::ReadError("Invalid byte-code object".into()));
                 }
-                let value = Value::allocated_lambda(&[Value::Nil; 6][..slots.len()]);
+                let value = Value::Closure(crate::lisp::types::ClosureRef::filled(
+                    slots.len(),
+                    Value::Nil,
+                ));
                 records.insert(identity, value);
                 Some(value)
             } else {
@@ -497,10 +506,10 @@ impl Interpreter {
                 materialized.push(value);
             }
             let record = match closure_kind {
-                Some(ReaderClosureKind::Interpreted) => {
-                    validate_interpreted_closure_literal(&materialized)?;
-                    let value = closure.expect("allocated interpreted closure");
-                    let Kind::Lambda(closure) = value.kind() else {
+                Some(_) => {
+                    prepare_closure_literal(self, &mut materialized, env)?;
+                    let value = closure.expect("allocated closure");
+                    let Kind::Closure(closure) = value.kind() else {
                         unreachable!()
                     };
                     for (index, slot) in materialized.into_iter().enumerate() {
@@ -508,11 +517,6 @@ impl Interpreter {
                     }
                     value
                 }
-                Some(ReaderClosureKind::ByteCode) => self.create_pseudovector(
-                    RecordKind::Closure,
-                    "byte-code-function",
-                    materialized,
-                ),
                 None => {
                     let Some(kind) = materialized.first() else {
                         return Err(LispError::ReadError("empty record literal".into()));
@@ -571,18 +575,6 @@ impl Interpreter {
         Ok(*value)
     }
 
-    /// Store the reader's interpreted-closure slots verbatim. Parameter
-    /// validation belongs to funcall_lambda, not object reconstruction.
-    pub(crate) fn make_interpreted_closure_value(
-        &mut self,
-        slots: &[Value],
-    ) -> Result<Value, LispError> {
-        if !(3..=6).contains(&slots.len()) || !matches!(slots[1].kind(), Kind::Cons(_)) {
-            return Err(LispError::ReadError("Invalid byte-code object".into()));
-        }
-        Ok(Value::allocated_lambda(slots))
-    }
-
     /// eval.c:Fmake_interpreted_closure: validate only the outer kinds,
     /// then retain the given argument, body and environment objects.
     pub(crate) fn make_interpreted_closure(
@@ -602,7 +594,7 @@ impl Interpreter {
         if !matches!(iform.kind(), Kind::Nil | Kind::Cons(_)) {
             return Err(LispError::WrongTypeArgument("listp".into(), iform));
         }
-        let interactive = crate::lisp::types::LambdaValue::interactive_slot_from_iform(iform)?;
+        let interactive = crate::lisp::types::ClosureRef::interactive_slot_from_iform(iform)?;
         let length = if !iform.is_nil() {
             6
         } else if !documentation.is_nil() {
@@ -618,7 +610,7 @@ impl Interpreter {
             documentation,
             interactive,
         ];
-        Ok(Value::allocated_lambda(&slots[..length]))
+        Ok(Value::allocated_closure(&slots[..length]))
     }
 
     // ── Macros ──

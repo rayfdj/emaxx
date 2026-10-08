@@ -10,8 +10,8 @@ pub struct SymbolWithPosRef(NonNull<VectorHeader>);
 impl SymbolWithPosRef {
     pub(crate) fn allocate(symbol: Value, position: Value) -> Self {
         let logical_bytes = HEADER_SIZE + 2 * WORD_SIZE;
-        // GNU allocate_vector(2) charges the three logical words. Small
-        // vector storage rounds to 32 bytes; the census includes that padding.
+        // GNU allocate_vector(2) charges the three Lisp words. Word-aligned
+        // storage needs no additional padding for this header and payload.
         crate::lisp::native_comp::note_lisp_allocation(logical_bytes);
         let header = allocate_vectorlike(logical_bytes);
         // SAFETY: fresh storage for the header and both aligned Cell<Value>s.

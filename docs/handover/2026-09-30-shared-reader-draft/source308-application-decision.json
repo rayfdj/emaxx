@@ -1,0 +1,152 @@
+{
+  "status": "apply source308 authoritative native-function checkpoint; full goal and performance parity remain open",
+  "predecessor": "2b561470516c519f2198d2551c7b85b474defcfc",
+  "source_manifest": "source308-manifest.json",
+  "source_inputs_verified": 541,
+  "selected_audit_sha256": "5832d53d817adf5bebe79ced33f00a2cb28e4d51e5aa51eb4f5c7329d586760c",
+  "performance_audit_sha256": "ae3406d8739692037dbba544356569ac0c52f62d8755d3fcfb9b5ce0b9fa80a4",
+  "rationale": [
+    "GNU Lisp_Subr fields replace the detached native-function record and three persistent descriptor/name maps. Calls and metadata read the same object; GC explicitly traces five fields and frees owned C names.",
+    "All original fixtures and assertions remain. The recorded commandp/isearch regression is repaired, fresh strict checks are warning-free,1031 tests pass per profile,52 ordinary GNU comparisons and198 generated rows match.",
+    "All384 ordinary process answers and modes verify across six complementary all16 pilots using identical frozen inputs. Raw geometric body ratio is0.9510939536786327. Native execution and native transitions improve substantially.",
+    "This is a necessary object-authority step with a measured favorable aggregate tradeoff, not an assertion that every workload improves. Mapcar, undo, bindat, allocation and interpreted-loop slower medians remain in the evidence and require further profile-based work. No statistical significance or causal explanation for the timing spread is claimed."
+  ],
+  "cases": [
+    {
+      "case": "interpreted-lexical",
+      "raw_change_percent": 0.8119065319974972,
+      "median_gnu_ratios": {
+        "source304": 2.431384111564347,
+        "source308": 2.3307462307294102
+      }
+    },
+    {
+      "case": "interpreted-dynamic",
+      "raw_change_percent": 1.8606240455774303,
+      "median_gnu_ratios": {
+        "source304": 2.122871794419856,
+        "source308": 2.2377847286664903
+      }
+    },
+    {
+      "case": "interpreted-calls",
+      "raw_change_percent": -5.44598755763781,
+      "median_gnu_ratios": {
+        "source304": 2.661664398746309,
+        "source308": 2.662756952029067
+      }
+    },
+    {
+      "case": "bytecode-calls",
+      "raw_change_percent": -6.246116880815,
+      "median_gnu_ratios": {
+        "source304": 4.118150161792895,
+        "source308": 4.006718893796061
+      }
+    },
+    {
+      "case": "native-execution",
+      "raw_change_percent": -25.06358782690207,
+      "median_gnu_ratios": {
+        "source304": 2.165997289686798,
+        "source308": 1.7073734863845207
+      }
+    },
+    {
+      "case": "interpreted-to-native",
+      "raw_change_percent": -9.976240935630143,
+      "median_gnu_ratios": {
+        "source304": 2.4662649559171212,
+        "source308": 2.25002952536758
+      }
+    },
+    {
+      "case": "bytecode-to-native",
+      "raw_change_percent": -25.89051662949451,
+      "median_gnu_ratios": {
+        "source304": 8.630238757450522,
+        "source308": 6.603434984858373
+      }
+    },
+    {
+      "case": "native-to-interpreted",
+      "raw_change_percent": -5.206662511408866,
+      "median_gnu_ratios": {
+        "source304": 2.736096528642932,
+        "source308": 2.6103021986840105
+      }
+    },
+    {
+      "case": "native-to-bytecode",
+      "raw_change_percent": -7.386545736168937,
+      "median_gnu_ratios": {
+        "source304": 2.9144266455067376,
+        "source308": 2.7035590408212973
+      }
+    },
+    {
+      "case": "cons-allocation",
+      "raw_change_percent": 1.4498531405004789,
+      "median_gnu_ratios": {
+        "source304": 1.763200619801363,
+        "source308": 1.7938245060909739
+      }
+    },
+    {
+      "case": "list-traversal",
+      "raw_change_percent": -2.1629632021421985,
+      "median_gnu_ratios": {
+        "source304": 2.03353982516004,
+        "source308": 2.078355959976756
+      }
+    },
+    {
+      "case": "mapcar",
+      "raw_change_percent": 4.486996063915938,
+      "median_gnu_ratios": {
+        "source304": 2.295696565718897,
+        "source308": 2.3530045239873343
+      }
+    },
+    {
+      "case": "explicit-gc",
+      "raw_change_percent": -0.4977139451036283,
+      "median_gnu_ratios": {
+        "source304": 1.0221889109568971,
+        "source308": 1.0168966128852255
+      }
+    },
+    {
+      "case": "upstream-sort",
+      "raw_change_percent": -0.32588827047937974,
+      "median_gnu_ratios": {
+        "source304": 5.035249070667071,
+        "source308": 5.006741533737118
+      }
+    },
+    {
+      "case": "upstream-undo",
+      "raw_change_percent": 5.655586546639291,
+      "median_gnu_ratios": {
+        "source304": 5.458445915900244,
+        "source308": 5.668515757340369
+      }
+    },
+    {
+      "case": "upstream-bindat",
+      "raw_change_percent": 3.2492170278357824,
+      "median_gnu_ratios": {
+        "source304": 3.356017044122095,
+        "source308": 3.361641580374254
+      }
+    }
+  ],
+  "geometric_mean_gnu_ratios": {
+    "source304": 2.821610091965792,
+    "source308": 2.7103173741363964
+  },
+  "original_cohort": 0.9654155884839514,
+  "followup_cohort": 0.9564914914571435,
+  "qualification": "Apply only the exact portable patch whose541 bytes/modes replay. Preserve305/306/307/development failures, original C-locale runner failure and audit preflight failures. Native unit authority/reclamation, symbols/intervals/pure storage, real physical counters, internal borrow review, final-source full validation/adversarial audit and calibrated nine-round/every-case upper95% GNU ratio<=1.03 remain open. Public host serialization/private handles are already implemented and separately reviewed. Main is unchanged and PR79 remains draft.",
+  "goal_complete": false
+}

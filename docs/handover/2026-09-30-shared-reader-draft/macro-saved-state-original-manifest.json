@@ -1,0 +1,21 @@
+{
+  "status": "Original uncompiled patch and record, preserved byte-for-byte in an archive.",
+  "qualification": "Unified diff context lines contain a required space and failed git diff --check when committed as new plain text. This packaging change retains the exact original patch hash without suppressing whitespace checks or altering the runtime. Later source197 validation is separate.",
+  "archive": {
+    "path": "macro-saved-state-original.tar.gz",
+    "bytes": 2744,
+    "sha256": "afb04e1c5e8b4382a6ceb6783bd162ffc6e6efd9dc0f2374eb028b0f64d24b29"
+  },
+  "files": [
+    {
+      "path": "macro-saved-state-draft.patch",
+      "bytes": 7784,
+      "sha256": "4d51644d8164829caf2a9c2dd77f888cb98f73ff6820af696742e9d6cc71dcb1"
+    },
+    {
+      "path": "macro-saved-state-draft.json",
+      "bytes": 1055,
+      "sha256": "022de8fbf9c92c32432f520bb32ae290c3c48c7bb511f5bab80f24f408134d1d"
+    }
+  ]
+}

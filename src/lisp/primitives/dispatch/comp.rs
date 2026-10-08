@@ -1,5 +1,4 @@
 use super::*;
-use crate::lisp::eval::RecordKind;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
@@ -327,93 +326,73 @@ pub(crate) fn native_elisp_load(
     // ENCODE_FILE, the loaded-unit lookup, and dlopen.  It is deliberately
     // allocated even when dlopen returns an already-loaded unit and the
     // candidate is subsequently discarded.
-    let candidate_unit = interp.create_pseudovector(
-        RecordKind::NativeCompUnit,
-        "native-comp-unit",
-        vec![Value::Nil; 7],
-    );
-    let loaded_units = interp
-        .lookup_var("comp-loaded-comp-units-h", env)
-        .unwrap_or(Value::Nil);
-    let loaded_before = c_primitive(
-        interp,
-        env,
-        "gethash",
-        &[*filename, loaded_units, Value::Nil],
-    )?
-    .is_truthy();
-    let library = if loaded_before
-        && !file_in_eln_sys_dir(interp, env, filename)?
-        && c_primitive(
+    let candidate = crate::lisp::types::NativeUnitRef::new();
+    let candidate_unit = Value::NativeCompUnit(candidate);
+    interp.with_lisp_stack_roots(&candidate_unit, |interp| {
+        let loaded_units = interp
+            .lookup_var("comp-loaded-comp-units-h", env)
+            .unwrap_or(Value::Nil);
+        let loaded_before = c_primitive(
             interp,
             env,
-            "file-writable-p",
-            std::slice::from_ref(filename),
+            "gethash",
+            &[*filename, loaded_units, Value::Nil],
         )?
-        .is_truthy()
-    {
-        // If in this session there was ever a file loaded with this name,
-        // rename it before loading, to make sure we always get a new handle!
-        let temporary = c_primitive(
-            interp,
-            env,
-            "make-temp-file-internal",
-            &[*filename, Value::Nil, Value::string(".eln.tmp"), Value::Nil],
-        )?;
-        if c_primitive(
-            interp,
-            env,
-            "file-writable-p",
-            std::slice::from_ref(&temporary),
-        )?
-        .is_truthy()
+        .is_truthy();
+        let library = if loaded_before
+            && !file_in_eln_sys_dir(interp, env, filename)?
+            && c_primitive(
+                interp,
+                env,
+                "file-writable-p",
+                std::slice::from_ref(filename),
+            )?
+            .is_truthy()
         {
-            c_primitive(
+            // If in this session there was ever a file loaded with this name,
+            // rename it before loading, to make sure we always get a new handle!
+            let temporary = c_primitive(
                 interp,
                 env,
-                "rename-file",
-                &[*filename, temporary, Value::T],
+                "make-temp-file-internal",
+                &[*filename, Value::Nil, Value::string(".eln.tmp"), Value::Nil],
             )?;
-            let opened =
-                crate::lisp::native_comp::open_unit(filename, &string_argument(&temporary)?);
-            c_primitive(
+            if c_primitive(
                 interp,
                 env,
-                "rename-file",
-                &[temporary, *filename, Value::Nil],
-            )?;
-            opened?
+                "file-writable-p",
+                std::slice::from_ref(&temporary),
+            )?
+            .is_truthy()
+            {
+                c_primitive(
+                    interp,
+                    env,
+                    "rename-file",
+                    &[*filename, temporary, Value::T],
+                )?;
+                let opened =
+                    crate::lisp::native_comp::open_unit(filename, &string_argument(&temporary)?);
+                c_primitive(
+                    interp,
+                    env,
+                    "rename-file",
+                    &[temporary, *filename, Value::Nil],
+                )?;
+                opened?
+            } else {
+                crate::lisp::native_comp::open_unit(filename, &name)?
+            }
         } else {
             crate::lisp::native_comp::open_unit(filename, &name)?
-        }
-    } else {
-        crate::lisp::native_comp::open_unit(filename, &name)?
-    };
-    let Kind::Record(candidate_id) = candidate_unit.kind() else {
-        unreachable!("native compilation unit is a pseudovector")
-    };
-    interp
-        .find_record_mut(candidate_id)
-        .expect("new native compilation unit remains live")
-        .slots[0] = *filename;
-    let lambda_guard = crate::lisp::json::make_hash_table(interp, "eq", Vec::new());
-    interp
-        .find_record_mut(candidate_id)
-        .expect("new native compilation unit remains live")
-        .slots[2] = lambda_guard;
-    let lambda_name_index = crate::lisp::json::make_hash_table(interp, "equal", Vec::new());
-    interp
-        .find_record_mut(candidate_id)
-        .expect("new native compilation unit remains live")
-        .slots[3] = lambda_name_index;
-    crate::lisp::native_comp::load(
-        interp,
-        env,
-        filename,
-        library,
-        &Value::Record(candidate_id),
-        late,
-    )
+        };
+        candidate.set_field(0, *filename);
+        let lambda_guard = crate::lisp::json::make_hash_table(interp, "eq", Vec::new());
+        candidate.set_field(2, lambda_guard);
+        let lambda_name_index = crate::lisp::json::make_hash_table(interp, "equal", Vec::new());
+        candidate.set_field(3, lambda_name_index);
+        crate::lisp::native_comp::load(interp, env, filename, library, &candidate_unit, late)
+    })
 }
 
 define_dispatch!(
@@ -486,14 +465,9 @@ define_dispatch!(
                 let Kind::Symbol(symbol) = args[0].kind() else {
                     return Err(wrong_type_argument("symbolp", args[0]));
                 };
-                let Kind::Record(trampoline_id) = args[1].kind() else {
+                let Kind::NativeFunction(trampoline) = args[1].kind() else {
                     return Err(wrong_type_argument("subrp", args[1]));
                 };
-                if !interp.find_record(trampoline_id).is_some_and(|record| {
-                    record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
-                }) {
-                    return Err(wrong_type_argument("subrp", args[1]));
-                }
                 let original = interp.lookup_function(&symbol, env)?;
                 let Kind::BuiltinFunc(original_name) = original.kind() else {
                     return Err(wrong_type_argument("subrp", original));
@@ -506,11 +480,7 @@ define_dispatch!(
                         args[0],
                     ]))
                 })?;
-                crate::lisp::native_comp::install_trampoline(
-                    interp,
-                    subroutine_index,
-                    trampoline_id.id,
-                )?;
+                crate::lisp::native_comp::install_trampoline(interp, subroutine_index, trampoline)?;
                 let installed = interp
                     .lookup_var("comp-installed-trampolines-h", env)
                     .unwrap_or(Value::Nil);

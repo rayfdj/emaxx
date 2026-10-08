@@ -213,7 +213,6 @@ struct TtyState {
     /// argument instead of dispatching (GNU's universal-argument--mode).
     prefix_active: bool,
     /// Events of the in-progress (multi-key) sequence.
-    pending: Vec<Value>,
     /// Frontend-owned echo text (key-sequence progress, command errors);
     /// when empty, the session's `message' echo line shows instead.
     echo: String,
@@ -280,7 +279,6 @@ impl TtyState {
             other_terminals: Default::default(),
             views: std::collections::HashMap::new(),
             prefix_active: false,
-            pending: Vec::new(),
             echo: String::new(),
             painted_rows: Vec::new(),
             painted_echo: Vec::new(),
@@ -531,7 +529,7 @@ fn make_event_reader(
     state: std::rc::Rc<std::cell::RefCell<TtyState>>,
 ) -> crate::lisp::primitives::TtyEventReader {
     Box::new(move |interpreter| {
-        draw_echo_row(&state);
+        draw_echo_row(interpreter, &state);
         loop {
             let input = queue.next_event()?;
             if let Ok(mut state) = state.try_borrow_mut() {
@@ -551,7 +549,7 @@ fn make_event_poller(
     state: std::rc::Rc<std::cell::RefCell<TtyState>>,
 ) -> crate::lisp::primitives::TtyEventPoller {
     Box::new(move |interpreter| {
-        draw_echo_row(&state);
+        draw_echo_row(interpreter, &state);
         match queue.try_next_event() {
             Err(()) => None,
             Ok(Some(input)) => {
@@ -697,10 +695,8 @@ fn max_mini_window_rows(interpreter: &Interpreter, rows: usize) -> usize {
     }
 }
 
-/// The composed echo repaint for contexts that hold the interpreter —
-/// the menu executor's message3-style paint carries face spans (the
-/// C-h help hint's help-key-binding face), which the interpreter-less
-/// draw_echo_row cannot resolve.
+/// Paint the echo area through the same character and face translation as
+/// full redisplay, including when a blocking event reader requests repaint.
 fn draw_echo_row_composed(
     interpreter: &mut Interpreter,
     env: &mut Env,
@@ -718,7 +714,7 @@ fn draw_echo_row_composed(
     let frontend_echo = state.echo.clone();
     let cols = cols.max(10) as usize;
     let max_rows = state.echo_max_rows.max(1);
-    let (long, _, _) = compose_echo_row(
+    let (long, _, echo_cursor) = compose_echo_row(
         interpreter,
         env,
         &frontend_echo,
@@ -746,7 +742,7 @@ fn draw_echo_row_composed(
         .lookup_var("cursor-in-echo-area", env)
         .is_some_and(|value| value.is_truthy())
     {
-        let (row, col) = wrapped_echo_cursor(&long, frontend_echo.chars().count(), cols, mini_rows);
+        let (row, col) = wrapped_echo_cursor(&long, echo_cursor.unwrap_or(0), cols, mini_rows);
         let _ = queue!(
             out,
             cursor::MoveTo(
@@ -761,106 +757,20 @@ fn draw_echo_row_composed(
     state.painted_echo = echo_paint;
 }
 
-/// Paint the live echo-area line without interpreter access; the message
-/// text lives in session state exactly so blocking readers can show it.
-/// When the full redisplay already painted this text (with its face
-/// attributes — the minibuffer prompt), leave that paint alone.
-fn draw_echo_row(state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
-    let Ok((cols, rows)) = crate::lisp::eval::terminal::output_size() else {
+/// The readers already hold the interpreter, so table selection and face
+/// resolution need no separate state or interpreter lookup.
+fn draw_echo_row(interpreter: &mut Interpreter, state: &std::rc::Rc<std::cell::RefCell<TtyState>>) {
+    let Ok(current) = state.try_borrow() else {
         return;
     };
-    let text = crate::lisp::primitives::echo_area_message().unwrap_or_default();
-    let cols = cols.max(10) as usize;
-    let mut mini_rows = 1usize;
-    if let Ok(mut state) = state.try_borrow_mut() {
-        // An active minibuffer's composed row (prompt face, overlay
-        // strings) belongs to full redisplay; commands are the only
-        // thing that changes it, and the frame-redraw hook repaints
-        // after each one.
-        if state.minibuffer_owns_echo {
-            return;
-        }
-        // A full redisplay may have just painted this exact message with
-        // resolved face spans.  The emission tick is authoritative for the
-        // cells, but not for the cursor: read-multiple-choice binds
-        // `cursor-in-echo-area' only after issuing its message, so a later
-        // blocking read must still move the cursor onto the already-current
-        // echo glass.
-        // Matrix invalidation can clear `painted_echo' afterward; the
-        // tick remains proof that repainting would only flatten face spans.
-        let emitted = crate::lisp::primitives::echo_area_message_tick();
-        if state.painted_message_tick == emitted {
-            if crate::lisp::primitives::tty_cursor_in_echo_area() {
-                mini_rows = state.echo_rows.max(1);
-                let mut long = PaintRow::blank(cols * mini_rows);
-                long.blit(0, &text, CellAttrs::default());
-                let (row, col) = wrapped_echo_cursor(&long, text.chars().count(), cols, mini_rows);
-                let base = (rows as usize).saturating_sub(mini_rows);
-                let mut out = terminal_output();
-                let _ = queue!(
-                    out,
-                    cursor::MoveTo(
-                        col.min(cols.saturating_sub(1)) as u16,
-                        (base + row).min(rows.saturating_sub(1) as usize) as u16,
-                    ),
-                    cursor::Show,
-                );
-                let _ = out.flush();
-            }
-            return;
-        }
-        mini_rows = state.echo_rows.max(1);
-        let max_rows = state.echo_max_rows.max(1);
-        // Painting (or confirming) the channel brings the glass up to
-        // date with every message emitted so far.
-        state.painted_message_tick = emitted;
-        let painted: String = state
-            .painted_echo
-            .first()
-            .map(|row| row.text.iter().collect())
-            .unwrap_or_default();
-        if state.painted_echo.len() <= 1 && painted.trim_end_matches(' ') == text {
-            return;
-        }
-        state.painted_echo = Vec::new();
-        // A message taller than the current mini window grows it right
-        // now, GNU's message3 entering redisplay: the rows it covers
-        // are marked stale so the next full redisplay repaints the
-        // resized window tree beneath.
-        let mut probe = PaintRow::blank(cols * max_rows);
-        probe.blit(0, &text, CellAttrs::default());
-        let needed = wrap_echo_paint(&probe, cols, max_rows).len();
-        if needed > mini_rows {
-            for row in (rows as usize).saturating_sub(needed)..(rows as usize) {
-                if row < state.painted_rows.len() {
-                    state.painted_rows[row] = PaintRow::unpainted();
-                }
-            }
-            state.echo_rows = needed;
-            mini_rows = needed;
-        }
+    if current.minibuffer_owns_echo
+        || (current.painted_message_tick == crate::lisp::primitives::echo_area_message_tick()
+            && !crate::lisp::primitives::tty_cursor_in_echo_area())
+    {
+        return;
     }
-    let mut long = PaintRow::blank(cols * mini_rows);
-    long.blit(0, &text, CellAttrs::default());
-    let mut echo_paint = wrap_echo_paint(&long, cols, mini_rows);
-    echo_paint.resize(mini_rows, PaintRow::blank(cols));
-    let base = (rows as usize).saturating_sub(mini_rows);
-    let mut out = terminal_output();
-    for (index, echo_row) in echo_paint.iter().enumerate() {
-        let _ = paint_row(&mut out, base + index, echo_row);
-    }
-    if crate::lisp::primitives::tty_cursor_in_echo_area() {
-        let (row, col) = wrapped_echo_cursor(&long, text.chars().count(), cols, mini_rows);
-        let _ = queue!(
-            out,
-            cursor::MoveTo(
-                col.min(cols.saturating_sub(1)) as u16,
-                (base + row).min(rows.saturating_sub(1) as usize) as u16,
-            ),
-            cursor::Show,
-        );
-    }
-    let _ = out.flush();
+    drop(current);
+    draw_echo_row_composed(interpreter, &mut Env::new(), state);
 }
 
 fn command_loop(
@@ -869,6 +779,7 @@ fn command_loop(
     queue: &SharedEventQueue,
     shared_state: &std::rc::Rc<std::cell::RefCell<TtyState>>,
 ) -> Result<i32, String> {
+    let mut reader: Option<crate::lisp::primitives::KeySequenceReader> = None;
     loop {
         // keyboard.c's command_loop_1 reselects the selected window's
         // buffer at the top of every command cycle.  A display action can
@@ -981,86 +892,80 @@ fn command_loop(
         // resolution itself can run the whole dropdown executor (a
         // keymap-bound mouse click pops it), both of which borrow the
         // same cell.
-        let mut pending_snapshot = {
+        if reader.is_none() {
             let state = &mut *shared_state.borrow_mut();
-
-            // A fresh key erases a previous command's echo, but not the
-            // accumulating `C-u' chain's own display (GNU's prefix echo
-            // survives until a non-prefix command consumes it).
-            if state.pending.is_empty() && !state.prefix_active {
+            if !state.prefix_active {
                 state.echo.clear();
             }
-            state.pending.push(event);
-            state.pending.clone()
-        };
-        let resolution = match crate::lisp::primitives::resolve_decoded_key_sequence(
-            interpreter,
-            env,
-            &mut pending_snapshot,
-        )
-        .map_err(LispError::into_kind)
-        {
+        }
+        let resolution = (|| {
+            if reader.is_none() {
+                reader = Some(crate::lisp::primitives::KeySequenceReader::new(
+                    interpreter,
+                    Value::Nil,
+                    env,
+                )?);
+            }
+            reader
+                .as_mut()
+                .expect("active key reader")
+                .read_event(interpreter, event, env)
+        })();
+        let resolution = match resolution.map_err(LispError::into_kind) {
             Ok(resolution) => resolution,
             Err(LispErrorKind::Terminate(termination)) => return Ok(termination.exit_code),
             Err(error) => {
                 let text = command_error_text(interpreter, env, &LispError::from(error.clone()));
                 crate::lisp::primitives::set_echo_area_message(Some(text));
-                shared_state.borrow_mut().pending.clear();
+                reader = None;
                 continue;
             }
         };
-        let dispatch = {
-            let state = &mut *shared_state.borrow_mut();
-            state.pending = pending_snapshot;
-            debug_log(&format!(
-                "keys {:?} -> {}",
-                describe_keys(&state.pending),
-                match &resolution {
-                    Resolution::Command(binding) => format!("command {binding}"),
-                    Resolution::Prefix => "prefix".to_string(),
-                    Resolution::Undefined => "undefined".to_string(),
+        let active = reader.as_ref().expect("active key reader");
+        debug_log(&format!(
+            "keys {:?} -> {}",
+            describe_keys(active.keys()),
+            match &resolution {
+                Resolution::Command(binding) => format!("command {binding}"),
+                Resolution::Prefix => "prefix".to_string(),
+                Resolution::Undefined => "undefined".to_string(),
+            }
+        ));
+        let binding = match resolution {
+            Resolution::Command(binding) => binding,
+            Resolution::Prefix => {
+                let mut state = shared_state.borrow_mut();
+                if active.keys().is_empty() {
+                    state.echo.clear();
+                } else {
+                    state.echo = format!("{}-", describe_keys(active.keys()));
                 }
-            ));
-            match resolution {
-                Resolution::Command(binding) => {
-                    // GNU erases the key echo when dispatch begins — a
-                    // command that blocks (a minibuffer read) must not
-                    // leave its own key sequence on the glass.  An
-                    // accumulating C-u chain keeps its echo: the digits
-                    // extend it after the prefix command runs.
-                    if !state.prefix_active {
-                        state.echo.clear();
-                    }
-                    let keys = std::mem::take(&mut state.pending);
-                    Some((binding, keys))
-                }
-                Resolution::Prefix => {
-                    state.echo = format!("{}-", describe_keys(&state.pending));
-                    None
-                }
-                Resolution::Undefined => {
-                    // keyboard.c discards unbound button-down events
-                    // silently; unbound clicks echo like any key.
-                    let silent = state.pending.len() == 1
-                        && matches!(
-                            state.pending[0].car().map(|v| v.kind()),
-                            Ok(Kind::Symbol(head)) if head.contains("down-mouse-")
-                        );
-                    if !silent {
-                        state.echo = format!("{} is undefined", describe_keys(&state.pending));
-                    }
-                    state.pending.clear();
-                    state.prefix_active = false;
-                    None
-                }
+                continue;
+            }
+            Resolution::Undefined => {
+                let mut state = shared_state.borrow_mut();
+                state.echo = format!("{} is undefined", describe_keys(active.keys()));
+                state.prefix_active = false;
+                reader = None;
+                continue;
             }
         };
-        let Some((binding, keys)) = dispatch else {
-            continue;
-        };
+        if !shared_state.borrow().prefix_active {
+            shared_state.borrow_mut().echo.clear();
+        }
+        let keys = reader
+            .take()
+            .expect("completed key reader")
+            .finish(interpreter, false, env);
         let last_event = keys.last().cloned().unwrap_or(Value::Nil);
-        let command_error = match execute_binding(interpreter, env, binding, &keys, last_event)
-            .map_err(LispError::into_kind)
+        let command_error = match crate::lisp::primitives::execute_read_key_command_binding(
+            interpreter,
+            env,
+            binding,
+            &keys,
+            last_event,
+        )
+        .map_err(LispError::into_kind)
         {
             Ok(()) => None,
             Err(LispErrorKind::Terminate(termination)) => {
@@ -1123,10 +1028,20 @@ fn select_command_loop_buffer(interpreter: &mut Interpreter) -> Result<(), LispE
 
 use crate::lisp::primitives::KeyResolution as Resolution;
 
+#[cfg(test)]
 fn resolve_pending(interpreter: &mut Interpreter, env: &mut Env, pending: &[Value]) -> Resolution {
-    crate::lisp::primitives::resolve_key_sequence(interpreter, env, pending)
+    let mut reader = crate::lisp::primitives::KeySequenceReader::new(interpreter, Value::Nil, env)
+        .expect("key reader");
+    let mut resolution = Resolution::Prefix;
+    for event in pending {
+        resolution = reader
+            .read_event(interpreter, *event, env)
+            .expect("key resolution");
+    }
+    resolution
 }
 
+#[cfg(test)]
 fn execute_binding(
     interpreter: &mut Interpreter,
     env: &mut Env,
@@ -1246,6 +1161,9 @@ fn synthesize_mouse_event(interpreter: &mut Interpreter, raw: RawMouseInput) -> 
         name.push_str("down-");
     }
     name.push_str(&format!("mouse-{button}"));
+    // xt-mouse.el and keyboard.c:make_lispy_event publish this on the
+    // actual event symbol; readers consult it even after Lisp renaming.
+    interpreter.put_symbol_property(&name, "event-kind", Value::symbol("mouse-click"));
 
     // Classify the click against the frame geometry used by its window
     // tree, including while a Lisp reader owns the terminal input loop.
@@ -1688,19 +1606,23 @@ enum GlyphlessDisplayMethod {
 
 impl GlyphlessDisplayMethod {
     fn render(&self, character: char) -> String {
+        self.render_code(u32::from(character))
+    }
+
+    fn render_code(&self, code: u32) -> String {
         match self {
             Self::ZeroWidth => String::new(),
             Self::ThinSpace => " ".into(),
             Self::EmptyBox => {
-                let width = unicode_width::UnicodeWidthChar::width(character)
+                let width = char::from_u32(code)
+                    .and_then(unicode_width::UnicodeWidthChar::width)
                     .unwrap_or(0)
                     .clamp(1, 4);
                 format!("[{}]", " ".repeat(width))
             }
-            Self::HexCode if u32::from(character) < 0x10000 => {
-                format!("\\u{:04X}", u32::from(character))
-            }
-            Self::HexCode => format!("\\U{:06X}", u32::from(character)),
+            Self::HexCode if code < 0x10000 => format!("\\u{code:04X}"),
+            Self::HexCode if code <= 0x10ffff => format!("\\U{code:06X}"),
+            Self::HexCode => format!("\\U{code:08X}"),
             Self::Acronym(acronym) if acronym.chars().count() == 1 => acronym.clone(),
             Self::Acronym(acronym) => {
                 let acronym: String = acronym.chars().take(6).take_while(char::is_ascii).collect();
@@ -1710,14 +1632,39 @@ impl GlyphlessDisplayMethod {
     }
 }
 
-struct GlyphlessDisplayContext<'a> {
+struct CharacterDisplayContext<'a> {
     interpreter: &'a Interpreter,
     table_id: Option<crate::lisp::types::CharTableRef>,
+    display_table: Option<crate::lisp::types::CharTableRef>,
     terminal_coding: String,
 }
 
-impl<'a> GlyphlessDisplayContext<'a> {
-    fn new(interpreter: &'a Interpreter, buffer_id: u64) -> Self {
+impl<'a> CharacterDisplayContext<'a> {
+    fn new(interpreter: &'a Interpreter, buffer_id: u64, window_id: u64) -> Self {
+        // window.c:window_display_table selects one valid table.  An absent
+        // character entry does not fall through to the next table.
+        let display_table = [
+            interpreter.find_record(window_id).and_then(|window| {
+                window
+                    .slots
+                    .get(crate::lisp::primitives::WINDOW_DISPLAY_TABLE_SLOT)
+                    .copied()
+            }),
+            interpreter
+                .buffer_local_toplevel_value(buffer_id, "buffer-display-table")
+                .or_else(|| interpreter.default_toplevel_value("buffer-display-table")),
+            interpreter.default_toplevel_value("standard-display-table"),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|value| match value.kind() {
+            Kind::CharTable(table)
+                if table.has_purpose("display-table") && table.extra_count() == 6 =>
+            {
+                Some(table)
+            }
+            _ => None,
+        });
         let table_id = match interpreter
             .buffer_local_toplevel_value(buffer_id, "glyphless-char-display")
             .or_else(|| interpreter.default_toplevel_value("glyphless-char-display"))
@@ -1732,6 +1679,7 @@ impl<'a> GlyphlessDisplayContext<'a> {
         Self {
             interpreter,
             table_id,
+            display_table,
             terminal_coding,
         }
     }
@@ -1767,6 +1715,10 @@ impl<'a> GlyphlessDisplayContext<'a> {
         {
             return Some(method);
         }
+        self.no_font_method_for(character)
+    }
+
+    fn no_font_method_for(&self, character: char) -> Option<GlyphlessDisplayMethod> {
         // Raw eight-bit characters bypass terminal encoding in term.c and
         // are always emitted as their byte.  Every ordinary scalar is tested
         // against the same coding implementation used by Lisp conversion.
@@ -1782,56 +1734,164 @@ impl<'a> GlyphlessDisplayContext<'a> {
         if encodable {
             return None;
         }
+        Some(self.no_font_method())
+    }
+
+    fn no_font_method(&self) -> GlyphlessDisplayMethod {
         let fallback = self
             .table_id
             .and_then(|table_id| self.interpreter.char_table_extra_slot(table_id, 0))
             .unwrap_or(Value::Nil);
-        Self::method_from_value(fallback, true).or(Some(GlyphlessDisplayMethod::EmptyBox))
+        Self::method_from_value(fallback, true).unwrap_or(GlyphlessDisplayMethod::EmptyBox)
+    }
+
+    fn translate(&self, text: &str) -> CharacterDisplay {
+        let mut display = CharacterDisplay {
+            text: String::with_capacity(text.len()),
+            offsets: Vec::with_capacity(text.chars().count() + 1),
+            glyphless_spans: Vec::new(),
+            face_spans: Vec::new(),
+        };
+        let mut count = 0;
+        for character in text.chars() {
+            display.offsets.push(count);
+            let vector = self
+                .display_table
+                .and_then(|table| {
+                    self.interpreter.char_table_get(
+                        table,
+                        crate::lisp::primitives::string_character_code(true, character) as u32,
+                    )
+                })
+                .and_then(|value| match value.kind() {
+                    Kind::Vector(vector) => Some(vector),
+                    _ => None,
+                });
+            if let Some(vector) = vector {
+                // xdisp.c:get_next_display_element gives vectors precedence
+                // over glyphless handling.  Their glyphs are not recursively
+                // looked up in either character table; an empty vector hides
+                // the source character.
+                for index in 0..vector.len() {
+                    let glyph = vector
+                        .get(index)
+                        .expect("display vector index is in bounds");
+                    let (code, face_id) = display_table_glyph(glyph).unwrap_or((32, 0));
+                    let from = count;
+                    let character = crate::lisp::primitives::char_from_integer(code).ok();
+                    let method = character.map_or_else(
+                        || Some(self.no_font_method()),
+                        |character| self.no_font_method_for(character),
+                    );
+                    if let Some(method) = method {
+                        let replacement = method.render_code(code as u32);
+                        count += replacement.chars().count();
+                        display.text.push_str(&replacement);
+                        display.glyphless_spans.push((from, count));
+                    } else {
+                        display
+                            .text
+                            .push(character.expect("encodable glyph has a character"));
+                        count += 1;
+                    }
+                    if face_id > 0
+                        && let Some(face) = self
+                            .interpreter
+                            .lisp_face_states
+                            .iter()
+                            .find(|face| face.id == Some(face_id))
+                    {
+                        display
+                            .face_spans
+                            .push((from, count, Value::symbol(&face.name)));
+                    }
+                }
+            } else if let Some(method) = self.method_for(character) {
+                let from = count;
+                let replacement = method.render(character);
+                count += replacement.chars().count();
+                display.text.push_str(&replacement);
+                if from < count {
+                    display.glyphless_spans.push((from, count));
+                }
+            } else {
+                display.text.push(character);
+                count += 1;
+            }
+        }
+        display.offsets.push(count);
+        display
     }
 }
 
-/// Apply the current buffer's `glyphless-char-display' substitutions to a
-/// rendered string and keep its face spans in display-character offsets.
-/// This covers mode/header strings; ordinary window lines use the same
-/// context through `glyphless_visual_line_at' so layout and point account
-/// for expansions before cells are planned.
-fn apply_glyphless_char_display(
+/// dispextern.h:GLYPH_CODE_P accepts a packed character/face integer or a
+/// (character . face-id) pair.  Invalid entries display a space.
+fn display_table_glyph(value: Value) -> Option<(i64, i64)> {
+    const CHARACTER_BITS: u32 = 22;
+    const MAX_CHARACTER: i64 = (1 << CHARACTER_BITS) - 1;
+    const MAX_FACE: i64 = (1 << 20) - 1;
+    match value.kind() {
+        Kind::Integer(code) if (0..(1 << 42)).contains(&code) => {
+            Some((code & MAX_CHARACTER, code >> CHARACTER_BITS))
+        }
+        Kind::Cons(_) => match value
+            .cons_values()
+            .map(|(car, cdr)| (car.kind(), cdr.kind()))
+        {
+            Some((Kind::Integer(character), Kind::Integer(face)))
+                if (0..=MAX_CHARACTER).contains(&character) && (0..=MAX_FACE).contains(&face) =>
+            {
+                Some((character, face))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+struct CharacterDisplay {
+    text: String,
+    offsets: Vec<usize>,
+    glyphless_spans: Vec<(usize, usize)>,
+    face_spans: Vec<(usize, usize, Value)>,
+}
+
+impl CharacterDisplay {
+    fn offset(&self, source: usize) -> usize {
+        self.offsets
+            .get(source)
+            .copied()
+            .unwrap_or_else(|| *self.offsets.last().unwrap_or(&0))
+    }
+
+    fn remap_faces(&self, spans: &mut [(usize, usize, Value)]) {
+        for (from, to, _) in spans {
+            *from = self.offset(*from);
+            *to = self.offset(*to);
+        }
+    }
+}
+
+/// Translate display-table vectors before glyphless fallback, keeping faces in
+/// display-character offsets. Window layout and echo composition use the same
+/// translator so expansion and removal also move point and face boundaries.
+fn apply_character_display(
     interpreter: &Interpreter,
     buffer_id: u64,
+    window_id: u64,
     text: String,
     spans: &mut Vec<(usize, usize, Value)>,
 ) -> String {
-    let context = GlyphlessDisplayContext::new(interpreter, buffer_id);
-    let mut rendered = String::with_capacity(text.len());
-    let mut display_offsets = Vec::with_capacity(text.chars().count() + 1);
-    let mut replacement_spans = Vec::new();
-    display_offsets.push(0);
-    let mut display_chars = 0usize;
-    for character in text.chars() {
-        if let Some(method) = context.method_for(character) {
-            let replacement = method.render(character);
-            let from = display_chars;
-            display_chars += replacement.chars().count();
-            rendered.push_str(&replacement);
-            if from < display_chars {
-                replacement_spans.push((
-                    from,
-                    display_chars,
-                    Value::Symbol("glyphless-char".into()),
-                ));
-            }
-        } else {
-            display_chars += 1;
-            rendered.push(character);
-        }
-        display_offsets.push(display_chars);
-    }
-    for (from, to, _) in spans.iter_mut() {
-        *from = display_offsets.get(*from).copied().unwrap_or(display_chars);
-        *to = display_offsets.get(*to).copied().unwrap_or(display_chars);
-    }
-    spans.extend(replacement_spans);
-    rendered
+    let display = CharacterDisplayContext::new(interpreter, buffer_id, window_id).translate(&text);
+    display.remap_faces(spans);
+    spans.extend(display.face_spans);
+    spans.extend(
+        display
+            .glyphless_spans
+            .into_iter()
+            .map(|(from, to)| (from, to, Value::symbol("glyphless-char"))),
+    );
+    display.text
 }
 
 /// A visual line under invisibility: the laid-out text starting at the
@@ -2262,56 +2322,35 @@ fn glyphless_visual_line_at(
     buffer: &crate::buffer::Buffer,
     spec: &InvisibilitySpec,
     first_line: usize,
-    context: Option<&GlyphlessDisplayContext<'_>>,
+    context: Option<&CharacterDisplayContext<'_>>,
 ) -> VisualLine {
     let mut visual = visual_line_at(buffer, spec, first_line);
     let Some(context) = context else {
         return visual;
     };
-    let old_text = std::mem::take(&mut visual.text);
-    let old_raw_of_display = std::mem::take(&mut visual.raw_of_display);
-    let old_count = old_text.chars().count();
-    let final_raw = old_raw_of_display.last().copied().unwrap_or(0);
-    let mut old_to_new = Vec::with_capacity(old_count + 1);
-    let mut rendered = String::with_capacity(old_text.len());
-    let mut raw_of_display = Vec::with_capacity(old_raw_of_display.len());
-    let mut glyphless_spans = Vec::new();
-    let mut display_chars = 0usize;
-    for (index, character) in old_text.chars().enumerate() {
-        old_to_new.push(display_chars);
-        let raw = old_raw_of_display.get(index).copied().unwrap_or(final_raw);
-        if let Some(method) = context.method_for(character) {
-            let replacement = method.render(character);
-            let from = display_chars;
-            for replacement_character in replacement.chars() {
-                rendered.push(replacement_character);
-                raw_of_display.push(raw);
-                display_chars += 1;
-            }
-            if from < display_chars {
-                glyphless_spans.push((from, display_chars));
-            }
-        } else {
-            rendered.push(character);
-            raw_of_display.push(raw);
-            display_chars += 1;
-        }
+    let display = context.translate(&visual.text);
+    let final_raw = visual.raw_of_display.last().copied().unwrap_or(0);
+    let mut raw_of_display = Vec::with_capacity(display.offset(usize::MAX) + 1);
+    for (index, offsets) in display.offsets.windows(2).enumerate() {
+        let raw = visual
+            .raw_of_display
+            .get(index)
+            .copied()
+            .unwrap_or(final_raw);
+        raw_of_display.extend(std::iter::repeat_n(raw, offsets[1] - offsets[0]));
     }
-    old_to_new.push(display_chars);
     raw_of_display.push(final_raw);
     for offset in &mut visual.map {
-        *offset = old_to_new.get(*offset).copied().unwrap_or(display_chars);
+        *offset = display.offset(*offset);
     }
     for offset in &mut visual.ellipses {
-        *offset = old_to_new.get(*offset).copied().unwrap_or(display_chars);
+        *offset = display.offset(*offset);
     }
-    for (from, to, _) in &mut visual.display_face_spans {
-        *from = old_to_new.get(*from).copied().unwrap_or(display_chars);
-        *to = old_to_new.get(*to).copied().unwrap_or(display_chars);
-    }
-    visual.text = rendered;
+    display.remap_faces(&mut visual.display_face_spans);
+    visual.display_face_spans.extend(display.face_spans);
+    visual.text = display.text;
     visual.raw_of_display = raw_of_display;
-    visual.glyphless_spans = glyphless_spans;
+    visual.glyphless_spans = display.glyphless_spans;
     visual
 }
 
@@ -2423,7 +2462,7 @@ fn displayed_line_text(buffer: &crate::buffer::Buffer, line: usize) -> String {
 fn plan_window_text(
     buffer: &crate::buffer::Buffer,
     spec: &InvisibilitySpec,
-    glyphless: Option<&GlyphlessDisplayContext<'_>>,
+    glyphless: Option<&CharacterDisplayContext<'_>>,
     view: &mut WindowView,
     commanded_start: usize,
     point: usize,
@@ -3071,6 +3110,7 @@ fn redraw_with_echo_policy(
     // Face spans over window text apply after the text lands (their
     // resolution evaluates Lisp, which the buffer borrow above forbids).
     struct TextFaceJob {
+        window_id: u64,
         buffer_id: u64,
         selected: bool,
         top: usize,
@@ -3092,6 +3132,7 @@ fn redraw_with_echo_policy(
     // after the text lands, exactly like the face spans: resolving the
     // line-number faces evaluates Lisp.
     struct LineNumberJob {
+        window_id: u64,
         buffer_id: u64,
         layout: crate::lisp::primitives::LineNumberLayout,
         top: usize,
@@ -3197,7 +3238,8 @@ fn redraw_with_echo_policy(
                 continue 'windows;
             };
             let invisibility = resolve_buffer_invisibility(interpreter, &buffer, info.buffer_id);
-            let glyphless = GlyphlessDisplayContext::new(interpreter, info.buffer_id);
+            let glyphless =
+                CharacterDisplayContext::new(interpreter, info.buffer_id, info.window_id);
             let plan = plan_window_text(
                 &buffer,
                 &invisibility,
@@ -3356,7 +3398,7 @@ fn redraw_with_echo_policy(
                         interpreter
                             .lookup_var("overlay-arrow-string", &crate::lisp::types::Env::new())
                     })
-                    .and_then(|value| value.as_string().map(str::to_string).ok())
+                    .and_then(|value| value.as_string().ok())
                     .unwrap_or_else(|| "=>".to_string());
                 let arrow: String = arrow
                     .chars()
@@ -3409,6 +3451,7 @@ fn redraw_with_echo_policy(
         }
         if let Some(layout) = geometry.lnum {
             line_number_jobs.push(LineNumberJob {
+                window_id: info.window_id,
                 buffer_id: info.buffer_id,
                 layout,
                 top: text_top,
@@ -3431,6 +3474,7 @@ fn redraw_with_echo_policy(
             });
         }
         text_face_jobs.push(TextFaceJob {
+            window_id: info.window_id,
             buffer_id: info.buffer_id,
             selected: info.selected,
             top: text_top,
@@ -3565,31 +3609,8 @@ fn redraw_with_echo_policy(
                 &Value::Symbol("default".into()),
             )
         });
-        let overlay_string_faces: Vec<Value> = {
-            let source = if job.buffer_id == interpreter.current_buffer_id() {
-                Some(interpreter.buffer.borrow())
-            } else {
-                interpreter.get_buffer_by_id(job.buffer_id)
-            };
-            source
-                .iter()
-                .flat_map(|buffer| &buffer.overlays)
-                .filter(|overlay| !overlay.is_dead())
-                .flat_map(|overlay| {
-                    ["before-string", "after-string"]
-                        .into_iter()
-                        .filter_map(move |name| overlay.get_prop(&Value::Symbol(name.into())))
-                        .flat_map(|value| crate::lisp::primitives::string_face_spans(&value))
-                        .map(|(_, _, face)| face)
-                })
-                .collect()
-        };
-        for face in overlay_string_faces {
-            let key = format!("{face}");
-            state.face_cache.entry(key).or_insert_with(|| {
-                crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
-            });
-        }
+        let mut display_face_jobs = Vec::new();
+        let mut ellipsis_jobs = Vec::new();
         let buffer = if job.buffer_id == interpreter.current_buffer_id() {
             interpreter.buffer.borrow()
         } else {
@@ -3599,7 +3620,7 @@ fn redraw_with_echo_policy(
             }
         };
         let job_invisibility = resolve_buffer_invisibility(interpreter, &buffer, job.buffer_id);
-        let glyphless = GlyphlessDisplayContext::new(interpreter, job.buffer_id);
+        let glyphless = CharacterDisplayContext::new(interpreter, job.buffer_id, job.window_id);
         for (index, (line, seg, row_start, row_hscroll)) in job.rows.iter().enumerate() {
             if *row_start == usize::MAX {
                 continue;
@@ -3737,11 +3758,6 @@ fn redraw_with_echo_policy(
                 }
             }
             for (span_begin, span_end, face) in &visual.display_face_spans {
-                let attrs = state
-                    .face_cache
-                    .get(&format!("{face}"))
-                    .copied()
-                    .unwrap_or_default();
                 let begin_column = display_column(&line_text, *span_begin).max(segment_start);
                 let end_column = display_column(&line_text, *span_end).min(segment_visible_end);
                 if begin_column >= end_column {
@@ -3765,12 +3781,12 @@ fn redraw_with_echo_policy(
                 let from_col = from_col.min(col_cap);
                 let to_col = to_col.min(col_cap);
                 if from_col < to_col {
-                    let row = &mut frame[job.top + index];
-                    if matches!(face.kind(), Kind::Symbol(name) if name == "default") {
-                        row.replace_attrs(job.left + from_col, job.left + to_col, attrs);
-                    } else {
-                        row.overlay(job.left + from_col, job.left + to_col, attrs);
-                    }
+                    display_face_jobs.push((
+                        job.top + index,
+                        job.left + from_col,
+                        job.left + to_col,
+                        *face,
+                    ));
                 }
             }
             // The ellipsis takes the face of the text before it
@@ -3789,14 +3805,33 @@ fn redraw_with_echo_policy(
                 if column == 0 || column >= col_cap {
                     continue;
                 }
-                let row = &mut frame[job.top + index];
-                let inherited = row.attrs[(job.left + column - 1).min(row.attrs.len() - 1)];
-                for dot in 0..3usize {
-                    let cell = job.left + column + dot;
-                    if column + dot < col_cap && cell < row.attrs.len() {
-                        row.attrs[cell] = inherited;
-                    }
-                }
+                ellipsis_jobs.push((
+                    job.top + index,
+                    job.left + column,
+                    (col_cap - column).min(3),
+                ));
+            }
+        }
+        drop(buffer);
+        for (row_index, from, to, face) in display_face_jobs {
+            let attrs = *state
+                .face_cache
+                .entry(format!("{face}"))
+                .or_insert_with(|| {
+                    crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
+                });
+            let row = &mut frame[row_index];
+            if matches!(face.kind(), Kind::Symbol(name) if name == "default") {
+                row.replace_attrs(from, to, attrs);
+            } else {
+                row.overlay(from, to, attrs);
+            }
+        }
+        for (row_index, from, length) in ellipsis_jobs {
+            let row = &mut frame[row_index];
+            let inherited = row.attrs[(from - 1).min(row.attrs.len() - 1)];
+            for cell in from..(from + length).min(row.attrs.len()) {
+                row.attrs[cell] = inherited;
             }
         }
     }
@@ -3869,7 +3904,7 @@ fn redraw_with_echo_policy(
         let current_attrs = resolve("line-number-current-line");
         let major_attrs = (layout.major_tick > 0).then(|| resolve("line-number-major-tick"));
         let minor_attrs = (layout.minor_tick > 0).then(|| resolve("line-number-minor-tick"));
-        let glyphless = GlyphlessDisplayContext::new(interpreter, job.buffer_id);
+        let glyphless = CharacterDisplayContext::new(interpreter, job.buffer_id, job.window_id);
         let Some(buffer) = (if job.buffer_id == interpreter.current_buffer_id() {
             Some(interpreter.buffer.borrow())
         } else {
@@ -4068,7 +4103,13 @@ fn redraw_with_echo_policy(
                 (format!("[mode-line render error: {error:?}]"), Vec::new())
             }
         };
-        mode_line = apply_glyphless_char_display(interpreter, job.buffer_id, mode_line, &mut spans);
+        mode_line = apply_character_display(
+            interpreter,
+            job.buffer_id,
+            job.window_id,
+            mode_line,
+            &mut spans,
+        );
         if mode_line.chars().count() < job.body_width {
             let missing = job.body_width - mode_line.chars().count();
             mode_line.extend(std::iter::repeat_n('-', missing));
@@ -4118,7 +4159,8 @@ fn redraw_with_echo_policy(
                     (format!("[tab-line render error: {error:?}]"), Vec::new())
                 }
             };
-            tab = apply_glyphless_char_display(interpreter, job.buffer_id, tab, &mut spans);
+            tab =
+                apply_character_display(interpreter, job.buffer_id, job.window_id, tab, &mut spans);
             if tab.chars().count() > job.body_width {
                 tab = tab.chars().take(job.body_width).collect();
             }
@@ -4168,7 +4210,13 @@ fn redraw_with_echo_policy(
                     (format!("[header-line render error: {error:?}]"), Vec::new())
                 }
             };
-            header = apply_glyphless_char_display(interpreter, job.buffer_id, header, &mut spans);
+            header = apply_character_display(
+                interpreter,
+                job.buffer_id,
+                job.window_id,
+                header,
+                &mut spans,
+            );
             if header.chars().count() > job.body_width {
                 header = header.chars().take(job.body_width).collect();
             }
@@ -4297,12 +4345,8 @@ fn redraw_with_echo_policy(
         .is_some_and(|value| value.is_truthy())
         && !frontend_echo_early.is_empty()
     {
-        let (row, col) = wrapped_echo_cursor(
-            &echo_long,
-            frontend_echo_early.chars().count(),
-            cols,
-            state.echo_rows,
-        );
+        let (row, col) =
+            wrapped_echo_cursor(&echo_long, echo_cursor.unwrap_or(0), cols, state.echo_rows);
         cursor_position = (
             col as u16,
             (frame_rows + row).min(rows.saturating_sub(1)) as u16,
@@ -4351,7 +4395,7 @@ fn compose_echo_row(
     cols: usize,
     face_cache: &mut std::collections::HashMap<String, CellAttrs>,
 ) -> (PaintRow, bool, Option<usize>) {
-    let mut row = PaintRow::blank(cols);
+    let mut row;
     let mut message_cursor = None;
     let minibuffer_id = if frontend_echo.is_empty() {
         interpreter
@@ -4459,6 +4503,15 @@ fn compose_echo_row(
                     .collect();
             }
         }
+        // Retain all source characters until translation: hidden entries
+        // can bring text beyond the original column limit onto the screen.
+        let output_cols = cols;
+        let cols = text.chars().count()
+            + strings
+                .iter()
+                .map(|string| string.text.chars().count())
+                .sum::<usize>();
+        row = PaintRow::blank(cols);
         // Lay the cells out with their source: buffer positions keep a
         // column map for the face spans; overlay strings carry their own.
         let mut col = 0usize;
@@ -4549,14 +4602,27 @@ fn compose_echo_row(
                 }
             }
         }
-        return (row, true, overlay_cursor.or(cursor));
+        row.text.truncate(col);
+        row.attrs.truncate(col);
+        let (row, cursor) = translate_echo_paint(
+            interpreter,
+            env,
+            buffer_id,
+            row,
+            overlay_cursor.or(cursor),
+            output_cols,
+            face_cache,
+        );
+        return (row, true, cursor);
     }
-    let (mut echo, spans) = if frontend_echo.is_empty() {
+    let (echo, spans) = if frontend_echo.is_empty() {
         crate::lisp::primitives::echo_display_message().unwrap_or_default()
     } else {
         (frontend_echo.to_string(), Vec::new())
     };
-    echo.truncate(cols);
+    let output_cols = cols;
+    let cols = echo.chars().count();
+    row = PaintRow::blank(cols);
     row.blit(0, &echo, CellAttrs::default());
     for (from, to, face) in spans {
         let key = format!("{face}");
@@ -4565,7 +4631,53 @@ fn compose_echo_row(
         });
         row.overlay(from.min(cols), to.min(cols), attrs);
     }
-    (row, false, message_cursor)
+    let (row, cursor) = translate_echo_paint(
+        interpreter,
+        env,
+        0,
+        row,
+        Some(message_cursor.unwrap_or(cols)),
+        output_cols,
+        face_cache,
+    );
+    (row, false, cursor)
+}
+
+fn translate_echo_paint(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    buffer_id: u64,
+    source: PaintRow,
+    cursor: Option<usize>,
+    cols: usize,
+    face_cache: &mut std::collections::HashMap<String, CellAttrs>,
+) -> (PaintRow, Option<usize>) {
+    let text: String = source.text.iter().collect();
+    let display =
+        CharacterDisplayContext::new(interpreter, buffer_id, interpreter.minibuffer_window_id())
+            .translate(&text);
+    let cursor = cursor.map(|offset| display.offset(offset));
+    let mut row = PaintRow::blank(cols);
+    row.blit(0, &display.text, CellAttrs::default());
+    for (index, offsets) in display.offsets.windows(2).enumerate() {
+        row.replace_attrs(
+            offsets[0].min(cols),
+            offsets[1].min(cols),
+            source.attrs[index],
+        );
+    }
+    for (from, to, face) in display.face_spans.into_iter().chain(
+        display
+            .glyphless_spans
+            .into_iter()
+            .map(|(from, to)| (from, to, Value::symbol("glyphless-char"))),
+    ) {
+        let attrs = *face_cache.entry(format!("{face}")).or_insert_with(|| {
+            crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
+        });
+        row.overlay(from.min(cols), to.min(cols), attrs);
+    }
+    (row, cursor)
 }
 
 /// GNU display strings can carry a non-nil `cursor' property selecting the
@@ -4759,7 +4871,7 @@ fn truncate_row_hscrolled(visual: &VisualLine, width: usize, hscroll: usize) -> 
 fn position_of_visual_row(
     buffer: &crate::buffer::Buffer,
     spec: &InvisibilitySpec,
-    glyphless: Option<&GlyphlessDisplayContext<'_>>,
+    glyphless: Option<&CharacterDisplayContext<'_>>,
     line: usize,
     seg: usize,
     usable: usize,
@@ -4948,6 +5060,195 @@ fn call(
 mod tests {
     use super::*;
     use crate::test_support::initialized_upstream_interactive_interpreter as initialized_interactive_runtime;
+
+    fn display_test_eval(interpreter: &mut Interpreter, text: &str) -> Value {
+        let form = crate::lisp::reader::Reader::new(text)
+            .read()
+            .expect("display setup parses")
+            .expect("display setup has a form");
+        interpreter
+            .eval(&form, &mut Env::new())
+            .expect("display setup evaluates")
+    }
+
+    #[test]
+    fn display_tables_select_one_valid_window_buffer_or_standard_table() {
+        let mut interpreter = initialized_interactive_runtime();
+        display_test_eval(
+            &mut interpreter,
+            "(progn
+          (require 'disp-table)
+          (setq standard-display-table (make-display-table))
+          (aset standard-display-table ?x [83])
+          (setq buffer-display-table (make-display-table))
+          (aset buffer-display-table ?x [66])
+          (set-window-display-table nil (make-display-table)))",
+        );
+        let rendered = |interpreter: &Interpreter| {
+            CharacterDisplayContext::new(
+                interpreter,
+                interpreter.current_buffer_id(),
+                interpreter.selected_window_id(),
+            )
+            .translate("x")
+            .text
+        };
+        assert_eq!(
+            rendered(&interpreter),
+            "x",
+            "an empty window entry does not use the buffer entry"
+        );
+        display_test_eval(
+            &mut interpreter,
+            "(set-window-display-table nil (make-char-table 'syntax-table))",
+        );
+        assert_eq!(
+            rendered(&interpreter),
+            "B",
+            "an invalid window table selects the buffer table"
+        );
+        display_test_eval(&mut interpreter, "(setq buffer-display-table nil)");
+        assert_eq!(rendered(&interpreter), "S");
+        display_test_eval(&mut interpreter, "(aset standard-display-table ?x [77 78])");
+        assert_eq!(
+            rendered(&interpreter),
+            "MN",
+            "the next redisplay sees the live entry"
+        );
+        display_test_eval(
+            &mut interpreter,
+            "(progn
+          (set-char-table-range standard-display-table nil [68])
+          (aset standard-display-table ?x nil)
+          (let ((parent (make-display-table)))
+            (aset parent ?x [80])
+            (set-char-table-parent standard-display-table parent)))",
+        );
+        assert_eq!(
+            rendered(&interpreter),
+            "D",
+            "a table default precedes its parent"
+        );
+        display_test_eval(
+            &mut interpreter,
+            "(set-char-table-range standard-display-table nil nil)",
+        );
+        assert_eq!(
+            rendered(&interpreter),
+            "P",
+            "parent lookup uses the live char table"
+        );
+    }
+
+    #[test]
+    fn display_vectors_remap_positions_and_faces_without_recursive_translation() {
+        let mut interpreter = initialized_interactive_runtime();
+        display_test_eval(&mut interpreter, "(progn
+          (require 'disp-table) (erase-buffer)
+          (setq standard-display-table (make-display-table))
+          (aset standard-display-table ?x (vector (make-glyph-code ?A 'bold) (cons ?B (face-id 'underline))))
+          (aset standard-display-table ?A [90])
+          (aset standard-display-table ?y [])
+          (aset standard-display-table ?z [nil -1 (65 . -1)])
+          (insert \"xyAz!\"))");
+        let context = CharacterDisplayContext::new(
+            &interpreter,
+            interpreter.current_buffer_id(),
+            interpreter.selected_window_id(),
+        );
+        let visual = glyphless_visual_line_at(
+            &interpreter.buffer.borrow(),
+            &InvisibilitySpec::default(),
+            1,
+            Some(&context),
+        );
+        assert_eq!(visual.text, "ABZ   !");
+        assert_eq!(visual.map, vec![0, 2, 2, 3, 6, 7]);
+        assert_eq!(visual.raw_of_display, vec![0, 0, 2, 3, 3, 3, 4, 5]);
+        assert!(visual.glyphless_spans.is_empty());
+        assert_eq!(
+            visual.display_face_spans,
+            vec![
+                (0, 1, Value::symbol("bold")),
+                (1, 2, Value::symbol("underline"))
+            ]
+        );
+        let mut spans = vec![(0, 2, Value::symbol("italic"))];
+        let rendered = apply_character_display(
+            &interpreter,
+            interpreter.current_buffer_id(),
+            interpreter.selected_window_id(),
+            "xyA".into(),
+            &mut spans,
+        );
+        assert_eq!(rendered, "ABZ");
+        assert_eq!(spans[0], (0, 2, Value::symbol("italic")));
+        assert_eq!(display_column(&visual.text, visual.map[3]), 3);
+    }
+
+    #[test]
+    fn display_tables_translate_echo_before_clipping_and_remap_minibuffer_point() {
+        let mut interpreter = initialized_interactive_runtime();
+        let mut env = Env::new();
+        display_test_eval(
+            &mut interpreter,
+            "(progn
+          (require 'disp-table)
+          (setq standard-display-table (make-display-table))
+          (aset standard-display-table ?x [65 66])
+          (aset standard-display-table ?y []))",
+        );
+        let mut cache = std::collections::HashMap::new();
+        let (row, mini, cursor) =
+            compose_echo_row(&mut interpreter, &mut env, "yyyxZ", 3, &mut cache);
+        assert!(!mini);
+        assert_eq!(row.text.iter().collect::<String>(), "ABZ");
+        assert_eq!(cursor, Some(3));
+        let active = crate::lisp::primitives::activate_minibuffer(
+            &mut interpreter,
+            &Value::String("x: ".into()),
+            &Value::String("yx".into()),
+            Value::Nil,
+            &mut env,
+        )
+        .expect("display test minibuffer activates");
+        crate::lisp::primitives::set_echo_area_message(None);
+        let (row, mini, cursor) = compose_echo_row(&mut interpreter, &mut env, "", 8, &mut cache);
+        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active);
+        assert!(mini);
+        assert_eq!(row.text.iter().collect::<String>(), "AB: AB  ");
+        assert_eq!(cursor, Some(6));
+        assert_eq!(
+            row.attrs[0], row.attrs[1],
+            "both prompt glyphs inherit the source face"
+        );
+        assert_ne!(row.attrs[0], CellAttrs::default());
+    }
+
+    #[test]
+    fn display_glyph_codes_validate_both_representations_and_full_character_bits() {
+        for code in [0, 65, 0xd800, 0x110000, 0x3fffff] {
+            for face in [0, 1, (1 << 20) - 1] {
+                assert_eq!(
+                    display_table_glyph(Value::Integer(code | (face << 22))),
+                    Some((code, face))
+                );
+                assert_eq!(
+                    display_table_glyph(Value::cons(Value::Integer(code), Value::Integer(face))),
+                    Some((code, face))
+                );
+            }
+        }
+        for glyph in [
+            Value::Nil,
+            Value::Integer(-1),
+            Value::Integer(1 << 42),
+            Value::cons(Value::Integer(1 << 22), Value::Integer(0)),
+            Value::cons(Value::Integer(65), Value::Integer(1 << 20)),
+        ] {
+            assert_eq!(display_table_glyph(glyph), None);
+        }
+    }
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
@@ -5053,7 +5354,11 @@ mod tests {
         .expect("erase scratch");
         interpreter.set_terminal_coding_system(None);
         interpreter.buffer.borrow_mut().insert("AöB€C😀D\n");
-        let context = GlyphlessDisplayContext::new(&interpreter, interpreter.current_buffer_id());
+        let context = CharacterDisplayContext::new(
+            &interpreter,
+            interpreter.current_buffer_id(),
+            interpreter.selected_window_id(),
+        );
         let visual = glyphless_visual_line_at(
             &interpreter.buffer.borrow(),
             &InvisibilitySpec::default(),
@@ -5069,7 +5374,11 @@ mod tests {
 
         drop(context);
         interpreter.set_terminal_coding_system(Some("utf-8-unix".into()));
-        let context = GlyphlessDisplayContext::new(&interpreter, interpreter.current_buffer_id());
+        let context = CharacterDisplayContext::new(
+            &interpreter,
+            interpreter.current_buffer_id(),
+            interpreter.selected_window_id(),
+        );
         let visual = glyphless_visual_line_at(
             &interpreter.buffer.borrow(),
             &InvisibilitySpec::default(),
@@ -5118,7 +5427,11 @@ mod tests {
         interpreter
             .set_char_table_extra_slot(table_id, 0, Value::Symbol("empty-box".into()))
             .expect("set no-font fallback");
-        let context = GlyphlessDisplayContext::new(&interpreter, interpreter.current_buffer_id());
+        let context = CharacterDisplayContext::new(
+            &interpreter,
+            interpreter.current_buffer_id(),
+            interpreter.selected_window_id(),
+        );
         let visual = glyphless_visual_line_at(
             &interpreter.buffer.borrow(),
             &InvisibilitySpec::default(),
@@ -5145,7 +5458,11 @@ mod tests {
             .buffer
             .borrow_mut()
             .insert(&format!("{}öZ\n", "x".repeat(76)));
-        let context = GlyphlessDisplayContext::new(&interpreter, interpreter.current_buffer_id());
+        let context = CharacterDisplayContext::new(
+            &interpreter,
+            interpreter.current_buffer_id(),
+            interpreter.selected_window_id(),
+        );
         let visual = glyphless_visual_line_at(
             &interpreter.buffer.borrow(),
             &InvisibilitySpec::default(),
@@ -5198,9 +5515,10 @@ mod tests {
             .eval(&form, &mut env)
             .expect("tabulated-list mode initializes");
         let mut spans = vec![(0, 3, Value::Symbol("bold".into()))];
-        let rendered = apply_glyphless_char_display(
+        let rendered = apply_character_display(
             &interpreter,
             interpreter.current_buffer_id(),
+            interpreter.selected_window_id(),
             "a▼▲".to_string(),
             &mut spans,
         );
@@ -6625,6 +6943,68 @@ gamma word three
     }
 
     #[test]
+    fn command_reader_retains_prefix_across_events_and_collecting_filters() {
+        let options = crate::batch::BatchRunOptions {
+            load_path: crate::compat::emaxx_upstream_load_path(
+                &crate::compat::project_root().join("../emacs"),
+            )
+            .expect("upstream load path"),
+            ..Default::default()
+        };
+        let mut interpreter = crate::batch::initialize_batch_interpreter(&options)
+            .expect("GNU Lisp runtime for the differential fixture");
+        let mut env = Env::new();
+        let form = crate::lisp::reader::Reader::new(include_str!(
+            "../tests/fixtures/input-decode-command-reader.el"
+        ))
+        .read()
+        .expect("fixture parses")
+        .expect("fixture expression");
+        let result = interpreter.eval(&form, &mut env).expect("same GNU fixture");
+        assert_eq!(
+            format!("{result}"),
+            include_str!("../tests/fixtures/input-decode-command-reader.expected").trim()
+        );
+        interpreter
+            .call_function_value(
+                Value::symbol("runtime-reader-command-setup"),
+                None,
+                &[],
+                &mut env,
+            )
+            .expect("reset maps");
+        let mut reader =
+            crate::lisp::primitives::KeySequenceReader::new(&mut interpreter, Value::Nil, &mut env)
+                .expect("reader");
+        assert!(matches!(
+            reader.read_event(&mut interpreter, Value::symbol("a"), &mut env),
+            Ok(Resolution::Prefix)
+        ));
+        crate::lisp::primitives::call(&mut interpreter, "garbage-collect", &[], &mut env)
+            .expect("collect between external events");
+        let Resolution::Command(binding) = reader
+            .read_event(&mut interpreter, Value::symbol("b"), &mut env)
+            .expect("second event")
+        else {
+            panic!("completed command must resolve");
+        };
+        assert_eq!(binding, Value::symbol("forward-char"));
+        assert_eq!(
+            reader.finish(&mut interpreter, false, &mut env),
+            vec![Value::symbol("a"), Value::symbol("b")]
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                interpreter
+                    .lookup_var("runtime-reader-calls", &env)
+                    .expect("callback trace")
+            ),
+            "(leaf prefix)"
+        );
+    }
+
+    #[test]
     fn key_resolution_distinguishes_prefixes_commands_and_undefined() {
         // GNU builds the global map entirely in preloaded Lisp; the bare
         // host starts with no global bindings.  Exercise the resolution
@@ -6747,7 +7127,7 @@ fn make_menu_executor(
               x0: usize,
               y0: usize| {
             let Ok((cols, rows)) = crate::lisp::eval::terminal::output_size() else {
-                return TtyMenuOutcome::Quit;
+                return Ok(TtyMenuOutcome::Quit);
             };
             let (cols, rows) = (cols.max(10) as usize, rows.max(4) as usize);
             let mut resolve_face = |name: &str| {
@@ -6799,7 +7179,7 @@ fn make_menu_executor(
                 .len()
                 .min(rows.saturating_sub(1) - y0.min(rows - 2));
             if max_items == 0 {
-                return TtyMenuOutcome::Quit;
+                return Ok(TtyMenuOutcome::Quit);
             }
 
             // The screen behind the menu, restored on the way out
@@ -6895,131 +7275,136 @@ fn make_menu_executor(
             // (tty_menu_activate's y and first_item).
             let mut selected_row = 0usize;
             let mut first_item = 0usize;
-            let outcome = loop {
-                {
-                    let mut state = state.borrow_mut();
-                    draw(&mut state, selected_row, first_item);
-                }
-                // One key sequence under the navigation map; prefixes keep
-                // reading, everything else maps per read_menu_input.
-                let mut pending: Vec<Value> = Vec::new();
-                let command = loop {
-                    // Live echo under the menu, but only for messages
-                    // emitted since the glass was last painted: GNU's
-                    // message3 repaints through a frozen redisplay (the
-                    // `(message "")' between cycled menus), while
-                    // read_char's input-arrival wipe leaves the old
-                    // pixels alone until the next full redisplay.
-                    let emitted = crate::lisp::primitives::echo_area_message_tick();
-                    if state
-                        .try_borrow()
-                        .is_ok_and(|state| state.painted_message_tick != emitted)
+            let outcome = (|| -> Result<TtyMenuOutcome, LispError> {
+                Ok(loop {
                     {
-                        draw_echo_row_composed(interpreter, env, &state);
-                        place_cursor(selected_row);
+                        let mut state = state.borrow_mut();
+                        draw(&mut state, selected_row, first_item);
                     }
-                    // A sequence still pending while this menu blocks
-                    // echoes after the shared idle window expires
-                    // (echo_now through the frozen redisplay); the read
-                    // then blocks normally.
-                    let event = match (&pending_keystroke_echo, pending_echo_deadline) {
-                        (Some(_), Some(deadline)) => {
-                            let timed = 'timed: loop {
-                                match queue.try_next_event() {
-                                    Err(()) => break 'timed Err(()),
-                                    Ok(Some(event)) => break 'timed Ok(event),
-                                    Ok(None) => {}
-                                }
-                                let now = std::time::Instant::now();
-                                if now >= deadline {
-                                    let (text, spans) = pending_keystroke_echo
-                                        .take()
-                                        .expect("pending echo present in this arm");
-                                    crate::lisp::primitives::set_echo_area_message_with_spans(
-                                        text, spans,
+                    // One key sequence under the navigation map; prefixes keep
+                    // reading, everything else maps per read_menu_input.
+                    let mut reader = crate::lisp::primitives::KeySequenceReader::new(
+                        interpreter,
+                        Value::Nil,
+                        env,
+                    )?;
+                    let command = loop {
+                        // Live echo under the menu, but only for messages
+                        // emitted since the glass was last painted: GNU's
+                        // message3 repaints through a frozen redisplay (the
+                        // `(message "")' between cycled menus), while
+                        // read_char's input-arrival wipe leaves the old
+                        // pixels alone until the next full redisplay.
+                        let emitted = crate::lisp::primitives::echo_area_message_tick();
+                        if state
+                            .try_borrow()
+                            .is_ok_and(|state| state.painted_message_tick != emitted)
+                        {
+                            draw_echo_row_composed(interpreter, env, &state);
+                            place_cursor(selected_row);
+                        }
+                        // A sequence still pending while this menu blocks
+                        // echoes after the shared idle window expires
+                        // (echo_now through the frozen redisplay); the read
+                        // then blocks normally.
+                        let event = match (&pending_keystroke_echo, pending_echo_deadline) {
+                            (Some(_), Some(deadline)) => {
+                                let timed = 'timed: loop {
+                                    match queue.try_next_event() {
+                                        Err(()) => break 'timed Err(()),
+                                        Ok(Some(event)) => break 'timed Ok(event),
+                                        Ok(None) => {}
+                                    }
+                                    let now = std::time::Instant::now();
+                                    if now >= deadline {
+                                        let (text, spans) = pending_keystroke_echo
+                                            .take()
+                                            .expect("pending echo present in this arm");
+                                        crate::lisp::primitives::set_echo_area_message_with_spans(
+                                            text, spans,
+                                        );
+                                        draw_echo_row_composed(interpreter, env, &state);
+                                        place_cursor(selected_row);
+                                        break 'timed Err(());
+                                    }
+                                    let _ = event::poll(
+                                        (deadline - now).min(std::time::Duration::from_millis(50)),
                                     );
-                                    draw_echo_row_composed(interpreter, env, &state);
-                                    place_cursor(selected_row);
-                                    break 'timed Err(());
+                                };
+                                match timed {
+                                    Ok(event) => Some(event),
+                                    // Echo shown (or terminal gone): a plain
+                                    // blocking read takes over either way.
+                                    Err(()) => queue.next_event(),
                                 }
-                                let _ = event::poll(
-                                    (deadline - now).min(std::time::Duration::from_millis(50)),
-                                );
-                            };
-                            match timed {
-                                Ok(event) => Some(event),
-                                // Echo shown (or terminal gone): a plain
-                                // blocking read takes over either way.
-                                Err(()) => queue.next_event(),
+                            }
+                            _ => queue.next_event(),
+                        };
+                        let Some(event) = event else {
+                            break Value::T;
+                        };
+                        let QueuedInput::Lisp(event) = event else {
+                            continue;
+                        };
+                        if event == Value::Integer(7) {
+                            break Value::T;
+                        }
+                        match reader.read_event(interpreter, event, env)? {
+                            Resolution::Command(binding) => break binding,
+                            Resolution::Prefix => {}
+                            Resolution::Undefined => break Value::Nil,
+                        }
+                    };
+                    let name = match command.kind() {
+                        Kind::Symbol(_) => command.as_symbol().expect("symbol command"),
+                        Kind::T => "tty-menu-exit",
+                        _ => "",
+                    };
+                    match name {
+                        "tty-menu-exit" => break TtyMenuOutcome::Quit,
+                        "tty-menu-next-menu" => break TtyMenuOutcome::NextMenu,
+                        "tty-menu-prev-menu" => break TtyMenuOutcome::PrevMenu,
+                        "tty-menu-next-item" => {
+                            // Below the last visible row GNU scrolls forward
+                            // (MI_SCROLL_FORWARD): the window advances until
+                            // the selection sits on the final item, and one
+                            // more step wraps to the top of the whole menu.
+                            if selected_row + 1 < max_items {
+                                selected_row += 1;
+                            } else if selected_row + first_item + 1 == pane.items.len() {
+                                selected_row = 0;
+                                first_item = 0;
+                            } else {
+                                first_item += 1;
                             }
                         }
-                        _ => queue.next_event(),
-                    };
-                    let Some(event) = event else {
-                        break Value::T;
-                    };
-                    let QueuedInput::Lisp(event) = event else {
-                        continue;
-                    };
-                    if event == Value::Integer(7) {
-                        break Value::T;
-                    }
-                    pending.push(event);
-                    match resolve_pending(interpreter, env, &pending) {
-                        Resolution::Command(binding) => break binding,
-                        Resolution::Prefix => {}
-                        Resolution::Undefined => break Value::Nil,
-                    }
-                };
-                let name = match command.kind() {
-                    Kind::Symbol(name) => name.as_str(),
-                    Kind::T => "tty-menu-exit",
-                    _ => "",
-                };
-                match name {
-                    "tty-menu-exit" => break TtyMenuOutcome::Quit,
-                    "tty-menu-next-menu" => break TtyMenuOutcome::NextMenu,
-                    "tty-menu-prev-menu" => break TtyMenuOutcome::PrevMenu,
-                    "tty-menu-next-item" => {
-                        // Below the last visible row GNU scrolls forward
-                        // (MI_SCROLL_FORWARD): the window advances until
-                        // the selection sits on the final item, and one
-                        // more step wraps to the top of the whole menu.
-                        if selected_row + 1 < max_items {
-                            selected_row += 1;
-                        } else if selected_row + first_item + 1 == pane.items.len() {
-                            selected_row = 0;
-                            first_item = 0;
-                        } else {
-                            first_item += 1;
+                        "tty-menu-prev-item" => {
+                            // MI_SCROLL_BACK: above the first visible row the
+                            // window retreats; at the very top it wraps to
+                            // the menu's last window with the final item
+                            // selected.
+                            if selected_row > 0 {
+                                selected_row -= 1;
+                            } else if first_item == 0 {
+                                selected_row = max_items - 1;
+                                first_item = pane.items.len() - max_items;
+                            } else {
+                                first_item -= 1;
+                            }
                         }
-                    }
-                    "tty-menu-prev-item" => {
-                        // MI_SCROLL_BACK: above the first visible row the
-                        // window retreats; at the very top it wraps to
-                        // the menu's last window with the final item
-                        // selected.
-                        if selected_row > 0 {
-                            selected_row -= 1;
-                        } else if first_item == 0 {
-                            selected_row = max_items - 1;
-                            first_item = pane.items.len() - max_items;
-                        } else {
-                            first_item -= 1;
+                        "tty-menu-select" => {
+                            // A separator or disabled item answers no selection
+                            // (TTYM_IA_SELECT), like GNU.
+                            let selection = selected_row + first_item;
+                            if pane.items[selection].enabled {
+                                break TtyMenuOutcome::Selected(selection);
+                            }
+                            break TtyMenuOutcome::NoSelect;
                         }
+                        _ => {}
                     }
-                    "tty-menu-select" => {
-                        // A separator or disabled item answers no selection
-                        // (TTYM_IA_SELECT), like GNU.
-                        let selection = selected_row + first_item;
-                        if pane.items[selection].enabled {
-                            break TtyMenuOutcome::Selected(selection);
-                        }
-                        break TtyMenuOutcome::NoSelect;
-                    }
-                    _ => {}
-                }
-            };
+                })
+            })();
 
             // screen_update: put back what the menu covered.
             {

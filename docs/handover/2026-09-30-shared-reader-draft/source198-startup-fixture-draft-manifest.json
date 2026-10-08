@@ -1,0 +1,133 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "source": "198",
+    "inputs": 405,
+    "runtime_unchanged_from": "197",
+    "changes": "The original keyboard-input contract now loads the actual batch Lisp owners. Every original assertion is retained. A same-input GNU/source197 control verifies live bound/unbound mouse-down behavior.",
+    "qualification": "Patch replay and baseline ordinary control only. Source198 compiler/runtime validation has started; running logs are excluded. Source196 macOS failure and source197 environment failures remain preserved. No full-source or performance claim."
+  },
+  "archive": {
+    "path": "source198-startup-fixture-draft.tar.gz",
+    "bytes": 75802,
+    "sha256": "592950ce9cd72b5cdb6a00e42cbc280e5d63eebef2a14b020c5d8a1d7cd59781"
+  },
+  "files": [
+    {
+      "path": "audit-source198-patch.py",
+      "bytes": 2787,
+      "sha256": "7a47563f1d94019d1d57e36b293e652a108f5d95059b416fd46038f7a45b9111"
+    },
+    {
+      "path": "build-reader198.py",
+      "bytes": 2428,
+      "sha256": "cc8dece2ff5302de4599b598dc538940c683a8e364f6cda51a9b279abf1651fb"
+    },
+    {
+      "path": "check-reader198.py",
+      "bytes": 2034,
+      "sha256": "84e49cbe5959e4495fb5e96a32da36ef47a81e56cacb0424b8c242512f975c9a"
+    },
+    {
+      "path": "compare-recovered-continuation-fixtures.py",
+      "bytes": 3442,
+      "sha256": "dfd6176b76d11a16bde82e3877ede4c424f537098954c49bf11727df3c95de91"
+    },
+    {
+      "path": "input-decode-down-event-binding.el",
+      "bytes": 723,
+      "sha256": "918699289c06c3a27dcf9deca61c976ad3a24092ac7740f318acd4e7e5ddb4d5"
+    },
+    {
+      "path": "queue-source198-validation.py",
+      "bytes": 2037,
+      "sha256": "94924dbf8b240a889a197acb4ec559b40006a6feac0ac3b927793ff56f3d38cd"
+    },
+    {
+      "path": "source197-retained-ordinary-artifacts.json",
+      "bytes": 796,
+      "sha256": "dc46f2210d3b1d7b4b737fcbdbdcf03f1a7ad6f2857df9f2362d0c7df7e7c51b"
+    },
+    {
+      "path": "source197-sibling-ordinary-input-decode-down-event-binding-comparison.json",
+      "bytes": 711,
+      "sha256": "17236d93357df264d39c925486d928f514bfd7ae45a411f3734da18bfd22881d"
+    },
+    {
+      "path": "source197-sibling-ordinary-input-decode-down-event-binding-emaxx.command.json",
+      "bytes": 1943,
+      "sha256": "65970a6de7ddd8193949ebf36aa6f8c300586f54beee3d8735858b16cac74530"
+    },
+    {
+      "path": "source197-sibling-ordinary-input-decode-down-event-binding-emaxx.result.json",
+      "bytes": 274,
+      "sha256": "dd55b2f5ca767d9dc574427b6c9d995eaa60dcbdaafbb1ee14b7191ba2db9876"
+    },
+    {
+      "path": "source197-sibling-ordinary-input-decode-down-event-binding-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source197-sibling-ordinary-input-decode-down-event-binding-emaxx.stdout",
+      "bytes": 44,
+      "sha256": "5a88043eb8f7bf9ef246cdffa0d420c38bf3d3b932d3b42e2568027311f9a5ff"
+    },
+    {
+      "path": "source197-sibling-ordinary-input-decode-down-event-binding-gnu.command.json",
+      "bytes": 1805,
+      "sha256": "7f56f467b581ceeb45ece0a03f93246d83d22fd64215e2fc8eeaa4be5223fa23"
+    },
+    {
+      "path": "source197-sibling-ordinary-input-decode-down-event-binding-gnu.result.json",
+      "bytes": 274,
+      "sha256": "47fac73fbcf58e7f1d3a59cd5ecabf57b60a22a94245068ec90d73444f3c0afb"
+    },
+    {
+      "path": "source197-sibling-ordinary-input-decode-down-event-binding-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source197-sibling-ordinary-input-decode-down-event-binding-gnu.stdout",
+      "bytes": 44,
+      "sha256": "5a88043eb8f7bf9ef246cdffa0d420c38bf3d3b932d3b42e2568027311f9a5ff"
+    },
+    {
+      "path": "source198-base.json",
+      "bytes": 814,
+      "sha256": "2c86c68689208b29c405ce16294c9f7fe1ac2877691cc7e28cfa29636c50c115"
+    },
+    {
+      "path": "source198-complete.patch",
+      "bytes": 225943,
+      "sha256": "b866afc0b6114d52496eed6842043172caf7244587fd4901baab963e575a93c5"
+    },
+    {
+      "path": "source198-manifest.json",
+      "bytes": 45871,
+      "sha256": "a9000dc6326ee5667f30d82920a29764c98e1dd782fcd71d3efd5c7b0c980922"
+    },
+    {
+      "path": "source198-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "76bbe82cab73c93c1f9697f08e7669ccc66419872b45e54d54449c49c68cf97a"
+    },
+    {
+      "path": "source198-selected-supervisor.json",
+      "bytes": 288,
+      "sha256": "b982e47834cd1daf69e03878bd339dc1beb4f62ed3e4fba93e350bbcb7514be7"
+    },
+    {
+      "path": "static-reader198.py",
+      "bytes": 1559,
+      "sha256": "1a9be797a3eab82206713a4f60e7dea63f6d32171b6cb85717e0e98d4c96f962"
+    },
+    {
+      "path": "test-reader198.py",
+      "bytes": 4912,
+      "sha256": "32f464ae6b59fc778bd5d8a7c9e8e204e8832b4b856eed1d32db89061256b489"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

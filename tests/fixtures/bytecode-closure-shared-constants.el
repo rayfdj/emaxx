@@ -1,0 +1,25 @@
+(let (results)
+  (dolist (count '(4 5 6))
+    (let* ((constants (vector (+ 37 count)))
+           (fields (list 0 (unibyte-string 192 135) constants 1
+                         "closure documentation 223" nil))
+           (object (apply #'make-byte-code (seq-take fields count)))
+           (before (funcall object))
+           copy rejection)
+      (aset constants 0 (+ 59 count))
+      (garbage-collect)
+      (setq copy (make-closure object (+ 83 count)))
+      (setq rejection
+            (condition-case err
+                (aset object 0 nil)
+              (wrong-type-argument
+               (list (car err) (cadr err) (eq (nth 2 err) object)))))
+      (push (list count (length object)
+                  (byte-code-function-p object)
+                  (interpreted-function-p object)
+                  before (funcall object) (funcall copy)
+                  (eq (aref object 2) constants)
+                  (not (eq (aref object 2) (aref copy 2)))
+                  rejection)
+            results)))
+  (nreverse results))

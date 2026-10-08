@@ -1,0 +1,192 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "new_architecture_assertions": "0 passed / 2 failed on unchanged source198 runtime",
+    "ordinary_pseudovector_census": "GNU/Emaxx differ",
+    "relative_path_helper_failure_preserved": true,
+    "qualification": "Baseline failures and raw ordinary comparison are preserved. No source200 pass is inferred from this baseline."
+  },
+  "archive": {
+    "path": "source199-vector-layout-baseline.tar.gz",
+    "bytes": 167529,
+    "sha256": "d028082dac23a0bf1582de84b2352c0d96f7455adc9e176017aa76572d5476f1"
+  },
+  "files": [
+    {
+      "path": "compare-recovered-continuation-fixtures.py",
+      "bytes": 3442,
+      "sha256": "dfd6176b76d11a16bde82e3877ede4c424f537098954c49bf11727df3c95de91"
+    },
+    {
+      "path": "prepare-vector-alignment-candidate.py",
+      "bytes": 2772,
+      "sha256": "4f0c932cabccdc3c2d5b9bd33cfb61c9955d35eaf72940dbc57cc9769fe01264"
+    },
+    {
+      "path": "run-vector-layout-baseline.py",
+      "bytes": 3169,
+      "sha256": "bc9c8a8ece91ad9e4bff92735a9611161b7b75d8ee9338b85dd9ee920fb665d5"
+    },
+    {
+      "path": "source198-census-relative-path-invocation-failure.json",
+      "bytes": 546,
+      "sha256": "e872da3d0dc16710850641e5e0566f2550dfc2141281e82aed6dfcf74bfada37"
+    },
+    {
+      "path": "source198-census-retry-manifest.json",
+      "bytes": 45871,
+      "sha256": "a9000dc6326ee5667f30d82920a29764c98e1dd782fcd71d3efd5c7b0c980922"
+    },
+    {
+      "path": "source198-census-retry-ordinary-vector-pseudovector-word-census-comparison.json",
+      "bytes": 712,
+      "sha256": "2e7a6c7a40b04abdcf652a68ee9495e59bc98b7e25e853e002fe56bd789b9e95"
+    },
+    {
+      "path": "source198-census-retry-ordinary-vector-pseudovector-word-census-emaxx.command.json",
+      "bytes": 2578,
+      "sha256": "01231f8334cea990cee7852e133a89ccbc69af38e3c9a84791bafeb1c5a7b3b7"
+    },
+    {
+      "path": "source198-census-retry-ordinary-vector-pseudovector-word-census-emaxx.result.json",
+      "bytes": 273,
+      "sha256": "93fee4942897181f587e7712532dace3ccbcb56f50d47a19a7cfd830b6a2ee6c"
+    },
+    {
+      "path": "source198-census-retry-ordinary-vector-pseudovector-word-census-emaxx.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source198-census-retry-ordinary-vector-pseudovector-word-census-emaxx.stdout",
+      "bytes": 272,
+      "sha256": "fb1d424434422ae15c9155eeec45b86e7d885248f052a185501eeb4190aa8c23"
+    },
+    {
+      "path": "source198-census-retry-ordinary-vector-pseudovector-word-census-gnu.command.json",
+      "bytes": 2440,
+      "sha256": "4e8478be841c67b20626d33906c9dd920a1eb468b5d3a339ae5d6219d0a0713a"
+    },
+    {
+      "path": "source198-census-retry-ordinary-vector-pseudovector-word-census-gnu.result.json",
+      "bytes": 274,
+      "sha256": "4997a9daf40dbbdd7878f22a3eca338b6a652071cf58ba7bdec7bd14522b6c71"
+    },
+    {
+      "path": "source198-census-retry-ordinary-vector-pseudovector-word-census-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source198-census-retry-ordinary-vector-pseudovector-word-census-gnu.stdout",
+      "bytes": 269,
+      "sha256": "a375467f4b13d429d331c2f583e6e7b870d8671ec99cc5e33d0110361c18f848"
+    },
+    {
+      "path": "source198-ordinary-vector-pseudovector-word-census-emaxx.command.json",
+      "bytes": 2482,
+      "sha256": "7ed90a3604adb7db5f4016dd30a8b061e628a0ca52fda4a2c4dfcaadf0912a92"
+    },
+    {
+      "path": "source198-ordinary-vector-pseudovector-word-census-gnu.command.json",
+      "bytes": 2440,
+      "sha256": "4e8478be841c67b20626d33906c9dd920a1eb468b5d3a339ae5d6219d0a0713a"
+    },
+    {
+      "path": "source198-ordinary-vector-pseudovector-word-census-gnu.result.json",
+      "bytes": 266,
+      "sha256": "cc991a215973660359c6874700e75e9bdac6b9130aca8b100fe27218d6adad01"
+    },
+    {
+      "path": "source198-ordinary-vector-pseudovector-word-census-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source198-ordinary-vector-pseudovector-word-census-gnu.stdout",
+      "bytes": 269,
+      "sha256": "a375467f4b13d429d331c2f583e6e7b870d8671ec99cc5e33d0110361c18f848"
+    },
+    {
+      "path": "source199-baseline-base.json",
+      "bytes": 3408,
+      "sha256": "a3d1fee800d3f6f4e40cec046609f630dbcb8de3987510c1831f4a66d9766778"
+    },
+    {
+      "path": "source199-baseline-complete.patch",
+      "bytes": 231906,
+      "sha256": "3dc4d575f61dc78b595b050e000e6dd42a2551b260fcf80c5e8624d9508d913c"
+    },
+    {
+      "path": "source199-baseline-driver.log",
+      "bytes": 186,
+      "sha256": "f5db5c8ba38922771a207ea65d6d3702562af23a086bf0578f54c1284ceebbeb"
+    },
+    {
+      "path": "source199-baseline-evidence-audit.json",
+      "bytes": 657,
+      "sha256": "6b861581aa410cbee174907d0e41d390d2d5cdfc7b390a8492eb71916ab25a12"
+    },
+    {
+      "path": "source199-baseline-focused-command.json",
+      "bytes": 1085,
+      "sha256": "70de58c27cc49e649fbfcaec9ad0d0bbc1c08f27a256b530939a2ad438644fc9"
+    },
+    {
+      "path": "source199-baseline-focused-result.json",
+      "bytes": 93,
+      "sha256": "e42b57d2feebbc3bb92402660a4179a2e1ba61373431eb3dfcfca0f35fea9d7a"
+    },
+    {
+      "path": "source199-baseline-focused.log",
+      "bytes": 1394,
+      "sha256": "49780d571308ea1035cca5428c925b68edd36c742c070799bd4838e5051fd78b"
+    },
+    {
+      "path": "source199-baseline-gate-build-command.json",
+      "bytes": 606,
+      "sha256": "dbc059afb2218303f57ee8767b903a776fcf90a809d7a8030840c7479f411d6d"
+    },
+    {
+      "path": "source199-baseline-gate-build-result.json",
+      "bytes": 90,
+      "sha256": "9f49849835561755db119ae1ca8affce741e2bdab22feb82fc9ae3164f86f24d"
+    },
+    {
+      "path": "source199-baseline-gate-build.log",
+      "bytes": 214391,
+      "sha256": "f05f4659ff7a20902814faffe66629d9d046a7eab56bfce650508244bb96e76c"
+    },
+    {
+      "path": "source199-baseline-inventory.txt",
+      "bytes": 260694,
+      "sha256": "4d2415f6f6746bf59c486ab436d6b1b0416ee1dd931078c253336e1dffd34104"
+    },
+    {
+      "path": "source199-baseline-manifest.json",
+      "bytes": 45977,
+      "sha256": "e5532b43a9477f10feb892b19c58a7755ea530ac74b2aa4911c3451fd5eb7111"
+    },
+    {
+      "path": "source199-baseline-result.json",
+      "bytes": 247,
+      "sha256": "9b55874af1d5e8a6992c724ea2f1003848b70d0f38701c5f7892c48c2efe319b"
+    },
+    {
+      "path": "source199-baseline-supervisor.json",
+      "bytes": 203,
+      "sha256": "ae5e36f9fa912aefbe06fae1d75b4788637f7d4baad120af7973e9ea35efeae5"
+    },
+    {
+      "path": "source199-preparation.json",
+      "bytes": 1170,
+      "sha256": "30a5bd347ffe98a0962546d3a6296311236980d492881ba7ba90dee558397c38"
+    },
+    {
+      "path": "vector-pseudovector-word-census.el",
+      "bytes": 1343,
+      "sha256": "6944984ba7ff4d21a0fcd027fee523054de77868b49d18db4b52fcd2307e3546"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

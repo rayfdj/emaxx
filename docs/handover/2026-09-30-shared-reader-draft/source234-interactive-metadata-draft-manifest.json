@@ -1,0 +1,276 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "source234 portable interactive-metadata repair; runtime validation active",
+    "goal_complete": false,
+    "source_inputs_replayed": 442,
+    "strict_checks": "passed",
+    "gnu_reference": {
+      "path": "src/callint.c",
+      "function": "Fcall_interactively",
+      "source_revision": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+      "sha256": "99c03770346486896392f47f97f78f3c48cab8a0de470b3e975f09a5db10f2d7"
+    },
+    "change": "Use CLOSURE_CONSTANTS as the interactive form environment only for a cons CLOSURE_CODE; use nil for all other commands. Delegate to existing Feval implementation. No new representation, cache or root registry.",
+    "prior_failure": "Source233 passes compiler and Clippy but fails the new test line wrapping; no runtime tests run. Source234 changes only that formatting.",
+    "evidence_limit": "GNU validates the new full fixture. The retained source231 ordinary probe fails with a constants-vector listp error. Neither a source234 runtime pass nor a Linux crash repair is claimed here. Both profile controls are active. Renderer, final architecture/accounting/ownership review and locked performance remain open."
+  },
+  "archive": {
+    "path": "source234-interactive-metadata-draft.tar.gz",
+    "bytes": 298049,
+    "sha256": "5ee9cf4b20ff4faaa175016081d5f9a7c08ec3074053e3551a371bcd819ca566"
+  },
+  "files": [
+    {
+      "path": "audit-source233-patches.py",
+      "bytes": 2787,
+      "sha256": "f2d119a410a17e9e0df181e114196236c85b20fc651e0bc4503c06a21bd67f9c"
+    },
+    {
+      "path": "audit-source234-patches.py",
+      "bytes": 2787,
+      "sha256": "34bcfff673aa8775c9515dabbf77b8b2a5b94181f09207d9bffc3201851ad59d"
+    },
+    {
+      "path": "check-source233.py",
+      "bytes": 2028,
+      "sha256": "d35c19eed8568ffbac06f5053c03d8dcafe6de9209adcccaf484237d775dc693"
+    },
+    {
+      "path": "package-source232-and234-drafts.py",
+      "bytes": 6476,
+      "sha256": "c82d39ada0993f8ee38ec9f5509b4a9656c3e9f3f329ef1fb44fa5b349f82e66"
+    },
+    {
+      "path": "run-source233-validation.py",
+      "bytes": 1022,
+      "sha256": "a6977a35e2baeb1c6df47a36543af6783d54a8150c48baa456c6f86344c3a592"
+    },
+    {
+      "path": "run-source234-validation.py",
+      "bytes": 1022,
+      "sha256": "920beca6e60e8dd98160efb6ef1cb48e8e1d3135a199dca31cb5d861cae9d86a"
+    },
+    {
+      "path": "source233-base.json",
+      "bytes": 682,
+      "sha256": "d50b1153993a4b629a453f4ea892bfdc38883cb6f7abc780f60bdadcfcfad356"
+    },
+    {
+      "path": "source233-check-command.json",
+      "bytes": 481,
+      "sha256": "df06c50775e0bb86ffc7cd3a44401ac43a83570344a8113caa28a2376c47bf31"
+    },
+    {
+      "path": "source233-check-result.json",
+      "bytes": 84,
+      "sha256": "792056c9b56f150e24f06214c07a6e943a9f37699153436ea03952dc4fdac855"
+    },
+    {
+      "path": "source233-check.log",
+      "bytes": 5122,
+      "sha256": "0c6c3a14e266872ae4a7aeb54d343a49e383c545cfb1fd36fbc7e2ae03804674"
+    },
+    {
+      "path": "source233-clippy-command.json",
+      "bytes": 469,
+      "sha256": "437e13e492e92e2884285b4eecfcc9097d1b66bbd8ee478f449d304ede45ee1f"
+    },
+    {
+      "path": "source233-clippy-result.json",
+      "bytes": 89,
+      "sha256": "cb750dc4b8b04148c073487a1fcadb190e47ce8e7efed0e506dd7b1cd6b2e289"
+    },
+    {
+      "path": "source233-clippy.log",
+      "bytes": 196,
+      "sha256": "fdc65032d4f7bbf874a4cd9aace7bc56a64c45bf7a3ba5aeeba581aa47ab6541"
+    },
+    {
+      "path": "source233-complete.patch",
+      "bytes": 546442,
+      "sha256": "a33df0877ef4fda6c6b3cdc7a8ee2f3995c0c78808221510b606f2db65c331be"
+    },
+    {
+      "path": "source233-diff-command.json",
+      "bytes": 385,
+      "sha256": "69423d935d3889fdc331bb81278448aab14e528d473fc8cfa5459846e2b046fa"
+    },
+    {
+      "path": "source233-diff-result.json",
+      "bytes": 90,
+      "sha256": "2d632b11e9cdd5dcf2cbe4f0aa8477cbb419f6888c7fb5ba3039f64d9bbee322"
+    },
+    {
+      "path": "source233-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source233-driver.log",
+      "bytes": 1394,
+      "sha256": "cdd834bc2673b7385beba4682cae01f92da8abf12d78724c8b75d09d182a65fc"
+    },
+    {
+      "path": "source233-fmt-command.json",
+      "bytes": 409,
+      "sha256": "d80d425937b65f21ba5375ecbfa25acc5efe55889115e29242a9173fa470b694"
+    },
+    {
+      "path": "source233-fmt-result.json",
+      "bytes": 81,
+      "sha256": "99750b8859a151aa5bc2665f777d556290234104396c1057b1ee0184d5e473ea"
+    },
+    {
+      "path": "source233-fmt.log",
+      "bytes": 644,
+      "sha256": "f00a148c6b2108306c696f5eebea8c0b430c8de910ae951b3beacd8622a22741"
+    },
+    {
+      "path": "source233-interactive-fixture-gnu-command.json",
+      "bytes": 3251,
+      "sha256": "49caa43a810a08484c71c387fdc39723574d209a3b8226908dc4cef2c816d2c3"
+    },
+    {
+      "path": "source233-interactive-fixture-gnu-result.json",
+      "bytes": 207,
+      "sha256": "52fc3f06109a450223a7be6e73ef6081cf7cb132b1d4aa89cd74babfd86814b6"
+    },
+    {
+      "path": "source233-interactive-fixture-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source233-interactive-fixture-gnu.stdout",
+      "bytes": 93,
+      "sha256": "859b0f49ef041ccc4d523cc884e0c3e9cfee0af19a38bfa5c2840efb27b7fd03"
+    },
+    {
+      "path": "source233-launch.json",
+      "bytes": 361,
+      "sha256": "b10e428b3e8c6d6ab7e0298cac65b9e424e637f76ad526c06e613f5411de3f6f"
+    },
+    {
+      "path": "source233-manifest.json",
+      "bytes": 50386,
+      "sha256": "376340c59bd518c3497f6b534a44de79d8fff220d0b305202c37b3485fff2d2a"
+    },
+    {
+      "path": "source233-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "17ac0abd6f069d925096b11e5f6e9e2c6251600c842a9f216f59d5deda1eb798"
+    },
+    {
+      "path": "source233-validation-result.json",
+      "bytes": 579,
+      "sha256": "f14d8e3b28978eea3a5920df87108ff46fc119145c770c0d40bd1064e4333782"
+    },
+    {
+      "path": "source234-base.json",
+      "bytes": 504,
+      "sha256": "c3dc4fac05fd6e2c43187b292cd0daeb08530570fe3c1a287842d2188c7ec050"
+    },
+    {
+      "path": "source234-check-command.json",
+      "bytes": 481,
+      "sha256": "0980e338ca87a964383d31e91ef966b208b9d70f2684316e5328e62d8deaeaff"
+    },
+    {
+      "path": "source234-check-result.json",
+      "bytes": 82,
+      "sha256": "0cae512f2ca8e46c1aabd08621e6e123099305fd623557402c414b2254603e98"
+    },
+    {
+      "path": "source234-check.log",
+      "bytes": 195,
+      "sha256": "22ea7e31deaf59a11ec1570514c10ac99377594a1d270c00b05e962d7582add1"
+    },
+    {
+      "path": "source234-clippy-command.json",
+      "bytes": 469,
+      "sha256": "437e13e492e92e2884285b4eecfcc9097d1b66bbd8ee478f449d304ede45ee1f"
+    },
+    {
+      "path": "source234-clippy-result.json",
+      "bytes": 90,
+      "sha256": "5cb47ac96a3c64b28d863fde3d8fd310266f66fba3729badca49ebc1251fea5a"
+    },
+    {
+      "path": "source234-clippy.log",
+      "bytes": 72,
+      "sha256": "732186322402325172940531d8d6d7cfac85dc902585b2bef6715ad6839dacfd"
+    },
+    {
+      "path": "source234-complete.patch",
+      "bytes": 546456,
+      "sha256": "2d04571e461e0f59ae015c57d7f026d7878e13d5467b46223c1e57e83a8291bf"
+    },
+    {
+      "path": "source234-diff-command.json",
+      "bytes": 385,
+      "sha256": "69423d935d3889fdc331bb81278448aab14e528d473fc8cfa5459846e2b046fa"
+    },
+    {
+      "path": "source234-diff-result.json",
+      "bytes": 90,
+      "sha256": "2f988ee6309eda4af6701c6a3e442c755ab131f304a3074db7aaf10d00d7e942"
+    },
+    {
+      "path": "source234-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source234-fmt-command.json",
+      "bytes": 409,
+      "sha256": "d80d425937b65f21ba5375ecbfa25acc5efe55889115e29242a9173fa470b694"
+    },
+    {
+      "path": "source234-fmt-result.json",
+      "bytes": 81,
+      "sha256": "2e7418b70d90a849153780e8ab58b4b4f10a408714ffbb873ca1548c7a44bae7"
+    },
+    {
+      "path": "source234-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source234-launch.json",
+      "bytes": 361,
+      "sha256": "01ccfe84e82cbd016e3bbf5f300f168cdfb1e58349075263df7fc1a4f41eeb85"
+    },
+    {
+      "path": "source234-manifest.json",
+      "bytes": 50386,
+      "sha256": "c7c4c52e2faef74cccf2d7bfb80fe797ad6be4e843f5a6554d2809fc2a9bf58c"
+    },
+    {
+      "path": "source234-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "0f2d532888a26b9a91d335a1b2e0f698d41e40fe5b3a8b6fae77bc405a7cd6a4"
+    },
+    {
+      "path": "static-source233.py",
+      "bytes": 1553,
+      "sha256": "2df2f7451cd7a7c303a6d0103dc76c08dd7b37839c6a21ddc536cbd94cdf945a"
+    },
+    {
+      "path": "test-source233-controls.py",
+      "bytes": 5688,
+      "sha256": "9836d28764c053f4af59a70b24fea669894a77d32e8d5dfc5a8bc5b01b5faab5"
+    },
+    {
+      "path": "tests/fixtures/interactive-closure-environments.el",
+      "bytes": 2383,
+      "sha256": "3cc91a918acecd3e4855757553afa7fa4a424b9ad6d8e1cf8d62809ff28e1201"
+    },
+    {
+      "path": "tests/fixtures/interactive-closure-environments.expected",
+      "bytes": 94,
+      "sha256": "45750f650ef918195d094f9668b6d8481c4e273ccc1a957ae28e429316d7bf75"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

@@ -1,0 +1,278 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "three separate profiles verify60 body answers and execution modes",
+    "result": {
+      "results": [
+        {
+          "case": "native-execution",
+          "runner": "emaxx",
+          "validation": "completed",
+          "samples": 20,
+          "result": "10169952",
+          "modes": {
+            "driver": "interpreted",
+            "comp-tests-fib-f": "native"
+          },
+          "profile_sha256": "393c391d91faa1a78ddd1e0c575421974242c711c756cd4389731b9c9ff48661"
+        },
+        {
+          "case": "bytecode-to-native",
+          "runner": "emaxx",
+          "validation": "completed",
+          "samples": 20,
+          "result": "128000008000000",
+          "modes": {
+            "driver": "interpreted",
+            "core-perf-byte-native": "bytecode",
+            "comp-tests-fixnum-1-plus-f": "native"
+          },
+          "profile_sha256": "09f6c4e309958e172bfdf737330b497bf70b645cfb880c94debeab19a7fc4177"
+        },
+        {
+          "case": "upstream-sort",
+          "runner": "emaxx",
+          "validation": "completed",
+          "samples": 20,
+          "result": "64",
+          "modes": {
+            "driver": "interpreted",
+            "sort-tests--insert-words-sort-and-compare": "interpreted",
+            "sort-lines": "interpreted"
+          },
+          "profile_sha256": "b89c3b8ca9f15f9b8ac7a82f2c54d5c2835a57d680c4bf7e553a312b0faaafe3"
+        }
+      ],
+      "inputs": {
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/profile-source297-mixed.py": "a525ea26b034c87626b8379f0d3a3dded096a6d2f1fbc5b4b8df52cbd59a9270",
+        "/Users/nbmhqa186/projects/emaxx/tools/core_runtime_perf.py": "68cecd39655fb2ca5c4701f9067ccb467721f39e50d424c2bf368df1de6cdb35",
+        "/Users/nbmhqa186/projects/emaxx/compat/core_runtime_perf.json": "bf8fb35c09ffdb82c0641caf50a932c13bed6447382e4d113cbe5d88194598cd",
+        "/Users/nbmhqa186/projects/emaxx/compat/core_runtime_perf.el": "7506890fe0d969d95429b5bc72c1da1415ad6db019134ab64277c3bd9f3b7bb7",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-05/native-funcall-dispatch/emaxx/target/vm-dispatch-validation/release/emaxx": "d32cbdc4f671c3801b60446f4254bd1a4aab58a226728db9f1455022e7e71fd3",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-05/native-funcall-dispatch/emaxx/target/vm-dispatch-validation/release/emaxx.pdmp": "24eab61929a5903f85f17771ba0c3514394a2d669af3eb6427fe94052283606d",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source297-core-native/emaxx/comp-test-funcs.eln": "3bab9142001722127d0f13b50d45801b1353b0c1e8ac05fe1242c9c934a0466e"
+      },
+      "inputs_unchanged": true,
+      "qualification": "Separate2-second macOS sample profiles at1ms intervals, Emaxx running20 repetitions; The corresponding288-process timing audit verifies actual GNU answers and modes for these unchanged locked-size bodies. Instrumented durations are not performance evidence. All raw reports, process outcomes and sample trees are retained; no local build, test or other profile job runs concurrently. These whole-process samples include setup and pre-body GC; collector samples must not be attributed to timed bodies without the GC deltas in each report.",
+      "goal_complete": false
+    },
+    "gc_counts": {
+      "native-execution": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "bytecode-to-native": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "upstream-sort": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "qualification": "Whole-process samples include driver/setup and explicit pre-body GC. Every timed-body GC delta is zero: collector samples are not timed-body costs. Native dispatch/function resolution and VM/native call entry remain measured leads. These instrumented durations are not acceptance measurements. All full-goal requirements remain open.",
+    "goal_complete": false
+  },
+  "archive": {
+    "path": "source297-native-call-profiles.tar.gz",
+    "bytes": 466820,
+    "sha256": "d7304f0ba7cf4198be84cd4e48de41a496caf76827e0ae6ab5f58a3f1cb3b540"
+  },
+  "files": [
+    {
+      "path": "package-native-dispatch-profiles-and296-rust.py",
+      "bytes": 4881,
+      "sha256": "f8812768dc70eb69c372becbdad4b679e539018080999f13a9e5ee2ee629d23a"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "profile-source297-mixed.py",
+      "bytes": 6571,
+      "sha256": "a525ea26b034c87626b8379f0d3a3dded096a6d2f1fbc5b4b8df52cbd59a9270"
+    },
+    {
+      "path": "source297-mixed-profile-result.json",
+      "bytes": 3018,
+      "sha256": "a11f7e61c8b00619d54d338f150516c77d4cc103c32e882052f9ecec278614f9"
+    },
+    {
+      "path": "source297-mixed-profiles/bytecode-to-native/emaxx/process.json",
+      "bytes": 1825,
+      "sha256": "1f22a6eca1ee68f9c0080413615f47173dd212b08538ede06107dbea1662d9e7"
+    },
+    {
+      "path": "source297-mixed-profiles/bytecode-to-native/emaxx/report.json",
+      "bytes": 12187,
+      "sha256": "dd0a11cbcfb2681298af5d9431e66ff327d17ad24ebf5ba0c8a167fadaece26b"
+    },
+    {
+      "path": "source297-mixed-profiles/bytecode-to-native/emaxx/sample.stderr",
+      "bytes": 306,
+      "sha256": "7ab2217a4c43fd607a686a2dbd48d0e2c13d6c25ceb9760440638fae6f81b80c"
+    },
+    {
+      "path": "source297-mixed-profiles/bytecode-to-native/emaxx/sample.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source297-mixed-profiles/bytecode-to-native/emaxx/sample.txt",
+      "bytes": 133257,
+      "sha256": "09f6c4e309958e172bfdf737330b497bf70b645cfb880c94debeab19a7fc4177"
+    },
+    {
+      "path": "source297-mixed-profiles/bytecode-to-native/emaxx/stderr.txt",
+      "bytes": 173,
+      "sha256": "95eadb99baea7b18a498d1a09c918f6aad4248358581c061d47bc8081df44260"
+    },
+    {
+      "path": "source297-mixed-profiles/bytecode-to-native/emaxx/stdout.txt",
+      "bytes": 12181,
+      "sha256": "9f04fdcf34eae08ac3e8f41ba87c334ee03b1553818d01da82c7a4954fba1963"
+    },
+    {
+      "path": "source297-mixed-profiles/bytecode-to-native/emaxx/validation.json",
+      "bytes": 351,
+      "sha256": "aa7afe10780ea52a5490e7587f39ce352e70d9e5dca123f9412b288e27daf0c3"
+    },
+    {
+      "path": "source297-mixed-profiles/native-execution/emaxx/process.json",
+      "bytes": 1794,
+      "sha256": "d458051b35be09fa5403181dd153d0b7460b1d3e4bd6a32f58dd486bf41e6b76"
+    },
+    {
+      "path": "source297-mixed-profiles/native-execution/emaxx/report.json",
+      "bytes": 11996,
+      "sha256": "3adc206c11443af580a6342409164cb335089b573ab27304fb29dd5b05b2ba52"
+    },
+    {
+      "path": "source297-mixed-profiles/native-execution/emaxx/sample.stderr",
+      "bytes": 304,
+      "sha256": "b8f8142c88f7aa44675582880f3e1a7f176d91624e656cc20911d3a66300c26b"
+    },
+    {
+      "path": "source297-mixed-profiles/native-execution/emaxx/sample.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source297-mixed-profiles/native-execution/emaxx/sample.txt",
+      "bytes": 21525515,
+      "sha256": "393c391d91faa1a78ddd1e0c575421974242c711c756cd4389731b9c9ff48661"
+    },
+    {
+      "path": "source297-mixed-profiles/native-execution/emaxx/stderr.txt",
+      "bytes": 173,
+      "sha256": "95eadb99baea7b18a498d1a09c918f6aad4248358581c061d47bc8081df44260"
+    },
+    {
+      "path": "source297-mixed-profiles/native-execution/emaxx/stdout.txt",
+      "bytes": 12043,
+      "sha256": "2cc30224a193b961e8aecc064d21f710611f45a54e9360690f0af310bb750dc5"
+    },
+    {
+      "path": "source297-mixed-profiles/native-execution/emaxx/validation.json",
+      "bytes": 291,
+      "sha256": "6936f9cce8c06e52d53569a1dd797c4fd614d9c1386cb8ad7563dd396f9fd035"
+    },
+    {
+      "path": "source297-mixed-profiles/upstream-sort/emaxx/process.json",
+      "bytes": 1797,
+      "sha256": "7857b7b5db5aa38f611233c64f240d849c30238c18a4907b58b0c42eb91d207f"
+    },
+    {
+      "path": "source297-mixed-profiles/upstream-sort/emaxx/report.json",
+      "bytes": 11927,
+      "sha256": "03cc93d0e2b481c7bcf284f63afde8d2264f44128eeeb9e947250d39c4135166"
+    },
+    {
+      "path": "source297-mixed-profiles/upstream-sort/emaxx/sample.stderr",
+      "bytes": 301,
+      "sha256": "c2f7f431402f7d3a09845dac3b5f6f7486eadc8b7c86a4f5c41d2bbceb8fe5ce"
+    },
+    {
+      "path": "source297-mixed-profiles/upstream-sort/emaxx/sample.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source297-mixed-profiles/upstream-sort/emaxx/sample.txt",
+      "bytes": 3048074,
+      "sha256": "b89c3b8ca9f15f9b8ac7a82f2c54d5c2835a57d680c4bf7e553a312b0faaafe3"
+    },
+    {
+      "path": "source297-mixed-profiles/upstream-sort/emaxx/stderr.txt",
+      "bytes": 251,
+      "sha256": "4f05931e3273a4a2a31f74379d8a742ee96c4b0b85fb1b0a1a4160d0e73881c1"
+    },
+    {
+      "path": "source297-mixed-profiles/upstream-sort/emaxx/stdout.txt",
+      "bytes": 11920,
+      "sha256": "a61ba42f71e2951c54cdf2fc7aa659f9ba86d5e2880f9689eab5eb6fec31184d"
+    },
+    {
+      "path": "source297-mixed-profiles/upstream-sort/emaxx/validation.json",
+      "bytes": 345,
+      "sha256": "11582761fef9b8c6eac57723e60125676f4fca1560adc36f6e043242bcc4b621"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

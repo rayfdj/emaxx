@@ -11,8 +11,8 @@ use std::time::{Duration, SystemTime};
 use super::primitives;
 use super::sqlite::SqliteHandleState;
 use super::types::{
-    ConsCell, EmacsTermination, Env, EnvFrame, Kind, LambdaValue, LispError, LispErrorKind,
-    ReaderClosureKind, ReaderForm, SymbolName, Value,
+    ConsCell, EmacsTermination, Env, EnvFrame, Kind, LispError, LispErrorKind, ReaderForm,
+    SymbolName, Value,
 };
 use crate::compat::DiscoveredTest;
 #[cfg(test)]
@@ -1112,14 +1112,6 @@ fn builtin_symbol_properties() -> Vec<(String, Value)> {
         .collect()
 }
 
-// One live keyboard-macro execution: recursive edits started while the macro
-// runs continue consuming events from the same shared cursor.
-#[derive(Clone, Debug)]
-pub(crate) struct KbdMacroExecutionState {
-    pub(crate) events: Vec<Value>,
-    pub(crate) index: usize,
-}
-
 // keyboard.c keeps these as one kboard-owned input state.  Keeping the same
 // ownership boundary here prevents command-key, raw-key, lossage, focus, and
 // dribble primitives from drifting into unrelated Lisp-variable shims.
@@ -1194,7 +1186,6 @@ pub(crate) struct SyntaxSegmentCache {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RecordKind {
     BoolVector,
-    Closure,
     Font,
     Process,
     Obarray,
@@ -1203,8 +1194,6 @@ pub(crate) enum RecordKind {
     Thread,
     Mutex,
     ConditionVariable,
-    NativeCompUnit,
-    NativeCompiledFunction,
     ModuleFunction,
     UserPointer,
     TreeSitterParser,
@@ -1216,16 +1205,10 @@ pub(crate) enum RecordKind {
 impl RecordKind {
     fn gnu_vector_slots(self, logical_slots: usize) -> usize {
         match self {
-            // Both interpreted and byte-code closures are ordinary vectors
-            // retagged PVEC_CLOSURE.
-            Self::Closure => logical_slots.saturating_add(1),
             // lisp.h:Lisp_Bool_Vector is header + bit count + packed words.
             Self::BoolVector => 2_usize.saturating_add(logical_slots.div_ceil(64)),
             // Verified from the configured GNU headers: 72 and 24 bytes.
             Self::Obarray => 3,
-            // Both configured structs are 88 bytes on the supported GNU
-            // 64-bit ABI (comp.h and lisp.h:Lisp_Subr).
-            Self::NativeCompUnit | Self::NativeCompiledFunction => 11,
             // alloc.c:allocate_process uses VECSIZE(struct Lisp_Process),
             // which is 42 words on the configured GNU 64-bit ABI.
             Self::Process => 42,
@@ -1397,8 +1380,8 @@ impl RecordState {
     /// `symbol_type_name' for the sweep, which must not read the type
     /// tag's object: a dead record's type may be a class record the same
     /// sweep has already freed.  The word's tag alone decides.
-    pub(crate) fn symbol_type_name_by_tag(&self) -> Option<&'static str> {
-        self.type_tag.symbol_by_tag().map(|symbol| symbol.as_str())
+    pub(crate) fn symbol_type_name_by_tag(&self) -> Option<&str> {
+        self.type_tag.symbol_name_by_tag()
     }
 
     pub(crate) fn has_symbol_type(&self, name: &str) -> bool {
@@ -2944,22 +2927,23 @@ impl ImageGraphCopier {
                 value
             }
             Kind::StringObject(state) => {
+                // Pure strings are immutable and contain no Lisp children;
+                // the two permanent empty roots also retain their identities.
+                if state.is_pure() || state.is_empty_singleton() {
+                    return *value;
+                }
                 let key = state.identity();
                 if let Some(copied) = self.strings.get(&key) {
                     return *copied;
                 }
-                let mut inner = state.borrow().clone();
-                let copied = crate::lisp::types::string_object_value(
-                    crate::lisp::types::SharedStringState {
-                        text: std::mem::take(&mut inner.text),
-                        props: Vec::new(),
-                        multibyte: inner.multibyte,
-                        extended_chars: std::mem::take(&mut inner.extended_chars),
-                    },
+                let copied = Value::StringObject(
+                    state
+                        .borrow()
+                        .copy_without_properties(crate::lisp::alloc::StringAllocation::Restored),
                 );
                 self.strings.insert(key, copied);
-                let props = state.borrow().props.clone();
-                let copied_props = props
+                let props = state.borrow().props.to_vec();
+                let copied_props: Vec<crate::lisp::types::StringPropertySpan> = props
                     .iter()
                     .map(|span| crate::lisp::types::StringPropertySpan {
                         start: span.start,
@@ -2972,8 +2956,45 @@ impl ImageGraphCopier {
                     })
                     .collect();
                 if let Kind::StringObject(new_state) = copied.kind() {
-                    new_state.borrow_mut().props = copied_props;
+                    new_state.borrow_mut().props = copied_props.into();
                 }
+                copied
+            }
+            Kind::NativeCompUnit(unit) => {
+                assert!(
+                    !unit.is_loaded(),
+                    "cannot clone live native relocation pointers"
+                );
+                let key = unit.identity();
+                if let Some(copied) = self.vectors.get(&key) {
+                    return *copied;
+                }
+                let copy = crate::lisp::types::NativeUnitRef::new();
+                let copied = Value::NativeCompUnit(copy);
+                self.vectors.insert(key, copied);
+                copy.set_fields(unit.fields().map(|field| self.copy(&field)));
+                copied
+            }
+            Kind::NativeFunction(function) => {
+                let key = function.identity();
+                if let Some(copied) = self.vectors.get(&key) {
+                    return *copied;
+                }
+                let copy = crate::lisp::types::NativeFunctionRef::new(
+                    crate::lisp::alloc::vectors::native_functions::NativeFunctionSpec {
+                        target: function.target(),
+                        min_args: function.min_args(),
+                        max_args: function.max_args_word(),
+                        doc: function.doc_index(),
+                        name: std::ffi::CString::new(function.name()).expect("valid stored C name"),
+                        c_name: std::ffi::CString::new(function.c_name())
+                            .expect("valid stored C name"),
+                        fields: [Value::Nil; 5],
+                    },
+                );
+                let copied = Value::NativeFunction(copy);
+                self.vectors.insert(key, copied);
+                copy.set_fields(function.fields().map(|field| self.copy(&field)));
                 copied
             }
             Kind::LispRecord(record) => {
@@ -3015,16 +3036,19 @@ impl ImageGraphCopier {
                 state.slots = slots;
                 copied
             }
-            Kind::Lambda(lambda) => {
+            Kind::Closure(lambda) => {
                 let key = lambda.identity();
                 if let Some(copied) = self.lambdas.get(&key) {
                     return *copied;
                 }
                 // Publish identity before copying any slot: every slot
                 // can reach this closure through the stored Lisp graph.
-                let copied = Value::allocated_lambda(&vec![Value::Nil; lambda.public_len()]);
+                let copied = Value::Closure(crate::lisp::alloc::ClosureRef::filled(
+                    lambda.public_len(),
+                    Value::Nil,
+                ));
                 self.lambdas.insert(key, copied);
-                let Kind::Lambda(destination) = copied.kind() else {
+                let Kind::Closure(destination) = copied.kind() else {
                     unreachable!()
                 };
                 for (index, value) in lambda.slots().enumerate() {
@@ -3238,7 +3262,6 @@ impl LispReachability {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => true,
             Kind::BigInteger(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Float(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::String(value) => value.mark_bit().is_marked(self.epoch),
             Kind::StringObject(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Symbol(symbol) => {
                 crate::lisp::types::visible_symbol_name(&symbol) == symbol.as_str()
@@ -3246,7 +3269,9 @@ impl LispReachability {
             }
             Kind::Cons(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Vector(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Lambda(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::Closure(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::NativeFunction(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::NativeCompUnit(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Buffer(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().is_marked(self.epoch),
             Kind::Overlay(overlay) => overlay.mark_bit().is_marked(self.epoch),
@@ -3327,12 +3352,13 @@ impl LispReachability {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => false,
             Kind::BigInteger(value) => value.mark_bit().mark(self.epoch),
             Kind::Float(value) => value.mark_bit().mark(self.epoch),
-            Kind::String(value) => value.mark_bit().mark(self.epoch),
             Kind::StringObject(value) => value.mark_bit().mark(self.epoch),
             Kind::Symbol(symbol) => symbol.mark_bit().mark(self.epoch),
             Kind::Cons(value) => value.mark_bit().mark(self.epoch),
             Kind::Vector(value) => value.mark_bit().mark(self.epoch),
-            Kind::Lambda(value) => value.mark_bit().mark(self.epoch),
+            Kind::Closure(value) => value.mark_bit().mark(self.epoch),
+            Kind::NativeFunction(value) => value.mark_bit().mark(self.epoch),
+            Kind::NativeCompUnit(value) => value.mark_bit().mark(self.epoch),
             Kind::Buffer(value) => value.mark_bit().mark(self.epoch),
             Kind::Marker(marker) => marker.mark_bit().mark(self.epoch),
             Kind::Overlay(overlay) => overlay.mark_bit().mark(self.epoch),
@@ -3351,6 +3377,16 @@ impl LispReachability {
 
     fn trace_fields(&mut self, interp: &Interpreter, value: &Value) {
         match value.kind() {
+            Kind::NativeCompUnit(unit) => {
+                for field in unit.fields() {
+                    self.enqueue(&field);
+                }
+            }
+            Kind::NativeFunction(function) => {
+                for field in function.fields() {
+                    self.enqueue(&field);
+                }
+            }
             Kind::SymbolWithPos(object) => {
                 self.enqueue(&object.position());
                 self.enqueue(&object.symbol());
@@ -3358,7 +3394,6 @@ impl LispReachability {
             Kind::Symbol(symbol) => {
                 // alloc.c:mark_objects traces SYMBOL_NAME and its intervals;
                 // the host-side key text is the symbol's too.
-                symbol.internal_text().mark_bit().mark(self.epoch);
                 self.enqueue(symbol.lisp_name_ref());
             }
             Kind::Finalizer(object) => {
@@ -3385,7 +3420,7 @@ impl LispReachability {
                     self.enqueue(&child);
                 }
             }
-            Kind::Lambda(lambda) => {
+            Kind::Closure(lambda) => {
                 for value in lambda.slots() {
                     self.enqueue(&value);
                 }
@@ -3500,7 +3535,6 @@ impl LispReachability {
             | Kind::Integer(_)
             | Kind::BigInteger(_)
             | Kind::Float(_)
-            | Kind::String(_)
             | Kind::BuiltinFunc(_)
             | Kind::Marker(_)
             | Kind::Unbound => {}
@@ -3685,9 +3719,6 @@ impl Interpreter {
             self.mutex_states.retain(|mutex| mutex.record_id != id);
             self.condition_variables
                 .retain(|condvar| condvar.record_id != id);
-            if let Some(slot) = self.bytecode_program_cache.get_mut(index) {
-                *slot = None;
-            }
         }
     }
 
@@ -3883,7 +3914,13 @@ impl Interpreter {
         env: &Env,
         native_roots: &[Value],
     ) -> WeakHashReachability {
+        // Check exclusive Rust string borrows before advancing the epoch.
+        // Shared guards are roots even when held off the scanned stacks.
+        let borrowed_strings = crate::lisp::alloc::borrowed_string_roots();
         let mut marked = LispReachability::default();
+        for value in borrowed_strings {
+            marked.mark(self, &value);
+        }
         marked.mark_env(self, env);
         for value in native_roots {
             marked.mark(self, value);
@@ -3923,14 +3960,9 @@ impl Interpreter {
         }
         // The thread's bytecode stack and its activations' specpdl entries
         // (alloc.c marks them with the thread).
-        for value in self.bc_stack.values() {
-            marked.mark(self, value);
-        }
+        roots::mark_source(self, &mut marked, &self.bc_stack);
         for entry in &self.bc_unwinds {
             roots::mark_source(self, &mut marked, entry);
-        }
-        for constants in &self.bc_live_programs {
-            marked.mark(self, &Value::Vector(*constants));
         }
         for thread in &self.thread_states {
             if let Some(context) = &thread.context {
@@ -4000,8 +4032,8 @@ impl Interpreter {
     /// thread.c, lread.c and window.c mark theirs): the windows the
     /// minibuffer state remembers (`minibuf_selected_window',
     /// `Vminibuf_scroll_window'), the previously selected window, the
-    /// native compilation units and subrs the loader holds (comp.c's
-    /// loaded-units table and the subrs' unit slots).
+    /// windows. Native units are reached through actual Lisp roots, as the
+    /// loaded-units table has weak values in GNU.
     /// A mutex, a condition variable, a tree-sitter object or a module
     /// function is not held here: C collects them when nothing reaches
     /// them, and the side tables that know them by id are purged with
@@ -4017,9 +4049,6 @@ impl Interpreter {
             hold(id);
         }
         if let Some(id) = self.minibuffer_runtime.active_window_id {
-            hold(id);
-        }
-        for id in self.native_compiler.held_record_ids() {
             hold(id);
         }
     }
@@ -4131,11 +4160,6 @@ impl Interpreter {
         }
         for (_, value) in self.ccl_programs.iter().flatten() {
             mark(value);
-        }
-        for execution in &self.kbd_macro_executions {
-            for event in &execution.events {
-                mark(event);
-            }
         }
         for event in self
             .keyboard_input
@@ -4328,8 +4352,13 @@ impl Interpreter {
     pub(crate) fn note_collection_done(&mut self, elapsed: std::time::Duration) {
         // alloc.c accumulates its own timespec and stores the total, so a
         // value Lisp stored in `gc-elapsed' is replaced by the true total.
-        self.gc_elapsed_total += elapsed.as_secs_f64();
-        self.set_symbol_value_cell("gc-elapsed", Value::float(self.gc_elapsed_total));
+        if self
+            .symbol_value_cell("gc-elapsed")
+            .is_ok_and(|value| matches!(value.kind(), Kind::Float(_)))
+        {
+            self.gc_elapsed_total += elapsed.as_secs_f64();
+            self.set_symbol_value_cell("gc-elapsed", Value::float(self.gc_elapsed_total));
+        }
         // `gcs_done++' on the C int the variable forwards to.
         let done = match self
             .forwarded_c_value("gcs-done", &Env::new())
@@ -4572,11 +4601,6 @@ impl Interpreter {
                     *slot = Some(copied);
                 }
             }
-            for execution in &mut clone.kbd_macro_executions {
-                for event in &mut execution.events {
-                    *event = c.copy(event);
-                }
-            }
             for event in &mut clone.keyboard_input.command_keys {
                 *event = c.copy(event);
             }
@@ -4720,12 +4744,10 @@ impl Interpreter {
         // every cached verdict keyed by (or holding) template cells is
         // stale.  All of these repopulate lazily.
         crate::lisp::primitives::forget_buffer_views();
-        clone.bytecode_program_cache.clear();
         clone.regexp_syntax_class_cache.get_mut().clear();
         *clone.syntax_segment_cache.get_mut() = None;
         clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
         clone.bc_unwinds.clear();
-        clone.bc_live_programs.clear();
 
         // Identity-bearing keys acquire new addresses in the test image.
         // Rehash copied standard tables only after the complete graph is
@@ -4932,7 +4954,6 @@ pub struct InterpreterState {
     /// alloc.c's nesting counter.  Hash-table user tests enter this section
     /// so arbitrary callback Lisp cannot collect the table being probed.
     garbage_collection_inhibited: usize,
-    pub(crate) kbd_macro_executions: Vec<KbdMacroExecutionState>,
     pub(crate) kbd_macro_definition: Vec<Value>,
     pub(crate) kbd_macro_committed_len: usize,
     pub(crate) keyboard_input: KeyboardInputState,
@@ -5124,11 +5145,6 @@ pub struct InterpreterState {
     /// alloc.c's private `gc_elapsed' timespec: the total the Lisp
     /// variable is recomputed from after every collection.
     gc_elapsed_total: f64,
-    /// Decoded byte-code programs indexed by record ID minus one — ids are
-    /// dense and never freed, so the slot vector doubles as the cache map
-    /// (see bytecode::vm).
-    pub(crate) bytecode_program_cache:
-        Vec<Option<std::rc::Rc<crate::lisp::bytecode::vm::CachedProgram>>>,
     /// Recycled operand stacks for the byte-code VM: one Vec per active
     /// nesting level, reused across calls to avoid per-call allocation.
     /// bytecode.c's per-thread bytecode stack, its activations' specpdl
@@ -5136,7 +5152,6 @@ pub struct InterpreterState {
     /// roots for as long as the activations run (alloc.c:mark_threads).
     pub(crate) bc_stack: crate::lisp::bytecode::vm::BcStack,
     pub(crate) bc_unwinds: Vec<crate::lisp::bytecode::vm::UnwindEntry>,
-    pub(crate) bc_live_programs: Vec<crate::lisp::types::VectorRef>,
     /// Live Rust-owned operand/context roots, independent of the reusable pool.
     stack_roots: roots::StackRoots,
     /// Recycled argument buffers for backtrace frames, same idea.
@@ -5239,7 +5254,7 @@ pub struct InterpreterState {
     /// decide whether stdout is already at the beginning of a line.  Keep it
     /// interpreter-local because Rust tests run independent interpreters in
     /// parallel inside one host process.
-    pub(crate) batch_standard_output_last_char: Option<char>,
+    pub(crate) batch_standard_output_last_char: Option<u32>,
     /// xdisp.c `noninteractive_need_newline': set by every batch write to
     /// stdout (print.c printchar/strout), cleared by `message', which
     /// first emits a newline on stderr when it is set.
@@ -5636,7 +5651,6 @@ impl Interpreter {
             variable_aliases: Vec::new(),
             lisp_eval_depth: 0,
             garbage_collection_inhibited: 0,
-            kbd_macro_executions: Vec::new(),
             kbd_macro_definition: Vec::new(),
             kbd_macro_committed_len: 0,
             keyboard_input: KeyboardInputState::default(),
@@ -5886,10 +5900,8 @@ impl Interpreter {
             .collect(),
             gc_elapsed_total: 0.0,
             sqlite_handles: Vec::new(),
-            bytecode_program_cache: Vec::new(),
             bc_stack: crate::lisp::bytecode::vm::BcStack::new(),
             bc_unwinds: Vec::new(),
-            bc_live_programs: Vec::new(),
             stack_roots: roots::StackRoots::default(),
             treesit_queries: Vec::new(),
             treesit_languages: Vec::new(),
@@ -6481,11 +6493,9 @@ impl Interpreter {
         // native objects, silently dropping dumped bindings like
         // `C-x b' -> `switch-to-buffer' from the reconstructed image.
         // keymap.c's own DEFVAR_LISP map is the one exception.
-        let minibuffer_local_map =
-            primitives::make_runtime_keymap(&mut interp, Value::string("minibuffer-local-map"));
+        let minibuffer_local_map = primitives::make_runtime_keymap(&mut interp, Value::Nil);
         interp.define_special_variable("minibuffer-local-map", minibuffer_local_map);
-        let input_decode_map =
-            primitives::make_runtime_keymap(&mut interp, Value::string("input-decode-map"));
+        let input_decode_map = primitives::make_runtime_keymap(&mut interp, Value::Nil);
         interp.set_global_binding("input-decode-map", input_decode_map);
         // keyboard.c creates these identity-bearing translation/event maps
         // before bindings.el is dumped.  Keep the native map family together
@@ -6496,9 +6506,25 @@ impl Interpreter {
             "function-key-map",
             "key-translation-map",
         ] {
-            let keymap = primitives::make_runtime_keymap(&mut interp, Value::string(name));
+            let keymap = primitives::make_runtime_keymap(&mut interp, Value::Nil);
             interp.define_special_variable(name, keymap);
         }
+        // keyboard.c:init_kboard also initializes the first keyboard,
+        // before bindings.el populates its shared function-key-map parent.
+        // A fresh fallback map on each lookup loses identity and inheritance.
+        let local_function_key_map = primitives::make_runtime_keymap(&mut interp, Value::Nil);
+        let empty_env = crate::lisp::types::Env::new();
+        let function_key_map = interp
+            .lookup_var("function-key-map", &empty_env)
+            .expect("initial function-key-map");
+        primitives::set_keymap_parent_value(
+            &interp,
+            local_function_key_map,
+            function_key_map,
+            &empty_env,
+        )
+        .expect("fresh local-function-key-map parent");
+        interp.define_special_variable("local-function-key-map", local_function_key_map);
         // keyboard.c syms_of_keyboard's initial_define_lispy_key entries for
         // the events the input reader executes itself (the oracle has no
         // D-Bus or NS, so their keys are absent there too).
@@ -7322,7 +7348,7 @@ impl Interpreter {
         let value = Value::list(
             load_path
                 .into_iter()
-                .map(|path| Self::stored_value(Value::String(path.display().to_string().into()))),
+                .map(|path| Value::String(path.display().to_string().into())),
         );
         self.set_load_path_value(value);
     }
@@ -7347,10 +7373,6 @@ impl Interpreter {
             .collect()
     }
 
-    pub(crate) fn push_lambda_capture_override(&mut self, capture: bool) {
-        self.lambda_capture_overrides.push(capture);
-    }
-
     pub(crate) fn push_lambda_eval_context(&mut self, capture: bool) {
         self.lambda_capture_overrides.push(capture);
     }
@@ -7372,12 +7394,6 @@ impl Interpreter {
 
     pub(crate) fn lambda_capture_override(&self) -> Option<bool> {
         self.lambda_capture_overrides.last().copied()
-    }
-
-    /// Snapshot stored slots for consumers that need an owned sequence.
-    /// Ordinary closure access reads the inline slot directly.
-    pub(crate) fn interpreted_closure_slots(&self, lambda: &LambdaValue) -> Vec<Value> {
-        lambda.slots().collect()
     }
 
     /// Register TAG as an active `catch' target for the extent of a native
@@ -7502,14 +7518,6 @@ fn buffer_undo_head_to_entry(value: &Value) -> crate::buffer::UndoEntry {
                     len: (end - beg) as usize,
                 }
             }
-            Some((Kind::String(text), Kind::Integer(pos))) => crate::buffer::UndoEntry::Delete {
-                pos: pos.unsigned_abs() as usize,
-                point_after: pos < 0,
-                text: text.to_string(),
-                props: Vec::new(),
-                extended_chars: Vec::new(),
-                markers: Vec::new(),
-            },
             _ => crate::buffer::UndoEntry::Opaque(*value),
         },
         _ => crate::buffer::UndoEntry::Opaque(*value),

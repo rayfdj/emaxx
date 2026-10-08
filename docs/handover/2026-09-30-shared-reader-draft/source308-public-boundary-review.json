@@ -1,0 +1,38 @@
+{
+  "status": "public execution boundary is implemented; internal soundness and final-source validation remain distinct",
+  "source_manifest": "source308-manifest.json",
+  "unchanged_public_boundary_files": {
+    "src/lib.rs": "ab20e055c8e9d9c78fed8f58f825078eca5691114d3dbe86bcb1d3b6c56507e6",
+    "src/lisp/mod.rs": "d95d8d5017c5a2d8e433c2b89cfbc6e4cb43f8a30dd732d4dcec6e6fa6705ef0",
+    "src/lisp/runtime.rs": "2e9cf40afb44f5800abd495f346af43e6dd7666f29eb06abe1acf55d3225dd9b",
+    "src/batch.rs": "d15575e74f535fff6f51acf01d33e1d3b193abce783bd59b781b6e7c10042c73",
+    "src/tty.rs": "79350daa0539e41ba22b3a219017f3819549fa50e5c5147027f5073299351eb0",
+    "src/anti_cheat.rs": "a134e2d64683b3427aa7cda7bb9bbf5f828eb36b14fe4637c6c09e35dcf1b8bc",
+    "src/compat.rs": "3b0e095781eacd04d7205f1582e27459e0b5200cdcefbf17c4081642f22851c1",
+    "src/perf.rs": "a526078d119f0b45b663ef7f710a8b06f1054a35f9c279ff440c8dd6b8dd5b17",
+    "src/lisp/primitives.rs": "819167ad9b5b20eee2c9134c3b7b09ea1d49c5c147b6b12227be5159b8a0de1d",
+    "src/lisp/primitives/system.rs": "fc8c3d42148b1fca3f4b901ce91bda7b3969fdbc61a75f49fcaec40ad638dfba",
+    "tests/runtime_ownership.rs": "476f17aba6a6ed640f2ee27a529ffb41c441b880957ef767537c32fc41231a6d"
+  },
+  "gnu_reference": "thread.c global_lock and acquire_global_lock",
+  "review": [
+    "Batch, terminal, ERT and audit Lisp entry points acquire the process runtime mutex; nested same-thread entry retains it.",
+    "Raw heap/interpreter modules are crate-private. Public results and callbacks carry owned host data, not Value or Interpreter.",
+    "Public build-details/daemon setters use atomic or mutex-protected host state. Performance/compatibility public functions carry host data and do not expose the private heap API.",
+    "No owner lookup or lock is added to ordinary object operations.",
+    "The September21 safe-public-API float reproduction no longer compiles through the original private paths; the existing compile-fail doctest expresses that API restriction."
+  ],
+  "existing_source304_controls": [
+    "lisp::runtime::tests::concurrent_entries_serialize_and_nested_entry_does_not_release_the_owner",
+    "public_editor_calls_serialize_allocation_collection_and_shutdown",
+    "public_ert_entry_preserves_complete_inventory_and_unexpected_failures",
+    "public_ert_entry_reports_top_level_errors_as_owned_host_data"
+  ],
+  "raw_evidence": {
+    "full-gate-source304/repeat-01-lightweight.log": "63a57ef7779e8ba6d5256f2993ffe262461bca66312d21f8130ef579c89aa7f9",
+    "full-gate-source304/integration.log": "7319f8591deb084f15977b6aa748566aa4cccf90c1684674b830eb4e096799d1",
+    "full-gate-source304/summary.json": "d6835503ec0610be5b657a4b312ac1122f12bc5d32009ff6ca01810ccd154cfe"
+  },
+  "qualification": "Read-only source review and exact unchanged-boundary/source304 raw evidence. No new runtime test or whole-runtime Rust soundness proof is claimed. Final308 full validation, internal GC/borrow/ownership review and native-unit reclamation remain required. Do not describe the existing public lock/private API repair as unimplemented.",
+  "goal_complete": false
+}

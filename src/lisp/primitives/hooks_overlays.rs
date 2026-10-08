@@ -692,10 +692,7 @@ pub(crate) fn ensure_region_modifiable(
             // textprop.c's text_read_only: the property's string as the
             // datum, none for any other value.
             let mut data = vec![Value::Symbol("text-read-only".into())];
-            if matches!(
-                read_only_value.kind(),
-                Kind::String(_) | Kind::StringObject(_)
-            ) {
+            if matches!(read_only_value.kind(), Kind::StringObject(_)) {
                 data.push(read_only_value);
             }
             return Err(LispError::SignalValue(Value::list(data)));

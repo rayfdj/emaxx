@@ -143,16 +143,16 @@ pub(crate) fn load(
 pub(crate) fn call_function(
     interpreter: &mut Interpreter,
     environment: &mut Env,
-    record_id: u64,
+    function: crate::lisp::types::NativeFunctionRef,
     arguments: &[Value],
 ) -> Result<Value, LispError> {
     if let Some(result) =
-        loader::call_active_function(interpreter, environment, record_id, arguments)
+        loader::call_active_function(interpreter, environment, function, arguments)
     {
         return result;
     }
     let mut state = std::mem::take(&mut interpreter.native_compiler);
-    let result = state.call_function(interpreter, environment, record_id, arguments);
+    let result = state.call_function(interpreter, environment, function, arguments);
     interpreter.native_compiler = state;
     result
 }
@@ -160,45 +160,16 @@ pub(crate) fn call_function(
 pub(crate) fn function_documentation(
     interpreter: &mut Interpreter,
     environment: &mut Env,
-    record_id: u64,
+    function: crate::lisp::types::NativeFunctionRef,
 ) -> Result<Value, LispError> {
-    let (index, unit_id) = {
-        let function = interpreter
-            .find_record(record_id)
-            .filter(|record| record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction)
-            .ok_or_else(|| lisp::native_ice("native documentation requested for a non-function"))?;
-        let index = function
-            .slots
-            .get(5)
-            .ok_or_else(|| lisp::native_ice("native function has no documentation index"))?
-            .as_integer()
-            .and_then(|index| {
-                usize::try_from(index)
-                    .map_err(|_| lisp::native_ice("negative native documentation index"))
-            })?;
-        let unit_id = match function.slots.get(8).map(|v| v.kind()) {
-            Some(Kind::Record(unit_id)) => unit_id,
-            _ => return Err(lisp::native_ice("native function has no compilation unit")),
-        };
-        (index, unit_id)
+    let index = usize::try_from(function.doc_index())
+        .map_err(|_| lisp::native_ice("negative native documentation index"))?;
+    let Kind::NativeCompUnit(unit) = function.unit().kind() else {
+        return Err(lisp::native_ice("native function has no compilation unit"));
     };
-    let docs = interpreter
-        .find_record(unit_id)
-        .filter(|record| record.kind == crate::lisp::eval::RecordKind::NativeCompUnit)
-        .and_then(|record| record.slots.get(4))
-        .cloned()
-        .ok_or_else(|| lisp::native_ice("native function compilation unit is missing"))?;
+    let docs = unit.field(4);
     let docs = if docs.is_nil() {
-        if let Some(result) =
-            loader::active_unit_documentation(interpreter, environment, unit_id.id)
-        {
-            result?
-        } else {
-            let state = std::mem::take(&mut interpreter.native_compiler);
-            let result = state.unit_documentation(interpreter, environment, unit_id.id);
-            interpreter.native_compiler = state;
-            result?
-        }
+        loader::unit_documentation(interpreter, environment, unit)?
     } else {
         docs
     };
@@ -209,30 +180,11 @@ pub(crate) fn function_documentation(
         .ok_or_else(|| lisp::native_ice("native documentation index is out of range"))
 }
 
-pub(crate) fn function_name(interpreter: &Interpreter, record_id: u64) -> Option<String> {
-    loader::active_function_name(record_id).or_else(|| {
-        interpreter
-            .native_compiler
-            .function_name(record_id)
-            .map(str::to_owned)
-    })
-}
-
-/// Lisp_Subr.native_c_name of a registered native function.
-pub(crate) fn function_c_name(interpreter: &Interpreter, record_id: u64) -> Option<String> {
-    loader::active_function_c_name(record_id).or_else(|| {
-        interpreter
-            .native_compiler
-            .function_c_name(record_id)
-            .map(str::to_owned)
-    })
-}
-
 /// pdumper.c:pdumper_load's late and very-late relocation phases for the
 /// native compilation units and native functions of a loaded image.
 pub(crate) fn load_dumped_code(
     interpreter: &mut Interpreter,
-    units: &[u64],
+    units: &[crate::lisp::types::NativeUnitRef],
     functions: &[loader::DumpedNativeFunction],
 ) -> Result<(), LispError> {
     let mut environment = Env::new();
@@ -266,18 +218,16 @@ pub(crate) fn subroutine_index(name: &str) -> Option<usize> {
 pub(crate) fn install_trampoline(
     interpreter: &mut Interpreter,
     subroutine_index: usize,
-    record_id: u64,
+    function: crate::lisp::types::NativeFunctionRef,
 ) -> Result<(), LispError> {
-    if let Some((target, _convention)) = loader::active_function_target(record_id) {
-        return runtime::with_current_runtime(|runtime| {
-            runtime.install_trampoline(subroutine_index, target)
-        })
-        .ok_or_else(|| lisp::native_ice("active native trampoline has no runtime"))?
-        .map_err(|error| lisp::native_ice(&error));
+    if let Some(result) = runtime::with_current_runtime(|runtime| {
+        runtime.install_trampoline(subroutine_index, function.target().cast_mut())
+    }) {
+        return result.map_err(|error| lisp::native_ice(&error));
     }
     interpreter
         .native_compiler
-        .install_trampoline(subroutine_index, record_id)
+        .install_trampoline(subroutine_index, function)
 }
 
 pub(crate) fn call_lisp(
@@ -328,9 +278,8 @@ pub(crate) fn garbage_collect_now(
 }
 
 /// alloc.c:Fgarbage_collect's temporary `symbols-with-pos-enabled' binding
-/// surrounds only the mark/sweep.  Keep the shared finalization and hook path
-/// outside that binding, just as Fgarbage_collect restores its specpdl before
-/// reading gcstat.
+/// surrounds garbage_collect, including finalizers and post-GC hooks. Restore
+/// the caller's binding after the complete collection before returning gcstat.
 pub(crate) fn garbage_collect_now_with_symbols_disabled(
     interpreter: &mut Interpreter,
     environment: &mut Env,
@@ -374,13 +323,23 @@ fn garbage_collect_now_below_top(
     };
     let started = std::time::Instant::now();
     begin_garbage_collection(interpreter, environment);
-    let census = interpreter.live_object_census();
+    let result = finish_garbage_collection(interpreter, environment, started).map(Some);
     if let Some(restore) = symbols_with_pos_restore {
         interpreter.restore_special_dynamic(restore, environment)?;
     }
-    // "GC is complete: now we can run our finalizer callbacks."  Before
-    // Fgarbage_collect's post-gc-hook, after the specpdl is restored.
-    interpreter.run_doomed_finalizers(environment)?;
+    result
+}
+
+/// alloc.c:garbage_collect after marking/sweeping. Both automatic native
+/// collections and explicit/interpreted collections must run this same tail.
+/// Reset the allocation allowance before finalizers can allocate or collect;
+/// report the completed collection before invoking the inhibited post-GC hook.
+pub(super) fn finish_garbage_collection(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    started: std::time::Instant,
+) -> Result<crate::lisp::eval::LiveObjectCensus, LispError> {
+    let census = interpreter.live_object_census();
     let (threshold, percentage) = gc_tuning(interpreter, environment);
     garbage_collection_finished(
         interpreter,
@@ -388,14 +347,24 @@ fn garbage_collect_now_below_top(
         threshold,
         percentage,
     );
+    interpreter.run_doomed_finalizers(environment)?;
     interpreter.note_collection_done(started.elapsed());
-    let _ = crate::lisp::primitives::call(
-        interpreter,
-        "run-hooks",
-        &[Value::symbol("post-gc-hook")],
-        environment,
-    );
-    Ok(Some(census))
+    // GNU inhibits collection, including explicit garbage-collect, for the
+    // hook's dynamic extent. Hook errors follow the existing safe-run path.
+    if interpreter
+        .lookup_var("post-gc-hook", environment)
+        .is_some_and(|hook| hook.is_truthy())
+    {
+        interpreter.inhibit_garbage_collection();
+        let _ = crate::lisp::primitives::call(
+            interpreter,
+            "run-hooks",
+            &[Value::symbol("post-gc-hook")],
+            environment,
+        );
+        interpreter.allow_garbage_collection();
+    }
+    Ok(census)
 }
 
 pub(crate) fn begin_garbage_collection(interpreter: &mut Interpreter, environment: &Env) {

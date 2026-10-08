@@ -2,6 +2,9 @@ use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
+mod key_sequence;
+pub(crate) use key_sequence::{KeySequenceReader, read_key_sequence_events};
+
 #[cfg(unix)]
 use std::sync::atomic::{AtomicUsize, Ordering as UserSignalOrdering};
 
@@ -118,12 +121,12 @@ pub(crate) fn set_command_key_state(
     raw_keys: Vec<Value>,
     env: &mut Env,
 ) {
-    interp.keyboard_input.command_keys = keys.clone();
+    interp.keyboard_input.command_keys = keys;
     interp.keyboard_input.single_command_start = 0;
     interp.keyboard_input.raw_keys = raw_keys;
     // GNU has no `this-single-command-keys' *variable* -- only the
     // keyboard.c function, which reads this native state (finding 66).
-    let _ = (keys, env);
+    let _ = env;
 }
 
 fn dribble_event_bytes(event: &Value) -> Vec<u8> {
@@ -133,15 +136,20 @@ fn dribble_event_bytes(event: &Value) -> Vec<u8> {
             .and_then(char::from_u32)
             .map(|character| character.to_string().into_bytes())
             .unwrap_or_else(|| format!("<{code}>").into_bytes()),
-        Kind::String(text) => text.as_bytes().to_vec(),
-        Kind::StringObject(state) => state.borrow().text.as_bytes().to_vec(),
+        Kind::StringObject(state) => state.borrow().text().as_bytes().to_vec(),
         Kind::Symbol(symbol) => format!("<{symbol}>").into_bytes(),
         other => format!("<{other}>").into_bytes(),
     }
 }
 
+pub(crate) fn executing_kbd_macro_p(interp: &Interpreter, env: &Env) -> bool {
+    interp
+        .lookup_var("executing-kbd-macro", env)
+        .is_some_and(|value| value.is_truthy())
+}
+
 fn record_external_input_event(interp: &mut Interpreter, event: &Value, env: &Env) {
-    if !interp.kbd_macro_executions.is_empty() {
+    if executing_kbd_macro_p(interp, env) {
         return;
     }
     interp.keyboard_input.recent_keys.push(*event);
@@ -202,23 +210,17 @@ pub(crate) fn function_documentation(
     }
     if let Kind::Record(id) = value.kind()
         && let Some(record) = interp.find_record(id)
-        && record.kind == crate::lisp::eval::RecordKind::Closure
-    {
-        return record.slots.get(4).filter(|doc| !doc.is_nil()).cloned();
-    }
-    if let Kind::Record(id) = value.kind()
-        && let Some(record) = interp.find_record(id)
         && record.kind == crate::lisp::eval::RecordKind::ModuleFunction
     {
         return record.slots.first().cloned();
     }
-    let Kind::Lambda(lambda) = value.kind() else {
+    let Kind::Closure(lambda) = value.kind() else {
         return None;
     };
     lambda.documentation().filter(|documentation| {
         matches!(
             documentation.kind(),
-            Kind::String(_) | Kind::StringObject(_) | Kind::Integer(_) | Kind::Cons(_)
+            Kind::StringObject(_) | Kind::Integer(_) | Kind::Cons(_)
         )
     })
 }
@@ -402,19 +404,18 @@ pub(crate) fn eval_callable_metadata_form(
     form: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    if let Kind::Lambda(lambda) = func.kind() {
-        // The form under the closure's own environment, as a call of the
-        // closure would install it.
-        let depth = env.len();
-        env.push(crate::lisp::types::EnvFrame::from_alist(
-            lambda.environment_value(),
-        ));
-        let result = interp.eval(form, env);
-        env.truncate(depth);
-        result
-    } else {
-        interp.eval(form, env)
-    }
+    // callint.c:Fcall_interactively passes CLOSURE_CONSTANTS to Feval only
+    // when CLOSURE_CODE is a cons: an interpreted closure's body.  A
+    // bytecode closure stores its constants vector in that same slot.
+    // All other commands evaluate their interactive form with a nil lexical
+    // environment, independently of the caller's lexical bindings.
+    let lexical = match func.kind() {
+        Kind::Closure(closure) if matches!(closure.body().kind(), Kind::Cons(_)) => {
+            closure.environment_value()
+        }
+        _ => Value::Nil,
+    };
+    eval_impl(interp, &[*form, lexical], env)
 }
 
 pub(crate) fn parse_interactive_string(
@@ -737,7 +738,7 @@ pub(crate) fn parse_interactive_string(
             _ => return Err(invalid_interactive_control_letter(code)),
         }
         if seen.is_nil()
-            && let Some(Kind::String(_) | Kind::StringObject(_)) = values.last().map(|v| v.kind())
+            && let Some(Kind::StringObject(_)) = values.last().map(|v| v.kind())
         {
             seen = values.last().cloned().unwrap_or(Value::Nil);
         }
@@ -899,7 +900,8 @@ pub(crate) fn pending_keystroke_echo(
     {
         // The Lisp side reads this-single-command-keys, exactly what
         // read_key_sequence has accumulated at this point.
-        set_command_key_state(interp, pending.to_vec(), pending.to_vec(), env);
+        interp.keyboard_input.command_keys = pending.to_vec();
+        interp.keyboard_input.single_command_start = 0;
         // help.el's function is interpreted Lisp: route through the
         // full function channel, not the builtin dispatch.
         if let Ok(appended) = interp.call_function_value(
@@ -916,18 +918,19 @@ pub(crate) fn pending_keystroke_echo(
     (text, Vec::new())
 }
 
-/// The event-head symbol of a parameterized mouse click event —
-/// ("C-down-mouse-3" POSN) answers the symbol; anything else nil.
-fn mouse_event_head(event: &Value) -> Option<String> {
-    let items = event.to_vec().ok()?;
-    match (
-        items.first().map(|v| v.kind()),
-        items.get(1).map(|v| v.kind()),
-    ) {
-        (Some(Kind::Symbol(head)), Some(Kind::Cons(_))) if head.contains("mouse-") => {
-            Some(head.to_string())
-        }
-        _ => None,
+/// keyboard.c:EVENT_HEAD_KIND reads the live symbol property. A mouse
+/// event need not have "mouse" in its name, including after translation.
+fn mouse_event_head(interp: &Interpreter, event: &Value) -> Option<Value> {
+    let (head, tail) = event.cons_values()?;
+    let symbol = head.as_symbol().ok()?;
+    let kind = interp.get_symbol_property(symbol, "event-kind")?;
+    if tail.car().ok()?.is_cons()
+        && (kind.eq_value(Value::symbol("mouse-click"))
+            || kind.eq_value(Value::symbol("touchscreen")))
+    {
+        Some(head)
+    } else {
+        None
     }
 }
 
@@ -940,147 +943,51 @@ fn mouse_event_on_menu_bar(event: &Value) -> bool {
         .is_some_and(|posn| matches!(posn.get(1).map(|v| v.kind()), Some(Kind::Symbol(area)) if area == "menu-bar"))
 }
 
-/// Resolve a pending key sequence through the runtime's own keymaps
-/// (`key-binding'), classifying strict prefixes so a multi-key sequence
-/// keeps reading.  This is the single resolution path for every command
-/// loop — the frame's and the minibuffer's recursive one.
-pub(crate) fn resolve_decoded_key_sequence(
+/// Complete command resolution using the binding already reached by the
+/// incremental reader. Re-entering key-binding here would repeat live filters.
+fn resolve_read_key_binding(
     interp: &mut Interpreter,
     env: &mut Env,
-    pending: &mut Vec<Value>,
+    binding: Value,
+    keys: &[Value],
 ) -> Result<KeyResolution, LispError> {
-    // keyboard.c:read_key_sequence/keyremap_step keeps a partial terminal
-    // sequence across reads. A PTY read boundary is not a key boundary.
-    if let Some(map) = interp
-        .lookup_var("input-decode-map", env)
-        .filter(|map| is_keymap_value(interp, map))
-    {
-        for start in 0..pending.len() {
-            let sequence = Value::vector(pending[start..].iter().cloned());
-            let binding = super::call(interp, "lookup-key", &[map, sequence], env)?;
-            if is_keymap_value(interp, &binding) {
-                return Ok(KeyResolution::Prefix);
-            }
-            if binding.is_nil() || matches!(binding.kind(), Kind::Integer(_)) {
-                continue;
-            }
-            let translated = if vector_items(&binding).is_ok() || binding.is_string() {
-                Ok(binding)
-            } else {
-                interp.call_function_value(binding, None, &[Value::Nil], env)
-            };
-            let translated = translated.and_then(|value| translated_input_events(&value))?;
-            pending.splice(start.., translated);
-            break;
-        }
-    }
-    Ok(resolve_key_sequence(interp, env, pending))
-}
-
-pub(crate) fn resolve_key_sequence(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    pending: &[Value],
-) -> KeyResolution {
-    // keyboard.c's read_key_sequence: a click's keymap key is its head
-    // symbol, and a click on the menu-bar area inserts the fake
-    // `menu-bar' prefix before it ([menu-bar mouse-1] finds
-    // menu-bar-open-mouse).
-    let mut lookup_events: Vec<Value> = Vec::with_capacity(pending.len() + 1);
-    for (index, event) in pending.iter().enumerate() {
-        if let Some(head) = mouse_event_head(event) {
-            if index == 0 && mouse_event_on_menu_bar(event) {
-                lookup_events.push(Value::Symbol("menu-bar".into()));
-            }
-            lookup_events.push(Value::Symbol(head.into()));
-        } else {
-            lookup_events.push(*event);
-        }
-    }
-    let key_vector =
-        Value::list(std::iter::once(Value::Symbol("vector-literal".into())).chain(lookup_events));
-    let binding = match command_loop_call(interp, env, "key-binding", &[key_vector, Value::T]) {
-        Ok(binding) => binding,
-        Err(_) => Value::Nil,
-    };
     if binding.is_nil() {
-        // An unresolved strict prefix keeps reading (C-x alone answers nil
-        // while C-x C-f resolves), so probe whether any longer sequence can
-        // still match by asking for the prefix's own keymap.
-        if pending_sequence_is_prefix(interp, env, pending) {
-            return KeyResolution::Prefix;
-        }
-        return KeyResolution::Undefined;
+        return Ok(KeyResolution::Undefined);
     }
-    // A prefix can answer as the keymap itself or as a prefix command
-    // symbol (`Control-X-prefix') whose function cell holds the keymap;
-    // GNU resolves through the indirection before dispatching.
-    let resolved = if let Kind::Symbol(name) = binding.kind() {
-        interp.lookup_function(&name, env).unwrap_or(binding)
-    } else {
-        binding
-    };
-    if crate::lisp::primitives::is_keymap_value(interp, &resolved) {
-        // A keymap bound to a parameterized click pops up as a menu
-        // (read_key_sequence's mouse-menu path — C-down-mouse-3's
-        // menu-item filter yields the menu-bar keymap); the chosen
-        // item's key path finishes the sequence.
-        if let Some(event) = pending
+    let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![binding, Value::Nil]);
+    if let Some(map) = keymap_reference_map(interp, &binding, env) {
+        roots[0] = map;
+        let Some(event) = keys
             .last()
-            .filter(|event| mouse_event_head(event).is_some())
-            && has_tty_menu_executor()
-        {
-            // The sequence stays pending while the menu is up: GNU
-            // holds its echo in kboard->echo_string and read_char's
-            // timer displays it after `echo-keystrokes' idle seconds.
-            // Compute it through the real machinery now; the executor's
-            // modal read owns the timing.
-            let echo = pending_keystroke_echo(interp, env, pending);
-            set_pending_keystroke_echo(Some(echo));
-            let answer = super::call(interp, "x-popup-menu", &[(*event), resolved], env)
-                .unwrap_or(Value::Nil);
-            let path = answer.to_vec().unwrap_or_default();
-            if path.is_empty() {
-                // Cancelled: the sequence dissolves with no command and
-                // no quit (MENU_FOR_CLICK).
-                return KeyResolution::Command(Value::Symbol("ignore".into()));
-            }
-            let vector =
-                Value::list(std::iter::once(Value::Symbol("vector-literal".into())).chain(path));
-            let chosen = super::call(interp, "lookup-key", &[resolved, vector], env)
-                .ok()
-                .filter(|value| !value.is_nil())
-                .and_then(|value| {
-                    crate::lisp::primitives::keymap_get_keyelt(interp, &value, true, env).ok()
-                });
-            if let Some(command) = chosen.filter(|value| !value.is_nil()) {
-                return KeyResolution::Command(command);
-            }
-            return KeyResolution::Command(Value::Symbol("ignore".into()));
+            .filter(|event| mouse_event_head(interp, event).is_some())
+        else {
+            return Ok(KeyResolution::Prefix);
+        };
+        if !has_tty_menu_executor() {
+            return Ok(KeyResolution::Prefix);
         }
-        KeyResolution::Prefix
-    } else {
-        KeyResolution::Command(binding)
+        let echo = pending_keystroke_echo(interp, env, keys);
+        set_pending_keystroke_echo(Some(echo));
+        roots[1] = super::call(interp, "x-popup-menu", &[*event, map], env)?;
+        let path = roots[1].to_vec()?;
+        if path.is_empty() {
+            return Ok(KeyResolution::Command(Value::symbol("ignore")));
+        }
+        for event in path {
+            roots[0] =
+                keymap_access_event(interp, roots[0], event, true, env)?.unwrap_or(Value::Nil);
+        }
+        if roots[0].is_nil() {
+            return Ok(KeyResolution::Command(Value::symbol("ignore")));
+        }
     }
-}
-
-fn pending_sequence_is_prefix(interp: &mut Interpreter, env: &mut Env, pending: &[Value]) -> bool {
-    // ESC alone is always a live prefix (meta encoding).
-    if pending.len() == 1 && matches!(pending.first().map(|v| v.kind()), Some(Kind::Integer(27))) {
-        return true;
+    if roots[0].is_symbol() {
+        let remapped = command_remapping(interp, &roots[0], None, env)?;
+        if !remapped.is_nil() {
+            roots[0] = remapped;
+        }
     }
-    let key_vector = Value::list(
-        std::iter::once(Value::Symbol("vector-literal".into())).chain(pending.iter().cloned()),
-    );
-    // `key-binding' with ACCEPT-DEFAULT nil still answers prefix keymaps.
-    command_loop_call(interp, env, "key-binding", &[key_vector])
-        .map(|binding| {
-            !binding.is_nil()
-                && command_loop_call(interp, env, "keymapp", &[binding])
-                    .map(|value| value.is_truthy())
-                    .unwrap_or(false)
-        })
-        .unwrap_or(false)
+    Ok(KeyResolution::Command(roots[0]))
 }
 
 /// Execute one resolved command with GNU's full per-command ceremony:
@@ -1088,7 +995,21 @@ fn pending_sequence_is_prefix(interp: &mut Interpreter, env: &mut Env, pending: 
 /// pre/post-command hooks around `call-interactively', and the
 /// last-command bookkeeping.  Shared by the frame command loop and the
 /// minibuffer's recursive loop.
+#[cfg(test)]
 pub(crate) fn execute_command_binding(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    binding: Value,
+    keys: &[Value],
+    last_event: Value,
+) -> Result<(), LispError> {
+    set_command_key_state(interp, keys.to_vec(), keys.to_vec(), env);
+    execute_command_binding_inner(interp, env, binding, keys, last_event, true)
+}
+
+/// The terminal reader already published the translated and raw sequences.
+/// Preserve that distinction while recording the completed macro command.
+pub(crate) fn execute_read_key_command_binding(
     interp: &mut Interpreter,
     env: &mut Env,
     binding: Value,
@@ -1154,10 +1075,8 @@ fn execute_command_binding_inner(
     if !mouse_event_on_menu_bar(&last_event) {
         interp.set_variable("last-nonmenu-event", last_event, env);
     }
-    // The canonical key-state channel: this-command-keys,
-    // this-single-command-keys, and their raw variants all read it
-    // (isearch's pre-command-hook indexes the vector).
-    set_command_key_state(interp, keys.to_vec(), keys.to_vec(), env);
+    // The reader has published translated command keys and the original
+    // raw input separately. Commands and hooks must observe both unchanged.
     interp.set_variable(
         "this-command-keys-vector",
         Value::list(
@@ -1410,6 +1329,10 @@ pub(crate) fn run_due_timers(
         let Some(timers) = interp
             .lookup_var(list_name, env)
             .and_then(|value| value.to_vec().ok())
+            // keyboard.c:timer_check keeps its copied lists reachable across
+            // callbacks. A Rust heap Vec is outside the conservative stack:
+            // cancel-timer followed by GC must not free its remaining entries.
+            .map(crate::lisp::alloc::RootedVec::from_vec)
         else {
             continue;
         };
@@ -1504,108 +1427,99 @@ pub(crate) fn run_tty_frame_redraw(interp: &mut Interpreter, env: &mut Env) {
     }
 }
 
+// read_char consumes the actual queue spine. Retaining its cdr preserves
+// sharing and lets a filter mutate the very next input event in place.
+fn pop_unread_event_cell(interp: &mut Interpreter, env: &mut Env) -> Option<Value> {
+    let (event, tail) = interp
+        .lookup_var("unread-command-events", env)?
+        .cons_values()?;
+    interp.with_lisp_stack_roots(&event, |interp| {
+        interp.set_variable("unread-command-events", tail, env);
+    });
+    Some(event)
+}
+
+pub(crate) fn pop_pending_input_event_value(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<Option<Value>, LispError> {
+    if let Some(event) = take_unread_command_event(interp, env) {
+        record_external_input_event(interp, &event, env);
+        return Ok(Some(event));
+    }
+    run_pending_user_signal_events(interp, env)?;
+    if let Some(event) = take_unread_command_event(interp, env) {
+        record_external_input_event(interp, &event, env);
+        return Ok(Some(event));
+    }
+    // GNU's input readers consume the executing keyboard macro's
+    // remaining events (viper's `F'/`t' read their target char that way).
+    // Lisp hooks may have rewound the public index after a speculative
+    // read (kmacro's quoted-insert step editor does exactly this), so the
+    // next read observes the actual array and public index directly.
+    crate::lisp::primitives::dispatch::next_kbd_macro_event(interp, env)
+}
+
 pub(crate) fn pop_unread_command_event_value(
     interp: &mut Interpreter,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let unread = interp
-        .lookup_var("unread-command-events", env)
-        .unwrap_or(Value::Nil);
-    let mut events = unread.to_vec()?;
-    if events.is_empty() {
-        run_pending_user_signal_events(interp, env)?;
-        events = unread_command_events(interp, env)?;
-        if !events.is_empty() {
-            let event = events.remove(0);
-            interp.set_variable("unread-command-events", Value::list(events), env);
-            record_external_input_event(interp, &event, env);
-            return Ok(event);
-        }
-        // GNU's input readers consume the executing keyboard macro's
-        // remaining events (viper's `F'/`t' read their target char that way).
-        // Lisp hooks may have rewound the public index after a speculative
-        // read (kmacro's quoted-insert step editor does exactly this), so the
-        // typed cursor must observe that assignment before supplying input.
-        crate::lisp::primitives::dispatch::sync_kbd_macro_execution(interp, env)?;
-        if let Some(state) = interp.kbd_macro_executions.last_mut()
-            && let Some(event) = state.events.get(state.index).cloned()
-        {
-            state.index += 1;
-            let index = state.index;
-            interp.set_variable(
-                "executing-kbd-macro-index",
-                Value::Integer(index as i64),
-                env,
-            );
-            return Ok(event);
-        }
-        // Poll for the event so ripe timers fire during the wait, as
-        // GNU's read_char does; the blocking reader stands in when the
-        // frontend installed no poller.
-        let mut idle_start: Option<std::time::Instant> = None;
-        let cursor_in_echo_area = interp
-            .lookup_var("cursor-in-echo-area", env)
-            .is_some_and(|value| value.is_truthy());
-        while let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area) {
-            match step {
-                None => return Err(LispError::SignalValue(Value::Symbol("quit".into()))),
-                Some(Some(event)) => {
-                    if event == Value::Integer(7) {
-                        return Err(LispError::SignalValue(Value::Symbol("quit".into())));
-                    }
+    if let Some(event) = pop_pending_input_event_value(interp, env)? {
+        return Ok(event);
+    }
+    // Poll for the event so ripe timers fire during the wait, as
+    // GNU's read_char does; the blocking reader stands in when the
+    // frontend installed no poller.
+    let mut idle_start: Option<std::time::Instant> = None;
+    let cursor_in_echo_area = interp
+        .lookup_var("cursor-in-echo-area", env)
+        .is_some_and(|value| value.is_truthy());
+    while let Some(step) = poll_via_tty_event_poller(interp, cursor_in_echo_area) {
+        match step {
+            None => return Err(LispError::SignalValue(Value::Symbol("quit".into()))),
+            Some(Some(event)) => {
+                if event == Value::Integer(7) {
+                    return Err(LispError::SignalValue(Value::Symbol("quit".into())));
+                }
+                record_external_input_event(interp, &event, env);
+                return Ok(event);
+            }
+            Some(None) => {
+                let idle = idle_start
+                    .get_or_insert_with(std::time::Instant::now)
+                    .elapsed();
+                let mut process_progress =
+                    crate::lisp::primitives::processes::pump_external_process_output(interp, env)?;
+                process_progress |=
+                    crate::lisp::primitives::processes::pump_connection_processes(interp, env)?;
+                if process_progress
+                    || interp.service_async_runtime_events(env, true, Some(idle.as_secs_f64()))?
+                {
+                    // A blocking Lisp reader owns the command thread, so
+                    // the outer terminal loop cannot observe asynchronous
+                    // work.  Redisplay here, as read_char does after
+                    // wait_reading_process_output.
+                    run_tty_frame_redraw(interp, env);
+                }
+                if let Some(event) = pop_unread_event_cell(interp, env) {
                     record_external_input_event(interp, &event, env);
                     return Ok(event);
                 }
-                Some(None) => {
-                    let idle = idle_start
-                        .get_or_insert_with(std::time::Instant::now)
-                        .elapsed();
-                    let mut process_progress =
-                        crate::lisp::primitives::processes::pump_external_process_output(
-                            interp, env,
-                        )?;
-                    process_progress |=
-                        crate::lisp::primitives::processes::pump_connection_processes(interp, env)?;
-                    if process_progress
-                        || interp.service_async_runtime_events(
-                            env,
-                            true,
-                            Some(idle.as_secs_f64()),
-                        )?
-                    {
-                        // A blocking Lisp reader owns the command thread, so
-                        // the outer terminal loop cannot observe asynchronous
-                        // work.  Redisplay here, as read_char does after
-                        // wait_reading_process_output.
-                        run_tty_frame_redraw(interp, env);
-                    }
-                    let mut events = unread_command_events(interp, env)?;
-                    if !events.is_empty() {
-                        let event = events.remove(0);
-                        interp.set_variable("unread-command-events", Value::list(events), env);
-                        record_external_input_event(interp, &event, env);
-                        return Ok(event);
-                    }
-                }
             }
         }
-        if let Some(read) = read_via_tty_event_reader(interp, cursor_in_echo_area) {
-            return match read {
-                Some(event) => {
-                    record_external_input_event(interp, &event, env);
-                    Ok(event)
-                }
-                None => Err(LispError::SignalValue(Value::Symbol("quit".into()))),
-            };
-        }
-        return Err(LispError::Signal(
-            "No unread-command-events available for interactive input".into(),
-        ));
     }
-    let event = events.remove(0);
-    interp.set_variable("unread-command-events", Value::list(events), env);
-    record_external_input_event(interp, &event, env);
-    Ok(event)
+    if let Some(read) = read_via_tty_event_reader(interp, cursor_in_echo_area) {
+        return match read {
+            Some(event) => {
+                record_external_input_event(interp, &event, env);
+                Ok(event)
+            }
+            None => Err(LispError::SignalValue(Value::Symbol("quit".into()))),
+        };
+    }
+    Err(LispError::Signal(
+        "No unread-command-events available for interactive input".into(),
+    ))
 }
 
 pub(crate) fn unread_command_event_char(event: &Value) -> Result<char, LispError> {
@@ -1614,15 +1528,12 @@ pub(crate) fn unread_command_event_char(event: &Value) -> Result<char, LispError
 }
 
 pub(crate) fn normalize_input_event_value(event: Value) -> Result<Value, LispError> {
-    if let Some(ch) = unread_event_char(&event) {
-        Ok(Value::Integer(ch as i64))
-    } else {
+    // lread.c:Fread_event returns the event word without resolving its
+    // modifier bits. In particular, a macro string's high bit becomes
+    // CHAR_META in read_char and must survive this raw event reader.
+    if matches!(event.kind(), Kind::Integer(_)) {
         Ok(event)
-    }
-}
-
-pub(crate) fn normalize_key_event_value(event: Value) -> Result<Value, LispError> {
-    if let Some(ch) = translated_unread_event_char(&event) {
+    } else if let Some(ch) = unread_event_char(&event) {
         Ok(Value::Integer(ch as i64))
     } else {
         Ok(event)
@@ -1648,8 +1559,7 @@ pub(crate) fn unread_event_char(value: &Value) -> Option<char> {
                 _ => None,
             }
         }
-        Kind::String(text) => text.chars().next(),
-        Kind::StringObject(state) => state.borrow().text.chars().next(),
+        Kind::StringObject(state) => state.borrow().text().chars().next(),
         _ => None,
     }
 }
@@ -1702,30 +1612,6 @@ fn modified_event_code_char(code: i64) -> Option<char> {
     char::from_u32(base as u32)
 }
 
-pub(crate) fn unread_prefix_matches(events: &[Value], prefix: &str) -> Option<usize> {
-    let chars: Vec<char> = prefix.chars().collect();
-    if events.len() < chars.len() {
-        return None;
-    }
-    for (index, expected) in chars.iter().enumerate() {
-        if unread_event_char(&events[index]) != Some(*expected) {
-            return None;
-        }
-    }
-    Some(chars.len())
-}
-
-pub(crate) fn prepend_unread_command_events(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    mut prefix: Vec<Value>,
-) -> Result<(), LispError> {
-    let unread = unread_command_events(interp, env)?;
-    prefix.extend(unread);
-    interp.set_variable("unread-command-events", Value::list(prefix), env);
-    Ok(())
-}
-
 pub(crate) fn translated_input_events(value: &Value) -> Result<Vec<Value>, LispError> {
     if matches!(value.kind(), Kind::Nil) {
         return Ok(Vec::new());
@@ -1750,196 +1636,6 @@ pub(crate) fn is_mouse_down_event(value: &Value) -> bool {
         .and_then(|items| items.first().cloned())
         .and_then(|item| item.as_symbol().ok().map(str::to_string))
         .is_some_and(|name| name.contains("down-mouse"))
-}
-
-pub(crate) fn read_decoded_input_event(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<Option<Value>, LispError> {
-    let unread = unread_command_events(interp, env)?;
-    for (prefix, function_name) in [
-        ("\u{1b}[<", "xterm-mouse-translate-extended"),
-        ("\u{1b}[M", "xterm-mouse-translate"),
-    ] {
-        let Some(prefix_len) = unread_prefix_matches(&unread, prefix) else {
-            continue;
-        };
-        let Ok(function) = interp.lookup_function(function_name, env) else {
-            continue;
-        };
-
-        let mut remaining = unread.clone();
-        remaining.drain(0..prefix_len);
-        interp.set_variable("unread-command-events", Value::list(remaining), env);
-
-        let translated =
-            interp.call_function_value(function, Some(function_name), &[Value::Nil], env)?;
-        let events = translated_input_events(&translated)?;
-        if events.is_empty() {
-            return Ok(None);
-        }
-        if events.len() > 1 {
-            prepend_unread_command_events(interp, env, events[1..].to_vec())?;
-        }
-        return Ok(events.into_iter().next());
-    }
-
-    let Some(input_decode_map) = interp.lookup_var("input-decode-map", env) else {
-        return Ok(None);
-    };
-    let mut best_match: Option<(usize, Value)> = None;
-    let mut prefix = String::new();
-    for event in unread.iter().take(8) {
-        let Some(ch) = unread_event_char(event) else {
-            break;
-        };
-        prefix.push(ch);
-        let binding = keymap_lookup_binding(interp, &input_decode_map, &prefix)?;
-        if !binding.is_nil()
-            && !is_keymap_value(interp, &binding)
-            && best_match
-                .as_ref()
-                .is_none_or(|(best_len, _)| prefix.chars().count() > *best_len)
-        {
-            best_match = Some((prefix.chars().count(), binding));
-        }
-    }
-    let Some((prefix_len, binding)) = best_match else {
-        return Ok(None);
-    };
-
-    let mut remaining = unread;
-    remaining.drain(0..prefix_len);
-    interp.set_variable("unread-command-events", Value::list(remaining), env);
-
-    // keyboard.c:read_key_sequence accepts a vector/string translation as
-    // well as a function. Termcap installs vectors in input-decode-map.
-    let translated = if matches!(binding.kind(), Kind::Vector(_)) || binding.is_string() {
-        binding
-    } else {
-        let function = resolve_callable(interp, &binding, env)?;
-        invoke_function_value(interp, &function, &[Value::Nil], env)?
-    };
-    let events = translated_input_events(&translated)?;
-    if events.is_empty() {
-        return Ok(None);
-    }
-    if events.len() > 1 {
-        prepend_unread_command_events(interp, env, events[1..].to_vec())?;
-    }
-    Ok(events.into_iter().next())
-}
-
-pub(crate) fn input_event_symbol(value: &Value) -> Option<String> {
-    match value.kind() {
-        Kind::Symbol(symbol) => Some(symbol.to_string()),
-        Kind::Cons(_) => value
-            .to_vec()
-            .ok()
-            .and_then(|items| items.first().cloned())
-            .and_then(|item| item.as_symbol().ok().map(str::to_string)),
-        _ => None,
-    }
-}
-
-pub(crate) fn update_input_event_symbol(value: &Value, symbol: &str) -> Value {
-    match value.kind() {
-        Kind::Symbol(_) => Value::Symbol(symbol.into()),
-        Kind::Cons(_) => {
-            let mut items = value.to_vec().unwrap_or_default();
-            if let Some(first) = items.first_mut() {
-                *first = Value::Symbol(symbol.into());
-            }
-            Value::list(items)
-        }
-        _ => *value,
-    }
-}
-
-pub(crate) fn first_input_from_link_action(value: &Value) -> Option<Value> {
-    if let Some(string) = string_like(value) {
-        return string
-            .text
-            .chars()
-            .next()
-            .map(|ch| Value::Integer(ch as i64));
-    }
-
-    vector_items(value).ok()?.into_iter().next()
-}
-
-pub(crate) fn translate_mouse_read_key_sequence_event(
-    interp: &mut Interpreter,
-    event: Value,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    interp.set_variable("last-input-event", event, env);
-
-    if input_event_symbol(&event).as_deref() != Some("mouse-1") {
-        return Ok(event);
-    }
-    if !interp
-        .lookup_var("mouse-1-click-follows-link", env)
-        .is_some_and(|value| value.is_truthy())
-    {
-        return Ok(event);
-    }
-
-    let action = match interp.lookup_function("mouse-on-link-p", env) {
-        Ok(function) => {
-            interp.call_function_value(function, Some("mouse-on-link-p"), &[Value::Nil], env)?
-        }
-        Err(_) => Value::Nil,
-    };
-
-    if let Some(first) = first_input_from_link_action(&action) {
-        interp.set_variable("last-input-event", first, env);
-        return Ok(first);
-    }
-    if action.is_truthy() {
-        let translated = update_input_event_symbol(&event, "mouse-2");
-        interp.set_variable("last-input-event", translated, env);
-        return Ok(translated);
-    }
-
-    Ok(event)
-}
-
-pub(crate) fn read_key_sequence_event(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    loop {
-        let event = if let Some(decoded) = read_decoded_input_event(interp, env)? {
-            decoded
-        } else {
-            normalize_key_event_value(pop_unread_command_event_value(interp, env)?)?
-        };
-        if is_mouse_down_event(&event) {
-            let event_name =
-                input_event_symbol(&event).expect("mouse-down events have a symbolic head");
-            let key_parts = vec![Value::symbol(&event_name)];
-            let mut binding = Value::Nil;
-            for map in active_command_keymaps(interp, env)? {
-                binding = keymap_lookup_sequence_value_with_default(
-                    interp, &map, &key_parts, false, env,
-                )?;
-                if !binding.is_nil() {
-                    break;
-                }
-            }
-            // bindings.el installs this in GNU's dumped global map.  Keep
-            // the file-less bootstrap fallback aligned without treating all
-            // mouse-down events as bound.
-            if binding.is_nil() && key_parts == [Value::symbol("down-mouse-1")] {
-                binding = Value::Symbol("mouse-drag-region".into());
-            }
-            if binding.is_nil() {
-                continue;
-            }
-        }
-        return translate_mouse_read_key_sequence_event(interp, event, env);
-    }
 }
 
 pub(crate) fn record_command_history(
@@ -2223,16 +1919,10 @@ pub(crate) fn active_keymap_count(interp: &mut Interpreter, env: &mut Env) -> us
 }
 
 /// Pop the first `unread-command-events' entry, unwrapping GNU's
-/// `(t . EVENT)' don't-re-record form — read_char's front of the input
+/// `(t . EVENT)' requeued-event form — read_char's front of the input
 /// stream, consulted before the terminal.
 pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env) -> Option<Value> {
-    let events = interp.lookup_var("unread-command-events", env)?;
-    let mut events = events.to_vec().ok()?;
-    if events.is_empty() {
-        return None;
-    }
-    let event = events.remove(0);
-    interp.set_variable("unread-command-events", Value::list(events), env);
+    let event = pop_unread_event_cell(interp, env)?;
     match event.kind() {
         Kind::Cons(_) if matches!(event.car().map(|v| v.kind()), Ok(Kind::T)) => event.cdr().ok(),
         _ => Some(event),
@@ -2269,8 +1959,7 @@ pub(crate) fn read_tty_event_with_timeout(
     let deadline = std::time::Instant::now() + timeout;
     let started = std::time::Instant::now();
     loop {
-        if let Some(event) = take_unread_command_event(interp, env) {
-            record_external_input_event(interp, &event, env);
+        if let Some(event) = pop_pending_input_event_value(interp, env)? {
             return Ok(Some(event));
         }
         // A timed read is still wait_reading_process_output with keyboard
@@ -2347,8 +2036,15 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-pub(crate) type TtyMenuExecutor =
-    Box<dyn FnMut(&mut Interpreter, &mut Env, &TtyMenuPane, usize, usize) -> TtyMenuOutcome>;
+pub(crate) type TtyMenuExecutor = Box<
+    dyn FnMut(
+        &mut Interpreter,
+        &mut Env,
+        &TtyMenuPane,
+        usize,
+        usize,
+    ) -> Result<TtyMenuOutcome, LispError>,
+>;
 
 pub(crate) fn set_tty_menu_executor(executor: Option<TtyMenuExecutor>) {
     TTY_MENU_EXECUTOR.with_borrow_mut(|slot| *slot = executor);
@@ -2364,16 +2060,17 @@ pub(crate) fn run_tty_menu_executor(
     pane: &TtyMenuPane,
     x: usize,
     y: usize,
-) -> Option<TtyMenuOutcome> {
-    let executor = TTY_MENU_EXECUTOR.with_borrow_mut(|slot| slot.take());
-    let mut executor = executor?;
+) -> Result<Option<TtyMenuOutcome>, LispError> {
+    let Some(mut executor) = TTY_MENU_EXECUTOR.with_borrow_mut(|slot| slot.take()) else {
+        return Ok(None);
+    };
     let outcome = executor(interp, env, pane, x, y);
     TTY_MENU_EXECUTOR.with_borrow_mut(|slot| {
         if slot.is_none() {
             *slot = Some(executor);
         }
     });
-    Some(outcome)
+    outcome.map(Some)
 }
 
 /// tty_menu_show's pane construction: walk MENU's entries in keymap

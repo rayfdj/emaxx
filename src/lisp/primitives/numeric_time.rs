@@ -48,61 +48,106 @@ pub(crate) fn normalize_bigint_value(value: BigInt) -> Value {
     }
 }
 
-pub(crate) fn string_version_compare(left: &str, right: &str) -> Ordering {
-    let left_bytes = left.as_bytes();
-    let right_bytes = right.as_bytes();
-    let mut left_index = 0usize;
-    let mut right_index = 0usize;
-
-    while left_index < left_bytes.len() && right_index < right_bytes.len() {
-        let left_byte = left_bytes[left_index];
-        let right_byte = right_bytes[right_index];
-
-        if left_byte.is_ascii_digit() && right_byte.is_ascii_digit() {
-            let left_start = left_index;
-            while left_index < left_bytes.len() && left_bytes[left_index].is_ascii_digit() {
-                left_index += 1;
+/// fns.c:Fstring_version_lessp passes the actual bytes and lengths to
+/// GNU lib/filevercmp.c:filenvercmp (LGPL-3.0-or-later). Follow its empty
+/// and dot-name ordering, suffix passes and Debian digit-run comparison.
+/// Leading zeros are ignored; an equal version has no length tie-break.
+pub(crate) fn string_version_compare(left: &[u8], right: &[u8]) -> Ordering {
+    fn prefix_len(bytes: &[u8]) -> usize {
+        let mut index = 0;
+        let mut prefix = 0;
+        while index < bytes.len() {
+            index += 1;
+            prefix = index;
+            while index + 1 < bytes.len()
+                && bytes[index] == b'.'
+                && (bytes[index + 1].is_ascii_alphabetic() || bytes[index + 1] == b'~')
+            {
+                index += 2;
+                while index < bytes.len()
+                    && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'~')
+                {
+                    index += 1;
+                }
             }
-            let right_start = right_index;
-            while right_index < right_bytes.len() && right_bytes[right_index].is_ascii_digit() {
-                right_index += 1;
-            }
-
-            let left_digits = &left[left_start..left_index];
-            let right_digits = &right[right_start..right_index];
-            let left_trimmed = left_digits.trim_start_matches('0');
-            let right_trimmed = right_digits.trim_start_matches('0');
-            let left_normalized = if left_trimmed.is_empty() {
-                "0"
-            } else {
-                left_trimmed
-            };
-            let right_normalized = if right_trimmed.is_empty() {
-                "0"
-            } else {
-                right_trimmed
-            };
-
-            match left_normalized.len().cmp(&right_normalized.len()) {
-                Ordering::Equal => match left_normalized.cmp(right_normalized) {
-                    Ordering::Equal => {}
-                    ordering => return ordering,
-                },
-                ordering => return ordering,
-            }
-            continue;
         }
+        prefix
+    }
 
-        match left_byte.cmp(&right_byte) {
-            Ordering::Equal => {
-                left_index += 1;
-                right_index += 1;
-            }
-            ordering => return ordering,
+    fn order(byte: Option<u8>) -> i16 {
+        match byte {
+            None => -1,
+            Some(b'~') => -2,
+            Some(byte) if byte.is_ascii_digit() => 0,
+            Some(byte) if byte.is_ascii_alphabetic() => i16::from(byte),
+            Some(byte) => i16::from(byte) + 256,
         }
     }
 
-    left_bytes.len().cmp(&right_bytes.len())
+    fn revision_compare(left: &[u8], right: &[u8]) -> Ordering {
+        let (mut a, mut b) = (0, 0);
+        while a < left.len() || b < right.len() {
+            while left.get(a).is_some_and(|byte| !byte.is_ascii_digit())
+                || right.get(b).is_some_and(|byte| !byte.is_ascii_digit())
+            {
+                let result = order(left.get(a).copied()).cmp(&order(right.get(b).copied()));
+                if result != Ordering::Equal {
+                    return result;
+                }
+                a += 1;
+                b += 1;
+            }
+            while left.get(a) == Some(&b'0') {
+                a += 1;
+            }
+            while right.get(b) == Some(&b'0') {
+                b += 1;
+            }
+            let mut first_difference = Ordering::Equal;
+            while left.get(a).is_some_and(u8::is_ascii_digit)
+                && right.get(b).is_some_and(u8::is_ascii_digit)
+            {
+                if first_difference == Ordering::Equal {
+                    first_difference = left[a].cmp(&right[b]);
+                }
+                a += 1;
+                b += 1;
+            }
+            if left.get(a).is_some_and(u8::is_ascii_digit) {
+                return Ordering::Greater;
+            }
+            if right.get(b).is_some_and(u8::is_ascii_digit) {
+                return Ordering::Less;
+            }
+            if first_difference != Ordering::Equal {
+                return first_difference;
+            }
+        }
+        Ordering::Equal
+    }
+
+    if left.is_empty() || right.is_empty() {
+        return left.len().cmp(&right.len());
+    }
+    if left[0] == b'.' || right[0] == b'.' {
+        let dotted = (right[0] == b'.').cmp(&(left[0] == b'.'));
+        if dotted != Ordering::Equal {
+            return dotted;
+        }
+        for special in [b".".as_slice(), b"..".as_slice()] {
+            if left == special || right == special {
+                return (right == special).cmp(&(left == special));
+            }
+        }
+    }
+    let a = prefix_len(left);
+    let b = prefix_len(right);
+    let result = revision_compare(&left[..a], &right[..b]);
+    if result != Ordering::Equal || (a == left.len() && b == right.len()) {
+        result
+    } else {
+        revision_compare(left, right)
+    }
 }
 
 fn arity_value((minimum, maximum): (i64, i64)) -> Value {
@@ -279,26 +324,8 @@ pub(crate) fn function_arity_value(
 
     match function.kind() {
         Kind::BuiltinFunc(subr) => Ok(subr.arity_value()),
-        Kind::Lambda(lambda) => closure_arity_value(interp, &lambda.parameters(), function, env),
-        Kind::Record(id)
-            if interp
-                .find_record(id)
-                .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::Closure) =>
-        {
-            let argument_spec = interp
-                .find_record(id)
-                .and_then(|record| record.slots.first())
-                .ok_or_else(|| invalid_function_arity(function))?;
-            closure_arity_value(interp, argument_spec, function, env)
-        }
-        Kind::Record(id)
-            if interp.find_record(id).is_some_and(|record| {
-                record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
-            }) =>
-        {
-            let record = interp.find_record(id).expect("record checked above");
-            Ok(Value::cons(record.slots[1], record.slots[2]))
-        }
+        Kind::Closure(lambda) => closure_arity_value(interp, &lambda.parameters(), function, env),
+        Kind::NativeFunction(function) => Ok(function.arity_value()),
         Kind::Record(id) if interp.modules.functions.contains_key(&id.id) => {
             let function = &interp.modules.functions[&id.id];
             Ok(Value::cons(

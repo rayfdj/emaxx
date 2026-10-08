@@ -1,0 +1,14 @@
+{
+  "results": [
+    {
+      "source": "source195-unread-followup",
+      "base_commit": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199",
+      "patch_sha256": "efb539be2717cc66f5511724cf10bf01f3b07efe03a4692e19442be0cd7c95b8",
+      "manifest_sha256": "e77fa7396195d18d86ac902c27e7ade2d9a0bd4679524dbc7434a61e21cf3f8b",
+      "inputs_replayed_and_verified": 401,
+      "executable_modes_verified": true,
+      "passed": true
+    }
+  ],
+  "qualification": "Exact patch replay only. Compiler, runtime and terminal outcomes are separately recorded; this does not turn failed or unexecuted validation into passes."
+}

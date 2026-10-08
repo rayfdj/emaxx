@@ -1,0 +1,103 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "standalone_replay": "passed",
+    "same_binary_as_failed_full_run": true,
+    "startup_image_differs": true,
+    "helper_negative_controls_rejected": 5,
+    "qualification": "The standalone pass does not clear the failed full run. Debugger input validation and inspected ABI evidence are preserved; GDB execution on the retained full-run inputs is pending."
+  },
+  "archive": {
+    "path": "source198-reclamation-replay-and-debugger.tar.gz",
+    "bytes": 95721,
+    "sha256": "2ccf5afe2e4a8a6799a403d0072a02f689e93ed0d31c7b94f4c1d49c58a105f5"
+  },
+  "files": [
+    {
+      "path": "linux-source198-rust-replay-artifacts/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/metadata/ci-bwrap.apparmor",
+      "bytes": 335,
+      "sha256": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782"
+    },
+    {
+      "path": "linux-source198-rust-replay-artifacts/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/metadata/oracle.txt",
+      "bytes": 449,
+      "sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4"
+    },
+    {
+      "path": "linux-source198-rust-replay-artifacts/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust-replay/build.log",
+      "bytes": 174752,
+      "sha256": "19e6e5ed81191daf74aa103a0f8217f4b03d2d1aa4eb20e2ac8cf1375506906b"
+    },
+    {
+      "path": "linux-source198-rust-replay-artifacts/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust-replay/full-inventory.log",
+      "bytes": 261143,
+      "sha256": "f8df2e25f1897a2309296e0ce274aace8dcfcd77daa85713ff7872561e44a9b4"
+    },
+    {
+      "path": "linux-source198-rust-replay-artifacts/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust-replay/ignored-inventory.log",
+      "bytes": 22,
+      "sha256": "414c144fa67f1df75f7b14a69af5641637772e81c4c3fa0a171e3228adbb922e"
+    },
+    {
+      "path": "linux-source198-rust-replay-artifacts/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust-replay/replay.log",
+      "bytes": 205,
+      "sha256": "d775633b5d9ee8a5b63581d9f95db53a8cdcf0077d152a4f00dada5f83c3388f"
+    },
+    {
+      "path": "linux-source198-rust-replay-artifacts/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust-replay/selected-inventory.log",
+      "bytes": 105,
+      "sha256": "b66043150192ee58a02b7ebb177841960e1394ed1c90c29c796d07840a0111b6"
+    },
+    {
+      "path": "linux-source198-rust-replay-artifacts/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust-replay/summary.json",
+      "bytes": 2282,
+      "sha256": "ea5151136b9f8ff031ec589c40caa9ab12fe921c01cb3e188a04c3cca5ec3323"
+    },
+    {
+      "path": "source198-exact-diagnostic-helper-validation.json",
+      "bytes": 1624,
+      "sha256": "a8a0801d59bae9abfebb0df95c9f61c214fdf1c42b588c7f13f84b99cbdfafeb"
+    },
+    {
+      "path": "source198-exact-diagnostic-reproduction-validation.json",
+      "bytes": 1146,
+      "sha256": "acde49bd565381d41b04f6af20b8867f2fc339c47cf4712c0735172a6ef48e5a"
+    },
+    {
+      "path": "source198-linux-rust-replay-download.json",
+      "bytes": 324,
+      "sha256": "b1caeec94bc21e0e2567853cc81e7130dc0340777db6bca1b59aa9a90dae788c"
+    },
+    {
+      "path": "source198-linux-rust-replay-final-state.json",
+      "bytes": 4100,
+      "sha256": "2f5cd31079cae3b260be882f07b8095a4c516b05814d28f37560385185a8675c"
+    },
+    {
+      "path": "source198-retained-collect-disassembly.txt",
+      "bytes": 14329,
+      "sha256": "848f7b63ee9355098d8864451a9a84510cab4cd2e4430484354b3e9ca6a6225e"
+    },
+    {
+      "path": "source198-retained-gc-symbols.txt",
+      "bytes": 3653,
+      "sha256": "29d63f56d76c3b0c713009b9d2538d68843f206a48528f6f5992af3c3b9c1168"
+    },
+    {
+      "path": "source198-retained-insert-disassembly.txt",
+      "bytes": 46604,
+      "sha256": "22228c1bd01ddd1419fe4d9a89ba46b28884f0d8f3d8f7a675fb04de4a98df1e"
+    },
+    {
+      "path": "source198-retained-reachability-disassembly.txt",
+      "bytes": 74368,
+      "sha256": "aacecb96decc868560ee3c335777f8de8c6faad1421deefc09eacfe260ca1bea"
+    },
+    {
+      "path": "validate-retained-diagnostic-helper.py",
+      "bytes": 3228,
+      "sha256": "114d16c849cbe23ddb2672407d4640bc73917a45a3073e880ad7a377f1cdf82b"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

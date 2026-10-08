@@ -1,0 +1,4205 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "source_review": {
+      "status": "strict checks and source review passed; runtime validation queued",
+      "source_inputs_verified": 492,
+      "gnu_references": {
+        "src/fns.c": {
+          "sha256": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+          "anchors": {
+            "string_cmp (Lisp_Object string1": 473,
+            "DEFUN (\"string-lessp\"": 561,
+            "DEFUN (\"string-version-lessp\"": 579
+          }
+        },
+        "lib/filevercmp.c": {
+          "sha256": "1434d7b7b0afa7d009c42b19de41e8ac247631c1204ccd5a69ada85d0ade0c1f",
+          "anchors": {
+            "file_prefixlen (char const": 36,
+            "order (char const": 62,
+            "verrevcmp (const char": 92,
+            "filenvercmp (char const": 142
+          }
+        }
+      },
+      "strict_checks": {
+        "check": {
+          "exit_code": 0,
+          "elapsed_seconds": 22.169082749999998,
+          "source_unchanged": true
+        },
+        "fmt": {
+          "exit_code": 0,
+          "elapsed_seconds": 1.593628167000002,
+          "source_unchanged": true
+        },
+        "clippy": {
+          "exit_code": 0,
+          "elapsed_seconds": 27.966385375,
+          "source_unchanged": true
+        },
+        "diff": {
+          "exit_code": 0,
+          "elapsed_seconds": 0.15510954100000163,
+          "source_unchanged": true
+        }
+      },
+      "unchanged_original_version_contract": "src/lisp/primitives/compat_runtime_tests/compat_03.rs",
+      "mechanisms": [
+        "Actual symbol-name strings and positioned-symbol flag resolution share the existing canonical string argument helper.",
+        "String order follows GNU bytewise fast paths, common multibyte prefix and full internal character comparison; mixed unibyte characters remain octets.",
+        "Version order follows filenvercmp on actual bytes, including embedded NUL, arbitrary digit length, tilde, dot-name priority and both suffix passes. Equal numbers ignore leading zeros without the old length tie-break.",
+        "The old host-text argument helper and explicit decoded text/character-vector intermediates in these two paths are removed."
+      ],
+      "limits": [
+        "No runtime, complete platform or performance pass for source262 yet.",
+        "Other consumers, including compare-strings case/range handling and platform collation, remain outside this repair.",
+        "Compact string headers, physical accounting, public ownership and the locked performance goal remain open."
+      ],
+      "goal_complete": false
+    },
+    "negative_probes": {
+      "status": "ordinary GNU ordering gaps confirmed",
+      "comparisons": [
+        {
+          "fixture": "string-ordering-symbol-storage",
+          "fixture_sha256": "0edf65ff06b4f1bda6d7a8c27ad7f09e957e7c9dfcd244a973e1bf43a85471fc",
+          "compared_rows": 1024,
+          "current_wrong": 154,
+          "main_wrong": 154,
+          "newly_wrong_rows": [
+            [
+              "string-lessp",
+              "nil",
+              "private-text",
+              "byte-symbol"
+            ],
+            [
+              "string-lessp",
+              "nil",
+              "private-text",
+              "private-symbol"
+            ],
+            [
+              "string-lessp",
+              "t",
+              "private-text",
+              "byte-symbol"
+            ],
+            [
+              "string-lessp",
+              "t",
+              "private-text",
+              "private-symbol"
+            ]
+          ],
+          "repaired_rows": [
+            [
+              "string-lessp",
+              "nil",
+              "private-text",
+              "byte8-symbol"
+            ],
+            [
+              "string-lessp",
+              "nil",
+              "private-text",
+              "byte8-text"
+            ],
+            [
+              "string-lessp",
+              "t",
+              "private-text",
+              "byte8-symbol"
+            ],
+            [
+              "string-lessp",
+              "t",
+              "private-text",
+              "byte8-text"
+            ]
+          ],
+          "changed_wrong_rows": [],
+          "inputs": {
+            "gnu": {
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/string-ordering-symbol-storage.el": "0edf65ff06b4f1bda6d7a8c27ad7f09e957e7c9dfcd244a973e1bf43a85471fc",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-source261-string-ordering.py": "deecc88e26cd88fc97ab9c038188db81be03d5557af1c25c90898f34e6542e2d",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/config.h": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/Makefile": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/fns.c": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/lib/filevercmp.c": "1434d7b7b0afa7d009c42b19de41e8ac247631c1204ccd5a69ada85d0ade0c1f"
+            },
+            "source261": {
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/string-ordering-symbol-storage.el": "0edf65ff06b4f1bda6d7a8c27ad7f09e957e7c9dfcd244a973e1bf43a85471fc",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-source261-string-ordering.py": "deecc88e26cd88fc97ab9c038188db81be03d5557af1c25c90898f34e6542e2d",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-comparisons/emaxx/target/string-comparison-validation/release/emaxx": "332e1aaaf04e0534096f5719b1bc7ed76cbac59409fe2e59c54187da7a4a7a36",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-comparisons/emaxx/target/string-comparison-validation/release/emaxx.pdmp": "f2200c7191c029ec78f74aad8195f3ac5f6b23515667cf9a2d60b362dfa3b2db",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/config.h": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/Makefile": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/fns.c": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/lib/filevercmp.c": "1434d7b7b0afa7d009c42b19de41e8ac247631c1204ccd5a69ada85d0ade0c1f"
+            },
+            "source174": {
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/string-ordering-symbol-storage.el": "0edf65ff06b4f1bda6d7a8c27ad7f09e957e7c9dfcd244a973e1bf43a85471fc",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-source261-string-ordering.py": "deecc88e26cd88fc97ab9c038188db81be03d5557af1c25c90898f34e6542e2d",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/combined/emaxx/target/frame-validation/release/emaxx": "58c99422ffe229e549b8046eb49ceaf578e1c2770ef6d53567b8ac00f355fa3c",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/combined/emaxx/target/frame-validation/release/emaxx.pdmp": "ee5d89a296b655ca5a690d26624643c6cb93c319470590123329fd6a4d56b43a",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/config.h": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/Makefile": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/fns.c": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/lib/filevercmp.c": "1434d7b7b0afa7d009c42b19de41e8ac247631c1204ccd5a69ada85d0ade0c1f"
+            }
+          },
+          "differences": [
+            {
+              "key": [
+                "string-lessp",
+                "nil",
+                "byte-symbol",
+                "byte8-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "nil",
+                "byte-symbol",
+                "byte8-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "nil",
+                "byte-symbol",
+                "private-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "nil",
+                "byte-symbol",
+                "private-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "nil",
+                "byte-text",
+                "byte-symbol"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "nil",
+                "private-symbol",
+                "byte8-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "nil",
+                "private-symbol",
+                "byte8-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "nil",
+                "private-text",
+                "byte-symbol"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "nil",
+                "private-text",
+                "byte8-symbol"
+              ],
+              "gnu": "t",
+              "source261": "t",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "nil",
+                "private-text",
+                "byte8-text"
+              ],
+              "gnu": "t",
+              "source261": "t",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "nil",
+                "private-text",
+                "private-symbol"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "nil-symbol",
+                "positioned-plain"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "nil-symbol",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "nil-text",
+                "positioned-plain"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "nil-text",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "true-symbol",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "true-symbol",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "true-text",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "true-text",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "plain-symbol",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "plain-symbol",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "plain-text",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "plain-text",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "byte-symbol",
+                "byte8-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "byte-symbol",
+                "byte8-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "byte-symbol",
+                "private-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "byte-symbol",
+                "private-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "byte-symbol",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "byte-symbol",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "byte-text",
+                "byte-symbol"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "byte-text",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "byte-text",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "byte8-symbol",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "byte8-symbol",
+                "positioned-byte8"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "byte8-text",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "byte8-text",
+                "positioned-byte8"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "private-symbol",
+                "byte8-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "private-symbol",
+                "byte8-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "private-symbol",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "private-symbol",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "private-text",
+                "byte-symbol"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "private-text",
+                "byte8-symbol"
+              ],
+              "gnu": "t",
+              "source261": "t",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "private-text",
+                "byte8-text"
+              ],
+              "gnu": "t",
+              "source261": "t",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "private-text",
+                "private-symbol"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "private-text",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "private-text",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "nil-symbol"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "nil-text"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "true-symbol"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "true-text"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "plain-symbol"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "plain-text"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "byte-symbol"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "byte-text"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "byte8-symbol"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "byte8-text"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "private-symbol"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "private-text"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "invalid-number"
+              ],
+              "gnu": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-plain",
+                "invalid-vector"
+              ],
+              "gnu": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "nil-symbol"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "nil-text"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "true-symbol"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "true-text"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "plain-symbol"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "plain-text"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "byte-symbol"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "byte-text"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "byte8-symbol"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "byte8-text"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "private-symbol"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "private-text"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "positioned-byte8"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "invalid-number"
+              ],
+              "gnu": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-lessp",
+                "t",
+                "positioned-byte8",
+                "invalid-vector"
+              ],
+              "gnu": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "nil",
+                "byte-symbol",
+                "byte8-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "nil",
+                "byte-symbol",
+                "byte8-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "nil",
+                "byte-symbol",
+                "private-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "nil",
+                "byte-symbol",
+                "private-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "nil",
+                "byte-text",
+                "byte8-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "nil",
+                "byte-text",
+                "byte8-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "nil",
+                "byte-text",
+                "private-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "nil",
+                "byte-text",
+                "private-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "nil",
+                "byte8-symbol",
+                "private-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "nil",
+                "byte8-symbol",
+                "private-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "nil",
+                "byte8-text",
+                "private-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "nil",
+                "byte8-text",
+                "private-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "nil-symbol",
+                "positioned-plain"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "nil-symbol",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "nil-text",
+                "positioned-plain"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "nil-text",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "true-symbol",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "true-symbol",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "true-text",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "true-text",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "plain-symbol",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "plain-symbol",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "plain-text",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "plain-text",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte-symbol",
+                "byte8-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte-symbol",
+                "byte8-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte-symbol",
+                "private-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte-symbol",
+                "private-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte-symbol",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte-symbol",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte-text",
+                "byte8-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte-text",
+                "byte8-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte-text",
+                "private-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte-text",
+                "private-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte-text",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte-text",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte8-symbol",
+                "private-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte8-symbol",
+                "private-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte8-symbol",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte8-symbol",
+                "positioned-byte8"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte8-text",
+                "private-symbol"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte8-text",
+                "private-text"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte8-text",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "byte8-text",
+                "positioned-byte8"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "private-symbol",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "private-symbol",
+                "positioned-byte8"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "private-text",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "private-text",
+                "positioned-byte8"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "nil-symbol"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "nil-text"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "true-symbol"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "true-text"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "plain-symbol"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "plain-text"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "byte-symbol"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "byte-text"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "byte8-symbol"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "byte8-text"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "private-symbol"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "private-text"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "positioned-byte8"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "invalid-number"
+              ],
+              "gnu": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-plain",
+                "invalid-vector"
+              ],
+              "gnu": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "nil-symbol"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "nil-text"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "true-symbol"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "true-text"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "plain-symbol"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "plain-text"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "byte-symbol"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "byte-text"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "byte8-symbol"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "byte8-text"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "private-symbol"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "private-text"
+              ],
+              "gnu": "t",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "positioned-plain"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "positioned-byte8"
+              ],
+              "gnu": "nil",
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "t"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "invalid-number"
+              ],
+              "gnu": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            },
+            {
+              "key": [
+                "string-version-lessp",
+                "t",
+                "positioned-byte8",
+                "invalid-vector"
+              ],
+              "gnu": [
+                "wrong-type-argument",
+                "stringp",
+                "nil",
+                "t"
+              ],
+              "source261": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ],
+              "source174": [
+                "wrong-type-argument",
+                "stringp",
+                "t",
+                "nil"
+              ]
+            }
+          ],
+          "current_wrong_by_primitive": {
+            "string-lessp": 74,
+            "string-version-lessp": 80
+          },
+          "main_wrong_by_primitive": {
+            "string-lessp": 74,
+            "string-version-lessp": 80
+          }
+        },
+        {
+          "fixture": "string-version-ordering",
+          "fixture_sha256": "657af0579cd7d6ae8007b12690d49562c818fa579260a1f284e2a15cb7c58389",
+          "compared_rows": 400,
+          "current_wrong": 56,
+          "main_wrong": 56,
+          "newly_wrong_rows": [],
+          "repaired_rows": [],
+          "changed_wrong_rows": [],
+          "inputs": {
+            "gnu": {
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/string-version-ordering.el": "657af0579cd7d6ae8007b12690d49562c818fa579260a1f284e2a15cb7c58389",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-source261-string-ordering.py": "deecc88e26cd88fc97ab9c038188db81be03d5557af1c25c90898f34e6542e2d",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/config.h": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/Makefile": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/fns.c": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/lib/filevercmp.c": "1434d7b7b0afa7d009c42b19de41e8ac247631c1204ccd5a69ada85d0ade0c1f"
+            },
+            "source261": {
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/string-version-ordering.el": "657af0579cd7d6ae8007b12690d49562c818fa579260a1f284e2a15cb7c58389",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-source261-string-ordering.py": "deecc88e26cd88fc97ab9c038188db81be03d5557af1c25c90898f34e6542e2d",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-comparisons/emaxx/target/string-comparison-validation/release/emaxx": "332e1aaaf04e0534096f5719b1bc7ed76cbac59409fe2e59c54187da7a4a7a36",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/string-comparisons/emaxx/target/string-comparison-validation/release/emaxx.pdmp": "f2200c7191c029ec78f74aad8195f3ac5f6b23515667cf9a2d60b362dfa3b2db",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/config.h": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/Makefile": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/fns.c": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/lib/filevercmp.c": "1434d7b7b0afa7d009c42b19de41e8ac247631c1204ccd5a69ada85d0ade0c1f"
+            },
+            "source174": {
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/string-version-ordering.el": "657af0579cd7d6ae8007b12690d49562c818fa579260a1f284e2a15cb7c58389",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-source261-string-ordering.py": "deecc88e26cd88fc97ab9c038188db81be03d5557af1c25c90898f34e6542e2d",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/combined/emaxx/target/frame-validation/release/emaxx": "58c99422ffe229e549b8046eb49ceaf578e1c2770ef6d53567b8ac00f355fa3c",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/combined/emaxx/target/frame-validation/release/emaxx.pdmp": "ee5d89a296b655ca5a690d26624643c6cb93c319470590123329fd6a4d56b43a",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/config.h": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/Makefile": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/fns.c": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+              "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/lib/filevercmp.c": "1434d7b7b0afa7d009c42b19de41e8ac247631c1204ccd5a69ada85d0ade0c1f"
+            }
+          },
+          "differences": [
+            {
+              "key": [
+                "base",
+                "prerelease"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "base",
+                "zero"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "prerelease",
+                "base"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "prerelease",
+                "zero"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "prerelease",
+                "one"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "prerelease",
+                "one-zero"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "prerelease",
+                "one-more-zeros"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "prerelease",
+                "two"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "prerelease",
+                "twelve"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "prerelease",
+                "suffix"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "prerelease",
+                "version-suffix"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "prerelease",
+                "other-suffix"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "prerelease",
+                "long-number"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "prerelease",
+                "long-zero-number"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "prerelease",
+                "embedded-nul"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "zero",
+                "prerelease"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "zero",
+                "suffix"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "zero",
+                "embedded-nul"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "one",
+                "prerelease"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "one",
+                "one-zero"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "one",
+                "one-more-zeros"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "one",
+                "embedded-nul"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "one-zero",
+                "prerelease"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "one-zero",
+                "one-more-zeros"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "one-zero",
+                "embedded-nul"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "one-more-zeros",
+                "prerelease"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "one-more-zeros",
+                "embedded-nul"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "two",
+                "prerelease"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "two",
+                "embedded-nul"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "twelve",
+                "prerelease"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "twelve",
+                "embedded-nul"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "suffix",
+                "prerelease"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "suffix",
+                "zero"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "suffix",
+                "embedded-nul"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "version-suffix",
+                "prerelease"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "version-suffix",
+                "embedded-nul"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "other-suffix",
+                "prerelease"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "other-suffix",
+                "embedded-nul"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "numeric-prefix",
+                "zero-prefix"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "long-number",
+                "prerelease"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "long-number",
+                "long-zero-number"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "long-number",
+                "embedded-nul"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "long-zero-number",
+                "prerelease"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "long-zero-number",
+                "embedded-nul"
+              ],
+              "gnu": "t",
+              "source261": "nil",
+              "source174": "nil"
+            },
+            {
+              "key": [
+                "embedded-nul",
+                "prerelease"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "embedded-nul",
+                "zero"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "embedded-nul",
+                "one"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "embedded-nul",
+                "one-zero"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "embedded-nul",
+                "one-more-zeros"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "embedded-nul",
+                "two"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "embedded-nul",
+                "twelve"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "embedded-nul",
+                "suffix"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "embedded-nul",
+                "version-suffix"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "embedded-nul",
+                "other-suffix"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "embedded-nul",
+                "long-number"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            },
+            {
+              "key": [
+                "embedded-nul",
+                "long-zero-number"
+              ],
+              "gnu": "nil",
+              "source261": "t",
+              "source174": "t"
+            }
+          ]
+        }
+      ],
+      "gnu_references": {
+        "src/fns.c": {
+          "sha256": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+          "anchors": {
+            "DEFUN (\"string-lessp\"": 561,
+            "DEFUN (\"string-version-lessp\"": 579
+          }
+        },
+        "lib/filevercmp.c": {
+          "sha256": "1434d7b7b0afa7d009c42b19de41e8ac247631c1204ccd5a69ada85d0ade0c1f",
+          "anchors": {
+            "file_prefixlen (": 36,
+            "order (": 62,
+            "verrevcmp (": 92,
+            "filenvercmp (": 136
+          }
+        }
+      },
+      "goal_complete": false,
+      "qualification": "All six ordinary processes exited zero with empty stderr; every input/output hash and complete matrix is verified. Historical attribution applies only to these rows on the retained source174/main executable/image. No full compatibility, general regression absence or performance claim. Source261 selected validation and active complete runs remain separate; no existing selector, expectation or runtime input changes."
+    },
+    "historical_controls": {
+      "status": "historical controls verified",
+      "rows": [
+        {
+          "source": "source207",
+          "matches_all_1024_rows_of": "source174",
+          "stdout_sha256": "4d3ddcd6cbd0a6d783767de90c9a4f27882f6c6c9ead26eafcfd7c31bd98d71b",
+          "inputs": {
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/string-ordering-symbol-storage.el": "0edf65ff06b4f1bda6d7a8c27ad7f09e957e7c9dfcd244a973e1bf43a85471fc",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-source261-string-ordering-origins.py": "ad127c93a4f5a1c2014c09e9009e59a58e8500b79afcb314c1b61df9387f9d05",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/eval-frames/emaxx/target/frame-validation/release/emaxx": "ed5f6135248b45d787d6dfb48e9b7321116adc03bbcbbe28d7e78a0bcadd876c",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/eval-frames/emaxx/target/frame-validation/release/emaxx.pdmp": "7be596586c2f53c0beb1987c374ec7c30a6e647a6ebff61453cca778f0b1cbb4",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/config.h": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/Makefile": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/fns.c": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/lib/filevercmp.c": "1434d7b7b0afa7d009c42b19de41e8ac247631c1204ccd5a69ada85d0ade0c1f"
+          }
+        },
+        {
+          "source": "source249",
+          "matches_all_1024_rows_of": "source261",
+          "stdout_sha256": "77556e8ec8dc089bcfc80fd31fda65cd7d9352e1624d7dd16709274bd1d7edbd",
+          "inputs": {
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/string-ordering-symbol-storage.el": "0edf65ff06b4f1bda6d7a8c27ad7f09e957e7c9dfcd244a973e1bf43a85471fc",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/probe-source261-string-ordering-origins.py": "ad127c93a4f5a1c2014c09e9009e59a58e8500b79afcb314c1b61df9387f9d05",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/coding-post-read/emaxx/target/frame-validation/release/emaxx": "5a1921c8f8d1a2b1a487954ecef1b767b8bcfcd87661bcad7331612860e279bc",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-09-30/coding-post-read/emaxx/target/frame-validation/release/emaxx.pdmp": "acf1b2b1bc776b22889a139963c68aa1769a974d10dbffe0063427c0401b62cc",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/config.h": "ba11e71bc6cf0ba487eaa59f10b814a93a00a2ffa03289b3b954bfa300340a75",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/Makefile": "d46190fc092cfd574ce633b72d137fd2b873d258968346abba3b8e593f0bc778",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/fns.c": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+            "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/lib/filevercmp.c": "1434d7b7b0afa7d009c42b19de41e8ac247631c1204ccd5a69ada85d0ade0c1f"
+          }
+        }
+      ],
+      "newly_wrong_since_main": [
+        [
+          "string-lessp",
+          "nil",
+          "private-text",
+          "byte-symbol"
+        ],
+        [
+          "string-lessp",
+          "nil",
+          "private-text",
+          "private-symbol"
+        ],
+        [
+          "string-lessp",
+          "t",
+          "private-text",
+          "byte-symbol"
+        ],
+        [
+          "string-lessp",
+          "t",
+          "private-text",
+          "private-symbol"
+        ]
+      ],
+      "qualification": "All 1024 ordering rows of source207 equal retained main/source174; all 1024 rows of source249 equal source261. The four newly wrong and four repaired rows therefore changed after source207 and by source249; the exact introducing commit is not established. The common-string source261 change adds no new ordering difference relative to source249 in this matrix. Existing defects and these regressions remain open; this does not establish general regression absence.",
+      "goal_complete": false
+    },
+    "launch": {
+      "pid": 38430,
+      "command": [
+        "/Library/Developer/CommandLineTools/usr/bin/python3",
+        "-B",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/queue-string-ordering262-validation.py"
+      ],
+      "helper_sha256": "008d28d6ba1e2da27aea47f5090b3fe5b0b6bd88c1b3c4bbf6b0104d48d5fb20",
+      "started_at_unix": 1790879769.488781,
+      "source_manifest": "source262-manifest.json",
+      "qualification": "Waits for the complete source261 macOS Rust/frozen/terminal supervisor to exit before running this isolated draft. A queued command is not a passing test."
+    },
+    "qualification": "Unapplied 492-input source262 ordering repair follows actual GNU string_cmp and filenvercmp. Both patches replay exactly and strict checks have zero warnings. The unchanged GNU matrices retain 154 wrong symbol/storage results and 56 wrong version results in source261. All 1024 symbol rows match source249; source207 matches main. Four wrong and four repaired rows changed between source207 and source249; exact introducing commit is not established. Version negatives match main exactly. Runtime queue38430 waits for complete source261 macOS exit, then runs 194 focused/1050 affected controls in each profile and 24 ordinary comparisons. No runtime pass or performance claim for the draft."
+  },
+  "archive": {
+    "path": "source262-string-ordering-draft.tar.gz",
+    "bytes": 536704,
+    "sha256": "30ac3507c087d9f17942e92b2d5f88d86b5972adb4455ae67558d6c755465fce"
+  },
+  "files": [
+    {
+      "path": "audit-source261-string-ordering.py",
+      "bytes": 5658,
+      "sha256": "b9cdade74cf4747146a4841ad02a8fa73d8f74e9e8329a4cfb17b9d326a6f62c"
+    },
+    {
+      "path": "audit-source262-string-ordering-patches.py",
+      "bytes": 3085,
+      "sha256": "ebb77a83cbb69a7c3d495e192930a02fd1823698120d208141153c870c9bb293"
+    },
+    {
+      "path": "audit-string-equality-symbol-names-positioned-negative.py",
+      "bytes": 3276,
+      "sha256": "66994784ab8813948438adc4f7e683c3d3c332853aa47a4d28c4b8314076f889"
+    },
+    {
+      "path": "audit-string-ordering-focused.py",
+      "bytes": 3803,
+      "sha256": "468dd329b22b6dbf10f3bf3dd1b926f551c7774e7709dab017f3e3f6fca974c1"
+    },
+    {
+      "path": "audit-string-ordering-release.py",
+      "bytes": 4652,
+      "sha256": "04be1543a1ffd70f027de8222bd9eced7abd2a3153fcb45f38aa47358ed9bf3a"
+    },
+    {
+      "path": "build-string-ordering-ordinary.py",
+      "bytes": 2477,
+      "sha256": "efaf331718a67067b9a6d079e66784205c37b2516438918a44895028dfba497d"
+    },
+    {
+      "path": "check-string-ordering-draft.py",
+      "bytes": 2662,
+      "sha256": "91ef900f6e6a67334276666db15ffb2152812f9c303f2e1b04e66d3bbca7e464"
+    },
+    {
+      "path": "compare-string-ordering-fixtures.py",
+      "bytes": 4040,
+      "sha256": "d750160370b6bc92155ecf82c9d1484de40dc96d58bfdb72710ee3a48267afcb"
+    },
+    {
+      "path": "freeze-string-ordering.py",
+      "bytes": 2679,
+      "sha256": "5006d91a0b597c4f331ce885d2d1c1bac73e24d6c78d0934072d065d21c6be28"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "package-source261-macos-and262-ordering.py",
+      "bytes": 6433,
+      "sha256": "e3e36b9ecdeef1fcff7cd6ba082935288bf2348a04cf18a090c7a14beeefb682"
+    },
+    {
+      "path": "probe-source261-string-ordering-origins.py",
+      "bytes": 3762,
+      "sha256": "ad127c93a4f5a1c2014c09e9009e59a58e8500b79afcb314c1b61df9387f9d05"
+    },
+    {
+      "path": "probe-source261-string-ordering.py",
+      "bytes": 3761,
+      "sha256": "deecc88e26cd88fc97ab9c038188db81be03d5557af1c25c90898f34e6542e2d"
+    },
+    {
+      "path": "queue-string-ordering262-validation.py",
+      "bytes": 5143,
+      "sha256": "008d28d6ba1e2da27aea47f5090b3fe5b0b6bd88c1b3c4bbf6b0104d48d5fb20"
+    },
+    {
+      "path": "run-string-ordering-focused.py",
+      "bytes": 6241,
+      "sha256": "a9fe0beae1321bf1abfce7c0b758274b860c52896827f3172f2c3ffc35b939c1"
+    },
+    {
+      "path": "run-string-ordering-release.py",
+      "bytes": 6286,
+      "sha256": "41df685ea1c929eb0ec0a630936bdd1ddbc021811369581ee55624a9cc2ba6cf"
+    },
+    {
+      "path": "source174-ordinary-artifacts.json",
+      "bytes": 736,
+      "sha256": "792c48f6f5dc1c66d901a8bfdc4412e88f421dd7230104dc9b347e00c8416d4a"
+    },
+    {
+      "path": "source207-ordinary-artifacts.json",
+      "bytes": 742,
+      "sha256": "9d1faaf5f38a7740356a8cd6c70dab1e808f6c334ab467ce311be144893ce4d6"
+    },
+    {
+      "path": "source249-gate-broad-command.json",
+      "bytes": 174181,
+      "sha256": "821e1305e17695b7eee9550c3de51800735059e7c6aca160760d9830935e274a"
+    },
+    {
+      "path": "source249-gate-controls-command.json",
+      "bytes": 31106,
+      "sha256": "c3a9d0ff5919a4d45ba64c87351ff600d23fc5b84e186ba736ea2cc5cb6ab768"
+    },
+    {
+      "path": "source249-ordinary-artifacts.json",
+      "bytes": 752,
+      "sha256": "6990dd1cbf77429b56ab213c98aa0deb109091bcf86a2440b141de99d1acf0f5"
+    },
+    {
+      "path": "source249-release-broad-command.json",
+      "bytes": 174184,
+      "sha256": "85e3ac7f11b4564aa82e6764ac49f84520e46adcf74d29fc5ac5bb475c2efed8"
+    },
+    {
+      "path": "source255-gate-controls-command.json",
+      "bytes": 32961,
+      "sha256": "9fc56add548abc30c45366241bdac8e50b6b6062fe85e61531f3b55f1f60b809"
+    },
+    {
+      "path": "source255-gate-inventory.log",
+      "bytes": 265251,
+      "sha256": "b6b275b9d7114a9a0034f6ea109f324362c37e3906340c029c2e19a3bb2fbee3"
+    },
+    {
+      "path": "source261-gate-broad-command.json",
+      "bytes": 175730,
+      "sha256": "7adbd58e55a5a6b05c9dd28c5bfbe533c0f44b29277cb386c7cce251cefa24f2"
+    },
+    {
+      "path": "source261-gate-controls-command.json",
+      "bytes": 34325,
+      "sha256": "2a63acac530ba1993598ffa4ea9754048c7e447a4ecc6245503d85612010db9f"
+    },
+    {
+      "path": "source261-manifest.json",
+      "bytes": 56077,
+      "sha256": "784c94f223f69f48250a2439c0981c2e8f38b667dfc7609f2058087f0f80eda1"
+    },
+    {
+      "path": "source261-ordinary-artifacts.json",
+      "bytes": 780,
+      "sha256": "62b3fc6baa8d99ab0871071843067f1b8e6e1905029194b8f8ff832d7bb40668"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-gnu-command.json",
+      "bytes": 3679,
+      "sha256": "80f4d0504ac5b84d18a9f4eccad39a90b4798a01c6c88c9b131929ed4071a1b5"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-gnu-result.json",
+      "bytes": 380,
+      "sha256": "9f887d7116aa574cf1947fccef25ae6ff4baa5bf2ea87953fbfd113a6e60a136"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-gnu.stdout",
+      "bytes": 63157,
+      "sha256": "9fe453d9fb3276844168cf7115c2cb88064f8008075f717e6c59ac16f705ee6d"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source174-command.json",
+      "bytes": 3796,
+      "sha256": "373a3b35e7b66c7db3a40cf0a306340aedc4fb082ebc85f0af9e80d1a42e4239"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source174-result.json",
+      "bytes": 386,
+      "sha256": "60ada2e46476216299085e2b1d0cc9e1175b8ff2f9641b7e510dd9261807b24d"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source174.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source174.stdout",
+      "bytes": 66621,
+      "sha256": "4d3ddcd6cbd0a6d783767de90c9a4f27882f6c6c9ead26eafcfd7c31bd98d71b"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source207-command.json",
+      "bytes": 3856,
+      "sha256": "a81b56f874ef28276d24cdbf7edb7633d605c892a2b1fe243925e386b894d65a"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source207-result.json",
+      "bytes": 376,
+      "sha256": "1a485f44307350e3e3b0030d0be39f1e56021bd839f696ff5d336becbaef5db5"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source207.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source207.stdout",
+      "bytes": 66621,
+      "sha256": "4d3ddcd6cbd0a6d783767de90c9a4f27882f6c6c9ead26eafcfd7c31bd98d71b"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source249-command.json",
+      "bytes": 3871,
+      "sha256": "6b27691b869523c559ae230854cb4d07792c91bc8b8f0f04f482fdd45e359a9e"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source249-result.json",
+      "bytes": 386,
+      "sha256": "7eefd17ccef7b4598204f329cc2eefb197be8121324c89da013aab92616a7999"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source249.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source249.stdout",
+      "bytes": 66605,
+      "sha256": "77556e8ec8dc089bcfc80fd31fda65cd7d9352e1624d7dd16709274bd1d7edbd"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source261-command.json",
+      "bytes": 3862,
+      "sha256": "4c78a876614c1d23e79d0d3749b5aa3545bf673a04fe46555269529cb6e3cccf"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source261-result.json",
+      "bytes": 377,
+      "sha256": "3bfb420ccdd02c571a8ac6154448a465b4c9a4a6a847c19718ee29d0cccce3a6"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source261.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-string-ordering-symbol-storage-source261.stdout",
+      "bytes": 66605,
+      "sha256": "77556e8ec8dc089bcfc80fd31fda65cd7d9352e1624d7dd16709274bd1d7edbd"
+    },
+    {
+      "path": "source261-probe-string-version-ordering-gnu-command.json",
+      "bytes": 3071,
+      "sha256": "d027cb94c28280997b9a9a5a0997af65017ebb9c80dbd861def545abdadb68c0"
+    },
+    {
+      "path": "source261-probe-string-version-ordering-gnu-result.json",
+      "bytes": 373,
+      "sha256": "b317ab2cef35fe7d6ba6047f564caf3cc6bcf0584e29169777e31434da9cc893"
+    },
+    {
+      "path": "source261-probe-string-version-ordering-gnu.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-string-version-ordering-gnu.stdout",
+      "bytes": 9553,
+      "sha256": "d51f0fd7a30347c5fd6f220ee7c1d5cea243041a9b11ee03c706d07fadab0d3b"
+    },
+    {
+      "path": "source261-probe-string-version-ordering-source174-command.json",
+      "bytes": 3188,
+      "sha256": "898a11107ed91f021cc5995bca41be2a59f12f3413c1fff23c86ffd1417378ad"
+    },
+    {
+      "path": "source261-probe-string-version-ordering-source174-result.json",
+      "bytes": 379,
+      "sha256": "a3c31538af05b16124ddbb63f13d85c7f312b3e0f9b596162597cc57390b5672"
+    },
+    {
+      "path": "source261-probe-string-version-ordering-source174.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-string-version-ordering-source174.stdout",
+      "bytes": 9541,
+      "sha256": "1db57e4a2c45015d057851d1da07da4000bfb04496a680cc220b803a3ab4a39b"
+    },
+    {
+      "path": "source261-probe-string-version-ordering-source261-command.json",
+      "bytes": 3254,
+      "sha256": "e9a6f2bd693b06a4dcd092671336b9118bcc9c8e1374285650c8a0055b792b9c"
+    },
+    {
+      "path": "source261-probe-string-version-ordering-source261-result.json",
+      "bytes": 378,
+      "sha256": "faa5038b33eed115d3919769bb8470263dc4421967b730073900fe3a0adab8b0"
+    },
+    {
+      "path": "source261-probe-string-version-ordering-source261.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source261-probe-string-version-ordering-source261.stdout",
+      "bytes": 9541,
+      "sha256": "1db57e4a2c45015d057851d1da07da4000bfb04496a680cc220b803a3ab4a39b"
+    },
+    {
+      "path": "source261-release-broad-command.json",
+      "bytes": 175733,
+      "sha256": "c2750e75f52ebeaa290732068ea967b02bae255df5667d7b8159de5aa3b36985"
+    },
+    {
+      "path": "source261-string-ordering-negative-audit.json",
+      "bytes": 83634,
+      "sha256": "e785effadfa1cab170a9d82bd66c613d49356551be63bf7450b4a41a5253ff38"
+    },
+    {
+      "path": "source261-string-ordering-origin-audit.json",
+      "bytes": 4337,
+      "sha256": "21593cd4e414648d5c8b69856f5e80d9568b3f10473d9d18928b7972e3c602b8"
+    },
+    {
+      "path": "source261-string-ordering-origin-probes.json",
+      "bytes": 1050,
+      "sha256": "614980c08f8ab762ad476c0498a6190a10efbb64e1b16e9edbae642653f9329b"
+    },
+    {
+      "path": "source261-string-ordering-probes.json",
+      "bytes": 2745,
+      "sha256": "84e5eb8b195bd3ed65d49b383c706f8f7ec590f52fd5074a413d8dea5a960c1b"
+    },
+    {
+      "path": "source262-c-reference-review.json",
+      "bytes": 2318,
+      "sha256": "76e087af675566298843e71661bca226b88a9099452a7a33edb1819f907856dd"
+    },
+    {
+      "path": "source262-check-command.json",
+      "bytes": 558,
+      "sha256": "0f3fd504d7e5c19d2104468cfe1f490b3a4718d921f20ddb46d2030ab2eba751"
+    },
+    {
+      "path": "source262-check-result.json",
+      "bytes": 89,
+      "sha256": "c4a3ab3469f31c2ab88d5f1bf85ec8afa81882fb8278dbce3ee10baaae139af8"
+    },
+    {
+      "path": "source262-check.log",
+      "bytes": 197,
+      "sha256": "7143e8a668fc41d27e2c277e7bf4bffcb959ddf833291082bc726133a2554839"
+    },
+    {
+      "path": "source262-clippy-command.json",
+      "bytes": 595,
+      "sha256": "31b385456badd52275456459ec86d3a6ea2ed712c63554f60e1aa94ef91c558e"
+    },
+    {
+      "path": "source262-clippy-result.json",
+      "bytes": 83,
+      "sha256": "1e905af58203333226db230ffb606f770084bbb3c1c49fb99c9e107b9254c1f8"
+    },
+    {
+      "path": "source262-clippy.log",
+      "bytes": 197,
+      "sha256": "eb2efb690d468c214492a4a8e933e981b8eb8fd8074a0dea5cc06812394d36fe"
+    },
+    {
+      "path": "source262-diff-command.json",
+      "bytes": 511,
+      "sha256": "bd7bf0f80bb3e91c54ab9b0b7caae8f1e4e3471529d97b39376cee311c097f19"
+    },
+    {
+      "path": "source262-diff-result.json",
+      "bytes": 90,
+      "sha256": "26f9b51a43959095c2a769706a6ac474e07d349edb31639bffb6a401d55dd748"
+    },
+    {
+      "path": "source262-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source262-fmt-command.json",
+      "bytes": 535,
+      "sha256": "6d1403033e1da9de05b3ba8b79f28fb7c7ac71e0e61dd0c5b352c857df38440f"
+    },
+    {
+      "path": "source262-fmt-result.json",
+      "bytes": 88,
+      "sha256": "c612b79fc39aba25f40a43f11e46c4949394821b315146126c3fd24a0ef7b5ba"
+    },
+    {
+      "path": "source262-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source262-format-result.json",
+      "bytes": 20,
+      "sha256": "8f0c1c520d4343f54805dcdaa74287fb690f4d610186020a9343b1407654bdbd"
+    },
+    {
+      "path": "source262-format.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source262-freeze.json",
+      "bytes": 1163,
+      "sha256": "345a9bf08eeeac53177aadc71a1cac57dad4c5516a7e6f2b01214345f708b66b"
+    },
+    {
+      "path": "source262-incremental.patch",
+      "bytes": 13696,
+      "sha256": "eff81e46ce1e0d2ab1f5c56fd0d5a54fe065c13d64b55607f929b4b03aedf0f0"
+    },
+    {
+      "path": "source262-manifest.json",
+      "bytes": 56563,
+      "sha256": "e7267211716fd37aff684e3de9a40a6f024ccfddd1d3d87c866389400d9b5fdf"
+    },
+    {
+      "path": "source262-patch-replay-audit.json",
+      "bytes": 1045,
+      "sha256": "9bdb18c8bf7d8487204d5d845cd8c4a8dfc6e0ba451f1f0aef74670df4a42750"
+    },
+    {
+      "path": "source262-portable-complete.patch",
+      "bytes": 949099,
+      "sha256": "216c71b5bff547e54ec29b7d471af85b31362d8c8d386be347f1dfa2299c1620"
+    },
+    {
+      "path": "source262-portable-incremental.patch",
+      "bytes": 90187,
+      "sha256": "32a1e778b1eb419b3dacb2435f592fcf0eda7a203a643d449efe54aaddef51e2"
+    },
+    {
+      "path": "source262-unformatted.patch",
+      "bytes": 13416,
+      "sha256": "d081a3f616327dbd19ad06c683183022290303dbe146734aa190d6571a603180"
+    },
+    {
+      "path": "source262-validation-at-packaging.json",
+      "bytes": 3331,
+      "sha256": "05cea0057d11992d45d1cab6e1a7ff3c62f27e415fd5c86a318dbf9bb4929402"
+    },
+    {
+      "path": "source262-validation-launch.json",
+      "bytes": 574,
+      "sha256": "eaa87137e6ff7f4a93c61cd2d876afa870ec450230f9f0a456dc47bd7c17b920"
+    },
+    {
+      "path": "string-ordering-draft-checkout.json",
+      "bytes": 854,
+      "sha256": "760d0f8827a87b81fc26f9b5218d9e5f4182a30f411cd63c68b20c893e4bc86e"
+    },
+    {
+      "path": "string-ordering-symbol-storage.el",
+      "bytes": 1664,
+      "sha256": "0edf65ff06b4f1bda6d7a8c27ad7f09e957e7c9dfcd244a973e1bf43a85471fc"
+    },
+    {
+      "path": "string-version-ordering.el",
+      "bytes": 1040,
+      "sha256": "657af0579cd7d6ae8007b12690d49562c818fa579260a1f284e2a15cb7c58389"
+    },
+    {
+      "path": "test-string-ordering-broad.py",
+      "bytes": 3912,
+      "sha256": "5deb42643565bb05cd7e018382e7d5a705f4f484ea8ee8c4ac8059a619040e05"
+    },
+    {
+      "path": "tests/fixtures/string-ordering-symbol-storage.el",
+      "bytes": 1664,
+      "sha256": "0edf65ff06b4f1bda6d7a8c27ad7f09e957e7c9dfcd244a973e1bf43a85471fc"
+    },
+    {
+      "path": "tests/fixtures/string-ordering-symbol-storage.expected",
+      "bytes": 63157,
+      "sha256": "9fe453d9fb3276844168cf7115c2cb88064f8008075f717e6c59ac16f705ee6d"
+    },
+    {
+      "path": "tests/fixtures/string-version-ordering.el",
+      "bytes": 1040,
+      "sha256": "657af0579cd7d6ae8007b12690d49562c818fa579260a1f284e2a15cb7c58389"
+    },
+    {
+      "path": "tests/fixtures/string-version-ordering.expected",
+      "bytes": 9553,
+      "sha256": "d51f0fd7a30347c5fd6f220ee7c1d5cea243041a9b11ee03c706d07fadab0d3b"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

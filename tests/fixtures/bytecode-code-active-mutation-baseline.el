@@ -1,0 +1,5 @@
+(let* ((code (unibyte-string 192 32 136 193 135))
+       (constants (vector nil 41 67))
+       (function (make-byte-code 0 code constants 1)))
+  (aset constants 0 (lambda () (aset code 3 194)))
+  (list (funcall function) (aref code 3)))

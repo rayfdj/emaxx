@@ -1,0 +1,52 @@
+(list
+ (mapcar
+  (lambda (code)
+    (let* ((source (make-string 3 code))
+           (leaf (vector code))
+           (before (append source nil)))
+      (put-text-property 0 3 'payload leaf source)
+      (mapcar
+       (lambda (parts)
+         (let ((result (apply #'concat parts)))
+           (garbage-collect)
+           (list (append result nil) (string-bytes result)
+                 (multibyte-string-p result)
+                 (eq (get-text-property 1 'payload result) leaf)
+                 (progn (aset result 1 65) (equal before (append source nil))))))
+       (list (list "x" source "y")
+             (list (list 120) source (vector code 121))
+             (list (make-string 0 955) (unibyte-string 255) source)))))
+  '(0 127 128 55296 57343 1114112 2097152 4194175 4194176 4194303))
+ (mapcar
+  (lambda (code)
+    (mapcar
+     (lambda (source)
+       (let ((result (concat source)))
+         (list (append result nil) (string-bytes result) (multibyte-string-p result))))
+     (list (list code) (vector code))))
+  '(0 127 128 55296 1114112 2097152 4194176 4194303))
+ (mapcar
+  (lambda (parts)
+    (let ((result (apply #'concat parts)))
+      (list (append result nil) (string-bytes result) (multibyte-string-p result))))
+  (list nil (list nil []) (list (make-string 0 955))
+        (list (unibyte-string 128 255) "x")
+        (list (unibyte-string 128 255) (make-string 0 955))))
+ (eq (concat) (concat))
+ (mapcar
+  (lambda (source)
+    (condition-case error
+        (progn (concat source) 'unexpected-success)
+      (error (list (car error) (cadr error)))))
+  (list 'bad 17 (vector 'bad) (list -1) (list 4194304)
+        (cons 'bad 17) (bool-vector nil) (make-bool-vector 0 nil)))
+ (let ((cycle (list 65)))
+   (setcdr cycle cycle)
+   (condition-case error (progn (concat cycle) 'unexpected-success)
+     (error (car error))))
+ (let* ((name (concat "runtime-" (string 955) "-completion"))
+        (buffer (get-buffer-create name)))
+   (unwind-protect
+       (let ((result (internal-complete-buffer "runtime-" nil nil)))
+         (list (equal result name) (multibyte-string-p result)))
+     (kill-buffer buffer))))

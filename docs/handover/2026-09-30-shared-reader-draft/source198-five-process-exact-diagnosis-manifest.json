@@ -1,0 +1,275 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "ordinary replay failed; five debugger processes passed",
+    "ordinary_failure": 1,
+    "debugger_runs": [
+      {
+        "log": "debugger.log",
+        "passed": 1,
+        "failed": 0,
+        "callback_errors": 0,
+        "watched_keys": 2,
+        "trace_events": 22,
+        "rejected_name_reads": {
+          "MemoryError": 11024,
+          "OverflowError": 498
+        }
+      },
+      {
+        "log": "debugger-02.log",
+        "passed": 1,
+        "failed": 0,
+        "callback_errors": 0,
+        "watched_keys": 2,
+        "trace_events": 22,
+        "rejected_name_reads": {
+          "MemoryError": 11024,
+          "OverflowError": 498
+        }
+      },
+      {
+        "log": "debugger-03.log",
+        "passed": 1,
+        "failed": 0,
+        "callback_errors": 0,
+        "watched_keys": 2,
+        "trace_events": 22,
+        "rejected_name_reads": {
+          "MemoryError": 11024,
+          "OverflowError": 498
+        }
+      },
+      {
+        "log": "debugger-04.log",
+        "passed": 1,
+        "failed": 0,
+        "callback_errors": 0,
+        "watched_keys": 2,
+        "trace_events": 22,
+        "rejected_name_reads": {
+          "MemoryError": 11024,
+          "OverflowError": 498
+        }
+      },
+      {
+        "log": "debugger-05.log",
+        "passed": 1,
+        "failed": 0,
+        "callback_errors": 0,
+        "watched_keys": 2,
+        "trace_events": 22,
+        "rejected_name_reads": {
+          "MemoryError": 11024,
+          "OverflowError": 498
+        }
+      }
+    ],
+    "source_inputs_verified": 398,
+    "retained_artifacts_verified": true,
+    "qualification": "The same ordinary original assertion fails. All five direct debugger children pass with original artifacts, two watched keys and four collection-source snapshots, without Python callback exceptions. Rejected speculative name reads are counted separately. No retaining root or runtime repair is established. Next controls compare the original child invocation with and without the debugger-only environment variable before using an inferior environment matching the original child."
+  },
+  "archive": {
+    "path": "source198-five-process-exact-diagnosis.tar.gz",
+    "bytes": 220330,
+    "sha256": "30bced4ffc5be041908f27fbbe447451ed7d9b2160c85165381d6b057596dbf2"
+  },
+  "files": [
+    {
+      "path": "debugger-02-trace-events.json",
+      "bytes": 46654,
+      "sha256": "e9740097ece10337da9ff4fa8ed34238608f14c7cde8118bab49d5f51e43daef"
+    },
+    {
+      "path": "debugger-02.log",
+      "bytes": 76546,
+      "sha256": "ce39bb96b0d16615baac668fc85ce7afc0624ea8b151d7e618f3c6e85089fe23"
+    },
+    {
+      "path": "debugger-03-trace-events.json",
+      "bytes": 46654,
+      "sha256": "38098952ce3b2c32d5abe9393b2417da123de0c08becab1dcd46db32bfd77df8"
+    },
+    {
+      "path": "debugger-03.log",
+      "bytes": 76549,
+      "sha256": "67f512e0737b4756c1175db079042fff117bcaf9375cfc7f04f542a9d17fdb99"
+    },
+    {
+      "path": "debugger-04-trace-events.json",
+      "bytes": 46654,
+      "sha256": "871a3036ed32d1f7199f74ebe37ef6071f42cd1a2bff5a6ec7a47521b17efec6"
+    },
+    {
+      "path": "debugger-04.log",
+      "bytes": 76546,
+      "sha256": "17e5531d24d9d1b744b567cf5c0f78e1d68c6f02405bfb2d7c79ad294ebef6af"
+    },
+    {
+      "path": "debugger-05-trace-events.json",
+      "bytes": 46654,
+      "sha256": "c75ad5f6e893972014463af3c4031dc7fbec9f859fad0ba399998f44fdc57c61"
+    },
+    {
+      "path": "debugger-05.log",
+      "bytes": 76543,
+      "sha256": "971958d748108baf083a3947a5cd38bba57f282aa88fd8ac29d681edf2ac27aa"
+    },
+    {
+      "path": "debugger.log",
+      "bytes": 76546,
+      "sha256": "da09a53e393b12aab53afbffd9dd240d82399b2126feee5ad9a1c4a2d8ca6eef"
+    },
+    {
+      "path": "next-diagnostic-driver.py",
+      "bytes": 15062,
+      "sha256": "ed80fca91536de88509202e663333064298e4d3474ca8f9a66538f17ffdefd33"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/metadata/ci-bwrap.apparmor",
+      "bytes": 335,
+      "sha256": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/metadata/oracle.txt",
+      "bytes": 449,
+      "sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/build.log",
+      "bytes": 174752,
+      "sha256": "d1ec463ee58baee8e890f72eac2d93db677ecbe6294bdf2761052505f1241d14"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/ignored-inventory.txt",
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/inventory.txt",
+      "bytes": 261117,
+      "sha256": "da615899938df3503b3a50e57573c354782584fc6dc3b1046ba662c997926e25"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/repeat-01-eval_01.json",
+      "bytes": 457,
+      "sha256": "7e827ea7fb6445c334ae550876879591f582c85fb16c238e3275cdb5d54a4263"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/repeat-01-eval_01.log",
+      "bytes": 36577,
+      "sha256": "db682e3662b366557473741a0579a76758aed154b8ce1d4bf54e425dd66001eb"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/repeat-01-eval_02.json",
+      "bytes": 457,
+      "sha256": "c75128e180f87db420f587c7e8bc5960f730b9ddf13a277f594ca864c014d022"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/repeat-01-eval_02.log",
+      "bytes": 66511,
+      "sha256": "e5d3cce42fc0f05bbbb8c1af7b42f2232dc3dd0f6b7e1b6eb8b856571ca10ce1"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/repeat-01-eval_03.json",
+      "bytes": 458,
+      "sha256": "4d30e325e4bf2495460572fc1198e2ae647e293780415654534a9f14de78548e"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/repeat-01-eval_03.log",
+      "bytes": 30494,
+      "sha256": "7c71a1f1f7f81cc07c93b322f25adfed503f3b9216f2c92f004a031dbff8926e"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/repeat-01-eval_04.json",
+      "bytes": 457,
+      "sha256": "c882f976351061bfaeb0119642e1292d3e272d2300a3c7801c0bed6b7db1efc2"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/repeat-01-eval_04.log",
+      "bytes": 24397,
+      "sha256": "22e80c956dc3e239878c2b532baf3d87047aa1076c33b09b1119ee4310bcf365"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/repeat-01-eval_05.json",
+      "bytes": 458,
+      "sha256": "7e86e83d697c459f2733cf39fbc6d5fe9235149f4c0933c90404bb8c5cb937cc"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/repeat-01-eval_05.log",
+      "bytes": 69335,
+      "sha256": "810e43071be42c1ace57b693f85b3186969e0ba1818f8656e62ec4a6614fce5f"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/repeat-01-primitives.json",
+      "bytes": 462,
+      "sha256": "1fcc11df845d89e91f4573e187d3e51ebb829cd3d2a2cc2d54168f8132561908"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/repeat-01-primitives.log",
+      "bytes": 62568,
+      "sha256": "d8da18838afa78f1994193eed70e5b8f1957adfea9da1e5c2dd5e036ab06daeb"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/retained-inputs/manifest.json",
+      "bytes": 769,
+      "sha256": "cce4b283e02ab233833ec645ceb86430a15fd3731b175d387ae5521353d344af"
+    },
+    {
+      "path": "original/ordinary-linux-7e45db47438a39e97658bddaceba903e0e41c186/rust/summary.json",
+      "bytes": 1882,
+      "sha256": "b123262867c67ab2de7d90e1215696920b9b57a51d051fe6e7c1e0a6194d5d19"
+    },
+    {
+      "path": "plain.log",
+      "bytes": 2144,
+      "sha256": "20e8a28c3b180cfeceb235414f9782b4b6e9539c01e1b69caa70f98ab0ae71de"
+    },
+    {
+      "path": "receipts/source198-exact-environment-artifact-validation.json",
+      "bytes": 1146,
+      "sha256": "12a56daa3aef1a829ed787ec9e4611358c63d5015436bdaebe7b5b8f190a379c"
+    },
+    {
+      "path": "receipts/source198-exact-environment-command-validation.json",
+      "bytes": 437,
+      "sha256": "0719a544ad1418cf36eb86f855b4ddc2c568ddfd569c403c3f9576120f3726c2"
+    },
+    {
+      "path": "receipts/source198-exact-repeat-audit.json",
+      "bytes": 1994,
+      "sha256": "134697885e459bade8ac804cb1d21894748957d5f0d4bede74906bbe05dae93d"
+    },
+    {
+      "path": "receipts/source198-linux-exact-repeat-ci.log",
+      "bytes": 222147,
+      "sha256": "33ab134ba7a4d4e686db41f198735a0a95472dca2f04c76464a72370965d85a6"
+    },
+    {
+      "path": "receipts/source198-linux-exact-repeat-download.json",
+      "bytes": 325,
+      "sha256": "55cd3f4449d3730ee85082275cb95240292b9052578f72146db8187a86308a32"
+    },
+    {
+      "path": "receipts/source198-linux-exact-repeat-final-state.json",
+      "bytes": 5918,
+      "sha256": "f073d8feb5bf01ef7b4131ccb6542c5239b91bbf6ad7641b2d9c6f50db82a1ae"
+    },
+    {
+      "path": "source-before.json",
+      "bytes": 45122,
+      "sha256": "76e7b9ac8cc9fd898f6a00b42c67171aa96517b576645aab93d428db1c7aa74d"
+    },
+    {
+      "path": "summary.json",
+      "bytes": 7472,
+      "sha256": "d048750bc31fb98df345a8ba9309b2436ad66f428dcf4aaffb2735e3b5240fcd"
+    },
+    {
+      "path": "trace-events.json",
+      "bytes": 46654,
+      "sha256": "914174026e8cc2f22a26a43ad3ca7fd82674ef332cd39ae2dbd2dbcc2eafcda3"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

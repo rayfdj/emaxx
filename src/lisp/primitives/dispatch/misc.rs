@@ -263,9 +263,10 @@ fn overriding_plist_property(
                 }
                 if bare_symbol_name(interp, env, &key).as_deref() == Some(property) {
                     let value = rest.car().ok()?;
-                    if !value.is_nil() {
-                        return Some(value);
-                    }
+                    // plist_get stops at the first key, even when its
+                    // value is nil. Fget then falls back to the real
+                    // plist instead of examining a later duplicate.
+                    return (!value.is_nil()).then_some(value);
                 }
                 plist = rest.cdr().ok()?;
             }
@@ -429,14 +430,28 @@ define_dispatch!(
                 if args.is_empty() || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let s = reader_string_source_text(&args[0])?;
-                let chars: Vec<char> = s.chars().collect();
-                let start = normalize_string_index(args.get(1), 0, chars.len() as i64)? as usize;
-                let end =
-                    normalize_string_index(args.get(2), chars.len() as i64, chars.len() as i64)?
-                        as usize;
-                let slice: String = chars[start..end].iter().collect();
-                match read_one_form_in_env(interp, &slice, env) {
+                let Kind::StringObject(state) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
+                let contents = state.borrow();
+                let length = contents.len();
+                // lread.c:read_internal_start uses fns.c:validate_subarray:
+                // check both types before the joint range and retain the
+                // caller's original indices in the signaled condition.
+                let (start, end) = validate_subarray(
+                    args[0],
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                    length,
+                )?;
+                let first = contents.byte_offset(start).expect("validated string start");
+                let last = contents.byte_offset(end).expect("validated string end");
+                match read_encoded_form_in_env(
+                    interp,
+                    &contents.bytes()[first..last],
+                    contents.is_multibyte(),
+                    env,
+                ) {
                     Ok((val, consumed)) => {
                         Ok(Value::cons(val, Value::Integer((start + consumed) as i64)))
                     }
@@ -1414,13 +1429,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 match args[0].kind() {
                     Kind::BuiltinFunc(_) => Ok(Value::Nil),
-                    Kind::Record(id)
-                        if interp.find_record(id).is_some_and(|record| {
-                            record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
-                        }) =>
-                    {
-                        Ok(interp.find_record(id).expect("record checked above").slots[4])
-                    }
+                    Kind::NativeFunction(function) => Ok(function.native_type()),
                     other => Err(wrong_type_argument("subrp", other.value())),
                 }
             }
@@ -1429,12 +1438,7 @@ define_dispatch!(
                 // profiler.c:Ffunction_equal first compares the objects,
                 // then CLOSURE_CODE by identity for either closure kind.
                 let code = |function: Value| match function.kind() {
-                    Kind::Lambda(lambda) => Some(lambda.body()),
-                    Kind::Record(record)
-                        if record.kind == crate::lisp::eval::RecordKind::Closure =>
-                    {
-                        record.slots.get(1).copied()
-                    }
+                    Kind::Closure(lambda) => Some(lambda.body()),
                     _ => None,
                 };
                 let same = values_eq_in_env(interp, &args[0], &args[1], env)
@@ -2048,12 +2052,8 @@ fn internal_subr_documentation(
         Kind::BuiltinFunc(name) => Ok(Value::Integer(ensure_builtin_doc_offset(
             interp, &name, env,
         )?)),
-        Kind::Record(id)
-            if interp.find_record(id).is_some_and(|record| {
-                record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction
-            }) =>
-        {
-            crate::lisp::native_comp::function_documentation(interp, env, id.id)
+        Kind::NativeFunction(function) => {
+            crate::lisp::native_comp::function_documentation(interp, env, function)
         }
         _ => Ok(Value::T),
     }
@@ -2280,7 +2280,7 @@ fn parse_doc_file(bytes: &[u8]) -> std::collections::HashMap<String, String> {
 }
 
 /// The `get' primitive, callable directly (a subr's function pointer).
-pub(super) fn direct_get(
+pub(in crate::lisp::primitives) fn direct_get(
     interp: &mut Interpreter,
     args: &[Value],
     env: &mut crate::lisp::types::Env,

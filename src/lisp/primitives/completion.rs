@@ -13,7 +13,7 @@ pub(crate) struct CompletionCandidate {
 
 fn completion_result_value(value: &Value, name: &str) -> Value {
     match value.kind() {
-        Kind::String(_) | Kind::StringObject(_) => *value,
+        Kind::StringObject(_) => *value,
         // minibuf.c's Fall_completions and Ftry_completion answer with
         // SYMBOL_NAME itself for an obarray's or an alist's symbol: the
         // symbol's own name object, which the symbol keeps reachable (a
@@ -353,15 +353,13 @@ pub(crate) fn values_eq_for_substitution(left: &Value, right: &Value) -> bool {
         (Kind::Float(a), Kind::Float(b)) => a.to_bits() == b.to_bits(),
         (Kind::Symbol(a), Kind::Symbol(b)) => a == b,
         (Kind::BuiltinFunc(a), Kind::BuiltinFunc(b)) => a == b,
+        (Kind::NativeFunction(a), Kind::NativeFunction(b)) => a.ptr_eq(&b),
         (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
-        (Kind::String(_), Kind::String(_))
-        | (Kind::String(_), Kind::StringObject(_))
-        | (Kind::StringObject(_), Kind::String(_)) => false,
         (Kind::Cons(left), Kind::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)
         }
         (Kind::Vector(left), Kind::Vector(right)) => left.ptr_eq(&right),
-        (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
+        (Kind::Closure(left), Kind::Closure(right)) => left.ptr_eq(&right),
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left_id), Kind::Marker(right_id)) => left_id == right_id,
         (Kind::Overlay(left_id), Kind::Overlay(right_id)) => left_id.ptr_eq(&right_id),
@@ -395,6 +393,15 @@ pub(crate) fn substitute_object_recurse(
 ) -> Result<Value, LispError> {
     if values_eq_for_substitution(subtree, placeholder) {
         return Ok(*object);
+    }
+
+    // lread.c:substitute_object_recurse cannot traverse Lisp_Subr's C fields.
+    // EQ replacement happens first; a different subr signals sequencep.
+    if matches!(
+        subtree.kind(),
+        Kind::BuiltinFunc(_) | Kind::NativeFunction(_)
+    ) {
+        return Err(wrong_type_argument("sequencep", *subtree));
     }
 
     let Some(key) = substitution_visit_key(subtree) else {
@@ -439,6 +446,9 @@ pub(crate) fn substitute_object_recurse(
             Ok(*subtree)
         }
         Kind::StringObject(state) => {
+            if state.borrow().props.is_empty() {
+                return Ok(*subtree);
+            }
             let mut state = state.borrow_mut();
             for span in &mut state.props {
                 for (_, prop_value) in &mut span.props {
@@ -551,7 +561,7 @@ pub(crate) fn default_intern_soft_result(
 
 pub(crate) fn completion_display_name(value: &Value) -> Result<String, LispError> {
     match value.kind() {
-        Kind::String(_) | Kind::StringObject(_) => string_text(value),
+        Kind::StringObject(_) => string_text(value),
         Kind::Nil => Ok("nil".into()),
         Kind::T => Ok("t".into()),
         Kind::Symbol(symbol) => Ok(crate::lisp::types::visible_symbol_name(&symbol).to_string()),
@@ -559,19 +569,6 @@ pub(crate) fn completion_display_name(value: &Value) -> Result<String, LispError
             "string-or-symbol".into(),
             value.type_name(),
         )),
-    }
-}
-
-pub(crate) fn ensure_completion_list_item_identity(item: &ConsSlot) -> Result<Value, LispError> {
-    let current = item.get();
-    match current.kind() {
-        Kind::String(text) => {
-            let shared =
-                make_shared_string_value_with_multibyte(text.to_string(), Vec::new(), false);
-            item.set(shared);
-            Ok(shared)
-        }
-        value => Ok(value.value()),
     }
 }
 
@@ -594,7 +591,7 @@ pub(crate) fn completion_list_candidates(
                         Value::String("Circular list".into()),
                     ])));
                 }
-                let item = ensure_completion_list_item_identity(&ConsSlot::car(&cons_cell))?;
+                let item = cons_cell.car.get();
                 // minibuf.c: an element that is neither a string nor a
                 // symbol "is not a possible completion" — it is skipped,
                 // never an error (semantic's texi tables carry characters).
@@ -704,50 +701,6 @@ pub(crate) fn completion_regex_matches(
     regex
         .is_match(candidate)
         .map_err(|error| LispError::Signal(error.to_string()))
-}
-
-pub(crate) fn completion_common_prefix(
-    matches: &[CompletionCandidate],
-    input: &str,
-    ignore_case: bool,
-) -> String {
-    let match_chars = matches
-        .iter()
-        .map(|candidate| candidate.name.chars().collect::<Vec<_>>())
-        .collect::<Vec<_>>();
-    let input_chars = input.chars().collect::<Vec<_>>();
-    let mut prefix = String::new();
-    let max_len = match_chars.iter().map(Vec::len).min().unwrap_or(0);
-
-    for index in 0..max_len {
-        let first = match_chars[0][index];
-        let same_actual = match_chars.iter().all(|chars| chars[index] == first);
-        let same_folded = match_chars.iter().all(|chars| {
-            if ignore_case {
-                chars[index].eq_ignore_ascii_case(&first)
-            } else {
-                chars[index] == first
-            }
-        });
-        if !same_folded {
-            break;
-        }
-        if !ignore_case || same_actual {
-            prefix.push(first);
-            continue;
-        }
-        if let Some(input_char) = input_chars
-            .get(index)
-            .copied()
-            .filter(|input_char| input_char.eq_ignore_ascii_case(&first))
-        {
-            prefix.push(input_char);
-        } else {
-            prefix.push(first.to_ascii_lowercase());
-        }
-    }
-
-    prefix
 }
 
 pub(crate) fn filtered_completion_matches(
@@ -876,56 +829,61 @@ pub(crate) fn try_completion(
         return Ok(Value::Nil);
     }
 
+    // minibuf.c:Ftry_completion keeps one actual best match, its common
+    // character count, and whether the matches are distinct. Case folding
+    // selects that whole candidate; it does not invent a spelling by mixing
+    // individual characters from different candidates.
     let ignore_case = completion_ignores_case(interp, env);
-    if ignore_case {
-        if let Some(candidate) = matches.iter().find(|candidate| candidate.name == input) {
-            if matches.len() == 1 {
-                return Ok(Value::T);
-            }
-            return Ok(make_shared_string_value_with_multibyte(
-                candidate.name.clone(),
-                Vec::new(),
-                false,
-            ));
-        }
-        if let Some(candidate) = matches
-            .iter()
-            .find(|candidate| candidate.name.eq_ignore_ascii_case(&input))
+    let mut best = &matches[0];
+    let mut size = best.name.chars().count();
+    let mut distinct = false;
+    let input_len = input.chars().count();
+    for candidate in &matches[1..] {
+        let candidate_len = candidate.name.chars().count();
+        let best_len = best.name.chars().count();
+        let compare = size.min(candidate_len);
+        let matched = best
+            .name
+            .chars()
+            .zip(candidate.name.chars())
+            .take(compare)
+            .take_while(|(a, b)| a == b || (ignore_case && a.eq_ignore_ascii_case(b)))
+            .count();
+        let same_case = best
+            .name
+            .chars()
+            .take(compare)
+            .eq(candidate.name.chars().take(compare));
+        distinct |= size != candidate_len || size != matched || (ignore_case && !same_case);
+        if ignore_case
+            && ((matched == candidate_len && matched < best_len)
+                || ((matched == candidate_len) == (matched == best_len)
+                    && candidate.name.starts_with(&input)
+                    && !best.name.starts_with(&input)))
         {
-            return Ok(make_shared_string_value_with_multibyte(
-                candidate.name.clone(),
-                Vec::new(),
-                false,
-            ));
+            best = candidate;
         }
-    } else if matches.iter().all(|candidate| candidate.name == input) {
+        size = matched;
+        if size <= input_len && !ignore_case && distinct {
+            break;
+        }
+    }
+
+    if ignore_case && size == input_len && best.name.chars().count() > size {
+        return Ok(args[0]);
+    }
+    if !distinct && best.name == input {
         return Ok(Value::T);
     }
 
-    // GNU's Ftry_completion returns a fresh string (not `eq' to any
-    // candidate; probed 2026-08-21), and callers mutate it in place --
-    // completion-preview.el sets a `face' on it and reads the result back
-    // through compiled locals.  A plain immutable string here made
-    // `set-text-properties' silently rewrite only the caller's environment
-    // binding, which bytecode stack slots never see; a shared string gives
-    // every holder the same mutable object, like `all-completions' above.
-    let common = completion_common_prefix(&matches, &input, ignore_case);
-    // When case folding finds no extension, GNU preserves the user's exact
-    // spelling ("A" stays "A").  Once completion extends the input it uses
-    // the candidates' canonical case ("AL" becomes "alp").
-    let completed = if ignore_case
-        && common.chars().count() == input.chars().count()
-        && common.eq_ignore_ascii_case(&input)
-    {
-        input
-    } else {
-        common
-    };
-    Ok(make_shared_string_value_with_multibyte(
-        completed,
-        Vec::new(),
-        false,
-    ))
+    // GNU returns Fsubstring of the selected candidate, preserving its bytes,
+    // encoding and copied properties without materializing another text view.
+    substring_value(
+        best.result,
+        Value::Integer(0),
+        Value::Integer(size as i64),
+        true,
+    )
 }
 
 pub(crate) fn all_completions(
@@ -1025,7 +983,7 @@ pub(crate) fn internal_complete_buffer(
             .iter()
             .map(|(id, name)| {
                 Value::cons(
-                    make_shared_string_value_with_multibyte(name.clone(), Vec::new(), false),
+                    string_like_value(name.clone(), Vec::new()),
                     interp.buffer_value(*id).expect("live buffer object"),
                 )
             })
@@ -1094,7 +1052,7 @@ pub(crate) fn completing_read(
         return call_function_value(interp, &function, args, env);
     }
 
-    if !interp.kbd_macro_executions.is_empty() {
+    if executing_kbd_macro_p(interp, env) {
         crate::lisp::primitives::dispatch::prepare_kbd_macro_minibuffer_entry(interp, env)?;
     }
     let minibuffer = activate_completing_read_minibuffer(interp, args, env)?;
@@ -1474,7 +1432,7 @@ fn completing_read_contents(
     }
 
     let initial_input = completing_read_initial_input(args);
-    if !interp.kbd_macro_executions.is_empty()
+    if executing_kbd_macro_p(interp, env)
         && let Some(contents) =
             crate::lisp::primitives::dispatch::read_minibuffer_text_from_kbd_macro_inner(
                 interp,
@@ -1555,7 +1513,7 @@ pub(crate) fn interactive_form_items(func: &Value) -> Option<Vec<Value>> {
     {
         return items.get(2..).and_then(interactive_form_in_body);
     }
-    let Kind::Lambda(lambda) = func.kind() else {
+    let Kind::Closure(lambda) = func.kind() else {
         return None;
     };
     lambda
@@ -1573,52 +1531,18 @@ pub(crate) fn callable_interactive_form_items(
 ) -> Option<Vec<Value>> {
     if let Kind::Record(id) = func.kind()
         && let Some(record) = interp.find_record(id)
+        && record.kind == crate::lisp::eval::RecordKind::ModuleFunction
     {
-        if record.kind == crate::lisp::eval::RecordKind::ModuleFunction {
-            return record
-                .slots
-                .get(1)?
-                .to_vec()
-                .ok()
-                .filter(|items| !items.is_empty());
-        }
-        if record.kind == crate::lisp::eval::RecordKind::NativeCompiledFunction {
-            return record
-                .slots
-                .get(6)
-                .filter(|spec| !spec.is_nil())
-                .cloned()
-                .and_then(|form| form.to_vec().ok());
-        }
-        if record.kind != crate::lisp::eval::RecordKind::Closure {
-            return interactive_form_items(func);
-        }
-        let Some(object) = crate::lisp::bytecode::ByteCodeObject::from_slots(&record.slots)
+        return record
+            .slots
+            .get(1)?
+            .to_vec()
             .ok()
-            .flatten()
-        else {
-            return interactive_form_items(func);
-        };
-        let Some(spec) = object.interactive else {
-            return interactive_form_items(func);
-        };
-        // GNU keys interactivity on the slot's presence (PVSIZE >
-        // COMPILED_INTERACTIVE): a bare `(interactive)' stores nil there
-        // and the function is still a command.  callint.c
-        // Finteractive_form: a vector in the slot is the byte-compiler's
-        // (SPEC MODES) encoding -- the form is element 0 alone; the mode
-        // list is `command-modes' data and never reaches the caller of
-        // the interactive form.
-        let spec = match spec.to_vec() {
-            Ok(items)
-                if matches!(items.first().map(|v| v.kind()),
-                    Some(Kind::Symbol(tag)) if tag == "vector-literal") =>
-            {
-                items.get(1).cloned().unwrap_or(Value::Nil)
-            }
-            _ => spec,
-        };
-        return Some(vec![Value::symbol("interactive"), spec]);
+            .filter(|items| !items.is_empty());
+    }
+    if let Kind::NativeFunction(function) = func.kind() {
+        let spec = function.interactive();
+        return (!spec.is_nil()).then(|| spec.to_vec().ok()).flatten();
     }
     // callint.c's cons-lambda branch: a spec without MODES entries is
     // answered verbatim (`(interactive)' stays bare, `(interactive "p")'
@@ -1638,7 +1562,7 @@ pub(crate) fn callable_interactive_form_items(
 
 fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
     for form in body.iter() {
-        if matches!(form.kind(), Kind::String(_) | Kind::StringObject(_)) {
+        if matches!(form.kind(), Kind::StringObject(_)) {
             continue;
         }
         // Internal evaluator closure markers precede the interactive form
@@ -1679,7 +1603,7 @@ pub(crate) fn completion_table_is_function(
     env: &Env,
 ) -> bool {
     match collection.kind() {
-        Kind::Symbol(_) | Kind::Lambda(_) | Kind::BuiltinFunc(_) => true,
+        Kind::Symbol(_) | Kind::Closure(_) | Kind::BuiltinFunc(_) | Kind::NativeFunction(_) => true,
         Kind::Record(_) => callable_value_p(interp, collection, env),
         Kind::Cons(_) => matches!(
             collection.car().map(|v| v.kind()),
@@ -2033,7 +1957,7 @@ pub(crate) fn interactive_minibuffer_command_loop(
     // `exit-minibuffer' arrive here instead of signaling `no-catch'.
     interp.push_active_catch_tag(Value::Symbol("exit".into()));
     let loop_outcome = (|interp: &mut Interpreter, env: &mut Env| -> Result<(), LispError> {
-        let mut pending: Vec<Value> = Vec::new();
+        let mut reader: Option<super::KeySequenceReader> = None;
         // A command error or an undefined key echoes its message until
         // the next keystroke, GNU's transient echo.
         let mut hold_echo = false;
@@ -2050,7 +1974,7 @@ pub(crate) fn interactive_minibuffer_command_loop(
         )
         .unwrap_or(());
         loop {
-            if pending.is_empty() {
+            if reader.is_none() {
                 if !hold_echo {
                     let minibuffer_text = interp
                         .active_minibuffer_buffer_id()
@@ -2074,11 +1998,19 @@ pub(crate) fn interactive_minibuffer_command_loop(
             // C-g propagates as GNU's quit out of the recursive edit.
             let event = crate::lisp::primitives::pop_unread_command_event_value(interp, env)?;
             hold_echo = false;
-            pending.push(event);
-            match crate::lisp::primitives::resolve_decoded_key_sequence(interp, env, &mut pending)?
+            if reader.is_none() {
+                reader = Some(super::KeySequenceReader::new(interp, Value::Nil, env)?);
+            }
+            match reader
+                .as_mut()
+                .expect("active key reader")
+                .read_event(interp, event, env)?
             {
                 crate::lisp::primitives::KeyResolution::Command(binding) => {
-                    let keys = std::mem::take(&mut pending);
+                    let keys = reader
+                        .take()
+                        .expect("completed key reader")
+                        .finish(interp, false, env);
                     let last_event = keys.last().cloned().unwrap_or(Value::Nil);
                     match crate::lisp::primitives::execute_recorded_input_command_binding(
                         interp, env, binding, &keys, last_event,
@@ -2114,7 +2046,7 @@ pub(crate) fn interactive_minibuffer_command_loop(
                 }
                 crate::lisp::primitives::KeyResolution::Prefix => {}
                 crate::lisp::primitives::KeyResolution::Undefined => {
-                    pending.clear();
+                    reader = None;
                 }
             }
         }

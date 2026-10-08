@@ -434,10 +434,10 @@ fn valid_image_spec(interp: &Interpreter, spec: &Value, env: &Env) -> bool {
     }
     let mut properties = std::collections::HashMap::new();
     for pair in items[1..].as_chunks::<2>().0 {
-        let Kind::Symbol(key) = pair[0].kind() else {
+        let Ok(key) = pair[0].as_symbol() else {
             return false;
         };
-        if !key.starts_with(':') || properties.insert(key.as_str(), &pair[1]).is_some() {
+        if !key.starts_with(':') || properties.insert(key, &pair[1]).is_some() {
             return false;
         }
     }
@@ -457,8 +457,7 @@ fn valid_image_spec(interp: &Interpreter, spec: &Value, env: &Env) -> bool {
     type_supported
         && matches!(
             (file.map(|v| v.kind()), data.map(|v| v.kind())),
-            (Some(Kind::String(_) | Kind::StringObject(_)), None)
-                | (None, Some(Kind::String(_) | Kind::StringObject(_)))
+            (Some(Kind::StringObject(_)), None) | (None, Some(Kind::StringObject(_)))
         )
 }
 
@@ -893,6 +892,142 @@ fn window_geometry(interp: &Interpreter, window_id: u64) -> (i64, i64, i64, i64)
     )
 }
 
+fn window_at_frame_coordinates(
+    interp: &Interpreter,
+    frame: crate::lisp::types::FrameRef,
+    x: i64,
+    y: i64,
+) -> Option<u64> {
+    frame_window_tree_leaf_ids(interp, frame)
+        .into_iter()
+        .chain(std::iter::once(frame.borrow().minibuffer_window_id()))
+        .find(|id| {
+            let (width, height, left, top) = window_geometry(interp, *id);
+            x >= left && x < left + width && y >= top && y < top + height
+        })
+}
+
+fn position_at_coordinates(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let mut x = super::collections::fixnum_index_arg(&args[0])?;
+    let mut y = super::collections::fixnum_index_arg(&args[1])?;
+    if x < -1 {
+        return Err(wrong_type_argument("natnump", args[0]));
+    }
+    if y < 0 {
+        return Err(wrong_type_argument("natnump", args[1]));
+    }
+    let requested = args.get(2).copied().unwrap_or(Value::Nil);
+    let frame = if requested.is_nil() || is_window_value(interp, &requested) {
+        let window = live_window_id_or_selected(interp, Some(&requested))?;
+        let (_, _, left, top) = window_geometry(interp, window);
+        x += left;
+        y += top;
+        if args.get(3).is_none_or(|value| value.is_nil()) {
+            x += interp.window_margins(window).0.unwrap_or(0);
+        }
+        interp.window_frame_id(window).expect("live window frame")
+    } else {
+        super::frames::decode_live_frame(interp, Some(&requested), false)?
+    };
+    let Some(window_id) = window_at_frame_coordinates(interp, frame, x, y) else {
+        return Ok(Value::list([
+            Value::Frame(frame),
+            Value::Nil,
+            Value::cons(Value::Integer(x), Value::Integer(y)),
+            Value::Integer(0),
+        ]));
+    };
+    let window = interp.record_value(window_id);
+    let (_, _, left, top) = window_geometry(interp, window_id);
+    let buffer = window_buffer_id(interp, &window)
+        .ok_or_else(|| wrong_type_argument("window-live-p", window))?;
+    let area = super::call(
+        interp,
+        "coordinates-in-window-p",
+        &[Value::cons(Value::Integer(x), Value::Integer(y)), window],
+        env,
+    )?;
+    let local_x = x - left;
+    let local_y = y - top;
+    if area.is_symbol() {
+        return Ok(Value::list([
+            window,
+            area,
+            Value::cons(Value::Integer(local_x), Value::Integer(local_y)),
+            Value::Integer(0),
+            Value::Nil,
+            Value::Nil,
+            Value::cons(Value::Integer(local_x), Value::Integer(local_y)),
+            Value::Nil,
+            Value::cons(Value::Integer(-1), Value::Integer(-1)),
+            Value::cons(Value::Integer(-1), Value::Integer(-1)),
+        ]));
+    }
+    let text_x = area.car()?.as_integer()?;
+    let text_y = local_y
+        - window_line_height(interp, buffer, "tab-line-format", env)
+        - window_line_height(interp, buffer, "header-line-format", env);
+    let old_buffer = interp.current_buffer_id();
+    interp.set_current_buffer_id(buffer)?;
+    let result = (|| {
+        let start = window_start(interp, Some(&window))?;
+        let end = interp.buffer.borrow().point_max();
+        let hscroll = window_hscroll_state(interp, window_id).hscroll.max(0);
+        let motion_args = crate::lisp::alloc::RootedVec::from_vec(vec![
+            Value::Integer(start as i64),
+            Value::cons(Value::Integer(-hscroll), Value::Integer(0)),
+            Value::Integer(end as i64),
+            Value::cons(Value::Integer(text_x), Value::Integer(text_y)),
+            Value::Nil,
+            Value::cons(Value::Integer(hscroll), Value::Integer(0)),
+            window,
+        ]);
+        let motion = super::buffer_edit::display_motion(interp, env, &motion_args, true)?;
+        let dx = text_x - motion.hpos;
+        let dy = text_y - motion.vpos;
+        // dispnew.c obtains dimensions from a realized glyph matrix.
+        // Batch has no such matrix, even though position traversal works.
+        let realized = interactive_window_metrics().is_some();
+        let width = if realized {
+            interp
+                .buffer
+                .borrow()
+                .char_at(motion.position)
+                .map_or(0, |character| {
+                    if character == '\t' || character == '\n' {
+                        1
+                    } else {
+                        unicode_width::UnicodeWidthChar::width(character).unwrap_or(0) as i64
+                    }
+                })
+        } else {
+            0
+        };
+        let position = Value::Integer(motion.position as i64);
+        Ok(Value::list([
+            window,
+            position,
+            Value::cons(Value::Integer(text_x), Value::Integer(text_y)),
+            Value::Integer(0),
+            Value::Nil,
+            position,
+            Value::cons(
+                Value::Integer(text_x.max(motion.hpos)),
+                Value::Integer(motion.vpos),
+            ),
+            Value::Nil,
+            Value::cons(Value::Integer(dx), Value::Integer(dy)),
+            Value::cons(Value::Integer(width), Value::Integer(i64::from(realized))),
+        ]))
+    })();
+    interp.with_lisp_stack_roots(&result, |interp| interp.set_current_buffer_id(old_buffer))?;
+    result
+}
+
 /// window.c's window_resize_apply: place WINDOW at (X, Y) and commit the
 /// size staged in its new-pixel slot for the resized dimension (the
 /// other dimension keeps its current size), then lay the children back
@@ -1226,10 +1361,7 @@ fn tty_supports_face_attributes(
             // face_attr_equal_p compares color strings case-insensitively.
             let text_of = |value: &Value| -> Option<String> {
                 match value.kind() {
-                    Kind::String(text) => Some(text.to_string()),
-                    Kind::StringObject(state) => {
-                        Some(std::cell::RefCell::borrow(&state).text.clone())
-                    }
+                    Kind::StringObject(state) => Some(state.borrow().text()),
                     _ => None,
                 }
             };
@@ -2943,7 +3075,7 @@ define_dispatch!(
                             .as_ref()
                             .is_some_and(|value| matches!(value.kind(), Kind::T));
                     let at_line_start = if noninteractive_stdout {
-                        interp.batch_standard_output_last_char == Some('\n')
+                        interp.batch_standard_output_last_char == Some(u32::from(b'\n'))
                     } else {
                         printer_stream_at_line_start(interp, stream.as_ref())?
                     };
@@ -2952,7 +3084,7 @@ define_dispatch!(
                     }
                 }
                 write_printer_output(interp, "\n", stream.as_ref(), env)?;
-                record_batch_standard_output_char(interp, stream.as_ref(), env, '\n');
+                record_batch_standard_output_char(interp, stream.as_ref(), env, u32::from(b'\n'));
                 Ok(Value::T)
             }
             "prin1-to-string" => {
@@ -2961,17 +3093,17 @@ define_dispatch!(
                 if args.get(1).is_some_and(|value| value.is_truthy()) {
                     let rendered =
                         with_printer_buffer_escape(interp, env, Some(true), |interp, env| {
-                            render_princ_object(interp, &args[0], env)
+                            render_printer_output(interp, &args[0], env, false, false)
                         })?;
-                    return Ok(Value::String(rendered.into()));
+                    return rendered.into_value(interp, env);
                 }
                 if matches!(args.get(2).map(|v| v.kind()), None | Some(Kind::Nil)) {
-                    return Ok(Value::String(render_prin1(interp, &args[0], env)?.into()));
+                    return render_prin1_output(interp, &args[0], env)?.into_value(interp, env);
                 }
                 let mut print_env = printer_env_with_overrides(env, args.get(2))?;
-                let rendered = render_prin1(interp, &args[0], &mut print_env)?;
+                let rendered = render_prin1_output(interp, &args[0], &mut print_env)?;
                 sync_print_number_table(env, args.get(2), &print_env);
-                Ok(Value::String(rendered.into()))
+                rendered.into_value(interp, env)
             }
             "write-char" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -2979,7 +3111,7 @@ define_dispatch!(
                 let stream = printer_stream_value(interp, env, args.get(1));
                 write_printer_output(interp, &rendered, stream.as_ref(), env)?;
                 if let Some(last) = rendered.chars().last() {
-                    record_batch_standard_output_char(interp, stream.as_ref(), env, last);
+                    record_batch_standard_output_char(interp, stream.as_ref(), env, last as u32);
                 }
                 Ok(args[0])
             }
@@ -2990,7 +3122,7 @@ define_dispatch!(
                     Some(value) => Value::String(string_text(&value.value())?.into()),
                 };
                 interp.external_debugging_output_target = match target.kind() {
-                    Kind::String(path) => Some(path.to_string()),
+                    Kind::StringObject(path) => Some(path.borrow().text()),
                     _ => None,
                 };
                 Ok(target)
@@ -5021,7 +5153,11 @@ define_dispatch!(
             }
             "window-at" => {
                 need_arg_range(name, args, 2, 3)?;
-                Ok(interp.selected_window_value())
+                let x = args[0].as_float()?.floor() as i64;
+                let y = args[1].as_float()?.floor() as i64;
+                let frame = super::frames::decode_live_frame(interp, args.get(2), true)?;
+                Ok(window_at_frame_coordinates(interp, frame, x, y)
+                    .map_or(Value::Nil, |id| interp.record_value(id)))
             }
             "split-window-internal" => {
                 need_args(name, args, 4)?;
@@ -5076,19 +5212,7 @@ define_dispatch!(
             }
             "posn-at-x-y" => {
                 need_arg_range(name, args, 2, 4)?;
-                let x = args[0].as_integer()?;
-                let y = args[1].as_integer()?;
-                let window = args
-                    .get(2)
-                    .filter(|value| is_window_value(interp, value))
-                    .cloned()
-                    .unwrap_or_else(|| interp.selected_window_value());
-                Ok(Value::list([
-                    window,
-                    Value::Nil,
-                    Value::cons(Value::Integer(x), Value::Integer(y)),
-                    Value::Integer(0),
-                ]))
+                position_at_coordinates(interp, args, env)
             }
             "posn-at-point" => {
                 need_arg_range(name, args, 0, 2)?;
@@ -5414,7 +5538,7 @@ fn render_mode_line_element(
             // the expansion.
             if let Kind::StringObject(state) = value.value().kind() {
                 let state = state.borrow();
-                let source_length = state.text.chars().count();
+                let source_length = state.len();
                 for property_span in &state.props {
                     let Some(face) = property_span
                         .props

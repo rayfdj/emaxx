@@ -218,7 +218,7 @@ impl Interpreter {
 
     pub fn set_process_plist_value(&mut self, record_id: u64, plist: Value) -> bool {
         if let Some(process) = self.find_process_state_mut(record_id) {
-            process.plist = Self::stored_value(plist);
+            process.plist = plist;
             true
         } else {
             false
@@ -230,7 +230,6 @@ impl Interpreter {
         record_id: u64,
         parameters: Value,
     ) -> bool {
-        let parameters = Self::stored_value(parameters);
         let Some(process) = self.find_process_state_mut(record_id) else {
             return false;
         };
@@ -2007,9 +2006,9 @@ impl Interpreter {
         let due = (delay_secs > 0.0 && delay_secs.is_finite())
             .then(|| std::time::Instant::now() + std::time::Duration::from_secs_f64(delay_secs));
         self.pending_timers.push(ScheduledTimer {
-            function: Self::stored_value(function),
+            function,
             original_name,
-            args: args.into_iter().map(Self::stored_value).collect(),
+            args,
             due,
             repeat: repeat_secs.filter(|secs| secs.is_finite() && *secs > 0.0),
         });
@@ -2170,7 +2169,7 @@ impl Interpreter {
                 descriptor: Value::Integer(descriptor),
                 path,
                 flags,
-                callback: Self::stored_value(callback),
+                callback,
                 active: true,
                 backend: FileNotifyBackend::SyntheticKqueue,
                 fingerprint,
@@ -2319,7 +2318,7 @@ impl Interpreter {
                 descriptor: Value::Integer(descriptor as i64),
                 path: Some(path),
                 flags,
-                callback: Self::stored_value(callback),
+                callback,
                 active: true,
                 backend: FileNotifyBackend::Kqueue,
                 fingerprint: Some(fingerprint),
@@ -2456,7 +2455,7 @@ impl Interpreter {
                 descriptor,
                 path: Some(path),
                 flags,
-                callback: Self::stored_value(callback),
+                callback,
                 active: true,
                 backend: FileNotifyBackend::Inotify,
                 fingerprint: None,

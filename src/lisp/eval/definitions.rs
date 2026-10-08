@@ -53,7 +53,7 @@ impl Interpreter {
                     continue;
                 }
                 if let Some(existing) = self.globals.value_mut(&symbol) {
-                    *existing = Self::stored_value(val);
+                    *existing = val;
                     continue;
                 }
                 self.setq_variable_symbol(&symbol, val, env)?;

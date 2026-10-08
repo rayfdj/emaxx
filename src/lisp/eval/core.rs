@@ -5,8 +5,13 @@ use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::SharedCons;
 use crate::lisp::types::SymbolName;
 
-fn byte_code_function_uses_dynamic_binding(record: &RecordState) -> bool {
-    matches!(record.slots.get(2).map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "dynamic-binding")
+// eval_sub's CHECK_LIST signals through a separate error path. Keep the
+// owned predicate string and boxed error payload out of ordinary eval's
+// frame: inactive slots there otherwise become conservative GC roots.
+#[cold]
+#[inline(never)]
+fn eval_list_type_error(value: Value) -> LispError {
+    LispError::WrongTypeArgument("listp".into(), value)
 }
 
 // ── Dev-only flat profiler (EMAXX_PROFILE=<path>) ──
@@ -51,14 +56,6 @@ impl<'a> CallName<'a> {
         match self {
             Self::Symbol(name) => name.as_str(),
             Self::Text(name) => name,
-        }
-    }
-
-    fn symbol_value(self, resolved_name: &SymbolName) -> Value {
-        match self {
-            Self::Symbol(name) => Value::Symbol(*name),
-            Self::Text(name) if name == resolved_name.as_str() => Value::Symbol(*resolved_name),
-            Self::Text(name) => Value::Symbol(name.into()),
         }
     }
 
@@ -385,12 +382,6 @@ impl Interpreter {
             // A vector is self-evaluating and keeps its reader identity.
             Kind::Vector(_) | Kind::LispRecord(_) | Kind::HashTable(_) => Ok(*expr),
 
-            // Evaluating a string literal yields a string object with its
-            // own identity, so `eq' distinguishes evaluations of distinct
-            // literals while `(memq (car l) l)' still finds the element the
-            // evaluation put there (GNU strings are always heap objects).
-            Kind::String(_) => Ok(Self::stored_value(*expr)),
-
             Kind::SymbolWithPos(_)
                 if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
                     && crate::lisp::primitives::symbol_with_pos_parts(self, expr).is_some() =>
@@ -424,7 +415,8 @@ impl Interpreter {
             }
 
             Kind::BuiltinFunc(_)
-            | Kind::Lambda(_)
+            | Kind::NativeFunction(_)
+            | Kind::Closure(_)
             | Kind::Buffer(_)
             | Kind::Marker(_)
             | Kind::Overlay(_)
@@ -433,6 +425,7 @@ impl Interpreter {
             | Kind::Frame(_)
             | Kind::Terminal(_)
             | Kind::SymbolWithPos(_)
+            | Kind::NativeCompUnit(_)
             | Kind::Record(_)
             | Kind::Finalizer(_)
             | Kind::Unbound => Ok(*expr),
@@ -445,16 +438,16 @@ impl Interpreter {
                 // eval_sub: XCAR (form) read for its symbol (copied only
                 // when it is something else), XCDR (form) held by its
                 // cell, CHECK_LIST (original_args).
-                let (head_symbol, head_value) = match cell.car.get().kind() {
+                let head = cell.car.get();
+                let (head_symbol, head_value) = match head.kind() {
                     Kind::Symbol(name) => (Some(name), None),
-                    other => (None, Some(other.value())),
+                    _ => (None, Some(head)),
                 };
-                let args_cell: Option<SharedCons> = match cell.cdr.get().kind() {
+                let tail = cell.cdr.get();
+                let args_cell: Option<SharedCons> = match tail.kind() {
                     Kind::Cons(args) => Some(args),
                     Kind::Nil => None,
-                    other => {
-                        return Err(LispError::WrongTypeArgument("listp".into(), other.value()));
-                    }
+                    _ => return Err(eval_list_type_error(tail)),
                 };
                 let callable_name = match head_value.as_ref() {
                     None => head_symbol,
@@ -559,15 +552,10 @@ impl Interpreter {
             // the original callee, not the object found in that cell.
             match function.kind() {
                 Kind::BuiltinFunc(subr) => break FunctionResolution::DirectBuiltin(subr),
-                Kind::Lambda(_) => break resolution,
+                Kind::Closure(_) | Kind::NativeFunction(_) => break resolution,
                 Kind::Record(id)
                     if self.find_record(id).is_some_and(|record| {
-                        matches!(
-                            record.kind,
-                            RecordKind::Closure
-                                | RecordKind::NativeCompiledFunction
-                                | RecordKind::ModuleFunction
-                        )
+                        matches!(record.kind, RecordKind::ModuleFunction)
                     }) =>
                 {
                     break resolution;
@@ -903,70 +891,6 @@ impl Interpreter {
         result
     }
 
-    /// exec_byte_code's Bcall: Ffuncall's depth and quit checks, then the
-    /// callee's own entry without the general dispatch between them -- a
-    /// byte-code object, or a symbol whose function cell holds one, goes to
-    /// funcall_lambda's byte-code branch; a symbol naming a subr to its
-    /// dispatch.  Anything else is the general call.
-    pub(crate) fn funcall_from_bytecode(
-        &mut self,
-        func: &Value,
-        args: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        if profile_path().is_some() {
-            return self.call_function_value(*func, None, args, env);
-        }
-        match func.kind() {
-            Kind::Record(id) if self.has_cached_bytecode_program(id.id) => {
-                self.begin_funcall(env)?;
-                let result = if let Some(termination) = self.pending_termination().cloned() {
-                    Err(LispError::Terminate(termination))
-                } else {
-                    self.execute_bytecode_record_named(id.id, None, args, env)
-                };
-                self.end_funcall();
-                result
-            }
-            Kind::Symbol(name) => {
-                self.begin_funcall(env)?;
-                let result = if let Some(termination) = self.pending_termination().cloned() {
-                    Err(LispError::Terminate(termination))
-                } else {
-                    match self.resolve_symbol_call(&name, env) {
-                        Ok(FunctionResolution::DirectBuiltin(subr)) => self.dispatch_named_builtin(
-                            &name,
-                            subr,
-                            Some(CallName::Symbol(&name)),
-                            args,
-                            env,
-                            true,
-                        ),
-                        Ok(FunctionResolution::Resolved(value)) if matches!(value.kind(), Kind::Record(id) if self.has_cached_bytecode_program(id.id)) =>
-                        {
-                            let Kind::Record(id) = value.kind() else {
-                                unreachable!("matched above")
-                            };
-                            self.execute_bytecode_record_named(
-                                id.id,
-                                Some(CallName::Symbol(&name)),
-                                args,
-                                env,
-                            )
-                        }
-                        // A lambda, an autoload, a local function binding or
-                        // a void function: the general path, which resolves
-                        // again from the cache.
-                        _ => self.call_function_value_inner(*func, None, args, env, true),
-                    }
-                };
-                self.end_funcall();
-                result
-            }
-            _ => self.call_function_value(*func, None, args, env),
-        }
-    }
-
     /// eval.c:call_debugger.  The C path specbinds the debugger control
     /// variables around apply1(Vdebugger, arg); keep those bindings in the
     /// same dynamic scope for native Ffuncall exits.
@@ -1081,6 +1005,49 @@ impl Interpreter {
                     .expect("checked pending termination"),
             ));
         }
+        let backtrace_function = original_name
+            .map(CallName::original_symbol_value)
+            .unwrap_or(func);
+        self.with_backtrace_frame(backtrace_function, args, |interp| {
+            interp.capture_current_backtrace_context(
+                original_name.map(CallName::as_str),
+                env,
+                None,
+            );
+            // eval.c:Ffuncall records the unresolved callee and its arguments,
+            // then collects before looking at the live function cell. Source
+            // evaluation already collected before evaluating its arguments.
+            if funcall {
+                crate::lisp::native_comp::maybe_gc(interp, env);
+            }
+            let result = interp.call_function_body(func, original_name, args, env, funcall);
+            interp.settle_frame_result(result, env)
+        })
+    }
+
+    /// funcall_general after Ffuncall/Bcall has established depth, roots and
+    /// its backtrace frame and run maybe_gc. Reuse that entry for VM/native
+    /// fallbacks instead of constructing another frame or collecting twice.
+    pub(crate) fn funcall_body(
+        &mut self,
+        func: Value,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        self.call_function_body(func, None, args, env, true)
+    }
+
+    fn call_function_body(
+        &mut self,
+        func: Value,
+        original_name: Option<CallName<'_>>,
+        args: &[Value],
+        env: &mut Env,
+        funcall: bool,
+    ) -> Result<Value, LispError> {
+        if let Some(termination) = self.pending_termination().cloned() {
+            return Err(LispError::Terminate(termination));
+        }
         // Dev-only flat profiler: EMAXX_PROFILE=<path> accumulates per-name
         // call counts and self-time, periodically rewriting <path>.
         if let Some(path) = profile_path() {
@@ -1113,11 +1080,12 @@ impl Interpreter {
         result
     }
 
-    /// Resolve a symbol function cell once, before argument evaluation.
+    /// Resolve the live function cell at the caller's GNU entry boundary.
     ///
     /// Source calls, bytecode Bcall and symbolic funcall all read the live
     /// function cell. Aliases and redefinitions therefore select the actual
-    /// callable before any subr metadata is consulted.
+    /// callable before any subr metadata is consulted. Ffuncall and Bcall do
+    /// this after collection; source evaluation does it before its arguments.
     fn resolve_symbol_call(
         &mut self,
         name: &SymbolName,
@@ -1132,39 +1100,6 @@ impl Interpreter {
                 FunctionResolution::DirectBuiltin(subr)
             }
             _ => FunctionResolution::Resolved(function),
-        })
-    }
-
-    /// The BuiltinFunc arm of `call_function_value_inner' for a callee
-    /// reached through a symbol: preserve that name in the backtrace while
-    /// dispatching the actual resolved subr, including through an alias.
-    fn dispatch_named_builtin(
-        &mut self,
-        name: &SymbolName,
-        subr: crate::lisp::types::BuiltinRef,
-        original_name: Option<CallName<'_>>,
-        args: &[Value],
-        env: &mut Env,
-        funcall: bool,
-    ) -> Result<Value, LispError> {
-        let backtrace_function = original_name
-            .map(|original| original.symbol_value(name))
-            .unwrap_or_else(|| Value::Symbol(*name));
-        self.with_backtrace_frame(backtrace_function, args, |interp| {
-            interp.capture_current_backtrace_context(
-                Some(original_name.map_or(name.as_str(), CallName::as_str)),
-                env,
-                None,
-            );
-            // eval.c:Ffuncall: maybe_quit, the depth check, record_in_backtrace,
-            // then maybe_gc -- the arguments are on the specpdl by then.
-            crate::lisp::native_comp::maybe_gc(interp, env);
-            let result =
-                primitives::call_with_facts(interp, subr.as_str(), subr.facts(), args, env)
-                    .map_err(|error| {
-                        Self::builtin_call_error(subr.as_str(), args.len(), funcall, error)
-                    });
-            interp.settle_frame_result(result, env)
         })
     }
 
@@ -1237,39 +1172,13 @@ impl Interpreter {
         result
     }
 
-    /// Execute one GNU byte-code closure with the activation-frame contract
-    /// that eval.c exposes to backtrace-frame/backtrace-eval.
-    #[inline]
-    fn execute_bytecode_record_named(
-        &mut self,
-        record_id: u64,
-        original_name: Option<CallName<'_>>,
-        args: &[Value],
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        let backtrace_function = original_name
-            .map(CallName::original_symbol_value)
-            .unwrap_or(self.record_value(record_id));
-        self.with_backtrace_frame(backtrace_function, args, |interp| {
-            interp.capture_current_backtrace_context(
-                original_name.map(CallName::as_str),
-                env,
-                None,
-            );
-            // Ffuncall's maybe_gc, after record_in_backtrace.
-            crate::lisp::native_comp::maybe_gc(interp, env);
-            let result = interp.execute_bytecode_funcall_body(record_id, args, env);
-            interp.settle_frame_result(result, env)
-        })
-    }
-
     /// eval.c:funcall_lambda's direct `exec_byte_code' branch.  The caller
     /// owns Ffuncall's depth and backtrace entry; this supplies only the
     /// byte-code activation boundary shared by source and native callers.
     #[inline(always)]
     pub(crate) fn execute_bytecode_funcall_body(
         &mut self,
-        record_id: u64,
+        closure: crate::lisp::types::ClosureRef,
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
@@ -1278,57 +1187,32 @@ impl Interpreter {
         // the caller's lexical bindings out of the VM's reads.
         let depth = env.len();
         env.push(EnvFrame::dynamic());
-        let result = crate::lisp::bytecode::vm::execute_record(self, record_id, args, env);
+        let result = crate::lisp::bytecode::vm::execute_closure(self, closure, args, env);
         env.truncate(depth);
         result
     }
 
-    /// Only execute_record fills this cache, so a hit is a genuine
-    /// byte-code function whose slots have not been mutated since.
-    /// Bcall's fast path: FUNC as a lexbound byte-code function whose
-    /// program is cached (a bare symbol read through its function cell,
-    /// as `XBARE_SYMBOL (call_fun)->u.s.function'), or None for anything
-    /// Ffuncall must handle -- an alias, an autoload, a dynamic arglist,
-    /// or the profiler.
+    /// Bcall can enter packed byte-code closures without a host function
+    /// registry. Classification reads the shared closure's actual code slot.
     pub(crate) fn bytecode_callee(
         &self,
         func: &Value,
-    ) -> Option<(std::rc::Rc<crate::lisp::bytecode::vm::CachedProgram>, u64)> {
-        let id = match func.kind() {
-            Kind::Record(id) => id,
-            Kind::Symbol(name) => match self.globals.function(&name).map(|v| v.kind()) {
-                Some(Kind::Record(id)) => id,
-                _ => return None,
-            },
-            _ => return None,
-        };
+    ) -> Option<(crate::lisp::bytecode::ByteCodeObject, Value)> {
         if profile_path().is_some() {
             return None;
         }
-        let program = self
-            .bytecode_program_cache
-            .get((id.id as usize).checked_sub(1)?)?
-            .as_ref()?;
-        matches!(
-            program.argspec,
-            crate::lisp::bytecode::ArgSpec::Packed { .. }
-        )
-        .then(|| (std::rc::Rc::clone(program), id.id))
-    }
-
-    fn has_cached_bytecode_program(&self, record_id: u64) -> bool {
-        (record_id as usize)
-            .checked_sub(1)
-            .and_then(|index| self.bytecode_program_cache.get(index))
-            .is_some_and(|slot| slot.is_some())
-    }
-
-    pub(crate) fn is_genuine_bytecode_function(&self, record_id: u64) -> bool {
-        // data.c:Fbyte_code_function_p: classification neither executes nor
-        // validates the bytecode and does not inspect payload contents.
-        self.find_record(record_id).is_some_and(|record| {
-            record.kind == RecordKind::Closure && record.slots.get(1).is_some_and(Value::is_string)
-        })
+        let function = match func.kind() {
+            Kind::Symbol(name) => *self.globals.function(&name)?,
+            _ => *func,
+        };
+        let Kind::Closure(closure) = function.kind() else {
+            return None;
+        };
+        if !closure.is_bytecode() || !matches!(closure.parameters().kind(), Kind::Integer(_)) {
+            return None;
+        }
+        let program = crate::lisp::bytecode::vm::closure_program(closure).ok()?;
+        Some((program, function))
     }
 
     fn call_function_value_inner(
@@ -1349,56 +1233,40 @@ impl Interpreter {
                 .map(Value::Symbol)
                 .unwrap_or(func)
         };
-        // A record with a cached program is a genuine byte-code function
-        // (only execute_record populates the cache), so skip the
-        // lambda/autoload probes and the record-type guards below.
-        if let Kind::Record(id) = func.kind()
-            && self.has_cached_bytecode_program(id.id)
+        if let Kind::Closure(closure) = func.kind()
+            && closure.is_bytecode()
         {
-            return self.execute_bytecode_record_named(id.id, original_name, args, env);
+            return self.execute_bytecode_funcall_body(closure, args, env);
         }
         let mut owned_name: Option<SymbolName> = None;
         let func = match func.kind() {
-            Kind::Symbol(name) => {
-                let resolution = match self.resolve_symbol_call(&name, env) {
-                    Ok(resolution) => resolution,
-                    Err(error) => {
-                        // eval.c's Ffuncall records the backtrace frame
-                        // BEFORE resolving the function cell, so a
-                        // void-function report carries the attempted call
-                        // itself (`foo(ARGS)') as its innermost frame.
-                        let function = original_name
-                            .map(|original| original.symbol_value(&name))
-                            .unwrap_or_else(|| Value::Symbol(name));
-                        return self.with_backtrace_frame(function, args, |interp| {
-                            interp.settle_frame_result(Err(error), env)
-                        });
-                    }
-                };
-                match resolution {
-                    FunctionResolution::DirectBuiltin(subr) => {
-                        let call_name = original_name.or(Some(CallName::Symbol(&name)));
-                        return self
-                            .dispatch_named_builtin(&name, subr, call_name, args, env, funcall);
-                    }
-                    // funcall_general's COMPILEDP arm: the function cell
-                    // holds a byte-code object already decoded once.
-                    FunctionResolution::Resolved(value) if matches!(value.kind(), Kind::Record(id) if self.has_cached_bytecode_program(id.id)) =>
-                    {
-                        let Kind::Record(id) = value.kind() else {
-                            unreachable!("matched above")
-                        };
-                        let call_name = original_name.or(Some(CallName::Symbol(&name)));
-                        return self.execute_bytecode_record_named(id.id, call_name, args, env);
-                    }
-                    FunctionResolution::Resolved(value) => {
-                        if original_name.is_none() {
-                            owned_name = Some(name);
-                        }
-                        value
-                    }
+            Kind::Symbol(name) => match self.resolve_symbol_call(&name, env)? {
+                FunctionResolution::DirectBuiltin(subr) => {
+                    return primitives::call_with_facts(
+                        self,
+                        subr.as_str(),
+                        subr.facts(),
+                        args,
+                        env,
+                    )
+                    .map_err(|error| {
+                        Self::builtin_call_error(subr.as_str(), args.len(), funcall, error)
+                    });
                 }
-            }
+                FunctionResolution::Resolved(value) if matches!(value.kind(), Kind::Closure(closure) if closure.is_bytecode()) =>
+                {
+                    let Kind::Closure(closure) = value.kind() else {
+                        unreachable!("matched above")
+                    };
+                    return self.execute_bytecode_funcall_body(closure, args, env);
+                }
+                FunctionResolution::Resolved(value) => {
+                    if original_name.is_none() {
+                        owned_name = Some(name);
+                    }
+                    value
+                }
+            },
             other => other.value(),
         };
         let original_name = original_name.or_else(|| owned_name.as_ref().map(CallName::Symbol));
@@ -1450,111 +1318,33 @@ impl Interpreter {
                 Ok(self.selected_window_value())
             }
             Kind::BuiltinFunc(ref name) => {
-                let backtrace_function = original_name
-                    .map(CallName::original_symbol_value)
-                    .unwrap_or(func);
-                self.with_backtrace_frame(backtrace_function, args, |interp| {
-                    interp.capture_current_backtrace_context(
-                        original_name.map(CallName::as_str),
-                        env,
-                        None,
-                    );
-                    crate::lisp::native_comp::maybe_gc(interp, env);
-                    let result = if name.descriptor().max_args()
-                        == crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled
-                    {
-                        // eval.c:funcall_subr rejects special forms as
-                        // function values, before their bodies or arity checks.
-                        Err(LispError::SignalValue(Value::list([
-                            Value::symbol("invalid-function"),
-                            func,
-                        ])))
-                    } else {
-                        primitives::call_with_facts(interp, name.as_str(), name.facts(), args, env)
-                            .map_err(|error| {
-                                Self::builtin_call_error(name, args.len(), funcall, error)
-                            })
-                    };
-                    interp.settle_frame_result(result, env)
-                })
+                if name.descriptor().max_args()
+                    == crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled
+                {
+                    // eval.c:funcall_subr rejects special forms before arity.
+                    Err(LispError::SignalValue(Value::list([
+                        Value::symbol("invalid-function"),
+                        func,
+                    ])))
+                } else {
+                    primitives::call_with_facts(self, name.as_str(), name.facts(), args, env)
+                        .map_err(|error| Self::builtin_call_error(name, args.len(), funcall, error))
+                }
             }
-            Kind::Record(id)
-                if self
-                    .find_record(id)
-                    .is_some_and(|record| record.kind == RecordKind::NativeCompiledFunction) =>
-            {
-                let backtrace_function = original_name
-                    .map(CallName::original_symbol_value)
-                    .unwrap_or(Value::Record(id));
-                self.with_backtrace_frame(backtrace_function, args, |interp| {
-                    interp.capture_current_backtrace_context(
-                        original_name.map(CallName::as_str),
-                        env,
-                        None,
-                    );
-                    crate::lisp::native_comp::maybe_gc(interp, env);
-                    let result = crate::lisp::native_comp::call_function(interp, env, id.id, args);
-                    interp.settle_frame_result(result, env)
-                })
+            Kind::NativeFunction(function) => {
+                crate::lisp::native_comp::call_function(self, env, function, args)
             }
             Kind::Record(id)
                 if self
                     .find_record(id)
                     .is_some_and(|record| record.kind == RecordKind::ModuleFunction) =>
             {
-                let backtrace_function = original_name
-                    .map(CallName::original_symbol_value)
-                    .unwrap_or(Value::Record(id));
-                self.with_backtrace_frame(backtrace_function, args, |interp| {
-                    interp.capture_current_backtrace_context(
-                        original_name.map(CallName::as_str),
-                        env,
-                        None,
-                    );
-                    let result = interp.with_lisp_stack_roots(&Value::Record(id), |interp| {
-                        // Ffuncall collects after recording the arguments for
-                        // module functions too. Keep the resolved function
-                        // live if a finalizer rebinds its original symbol.
-                        crate::lisp::native_comp::maybe_gc(interp, env);
-                        crate::lisp::modules::call(interp, env, id.id, args)
-                    });
-                    interp.settle_frame_result(result, env)
-                })
+                crate::lisp::modules::call(self, env, id.id, args)
             }
-            Kind::Record(id)
-                if self
-                    .find_record(id)
-                    .is_some_and(|record| record.kind == RecordKind::Closure) =>
-            {
-                let (inner, uses_dynamic_binding) = {
-                    let Some(record) = self.find_record(id) else {
-                        unreachable!("checked record presence");
-                    };
-                    // A byte-code closure has a string code slot. Leave
-                    // instruction validation to the VM, not this type check.
-                    if record.slots.get(1).is_some_and(Value::is_string) {
-                        return self.execute_bytecode_record_named(id.id, original_name, args, env);
-                    }
-                    let Some(inner) = record.slots.first().cloned() else {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::Symbol("invalid-function".into()),
-                            Value::Record(id),
-                        ])));
-                    };
-                    (inner, byte_code_function_uses_dynamic_binding(record))
-                };
-                // Unwrapping the record is still the same Ffuncall entry.
-                if uses_dynamic_binding {
-                    self.push_lambda_capture_override(false);
-                    let result =
-                        self.call_function_value_named(inner, original_name, args, env, funcall);
-                    self.pop_lambda_capture_override();
-                    result
-                } else {
-                    self.call_function_value_named(inner, original_name, args, env, funcall)
-                }
+            Kind::Closure(closure) if closure.is_bytecode() => {
+                self.execute_bytecode_funcall_body(closure, args, env)
             }
-            Kind::Lambda(_) => self.funcall_interpreted_lambda(func, original_name, args, env),
+            Kind::Closure(_) => self.funcall_interpreted_lambda(func, original_name, args, env),
             Kind::Cons(_) if is_lambda_form(self, &func, env) => {
                 self.funcall_interpreted_lambda(func, original_name, args, env)
             }
@@ -1579,128 +1369,117 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let backtrace_function = original_name
-            .map(CallName::original_symbol_value)
-            .unwrap_or(function);
-        self.with_backtrace_frame(backtrace_function, args, |interp| {
-            let (mut parameters, mut lexical_environment) = match function.kind() {
-                Kind::Lambda(lambda) => (lambda.parameters(), lambda.environment_value()),
-                Kind::Cons(cell) => match cell.cdr.get().kind() {
-                    Kind::Cons(tail) => (tail.car.get(), Value::Nil),
-                    _ => return interp.settle_frame_result(Err(invalid_function(function)), env),
-                },
-                _ => unreachable!("an interpreted lambda was selected"),
-            };
-            let lexical = !lexical_environment.is_nil();
-            let override_capture = interp.lambda_capture_override() != Some(lexical);
-            if override_capture {
-                interp.push_lambda_eval_context(lexical);
-            }
-            let depth = env.len();
-            let count = interp.specpdl_index();
-            let result = (|| {
-                let mut index = 0;
-                let mut optional = false;
-                let mut rest = false;
-                let mut previous_rest = false;
-                while let Kind::Cons(cell) = parameters.kind() {
-                    interp.maybe_quit(env)?;
-                    let value = cell.car.get();
-                    let parameter = match value.kind() {
-                        Kind::Nil => SymbolName::intern_str("nil"),
-                        Kind::T => SymbolName::intern_str("t"),
-                        _ => interp
-                            .callable_symbol_name(&value, env)
-                            .ok_or_else(|| invalid_function(function))?,
-                    };
-                    if parameter == "&rest" {
-                        if rest || previous_rest {
-                            return Err(invalid_function(function));
-                        }
-                        rest = true;
-                        previous_rest = true;
-                    } else if parameter == "&optional" {
-                        if optional || rest || previous_rest {
-                            return Err(invalid_function(function));
-                        }
-                        optional = true;
-                    } else {
-                        let argument = if rest {
-                            let remaining = Value::list(args[index..].iter().copied());
-                            index = args.len();
-                            remaining
-                        } else if let Some(argument) = args.get(index) {
-                            index += 1;
-                            *argument
-                        } else if optional {
-                            Value::Nil
-                        } else {
-                            return Err(LispError::SignalValue(Value::list([
-                                Value::symbol("wrong-number-of-arguments"),
-                                function,
-                                Value::Integer(args.len() as i64),
-                            ])));
-                        };
-                        // Dynamic specbind can run variable watchers. Bind
-                        // immediately, retaining GNU's order and the live
-                        // parameter cell until its cdr is read below.
-                        interp
-                            .backtrace_frames
-                            .last_mut()
-                            .expect("active call frame")
-                            .detail_mut()
-                            .locals
-                            .push((parameter, argument));
-                        if lexical {
-                            lexical_environment =
-                                Self::cons_binding(parameter, argument, lexical_environment);
-                        } else {
-                            interp.specbind_symbol(&parameter, argument, env)?;
-                        }
-                        previous_rest = false;
-                    }
-                    parameters = cell.cdr.get();
-                }
-                if !parameters.is_nil() || previous_rest {
-                    return Err(invalid_function(function));
-                }
-                if index < args.len() {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::symbol("wrong-number-of-arguments"),
-                        function,
-                        Value::Integer(args.len() as i64),
-                    ])));
-                }
-                if crate::lisp::types::current_environment_value(env).word()
-                    != lexical_environment.word()
-                {
-                    env.push(EnvFrame::from_alist(lexical_environment));
-                }
-                interp.capture_current_backtrace_context(
-                    original_name.map(CallName::as_str),
-                    env,
-                    None,
-                );
-                crate::lisp::native_comp::maybe_gc(interp, env);
-                let body = match function.kind() {
-                    Kind::Lambda(lambda) => lambda.body(),
-                    _ => function.cdr()?.cdr()?,
+        let (mut parameters, mut lexical_environment) = match function.kind() {
+            Kind::Closure(lambda) => (lambda.parameters(), lambda.environment_value()),
+            Kind::Cons(cell) => match cell.cdr.get().kind() {
+                Kind::Cons(tail) => (tail.car.get(), Value::Nil),
+                _ => return self.settle_frame_result(Err(invalid_function(function)), env),
+            },
+            _ => unreachable!("an interpreted lambda was selected"),
+        };
+        let lexical = !lexical_environment.is_nil();
+        let override_capture = self.lambda_capture_override() != Some(lexical);
+        if override_capture {
+            self.push_lambda_eval_context(lexical);
+        }
+        let depth = env.len();
+        let count = self.specpdl_index();
+        let result = (|| {
+            let mut index = 0;
+            let mut optional = false;
+            let mut rest = false;
+            let mut previous_rest = false;
+            while let Kind::Cons(cell) = parameters.kind() {
+                self.maybe_quit(env)?;
+                let value = cell.car.get();
+                let parameter = match value.kind() {
+                    Kind::Nil => SymbolName::intern_str("nil"),
+                    Kind::T => SymbolName::intern_str("t"),
+                    _ => self
+                        .callable_symbol_name(&value, env)
+                        .ok_or_else(|| invalid_function(function))?,
                 };
-                interp.progn_list(&body, env)
-            })();
-            // GNU signals before unbinding: handlers can inspect partial
-            // dynamic argument bindings and the signaling call's frame.
-            let result = interp.settle_frame_result(result, env);
-            env.truncate(depth);
-            let unbind = interp.unbind_to(count, env);
-            if override_capture {
-                interp.pop_lambda_capture_override();
+                if parameter == "&rest" {
+                    if rest || previous_rest {
+                        return Err(invalid_function(function));
+                    }
+                    rest = true;
+                    previous_rest = true;
+                } else if parameter == "&optional" {
+                    if optional || rest || previous_rest {
+                        return Err(invalid_function(function));
+                    }
+                    optional = true;
+                } else {
+                    let argument = if rest {
+                        let remaining = Value::list(args[index..].iter().copied());
+                        index = args.len();
+                        remaining
+                    } else if let Some(argument) = args.get(index) {
+                        index += 1;
+                        *argument
+                    } else if optional {
+                        Value::Nil
+                    } else {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::symbol("wrong-number-of-arguments"),
+                            function,
+                            Value::Integer(args.len() as i64),
+                        ])));
+                    };
+                    // Dynamic specbind can run variable watchers. Bind
+                    // immediately, retaining GNU's order and the live
+                    // parameter cell until its cdr is read below.
+                    self.backtrace_frames
+                        .last_mut()
+                        .expect("active call frame")
+                        .detail_mut()
+                        .locals
+                        .push((parameter, argument));
+                    if lexical {
+                        lexical_environment =
+                            Self::cons_binding(parameter, argument, lexical_environment);
+                    } else {
+                        self.specbind_symbol(&parameter, argument, env)?;
+                    }
+                    previous_rest = false;
+                }
+                parameters = cell.cdr.get();
             }
-            match result {
-                Ok(value) => unbind.map(|()| value),
-                Err(error) => Err(error),
+            if !parameters.is_nil() || previous_rest {
+                return Err(invalid_function(function));
             }
-        })
+            if index < args.len() {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("wrong-number-of-arguments"),
+                    function,
+                    Value::Integer(args.len() as i64),
+                ])));
+            }
+            if crate::lisp::types::current_environment_value(env).word()
+                != lexical_environment.word()
+            {
+                env.push(EnvFrame::from_alist(lexical_environment));
+            }
+            self.capture_current_backtrace_context(original_name.map(CallName::as_str), env, None);
+            let body = match function.kind() {
+                Kind::Closure(lambda) => lambda.body(),
+                _ => function.cdr()?.cdr()?,
+            };
+            self.progn_list(&body, env)
+        })();
+        // GNU signals before unbinding: handlers can inspect partial
+        // dynamic argument bindings and the signaling call's frame.
+        let result = self.settle_frame_result(result, env);
+        env.truncate(depth);
+        let unbind = self.unbind_to(count, env);
+        if override_capture {
+            self.pop_lambda_capture_override();
+        }
+        match result {
+            Ok(value) => unbind.map(|()| value),
+            Err(error) => Err(error),
+        }
     }
 
     // ── Special forms ──

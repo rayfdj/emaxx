@@ -1,0 +1,40 @@
+{
+  "status": "source308 applied; all541 validated bytes and modes verified",
+  "pre_apply_head": "2b561470516c519f2198d2551c7b85b474defcfc",
+  "portable_patch_base": "2b561470516c519f2198d2551c7b85b474defcfc",
+  "patch_sha256": "0113c37e5c85f2f4ed60939eeaad482abb4ec93e9b0b47565d1f69f22b47c423",
+  "steps": [
+    {
+      "command": [
+        "git",
+        "apply",
+        "--check",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source308-portable-incremental.patch"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "apply",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source308-portable-incremental.patch"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "goal_complete": false
+}

@@ -1,0 +1,57 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "raw_passed": 542,
+    "raw_failed": 0,
+    "raw_ignored": 0,
+    "qualification": "All selected raw names and verdicts audited against the exact binary inventory. Release, ordinary and complete validation remain pending. No performance claim."
+  },
+  "archive": {
+    "path": "source198-selected-gate.tar.gz",
+    "bytes": 102086,
+    "sha256": "a6ceda54d595270a22017978e3e723255c2b2381448ad485f7013579e2817bc8"
+  },
+  "files": [
+    {
+      "path": "source198-gate-inventory.txt",
+      "bytes": 260428,
+      "sha256": "f8f5ce814811d4782ceace5b7d44d1a81f2aada2f5d5754107fd34b7e7904f55"
+    },
+    {
+      "path": "source198-gate-selected-command.json",
+      "bytes": 50955,
+      "sha256": "a4493547384ebc2e5655179bf654a9490770ae7c9d079d1e6dc9e8576df72666"
+    },
+    {
+      "path": "source198-gate-selected-evidence-audit.json",
+      "bytes": 209,
+      "sha256": "06b0af835da4917e285fd9b84ef881fadf4cc2d0aef6b49d9e7bdbe17d839437"
+    },
+    {
+      "path": "source198-gate-selected-inventory-check.json",
+      "bytes": 204,
+      "sha256": "b9272cde897c4bfa0cf94a56a0913b4c37c230cc6fd4a90a60cc883ded64fbf6"
+    },
+    {
+      "path": "source198-gate-selected-result.json",
+      "bytes": 90,
+      "sha256": "822ccffd0aa2512aec559aefd6b98eb0f5a694191fab42ff86f267c03b1696bb"
+    },
+    {
+      "path": "source198-gate-selected.log",
+      "bytes": 73653,
+      "sha256": "c00176d1ddf34e46c5c8329b03a1fa137a65a09f9df047b7be273915949e7374"
+    },
+    {
+      "path": "source198-manifest.json",
+      "bytes": 45871,
+      "sha256": "a9000dc6326ee5667f30d82920a29764c98e1dd782fcd71d3efd5c7b0c980922"
+    },
+    {
+      "path": "test-reader198.py",
+      "bytes": 4912,
+      "sha256": "32f464ae6b59fc778bd5d8a7c9e8e204e8832b4b856eed1d32db89061256b489"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

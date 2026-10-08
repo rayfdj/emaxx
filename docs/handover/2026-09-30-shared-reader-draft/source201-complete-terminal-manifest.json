@@ -1,0 +1,86 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "passed",
+    "scenarios": 226,
+    "verified_checkpoints": 686,
+    "screen_comparisons": 658,
+    "filesystem_comparisons": 28,
+    "log_sha256": "2619d796a06942ca54f563a17b2c37558522743e0ec7e1f61ccf46c9c528bfe2",
+    "inputs_rehashed": 8,
+    "qualification": "Complete unchanged default scenario, screen and filesystem inventories match raw reports in order. Source/ABI-matched Darwin GNU is not the frozen executable. No performance certification."
+  },
+  "archive": {
+    "path": "source201-complete-terminal.tar.gz",
+    "bytes": 135732,
+    "sha256": "07e7d4c56ee122464bd33181d48d504bf219fa04d6a604447d4cf29ce5aefdf8"
+  },
+  "files": [
+    {
+      "path": "run-source201-full-tty.py",
+      "bytes": 3321,
+      "sha256": "03456d3423de9476566cded7bbd9d33c4fce0c8a4671f622c0dc78b5892508ec"
+    },
+    {
+      "path": "source201-complete-terminal-audit.json",
+      "bytes": 456,
+      "sha256": "9ecfd3921f9a323904655a54affeb01b0c2987fa2b33c2d3df4349479892b099"
+    },
+    {
+      "path": "source201-complete.patch",
+      "bytes": 245226,
+      "sha256": "ca4c45b3a9ec12308ab14348b3077e1850a99123809c5581bd183cc6c0f59e43"
+    },
+    {
+      "path": "source201-full-tty-driver.log",
+      "bytes": 242,
+      "sha256": "c9ca629d6572431ec8bdd636130505c25bd3a2c2678f15d0c843841782bc5711"
+    },
+    {
+      "path": "source201-full-tty-launch.json",
+      "bytes": 587,
+      "sha256": "7a921ba1b3afdea8173c7f814dda8155e324411eb1698e1982f6319390b6e73f"
+    },
+    {
+      "path": "source201-full-ttydiff-command.json",
+      "bytes": 8848,
+      "sha256": "80e65b28641efb39699386b327f6c41f90ac5cba61463bcb9e2438f17e940e72"
+    },
+    {
+      "path": "source201-full-ttydiff-result.json",
+      "bytes": 267,
+      "sha256": "6391dfe98874794714cac0027ae2b8c4ff1728e8968f89590a2765aa5525a278"
+    },
+    {
+      "path": "source201-full-ttydiff.log",
+      "bytes": 62615,
+      "sha256": "2619d796a06942ca54f563a17b2c37558522743e0ec7e1f61ccf46c9c528bfe2"
+    },
+    {
+      "path": "source201-manifest.json",
+      "bytes": 46477,
+      "sha256": "dfdf209571867a9de9ab0ad6ca001c145f5b86d2124420155deda34ec919d20a"
+    },
+    {
+      "path": "tools/fixtures/fake_lsp_server.py",
+      "bytes": 8468,
+      "sha256": "a434019f518c8928911be60801c5813a005e83cec43220a8323ce47309362251"
+    },
+    {
+      "path": "tools/fixtures/fieldnotes.org",
+      "bytes": 24328,
+      "sha256": "d53f935cbe8595f666e79a98af84d2d18c5aa75c24df2f4dfeb4f6ba40d3c45b"
+    },
+    {
+      "path": "tools/ttydiff.py",
+      "bytes": 195505,
+      "sha256": "5a99cb326aa7d4b658d0a78a177eed4342cfa03bd92c374da69649050eb76aaa"
+    },
+    {
+      "path": "verify-complete-reader-terminal-receipts.py",
+      "bytes": 3084,
+      "sha256": "1ff488145e6a473e30eda7d944b74f7b0999f4f45776f710b6988067d5c7d446"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

@@ -313,17 +313,22 @@ pub(crate) fn simple_case_char_for_action(
     code: u32,
     action: CaseAction,
 ) -> u32 {
-    let mapped = match action {
-        CaseAction::Up => case_table_mapping(interp, up_table, code).unwrap_or(code),
-        CaseAction::Down => case_table_mapping(interp, down_table, code).unwrap_or(code),
+    // This path receives an actual Lisp character, not a host-text byte
+    // placeholder. buffer.h:upcase/downcase consult exactly that table
+    // entry (including its default/parent) and leave a non-natnum unmapped.
+    let mapping = |table: CharTableRef| match table.get(code).kind() {
+        Kind::Integer(mapped) if mapped >= 0 => mapped as u32,
+        _ => code,
+    };
+    match action {
+        CaseAction::Up => mapping(up_table),
+        CaseAction::Down => mapping(down_table),
         // casefiddle.c:case_character_impl checks the `titlecase' uniprop
         // before falling back to the case-table upcase mapping.
         CaseAction::Capitalize | CaseAction::UpcaseInitials => context
             .titlecase_char(interp, code)
-            .or_else(|| case_table_mapping(interp, up_table, code))
-            .unwrap_or(code),
-    };
-    denormalize_case_key(code, mapped)
+            .unwrap_or_else(|| mapping(up_table)),
+    }
 }
 
 pub(crate) fn casify_string(

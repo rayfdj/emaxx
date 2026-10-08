@@ -1,0 +1,42 @@
+{
+  "status": "source311 applied; all548 validated runtime inputs and94 auxiliary inputs verified",
+  "pre_apply_head": "48593a3562ba26384bd9916099dbb08e53aa205e",
+  "portable_patch_base": "5e6f6fc89654b5e695161f5e1713d06ff8ca1f3c",
+  "patch_sha256": "02eb232b07eeb8fafd8a4cdc389dc593778ad4e7502685830c0e3184ab023288",
+  "steps": [
+    {
+      "command": [
+        "git",
+        "apply",
+        "--check",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source311-portable-incremental.patch"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "apply",
+        "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source311-portable-incremental.patch"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "original_failed_attempt": "Actual source310 stack overflow and separate moved-image setup failure retained",
+  "performance_status": "pending; unchanged full16 source310/source311 Linux diagnostic will follow publication",
+  "goal_complete": false
+}

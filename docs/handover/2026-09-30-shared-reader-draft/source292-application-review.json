@@ -1,0 +1,229 @@
+{
+  "status": "apply independently validated LF-only correction source292; reject optional lookup changes294 and295",
+  "reason": "GNU line motion and line counting use LF. Ropey default Unicode/CR separators make actual line-number answers differ. Source292 changes only the dependency feature configuration, preserving the original backward scan. Both selected profiles and 47 ordinary GNU comparisons pass; broad differences fall from155 rows to60 existing column-width rows, with every line/motion field matching. No performance gain is claimed. Both diagnostic cohorts and all slower cases are retained; optional lookup changes have no acceptable measured advantage.",
+  "evidence": {
+    "source292-selected-audit.json": "9f9f617685d6047865d959083ad697804957f0a5cada2264d11ef31e50ff5a84",
+    "source292-portable-draft-audit.json": "661b61b0a2af7c589e6af8d91238d28fc3f0b6979ad7cfa4abdc6729f7bb68a3",
+    "buffer-line-fresh-performance-audit.json": "4fa8b360e092ced2ebd0f70efcccb333d62de190861309b7bd84588d4c55e459",
+    "single-line-performance-audit.json": "3ea20e8ce2557d3db287821ffa27433a6ce24f686e7ba9bf727d0c7cfe9ba311",
+    "source294-application-decision.json": "a40b9bc836977973732489dc6cb419f645621b2c75aa2f26007eb43b30a09b89",
+    "source295-application-decision.json": "d1be2ea8f54c9a7ee4fd14f13c1b4cd25949c09a5c9696c85538295118eee223"
+  },
+  "combined_cases": [
+    {
+      "case": "interpreted-lexical",
+      "emaxx_median_seconds": {
+        "source290": 0.5772809982299805,
+        "source292": 0.5808204412460327
+      },
+      "body_ratio": 1.006131230764402,
+      "median_gnu_ratios": {
+        "source290": 2.5566734004419382,
+        "source292": 2.4207741872298887
+      },
+      "samples_per_editor_per_source": 6
+    },
+    {
+      "case": "interpreted-dynamic",
+      "emaxx_median_seconds": {
+        "source290": 0.403749942779541,
+        "source292": 0.4105314016342163
+      },
+      "body_ratio": 1.0167961853021938,
+      "median_gnu_ratios": {
+        "source290": 2.0588857380021226,
+        "source292": 2.1306331702680694
+      },
+      "samples_per_editor_per_source": 6
+    },
+    {
+      "case": "interpreted-calls",
+      "emaxx_median_seconds": {
+        "source290": 0.809402346611023,
+        "source292": 0.8260043859481812
+      },
+      "body_ratio": 1.020511479126137,
+      "median_gnu_ratios": {
+        "source290": 2.805983652686116,
+        "source292": 2.9510785998019617
+      },
+      "samples_per_editor_per_source": 6
+    },
+    {
+      "case": "bytecode-calls",
+      "emaxx_median_seconds": {
+        "source290": 0.5550025701522827,
+        "source292": 0.5727288722991943
+      },
+      "body_ratio": 1.031939135240487,
+      "median_gnu_ratios": {
+        "source290": 4.145617247497902,
+        "source292": 3.958555989810625
+      },
+      "samples_per_editor_per_source": 6
+    },
+    {
+      "case": "native-execution",
+      "emaxx_median_seconds": {
+        "source290": 1.9176359176635742,
+        "source292": 1.8871779441833496
+      },
+      "body_ratio": 0.9841169154167,
+      "median_gnu_ratios": {
+        "source290": 3.38872152406036,
+        "source292": 3.4077268685796103
+      },
+      "samples_per_editor_per_source": 6
+    },
+    {
+      "case": "interpreted-to-native",
+      "emaxx_median_seconds": {
+        "source290": 0.46956944465637207,
+        "source292": 0.47698092460632324
+      },
+      "body_ratio": 1.015783565209135,
+      "median_gnu_ratios": {
+        "source290": 2.415628101075057,
+        "source292": 2.5068339860938638
+      },
+      "samples_per_editor_per_source": 6
+    },
+    {
+      "case": "bytecode-to-native",
+      "emaxx_median_seconds": {
+        "source290": 1.391631007194519,
+        "source292": 1.4152274131774902
+      },
+      "body_ratio": 1.0169559357767837,
+      "median_gnu_ratios": {
+        "source290": 8.4402824201714,
+        "source292": 8.529867062803167
+      },
+      "samples_per_editor_per_source": 6
+    },
+    {
+      "case": "native-to-interpreted",
+      "emaxx_median_seconds": {
+        "source290": 0.6619565486907959,
+        "source292": 0.6609195470809937
+      },
+      "body_ratio": 0.9984334294873988,
+      "median_gnu_ratios": {
+        "source290": 2.8645575635724096,
+        "source292": 2.8189668354199537
+      },
+      "samples_per_editor_per_source": 6
+    },
+    {
+      "case": "native-to-bytecode",
+      "emaxx_median_seconds": {
+        "source290": 0.6681904792785645,
+        "source292": 0.6526066064834595
+      },
+      "body_ratio": 0.9766774994879743,
+      "median_gnu_ratios": {
+        "source290": 3.1087471808200595,
+        "source292": 2.994142551383141
+      },
+      "samples_per_editor_per_source": 6
+    },
+    {
+      "case": "cons-allocation",
+      "emaxx_median_seconds": {
+        "source290": 0.38191497325897217,
+        "source292": 0.3873109817504883
+      },
+      "body_ratio": 1.0141288215161366,
+      "median_gnu_ratios": {
+        "source290": 1.8160554136244302,
+        "source292": 1.8295499454926976
+      },
+      "samples_per_editor_per_source": 6
+    },
+    {
+      "case": "list-traversal",
+      "emaxx_median_seconds": {
+        "source290": 0.6312835216522217,
+        "source292": 0.6428664922714233
+      },
+      "body_ratio": 1.018348286026675,
+      "median_gnu_ratios": {
+        "source290": 2.0053030168993686,
+        "source292": 2.083951672507239
+      },
+      "samples_per_editor_per_source": 6
+    },
+    {
+      "case": "mapcar",
+      "emaxx_median_seconds": {
+        "source290": 0.37717342376708984,
+        "source292": 0.36518561840057373
+      },
+      "body_ratio": 0.968216728403646,
+      "median_gnu_ratios": {
+        "source290": 2.3268968220894117,
+        "source292": 2.311118877725228
+      },
+      "samples_per_editor_per_source": 6
+    },
+    {
+      "case": "explicit-gc",
+      "emaxx_median_seconds": {
+        "source290": 0.21389007568359375,
+        "source292": 0.22197604179382324
+      },
+      "body_ratio": 1.037804307116105,
+      "median_gnu_ratios": {
+        "source290": 1.1050517910902102,
+        "source292": 1.111565299648254
+      },
+      "samples_per_editor_per_source": 6
+    },
+    {
+      "case": "upstream-sort",
+      "emaxx_median_seconds": {
+        "source290": 2.069617986679077,
+        "source292": 1.9977070093154907
+      },
+      "body_ratio": 0.9652539851187826,
+      "median_gnu_ratios": {
+        "source290": 5.490038570235956,
+        "source292": 5.473093765327901
+      },
+      "samples_per_editor_per_source": 6
+    },
+    {
+      "case": "upstream-undo",
+      "emaxx_median_seconds": {
+        "source290": 0.743018388748169,
+        "source292": 0.720536470413208
+      },
+      "body_ratio": 0.9697424469226956,
+      "median_gnu_ratios": {
+        "source290": 5.395667072621736,
+        "source292": 5.360127754089746
+      },
+      "samples_per_editor_per_source": 6
+    },
+    {
+      "case": "upstream-bindat",
+      "emaxx_median_seconds": {
+        "source290": 0.6932064294815063,
+        "source292": 0.6884640455245972
+      },
+      "body_ratio": 0.993158770958809,
+      "median_gnu_ratios": {
+        "source290": 3.6371900200029814,
+        "source292": 3.6097223773835134
+      },
+      "samples_per_editor_per_source": 6
+    }
+  ],
+  "geometric_mean_body_ratio": 1.001869001331309,
+  "geometric_mean_gnu_ratios": {
+    "source290": 2.976760849215958,
+    "source292": 2.978836470471703
+  },
+  "qualification": "Six one-sample/no-warmup diagnostic observations per source/editor/case. This is descriptive, not statistical acceptance. All known width failures, Rust reference failures and incomplete platform/counter/ownership/full-goal requirements remain open. No fixture expectation, timeout, comparison rule, workload or tolerance changes.",
+  "goal_complete": false
+}

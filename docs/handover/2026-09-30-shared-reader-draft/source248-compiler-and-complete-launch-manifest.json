@@ -1,0 +1,325 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "compiler": {
+      "status": "passed",
+      "inputs_verified": 472,
+      "outcomes_per_editor": 177,
+      "reports": {
+        "gnu": {
+          "report_sha256": "00bd65062fed8ac2b76e50e38fb0283ad5f8e5feab6c829565d67d9cb7debe5b",
+          "outcomes": 177
+        },
+        "emaxx": {
+          "report_sha256": "8c5c772c9c3812ec818129318624617e969d7390b4b5b770ccc4b7cd42e620d8",
+          "outcomes": 177
+        }
+      },
+      "original_frozen_report_sha256": "3e5c25509a08a3d743ad30c6604906ca5d9afc16ead6c67ee6d7b23e7edda2cd",
+      "goal_complete": false,
+      "qualification": "Every original frozen compiler name, discovered metadata, selector and expected verdict matches the new ordinary comparison. All 177 tests pass in both normal editors. Local GNU is source/native-ABI matched, not pinned Darwin. Complete source248 platform/release/frozen validation remains required."
+    },
+    "applied_inputs": 472,
+    "launched": [
+      {
+        "pid": 4528,
+        "command": [
+          "/Library/Developer/CommandLineTools/usr/bin/python3",
+          "-B",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/run-source248-full-gate.py"
+        ],
+        "helper_sha256": "587e16e757d3b76ad3c77bb481ecb36b43ebcabb214a617e01b398b254b16d5d",
+        "source_manifest": "source248-manifest.json",
+        "qualification": "Launch is not a passing result."
+      },
+      {
+        "pid": 4529,
+        "command": [
+          "/Library/Developer/CommandLineTools/usr/bin/python3",
+          "-B",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/run-source248-release-and-ordinary.py"
+        ],
+        "helper_sha256": "33ee7f00e809bc783358c16eeeebad3b984595de9edfae9e479c636cadc175c8",
+        "source_manifest": "source248-manifest.json",
+        "qualification": "Launch is not a passing result."
+      },
+      {
+        "pid": 4530,
+        "command": [
+          "/Library/Developer/CommandLineTools/usr/bin/python3",
+          "-B",
+          "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/run-source248-full-tty.py"
+        ],
+        "helper_sha256": "a6423a27f26f059e698cf9f5927e01ab878fee9d48ef3c9cc749681d030961d7",
+        "source_manifest": "source248-manifest.json",
+        "qualification": "Launch is not a passing result."
+      }
+    ],
+    "gnu_diagnosis": {
+      "run_id": 36848112001,
+      "state": {
+        "conclusion": "",
+        "headSha": "2dd1dea85d6fbd9ed3017346d4d17348bdbbd329",
+        "status": "queued",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/36848112001"
+      },
+      "source_commit": "2dd1dea85d6fbd9ed3017346d4d17348bdbbd329",
+      "runtime_source": "source246",
+      "qualification": "Read-only GNU GC observation with unchanged fixtures; static/synthetic and ordinary-only macOS smoke pass. Actual Linux observer has not completed. Original full Linux Rust failure remains failed."
+    },
+    "qualification": "All original 177 compiler tests pass GNU/source248 with frozen inventories and raw process hashes verified. The root runtime now matches all 472 validated candidate inputs. Complete macOS4528, release/preceding ordinary4529 and terminal4530 are launched; active logs are excluded. GNU-only GC diagnosis36848112001 is separately queued on 2dd1dea8. No complete source248 platform or performance pass is claimed, and full goal remains open."
+  },
+  "archive": {
+    "path": "source248-compiler-and-complete-launch.tar.gz",
+    "bytes": 249941,
+    "sha256": "3e2514a1badc1751f2fc56cd53deac0ba2b0714833ad5cd3daedb8aef00eafa4"
+  },
+  "files": [
+    {
+      "path": "audit-source248-original-compiler.py",
+      "bytes": 2689,
+      "sha256": "701e0b747dc212898105468968c031461be581ff3f3335a5b20ea4f7489a6e61"
+    },
+    {
+      "path": "compare-source248-upstream-compiler.py",
+      "bytes": 5892,
+      "sha256": "b5cf28ef082c69651ef46a80196c3b19c284d86262457bf1f74b58941cf83695"
+    },
+    {
+      "path": "launch-source248-complete.py",
+      "bytes": 1652,
+      "sha256": "357711c81753b36ffbfd86edaf6c33eef41b75afe5b226a37ba339b0f26b8225"
+    },
+    {
+      "path": "package-source248-compiler-and-launch.py",
+      "bytes": 2895,
+      "sha256": "7afc7096695200276e4a80324f79564b21f1641945fa4782ab1573a8fa923f71"
+    },
+    {
+      "path": "run-source248-full-gate.py",
+      "bytes": 3449,
+      "sha256": "587e16e757d3b76ad3c77bb481ecb36b43ebcabb214a617e01b398b254b16d5d"
+    },
+    {
+      "path": "run-source248-full-tty.py",
+      "bytes": 3980,
+      "sha256": "a6423a27f26f059e698cf9f5927e01ab878fee9d48ef3c9cc749681d030961d7"
+    },
+    {
+      "path": "run-source248-release-and-ordinary.py",
+      "bytes": 2333,
+      "sha256": "33ee7f00e809bc783358c16eeeebad3b984595de9edfae9e479c636cadc175c8"
+    },
+    {
+      "path": "source246-linux-gnu-trace-dispatch.json",
+      "bytes": 363,
+      "sha256": "7563535a7f1bb64902da568145876f36ad2ce40e68dc1746bc7263d11627ba23"
+    },
+    {
+      "path": "source246-linux-gnu-trace-launch.json",
+      "bytes": 535,
+      "sha256": "45772b43309456429f1081ee9c8805419260ae5ef8d0e87f2ce9d26f78ae18ba"
+    },
+    {
+      "path": "source246-recovered-commit.json",
+      "bytes": 1575,
+      "sha256": "249461f2698e15726f12672acf2dd181cb1dfa8a4d8dc7055a411ce95643a02d"
+    },
+    {
+      "path": "source246-recovered-push.json",
+      "bytes": 243,
+      "sha256": "8c0d152e8d677046f6bb278056de7890460ba253639e35fb14542ff6cac43e92"
+    },
+    {
+      "path": "source248-complete-launch-result.json",
+      "bytes": 1278,
+      "sha256": "ad8db045458ecfa596c5008cc5fb78d5a10a110a934cbcab38611668c7724ebb"
+    },
+    {
+      "path": "source248-complete.patch",
+      "bytes": 702400,
+      "sha256": "c22b942352e648d01e3a452d220df4898f32b832b41033f07a087ca10cc36dfe"
+    },
+    {
+      "path": "source248-freeze.json",
+      "bytes": 989,
+      "sha256": "eaaafad7a59cc4913c7662cece6be6fbcc469d4c710862996330ebd50523691e"
+    },
+    {
+      "path": "source248-full-gate-launch.json",
+      "bytes": 398,
+      "sha256": "25276eaf73240b1753a4253b938355039bb042edfc5043df8f2b45da9ca5821d"
+    },
+    {
+      "path": "source248-full-ttydiff-launch.json",
+      "bytes": 397,
+      "sha256": "0732092d545436701e6e2e07be6fd0e69ac7fb7de6533aa2625e1595ea19bac9"
+    },
+    {
+      "path": "source248-gate-focused-audit.json",
+      "bytes": 16293,
+      "sha256": "27d686b0c2d18a49ede6ac3afe02c408afbc18960d711119ea201c8e3d3fc3c5"
+    },
+    {
+      "path": "source248-incremental.patch",
+      "bytes": 9237,
+      "sha256": "ddf05f6ac048fbc16fcc24c771e09599c258ec3804f8a1eff283fb7146b9f3cd"
+    },
+    {
+      "path": "source248-manifest.json",
+      "bytes": 54099,
+      "sha256": "686003776613cdc0825d9575e630e7b39fdbe0674dcdeea893f9f3620caef92f"
+    },
+    {
+      "path": "source248-patch-replay-audit.json",
+      "bytes": 864,
+      "sha256": "d793d24a8c632c603a58c4de53d9a02c5bd377bf3018b11dce7ef738cb1f7978"
+    },
+    {
+      "path": "source248-release-and-ordinary-launch.json",
+      "bytes": 409,
+      "sha256": "09cf87cc140cb28c9302999606e4a188af81cbf7c4ec099b0619fe51ca7ab2eb"
+    },
+    {
+      "path": "source248-root-application.json",
+      "bytes": 446,
+      "sha256": "0eea4387622b318f4fc477d6f35cd09748ce2d7fce2e645bb79fdabc4642d4bc"
+    },
+    {
+      "path": "source248-selected-audit.json",
+      "bytes": 88073,
+      "sha256": "fd3e163d8746e7fe77bf472746a19227114738aa1c83c59aa7fa14cbd7d60006"
+    },
+    {
+      "path": "source248-upstream-compiler-audit.json",
+      "bytes": 1316,
+      "sha256": "0992651234d3bed0f10d22a9b1e6f69f60bfd99ffa9f56631a9b0f8b4246d9ff"
+    },
+    {
+      "path": "source248-upstream-compiler-driver.log",
+      "bytes": 2082,
+      "sha256": "67e0bf7569bf58aac41d4fd102eeda4eaaa6ff0277b638b23381c05594e73a5b"
+    },
+    {
+      "path": "source248-upstream-compiler-emaxx-command.json",
+      "bytes": 3972,
+      "sha256": "570ac009154b1bbf7dcf68fd0fb4f35f5ae1f25c5aa5bbfd4d15e1b67bee1881"
+    },
+    {
+      "path": "source248-upstream-compiler-emaxx-result.json",
+      "bytes": 395,
+      "sha256": "cea4426139b88e8763bcd8d891b5db053d8b29fa3c81fc32437a3a11484dd54c"
+    },
+    {
+      "path": "source248-upstream-compiler-emaxx.stderr",
+      "bytes": 1098,
+      "sha256": "025d001d4056e7e87d3a0564115500b027e5f643f10ee193411f7e2059ec8996"
+    },
+    {
+      "path": "source248-upstream-compiler-emaxx.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-upstream-compiler-gnu-command.json",
+      "bytes": 3802,
+      "sha256": "4b18a9e525d65d9a4c90bb6abb63954d45052b36c6e5ca5be32d1ec38df4ecbb"
+    },
+    {
+      "path": "source248-upstream-compiler-gnu-result.json",
+      "bytes": 394,
+      "sha256": "00a5fcd418dcc4b40e90723a386d9c631303987373747617b21a8bb98cab6dec"
+    },
+    {
+      "path": "source248-upstream-compiler-gnu.stderr",
+      "bytes": 1094,
+      "sha256": "0cd2f0cff387e21a32631b5ffc78a53be75f92d4c22470b1db8b0cdce4ebcc27"
+    },
+    {
+      "path": "source248-upstream-compiler-gnu.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source248-upstream-compiler-launch.json",
+      "bytes": 414,
+      "sha256": "c4863e7f8abd9785d10150f9e29a69f74d8288e507b0340c31f8f9221b0ecb2a"
+    },
+    {
+      "path": "source248-upstream-compiler-raw-audit.json",
+      "bytes": 817,
+      "sha256": "7e7860993f68eed3d4d8f387d2c14daa4aeac0909e6f2108240c87b289052d92"
+    },
+    {
+      "path": "source248-upstream-compiler/emaxx/comp-resources/comp-test-45603.el",
+      "bytes": 923,
+      "sha256": "e773e15ab1dc05fbfaf95ee7c6ecd9426330c911f2310dca2d32d23b955dd31f"
+    },
+    {
+      "path": "source248-upstream-compiler/emaxx/comp-resources/comp-test-funcs-dyn.el",
+      "bytes": 1494,
+      "sha256": "fa07dda46576dc3111f62eb59b8b95ffae2c06b3dcaf3cefd96ecfa27f0bd8ec"
+    },
+    {
+      "path": "source248-upstream-compiler/emaxx/comp-resources/comp-test-funcs-dyn2.el",
+      "bytes": 1073,
+      "sha256": "8760897f12fa4844486c0f326261b52d25060ce05c72c46ae09ca7e1a1508f4d"
+    },
+    {
+      "path": "source248-upstream-compiler/emaxx/comp-resources/comp-test-funcs.el",
+      "bytes": 18832,
+      "sha256": "582c0cd31abbc97aff9299304d3dff879dfdbe51614b3344d9676831fc553965"
+    },
+    {
+      "path": "source248-upstream-compiler/emaxx/comp-resources/comp-test-pure.el",
+      "bytes": 1244,
+      "sha256": "3a259e4d7a073c861348d848aa76bd8621e2d85043d3131ec9ee8556b7623e55"
+    },
+    {
+      "path": "source248-upstream-compiler/emaxx/comp-tests.el",
+      "bytes": 49628,
+      "sha256": "9fe2e25cd317f21cd2226bb1ea21f48cc3d1450f75da1485b0b00bb0c562e9fa"
+    },
+    {
+      "path": "source248-upstream-compiler/emaxx/report.json",
+      "bytes": 45274,
+      "sha256": "8c5c772c9c3812ec818129318624617e969d7390b4b5b770ccc4b7cd42e620d8"
+    },
+    {
+      "path": "source248-upstream-compiler/gnu/comp-resources/comp-test-45603.el",
+      "bytes": 923,
+      "sha256": "e773e15ab1dc05fbfaf95ee7c6ecd9426330c911f2310dca2d32d23b955dd31f"
+    },
+    {
+      "path": "source248-upstream-compiler/gnu/comp-resources/comp-test-funcs-dyn.el",
+      "bytes": 1494,
+      "sha256": "fa07dda46576dc3111f62eb59b8b95ffae2c06b3dcaf3cefd96ecfa27f0bd8ec"
+    },
+    {
+      "path": "source248-upstream-compiler/gnu/comp-resources/comp-test-funcs-dyn2.el",
+      "bytes": 1073,
+      "sha256": "8760897f12fa4844486c0f326261b52d25060ce05c72c46ae09ca7e1a1508f4d"
+    },
+    {
+      "path": "source248-upstream-compiler/gnu/comp-resources/comp-test-funcs.el",
+      "bytes": 18832,
+      "sha256": "582c0cd31abbc97aff9299304d3dff879dfdbe51614b3344d9676831fc553965"
+    },
+    {
+      "path": "source248-upstream-compiler/gnu/comp-resources/comp-test-pure.el",
+      "bytes": 1244,
+      "sha256": "3a259e4d7a073c861348d848aa76bd8621e2d85043d3131ec9ee8556b7623e55"
+    },
+    {
+      "path": "source248-upstream-compiler/gnu/comp-tests.el",
+      "bytes": 49628,
+      "sha256": "9fe2e25cd317f21cd2226bb1ea21f48cc3d1450f75da1485b0b00bb0c562e9fa"
+    },
+    {
+      "path": "source248-upstream-compiler/gnu/report.json",
+      "bytes": 45117,
+      "sha256": "00bd65062fed8ac2b76e50e38fb0283ad5f8e5feab6c829565d67d9cb7debe5b"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

@@ -1,0 +1,1 @@
+(list (kbd "S-TAB") (kbd "S-<tab>") (lookup-key local-function-key-map (kbd "S-TAB")) (lookup-key local-function-key-map [S-tab]) (lookup-key function-key-map (kbd "S-TAB")) (read-kbd-macro "S-TAB" t))

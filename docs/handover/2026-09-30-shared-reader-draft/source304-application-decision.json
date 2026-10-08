@@ -1,0 +1,150 @@
+{
+  "status": "apply source304 GNU column and exact-contract inventory repairs",
+  "source_inputs": 534,
+  "selected_audit_sha256": "98ee8330bb8c7529b3b68653be4f71666876ae81d1bd1dcc4a2a0a33677a7bf7",
+  "performance_audit_sha256": "976d60dd99adee867de69ee411a85956cc0c80175e70aa21bb67b14ff611a007",
+  "reasons": [
+    "All338 original probe rows now match actual GNU; the60 original width differences remain in302 evidence.",
+    "Missing native + and - declarations now identify their GNU C owners and a real installed-ABI boundary test. Exact-set equality and approved-deviation policy are unchanged.",
+    "506 selected tests/profile including all24 audit tests,49 ordinary GNU comparisons, fresh builds and warning-free strict checks pass."
+  ],
+  "timing": {
+    "raw_geometric_ratio": 1.0223826402531841,
+    "paired_gnu_geometric_ratios": {
+      "source302": 2.8362283315119257,
+      "source304": 2.8807321641296237
+    },
+    "cases": [
+      {
+        "case": "interpreted-lexical",
+        "optimized_over_baseline": 1.0324328229496174,
+        "median_gnu_ratios": {
+          "source302": 2.378090074572821,
+          "source304": 2.4679503649253602
+        }
+      },
+      {
+        "case": "interpreted-dynamic",
+        "optimized_over_baseline": 1.0311062855552902,
+        "median_gnu_ratios": {
+          "source302": 2.120995564317398,
+          "source304": 2.132144127725176
+        }
+      },
+      {
+        "case": "interpreted-calls",
+        "optimized_over_baseline": 1.0260596505916666,
+        "median_gnu_ratios": {
+          "source302": 2.7096570908590336,
+          "source304": 2.725394637655948
+        }
+      },
+      {
+        "case": "bytecode-calls",
+        "optimized_over_baseline": 1.0170407293122699,
+        "median_gnu_ratios": {
+          "source302": 4.168111306861815,
+          "source304": 4.110411410776964
+        }
+      },
+      {
+        "case": "native-execution",
+        "optimized_over_baseline": 1.0207680276420639,
+        "median_gnu_ratios": {
+          "source302": 2.1807239787444583,
+          "source304": 2.2380073504002294
+        }
+      },
+      {
+        "case": "interpreted-to-native",
+        "optimized_over_baseline": 1.0143164335462713,
+        "median_gnu_ratios": {
+          "source302": 2.369306133742501,
+          "source304": 2.463214059442721
+        }
+      },
+      {
+        "case": "bytecode-to-native",
+        "optimized_over_baseline": 1.0246425421316512,
+        "median_gnu_ratios": {
+          "source302": 8.610699774752929,
+          "source304": 8.495781398385565
+        }
+      },
+      {
+        "case": "native-to-interpreted",
+        "optimized_over_baseline": 1.0753961166940789,
+        "median_gnu_ratios": {
+          "source302": 2.7714515654178995,
+          "source304": 2.833955600615887
+        }
+      },
+      {
+        "case": "native-to-bytecode",
+        "optimized_over_baseline": 1.076647455362447,
+        "median_gnu_ratios": {
+          "source302": 2.903890118765759,
+          "source304": 3.0755562281754023
+        }
+      },
+      {
+        "case": "cons-allocation",
+        "optimized_over_baseline": 1.0726219415196068,
+        "median_gnu_ratios": {
+          "source302": 1.7555283087238227,
+          "source304": 1.9331224565955254
+        }
+      },
+      {
+        "case": "list-traversal",
+        "optimized_over_baseline": 1.0065220866987865,
+        "median_gnu_ratios": {
+          "source302": 2.073509320841316,
+          "source304": 2.0706199837937955
+        }
+      },
+      {
+        "case": "mapcar",
+        "optimized_over_baseline": 1.0517435473539947,
+        "median_gnu_ratios": {
+          "source302": 2.2503081756004453,
+          "source304": 2.2893526519079064
+        }
+      },
+      {
+        "case": "explicit-gc",
+        "optimized_over_baseline": 1.0037657055266556,
+        "median_gnu_ratios": {
+          "source302": 1.0886755562096277,
+          "source304": 1.0692114031472368
+        }
+      },
+      {
+        "case": "upstream-sort",
+        "optimized_over_baseline": 0.9825970167524261,
+        "median_gnu_ratios": {
+          "source302": 5.2548912383855,
+          "source304": 5.126051520058765
+        }
+      },
+      {
+        "case": "upstream-undo",
+        "optimized_over_baseline": 0.9934982529581791,
+        "median_gnu_ratios": {
+          "source302": 5.1227149909661485,
+          "source304": 5.341662279534832
+        }
+      },
+      {
+        "case": "upstream-bindat",
+        "optimized_over_baseline": 0.9385764303206394,
+        "median_gnu_ratios": {
+          "source302": 3.5807279869016977,
+          "source304": 3.4841696428453193
+        }
+      }
+    ]
+  },
+  "qualification": "Mandatory correctness repairs, with original302 and corrected304 timing costs visible. All192 diagnostic process answers/modes verify. Three pilots do not establish statistical significance or final GNU parity.302 full validation failed; no certification transfers from it. Exact304 full platform validation follows. Architecture, real counters, ownership and final calibrated every-case3% criterion remain required.",
+  "goal_complete": false
+}

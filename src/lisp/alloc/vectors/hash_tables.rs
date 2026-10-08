@@ -41,6 +41,7 @@ pub(crate) struct LispHashTable {
 
 const _: () = {
     assert!(std::mem::size_of::<LispHashTable>() == 72);
+    assert!(std::mem::align_of::<LispHashTable>() <= ROUNDUP_SIZE);
     assert!(std::mem::offset_of!(LispHashTable, key_and_value) == 24);
     assert!(std::mem::offset_of!(LispHashTable, count) == 48);
     assert!(std::mem::offset_of!(LispHashTable, table_size) == 56);
@@ -114,8 +115,8 @@ impl HashTableRef {
             result.install(arrays);
             result.object().next_free.set(0);
         }
-        // GNU charges the 72 logical header/payload bytes. The vector
-        // census separately includes its 80-byte rounded allocation.
+        // GNU charges the 72 header/payload bytes. Word-aligned allocation
+        // now uses that same physical footprint, with arrays owned separately.
         crate::lisp::native_comp::note_lisp_allocation(
             bytes + crate::lisp::eval::gnu_hash_table_storage_bytes(size),
         );

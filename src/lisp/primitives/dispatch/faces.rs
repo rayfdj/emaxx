@@ -6,7 +6,7 @@ use crate::lisp::types::Kind;
 fn resolve_face_name(interp: &Interpreter, value: &Value) -> Result<String, LispError> {
     let mut name = match value.kind() {
         Kind::Symbol(name) => name.to_string(),
-        Kind::String(_) | Kind::StringObject(_) => string_text(value)?,
+        Kind::StringObject(_) => string_text(value)?,
         _ => return Err(wrong_type_argument("symbolp", *value)),
     };
     let mut seen = HashSet::new();
@@ -114,7 +114,7 @@ fn normalize_face_attribute_value(
         ":height" => match value.kind() {
             Kind::Integer(height) if height > 0 => *value,
             Kind::Float(scale) if scale.is_finite() && scale.get() > 0.0 => *value,
-            Kind::Lambda(_) | Kind::BuiltinFunc(_) | Kind::Symbol(_) => *value,
+            Kind::Closure(_) | Kind::BuiltinFunc(_) | Kind::Symbol(_) => *value,
             _ => return Err(LispError::Signal("Invalid face height".into())),
         },
         ":weight" => {
@@ -276,7 +276,7 @@ fn merge_face_height(
             Kind::Symbol(symbol) if symbol == "unspecified" => Ok(*from),
             _ => Ok(*from),
         },
-        Kind::Lambda(_) | Kind::BuiltinFunc(_) | Kind::Symbol(_) => {
+        Kind::Closure(_) | Kind::BuiltinFunc(_) | Kind::Symbol(_) => {
             interp.call_function_value(*from, None, std::slice::from_ref(to), env)
         }
         _ => Ok(*from),
@@ -491,10 +491,7 @@ define_dispatch!(
             }
             "internal-lisp-face-p" => {
                 need_arg_range(name, args, 1, 2)?;
-                if !matches!(
-                    args[0].kind(),
-                    Kind::Symbol(_) | Kind::String(_) | Kind::StringObject(_)
-                ) {
+                if !matches!(args[0].kind(), Kind::Symbol(_) | Kind::StringObject(_)) {
                     return Ok(Value::Nil);
                 }
                 let face = resolve_face_name(interp, &args[0])?;

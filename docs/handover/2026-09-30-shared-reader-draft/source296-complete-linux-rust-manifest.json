@@ -1,0 +1,364 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "complete exact68ca5d88 Linux Rust gate raw-audited",
+    "audit": {
+      "status": "passed",
+      "source_commit": "68ca5d8819ddae6f699ac7eeae694b1b19867261",
+      "source_manifest": "source296-manifest.json",
+      "complete_patch_sha256": "9d7ad5bcf95c399f285eeded1890cfa5a0bfda0c9cb1a26f320e7d9d7e28e2ae",
+      "validation_checkout": {
+        "dirty": false,
+        "head": "68ca5d8819ddae6f699ac7eeae694b1b19867261"
+      },
+      "verified_source_equivalent_inputs": 532,
+      "library_passed": 3044,
+      "library_ignored": 2,
+      "cargo_passed": {
+        "bins": 61,
+        "integration": 42
+      },
+      "total_passed": 3147,
+      "native_artifact_identity": "passed",
+      "native_identity_raw_lines": [
+        "test unchanged_gnu_sources_produce_identical_native_artifacts ... ok"
+      ],
+      "retained_files_verified": 4,
+      "test_binary_sha256": "14da32cdf4d533645da16b95641a9565809ee0c9e034305a8cd005b35a839c7d",
+      "summary_sha256": "38815cbf2410625335612d8cd69e000f86e540eae2a58d611eed406eb6a07e79",
+      "qualification": "Complete group and Cargo result summaries cross-checked with raw logs and unchanged inventory counts. Post-run retained images do not establish which individual test used each file. Frozen and terminal runs are separate."
+    },
+    "oracle": {
+      "status": "all4 retained pinned GNU inputs verified",
+      "capture": {
+        "format_version": 1,
+        "status": "captured",
+        "source": "/home/runner/work/emaxx/emaxx/emacs",
+        "files": [
+          {
+            "original": "/home/runner/work/emaxx/emaxx/emacs/src/emacs",
+            "artifact": "emacs",
+            "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf",
+            "bytes": 30924408
+          },
+          {
+            "original": "/home/runner/work/emaxx/emaxx/emacs/src/emacs.pdmp",
+            "artifact": "emacs.pdmp",
+            "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae",
+            "bytes": 17723936
+          },
+          {
+            "original": "/home/runner/work/emaxx/emaxx/emacs/src/config.h",
+            "artifact": "config.h",
+            "sha256": "ad0a1b9de2bc321faa4c92425a632884ef2bbdf9fd2917591cb1c833438539a0",
+            "bytes": 115890
+          },
+          {
+            "original": "/home/runner/work/emaxx/emaxx/emacs/src/Makefile",
+            "artifact": "Makefile",
+            "sha256": "cea4d24bdbe0eaf186951ee60a82e6c61f9fd73461afcb13abb06df8b751df03",
+            "bytes": 36149
+          }
+        ],
+        "qualification": "Configured GNU inputs captured before validation; no test result is implied.",
+        "source_commit": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+        "source_tracked_changes": []
+      },
+      "verification": {
+        "status": "unchanged",
+        "capture_manifest_sha256": "9d701f9f847eea35d34fef0b774d18e07aac8936bfb370a18d9f67aff279c55f",
+        "qualification": "Checks original and retained bytes after validation; does not change gate outcomes.",
+        "files_verified": 4
+      },
+      "qualification": "No cause for prior GNU census failures is established by this passing run.",
+      "goal_complete": false
+    },
+    "omitted_large_artifacts": [
+      {
+        "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/oracle-inputs/emacs.pdmp",
+        "bytes": 17723936,
+        "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae"
+      },
+      {
+        "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/oracle-inputs/emacs",
+        "bytes": 30924408,
+        "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf"
+      },
+      {
+        "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/retained-inputs/libtest",
+        "bytes": 34488680,
+        "sha256": "14da32cdf4d533645da16b95641a9565809ee0c9e034305a8cd005b35a839c7d"
+      },
+      {
+        "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/retained-inputs/fixture-images/loadup-14da32cd-988ea42f.pdmp",
+        "bytes": 22407176,
+        "sha256": "ca8612c5dffbf7c519a0e0c31c17f768069d1985ad77a38c7d44db34d9374263"
+      },
+      {
+        "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/retained-inputs/fixture-images/loadup-fcf1ebeb-988ea42f.pdmp",
+        "bytes": 22410312,
+        "sha256": "711bd1cafaf317c23523deec327a2e2fc139ce4e3b5f9079eb5916215155fc6f"
+      },
+      {
+        "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/retained-inputs/fixture-images/loadup-2842bcd4-988ea42f.pdmp",
+        "bytes": 22410320,
+        "sha256": "4c6c9f1e5eb58c33249968a2913ccbecf193e55aae9231cbb0f2842d3820e4c0"
+      }
+    ],
+    "qualification": "All3046 library names/verdicts and532 published source inputs verify.3147 passes/two existing ignores; native artifact identity passes. Retained local binaries/images are identified by hashes and must be rebuilt elsewhere. Frozen, macOS and later-source results remain separate. Earlier census failures remain unexplained; full-goal completion is not claimed.",
+    "goal_complete": false
+  },
+  "archive": {
+    "path": "source296-complete-linux-rust.tar.gz",
+    "bytes": 228223,
+    "sha256": "68ff8e9160793db95daf940a59742abaaf47313c5786524a9233fa8176177c37"
+  },
+  "files": [
+    {
+      "path": "audit-source296-linux-rust-names.py",
+      "bytes": 2084,
+      "sha256": "9d4874e5fdfeb2c7daaa8acbe0746e8af1b3080b66e1ed553885bb5aaa052616"
+    },
+    {
+      "path": "package-native-dispatch-profiles-and296-rust.py",
+      "bytes": 4881,
+      "sha256": "f8812768dc70eb69c372becbdad4b679e539018080999f13a9e5ee2ee629d23a"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "source296-applied-commit.json",
+      "bytes": 2707,
+      "sha256": "50dbb2f2651c42df56fca87483a1b05ef2ab3df747922fed2338d4ced3c76877"
+    },
+    {
+      "path": "source296-full-validation-launch.json",
+      "bytes": 1437,
+      "sha256": "4680f0f4c6411ae43e18980f911a22b2aef23b07acf46b319eb66c544b1ab677"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/metadata/ci-bwrap.apparmor",
+      "bytes": 335,
+      "sha256": "bda34c11d8873c7d2a5eca351394b91f32357883408cd486768873c5bb2c2782"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/metadata/oracle.txt",
+      "bytes": 449,
+      "sha256": "30fa8092347f49f1f324b2e45f9d0cc25108c2c64bb8d0549b062d9e56b2e5f4"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/oracle-inputs/Makefile",
+      "bytes": 36149,
+      "sha256": "cea4d24bdbe0eaf186951ee60a82e6c61f9fd73461afcb13abb06df8b751df03"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/oracle-inputs/config.h",
+      "bytes": 115890,
+      "sha256": "ad0a1b9de2bc321faa4c92425a632884ef2bbdf9fd2917591cb1c833438539a0"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/oracle-inputs/manifest.json",
+      "bytes": 1189,
+      "sha256": "9d701f9f847eea35d34fef0b774d18e07aac8936bfb370a18d9f67aff279c55f"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/oracle-inputs/verification.json",
+      "bytes": 254,
+      "sha256": "0506932035e0ca004a498d7577da86aa5b723adf0dca66ee9fc70460abdd01f8"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/bins.log",
+      "bytes": 5518,
+      "sha256": "1ec6d772a723fbbb1f2350f44afc4e9d3ae9051b288ab8dc00738c74720c8149"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/build.log",
+      "bytes": 174715,
+      "sha256": "4635175884a5459494bedf0f02f07cfe83de03e7e58664b3f54a4f631b4a9367"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/ignored-inventory.txt",
+      "bytes": 71,
+      "sha256": "f0d9d60dbf8b2298241041caf6848edb68f9a86ac2216de57c47ddea8619014b"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/integration.log",
+      "bytes": 4972,
+      "sha256": "5421be81ba3f61862eddc148724b6c8bb5ed854fee3a435540956da0c70eb0c6"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/inventory.txt",
+      "bytes": 269156,
+      "sha256": "b9e20c78ebcb1f4ed17172a699dfb107afa0554242ba5eb01dc08e89809c6b12"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/metadata.log",
+      "bytes": 13885,
+      "sha256": "e0cd5d232bced5aa889c292618a702c9b9172757f1b7799cd398fbc6bba16774"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-batch.json",
+      "bytes": 440,
+      "sha256": "38d809a8d9167c5118b00cee36aed69416da53c7e1314c36a441d78c963539b2"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-batch.log",
+      "bytes": 4237,
+      "sha256": "9d66611ab042fd44c7e9dbd8ce9149e55ec181dae48eeba2206bc2c32042ef6d"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-compat_runtime.json",
+      "bytes": 483,
+      "sha256": "58ab4d3da58731dde44548f101f3e99fcb9ac3936fa437b359f204d68d954576"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-compat_runtime.log",
+      "bytes": 10196,
+      "sha256": "df331a2638f8f34dbd940313b15c78b957872285d4c71a8ad41d992e09ab1003"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-eval_01.json",
+      "bytes": 457,
+      "sha256": "2f38958ffc0c18334ecb04f88c806033804f96a96f3fc6f06bb9836e5c7b9e4a"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-eval_01.log",
+      "bytes": 36577,
+      "sha256": "45d75c3fd2d244feae7a7c79bad89898d1838b8e43c88cd8da3d0be28a50a84a"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-eval_02.json",
+      "bytes": 457,
+      "sha256": "fcf97a49f7c92fce1d5b86c0b5e3c6cf8e0d05dd2664f46acf164877ffb09664"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-eval_02.log",
+      "bytes": 66511,
+      "sha256": "e8f9a039742c8dd1a8ca2b15d5add5d6d468dd9ca1ddb70c5e41749eaa4dfeb4"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-eval_03.json",
+      "bytes": 458,
+      "sha256": "c88c63e5937a6805d49a3efda2d163f0318f411ec251406a898f7679c280353b"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-eval_03.log",
+      "bytes": 30494,
+      "sha256": "e58dda0057df43ac25e240dbc030ca472aa34be2d89bcf6fb48c33949ed7c3ee"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-eval_04.json",
+      "bytes": 457,
+      "sha256": "2d9895af6b8ff49afd1b3aadb2584467ff56d6890078a3d217b4756597752a3e"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-eval_04.log",
+      "bytes": 24397,
+      "sha256": "f23e393e8fc2d076998421b2f6292a76725e8d859c1f3f772855f995b0d3005d"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-eval_05.json",
+      "bytes": 458,
+      "sha256": "0f6c30a6fc8269ce2ee92306916bae243e06e09e753ee09d8838d9919af189ff"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-eval_05.log",
+      "bytes": 69335,
+      "sha256": "cde31320ced071dae3f3e612e46a5419cda67c520b905badc8cfe0fd3cecedb9"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-lightweight.json",
+      "bytes": 852,
+      "sha256": "6af4bad5a4bcd319bc9f6cda2b945ff66bb46811e4587534277b79027e95fb75"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-lightweight.log",
+      "bytes": 52253,
+      "sha256": "57d82c083aee13ebe81c8cab3432f6d44277c26c31222783103c075514c9d210"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-primitives.json",
+      "bytes": 461,
+      "sha256": "41714754b54f660c02c19153fe9e8f457e251cec74d2f2357cb195ecdf42489f"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-primitives.log",
+      "bytes": 66441,
+      "sha256": "f37963ae2d7acd544a624edf370d099a2ec1839daab152c9af1b38274585e2da"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-tty.json",
+      "bytes": 426,
+      "sha256": "03561864b775c0075cef1e9356549b03a7b5bac00107fc1f2514eecfe645fcba"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/repeat-01-tty.log",
+      "bytes": 5167,
+      "sha256": "ea0666874d44dd85e73010f4059a11b403f3f2000dc30c152dcf1559de3f1b9a"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/retained-inputs/manifest.json",
+      "bytes": 1315,
+      "sha256": "c68b1776b6b42c8627b9e1284ca718093c9b03ca220d09bc646403f2df012456"
+    },
+    {
+      "path": "source296-linux-rust-artifacts/ordinary-linux-68ca5d8819ddae6f699ac7eeae694b1b19867261/rust/summary.json",
+      "bytes": 14342,
+      "sha256": "38815cbf2410625335612d8cd69e000f86e540eae2a58d611eed406eb6a07e79"
+    },
+    {
+      "path": "source296-linux-rust-audit.json",
+      "bytes": 1127,
+      "sha256": "6c1c9806cf66f3a2b09ec56b153a2b178921810b5bdc46dc06639ed8f2188d5d"
+    },
+    {
+      "path": "source296-linux-rust-completed.json",
+      "bytes": 180,
+      "sha256": "d35cdbc50338124a93067f1687f5fa07e24cb79aad7fc748aed37e71afa2de59"
+    },
+    {
+      "path": "source296-linux-rust-dispatch.json",
+      "bytes": 351,
+      "sha256": "8110eac4ea77c1681d78a1c492657c384c25f3a063347bc419677ce944ecf1a2"
+    },
+    {
+      "path": "source296-linux-rust-download-files.json",
+      "bytes": 6553,
+      "sha256": "7421324039ab119aac4d9eee3f329cb5b78fe4c50eaea6cd4a12b22a8e540a79"
+    },
+    {
+      "path": "source296-linux-rust-download.json",
+      "bytes": 457,
+      "sha256": "d8968cea6f01ce43fe412d611e63088925393540becbe8e2f831381aae1ca99e"
+    },
+    {
+      "path": "source296-linux-rust-launch.json",
+      "bytes": 586,
+      "sha256": "98dd5ee7ba249cda6721a29700794045a3983a7a6a8ae1dd7f686716802ddab7"
+    },
+    {
+      "path": "source296-linux-rust-name-audit.json",
+      "bytes": 414,
+      "sha256": "4a8d2df85fb692f67e01964cf2f2b7e50c45faf38f1af54f2311ad92ac2fb530"
+    },
+    {
+      "path": "source296-linux-rust-oracle-audit.json",
+      "bytes": 1733,
+      "sha256": "06148820dd0c9112aaa9ed7e4c54711a411aec4b1474c7d269dc1122a14b1bb2"
+    },
+    {
+      "path": "source296-manifest.json",
+      "bytes": 61385,
+      "sha256": "0ca4b3f1836594699b409bf05f5d910b41dd8842b995d96ed3a67ade2d80d6cc"
+    },
+    {
+      "path": "verify-source296-linux-rust.py",
+      "bytes": 4621,
+      "sha256": "e8e841d9fdceddd6eb66dd3d2cdbe31ef4090e6b0d2f18e03079f88b2cc4f5e9"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

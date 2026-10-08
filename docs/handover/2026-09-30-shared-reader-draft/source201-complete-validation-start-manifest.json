@@ -1,0 +1,89 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "source_inputs": 410,
+    "macos_full_rust_supervisor": 33431,
+    "macos_full_terminal_supervisor": 33432,
+    "selected_prerequisites": "strict, 454 gate, 454 release, 36 exact ordinary comparisons passed and audited",
+    "diagnostic_helpers": "Local callback and malformed-artifact controls pass; Linux debugger diagnosis still required. Preserve all five independent debugger outcomes and restored image hashes.",
+    "qualification": "Running logs excluded. Candidate full validation and original source198 reclamation failure remain open. No full-goal or performance completion."
+  },
+  "archive": {
+    "path": "source201-complete-validation-start.tar.gz",
+    "bytes": 19416,
+    "sha256": "72fdf202bd58ba563251e933923febc58290c4ff7d6e927c11d84e3f48b78b29"
+  },
+  "files": [
+    {
+      "path": "repository/.github/workflows/frozen-run.yml",
+      "bytes": 26793,
+      "sha256": "d961272b92632057d05c4eb061e8b599210d4db68a3f721ce3b9fc4caef8aa2b"
+    },
+    {
+      "path": "repository/tools/diagnose_exact_weak_roots.py",
+      "bytes": 12854,
+      "sha256": "857b69d0d79d59ced8494a2899351b137c142524c022a4521a693302a458d49a"
+    },
+    {
+      "path": "repository/tools/diagnostics/exact-weak-root-watch.py",
+      "bytes": 8463,
+      "sha256": "30c746fc7c0c5c25892e97239b4d0a178ac878adcbaaaff97b5f0eb050fd3ae7"
+    },
+    {
+      "path": "run-source201-full-gate.py",
+      "bytes": 3170,
+      "sha256": "2855122a8ea89bfd28c74861fa6ea577c2ae803077c752b51b8fbd09ba040b68"
+    },
+    {
+      "path": "run-source201-full-tty.py",
+      "bytes": 3321,
+      "sha256": "03456d3423de9476566cded7bbd9d33c4fce0c8a4671f622c0dc78b5892508ec"
+    },
+    {
+      "path": "source201-applied-to-task-worktree.json",
+      "bytes": 1042,
+      "sha256": "3acdd2a56d21f9c3cafda6d4acd1a847d66c52116f45e2d16d43a6085583f31c"
+    },
+    {
+      "path": "source201-debugger-callback-control.json",
+      "bytes": 1070,
+      "sha256": "695760af79bc082c205e48cdeb505c00a3281a65284e2d0f138e2653ccee7a6c"
+    },
+    {
+      "path": "source201-debugger-callback-reproduction.json",
+      "bytes": 1040,
+      "sha256": "edab26847ee286104fb6c4b1641309d515f26dbfda2f8d1c1ed3bc762fcf0287"
+    },
+    {
+      "path": "source201-exact-diagnostic-helper-validation.json",
+      "bytes": 1146,
+      "sha256": "d1451617f35cab52b3d2f5749908294c6d501025f40916c5f61fda1b0fa942d0"
+    },
+    {
+      "path": "source201-full-gate-launch.json",
+      "bytes": 588,
+      "sha256": "2d50841b7c25c7c48d4198ff7cec911b169683fb3fa27f9423e4b1700d3e2ff9"
+    },
+    {
+      "path": "source201-full-tty-launch.json",
+      "bytes": 587,
+      "sha256": "7a921ba1b3afdea8173c7f814dda8155e324411eb1698e1982f6319390b6e73f"
+    },
+    {
+      "path": "source201-publication-inputs-audit.json",
+      "bytes": 1414,
+      "sha256": "8a74fabdd9fc383caabd6d7745ad67c4d4e507391c7e20d1bb9b2b41121341ec"
+    },
+    {
+      "path": "validate-debugger-callback.py",
+      "bytes": 2934,
+      "sha256": "62a3c55d7a50dad65c6dd47b45519c9958f2614738d5d5fe269a265918c3ef97"
+    },
+    {
+      "path": "validate-retained-diagnostic-helper.py",
+      "bytes": 3228,
+      "sha256": "114d16c849cbe23ddb2672407d4640bc73917a45a3073e880ad7a377f1cdf82b"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

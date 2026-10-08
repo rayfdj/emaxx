@@ -2887,6 +2887,8 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         (Kind::Float(left), Kind::Float(right)) => left == right,
         (Kind::Symbol(left), Kind::Symbol(right)) => left == right,
         (Kind::BuiltinFunc(left), Kind::BuiltinFunc(right)) => left == right,
+        (Kind::NativeFunction(left), Kind::NativeFunction(right)) => left.ptr_eq(&right),
+        (Kind::NativeCompUnit(left), Kind::NativeCompUnit(right)) => left.ptr_eq(&right),
         // GNU's interval code compares property values with EQ, so a range
         // propertized with ONE string object is a single run.  Emaxx string
         // clones share their backing store, preserving that identity; the
@@ -2894,12 +2896,11 @@ pub(crate) fn text_property_values_eq(left: &Value, right: &Value) -> bool {
         // string-valued span per character (shr-zoom-image's
         // next-single-property-change saw a "change" at every char of the
         // alt text and replaced two characters of a twenty-char image).
-        (Kind::String(left), Kind::String(right)) => left.ptr_eq(&right),
         (Kind::StringObject(left), Kind::StringObject(right)) => left.ptr_eq(&right),
         (Kind::Cons(left), Kind::Cons(right)) => {
             crate::lisp::types::SharedCons::ptr_eq(&left, &right)
         }
-        (Kind::Lambda(left), Kind::Lambda(right)) => left.ptr_eq(&right),
+        (Kind::Closure(left), Kind::Closure(right)) => left.ptr_eq(&right),
         (Kind::Buffer(left), Kind::Buffer(right)) => left.ptr_eq(&right),
         (Kind::Marker(left), Kind::Marker(right)) => left == right,
         (Kind::Overlay(left), Kind::Overlay(right)) => left.ptr_eq(&right),

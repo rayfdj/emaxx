@@ -1,0 +1,191 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "release": {
+      "status": "all focused and affected release controls pass",
+      "inputs_verified": 462,
+      "groups": [
+        {
+          "group": "controls",
+          "passed": 165,
+          "failed": 0,
+          "ignored": [
+            "tty::tty_differential_end_to_end",
+            "tty::tty_smoke_end_to_end"
+          ]
+        },
+        {
+          "group": "broad",
+          "passed": 948,
+          "failed": 0,
+          "ignored": []
+        }
+      ],
+      "retained_files": [
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source243-release-libtest",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source243-release-retained-inputs/source243-release-libtest",
+          "sha256": "9e1dc170f6762c65d116fc0f625ff407d8e8b4ecb514fcde6a08e7a578164b67",
+          "bytes": 22348640
+        },
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/fixture-images-source243/loadup-9e1dc170-44409a21.pdmp",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/resume-2026-09-28/source243-release-retained-inputs/loadup-9e1dc170-44409a21.pdmp",
+          "sha256": "2cc4c323e555ead1eb62a8bb33aa5f92eea0fa5d4a905669461ad11a0dcb1956",
+          "bytes": 22362464
+        }
+      ],
+      "goal_complete": false,
+      "qualification": "165 focused release passes with two pre-existing ignores, plus 948 affected-module passes. Raw inventories, names, verdicts, binary and retained image identities are verified. The single existing debug-only file-descriptor ownership control accounts for the gate/release inventory difference. No other inventory difference or new exclusion is allowed. Complete macOS/Linux/frozen/terminal results and the performance goal remain separate."
+    },
+    "qualification": "Release supervisor55868 has exited. Source243 passes the same 165 focused controls with two existing ignores and all 948 affected controls in both profiles. Exact release executable/image copies and hashes are retained locally; every raw name and verdict is checked. All 65 ordinary comparisons are separately audited. Complete macOS55867, full terminal55869 and exact-commit Linux jobs remain active. Prepared complete-Mac auditors are included but have not executed. Main and all remaining full-goal requirements are unchanged."
+  },
+  "archive": {
+    "path": "source243-release-complete.tar.gz",
+    "bytes": 270116,
+    "sha256": "d721035f9bd1b6221d44aa3fe48bc855059917d5ae608c3c9d2cfccea2996bfb"
+  },
+  "files": [
+    {
+      "path": "audit-source238-release.py",
+      "bytes": 6600,
+      "sha256": "a88af9f455dd1646cf700decd651b977a525af8dc4a7eea81ed76f1812ff182f"
+    },
+    {
+      "path": "audit-source243-macos-names.py",
+      "bytes": 1679,
+      "sha256": "80e99987fb59a6371c71db754732a9e18527e9296b2d95b75c781b7c87ae9ac0"
+    },
+    {
+      "path": "audit-source243-release.py",
+      "bytes": 4013,
+      "sha256": "d47ebe0ec88b219ec2c5a1115950652b0f1a1c87b9f0278bbdce2225f833ef40"
+    },
+    {
+      "path": "package-source243-release.py",
+      "bytes": 2136,
+      "sha256": "910637a20e96158655453fdd227d929adba8678913f62d455975a677e2c420bd"
+    },
+    {
+      "path": "run-source243-release-and-ordinary.py",
+      "bytes": 2319,
+      "sha256": "78d55d7279edb74403b0fc4ec32f49fe11c96ea90e93466dcfe82ad1e8f6e812"
+    },
+    {
+      "path": "source243-gate-broad-command.json",
+      "bytes": 172825,
+      "sha256": "43e984669517ebbf2e45fc8dff84a450a2f73c9bc593b8b8723a096ea69f0472"
+    },
+    {
+      "path": "source243-gate-controls-command.json",
+      "bytes": 29750,
+      "sha256": "ecbaf2ad1897cebfeb81f5d7378ea5d57fbf3ad26cd77160296fe87e8fe716c4"
+    },
+    {
+      "path": "source243-gate-inventory.txt",
+      "bytes": 264393,
+      "sha256": "ad139077a7158f4a20b56845d7bb2208eef7587c5a3b86f9f5549f84750d5782"
+    },
+    {
+      "path": "source243-manifest.json",
+      "bytes": 52843,
+      "sha256": "cfc2be5ceeed710f1c91ff6c1cf82398933717bff9c30a20e189e38cff8ce5fe"
+    },
+    {
+      "path": "source243-new-ordinary-audit.json",
+      "bytes": 1657,
+      "sha256": "889b22795a58c13c966f16cf7a2417c439c143111bb20fcecf5a3a832f1705a5"
+    },
+    {
+      "path": "source243-ordinary-audit.json",
+      "bytes": 3488,
+      "sha256": "e9ef4bc045f306ebdedac40006ddab1a33ccabda8769d065cee1c5b42aab916d"
+    },
+    {
+      "path": "source243-release-and-ordinary-driver.log",
+      "bytes": 33022,
+      "sha256": "a82129feb76bb47b0f4f145a5f1a0f78d47cbf07097c980e0b530b9e8adbeda2"
+    },
+    {
+      "path": "source243-release-and-ordinary-launch.json",
+      "bytes": 346,
+      "sha256": "7f59b9459d69e0c901a132ee82a9a359e6dd90fce013d942943c7e71bd02b2aa"
+    },
+    {
+      "path": "source243-release-and-ordinary-result.json",
+      "bytes": 3090,
+      "sha256": "7517f7cdfc7b503f98d6d55b73d67c6d2d9b88d1784e392b3639910bd0dc2190"
+    },
+    {
+      "path": "source243-release-audit.json",
+      "bytes": 1716,
+      "sha256": "1edb96f485a8e0644e32bbbf879d54303920cf4aa27411cd797166a7c91e0396"
+    },
+    {
+      "path": "source243-release-broad-command.json",
+      "bytes": 172828,
+      "sha256": "d1948d3799aa648d5cb41db00e792d55c34b32cd7dfd3e5df4036f18d976ed50"
+    },
+    {
+      "path": "source243-release-broad-result.json",
+      "bytes": 84,
+      "sha256": "c2826fbcccd30e733410b8df433b7b44e0da24e99dfa61f287e037fd12edd886"
+    },
+    {
+      "path": "source243-release-broad.log",
+      "bytes": 95110,
+      "sha256": "0abf1f725d65ae9d172901ba5b837db4cf76c6511f943110964d3dcc013ce6de"
+    },
+    {
+      "path": "source243-release-build-command.json",
+      "bytes": 1153,
+      "sha256": "2ae3667870f94752fbb575aeffc671d5ab0d47192302946eb883363747b4f312"
+    },
+    {
+      "path": "source243-release-build-result.json",
+      "bytes": 85,
+      "sha256": "a9eece8afc9d167f5ac4e14e737161209d99883430556a0162cde7afcecfb18d"
+    },
+    {
+      "path": "source243-release-build.log",
+      "bytes": 215649,
+      "sha256": "62066832d67f03b89c6469494ee2aacfd3b03bea7a09ead154b7daca31ff15fa"
+    },
+    {
+      "path": "source243-release-controls-command.json",
+      "bytes": 29753,
+      "sha256": "0906527e2ae28afc5e6dde9e6cc8962ee8a2d047c9e4d453d09800f5a9d00dde"
+    },
+    {
+      "path": "source243-release-controls-result.json",
+      "bytes": 89,
+      "sha256": "4b402c39c50de65fdce311a59b85adbeb537662691f781ce33afa8f48f5ac5e8"
+    },
+    {
+      "path": "source243-release-controls.log",
+      "bytes": 16636,
+      "sha256": "bef3fcf6577afab1e89e6a057c53afde724aeca330520839b3fadda5c30b965a"
+    },
+    {
+      "path": "source243-release-inventory.txt",
+      "bytes": 264304,
+      "sha256": "730a1654f5422c05bf7c15ed24c75e21db95dcf73a85fa10882f5fbcf5c67d65"
+    },
+    {
+      "path": "test-source243-broad.py",
+      "bytes": 3084,
+      "sha256": "35221a3c8c4240ee54bfdecd42859d51d35af88ec4c42280d97dcdafcdee52a4"
+    },
+    {
+      "path": "test-source243-controls.py",
+      "bytes": 7062,
+      "sha256": "493b37868bf674c5c74dc5951d2b623bdcf569fc80cdae7ba0ffa80737e31c18"
+    },
+    {
+      "path": "verify-source243-macos-rust.py",
+      "bytes": 4386,
+      "sha256": "accb5e323a12d04c1d21a585f7824c8e7df524c2c78cfd0628cb0aa16812b7b6"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

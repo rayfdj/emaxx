@@ -1,0 +1,198 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "strict checks and focused gate passed",
+    "source_inputs": 410,
+    "focused_names": [
+      "lisp::types::tests::retained_cons_fields_use_one_word_and_preserve_slot_identity",
+      "lisp::native_comp::runtime::tests::conservative_cons_roots_accept_only_gnu_field_and_tag_offsets",
+      "lisp::native_comp::runtime::tests::retained_cons_field_addresses_survive_collection_and_then_reclaim",
+      "lisp::native_comp::runtime::tests::cons_interior_pointers_root_the_cell_but_are_not_valid_lisp_words",
+      "lisp::native_comp::runtime::tests::unprepared_cons_fields_share_native_and_interpreter_stores",
+      "lisp::primitives::tests::threads_retain_lexical_caller_roots_across_separate_callee_environments",
+      "lisp::primitives::tests::suspended_bytecode_retains_operand_and_unwind_roots"
+    ],
+    "focused_passed": 7,
+    "selected_expected": 596,
+    "binary_sha256": "9e14329d64ab50220231ece20219015ed7d647e0ec987e876c7d63342bdaf34e",
+    "qualification": "Broader gate, release and ordinary comparisons are still running. This does not certify the final-source Linux repair or complete the goal."
+  },
+  "archive": {
+    "path": "source204-cons-field-root-focused.tar.gz",
+    "bytes": 104538,
+    "sha256": "8f615e77b31b6929857b69ca103bd9252b3bda684bdcbca8c7107c0fc243eca4"
+  },
+  "files": [
+    {
+      "path": "audit-source201-selected.py",
+      "bytes": 5635,
+      "sha256": "acb2d88ae04f5964a64827ff978845d8eecec59afa2b2ff18f783964df964069"
+    },
+    {
+      "path": "audit-source204-patch.py",
+      "bytes": 2787,
+      "sha256": "92f3f78620a52964e10ae2f237578538d6e002f9dae15c5988dea2256558c2aa"
+    },
+    {
+      "path": "build-cons204.py",
+      "bytes": 2414,
+      "sha256": "1cb289fa88f8b5bf839f60b203a584d6b61d59ea679dd6f68e6ea732a6de1591"
+    },
+    {
+      "path": "check-cons204.py",
+      "bytes": 2020,
+      "sha256": "4d72e8ef222b023645938d7aea22dd84212b8e52b105407a7e26548b924e01f2"
+    },
+    {
+      "path": "compare-recovered-continuation-fixtures.py",
+      "bytes": 3442,
+      "sha256": "dfd6176b76d11a16bde82e3877ede4c424f537098954c49bf11727df3c95de91"
+    },
+    {
+      "path": "freeze-cons-candidate.py",
+      "bytes": 2063,
+      "sha256": "18911cbf4e2cd6722c28405a5cf3528ed3f5891514e2a2fc5c3d36c7e580990c"
+    },
+    {
+      "path": "queue-source204-validation.py",
+      "bytes": 2412,
+      "sha256": "198e90348b0b46507b85e9dc5d936e02b160a24a403caf46594da4c3596f7341"
+    },
+    {
+      "path": "source204-base.json",
+      "bytes": 428,
+      "sha256": "e5f182e699ac10012dce0afb7ba6c4a05a44d4e3c7bf7c153b042124ff5aa840"
+    },
+    {
+      "path": "source204-check-command.json",
+      "bytes": 473,
+      "sha256": "88ab3ec6b061fbc99dec124c4a63555f5f44ca1ab5fcc844eb76a3ad7f56f854"
+    },
+    {
+      "path": "source204-check-result.json",
+      "bytes": 84,
+      "sha256": "ef31ed293b0332e1ffea3310d46ce34b9e5f25382bbdb377f57fee077df78864"
+    },
+    {
+      "path": "source204-check.log",
+      "bytes": 192,
+      "sha256": "a44c823804bbced9ac47912a16c447406fc5053fcfdd9d0a672bf18e8b3bcf3b"
+    },
+    {
+      "path": "source204-clippy-command.json",
+      "bytes": 461,
+      "sha256": "62535953dfdbe13d861b428bf099f7c10800bce476df13bdb57560324607c1f9"
+    },
+    {
+      "path": "source204-clippy-result.json",
+      "bytes": 83,
+      "sha256": "8c3aefe1b37de2de6493a24888ac844779dfd506ebd7e168d04670651981560a"
+    },
+    {
+      "path": "source204-clippy.log",
+      "bytes": 192,
+      "sha256": "07ff5a364fb00480b7941ba53eb3f0974663dbb813099ea06667c9d74a596c7c"
+    },
+    {
+      "path": "source204-complete.patch",
+      "bytes": 256281,
+      "sha256": "38b0d7dc110dd51390b11e75e6dd3c75369407474e53e0ef4012775550f02cdc"
+    },
+    {
+      "path": "source204-cons-followup.patch",
+      "bytes": 11242,
+      "sha256": "d2439d82fac17958fe3e421a26671a64331eaf87a130c93ee73b862e907c0881"
+    },
+    {
+      "path": "source204-diff-command.json",
+      "bytes": 377,
+      "sha256": "c4b2135400fbe189448708adfdcb08776bcbdbd878eacfbab0f4d3aa1477e726"
+    },
+    {
+      "path": "source204-diff-result.json",
+      "bytes": 89,
+      "sha256": "391e8ac2f6ff9ca88892dc2562e7f294a89495a79fb21f7da0d094b1c2348a88"
+    },
+    {
+      "path": "source204-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source204-fmt-command.json",
+      "bytes": 401,
+      "sha256": "ab0a8aed4d5f42be26fdc940ba8686ab3094651958f433f043f36cb2dda90ec8"
+    },
+    {
+      "path": "source204-fmt-result.json",
+      "bytes": 82,
+      "sha256": "b64cb5cba96935c0757de4051a3793d2a7573aeab548f2d6c35773a300b624fd"
+    },
+    {
+      "path": "source204-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source204-focused-audit.json",
+      "bytes": 1101,
+      "sha256": "e63c3d61740b069cdcb14850e577e79057d56d1fe0e6ed7cd8942f3a28db6cc0"
+    },
+    {
+      "path": "source204-gate-build-command.json",
+      "bytes": 1112,
+      "sha256": "31040e7cc72a6fd7e404b4a29d2159c7665d127f1c7ca7967771b6af49336540"
+    },
+    {
+      "path": "source204-gate-build-result.json",
+      "bytes": 90,
+      "sha256": "79bddf7832e73b15d802ef1bbb8d164cc09db2f9f8c395fcb54f4db0be694710"
+    },
+    {
+      "path": "source204-gate-build.log",
+      "bytes": 213529,
+      "sha256": "21adea469c975990bbd7b7448639c32eba05a6ea81481877c0a9f887b65d73f1"
+    },
+    {
+      "path": "source204-gate-focused-command.json",
+      "bytes": 2612,
+      "sha256": "dd6fd74db80f242995defe80ee78d416c3c35497b10c28b13a00d2dd8c5d0391"
+    },
+    {
+      "path": "source204-gate-focused-result.json",
+      "bytes": 89,
+      "sha256": "084a22eb5016724f447415bf0b5b70192c83db8d904a754360aa26406a10d6ae"
+    },
+    {
+      "path": "source204-gate-focused.log",
+      "bytes": 848,
+      "sha256": "d042ba6abe622cec5c1bd2f20abd7245ac1f5dc9f3ad55878d0bd6a26a95888b"
+    },
+    {
+      "path": "source204-manifest.json",
+      "bytes": 46477,
+      "sha256": "3703327bef6ff1f287a91fc505e8ae8439902e00381af8061357a5963f62050c"
+    },
+    {
+      "path": "source204-patch-replay-and-modes-audit.json",
+      "bytes": 592,
+      "sha256": "e6da376a8c9edc903910fd4b72f4ba427c89e0539a825651b4eca8408168109e"
+    },
+    {
+      "path": "source204-selected-validation-launch.json",
+      "bytes": 209,
+      "sha256": "04a59584ddbc2db644fe153d8cf7f3380d55a564a363e98c3472818746487125"
+    },
+    {
+      "path": "static-cons204.py",
+      "bytes": 1545,
+      "sha256": "7ae3d921affa4948cca40e4e307882a19c7d43b8de55aed82b61426bba8c6869"
+    },
+    {
+      "path": "test-cons204.py",
+      "bytes": 5266,
+      "sha256": "d0d562376e43e4d134d180b0b3924bdb2aeb0f0c86264f0b331e2190becec6b3"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

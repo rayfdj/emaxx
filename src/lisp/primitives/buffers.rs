@@ -414,15 +414,6 @@ pub(crate) fn vector_items(value: &Value) -> Result<Vec<Value>, LispError> {
     }
 }
 
-pub(crate) fn record_type_name<'a>(interp: &'a Interpreter, value: &Value) -> Option<&'a str> {
-    let Kind::Record(id) = value.kind() else {
-        return None;
-    };
-    interp
-        .find_record(id)
-        .and_then(|record| record.symbol_type_name())
-}
-
 pub(crate) fn is_bool_vector_value(interp: &Interpreter, value: &Value) -> bool {
     let Kind::Record(id) = value.kind() else {
         return false;
@@ -764,14 +755,20 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
         }
         Kind::BigInteger(_) => "bignum",
         Kind::Float(_) => "float",
-        Kind::String(_) | Kind::StringObject(_) => "string",
+        Kind::StringObject(_) => "string",
         Kind::Symbol(_) => "symbol",
         Kind::Vector(_) => "vector",
         Kind::Cons(_) if is_vector_value(value) => "vector",
         Kind::Cons(_) => "cons",
         Kind::BuiltinFunc(name) if is_special_form_name(&name) => "special-form",
         Kind::BuiltinFunc(_) => "primitive-function",
-        Kind::Lambda(_) => "interpreted-function",
+        Kind::Closure(closure) => {
+            if closure.is_bytecode() {
+                "byte-code-function"
+            } else {
+                "interpreted-function"
+            }
+        }
         Kind::Buffer(_) => "buffer",
         Kind::Marker(_) => "marker",
         Kind::Overlay(_) => "overlay",
@@ -796,7 +793,6 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
             };
             let type_name = match record.kind {
                 crate::lisp::eval::RecordKind::BoolVector => "bool-vector",
-                crate::lisp::eval::RecordKind::Closure => "byte-code-function",
                 crate::lisp::eval::RecordKind::Font => match record.symbol_type_name() {
                     Some("font-entity") => "font-entity",
                     Some("font-object") => "font-object",
@@ -809,8 +805,6 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
                 crate::lisp::eval::RecordKind::Thread => "thread",
                 crate::lisp::eval::RecordKind::Mutex => "mutex",
                 crate::lisp::eval::RecordKind::ConditionVariable => "condition-variable",
-                crate::lisp::eval::RecordKind::NativeCompUnit => "native-comp-unit",
-                crate::lisp::eval::RecordKind::NativeCompiledFunction => "native-comp-function",
                 crate::lisp::eval::RecordKind::ModuleFunction => "module-function",
                 crate::lisp::eval::RecordKind::UserPointer => "user-ptr",
                 crate::lisp::eval::RecordKind::TreeSitterParser => "treesit-parser",
@@ -820,6 +814,8 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
             };
             return Ok(Value::symbol(type_name));
         }
+        Kind::NativeFunction(_) => "native-comp-function",
+        Kind::NativeCompUnit(_) => "native-comp-unit",
         Kind::Finalizer(_) => "finalizer",
         Kind::ReaderForm(_) => {
             return Err(LispError::Signal(
@@ -978,8 +974,42 @@ pub(crate) fn column_after(
             .unwrap_or(8)
             .max(1) as usize;
         (current_col / tab_width + 1) * tab_width
-    } else {
+    } else if (' '..='~').contains(&ch) {
         current_col + 1
+    } else if ch == '\n' {
+        current_col
+    } else {
+        // indent.c:scan_for_column and buffer.h:CHARACTER_WIDTH use
+        // ctl-arrow for ASCII controls, four columns for unibyte high
+        // bytes, and the live char-width-table for multibyte characters.
+        let width = if ch <= '\u{7f}' {
+            if interp
+                .lookup_var("ctl-arrow", env)
+                .is_some_and(|value| value.is_truthy())
+            {
+                2
+            } else {
+                4
+            }
+        } else if !interp.buffer.borrow().is_multibyte() {
+            4
+        } else {
+            let width = interp
+                .lookup_var("char-width-table", env)
+                .and_then(|value| match value.kind() {
+                    Kind::CharTable(table) => interp.char_table_get(table, ch as u32),
+                    _ => None,
+                })
+                .and_then(|value| value.as_integer().ok())
+                .unwrap_or(0);
+            // buffer.h:sanitize_char_width caps invalid numeric widths.
+            if (0..=1000).contains(&width) {
+                width as usize
+            } else {
+                1000
+            }
+        };
+        current_col + width
     }
 }
 

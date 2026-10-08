@@ -1,0 +1,32 @@
+{
+  "runtime_source": "source292",
+  "source_commit": "93ed451dccdbda26695ea9fc25135d9cfbedc05c",
+  "linux": [
+    {
+      "run_id": 37278007515,
+      "state": {
+        "conclusion": "",
+        "headSha": "93ed451dccdbda26695ea9fc25135d9cfbedc05c",
+        "status": "in_progress",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/37278007515"
+      },
+      "source_commit": "93ed451dccdbda26695ea9fc25135d9cfbedc05c",
+      "runtime_source": "source292",
+      "qualification": "Exact validated LF-only correction; all532 bytes/modes verified. Predecessor Rust reference failure and broader width differences remain unresolved. No final-platform or performance acceptance is claimed."
+    },
+    {
+      "run_id": 37278010760,
+      "state": {
+        "conclusion": "",
+        "headSha": "93ed451dccdbda26695ea9fc25135d9cfbedc05c",
+        "status": "in_progress",
+        "url": "https://github.com/rayfdj/emaxx/actions/runs/37278010760"
+      },
+      "source_commit": "93ed451dccdbda26695ea9fc25135d9cfbedc05c",
+      "runtime_source": "source292",
+      "qualification": "Exact validated LF-only correction; all532 bytes/modes verified. Predecessor Rust reference failure and broader width differences remain unresolved. No final-platform or performance acceptance is claimed."
+    }
+  ],
+  "macos": "unstarted",
+  "goal_complete": false
+}

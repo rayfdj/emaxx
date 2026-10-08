@@ -26,7 +26,6 @@ pub(crate) const WEIGHT_STRONG: LinkWeight = LinkWeight(1200);
 pub(crate) enum ObjectKey {
     Cons(usize),
     String(usize),
-    StringObject(usize),
     Symbol(u32),
     SymbolWithPos(usize),
     Vector(usize),
@@ -36,6 +35,8 @@ pub(crate) enum ObjectKey {
     /// values are one bignum record.
     WideInteger(i64),
     Subr(u32),
+    NativeFunction(usize),
+    NativeCompUnit(usize),
     Lambda(usize),
     /// A buffer's identity is its id (`eq' compares ids): every
     /// `Value::Buffer' naming one buffer is one object.
@@ -56,8 +57,7 @@ pub(crate) enum ObjectKey {
 pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
     Some(match value.kind() {
         Kind::Cons(cell) => ObjectKey::Cons(ConsCell::identity(&cell)),
-        Kind::String(text) => ObjectKey::String(text.identity_ptr()),
-        Kind::StringObject(state) => ObjectKey::StringObject(state.identity()),
+        Kind::StringObject(state) => ObjectKey::String(state.identity()),
         Kind::Symbol(name) => {
             if name == "nil" || name == "t" {
                 return None;
@@ -75,10 +75,12 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
             ObjectKey::WideInteger(integer)
         }
         Kind::BuiltinFunc(name) => ObjectKey::Subr(name.id()),
+        Kind::NativeFunction(function) => ObjectKey::NativeFunction(function.identity()),
+        Kind::NativeCompUnit(unit) => ObjectKey::NativeCompUnit(unit.identity()),
         Kind::Nil | Kind::T | Kind::Unbound => return None,
         // dump_object_needs_dumping_p: everything but a fixnum is queued,
         // and dump_object refuses what it cannot write.
-        Kind::Lambda(lambda) => ObjectKey::Lambda(lambda.identity()),
+        Kind::Closure(lambda) => ObjectKey::Lambda(lambda.identity()),
         Kind::Buffer(buffer) => ObjectKey::Buffer(buffer.id),
         Kind::Marker(marker) => ObjectKey::Marker(marker.identity()),
         Kind::Overlay(overlay) => ObjectKey::Overlay(overlay.identity()),
@@ -108,12 +110,16 @@ pub(crate) fn self_representing_word(value: &Value) -> Option<u64> {
     }
 }
 
+// The serialized native-subr discriminator is retained for image compatibility.
+// It never names a RecordKind or installs a detached runtime record.
+pub(crate) const NATIVE_SUBR_CODE: u32 = 15;
+pub(crate) const NATIVE_UNIT_CODE: u32 = 14;
+
 /// The record kinds the image distinguishes (eval.rs:RecordKind), as
 /// stable codes.
 pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
     match kind {
         RecordKind::BoolVector => 2,
-        RecordKind::Closure => 3,
         RecordKind::Font => 4,
         RecordKind::Process => 6,
         RecordKind::Obarray => 8,
@@ -122,8 +128,6 @@ pub(crate) fn record_kind_code(kind: RecordKind) -> u32 {
         RecordKind::Thread => 11,
         RecordKind::Mutex => 12,
         RecordKind::ConditionVariable => 13,
-        RecordKind::NativeCompUnit => 14,
-        RecordKind::NativeCompiledFunction => 15,
         RecordKind::TreeSitterParser => 16,
         RecordKind::TreeSitterNode => 17,
         RecordKind::TreeSitterCompiledQuery => 18,
@@ -138,7 +142,7 @@ pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
     Some(match code {
         // Former generic record code 1 used a detached host payload.
         2 => RecordKind::BoolVector,
-        3 => RecordKind::Closure,
+        // Former detached byte-code record code 3 is unsupported.
         4 => RecordKind::Font,
         // Former positioned-symbol records are not a supported dump object.
         6 => RecordKind::Process,
@@ -148,8 +152,7 @@ pub(crate) fn record_kind_from_code(code: u32) -> Option<RecordKind> {
         11 => RecordKind::Thread,
         12 => RecordKind::Mutex,
         13 => RecordKind::ConditionVariable,
-        14 => RecordKind::NativeCompUnit,
-        15 => RecordKind::NativeCompiledFunction,
+        // Code 15 is the native subr codec, not a runtime host record.
         16 => RecordKind::TreeSitterParser,
         17 => RecordKind::TreeSitterNode,
         18 => RecordKind::TreeSitterCompiledQuery,
@@ -538,15 +541,16 @@ impl DumpContext {
         }
         match value.kind() {
             Kind::Cons(_) => DumpType::Cons,
-            Kind::String(_) => DumpType::String,
-            Kind::StringObject(_) => DumpType::StringObject,
+            Kind::StringObject(state) if state.is_empty_singleton() => DumpType::EmptyString,
+            Kind::StringObject(_) => DumpType::String,
             Kind::Symbol(_) => DumpType::Symbol,
             Kind::Vector(_) => DumpType::Vector,
             Kind::LispRecord(_) => DumpType::LispRecord,
             Kind::Float(_) => DumpType::Float,
             Kind::BigInteger(_) | Kind::Integer(_) => DumpType::Bignum,
             Kind::BuiltinFunc(_) => DumpType::Subr,
-            Kind::Lambda(_) => DumpType::Closure,
+            Kind::NativeFunction(_) | Kind::NativeCompUnit(_) => DumpType::Record,
+            Kind::Closure(_) => DumpType::Closure,
             Kind::CharTable(_) => DumpType::CharTable,
             Kind::HashTable(_) => DumpType::HashTable,
             Kind::SubCharTable(_) => DumpType::SubCharTable,
@@ -1040,14 +1044,21 @@ impl DumpContext {
         // Object needs to be dumped.
         self.set_referrer(*object);
         let (offset, kind) = match object.kind() {
-            Kind::String(_) | Kind::StringObject(_) => self.dump_string(interp, object)?,
+            Kind::StringObject(_) => self.dump_string(interp, object)?,
             Kind::Vector(vector) => (self.dump_vector(&vector)?, DumpType::Vector),
             Kind::Symbol(_) => (self.dump_symbol(interp, object)?, DumpType::Symbol),
             Kind::Cons(cell) => (self.dump_cons(&cell)?, DumpType::Cons),
             Kind::Float(float) => (self.dump_float(*float)?, DumpType::Float),
             Kind::BigInteger(_) | Kind::Integer(_) => (self.dump_bignum(object)?, DumpType::Bignum),
             Kind::BuiltinFunc(name) => (self.dump_subr(&name)?, DumpType::Subr),
-            Kind::Lambda(lambda) => (self.dump_closure(&lambda)?, DumpType::Closure),
+            Kind::NativeCompUnit(unit) => {
+                let offset = self.dump_native_comp_unit(unit)?;
+                (offset, DumpType::Record)
+            }
+            Kind::NativeFunction(function) => {
+                (self.dump_native_function(function)?, DumpType::Record)
+            }
+            Kind::Closure(lambda) => (self.dump_closure(&lambda)?, DumpType::Closure),
             Kind::CharTable(table) => (self.dump_char_table(table)?, DumpType::CharTable),
             Kind::HashTable(table) => (self.dump_hash_table(table, object)?, DumpType::HashTable),
             Kind::SubCharTable(table) => (self.dump_sub_char_table(table)?, DumpType::SubCharTable),
@@ -1105,25 +1116,33 @@ impl DumpContext {
         interp: &Interpreter,
         object: &Value,
     ) -> Result<(u32, DumpType), DumpError> {
-        let string = string_like(object).expect("a string");
-        let kind = match object.kind() {
-            Kind::String(_) => DumpType::String,
-            _ => DumpType::StringObject,
+        let Kind::StringObject(state) = object.kind() else {
+            unreachable!("dumping a string")
         };
-        let size = string.text.chars().count() as u64;
-        let size_byte = if string.multibyte {
-            crate::lisp::primitives::strings::lisp_string_byte_len(
-                &string.text,
-                true,
-                &string.extended_chars,
-            )? as u64
-        } else {
-            // -1: a unibyte string.
-            u64::MAX
+        let (size, size_byte, props) = {
+            let string = state.borrow();
+            let props = string
+                .props
+                .iter()
+                .map(|span| TextPropertySpan {
+                    start: span.start,
+                    end: span.end,
+                    props: span.props.clone(),
+                })
+                .collect::<Vec<_>>();
+            (
+                string.len() as u64,
+                if string.is_multibyte() {
+                    string.storage_bytes() as u64
+                } else {
+                    u64::MAX
+                },
+                props,
+            )
         };
         self.object_start()?;
         let mut words = [size, size_byte, 0, 0];
-        let has_props = !string.props.is_empty();
+        let has_props = !props.is_empty();
         if has_props {
             words[2] = FIXUP_PLACEHOLDER;
         }
@@ -1131,10 +1150,17 @@ impl DumpContext {
         self.remember_cold_op(ColdOp::String(*object));
         let offset = self.object_finish(&words)?;
         if has_props {
-            let properties = self.dump_text_properties(interp, &string.props)?;
+            let properties = self.dump_text_properties(interp, &props)?;
             self.remember_fixup_ptr_raw(offset + 16, properties);
         }
-        Ok((offset, kind))
+        Ok((
+            offset,
+            if state.is_empty_singleton() {
+                DumpType::EmptyString
+            } else {
+                DumpType::String
+            },
+        ))
     }
 
     /// The string's property spans: count, then (start, end, nprops,
@@ -1304,7 +1330,7 @@ impl DumpContext {
         let type_tag = record.type_tag;
         let slots = record.slots.clone();
         match kind {
-            RecordKind::Closure | RecordKind::Font => {
+            RecordKind::Font => {
                 let offset = self.dump_record_slots(id, kind, &type_tag, &slots, false)?;
                 Ok((offset, DumpType::Record))
             }
@@ -1333,14 +1359,6 @@ impl DumpContext {
             }
             RecordKind::Mutex => Err(self.unsupported(object, "mutex")),
             RecordKind::ConditionVariable => Err(self.unsupported(object, "condition variable")),
-            RecordKind::NativeCompUnit => {
-                let offset = self.dump_native_comp_unit(id, &type_tag, &slots)?;
-                Ok((offset, DumpType::Record))
-            }
-            RecordKind::NativeCompiledFunction => {
-                let offset = self.dump_native_function(interp, id, object, &type_tag, &slots)?;
-                Ok((offset, DumpType::Record))
-            }
             RecordKind::TreeSitterParser => Err(self.unsupported(object, "tree-sitter parser")),
             RecordKind::TreeSitterNode => Err(self.unsupported(object, "tree-sitter node")),
             RecordKind::TreeSitterCompiledQuery => {
@@ -1358,21 +1376,31 @@ impl DumpContext {
     /// the handle left to the late relocation that reopens the unit.
     fn dump_native_comp_unit(
         &mut self,
-        id: u64,
-        type_tag: &Value,
-        slots: &[Value],
+        unit: crate::lisp::types::NativeUnitRef,
     ) -> Result<u32, DumpError> {
-        if !matches!(slots.first().map(|v| v.kind()), Some(Kind::Cons(_))) {
+        if !matches!(unit.field(0).kind(), Kind::Cons(_)) {
             return Err(DumpError::Lisp(LispError::Signal(
                 "trying to dump non fixed-up eln file".into(),
             )));
         }
-        let mut slots = slots.to_vec();
-        if let Some(docs) = slots.get_mut(4) {
-            *docs = Value::Nil;
+        let mut slots = unit.fields();
+        slots[4] = Value::Nil;
+        // Legacy codec 14 carries seven Lisp fields. No runtime record/id
+        // is reconstructed; object offsets retain sharing and cycles.
+        let start = self.object_start()?;
+        let mut words = vec![0, u64::from(NATIVE_UNIT_CODE), 0, slots.len() as u64];
+        words.resize(slots.len() + 4, WORD_NIL);
+        self.field_lv(
+            start,
+            &mut words,
+            2,
+            &Value::symbol("native-comp-unit"),
+            WEIGHT_STRONG,
+        );
+        for (index, field) in slots.iter().enumerate() {
+            self.field_lv(start, &mut words, index + 4, field, WEIGHT_STRONG);
         }
-        let offset =
-            self.dump_record_slots(id, RecordKind::NativeCompUnit, type_tag, &slots, false)?;
+        let offset = self.object_finish(&words)?;
         if self.flags.dump_object_contents {
             self.dump_relocs[LATE_RELOCS].push((offset, DumpRelocKind::NativeCompUnit));
         }
@@ -1386,25 +1414,40 @@ impl DumpContext {
     /// the function in its reopened unit.
     fn dump_native_function(
         &mut self,
-        interp: &Interpreter,
-        id: u64,
-        object: &Value,
-        type_tag: &Value,
-        slots: &[Value],
+        function: crate::lisp::types::NativeFunctionRef,
     ) -> Result<u32, DumpError> {
-        let Some(c_name) = crate::lisp::native_comp::function_c_name(interp, id) else {
-            return Err(self.unsupported(object, "native compiled function without a C name"));
-        };
-        let name = crate::lisp::native_comp::function_name(interp, id).unwrap_or_default();
-        let start = self.object_start()?;
-        let mut words = vec![
-            id,
-            u64::from(record_kind_code(RecordKind::NativeCompiledFunction)),
-            0,
-            slots.len() as u64,
+        // Keep the existing native-subr image codec, including old images.
+        // Its obsolete host-record id is zero; object offsets own identity.
+        // No record or name registry is created while executing or loading it.
+        let id = 0;
+        let type_tag = Value::symbol("subr");
+        let slots = [
+            Value::Nil,
+            Value::Integer(i64::from(function.min_args())),
+            if function.max_args_word() < 0 {
+                Value::symbol("many")
+            } else {
+                Value::Integer(i64::from(function.max_args_word()))
+            },
+            Value::Nil,
+            function.native_type(),
+            Value::Integer(function.doc_index() as i64),
+            function.interactive(),
+            function.command_modes(),
+            function.unit(),
+            function.lambda_list(),
+            if function.is_dynamic() {
+                Value::T
+            } else {
+                Value::Nil
+            },
         ];
+        let name = function.name();
+        let c_name = function.c_name();
+        let start = self.object_start()?;
+        let mut words = vec![id, u64::from(NATIVE_SUBR_CODE), 0, slots.len() as u64];
         words.resize(slots.len() + 6, WORD_NIL);
-        self.field_lv(start, &mut words, 2, type_tag, WEIGHT_STRONG);
+        self.field_lv(start, &mut words, 2, &type_tag, WEIGHT_STRONG);
         for (index, slot) in slots.iter().enumerate() {
             self.field_lv(start, &mut words, index + 4, slot, WEIGHT_STRONG);
         }
@@ -1413,14 +1456,14 @@ impl DumpContext {
             start,
             &mut words,
             name_index,
-            &Value::string(&name),
+            &Value::string(name),
             WEIGHT_STRONG,
         );
         self.field_lv(
             start,
             &mut words,
             name_index + 1,
-            &Value::string(&c_name),
+            &Value::string(c_name),
             WEIGHT_STRONG,
         );
         let offset = self.object_finish(&words)?;
@@ -1517,7 +1560,7 @@ impl DumpContext {
     /// carry their exact Lisp objects; the parameter and body vectors and
     /// the environment are shared objects dumped through raw-pointer
     /// fixups, as intervals are.
-    fn dump_closure(&mut self, lambda: &crate::lisp::types::LambdaRef) -> Result<u32, DumpError> {
+    fn dump_closure(&mut self, lambda: &crate::lisp::types::ClosureRef) -> Result<u32, DumpError> {
         let start = self.object_start()?;
         let mut words = vec![0; lambda.public_len() + 1];
         words[0] = lambda.public_len() as u64;
@@ -2352,6 +2395,10 @@ pub(crate) fn record_state_for_load(
 /// The string's bytes as GNU stores them: the internal multibyte form for
 /// a multibyte string, the raw octets for a unibyte one.
 pub(crate) fn internal_string_bytes(object: &Value) -> Result<Vec<u8>, DumpError> {
+    if let Kind::StringObject(state) = object.kind() {
+        return Ok(state.borrow().bytes().to_vec());
+    }
+
     let string = string_like(object).expect("a string");
     internal_codes_bytes(string.character_codes(), string.multibyte, &string.text)
 }

@@ -38,10 +38,6 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "eval.c:init_eval_once_for_pdumper recreates the specpdl; the entries of the byte-code activations in progress are the running thread's",
     ),
     (
-        "bc_live_programs",
-        "bytecode.c: the constants of the activations in progress are reached through the functions on the running thread's stack, which pdumper.c does not write",
-    ),
-    (
         "frame_states",
         "frame.c:init_frame_once_for_pdumper resets Vframe_list and selected_frame; frames are nilled in the image, their windows and face hash tables with them (window.c:init_window_once_for_pdumper)",
     ),
@@ -68,10 +64,6 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
         "kbd_macro_definition",
         "a KVAR of the kboard, which is not in the image: keyboard.c:syms_of_keyboard_for_pdumper allocates initial_kboard anew",
-    ),
-    (
-        "kbd_macro_executions",
-        "kboard state, as kbd_macro_definition",
     ),
     (
         "process_states",

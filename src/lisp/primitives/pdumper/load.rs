@@ -13,7 +13,7 @@ use super::super::*;
 use super::context::*;
 use super::image::*;
 use crate::lisp::eval::RecordKind;
-use crate::lisp::types::{CharTableRef, Kind, SharedText, SubCharTableRef, SymbolName};
+use crate::lisp::types::{CharTableRef, Kind, SubCharTableRef, SymbolName};
 
 /// pdumper.c:pdumper_load_result.
 #[derive(Debug, PartialEq, Eq)]
@@ -52,7 +52,7 @@ pub(crate) struct LoadedImage {
     pub(crate) builtin_cells: Vec<LoadedSymbol>,
     /// RELOC_NATIVE_COMP_UNIT: the native compilation unit records, in
     /// image order, for the late phase that reopens each unit.
-    pub(crate) native_units: Vec<u64>,
+    pub(crate) native_units: Vec<crate::lisp::types::NativeUnitRef>,
     /// RELOC_NATIVE_SUBR: the native function records with their names,
     /// for the very late phase that resolves each in its unit.
     pub(crate) native_functions: Vec<crate::lisp::native_comp::DumpedNativeFunction>,
@@ -361,7 +361,7 @@ impl Loader<'_> {
         let mut string_props: Vec<(u32, u32)> = Vec::new();
         for &(offset, kind) in &object_starts {
             match kind {
-                DumpType::String | DumpType::StringObject => {
+                DumpType::String | DumpType::StringObject | DumpType::EmptyString => {
                     let (value, props) = self.load_string(offset, kind)?;
                     if let Some(props) = props {
                         string_props.push((offset, props));
@@ -418,15 +418,17 @@ impl Loader<'_> {
                 }
                 DumpType::Closure => {
                     let size = self.reader.word(offset)? as usize;
-                    if !(3..=6).contains(&size) {
+                    if !(3..=0xfff).contains(&size) {
                         return Err(LoadError::Error(format!(
                             "invalid closure size at {offset}"
                         )));
                     }
                     // Publish every identity before relocating any field.
                     // Any closure slot can participate in an object cycle.
-                    self.objects
-                        .insert(offset, Value::allocated_lambda(&[Value::Nil; 6][..size]));
+                    self.objects.insert(
+                        offset,
+                        Value::Closure(crate::lisp::types::ClosureRef::filled(size, Value::Nil)),
+                    );
                 }
                 DumpType::Vector => {
                     let size = self.reader.word(offset)? as usize;
@@ -481,11 +483,37 @@ impl Loader<'_> {
                 DumpType::Record | DumpType::Obarray => {
                     let id = self.reader.word(offset)?;
                     let kind_code = self.reader.word(offset + 8)? as u32;
+                    let nslots = self.reader.word(offset + 24)? as usize;
+                    let type_tag = self.symbol_or_immediate_at(offset + 16)?;
+                    if kind_code == NATIVE_SUBR_CODE {
+                        if nslots != 11
+                            || self.relocs.get(&offset) != Some(&DumpRelocKind::NativeSubr)
+                        {
+                            return Err(LoadError::Error(
+                                "invalid native subr image record".into(),
+                            ));
+                        }
+                        let function = crate::lisp::types::NativeFunctionRef::blank();
+                        self.objects.insert(offset, Value::NativeFunction(function));
+                        native_function_records.push((offset, function, nslots));
+                        continue;
+                    }
+                    if kind_code == super::context::NATIVE_UNIT_CODE {
+                        if nslots != 7
+                            || self.relocs.get(&offset) != Some(&DumpRelocKind::NativeCompUnit)
+                        {
+                            return Err(LoadError::Error(
+                                "invalid native compilation unit image record".into(),
+                            ));
+                        }
+                        let unit = crate::lisp::types::NativeUnitRef::new();
+                        self.objects.insert(offset, Value::NativeCompUnit(unit));
+                        native_units.push(unit);
+                        continue;
+                    }
                     let record_kind = record_kind_from_code(kind_code).ok_or_else(|| {
                         LoadError::Error(format!("unknown record kind {kind_code} at {offset}"))
                     })?;
-                    let nslots = self.reader.word(offset + 24)? as usize;
-                    let type_tag = self.symbol_or_immediate_at(offset + 16)?;
                     self.interp.install_record(record_state_for_load(
                         id,
                         record_kind,
@@ -495,28 +523,6 @@ impl Loader<'_> {
                     self.objects.insert(offset, self.interp.record_value(id));
                     if kind == DumpType::Obarray {
                         obarray_records.push((offset, id, nslots));
-                    }
-                    // The native kinds carry their late relocations; a
-                    // record of either kind without one is not this
-                    // writer's.
-                    match record_kind {
-                        RecordKind::NativeCompUnit => {
-                            if self.relocs.get(&offset) != Some(&DumpRelocKind::NativeCompUnit) {
-                                return Err(LoadError::Error(format!(
-                                    "native compilation unit {id} has no late relocation"
-                                )));
-                            }
-                            native_units.push(id);
-                        }
-                        RecordKind::NativeCompiledFunction => {
-                            if self.relocs.get(&offset) != Some(&DumpRelocKind::NativeSubr) {
-                                return Err(LoadError::Error(format!(
-                                    "native function {id} has no very late relocation"
-                                )));
-                            }
-                            native_function_records.push((offset, id, nslots));
-                        }
-                        _ => {}
                     }
                 }
                 DumpType::CharTable => {
@@ -619,16 +625,16 @@ impl Loader<'_> {
                     cell.cdr.set(cdr);
                 }
                 DumpType::Closure => {
-                    let Kind::Lambda(closure) = self.objects[&offset].kind() else {
+                    let Kind::Closure(closure) = self.objects[&offset].kind() else {
                         unreachable!()
                     };
                     for index in 0..closure.public_len() {
                         let value = self.value_at(offset + 8 * (index as u32 + 1))?;
                         closure.initialize_slot(index, value);
                     }
-                    if !matches!(closure.body().kind(), Kind::Cons(_)) {
+                    if !closure.is_bytecode() && !matches!(closure.body().kind(), Kind::Cons(_)) {
                         return Err(LoadError::Error(format!(
-                            "invalid interpreted closure body at {offset}"
+                            "invalid closure code at {offset}"
                         )));
                     }
                 }
@@ -658,32 +664,57 @@ impl Loader<'_> {
                     for index in 0..nslots {
                         slots.push(self.value_at(offset + 32 + 8 * index as u32)?);
                     }
-                    let record = self
-                        .interp
-                        .find_record_mut(id)
-                        .ok_or_else(|| LoadError::Error(format!("record {id} was installed")))?;
-                    record.slots = slots;
+                    if let Kind::NativeFunction(function) = self.objects[&offset].kind() {
+                        let integer = |value: Value| {
+                            value
+                                .as_integer()
+                                .map_err(|error| LoadError::Error(error.to_string()))
+                        };
+                        let minimum = integer(slots[1])? as i16;
+                        let maximum = if slots[2].as_symbol().ok() == Some("many") {
+                            -2
+                        } else {
+                            integer(slots[2])? as i16
+                        };
+                        function.set_arity(minimum, maximum);
+                        function.set_doc_index(integer(slots[5])? as isize);
+                        function.set_fields([slots[6], slots[7], slots[8], slots[9], slots[4]]);
+                    } else if let Kind::NativeCompUnit(unit) = self.objects[&offset].kind() {
+                        unit.set_fields(
+                            slots
+                                .try_into()
+                                .map_err(|_| LoadError::Error("invalid unit field count".into()))?,
+                        );
+                    } else {
+                        let record = self.interp.find_record_mut(id).ok_or_else(|| {
+                            LoadError::Error(format!("record {id} was installed"))
+                        })?;
+                        record.slots = slots;
+                    }
                 }
                 _ => {}
             }
         }
         let mut native_functions = Vec::new();
-        for (offset, id, nslots) in native_function_records {
+        for (offset, function, nslots) in native_function_records {
             let names_at = offset + 32 + 8 * nslots as u32;
             let name = self.value_at(names_at)?;
             let c_name = self.value_at(names_at + 8)?;
             let text = |value: Value, what: &str| {
-                string_like(&value)
+                let text = string_like(&value)
                     .map(|string| string.text)
                     .ok_or_else(|| {
-                        LoadError::Error(format!("native function {id}'s {what} is not a string"))
-                    })
+                        LoadError::Error(format!("native function {what} is not a string"))
+                    })?;
+                std::ffi::CString::new(text)
+                    .map_err(|_| LoadError::Error(format!("NUL in native function {what}")))
             };
-            native_functions.push(crate::lisp::native_comp::DumpedNativeFunction {
-                record_id: id,
-                name: text(name, "name")?,
-                c_name: text(c_name, "C name")?,
-            });
+            let name = text(name, "name")?;
+            let c_name = text(c_name, "C name")?;
+            // SAFETY: this load's newly allocated object is unpublished. No
+            // borrowed C-name view exists while the initial names are replaced.
+            unsafe { &mut *function.as_ptr() }.set_names(name, c_name);
+            native_functions.push(crate::lisp::native_comp::DumpedNativeFunction { function });
         }
         for (offset, id, nslots) in obarray_records {
             let count_at = offset + 32 + 8 * nslots as u32;
@@ -710,7 +741,7 @@ impl Loader<'_> {
             let spans = self.load_text_properties(props_offset)?;
             match self.objects[&string_offset].kind() {
                 Kind::StringObject(state) => {
-                    state.borrow_mut().props = spans;
+                    state.borrow_mut().props = spans.into();
                 }
                 other => {
                     return Err(LoadError::Error(format!(
@@ -1006,14 +1037,9 @@ impl Loader<'_> {
         name: Value,
     ) -> Result<SymbolName, LoadError> {
         let interned = (flags >> SYMBOL_INTERNED_SHIFT) & 3;
-        let name_text: std::borrow::Cow<'_, str> = match name.kind() {
-            Kind::String(text) => std::borrow::Cow::Borrowed(text.as_str()),
-            other => std::borrow::Cow::Owned(
-                string_like(&other.value())
-                    .map(|string| string.text)
-                    .ok_or_else(|| LoadError::Error("symbol name is not a string".into()))?,
-            ),
-        };
+        let name_text = name
+            .as_string()
+            .map_err(|_| LoadError::Error("symbol name is not a string".into()))?;
         if interned == SYMBOL_UNINTERNED && flags & FLAG_UNINTERNED_FROM_OBARRAY == 0 {
             return Ok(SymbolName::make_uninterned(
                 name,
@@ -1038,10 +1064,7 @@ impl Loader<'_> {
             }
             return Ok(SymbolName::intern_with_lisp_name(internal, Some(name)));
         }
-        Ok(SymbolName::intern_with_lisp_name(
-            name_text.into_owned(),
-            Some(name),
-        ))
+        Ok(SymbolName::intern_with_lisp_name(name_text, Some(name)))
     }
 
     fn load_string(
@@ -1062,19 +1085,20 @@ impl Loader<'_> {
             .ok_or_else(|| {
                 LoadError::Error(format!("string data at {data} is outside the image"))
             })?;
-        let (text, extended_chars) = decode_internal_bytes(bytes, multibyte)?;
-        // The record's `size' and `size_byte' are the string's character
-        // count and storage size; pdumper.c takes them as they are, so
-        // the loader counts nothing (a unibyte string stores one byte a
-        // character).
-        let value = match kind {
-            DumpType::String => Value::String(SharedText::with_storage_bytes(text, nbytes)),
-            _ => crate::lisp::primitives::strings::make_loaded_string_object_value(
-                text,
-                multibyte,
-                extended_chars,
-                nbytes,
-            ),
+        let mode = if kind == DumpType::EmptyString {
+            crate::lisp::alloc::StringAllocation::Ordinary
+        } else {
+            crate::lisp::alloc::StringAllocation::Restored
+        };
+        let state = StringObjectRef::from_storage_kind(bytes.to_vec(), size, multibyte, mode)
+            .map_err(|error| LoadError::Error(error.to_string()))?;
+        let value = if kind == DumpType::EmptyString {
+            if size != 0 || nbytes != 0 || intervals != 0 {
+                return Err(LoadError::Error("nonempty static empty string".into()));
+            }
+            Value::StringObject(state)
+        } else {
+            Value::StringObject(state)
         };
         Ok((value, (intervals != 0).then_some(intervals)))
     }

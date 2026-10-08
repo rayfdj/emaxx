@@ -1,0 +1,324 @@
+{
+  "goal_complete": false,
+  "scope": {
+    "status": "portable unapplied inline-only source301 draft; full validation/timing pending",
+    "portable": {
+      "status": "portable unapplied draft verified",
+      "candidate": "target/runtime-goal/recovered-2026-10-05/native-bytecode-inline/emaxx",
+      "patches": [
+        {
+          "patch": "source301-portable-incremental.patch",
+          "sha256": "16f1b9c4d98e3f1602634f43e7753d2ce0fd6b0763298585aedbec11b348e07b",
+          "base": "4af440a93be274739b3745d26e9026e12974b411",
+          "inputs": 532,
+          "bytes_and_modes": "exact"
+        },
+        {
+          "patch": "source301-portable-complete.patch",
+          "sha256": "66f3aa614f55be8cdd62c0bd9ff4892f08f11dd9c75c70e39f0ddbd1df3c2a5f",
+          "base": "21d20f0eec08f3c013d5d3eb3bd6e9cfc16b3199",
+          "inputs": 532,
+          "bytes_and_modes": "exact"
+        }
+      ],
+      "goal_complete": false,
+      "qualification": "Source301 changes only the shared native helper inline attribute from held300. All532 input bytes/modes reconstruct from applied4af440a9 and main. Original tests/fixtures/selectors/timeouts/criteria remain. Selected validation and timing are separate."
+    },
+    "source_inputs_verified": 532,
+    "qualification": "All source bytes/modes replay. Strict source301 checks have zero warnings. Immutable launch snapshots do not imply selected/comparison/performance completion; inspect the live/final coordinator receipts when resuming. Source300 remains held after the original192-process diagnostic with two native-transition regressions. Applied runtime remains source297. The queued three-way comparison retains original297, default300 and inline301, all16 workloads and every unfavorable result. No full-goal completion claim.",
+    "goal_complete": false
+  },
+  "archive": {
+    "path": "source301-native-bytecode-inline-draft.tar.gz",
+    "bytes": 492985,
+    "sha256": "4169ea14aec920ac2c8d5199d6a552feba2380146348859a27fcac857bd2cd74"
+  },
+  "files": [
+    {
+      "path": "audit-native-bytecode-inline-selected.py",
+      "bytes": 8739,
+      "sha256": "7fd2062441921398cbce1fbd380b12d2af7e5f8d8110593bbefe6edd0e00d97c"
+    },
+    {
+      "path": "audit-native-bytecode-inlining-performance.py",
+      "bytes": 5634,
+      "sha256": "75756fb4f818528497aa77cc72433ec6bc1707f6713f30e21cb55103cf69e24d"
+    },
+    {
+      "path": "compare-buffer-line-broad-probe.py",
+      "bytes": 4092,
+      "sha256": "3f1c7c7929963b9821a7e32ec394f9ca14ceb46cfb8fb5e07606ec23800e48de"
+    },
+    {
+      "path": "compare-source292-generated-loaded.py",
+      "bytes": 2833,
+      "sha256": "1e6f3efe0ae133871c83b01732cd6c17bbef13d9b8183980476406af8a970ec3"
+    },
+    {
+      "path": "compare-source300-generated-loaded.py",
+      "bytes": 2847,
+      "sha256": "0bb75dd9c661d1889a67ce010b412ed1d9a481b0f67010b86b406162178397da"
+    },
+    {
+      "path": "compare-source301-generated-loaded.py",
+      "bytes": 2838,
+      "sha256": "4722bf298727a2b5891a6658db5d90e062e2bc367debe6f2a3077f788400304f"
+    },
+    {
+      "path": "compare-vm-dispatch-fixtures.py",
+      "bytes": 4143,
+      "sha256": "cbacebaedda3cc6347863faf3cb63b83ec4a8083ed4ecfad2128ece2a7aaf9a4"
+    },
+    {
+      "path": "finish-native-bytecode-inlining-performance-closed.py",
+      "bytes": 2075,
+      "sha256": "5dda35d531b3b8b6d7a63eb815f47bc9f577e321ef407baa35771cf191066a12"
+    },
+    {
+      "path": "finish-native-bytecode-inlining-selected-closed.py",
+      "bytes": 3230,
+      "sha256": "d0ee52a687288e79d2ba5b193f80abedc29d00dcaec9dd1b23e3c9f8115b4040"
+    },
+    {
+      "path": "measure-native-bytecode-inlining.py",
+      "bytes": 5102,
+      "sha256": "ab206a6e6570bd5a07b6cf7cf6def0281bb5731978e8b835f7a64cce51da1dbf"
+    },
+    {
+      "path": "native_fixed_validation_support.py",
+      "bytes": 1038,
+      "sha256": "87efc148e2141fba558e6b13998d0573d43882954c2b4d0dbe3b0d71abcce94f"
+    },
+    {
+      "path": "package-native-bytecode301-draft.py",
+      "bytes": 3757,
+      "sha256": "42c97aa8053038f1148c644705202028282e137c506d2b272b129f442d9eeeb0"
+    },
+    {
+      "path": "package-source196-failure-and197-results.py",
+      "bytes": 6638,
+      "sha256": "11760b57658634e35fb06d7750debc2b6f179bd2e2d465874cf1b6085605bd5b"
+    },
+    {
+      "path": "prepare-native-bytecode-evidence301.py",
+      "bytes": 5502,
+      "sha256": "17059975f7fd98258a5681b1e6fd57bdbfe7a1d430b93b6cf568e10746f192f6"
+    },
+    {
+      "path": "prepare-native-bytecode301.py",
+      "bytes": 3562,
+      "sha256": "0ebfd164b1817631be9ae0ef40182a601b7e5dd520bac5612d9f0a3491d5509e"
+    },
+    {
+      "path": "replay-native-bytecode301.py",
+      "bytes": 2305,
+      "sha256": "72411206bb72ace5adaccdf916d55919c9cf5be955926bc0016f57e41ac4fef9"
+    },
+    {
+      "path": "run-source301-validation.py",
+      "bytes": 9370,
+      "sha256": "0c71f5471bbf7fbebc41019f86a3c2bd8663e25642a4e16940c472eef6dfac56"
+    },
+    {
+      "path": "source297-full-validation-launch.json",
+      "bytes": 1387,
+      "sha256": "d632798f682c86460d51e598e379a1489d81edea7bf5182d65384c4b23f201a9"
+    },
+    {
+      "path": "source300-application-decision.json",
+      "bytes": 6825,
+      "sha256": "27550a9f21f04bb97f7c0485f944110f69070fab9a8fe9b21ed24ccd3d82456f"
+    },
+    {
+      "path": "source300-gate-inventory.log",
+      "bytes": 268597,
+      "sha256": "6afcddb3a91cff8fda6f3beb892f22563977ecce62ae358c7cb590fff6532cbe"
+    },
+    {
+      "path": "source300-manifest.json",
+      "bytes": 61385,
+      "sha256": "bb3fafd189e88748efd7c7b6e90c22a3be36936a5d274c2e46f28cb45bc2daf7"
+    },
+    {
+      "path": "source300-native-helper-symbol.json",
+      "bytes": 569,
+      "sha256": "73cd04833a450ba13dd137703ce74b067041859893372a289f4dd53045061560"
+    },
+    {
+      "path": "source300-release-inventory.log",
+      "bytes": 268508,
+      "sha256": "2a571bc73159cd9be6198a4c0083dc46db6b6c4267e67eaa45398d3456587471"
+    },
+    {
+      "path": "source300-selected-audit.json",
+      "bytes": 259065,
+      "sha256": "754e363e90fc15dd2f7ed63a4ba56a1fae3ec22961d30cccba491bab61184130"
+    },
+    {
+      "path": "source301-cache-clone-command.json",
+      "bytes": 1388,
+      "sha256": "b6d4be5425cd793acb7aff5c1d35297ecc604989bf77a34b76bd07931437f1bc"
+    },
+    {
+      "path": "source301-cache-clone-result.json",
+      "bytes": 137,
+      "sha256": "e77042df6886fbcfb282f5222692e2a4899b86cce41d53c78bb769779fe3202d"
+    },
+    {
+      "path": "source301-cache-clone.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source301-check-command.json",
+      "bytes": 1160,
+      "sha256": "1322c1bb4422395b2343848448f69a1058c469987f924b51bb7417780c3a857b"
+    },
+    {
+      "path": "source301-check-result.json",
+      "bytes": 131,
+      "sha256": "ccbfb7c5c65258d9cd577e4014adecf9cb82b9cd45dedd54128f77205c40d727"
+    },
+    {
+      "path": "source301-check.log",
+      "bytes": 204,
+      "sha256": "ec4d06fab80e0c1d5d9b621ac41ae9b4d39af79788f3aad03f6f079c284571ed"
+    },
+    {
+      "path": "source301-clippy-command.json",
+      "bytes": 1197,
+      "sha256": "a77b151c0ab0ee14323a2f84fc95ed3e7a863758e06369d7086030630093a70a"
+    },
+    {
+      "path": "source301-clippy-result.json",
+      "bytes": 125,
+      "sha256": "b7a63adfe4d43984bf369f478906bcebf57bf2e9e3f571699e42ecbb96da4e33"
+    },
+    {
+      "path": "source301-clippy.log",
+      "bytes": 204,
+      "sha256": "e12d709c17133c64c815a76236d3eadc37eb46dd670dae9e93d35990eea73cb4"
+    },
+    {
+      "path": "source301-diff-command.json",
+      "bytes": 1113,
+      "sha256": "bb3481c2a298281c8ebc75f38b122f0aed9f8c4e843fdd4f86305625bbc7567d"
+    },
+    {
+      "path": "source301-diff-result.json",
+      "bytes": 130,
+      "sha256": "eb8c489b862995ba18651f2b1f3d4e59dc8d16dd66b8f5b3326228f9fffde4b1"
+    },
+    {
+      "path": "source301-diff.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source301-fmt-command.json",
+      "bytes": 1137,
+      "sha256": "b630634dafd0696a1c07591c7d5b292fe64be1925917abc6531517a853b6d9ad"
+    },
+    {
+      "path": "source301-fmt-result.json",
+      "bytes": 129,
+      "sha256": "1bdbe109df5ca0d78686b5e235787debed4fc040db3196614147f013119c31af"
+    },
+    {
+      "path": "source301-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source301-fresh-crate-command.json",
+      "bytes": 1131,
+      "sha256": "91a25d90d65b71eb3aad43e9ad21883e2e4d1a965f50a3e268e43dc4b33a072e"
+    },
+    {
+      "path": "source301-fresh-crate-result.json",
+      "bytes": 137,
+      "sha256": "44e2ff775d33828d4679dbcaa5281f5501b1ebab09a0a28d4d3ecd60f26e3ad2"
+    },
+    {
+      "path": "source301-fresh-crate.log",
+      "bytes": 39,
+      "sha256": "c982b104cb7413636fcc308d18e01cf11d5e09a3d77e72110da3a2dd902549bd"
+    },
+    {
+      "path": "source301-fresh-gate-crate-command.json",
+      "bytes": 1160,
+      "sha256": "5e932c27e4813881ec892290443d75ab2129e930134ab4afa290b4ac5b34742a"
+    },
+    {
+      "path": "source301-fresh-gate-crate-result.json",
+      "bytes": 143,
+      "sha256": "aa96137cb6051a5fc8cdfbc2af2777087e00e4bfb6bd7c1f5d22eb9985289d82"
+    },
+    {
+      "path": "source301-fresh-gate-crate.log",
+      "bytes": 37,
+      "sha256": "591aeddc7d7bc5aee8e3130d214bef83c6f6cf6930ff9822822cfab2d38fa8bb"
+    },
+    {
+      "path": "source301-fresh-release-crate-command.json",
+      "bytes": 1163,
+      "sha256": "c78c60ef10b7ac2a3c87f7654678ca8e997545d0b5933d1241ca799af9d4076b"
+    },
+    {
+      "path": "source301-fresh-release-crate-result.json",
+      "bytes": 145,
+      "sha256": "6db22e60ee6f0100ae386129d593381e3ebb76e9c5e1c8c2512c1617783c7309"
+    },
+    {
+      "path": "source301-fresh-release-crate.log",
+      "bytes": 38,
+      "sha256": "e20205dd0b377a5773388d8c66b6f3b4edfabe5211df37b4d7ff3a4c911dbdf1"
+    },
+    {
+      "path": "source301-launch-snapshot/native-bytecode-inlining-performance-sequence-closed-state.json",
+      "bytes": 476,
+      "sha256": "df81a6e3390bea2175a8d163651c6ffa42bf3ca741bd631f7afadda1846e977e"
+    },
+    {
+      "path": "source301-launch-snapshot/native-bytecode-inlining-selection-closed-state.json",
+      "bytes": 1124,
+      "sha256": "97c694908c4d63a4217f116d107adc334546d903a6416415f0e35133a8f0a1a9"
+    },
+    {
+      "path": "source301-launch-snapshot/source301-validation-state.json",
+      "bytes": 1763,
+      "sha256": "1de1a39167605098a2e3cfc07cd35b52a9bf44034d8cf4a3cc7e09002fc7c960"
+    },
+    {
+      "path": "source301-manifest.json",
+      "bytes": 61385,
+      "sha256": "93bc278e2593df1b5b3fabcf0e4972521b33db92974de295d1f13a584f3bfd78"
+    },
+    {
+      "path": "source301-portable-complete.patch",
+      "bytes": 1408295,
+      "sha256": "66f3aa614f55be8cdd62c0bd9ff4892f08f11dd9c75c70e39f0ddbd1df3c2a5f"
+    },
+    {
+      "path": "source301-portable-draft-audit.json",
+      "bytes": 983,
+      "sha256": "4b27d7f5467c84fbc15c0cca4b3708633c83d67414c6af97d163fa8cde12f186"
+    },
+    {
+      "path": "source301-portable-incremental.patch",
+      "bytes": 3460,
+      "sha256": "16f1b9c4d98e3f1602634f43e7753d2ce0fd6b0763298585aedbec11b348e07b"
+    },
+    {
+      "path": "source301-static-review.json",
+      "bytes": 1274,
+      "sha256": "354b954af49538a1801e445a29ee6aec00ebbda470adb5970789c4b885fd44b0"
+    },
+    {
+      "path": "verify-existing-portable-draft.py",
+      "bytes": 854,
+      "sha256": "3a391fee2ac405fa9113da352fcb52f3eabe6d575fb0ddf9ca3c6fdfca5b83a7"
+    }
+  ],
+  "binaries": "Not packaged; rebuild. Retained binary hashes identify local evidence only."
+}

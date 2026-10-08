@@ -1,0 +1,18 @@
+(with-temp-buffer
+  (let ((table (copy-case-table (standard-case-table)))
+        (result nil))
+    (set-case-syntax-pair ?Q ?x table)
+    (set-case-table table)
+    (dolist (phase '(installed mutated after-gc))
+      (cond ((eq phase 'mutated)
+             (aset (char-table-extra-slot table 0) ?x ?Z))
+            ((eq phase 'after-gc) (garbage-collect)))
+      (push (list phase
+                  (upcase ?x)
+                  (compare-strings "x" nil nil "Q" nil nil t)
+                  (compare-strings "x" nil nil "Z" nil nil t)
+                  (compare-strings "x" nil nil "X" nil nil t)
+                  (compare-strings "ax!" 1 2 "bQ?" 1 2 t)
+                  (compare-strings "x" nil nil "Q" nil nil nil))
+            result))
+    (nreverse result)))
