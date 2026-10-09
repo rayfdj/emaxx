@@ -39,14 +39,14 @@ execute real bytecode/native code; all three redirect helpers and their caller
 are confirmed native. Raw outputs, compiler-selected test binary identities,
 process receipts, source captures and both patch replays are retained.
 
-The full source318 macOS Rust gate is running separately at
-`target/runtime-goal/symbol-payload-api-2026-10-09/payload-draft1-full`.
-Its supervisor is `finish_selected_and_full.py`; it started only after the
-selected audit passed. Inspect its state before starting another run. The
-source317 checkout now holds source318's uncommitted API changes; leave its
-runtime inputs unchanged while this full gate runs. Linux, frozen, terminal and
-timing validation remain pending. The original source317 setup failures and
-source316 ownership negative remain in the linked predecessor evidence.
+The [complete source318 macOS Rust gate](handover/2026-10-09-symbol-fields/source318-macos-rust-results-manifest.json)
+verifies **3,166 passes / two existing ignores**, including native artifact
+identity. All 3,069 library names and raw verdicts, Cargo results, 562 input bytes
+and modes, and retained artifact hashes are independently checked. It ran the
+uncommitted API change on source317 `c7185a61`; both portable patch replays match.
+Post-run retained images identify those artifacts, not per-test image use.
+Linux, frozen, terminal and timing validation remain pending. The original
+source317 setup failures and source316 ownership negative remain preserved.
 
 Continue with instance-owned canonical symbols and graph-preserving image
 copying, then direct allocated fields. The ID counters, name lookup adapters,

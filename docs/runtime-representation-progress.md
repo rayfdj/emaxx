@@ -6,7 +6,11 @@ Source316 is applied on PR81 as `ee0bddb9`. Main contains source314 through
 merged PR80 (`0610bf0c`). The [source316 evidence](runtime-representation-symbol-redirect-draft.md)
 verifies 3,165 macOS Rust passes and 3,177 Linux Rust passes, each with two
 existing ignores; Linux frozen matches all 7,928 outcomes across 519 files.
-The full macOS frozen comparison is running. Three alternating Linux full16
+Separate macOS attempts now observe all 519 files / 7,915 matching outcomes;
+six existing diagnostics and both original Tramp timeouts remain failed. The
+bounded Tramp observation obtains actual matching answers, and the 200-file tail
+completes with the original deadline. Source316 terminal validation remains open.
+Three alternating Linux full16
 pilots verify 192 answers/modes and are 2.41% faster than main by body aggregate,
 but still 2.659845× paired GNU; mapcar regresses 2.41%. All samples remain.
 
@@ -23,7 +27,9 @@ required. Neither these passing gates nor the requested merge completes the goal
 The separate [source318 access-API continuation](runtime-representation-symbol-payload-api-draft.md)
 returns symbol payloads by copy and performs explicit stores. Strict checks,
 208 controls per profile, nine ordinary comparisons and both 562-input patch
-replays pass. Its full macOS Rust gate is running. It prepares allocated-field
+replays pass. Its full macOS Rust gate verifies 3,166 passes / two existing ignores,
+including native artifact identity. Linux/frozen/terminal/timing remain pending.
+It prepares allocated-field
 mutation but does not implement instance-owned symbols or repair the recorded
 isolation defect; no performance or full-goal completion is claimed.
 

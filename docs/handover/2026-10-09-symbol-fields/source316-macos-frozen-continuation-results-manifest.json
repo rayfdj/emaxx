@@ -1,0 +1,187 @@
+{
+  "checkpoint": "source316",
+  "runtime_source_commit": "ee0bddb9794b513622736b4f81edfead86c686ba",
+  "archive": {
+    "path": "source316-macos-frozen-continuation-results.tar.gz",
+    "bytes": 1681228,
+    "sha256": "51a2c74421a7a4bb597826f3c8f752dfb120717d3681bf2684bc5fd2ce1e5d55",
+    "members": 5231
+  },
+  "original": {
+    "status": "failed: both Tramp processes timed out; remaining frozen files unstarted",
+    "completed_comparisons": 318,
+    "matching_outcomes": 4479,
+    "successful_processes": 636,
+    "failed_processes": 2,
+    "unstarted_files": 200,
+    "source_inputs_verified": 562,
+    "deadline_seconds": 180
+  },
+  "longer": {
+    "status": "matched in separate bounded longer run",
+    "matching_outcomes": 59,
+    "successful_processes": 2,
+    "runner_summaries": {
+      "oracle": {
+        "passed": 52,
+        "failed": 0,
+        "skipped": 7,
+        "total": 59,
+        "unexpected": 0
+      },
+      "emaxx": {
+        "passed": 52,
+        "failed": 0,
+        "skipped": 7,
+        "total": 59,
+        "unexpected": 0
+      }
+    },
+    "test_seconds": {
+      "oracle": 225.655592621,
+      "emaxx": 268.851870153
+    },
+    "deadline_seconds": 600,
+    "original_subject_sha256": "6c08c0b910784f57384521f40df17a8ff968e550e85b9d5e20393e3ddd5b3829",
+    "subject_sha256": "1d770269754f05b581c495e784e60407179eb3b293bb7f67179811eb3bd16a59"
+  },
+  "tail": {
+    "status": "failed: six existing feature-message differences",
+    "files": 200,
+    "matching_outcomes": 3377,
+    "mismatching_outcomes": 6,
+    "total_outcomes": 3383,
+    "successful_processes": 400,
+    "runner_summaries": {
+      "oracle": {
+        "total": 3383,
+        "passed": 3201,
+        "failed": 14,
+        "skipped": 168,
+        "unexpected": 0
+      },
+      "emaxx": {
+        "total": 3383,
+        "passed": 3201,
+        "failed": 14,
+        "skipped": 168,
+        "unexpected": 0
+      }
+    },
+    "source_inputs_verified": 562,
+    "subject_sha256": "1d770269754f05b581c495e784e60407179eb3b293bb7f67179811eb3bd16a59",
+    "deadline_seconds": 180
+  },
+  "combined": {
+    "files_observed": 519,
+    "distinct_matching_outcomes": 7915,
+    "mismatching_outcomes": 6,
+    "successful_processes": 1038,
+    "original_failed_processes": 2
+  },
+  "excluded_large_inputs": [
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/compat-subject/gate/emaxx",
+      "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-ownership-2026-10-09/source316-macos-frozen-failed-inputs/emaxx",
+      "sha256": "6c08c0b910784f57384521f40df17a8ff968e550e85b9d5e20393e3ddd5b3829",
+      "bytes": 17734592
+    },
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+      "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-ownership-2026-10-09/source316-macos-frozen-failed-inputs/emacs.pdmp",
+      "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+      "bytes": 22954264
+    },
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/compat-subject/gate/emaxx.pdmp",
+      "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-ownership-2026-10-09/source316-macos-frozen-failed-inputs/emaxx.pdmp",
+      "sha256": "4d7c5ade78c9ba3ced27b7790b66831ecaee1a1eabac81373ecb908e8fc334e0",
+      "bytes": 21783072
+    },
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+      "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-ownership-2026-10-09/source316-macos-frozen-failed-inputs/emacs",
+      "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+      "bytes": 9600848
+    },
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/compat-subject/gate/emaxx",
+      "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-ownership-2026-10-09/source316-tramp-longer/retained-inputs/emaxx",
+      "sha256": "1d770269754f05b581c495e784e60407179eb3b293bb7f67179811eb3bd16a59",
+      "bytes": 17820064
+    },
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+      "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-ownership-2026-10-09/source316-tramp-longer/retained-inputs/emacs.pdmp",
+      "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+      "bytes": 22954264
+    },
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/compat-subject/gate/emaxx.pdmp",
+      "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-ownership-2026-10-09/source316-tramp-longer/retained-inputs/emaxx.pdmp",
+      "sha256": "4d7c5ade78c9ba3ced27b7790b66831ecaee1a1eabac81373ecb908e8fc334e0",
+      "bytes": 21783072
+    },
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+      "artifact": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-ownership-2026-10-09/source316-tramp-longer/retained-inputs/emacs",
+      "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+      "bytes": 9600848
+    }
+  ],
+  "excluded_prerequisite_tools": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/compat/frozen-1791519403990625000-85993/tools/rustdoc",
+      "bytes": 10246801,
+      "sha256": "171c855f5dcff7bdfa6c10e3251fcefa14d46f03493ecb4305c6139cc77d9fd6"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/compat/frozen-1791519403990625000-85993/tools/clangd",
+      "bytes": 98,
+      "sha256": "6015fc2c17fa2e77e5c01326a93b58eccaecdd28f5f47181328f38b04e8f1073"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/compat/frozen-1791519403990625000-85993/tools/cargo",
+      "bytes": 26689971,
+      "sha256": "d92fdab3cc38e1952e00b04d6cf4c725a08fc8519399a3ba76b93932e4985803"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/compat/frozen-1791519403990625000-85993/tools/rust-analyzer",
+      "bytes": 36189131,
+      "sha256": "63df1ed6c73dc06ec090597abd0395cbccc8fa704822f3bfe0d03c338960025d"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/compat/frozen-1791519403990625000-85993/tools/rustc",
+      "bytes": 640792,
+      "sha256": "2e5d8100af1c46dc9b9f2f8b644f085b7c099dce9f4237ecf304adc3e110c294"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/compat/run-1791532014463468000-41940/tools/rustdoc",
+      "bytes": 10246801,
+      "sha256": "171c855f5dcff7bdfa6c10e3251fcefa14d46f03493ecb4305c6139cc77d9fd6"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/compat/run-1791532014463468000-41940/tools/clangd",
+      "bytes": 98,
+      "sha256": "6015fc2c17fa2e77e5c01326a93b58eccaecdd28f5f47181328f38b04e8f1073"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/compat/run-1791532014463468000-41940/tools/cargo",
+      "bytes": 26689971,
+      "sha256": "d92fdab3cc38e1952e00b04d6cf4c725a08fc8519399a3ba76b93932e4985803"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/compat/run-1791532014463468000-41940/tools/rust-analyzer",
+      "bytes": 36189131,
+      "sha256": "63df1ed6c73dc06ec090597abd0395cbccc8fa704822f3bfe0d03c338960025d"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/compat/run-1791532014463468000-41940/tools/rustc",
+      "bytes": 640792,
+      "sha256": "2e5d8100af1c46dc9b9f2f8b644f085b7c099dce9f4237ecf304adc3e110c294"
+    }
+  ],
+  "remaining": "Source316 terminal validation, the separately recorded instance ownership defect, and the complete architectural and calibrated performance goal remain open.",
+  "qualification": "All raw prefix, bounded Tramp and 200-file tail reports, process records, hashes, selectors and audit helpers are retained. The separate tail has 3,377 matches and six existing feature-message differences, with no unexpected outcome. Across the three attempts, all 519 files are observed and 7,915 distinct outcome labels match. The six diagnostics remain strict mismatches. Both original Tramp processes timed out without answers. The separately bounded run obtains all 59 actual matching outcomes. It uses the same runtime inputs and image but a rebuilt subject executable, identified separately. The failed frozen run is not relabeled successful; no complete frozen or performance acceptance is claimed. Large executable/images and prerequisite tools remain locally retained and are identified by hash.",
+  "goal_complete": false
+}

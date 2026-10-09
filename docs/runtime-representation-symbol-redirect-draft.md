@@ -76,8 +76,19 @@ verdict, process record and frozen outcome is checked against the full inventory
 all 562 runtime inputs match the published source and retained oracle bytes.
 The post-run Rust image retention identifies those artifacts, not per-test use.
 
-The ordinary macOS frozen comparison is running with the original selector and
-deadlines. Relevant source316 terminal coverage has not run. Per-instance
+The [macOS continuation evidence](handover/2026-10-09-symbol-fields/source316-macos-frozen-continuation-results-manifest.json)
+retains the failed original run: **318 completed comparisons / 4,479 matches**,
+then both Tramp processes time out at the original 180-second limit. A separately
+bounded 600-second run obtains all **59 matching Tramp answers** (GNU 225.66
+seconds; Emaxx 268.85 seconds). It uses the same 562 runtime inputs and image,
+with an independently recorded rebuilt subject executable. The ordinary tail
+covers exactly the remaining **200 files / 3,377 matches / six existing platform
+diagnostic differences**, preserving the 180-second limit. All 400 tail processes
+succeed, including all 177 compiler outcomes and every Eglot outcome in both
+editors. Across these separate attempts all **519 files / 7,915 distinct matching
+outcome labels** are observed. Six diagnostics remain strict mismatches; the
+original Tramp timeouts remain failed. This is not one complete passing macOS
+frozen run. Relevant source316 terminal coverage has not run. Per-instance
 interning, image copying and allocated-symbol
 authority still must remove the weak side table and GC fixed-point walk.
 Intervals/pure storage, real allocation accounting/counters, internal ownership

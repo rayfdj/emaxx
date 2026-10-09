@@ -33,8 +33,12 @@ verifies **3,165 passes / two existing ignores**. The
 verifies **3,177 Rust passes / two existing ignores** and **519 frozen files /
 7,928 matching outcomes / 1,038 successful processes**. Raw names, verdicts,
 source/artifact identities and native artifact identity are independently checked.
-The ordinary macOS frozen run is now running with its original selector and
-deadlines. The [Linux timing evidence](docs/handover/2026-10-09-symbol-fields/source316-linux-symbol-performance-results-manifest.json)
+The [macOS frozen continuation](docs/handover/2026-10-09-symbol-fields/source316-macos-frozen-continuation-results-manifest.json)
+observes all **519 files / 7,915 matching outcomes**, with **six existing platform
+diagnostic differences**. The original run retains both Tramp timeouts at 180
+seconds. A separate 600-second observation obtains all 59 matching Tramp answers;
+the ordinary 200-file tail retains the original deadline. This is not one complete
+passing frozen run. Source316 terminal validation remains pending. The [Linux timing evidence](docs/handover/2026-10-09-symbol-fields/source316-linux-symbol-performance-results-manifest.json)
 verifies all 192 answers/modes. The three alternating full16 pilots are 2.41%
 faster than current main by raw body aggregate, but still 2.659845× paired GNU.
 Mapcar regresses 2.41%; all samples remain. This is not final performance acceptance.
@@ -56,7 +60,9 @@ replaces borrowed mutable payloads with copied words and explicit stores, keepin
 the existing lookup and assignment paths. Strict checks, **208 controls per
 profile** and **nine ordinary GNU comparisons** pass. Both patch replays verify
 562 inputs; old assertions and all test inventories remain. Its full macOS Rust
-gate is running in the source317 checkout. Instance-owned interning and allocated
+gate [passes 3,166 tests / two existing ignores](docs/handover/2026-10-09-symbol-fields/source318-macos-rust-results-manifest.json),
+including native artifact identity. Linux/frozen/terminal/timing remain pending.
+Instance-owned interning and allocated
 fields are still unimplemented; the public-instance name-property negative stays
 open. This API preparation does not establish ownership or performance completion.
 
