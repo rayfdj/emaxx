@@ -57,12 +57,29 @@ inputs are unchanged. Apply it to `2712c057`, then run the full goal's original
 checks and build each editor's own image. The archive contains exact selectors,
 commands, raw outputs, artifact identities, replay auditor and GNU source hashes.
 
+The [Linux diagnostic timing evidence](handover/2026-10-09-symbol-fields/source316-linux-symbol-performance-results-manifest.json)
+verifies all **192 actual answers and execution modes** across three alternating
+full16 pilots against main `0610bf0c`. The raw body geometric ratio is
+**0.975874** (2.41% faster). Paired GNU aggregates are **2.659845× for source316**
+and 2.751122× for the baseline. Mapcar is the largest raw regression (+2.41%);
+every sample and slower case remains. Both revisions include the source314
+symbol-lifetime/plist repairs. This is not calibrated nine-round acceptance or
+evidence of complete allocation accounting.
+
 The complete source316 macOS Rust gate is running separately under
 `target/runtime-goal/symbol-ownership-2026-10-09/redirect-draft1-full`; no result
-is claimed yet. Linux/macOS frozen comparison, relevant terminal coverage and
-timing have not run. Source315's complete macOS result does not
+is claimed yet. Linux Rust/frozen validation is running, and the macOS frozen
+run is queued after its Rust gate. Relevant terminal coverage has not run.
+Source315's complete macOS result does not
 certify source316. Per-instance interning, image copying and allocated-symbol
 authority still must remove the weak side table and GC fixed-point walk.
 Intervals/pure storage, real allocation accounting/counters, internal ownership
 review, final adversarial review and the locked 16-workload/nine-round/every-case
 3% performance criterion remain required.
+
+The separate [source317 registry-removal draft](runtime-representation-symbol-registry-draft.md)
+passes 175 controls per profile and nine ordinary comparisons. It also preserves
+an actual source316 public-API negative: two editor instances share mutable
+symbol-name properties. That ownership gap remains unresolved and is not repaired
+by removing the redundant registry. Source317 is packaged separately; PR81's
+production runtime remains source316.

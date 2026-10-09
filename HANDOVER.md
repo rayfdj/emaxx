@@ -27,9 +27,22 @@ no new login or user approval is required for the authorized branch/CI work.
 Source316 is now applied on the task branch as `ee0bddb9`, with all 562 inputs
 identical to its selected validation. It combines source315's compact fields
 and removed alias mirror with a shared value/alias word. Its full macOS Rust
-gate is running; Linux gates, frozen comparisons and timing remain pending.
+gate is running; Linux Rust/frozen validation is running and macOS frozen is
+queued after the Rust gate. The [Linux timing evidence](docs/handover/2026-10-09-symbol-fields/source316-linux-symbol-performance-results-manifest.json)
+verifies all 192 answers/modes. The three alternating full16 pilots are 2.41%
+faster than current main by raw body aggregate, but still 2.659845× paired GNU.
+Mapcar regresses 2.41%; all samples remain. This is not final performance acceptance.
 The archived draft's earlier unapplied status is historical. Main's production
 runtime remains source314 until the next validated merge.
+
+The new [registry-removal draft](docs/runtime-representation-symbol-registry-draft.md)
+is separately packaged as **source317, unapplied**. It removes the redundant
+name-to-ID registry/mutex and two uninterned-name copies. Strict checks, all
+175 controls per profile and nine ordinary comparisons pass; the initial
+143-pass/32-failure source-layout attempt remains preserved. A source316
+public-API probe confirms that mutable symbol-name properties leak into the
+next editor instance. That negative remains open. Instance-owned interning,
+image copying and allocated fields must resolve it; the cleanup alone does not.
 
 ## Symbol-field checkpoint evidence — 9 October 2026
 

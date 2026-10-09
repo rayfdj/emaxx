@@ -1,0 +1,77 @@
+{
+  "checkpoint": "source317 unapplied draft",
+  "base": "4dcf9f6a9b651545a9fba49934131e5488f0a05d",
+  "archive": {
+    "path": "source317-symbol-registry-draft.tar.gz",
+    "bytes": 472582,
+    "sha256": "005ad5e50bd1db337499810c73c674a8e686edc94d9cfda992ae9a29393aed43",
+    "members": 170
+  },
+  "selected_audit": {
+    "checkpoint": "source317 selected draft",
+    "base": "4dcf9f6a9b651545a9fba49934131e5488f0a05d",
+    "source_inputs_verified": 562,
+    "profiles": {
+      "gate": {
+        "selected": 175,
+        "inventory": 3069,
+        "binary_sha256": "c939b2dbf69b09f092ba9685243bcdba2975e48258c5d9d3787aec2fa578d871"
+      },
+      "release": {
+        "selected": 175,
+        "inventory": 3068,
+        "binary_sha256": "844c5fedae9b23dfa7edf8c7d0ba94b008fb1096a283ffbc20dcc5d911fe76f3"
+      }
+    },
+    "ordinary_processes": 18,
+    "ordinary_comparisons": 9,
+    "original_controls_retained": 128,
+    "old_test_bodies_unchanged": true,
+    "patch_sha256": "97263d368d383950d0c76110de3b66b2d734b3030738b82e1d7aa47ac06485bd",
+    "replay_verified": true,
+    "first_cohort": {
+      "passed": 143,
+      "failed": 32,
+      "ignored": 0,
+      "reason": "required GNU sibling source layout absent; original failures retained"
+    },
+    "corrected_gate": "The same binary, selection, input bytes/modes and environment overrides pass after installing the missing ../emacs link",
+    "ownership_negative": "Source316 public editor calls share mutable symbol-name properties; first GNU answer (t owner-one), second (t nil), Emaxx second (nil owner-one). The registry cleanup does not claim to repair that separate allocated-symbol ownership gap.",
+    "goal_complete": false,
+    "qualification": "Strict and selected gate/release evidence plus nine ordinary GNU comparisons. Full platform, frozen and timing evidence remain required. Earlier launch/setup failures and the public-instance ownership negative remain retained. This removes redundant registry/key storage, not the per-interpreter symbol field adapter or process-shared symbol pool."
+  },
+  "excluded_retained_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-registry-2026-10-09/isolation-baseline-lto/public-instances",
+      "bytes": 13522608,
+      "sha256": "66621e495bac69354a15435fdc888e4d7ff263d338c769550afa2d8fd26e2ea4"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-registry-2026-10-09/isolation-flushed/public-instances",
+      "bytes": 13525472,
+      "sha256": "fd251e8a3d451b01076caedd2eec3f13a66c7e5afb9b6a6c6d77e3a5b476e796"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-registry-2026-10-09/registry-draft1/fixture-images/loadup-c939b2db-d44829be.pdmp",
+      "bytes": 21798120,
+      "sha256": "b17e533172b5eada2ba59cc341ebe27647919689a825211bb56a30e10cb99bba"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-registry-2026-10-09/registry-draft1/libtest",
+      "bytes": 29635616,
+      "sha256": "c939b2dbf69b09f092ba9685243bcdba2975e48258c5d9d3787aec2fa578d871"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-registry-2026-10-09/registry-draft1-release/fixture-images/loadup-844c5fed-d44829be.pdmp",
+      "bytes": 21798312,
+      "sha256": "2133d0bd3a5e9d4dfade3cb7b5bd1550c0daed8845a73437b10a28a2b09e4536"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-registry-2026-10-09/registry-draft1-release/libtest",
+      "bytes": 22930768,
+      "sha256": "844c5fedae9b23dfa7edf8c7d0ba94b008fb1096a283ffbc20dcc5d911fe76f3"
+    }
+  ],
+  "qualification": "Selected-only continuation of source316, not part of PR81 production runtime. All raw selected/ordinary observations, the first missing-source-layout failures, public-instance isolation negative, earlier launcher/setup failures, exact patch and helpers remain retained. Large executables/images are held locally and identified by hash. Full platform/frozen/timing validation and per-instance allocated-symbol authority remain open.",
+  "goal_complete": false
+}
