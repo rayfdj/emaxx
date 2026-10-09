@@ -32,13 +32,24 @@ Linux Rust/frozen and diagnostic timing are [running on source318 `93b6546f`](do
 does not repair the known cross-instance symbol-name property leak. The separate
 source319 ownership experiment is still local and unvalidated as a whole.
 
+The [source318 Linux timing evidence](docs/handover/2026-10-09-symbol-fields/source318-linux-symbol-performance-results-manifest.json)
+verifies all **192 actual answers and modes**. Three alternating full16 pilots
+have a body aggregate **0.53% slower than source316 main**, and **2.857181×**
+paired GNU. Explicit GC regresses 6.33% and bindat 5.28%; all samples remain.
+This is an unfavorable diagnostic, not calibrated nine-round/every-case
+performance acceptance. The other source318 platform runs remain separate.
+
 The [source319 ownership draft](docs/runtime-representation-symbol-owner-draft.md)
 is separately packaged and unapplied. It gives public editor entries their own
 canonical symbols and hash-test descriptors. The original name-property leak
 now matches GNU. True pointer equality exposed a second-editor descriptor
 mismatch; the corrected owner-specific pool now matches the unchanged probe.
 All earlier failures remain preserved. Strict checks and **229 gate controls**
-pass; release and ordinary/native validation are running. Private image-clone
+pass in **both profiles**. The [selected continuation](docs/handover/2026-10-09-symbol-fields/source319-symbol-owner-selected-results-manifest.json)
+adds nine ordinary GNU comparisons. The [public/native continuation](docs/handover/2026-10-09-symbol-fields/source319-public-native-results-manifest.json)
+passes all three existing public integration tests and compares two native-compiling
+editor instances restored from valid images. Original image/link/worker launcher
+failures remain preserved. All local source319 processes have ended. Private image-clone
 isolation, direct allocated fields, descriptor reclamation and other process-wide
 Lisp roots remain unresolved. This is unfinished work, not ownership completion.
 

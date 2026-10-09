@@ -1,0 +1,109 @@
+{
+  "checkpoint": "source319 unapplied owner draft4 public integration and native continuation",
+  "archive": {
+    "path": "source319-public-native-results.tar.gz",
+    "bytes": 148023,
+    "sha256": "667a3103af8b25e5046dc9c702d0df61f5287509cf012535e3abbc211fcb3b91",
+    "members": 59
+  },
+  "audit": {
+    "status": "public integration and restored native comparisons passed",
+    "source_inputs_verified": 563,
+    "integration_passed": 3,
+    "integration_names": [
+      "public_editor_calls_serialize_allocation_collection_and_shutdown",
+      "public_ert_entry_preserves_complete_inventory_and_unexpected_failures",
+      "public_ert_entry_reports_top_level_errors_as_owned_host_data"
+    ],
+    "restored_public_processes": 12,
+    "restored_public_comparisons": [
+      {
+        "label": "image-state",
+        "exit_codes": [
+          0,
+          0,
+          0
+        ],
+        "gnu": "(t t)\n(t t)\n",
+        "emaxx": "(t t)\n(t t)\n",
+        "matches": true
+      },
+      {
+        "label": "original-name",
+        "exit_codes": [
+          0,
+          0,
+          0
+        ],
+        "gnu": "(t owner-one)\n(t nil)\n",
+        "emaxx": "(t owner-one)\n(t nil)\n",
+        "matches": true
+      },
+      {
+        "label": "hash-types",
+        "exit_codes": [
+          0,
+          0,
+          0
+        ],
+        "gnu": "(t t t t t)\n(t t t t t)\n",
+        "emaxx": "(t t t t t)\n(t t t t t)\n",
+        "matches": true
+      },
+      {
+        "label": "native-owner",
+        "exit_codes": [
+          0,
+          0,
+          0
+        ],
+        "gnu": "(t t t t)\n(t t t t)\n",
+        "emaxx": "(t t t t)\n(t t t t)\n",
+        "matches": true
+      }
+    ],
+    "retained_inputs": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-native-retained-inputs/0-emacs",
+        "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+        "bytes": 9600848
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-native-retained-inputs/1-emacs.pdmp",
+        "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+        "bytes": 22954264
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/ownership-native-image/owner-probe",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-native-retained-inputs/2-owner-probe",
+        "sha256": "907a1773a20a75c170b45450c2a3904dc6ca292c46f2f0d1ca5035619c7320a0",
+        "bytes": 13915952
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/ownership-native-image/owner-probe.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-native-retained-inputs/3-owner-probe.pdmp",
+        "sha256": "d403d2a2291ef376b47cba37cde4838f223c312de43022ca4f34d50f7fffadb8",
+        "bytes": 21785024
+      }
+    ],
+    "prior_failure": {
+      "status": "preserved failed native-worker launcher",
+      "exit_code": 101,
+      "gnu": "(t t t t)\n(t t t t)\n",
+      "emaxx": "",
+      "cause": "The standalone launcher handled dump/fingerprint options but treated native compiler child CLI options as file paths. The corrected launcher delegates CLI options to the unchanged normal CLI. Production library and Lisp program are unchanged."
+    },
+    "goal_complete": false,
+    "qualification": "All 563 inputs match strict, selected and ordinary validation. Existing integration assertions are unchanged, including concurrent host entries, collection, nested version calls and complete visible ERT failures. Two successive editors load valid images and native-compile a function that returns their own canonical symbol, then force GC; GNU and Emaxx outputs and actual native predicates agree. This does not complete native artifact identity, complete platform/frozen/terminal validation, private interpreter image cloning, allocated-field authority or performance acceptance."
+  },
+  "excluded_large_test_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-public-integration/fixture-images/loadup-469ae8f3-d44829be.pdmp",
+      "bytes": 21781928,
+      "sha256": "1dad526d56effe815c9e171528493d35a095819052f1e06850c11b316ef7a32b"
+    }
+  ],
+  "goal_complete": false
+}

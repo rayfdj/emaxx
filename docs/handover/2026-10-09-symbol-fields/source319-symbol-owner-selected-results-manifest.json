@@ -1,0 +1,150 @@
+{
+  "checkpoint": "source319 unapplied owner draft4 selected continuation",
+  "archive": {
+    "path": "source319-symbol-owner-selected-results.tar.gz",
+    "bytes": 375925,
+    "sha256": "78b3c070e881e9c7695eedf281d808810e7ef7e769d810c75e197e5f3e4cc27e",
+    "members": 166
+  },
+  "selected_audit": {
+    "checkpoint": "source319 unfinished owner draft4 selected validation",
+    "source_inputs_verified": 563,
+    "profiles": {
+      "gate": {
+        "selected": 229,
+        "inventory": 3069,
+        "binary_sha256": "6c40d9c2a7773c681502920fa43e5c41a16320b8626e9c4d8f2e69c841902a97"
+      },
+      "release": {
+        "selected": 229,
+        "inventory": 3068,
+        "binary_sha256": "195b9e2c2fa61ef5587c83ceab094f308bbc77407d88f93a8034d448674c6ec5"
+      }
+    },
+    "prior_controls_retained": 208,
+    "unchanged_full_test_inventories": true,
+    "unchanged_fixtures_and_ordinary_launcher": true,
+    "ordinary_processes": 18,
+    "ordinary_comparisons": 9,
+    "restored_public_processes": 9,
+    "restored_public_comparisons": [
+      {
+        "label": "image-state",
+        "exit_codes": [
+          0,
+          0,
+          0
+        ],
+        "gnu": "(t t)\n(t t)\n",
+        "emaxx": "(t t)\n(t t)\n",
+        "matches": true
+      },
+      {
+        "label": "original-name",
+        "exit_codes": [
+          0,
+          0,
+          0
+        ],
+        "gnu": "(t owner-one)\n(t nil)\n",
+        "emaxx": "(t owner-one)\n(t nil)\n",
+        "matches": true
+      },
+      {
+        "label": "hash-types",
+        "exit_codes": [
+          0,
+          0,
+          0
+        ],
+        "gnu": "(t t t t t)\n(t t t t t)\n",
+        "emaxx": "(t t t t t)\n(t t t t t)\n",
+        "matches": true
+      }
+    ],
+    "restored_public_artifacts": {
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/ownership-target-image/owner-probe": "951551c83503d9f5c0e85c954d969d481f90eb289e7c19e5efd537e5777c3aac",
+      "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/ownership-target-image/owner-probe.pdmp": "a63aab426aba988659244884ccf5b7f6bf2a0e0217f8d39b617582c48569f2e1"
+    },
+    "replays": {
+      "obarray-draft4.patch": {
+        "base": "93b6546f9c54aaecf2237cc751e3f94591066969",
+        "sha256": "d0c7a0a40e2dfcbbd9be723fd6f4ae7d04d94d789feedf40cdd6cd4f5bfdb416",
+        "source_inputs_verified": 563
+      },
+      "obarray-cumulative-draft4.patch": {
+        "base": "30fa6e5b669c5cbd26e842e7675bfc18d306c2b4",
+        "sha256": "71b7b522ab68c0de31ef1b326d2440cbd7b0a48d7d5d1c0d6913c9b56bb76f08",
+        "source_inputs_verified": 563
+      }
+    },
+    "goal_complete": false,
+    "qualification": "Both selected profiles and ordinary modes pass. A new launcher linked to the same retained production library, with the unchanged normal CLI source exposed for dumping, runs two successive editors from its own valid fingerprinted image; actual pdumper-stats proves both loads, and name/descriptor identities match GNU. The mismatched-image attempt and two standalone link failures are retained as setup failures; the original name/descriptor failures remain in the separate draft archive. Full platform/frozen/terminal/native/module validation, private image-clone ownership, direct allocated fields, descriptor reclamation, other process roots and physical accounting remain open. No total performance or ownership completion claim."
+  },
+  "retained_large_inputs": [
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+      "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-retained-inputs/0-emacs",
+      "bytes": 9600848,
+      "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5"
+    },
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+      "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-retained-inputs/1-emacs.pdmp",
+      "bytes": 22954264,
+      "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67"
+    },
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/ownership-target-image/owner-probe",
+      "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-retained-inputs/2-owner-probe",
+      "bytes": 13915952,
+      "sha256": "951551c83503d9f5c0e85c954d969d481f90eb289e7c19e5efd537e5777c3aac"
+    },
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/ownership-target-image/owner-probe.pdmp",
+      "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-retained-inputs/3-owner-probe.pdmp",
+      "bytes": 21785024,
+      "sha256": "a63aab426aba988659244884ccf5b7f6bf2a0e0217f8d39b617582c48569f2e1"
+    },
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/release/emaxx",
+      "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-retained-inputs/4-emaxx",
+      "bytes": 13284880,
+      "sha256": "e51a4b8a2ab4065b6462142598ac420f701b754cb29600f692cc1b5980a900bd"
+    },
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/release/emaxx.pdmp",
+      "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-retained-inputs/5-emaxx.pdmp",
+      "bytes": 21785208,
+      "sha256": "046b2c53c6f6aa8e7574805cc788c7ac237222c03a34559e2c2b4719ce7c7b0b"
+    },
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/release/owned-image-probe",
+      "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-retained-inputs/6-owned-image-probe",
+      "bytes": 13511392,
+      "sha256": "eda0c39e3c3de46549e0f651b6ef644d08f4a6e3e9bcb5c27ec87242af777a85"
+    },
+    {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/release/owned-image-probe.pdmp",
+      "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-retained-inputs/7-owned-image-probe.pdmp",
+      "bytes": 21785208,
+      "sha256": "046b2c53c6f6aa8e7574805cc788c7ac237222c03a34559e2c2b4719ce7c7b0b"
+    }
+  ],
+  "excluded_large_test_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-release/fixture-images/loadup-195b9e2c-d44829be.pdmp",
+      "bytes": 21807576,
+      "sha256": "46771509f012099c03e40b10218791fa80e934ccebda400e2f35289d780c2b2a"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-release/libtest",
+      "bytes": 22919296,
+      "sha256": "195b9e2c2fa61ef5587c83ceab094f308bbc77407d88f93a8034d448674c6ec5"
+    }
+  ],
+  "qualification": "Complements source319-symbol-owner-unfinished-draft.tar.gz, which contains the exact patches, strict/gate results and original ownership failures. All 229 controls pass in gate/release. Nine ordinary GNU comparisons and three restored public-image comparisons match. Image fingerprint rejection and both standalone link failures remain preserved. The corrected launcher uses the target libc artifact and builds its own fingerprinted image through the unchanged CLI. Public-thread/ERT integration is running separately; broader platform/frozen/terminal/native/module validation, complete ownership, reclamation, accounting and performance remain open.",
+  "goal_complete": false
+}

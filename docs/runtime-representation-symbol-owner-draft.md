@@ -44,17 +44,36 @@ unchanged. Raw verdicts, public process logs, source captures, executable hashes
 and both patch replays are independently checked. The first unused-import Clippy
 failure and missing dependency-path launcher failure remain preserved.
 
-Release and ordinary interpreted/bytecode/native validation are running in
-`target/runtime-goal/symbol-obarray-2026-10-09`, supervised by
-`continue_selected.py`. Inspect `continued-validation-state.json` before starting
-another run; do not change the ownership checkout's runtime inputs while it is
-active. The complete platform, frozen, terminal, native/module/image and GC
-contracts are not certified by these selected results.
+The [completed selected continuation](handover/2026-10-09-symbol-fields/source319-symbol-owner-selected-results-manifest.json)
+verifies **229 controls in each profile** with unchanged complete inventories,
+plus **18 ordinary GNU/Emaxx processes / nine matching comparisons**, including
+actual bytecode/native execution. Three restored public-image comparisons also
+match. The first copied-image probe correctly fails the executable fingerprint
+check; two subsequent standalone link setup failures are retained. The working
+launcher links the same production library and builds its own valid image through
+the unchanged normal CLI. The original executable/image checks are not bypassed.
+
+The [public/native continuation](handover/2026-10-09-symbol-fields/source319-public-native-results-manifest.json)
+verifies all **three existing public integration tests**, including concurrent
+host entries, collection, nested version calls and complete visible ERT failures.
+Four additional comparisons match across **12 successful GNU/Emaxx processes**.
+Two successive editor entries load valid images, compile a native function that
+returns their own canonical symbol, and collect; every actual native and identity
+predicate agrees with GNU. The first native-worker attempt failed because the
+standalone launcher treated child CLI options as input filenames. Its failure
+remains recorded. The corrected launcher delegates normal options to the unchanged
+CLI; the production library and Lisp input are unchanged. All local validation
+processes for this source319 draft have ended.
+
+The complete platform, frozen, terminal, native artifact identity, module and GC
+contracts are not certified by these selected results. Source319 remains unapplied.
 
 Remaining work is substantial and explicit. Private interpreter image clones
 still share canonical symbols. Value/function/plist/alias fields remain in
 per-interpreter cells, with IDs, enumeration and a weak-field GC fixed point.
-Symbol roots can still be visited more than once. The old descriptor allocations
+Symbol roots can still be visited more than once. Global IDs also leave growing
+prefixes in dense cell tables across successive editors; they are not a final
+per-editor allocation strategy. The old descriptor allocations
 still use static leaked storage; their reclamation and physical accounting are
 unresolved. Other process-wide Lisp roots, including the Unicode menu table and
 echo state, still need ownership review. `SymbolName` retains the old

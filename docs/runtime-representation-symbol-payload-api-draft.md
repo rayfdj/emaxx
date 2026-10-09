@@ -47,9 +47,18 @@ identity. All 3,069 library names and raw verdicts, Cargo results, 562 input byt
 and modes, and retained artifact hashes are independently checked. It ran the
 uncommitted API change on source317 `c7185a61`; both portable patch replays match.
 Post-run retained images identify those artifacts, not per-test image use.
-Linux Rust/frozen and diagnostic timing are [running on published source318](handover/2026-10-09-symbol-fields/source318-linux-launch.json). Its own macOS frozen comparison is running in the source316/318 task checkout;
+Linux Rust/frozen are [running on published source318](handover/2026-10-09-symbol-fields/source318-linux-launch.json). Its own macOS frozen comparison is running in the source316/318 task checkout;
 terminal validation remains pending. The original
 source317 setup failures and source316 ownership negative remain preserved.
+
+The [completed Linux timing diagnostic](handover/2026-10-09-symbol-fields/source318-linux-symbol-performance-results-manifest.json)
+independently verifies all **192 actual answers and modes**. Three alternating
+full16 pilots have body ratio **1.005265** against source316 main (0.53% slower).
+Paired GNU aggregates are **2.857181× for source318** and 2.808045× for the baseline.
+Explicit GC regresses 6.33%, bindat 5.28%, interpreted dynamic loops 4.26% and
+mapcar 3.57%; every sample remains. This combined registry/API change has no
+established timing improvement and does not meet calibrated nine-round/every-case
+GNU acceptance. Physical allocation/counter requirements remain unresolved.
 
 Continue with instance-owned canonical symbols and graph-preserving image
 copying, then direct allocated fields. The ID counters, name lookup adapters,
