@@ -35,6 +35,13 @@ remain in the linked evidence. Per-instance allocated-symbol ownership, honest
 physical accounting/counters and every other full-goal requirement stay open.
 This diagnostic does not establish calibrated nine-round/every-case GNU parity.
 
+The next [compact-symbol draft](docs/runtime-representation-symbol-values-draft.md)
+is **packaged separately and unapplied**. Source315 removes duplicated alias
+names/targets and uses single-word value/function payloads. Its exact patch
+replays 560 inputs; strict checks, 126 selected tests per profile and 12 ordinary
+GNU/Emaxx processes pass. All old tests remain. Its complete macOS gate is running;
+its own Linux/frozen/timing evidence is still required. PR80's runtime remains314.
+
 ## Main merge and terminal continuation — 8 October 2026
 
 PR [#79](https://github.com/rayfdj/emaxx/pull/79) is **merged into main** as
