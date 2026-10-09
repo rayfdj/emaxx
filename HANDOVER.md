@@ -16,7 +16,57 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
-## Symbol-field continuation — 9 October 2026
+## Main merge and source316 continuation — 9 October 2026
+
+PR [#80](https://github.com/rayfdj/emaxx/pull/80) is merged into main as
+`0610bf0c6aafbc45101d67efbd19cb058af4fc8f`. It carries source314's symbol
+lifetime/plist repairs and the evidence and separately packaged drafts below.
+The full goal remains active and incomplete. The existing Git credential works;
+no new login or user approval is required for the authorized branch/CI work.
+
+Source316 is now applied on the task branch as `ee0bddb9`, with all 562 inputs
+identical to its selected validation. It combines source315's compact fields
+and removed alias mirror with a shared value/alias word. The
+[complete macOS Rust evidence](docs/handover/2026-10-09-symbol-fields/source316-macos-rust-results-manifest.json)
+verifies **3,165 passes / two existing ignores**. The
+[complete Linux evidence](docs/handover/2026-10-09-symbol-fields/source316-linux-complete-results-manifest.json)
+verifies **3,177 Rust passes / two existing ignores** and **519 frozen files /
+7,928 matching outcomes / 1,038 successful processes**. Raw names, verdicts,
+source/artifact identities and native artifact identity are independently checked.
+The [macOS frozen continuation](docs/handover/2026-10-09-symbol-fields/source316-macos-frozen-continuation-results-manifest.json)
+observes all **519 files / 7,915 matching outcomes**, with **six existing platform
+diagnostic differences**. The original run retains both Tramp timeouts at 180
+seconds. A separate 600-second observation obtains all 59 matching Tramp answers;
+the ordinary 200-file tail retains the original deadline. This is not one complete
+passing frozen run. Source316 terminal validation remains pending. The [Linux timing evidence](docs/handover/2026-10-09-symbol-fields/source316-linux-symbol-performance-results-manifest.json)
+verifies all 192 answers/modes. The three alternating full16 pilots are 2.41%
+faster than current main by raw body aggregate, but still 2.659845× paired GNU.
+Mapcar regresses 2.41%; all samples remain. This is not final performance acceptance.
+The archived draft's earlier unapplied status is historical. Main's production
+runtime remains source314 until the next validated merge.
+
+The new [registry-removal draft](docs/runtime-representation-symbol-registry-draft.md)
+is separately packaged as **source317, unapplied**. It removes the redundant
+name-to-ID registry/mutex and two uninterned-name copies. Strict checks, all
+175 controls per profile and nine ordinary comparisons pass; the initial
+143-pass/32-failure source-layout attempt remains preserved. A source316
+public-API probe confirms that mutable symbol-name properties leak into the
+next editor instance. That negative remains open. Instance-owned interning,
+image copying and allocated fields must resolve it; the cleanup alone does not.
+
+The next [copied-payload API draft](docs/runtime-representation-symbol-payload-api-draft.md)
+is separately packaged as **source318, unapplied**. It includes source317 and
+replaces borrowed mutable payloads with copied words and explicit stores, keeping
+the existing lookup and assignment paths. Strict checks, **208 controls per
+profile** and **nine ordinary GNU comparisons** pass. Both patch replays verify
+562 inputs; old assertions and all test inventories remain. Its full macOS Rust
+gate [passes 3,166 tests / two existing ignores](docs/handover/2026-10-09-symbol-fields/source318-macos-rust-results-manifest.json),
+including native artifact identity. Linux/frozen/terminal/timing remain pending.
+Instance-owned interning and allocated
+fields are still unimplemented; the public-instance name-property negative stays
+open. This API preparation does not establish ownership or performance completion.
+
+## Symbol-field checkpoint evidence — 9 October 2026
 
 Read the [symbol-field continuation](docs/runtime-representation-symbol-fields-draft.md).
 Source314 removes the separate plist store/indexes, preserves live `put` sharing,

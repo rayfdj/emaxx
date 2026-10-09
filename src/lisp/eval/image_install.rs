@@ -251,18 +251,6 @@ impl Interpreter {
                 flags,
             },
         );
-        if let Some(target) = &symbol.alias {
-            let target = target.as_str().to_owned();
-            if let Some(index) = self
-                .variable_aliases
-                .iter()
-                .rposition(|(existing, _)| *existing == name)
-            {
-                self.variable_aliases[index].1 = target;
-            } else {
-                self.variable_aliases.push((name.clone(), target));
-            }
-        }
         if let Some(value) = &symbol.value {
             self.note_installed_value(&name, value);
         }

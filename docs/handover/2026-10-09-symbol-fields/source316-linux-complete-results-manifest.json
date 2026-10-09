@@ -1,0 +1,122 @@
+{
+  "checkpoint": "source316",
+  "source_commit": "4dcf9f6a9b651545a9fba49934131e5488f0a05d",
+  "archive": {
+    "path": "source316-linux-complete-results.tar.gz",
+    "bytes": 1753640,
+    "sha256": "c2304745f295775c04ccc3bacf71207cbefc6f0e5f71a18ca3d005b555cdadaf"
+  },
+  "members": 5251,
+  "rust": {
+    "status": "passed",
+    "source_commit": "4dcf9f6a9b651545a9fba49934131e5488f0a05d",
+    "validation_checkout": {
+      "dirty": false,
+      "head": "4dcf9f6a9b651545a9fba49934131e5488f0a05d"
+    },
+    "unchanged_source_inputs": 562,
+    "raw_library_names_verified": 3076,
+    "library_passed": 3074,
+    "library_ignored": 2,
+    "cargo_passed": {
+      "bins": 61,
+      "integration": 42
+    },
+    "total_passed": 3177,
+    "native_artifact_identity": "passed",
+    "retained_files_verified": 4,
+    "test_binary_sha256": "66f97e3d8fce4cad0db7024bf8b7b87801e10de0a7f5f2ed42ded69d1160a123",
+    "summary_sha256": "c6461265c455a9255da3d8c0fb7522bbc56aa0ebc3097780c7948e0205922d91",
+    "qualification": "Full Linux gate records a clean source316 checkout. All 562 frozen runtime inputs match the published commit; every raw library name/verdict, Cargo summary and retained artifact identity is checked. Post-run fixture images do not identify per-test use. Frozen, macOS and performance evidence is separate.",
+    "goal_complete": false,
+    "oracle_inputs_verified": 4,
+    "existing_library_names_preserved": 3072,
+    "added_library_tests": [
+      "lisp::eval::symbol_cells::tests::alias_enumeration_follows_one_target_through_retargeting_and_compaction",
+      "lisp::eval::symbol_cells::tests::alias_payload_replaces_the_value_and_traces_only_its_current_target",
+      "lisp::eval::symbol_cells::tests::compact_fields_preserve_nil_values_void_defaults_and_image_replacement",
+      "lisp::primitives::tests::symbol_alias_redirects_preserve_handover_fields_and_reclaim_replaced_targets"
+    ],
+    "run_id": 37880299667
+  },
+  "frozen": {
+    "status": "matched",
+    "run_id": 37880301401,
+    "published_commit": "4dcf9f6a9b651545a9fba49934131e5488f0a05d",
+    "verified_files": 519,
+    "verified_outcomes": 7928,
+    "successful_processes": 1038,
+    "runner_summaries": {
+      "emaxx": {
+        "total": 7928,
+        "passed": 7670,
+        "failed": 47,
+        "skipped": 211,
+        "unexpected": 0
+      },
+      "oracle": {
+        "total": 7928,
+        "passed": 7670,
+        "failed": 47,
+        "skipped": 211,
+        "unexpected": 0
+      }
+    },
+    "pinned_oracle_sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf",
+    "frozen_manifest": {
+      "path": "compat/oracle_tests_all_linux.txt",
+      "sha256": "ca3cbd63e3dfe6893ef688b6ef7413e1ef2134eabc5c284bfd50a1edf4554be7",
+      "recorded_files": 519,
+      "executed_files": 519,
+      "historical_load_errors": 0,
+      "required_outcomes": 7928,
+      "compared_outcomes": 7928
+    },
+    "summary_sha256": "32f4eb8d66e0e50f5c6104d8c4d69db3a3f3fe0eda015a8dcaae8e4d9d884f1f",
+    "qualification": "Complete frozen file/test inventory and raw outcomes, comparison issues and successful processes cross-checked. Existing expected failures and skips remain distinct from passes. Binaries and images are identified by runner provenance, not downloaded executable bytes. Darwin adopted its rebuilt pin separately. This Linux audit establishes no macOS or performance result."
+  },
+  "excluded_binaries": [
+    {
+      "path": "source316-linux-rust/raw/oracle-inputs/emacs",
+      "bytes": 30924408,
+      "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf"
+    },
+    {
+      "path": "source316-linux-rust/raw/oracle-inputs/emacs.pdmp",
+      "bytes": 17723936,
+      "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae"
+    },
+    {
+      "path": "source316-linux-rust/raw/rust/retained-inputs/fixture-images/loadup-0af4b3eb-988ea42f.pdmp",
+      "bytes": 21846360,
+      "sha256": "035fdb3624c4844a731293d9d4e4583dce1691d5de9b7ac00079e3bb8be9380f"
+    },
+    {
+      "path": "source316-linux-rust/raw/rust/retained-inputs/fixture-images/loadup-48d48de5-988ea42f.pdmp",
+      "bytes": 21846368,
+      "sha256": "01cf691cbfcbb9bf71aff3f887d35e1ec19a48e4faa9dccb278f7d1676510de7"
+    },
+    {
+      "path": "source316-linux-rust/raw/rust/retained-inputs/fixture-images/loadup-66f97e3d-988ea42f.pdmp",
+      "bytes": 21843224,
+      "sha256": "5aab171c1ff79b67593f06d1a9f772c99e418c4ac31ea5f46a9fd8451330e98f"
+    },
+    {
+      "path": "source316-linux-rust/raw/rust/retained-inputs/libtest",
+      "bytes": 34329984,
+      "sha256": "66f97e3d8fce4cad0db7024bf8b7b87801e10de0a7f5f2ed42ded69d1160a123"
+    },
+    {
+      "path": "source316-linux-frozen/raw/oracle-inputs/emacs",
+      "bytes": 30924408,
+      "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf"
+    },
+    {
+      "path": "source316-linux-frozen/raw/oracle-inputs/emacs.pdmp",
+      "bytes": 17723936,
+      "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae"
+    }
+  ],
+  "qualification": "All raw inventories, verdicts, reports, successful process records and execution hashes retained. Large executables/images are retained in the downloaded local artifacts and identified by hash here. Expected failures and skips remain distinct from passes. macOS Rust passed separately; the full macOS frozen comparison is running. Source317 is a separate unapplied draft and retains an unresolved source316 public-instance name-property isolation negative.",
+  "goal_complete": false
+}

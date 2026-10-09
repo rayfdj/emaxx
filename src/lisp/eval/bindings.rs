@@ -868,7 +868,7 @@ impl Interpreter {
     pub(crate) fn known_symbols_shared(&self) -> Rc<Vec<crate::lisp::types::SymbolName>> {
         let key = super::KnownSymbolsKey {
             globals: self.globals.bound_len(),
-            variable_aliases: self.variable_aliases.len(),
+            variable_aliases: self.globals.aliases_len(),
             functions: self.globals.function_definitions_len(),
             symbol_properties: self.globals.plists_len(),
             interned_symbols: self.interned_symbols.len(),
@@ -911,8 +911,8 @@ impl Interpreter {
                 for (symbol, _) in self.globals.iter().skip(old.globals) {
                     admit(*symbol);
                 }
-                for (name, _) in &self.variable_aliases[old.variable_aliases..] {
-                    admit(crate::lisp::types::SymbolName::intern_str(name));
+                for (symbol, _) in self.globals.aliases().skip(old.variable_aliases) {
+                    admit(*symbol);
                 }
                 for (symbol, _) in self.globals.function_definitions().skip(old.functions) {
                     admit(*symbol);
@@ -958,9 +958,9 @@ impl Interpreter {
             .map(Source::Name)
             .chain(self.globals.iter().map(|(name, _)| Source::Symbol(name)))
             .chain(
-                self.variable_aliases
-                    .iter()
-                    .map(|(name, _)| Source::Name(name.as_str())),
+                self.globals
+                    .aliases()
+                    .map(|(symbol, _)| Source::Symbol(symbol)),
             )
             .chain(
                 self.globals

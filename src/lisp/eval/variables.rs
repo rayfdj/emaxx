@@ -1187,16 +1187,6 @@ impl Interpreter {
             &SymbolName::intern_str(alias),
             SymbolName::intern_str(target),
         );
-        if let Some(index) = self
-            .variable_aliases
-            .iter()
-            .rposition(|(existing, _)| existing == alias)
-        {
-            self.variable_aliases[index].1 = target.to_owned();
-        } else {
-            self.variable_aliases
-                .push((alias.to_string(), target.to_owned()));
-        }
         Ok(())
     }
 
@@ -1282,14 +1272,8 @@ impl Interpreter {
 
     #[cfg(test)]
     pub fn remove_variable_alias(&mut self, name: &str) -> bool {
-        if let Some(index) = self
-            .variable_aliases
-            .iter()
-            .rposition(|(alias, _)| alias == name)
-        {
-            self.variable_aliases.remove(index);
+        if self.globals.clear_alias_by_name(name) {
             self.note_obarray_removal();
-            self.globals.clear_alias_by_name(name);
             true
         } else {
             false

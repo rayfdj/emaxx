@@ -1,0 +1,57 @@
+{
+  "checkpoint": "source318 unapplied draft, full macOS Rust gate",
+  "archive": {
+    "path": "source318-macos-rust-results.tar.gz",
+    "bytes": 231999,
+    "sha256": "52006751737377f95e43ea698e1c2129a313d29e48261763a9650c764a374d47",
+    "members": 43
+  },
+  "audit": {
+    "status": "passed",
+    "draft_base": "c7185a614d256128d00929ee6fc6251149e4766f",
+    "draft_patch_sha256": "57e0e3c1a94ebfbcb68e4694d7be581531bcdc476b31b06bf57f1044fb21874f",
+    "validation_checkout": {
+      "dirty": true,
+      "head": "c7185a614d256128d00929ee6fc6251149e4766f"
+    },
+    "unchanged_source_inputs": 562,
+    "raw_library_names_verified": 3069,
+    "library_passed": 3067,
+    "library_ignored": 2,
+    "cargo_passed": {
+      "bins": 60,
+      "integration": 39
+    },
+    "total_passed": 3166,
+    "native_artifact_identity": "passed",
+    "retained_files_verified": 4,
+    "test_binary_sha256": "b8fea9d238ade1ad320025d31223d13eec65541c716e50cb958a626472b3af89",
+    "summary_sha256": "169bffa9ca5bc85df96056674a4e6dcace0bacc03c900010a7bf627cef6a2224",
+    "qualification": "Full source318 macOS gate: all 562 runtime input bytes/modes match strict/selected validation, terminal wrapper captures, current checkout and both verified portable patches. The run is the uncommitted API change on the locally committed source317 base c7185a61. Every raw library name/verdict and Cargo result is checked. Retained post-run images do not establish per-test use. Source318 Linux/frozen/terminal/timing evidence and the actual allocated-symbol ownership work remain open; source319 is a separate worktree.",
+    "goal_complete": false
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-payload-api-2026-10-09/payload-draft1-full/full/retained-inputs/fixture-images/loadup-9dcfbe1a-d44829be.pdmp",
+      "bytes": 21780328,
+      "sha256": "db0bff84a6aaeea8f38f4109b9eff9aca42e15839b9d97082891083e21fe9eb1"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-payload-api-2026-10-09/payload-draft1-full/full/retained-inputs/fixture-images/loadup-b8fea9d2-d44829be.pdmp",
+      "bytes": 21776816,
+      "sha256": "1311db2b76ea2f0369d3873eb43ace227696cbdc18706e64638fa533843e451d"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-payload-api-2026-10-09/payload-draft1-full/full/retained-inputs/fixture-images/loadup-be7f6580-d44829be.pdmp",
+      "bytes": 21780320,
+      "sha256": "5deb2b36cf7ef6c0110edbfd9bde88043c67334dd41c09f53ba42a7e48856b10"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-payload-api-2026-10-09/payload-draft1-full/full/retained-inputs/libtest",
+      "bytes": 29403280,
+      "sha256": "b8fea9d238ade1ad320025d31223d13eec65541c716e50cb958a626472b3af89"
+    }
+  ],
+  "goal_complete": false,
+  "qualification": "All full-gate raw inventories, per-test verdicts, Cargo logs, wrapper receipts and source captures are retained. Large libtest/image inputs remain locally retained and identified here. Source316 is the PR81 runtime. Linux Rust/frozen and diagnostic timing have separate evidence; macOS frozen is running. This does not repair the separately recorded instance-name ownership gap or complete the full goal."
+}

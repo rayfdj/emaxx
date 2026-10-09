@@ -4963,7 +4963,6 @@ pub struct InterpreterState {
     pub(crate) pending_thread_events: Vec<Value>,
     pub(crate) pending_funcalls: Vec<Value>,
     /// Variable aliases keyed by alias name.
-    variable_aliases: Vec<(String, String)>,
     /// Variables with dynamic binding semantics, in declaration order; the
     /// membership test is the SPECIAL flag in `globals'.
     special_variables: Vec<String>,
@@ -5655,7 +5654,6 @@ impl Interpreter {
             max_lisp_eval_depth: 1600,
             debug_on_next_call: false,
             symbols_with_positions_enabled: Box::new(Cell::new(false)),
-            variable_aliases: Vec::new(),
             lisp_eval_depth: 0,
             garbage_collection_inhibited: 0,
             kbd_macro_definition: Vec::new(),
