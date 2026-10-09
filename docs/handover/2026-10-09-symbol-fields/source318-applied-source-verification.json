@@ -1,0 +1,9 @@
+{
+  "status": "applied; matches selected and full macOS source",
+  "base": "30fa6e5b669c5cbd26e842e7675bfc18d306c2b4",
+  "source_inputs_verified": 562,
+  "patch_sha256": "81a97302af85a5cb7bbc5d63cef39632ad7ed2db73e0c596d9abc7d2e62ed988",
+  "strict_selected_audit_sha256": "7f2b1ea3a646dba852271c02a4d3a00499d8eb2f337458353dc4e46f72238524",
+  "full_macos_audit_sha256": "c2e1ecb1e59342c5c464bd2b0577a8fda6bfa9dccaa172c78be0e4f35fc5f26e",
+  "goal_complete": false
+}

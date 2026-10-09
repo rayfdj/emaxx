@@ -723,7 +723,7 @@ impl Interpreter {
         if self.globals.plain_store(name)
             && let Some(value) = self.globals.value(name)
         {
-            return Ok(*value);
+            return Ok(value);
         }
         let resolved: std::borrow::Cow<'_, str> = if self.globals.alias(name).is_none() {
             name.as_str().into()
@@ -754,7 +754,7 @@ impl Interpreter {
         symbol: &SymbolName,
         _env: &Env,
     ) -> Option<Value> {
-        self.globals.function(symbol).copied()
+        self.globals.function(symbol)
     }
 
     /// `lookup_function' for the symbol in hand (the alias chain followed
@@ -1098,10 +1098,7 @@ impl Interpreter {
         // data.c:set_internal, SYMBOL_PLAINVAL and untrapped: the store
         // alone (the general path below tested the name against every
         // dedicated store and the watcher list on each `setq').
-        if self.globals.plain_store(resolved)
-            && let Some(existing) = self.globals.value_mut(resolved)
-        {
-            *existing = value;
+        if self.globals.plain_store(resolved) && self.globals.replace_bound_value(resolved, value) {
             return Ok(());
         }
         self.notify_assignment_symbol(resolved, value, env)?;
@@ -1293,7 +1290,7 @@ impl Interpreter {
         {
             return false;
         }
-        let Some(definition) = self.globals.function_definition_by_name(name).copied() else {
+        let Some(definition) = self.globals.function_definition_by_name(name) else {
             return false;
         };
         if !self
@@ -1314,7 +1311,7 @@ impl Interpreter {
             return;
         }
         for (name, definition) in std::mem::take(&mut self.deferred_defsubst_unbindings) {
-            if self.globals.function_definition_by_name(&name) == Some(&definition) {
+            if self.globals.function_definition_by_name(&name) == Some(definition) {
                 self.set_function_binding(&name, None);
             }
         }

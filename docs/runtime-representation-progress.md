@@ -1,5 +1,22 @@
 # Current goal status — 9 October 2026
 
+## Source318 application after the main merge — 9 October 2026
+
+PR [#81](https://github.com/rayfdj/emaxx/pull/81) is merged into main as
+`30fa6e5b669c5cbd26e842e7675bfc18d306c2b4`. Main contains source316 and its
+complete saved evidence, including both failed macOS Tramp processes and the
+separate matching longer observation. The full goal remains incomplete.
+
+The [source318 continuation](runtime-representation-symbol-payload-api-draft.md)
+is now applied on the task branch. It includes source317's registry removal and
+copied payload access; all 562 input bytes/modes match the archived patches,
+strict/selected validation and the complete macOS Rust gate (3,166 passes / two
+existing ignores). The earlier unapplied sections record historical states.
+Linux Rust/frozen and diagnostic timing will run on the published source318
+revision. Its own macOS frozen and terminal validation remain open. This change
+does not repair the known cross-instance symbol-name property leak. The separate
+source319 ownership experiment is still local and unvalidated as a whole.
+
 ## Source316 validation and ownership continuation — 9 October 2026
 
 Source316 is applied on PR81 as `ee0bddb9`. Main contains source314 through

@@ -1,7 +1,9 @@
 # Copied symbol payload access — 9 October 2026
 
-Source318 is a **separately packaged, unapplied continuation**. PR81's runtime
-remains source316. Its [portable selected evidence](handover/2026-10-09-symbol-fields/source318-symbol-payload-api-draft-manifest.json)
+Source318 is **applied on the task branch after PR81 merged**. Main remains
+source316 at `30fa6e5b`; the archived unapplied state below is historical.
+[Applied-source verification](handover/2026-10-09-symbol-fields/source318-applied-source-verification.json)
+checks every runtime byte and mode against its completed validation. Its [portable selected evidence](handover/2026-10-09-symbol-fields/source318-symbol-payload-api-draft-manifest.json)
 contains an incremental patch on local source317 `c7185a61` and a cumulative
 patch on published `4dcf9f6a`. Both reproduce all **562 inputs and modes**.
 The full goal remains active and incomplete.
@@ -45,7 +47,8 @@ identity. All 3,069 library names and raw verdicts, Cargo results, 562 input byt
 and modes, and retained artifact hashes are independently checked. It ran the
 uncommitted API change on source317 `c7185a61`; both portable patch replays match.
 Post-run retained images identify those artifacts, not per-test image use.
-Linux, frozen, terminal and timing validation remain pending. The original
+Linux Rust/frozen and diagnostic timing will run on the published source318
+revision. Its own macOS frozen and terminal validation remain pending. The original
 source317 setup failures and source316 ownership negative remain preserved.
 
 Continue with instance-owned canonical symbols and graph-preserving image

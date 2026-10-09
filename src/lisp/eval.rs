@@ -4501,12 +4501,8 @@ impl Interpreter {
                 restriction.beg_marker_id = beginning;
                 restriction.end_marker_id = end;
             }
-            for value in clone.globals.values_mut() {
-                *value = c.copy(value);
-            }
-            for function in clone.globals.functions_mut() {
-                *function = c.copy(function);
-            }
+            clone.globals.map_values(|value| c.copy(&value));
+            clone.globals.map_functions(|function| c.copy(&function));
             // SAFETY: graph copying invokes no Lisp and changes only the
             // new lists; the template's list links remain untouched.
             for object in unsafe { self.finalizers.iter() } {
@@ -4556,9 +4552,7 @@ impl Interpreter {
                 *value = c.copy(value);
             }
             clone.local_time_zone_rule = c.copy(&clone.local_time_zone_rule.clone());
-            for value in clone.globals.plists_mut() {
-                *value = c.copy(value);
-            }
+            clone.globals.map_plists(|value| c.copy(&value));
             for (_, watchers) in &mut clone.variable_watchers {
                 for watcher in watchers {
                     *watcher = c.copy(watcher);

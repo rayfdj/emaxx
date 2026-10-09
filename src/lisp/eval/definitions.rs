@@ -52,8 +52,7 @@ impl Interpreter {
                 if self.set_lexical_variable_checked_symbol(&symbol, val, env)? {
                     continue;
                 }
-                if let Some(existing) = self.globals.value_mut(&symbol) {
-                    *existing = val;
+                if self.globals.replace_bound_value(&symbol, val) {
                     continue;
                 }
                 self.setq_variable_symbol(&symbol, val, env)?;

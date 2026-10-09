@@ -82,7 +82,7 @@ struct SymbolCell {
 /// The two Copy members of Lisp_Symbol's value/redirect union. Access is
 /// confined to SymbolCell: a present alias_position means `alias'; every
 /// other state initializes `value'. A value position never coexists with
-/// an alias position. No borrowed reference survives a mutable cell access.
+/// an alias position. Reads copy a Lisp word; no reference to a mutable payload escapes the cell.
 #[derive(Clone, Copy)]
 union SymbolPayload {
     value: Value,
@@ -109,16 +109,18 @@ impl Default for SymbolCell {
 }
 
 impl SymbolCell {
-    fn value(&self) -> Option<&Value> {
+    fn value(&self) -> Option<Value> {
         // SAFETY: a value position is installed only for the value member;
         // set_alias retires it before replacing the payload with a target.
-        self.position.map(|_| unsafe { &self.payload.value })
+        self.position.map(|_| unsafe { self.payload.value })
     }
 
-    fn value_mut(&mut self) -> Option<&mut Value> {
-        // SAFETY: as in value; the exclusive cell borrow prevents a redirect
-        // transition while this reference is in use.
-        self.position.map(|_| unsafe { &mut self.payload.value })
+    fn replace_bound_value(&mut self, value: Value) -> bool {
+        if self.position.is_none() {
+            return false;
+        }
+        self.payload = SymbolPayload { value };
+        true
     }
 
     fn take_value(&mut self) -> Option<Value> {
@@ -128,28 +130,22 @@ impl SymbolCell {
         })
     }
 
-    fn alias(&self) -> Option<&SymbolName> {
+    fn alias(&self) -> Option<SymbolName> {
         // SAFETY: only set_alias installs an alias position, together with
         // the target. clear_alias initializes the value member again.
-        self.alias_position.map(|_| unsafe { &self.payload.alias })
+        self.alias_position.map(|_| unsafe { self.payload.alias })
     }
 
-    fn function(&self) -> Option<&Value> {
-        (self.function.word() != Value::Nil.word()).then_some(&self.function)
-    }
-
-    #[cfg(test)]
-    fn function_mut(&mut self) -> Option<&mut Value> {
-        (self.function.word() != Value::Nil.word()).then_some(&mut self.function)
+    fn function(&self) -> Option<Value> {
+        (self.function.word() != Value::Nil.word()).then_some(self.function)
     }
 
     fn roots(&self) -> impl Iterator<Item = Value> + '_ {
         self.value()
-            .copied()
             .into_iter()
-            .chain(self.function().copied())
+            .chain(self.function())
             .chain([self.plist])
-            .chain(self.alias().copied().map(Value::Symbol))
+            .chain(self.alias().map(Value::Symbol))
     }
 }
 
@@ -232,25 +228,23 @@ impl SymbolCells {
 
     // --- value cell -----------------------------------------------------
 
-    pub(crate) fn value(&self, symbol: &SymbolName) -> Option<&Value> {
+    pub(crate) fn value(&self, symbol: &SymbolName) -> Option<Value> {
         self.cell(symbol.id()).and_then(SymbolCell::value)
     }
 
-    pub(crate) fn value_by_name(&self, name: &str) -> Option<&Value> {
+    pub(crate) fn value_by_name(&self, name: &str) -> Option<Value> {
         let id = SymbolName::id_of(name)?;
         self.cell(id).and_then(SymbolCell::value)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn value_by_name_mut(&mut self, name: &str) -> Option<&mut Value> {
-        let id = SymbolName::id_of(name)?;
-        let cell = self.existing_cell_mut(id)?;
-        cell.value_mut()
-    }
-
-    pub(crate) fn value_mut(&mut self, symbol: &SymbolName) -> Option<&mut Value> {
-        let cell = self.existing_cell_mut(symbol.id())?;
-        cell.value_mut()
+    /// Store into an existing plain value slot without exposing a Rust
+    /// reference to its payload. Copied Lisp handles may name the same
+    /// allocated object; callers must read a word and perform an explicit
+    /// store, as data.c reads SYMBOL_VAL and writes SET_SYMBOL_VAL.
+    #[inline]
+    pub(crate) fn replace_bound_value(&mut self, symbol: &SymbolName, value: Value) -> bool {
+        self.existing_cell_mut(symbol.id())
+            .is_some_and(|cell| cell.replace_bound_value(value))
     }
 
     pub(crate) fn is_bound_name(&self, name: &str) -> bool {
@@ -268,7 +262,7 @@ impl SymbolCells {
             cell.alias_position.is_none(),
             "plain store into a symbol alias"
         );
-        let previous = cell.value().copied();
+        let previous = cell.value();
         cell.payload = SymbolPayload { value };
         if previous.is_none() {
             cell.position = next_position;
@@ -330,7 +324,7 @@ impl SymbolCells {
     }
 
     /// Bound (symbol, value) pairs in first-binding order.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&SymbolName, &Value)> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&SymbolName, Value)> {
         self.order
             .iter()
             .enumerate()
@@ -383,21 +377,22 @@ impl SymbolCells {
     }
 
     #[cfg(test)]
-    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut Value> {
-        self.cells
-            .iter_mut()
-            .chain(self.uninterned.values_mut())
-            .filter_map(SymbolCell::value_mut)
+    pub(crate) fn map_values(&mut self, mut copy: impl FnMut(Value) -> Value) {
+        for cell in self.cells.iter_mut().chain(self.uninterned.values_mut()) {
+            if let Some(value) = cell.value() {
+                cell.payload = SymbolPayload { value: copy(value) };
+            }
+        }
     }
 
     // --- the function cell --------------------------------------------
 
     /// The symbol's function cell, by id.
-    pub(crate) fn function(&self, symbol: &SymbolName) -> Option<&Value> {
+    pub(crate) fn function(&self, symbol: &SymbolName) -> Option<Value> {
         self.cell(symbol.id()).and_then(SymbolCell::function)
     }
 
-    pub(crate) fn function_by_name(&self, name: &str) -> Option<&Value> {
+    pub(crate) fn function_by_name(&self, name: &str) -> Option<Value> {
         let id = SymbolName::id_of(name)?;
         self.cell(id)?.function()
     }
@@ -439,7 +434,7 @@ impl SymbolCells {
             .is_some_and(|cell| cell.function_position.is_some())
     }
 
-    pub(crate) fn function_definition_by_name(&self, name: &str) -> Option<&Value> {
+    pub(crate) fn function_definition_by_name(&self, name: &str) -> Option<Value> {
         let cell = self.cell(SymbolName::id_of(name)?)?;
         cell.function_position?;
         cell.function()
@@ -449,7 +444,7 @@ impl SymbolCells {
         self.defined_functions
     }
 
-    pub(crate) fn function_definitions(&self) -> impl Iterator<Item = (&SymbolName, &Value)> {
+    pub(crate) fn function_definitions(&self) -> impl Iterator<Item = (&SymbolName, Value)> {
         self.function_order
             .iter()
             .enumerate()
@@ -491,7 +486,7 @@ impl SymbolCells {
     /// Trace all actual function cells, including direct defsubr/image
     /// stores that do not participate in Lisp-definition enumeration.
     #[cfg(test)]
-    pub(crate) fn function_values(&self) -> impl Iterator<Item = &Value> {
+    pub(crate) fn function_values(&self) -> impl Iterator<Item = Value> {
         self.cells
             .iter()
             .chain(self.uninterned.values())
@@ -500,11 +495,12 @@ impl SymbolCells {
 
     /// Every function cell, for the image copier.
     #[cfg(test)]
-    pub(crate) fn functions_mut(&mut self) -> impl Iterator<Item = &mut Value> {
-        self.cells
-            .iter_mut()
-            .chain(self.uninterned.values_mut())
-            .filter_map(SymbolCell::function_mut)
+    pub(crate) fn map_functions(&mut self, mut copy: impl FnMut(Value) -> Value) {
+        for cell in self.cells.iter_mut().chain(self.uninterned.values_mut()) {
+            if let Some(function) = cell.function() {
+                cell.function = copy(function);
+            }
+        }
     }
 
     // --- property list ---------------------------------------------------
@@ -544,7 +540,7 @@ impl SymbolCells {
         self.plists
     }
 
-    pub(crate) fn plists(&self) -> impl Iterator<Item = (&SymbolName, &Value)> {
+    pub(crate) fn plists(&self) -> impl Iterator<Item = (&SymbolName, Value)> {
         self.plist_order
             .iter()
             .enumerate()
@@ -553,7 +549,7 @@ impl SymbolCells {
                 if cell.plist_position?.get() as usize != position + 1 {
                     return None;
                 }
-                Some((cell.symbol.as_ref()?, &cell.plist))
+                Some((cell.symbol.as_ref()?, cell.plist))
             })
     }
 
@@ -580,21 +576,21 @@ impl SymbolCells {
     }
 
     #[cfg(test)]
-    pub(crate) fn plists_mut(&mut self) -> impl Iterator<Item = &mut Value> {
-        self.cells
-            .iter_mut()
-            .chain(self.uninterned.values_mut())
-            .filter(|cell| cell.plist_position.is_some())
-            .map(|cell| &mut cell.plist)
+    pub(crate) fn map_plists(&mut self, mut copy: impl FnMut(Value) -> Value) {
+        for cell in self.cells.iter_mut().chain(self.uninterned.values_mut()) {
+            if cell.plist_position.is_some() {
+                cell.plist = copy(cell.plist);
+            }
+        }
     }
 
     // --- redirect: alias -------------------------------------------------
 
-    pub(crate) fn alias(&self, symbol: &SymbolName) -> Option<&SymbolName> {
+    pub(crate) fn alias(&self, symbol: &SymbolName) -> Option<SymbolName> {
         self.cell(symbol.id()).and_then(SymbolCell::alias)
     }
 
-    pub(crate) fn alias_by_name(&self, name: &str) -> Option<&SymbolName> {
+    pub(crate) fn alias_by_name(&self, name: &str) -> Option<SymbolName> {
         let id = SymbolName::id_of(name)?;
         self.cell(id).and_then(SymbolCell::alias)
     }
@@ -659,7 +655,7 @@ impl SymbolCells {
         self.aliases
     }
 
-    pub(crate) fn aliases(&self) -> impl Iterator<Item = (&SymbolName, &SymbolName)> {
+    pub(crate) fn aliases(&self) -> impl Iterator<Item = (&SymbolName, SymbolName)> {
         self.alias_order
             .iter()
             .enumerate()
@@ -705,8 +701,8 @@ impl SymbolCells {
     pub(crate) fn snapshot(&self, symbol: &SymbolName) -> SymbolCellSnapshot {
         match self.cell(symbol.id()) {
             Some(cell) => SymbolCellSnapshot {
-                value: cell.value().copied(),
-                alias: cell.alias().copied(),
+                value: cell.value(),
+                alias: cell.alias(),
                 flags: cell.flags,
             },
             None => SymbolCellSnapshot {
@@ -785,8 +781,8 @@ impl SymbolCells {
 }
 
 impl<'a> IntoIterator for &'a SymbolCells {
-    type Item = (&'a SymbolName, &'a Value);
-    type IntoIter = Box<dyn Iterator<Item = (&'a SymbolName, &'a Value)> + 'a>;
+    type Item = (&'a SymbolName, Value);
+    type IntoIter = Box<dyn Iterator<Item = (&'a SymbolName, Value)> + 'a>;
 
     fn into_iter(self) -> Self::IntoIter {
         Box::new(self.iter())
@@ -829,7 +825,7 @@ mod tests {
         assert!(roots.contains(&function) && roots.contains(&plist));
         cells.set_alias(&symbol, second);
         assert_eq!(cells.aliases_len(), 1);
-        assert_eq!(cells.aliases().next(), Some((&symbol, &second)));
+        assert_eq!(cells.aliases().next(), Some((&symbol, second)));
         let roots = cells.permanent_roots().collect::<Vec<_>>();
         assert!(!roots.contains(&old_value) && !roots.contains(&Value::Symbol(first)));
         assert!(roots.contains(&Value::Symbol(second)));
@@ -842,11 +838,11 @@ mod tests {
                 flags: SPECIAL,
             },
         );
-        assert_eq!(cells.value(&symbol), Some(&Value::Integer(31)));
+        assert_eq!(cells.value(&symbol), Some(Value::Integer(31)));
         assert!(cells.alias(&symbol).is_none());
         assert_eq!(cells.bound_len(), 1);
         assert_eq!(cells.aliases_len(), 0);
-        assert_eq!(cells.function(&symbol), Some(&function));
+        assert_eq!(cells.function(&symbol), Some(function));
         assert_eq!(cells.plist(&symbol), plist);
         assert_eq!(
             std::mem::size_of::<SymbolPayload>(),
@@ -862,10 +858,10 @@ mod tests {
         let target = SymbolName::intern_str("compact-field-target");
         assert!(cells.value(&symbol).is_none());
         cells.insert(&symbol, Value::Nil);
-        assert_eq!(cells.value(&symbol), Some(&Value::Nil));
+        assert_eq!(cells.value(&symbol), Some(Value::Nil));
         assert_eq!(cells.bound_len(), 1);
         cells.set_function_definition(&symbol, Some(Value::T));
-        assert_eq!(cells.function(&symbol), Some(&Value::T));
+        assert_eq!(cells.function(&symbol), Some(Value::T));
         cells.set_function_definition(&symbol, Some(Value::Nil));
         assert!(cells.function(&symbol).is_none());
         assert_eq!(cells.function_definitions_len(), 0);
@@ -877,7 +873,7 @@ mod tests {
         assert_eq!(snapshot.value, Some(Value::Unbound));
         let mut restored = SymbolCells::default();
         restored.install_cell(&symbol, snapshot);
-        assert_eq!(restored.value(&symbol), Some(&Value::Unbound));
+        assert_eq!(restored.value(&symbol), Some(Value::Unbound));
         assert_eq!(restored.bound_len(), 1);
         restored.install_cell(
             &symbol,
@@ -889,7 +885,7 @@ mod tests {
         );
         assert!(restored.value(&symbol).is_none());
         assert_eq!(restored.bound_len(), 0);
-        assert_eq!(restored.alias(&symbol), Some(&target));
+        assert_eq!(restored.alias(&symbol), Some(target));
         assert_eq!(restored.aliases_len(), 1);
         restored.install_cell(
             &symbol,
@@ -899,7 +895,7 @@ mod tests {
                 flags: 0,
             },
         );
-        assert_eq!(restored.value(&symbol), Some(&Value::Integer(71)));
+        assert_eq!(restored.value(&symbol), Some(Value::Integer(71)));
         assert_eq!(restored.bound_len(), 1);
         assert_eq!(restored.aliases_len(), 0);
         assert_eq!(restored.aliases().count(), 0);
@@ -934,7 +930,7 @@ mod tests {
         assert_eq!(
             cells
                 .aliases()
-                .map(|(symbol, target)| (*symbol, *target))
+                .map(|(symbol, target)| (*symbol, target))
                 .collect::<Vec<_>>(),
             vec![
                 (symbols[0], next_target),
@@ -958,7 +954,7 @@ mod tests {
         assert_eq!(cells.function_definitions_len(), 0);
         assert_eq!(
             cells.function_by_name(direct.as_str()),
-            Some(&Value::Integer(71))
+            Some(Value::Integer(71))
         );
         for (index, symbol) in symbols.iter().enumerate() {
             cells.set_function_definition(symbol, Some(Value::Integer(index as i64)));
@@ -978,7 +974,7 @@ mod tests {
         assert_eq!(
             cells
                 .function_definitions()
-                .map(|(symbol, value)| (*symbol, *value))
+                .map(|(symbol, value)| (*symbol, value))
                 .collect::<Vec<_>>(),
             vec![
                 (symbols[0], Value::Integer(17)),
@@ -1004,11 +1000,11 @@ mod tests {
         let mut cells = SymbolCells::default();
         let symbol = SymbolName::intern_str("symbol-cells-test-a");
         cells.insert_by_name("symbol-cells-test-a", Value::Integer(1));
-        assert_eq!(cells.value(&symbol), Some(&Value::Integer(1)));
+        assert_eq!(cells.value(&symbol), Some(Value::Integer(1)));
         cells.insert(&symbol, Value::Integer(2));
         assert_eq!(
             cells.value_by_name("symbol-cells-test-a"),
-            Some(&Value::Integer(2))
+            Some(Value::Integer(2))
         );
         assert!(cells.remove_by_name("symbol-cells-test-a").is_some());
         assert!(cells.value(&symbol).is_none());
@@ -1021,10 +1017,7 @@ mod tests {
         let first = SymbolName::make_uninterned(Value::string("cell"), "cell", 41);
         let second = SymbolName::make_uninterned(Value::string("cell"), "cell", 42);
         cells.insert(&first, Value::Integer(1));
-        assert_eq!(
-            cells.value_by_name(first.as_str()),
-            Some(&Value::Integer(1))
-        );
+        assert_eq!(cells.value_by_name(first.as_str()), Some(Value::Integer(1)));
         assert!(cells.value(&second).is_none());
         // `make-symbol' twice with one name makes two variables.
         assert_ne!(first.id(), second.id());
@@ -1089,18 +1082,21 @@ mod tests {
         assert!(cells.value(&symbol).is_none());
         cells.insert(&symbol, Value::Integer(1));
         assert_eq!(
-            cells.value(&symbol).copied().map(Value::word),
+            cells.value(&symbol).map(Value::word),
             Some(Value::Integer(1).word())
         );
         cells.insert(&symbol, Value::Integer(2));
         assert_eq!(
-            cells.value(&symbol).copied().map(Value::word),
+            cells.value(&symbol).map(Value::word),
             Some(Value::Integer(2).word())
         );
-        *cells.value_by_name_mut("symbol-cells-word").expect("bound") = Value::Integer(3);
-        assert_eq!(cells.value(&symbol), Some(&Value::Integer(3)));
+        assert_eq!(
+            cells.insert_by_name("symbol-cells-word", Value::Integer(3)),
+            Some(Value::Integer(2))
+        );
+        assert_eq!(cells.value(&symbol), Some(Value::Integer(3)));
         cells.set_alias(&symbol, target);
-        assert_eq!(cells.alias(&symbol), Some(&target));
+        assert_eq!(cells.alias(&symbol), Some(target));
         assert!(cells.value(&symbol).is_none());
         assert_eq!(cells.bound_len(), 0);
         cells.clear_alias_by_name("symbol-cells-word");
@@ -1113,7 +1109,7 @@ mod tests {
         assert!(cells.has_flag(&symbol, LOCALIZED));
         cells.clear_flag_by_name("symbol-cells-word", LOCALIZED);
         assert!(!cells.has_flag(&symbol, LOCALIZED));
-        assert_eq!(cells.value(&symbol), Some(&Value::Integer(3)));
+        assert_eq!(cells.value(&symbol), Some(Value::Integer(3)));
         cells.remove_by_name("symbol-cells-word");
         assert!(cells.value(&symbol).is_none());
     }
@@ -1129,7 +1125,7 @@ mod tests {
         clone.insert(&symbol, Value::Integer(2));
         clone.clear_flag_by_name("symbol-cells-clone", SPECIAL);
         clone.set_alias(&symbol, SymbolName::intern_str("symbol-cells-clone-target"));
-        assert_eq!(cells.value(&symbol), Some(&Value::Integer(1)));
+        assert_eq!(cells.value(&symbol), Some(Value::Integer(1)));
         assert!(cells.has_flag(&symbol, SPECIAL));
         assert!(cells.alias(&symbol).is_none());
         assert!(!cells.has_aliases());
