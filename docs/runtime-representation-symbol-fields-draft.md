@@ -2,9 +2,9 @@
 
 Source314 continues the full goal; **the architecture and performance goal remain
 incomplete**. The [selected evidence](handover/2026-10-09-symbol-fields/source314-selected-manifest.json)
-identifies every changed input and retains the earlier failures. Complete macOS
-Rust validation and Linux diagnostic timing have now finished. Linux Rust and
-both full frozen comparisons continue separately.
+identifies every changed input and retains the earlier failures. Complete Linux
+and macOS Rust validation, Linux frozen comparison and Linux diagnostic timing
+have now finished. The full macOS frozen comparison continues separately.
 
 The existing per-interpreter symbol cell now owns its property list alongside
 the value, function and alias. The separate name-keyed plist vector and both
@@ -58,6 +58,14 @@ post-run source bytes/modes match published `2712c057`. The detached wrapper
 saved the successful command receipt but omitted its final source-after file;
 the independent capture and that limitation are preserved. No test was rerun
 to replace the result.
+
+The [complete Linux evidence](handover/2026-10-09-symbol-fields/source314-linux-complete-results-manifest.json)
+verifies **3,173 Rust passes / two existing ignores**, all 3,072 raw library
+names, native artifact identity and the retained pinned GNU executable/image.
+The full frozen comparison matches **519 files / 7,928 outcomes** across **1,038
+successful processes**. Each editor has 7,670 passes, 47 expected failures and
+211 skips. No previous library name, frozen selector or expected outcome is lost;
+all six source314 tests extend the prior Linux library inventory.
 
 The [Linux timing audit](handover/2026-10-09-symbol-fields/source314-linux-symbol-performance-results-manifest.json)
 verifies all **192 actual answers and execution modes** across three alternating

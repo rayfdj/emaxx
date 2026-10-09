@@ -26,7 +26,10 @@ checks, 24 focused passes in each profile and 12 matching ordinary GNU/Emaxx
 processes, including real bytecode/native execution. Earlier failed drafts remain
 preserved. The complete macOS Rust gate now verifies **3,161 passes / two existing
 ignores**, including every raw library name and native artifact identity. Linux
-Rust and both frozen comparisons continue separately.
+Rust verifies **3,173 passes / two existing ignores**, and full Linux frozen
+matches **519 files / 7,928 outcomes / 1,038 successful processes**. Each editor
+has 7,670 passes, 47 expected failures and 211 skips. Only the macOS frozen run
+remains active for this checkpoint; source315 validation is separate.
 
 Three alternating Linux full16 pilots verify all **192 actual answers/modes**.
 The body aggregate is **2.52% slower than main**, and the paired GNU aggregate is
