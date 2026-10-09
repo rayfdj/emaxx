@@ -870,7 +870,7 @@ impl Interpreter {
             globals: self.globals.bound_len(),
             variable_aliases: self.variable_aliases.len(),
             functions: self.globals.function_definitions_len(),
-            symbol_properties: self.symbol_properties.len(),
+            symbol_properties: self.globals.plists_len(),
             interned_symbols: self.interned_symbols.len(),
             uninterned_standard: self.uninterned_standard_symbol_names.len(),
             epoch: self.obarray_epoch,
@@ -917,8 +917,8 @@ impl Interpreter {
                 for (symbol, _) in self.globals.function_definitions().skip(old.functions) {
                     admit(*symbol);
                 }
-                for (name, _) in &self.symbol_properties[old.symbol_properties..] {
-                    admit(crate::lisp::types::SymbolName::intern_str(name));
+                for (symbol, _) in self.globals.plists().skip(old.symbol_properties) {
+                    admit(*symbol);
                 }
                 for symbol in &self.interned_symbols[old.interned_symbols..] {
                     admit(*symbol);
@@ -968,9 +968,9 @@ impl Interpreter {
                     .map(|(symbol, _)| Source::Symbol(symbol)),
             )
             .chain(
-                self.symbol_properties
-                    .iter()
-                    .map(|(name, _)| Source::Name(name.as_str())),
+                self.globals
+                    .plists()
+                    .map(|(symbol, _)| Source::Symbol(symbol)),
             )
             .chain(self.interned_symbols.iter().map(Source::Symbol));
         let mut items = Vec::new();
@@ -1009,7 +1009,7 @@ impl Interpreter {
             || self.globals.is_bound_name(name)
             || self.globals.alias_by_name(name).is_some()
             || self.globals.function_definition_by_name(name).is_some()
-            || self.symbol_property_index(name).is_some()
+            || !self.symbol_plist(name).is_nil()
     }
 
     pub(crate) fn standard_obarray_symbol_is_uninterned(&self, name: &str) -> bool {

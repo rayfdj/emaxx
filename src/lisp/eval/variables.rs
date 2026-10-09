@@ -631,40 +631,6 @@ impl Interpreter {
         self.special_variables.clone()
     }
 
-    pub(super) fn symbol_property_index(&self, name: &str) -> Option<usize> {
-        self.symbol_properties_index.get(name).copied()
-    }
-
-    /// The plist position of SYMBOL by its id, learning it from the name
-    /// index on the first lookup.
-    fn symbol_property_index_of(&self, symbol: &SymbolName) -> Option<usize> {
-        if let Some(cached) = self.symbol_properties_by_id.borrow().get(&symbol.id()) {
-            return *cached;
-        }
-        // A symbol without a plist (most) is remembered as such; a new
-        // plist clears the cache.
-        let index = self.symbol_property_index(symbol.as_str());
-        self.symbol_properties_by_id
-            .borrow_mut()
-            .insert(symbol.id(), index);
-        index
-    }
-
-    /// A symbol's first plist entry: the position cache learns it (a
-    /// cached "no plist" for the symbol would otherwise stand).
-    fn note_symbol_plist_added(&mut self, name: &str, index: usize) {
-        if let Some(id) = SymbolName::id_of(name) {
-            self.symbol_properties_by_id
-                .borrow_mut()
-                .insert(id, Some(index));
-        }
-    }
-
-    fn rebuild_symbol_properties_index(&mut self) {
-        self.symbol_properties_index = super::ordered_name_index(&self.symbol_properties);
-        self.symbol_properties_by_id.borrow_mut().clear();
-    }
-
     /// fns.c:Fget's plist_get on the symbol's own plist: SYMBOL addresses
     /// its plist directly and PROPERTY is compared as a symbol.
     pub fn get_symbol_property_of(
@@ -672,12 +638,11 @@ impl Interpreter {
         symbol: &SymbolName,
         property: &SymbolName,
     ) -> Option<Value> {
-        let index = self.symbol_property_index_of(symbol)?;
         // fns.c:plist_get: the walk reads each cell in place -- no Lisp
         // object is copied per pair (a clone of every car and cdr made the
         // walk three refcount round trips a pair) -- with
         // FOR_EACH_TAIL_SAFE's Brent cycle check on the cell identities.
-        let mut cell = match self.symbol_properties[index].1.kind() {
+        let mut cell = match self.globals.plist(symbol).kind() {
             Kind::Cons(cell) => cell,
             _ => return None,
         };
@@ -719,8 +684,7 @@ impl Interpreter {
     }
 
     pub fn get_symbol_property(&self, name: &str, property: &str) -> Option<Value> {
-        let index = self.symbol_property_index(name)?;
-        let mut tail = self.symbol_properties[index].1;
+        let mut tail = self.globals.plist_by_name(name);
         // fns.c:plist_get walks with FOR_EACH_TAIL_SAFE: Brent's cycle
         // detection (a tortoise moved at powers of two), no allocation.
         let mut tortoise = Brent::new(&tail);
@@ -739,45 +703,33 @@ impl Interpreter {
     }
 
     pub fn put_symbol_property(&mut self, name: &str, property: &str, value: Value) {
-        if let Some(index) = self.symbol_property_index(name) {
-            let plist = self.symbol_properties[index].1;
-            let mut tail = plist;
-            let mut tortoise = Brent::new(&tail);
-            while let Kind::Cons(cell) = tail.kind() {
-                let rest = cell.cdr.get();
-                let Some((value_cell, next_cell)) = (rest).cons_cells() else {
-                    return;
-                };
-                if matches!(cell.car.get().kind(), Kind::Symbol(key) if key == property) {
-                    value_cell.set(value);
-                    return;
-                }
-                let next = next_cell.get();
-                if next.is_nil() {
-                    next_cell.set(Value::list([
-                        Value::Symbol(property.to_string().into()),
-                        value,
-                    ]));
-                    return;
-                }
-                tail = next;
-                if tortoise.cycle(&tail) {
-                    return;
-                }
+        let symbol = SymbolName::intern_str(name);
+        let plist = self.globals.plist(&symbol);
+        let mut tail = plist;
+        let mut tortoise = Brent::new(&tail);
+        while let Kind::Cons(cell) = tail.kind() {
+            let rest = cell.cdr.get();
+            let Some((value_cell, next_cell)) = rest.cons_cells() else {
+                return;
+            };
+            if matches!(cell.car.get().kind(), Kind::Symbol(key) if key == property) {
+                value_cell.set(value);
+                return;
             }
-            if plist.is_nil() {
-                self.symbol_properties[index].1 =
-                    Value::list([Value::Symbol(property.to_string().into()), value]);
+            let next = next_cell.get();
+            if next.is_nil() {
+                next_cell.set(Value::list([Value::symbol(property), value]));
+                return;
             }
-            return;
+            tail = next;
+            if tortoise.cycle(&tail) {
+                return;
+            }
         }
-        let index = self.symbol_properties.len();
-        self.symbol_properties.push((
-            name.to_string(),
-            Value::list([Value::Symbol(property.to_string().into()), value]),
-        ));
-        self.symbol_properties_index.insert(name.to_string(), index);
-        self.note_symbol_plist_added(name, index);
+        if plist.is_nil() {
+            self.globals
+                .set_plist(&symbol, Value::list([Value::symbol(property), value]));
+        }
     }
 
     pub fn intern_symbol_name(&mut self, name: &str) {
@@ -987,25 +939,26 @@ impl Interpreter {
     }
 
     pub fn symbol_plist(&self, name: &str) -> Value {
-        self.symbol_property_index(name)
-            .map(|index| self.symbol_properties[index].1)
-            .unwrap_or(Value::Nil)
+        self.globals.plist_by_name(name)
+    }
+
+    pub(crate) fn symbol_plist_symbol(&self, symbol: &SymbolName) -> Value {
+        self.globals.plist(symbol)
     }
 
     pub fn set_symbol_plist(&mut self, name: &str, plist: Value) -> Result<Value, LispError> {
-        if plist.is_nil() {
-            if let Some(existing) = self.symbol_property_index(name) {
-                self.symbol_properties.remove(existing);
-                self.rebuild_symbol_properties_index();
-                self.note_obarray_removal();
-            }
-        } else if let Some(existing) = self.symbol_property_index(name) {
-            self.symbol_properties[existing].1 = plist;
-        } else {
-            let index = self.symbol_properties.len();
-            self.symbol_properties.push((name.to_string(), plist));
-            self.symbol_properties_index.insert(name.to_string(), index);
-            self.note_symbol_plist_added(name, index);
+        self.set_symbol_plist_symbol(&SymbolName::intern_str(name), plist)
+    }
+
+    pub(crate) fn set_symbol_plist_symbol(
+        &mut self,
+        symbol: &SymbolName,
+        plist: Value,
+    ) -> Result<Value, LispError> {
+        let previous = self.globals.plist(symbol);
+        self.globals.set_plist(symbol, plist);
+        if plist.is_nil() && !previous.is_nil() {
+            self.note_obarray_removal();
         }
         Ok(plist)
     }

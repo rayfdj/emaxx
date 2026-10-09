@@ -976,14 +976,14 @@ define_dispatch!(
             "symbol-plist" => {
                 need_args(name, args, 1)?;
                 // GNU 30.2 data.c:Fsymbol_plist uses CHECK_SYMBOL/XSYMBOL.
-                let symbol = checked_symbol_name(interp, &args[0], env)?;
-                Ok(interp.symbol_plist(&symbol))
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                Ok(interp.symbol_plist_symbol(&symbol))
             }
             "setplist" => {
                 need_args(name, args, 2)?;
                 // GNU 30.2 data.c:Fsetplist uses CHECK_SYMBOL.
-                let symbol = checked_symbol_name(interp, &args[0], env)?;
-                interp.set_symbol_plist(&symbol, args[1])
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                interp.set_symbol_plist_symbol(&symbol, args[1])
             }
             "interactive-form" => {
                 need_args(name, args, 1)?;

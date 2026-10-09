@@ -1,0 +1,57 @@
+{
+  "checkpoint": "source315 separately packaged and unapplied draft",
+  "archive": {
+    "path": "source315-macos-rust-results.tar.gz",
+    "bytes": 221492,
+    "sha256": "0335543994ecdca05a19ed010d58612bab0250b96e51bc733a68535d99dc2d34",
+    "members": 45
+  },
+  "audit": {
+    "status": "passed",
+    "draft_base": "2712c05779e47ec9b8a7c89121d1a79fdcc42596",
+    "draft_patch_sha256": "5dfdc1fd2cf39677dd3f5e4b03aa5b6a4e3d54b5fd3a7e423eba83cf476c30b5",
+    "validation_checkout": {
+      "dirty": true,
+      "head": "2712c05779e47ec9b8a7c89121d1a79fdcc42596"
+    },
+    "unchanged_source_inputs": 560,
+    "raw_library_names_verified": 3066,
+    "library_passed": 3064,
+    "library_ignored": 2,
+    "cargo_passed": {
+      "bins": 60,
+      "integration": 39
+    },
+    "total_passed": 3163,
+    "native_artifact_identity": "passed",
+    "retained_files_verified": 4,
+    "test_binary_sha256": "55012731bc4cf488b962383a80db2b176543a3d28dea44ee0cd306c569f6e803",
+    "summary_sha256": "feac86efc4a0d24865706dc53b22d477b314875841dbdbfc58040abf3d7bd0d4",
+    "qualification": "Full source315 macOS gate on the separately packaged draft: all 560 bytes/modes match its original selected source, terminal wrapper capture, current checkout and verified portable patch. Every raw library verdict and Cargo result checked. Retained post-run fixture images do not establish per-test use. No Linux, frozen, timing or allocated-symbol authority claim.",
+    "goal_complete": false
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-values-2026-10-09/compact-draft1-full/full/retained-inputs/fixture-images/loadup-55012731-d44829be.pdmp",
+      "bytes": 21778920,
+      "sha256": "a1e436071f106a01272a7f8b243cbb30bcc4170f0fe653a25c74e1ae408ca0f9"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-values-2026-10-09/compact-draft1-full/full/retained-inputs/fixture-images/loadup-eb6cec8b-d44829be.pdmp",
+      "bytes": 21782048,
+      "sha256": "19783ed66f0cd74079db7d885565f0b4ae14be1422eba75bc69acd8721f9fcba"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-values-2026-10-09/compact-draft1-full/full/retained-inputs/fixture-images/loadup-f78870e3-d44829be.pdmp",
+      "bytes": 21782040,
+      "sha256": "8353ddde33ead7a0d588eccf9fac892e39a7f79abf6f3793034ae1a6c02eb8f7"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-values-2026-10-09/compact-draft1-full/full/retained-inputs/libtest",
+      "bytes": 29848240,
+      "sha256": "55012731bc4cf488b962383a80db2b176543a3d28dea44ee0cd306c569f6e803"
+    }
+  ],
+  "goal_complete": false,
+  "qualification": "All full-gate raw inventories, per-test verdicts, Cargo logs, wrapper receipts and source captures are retained. Large libtest/image inputs remain locally retained and identified here. Source315 still has no Linux/frozen/timing certification; source314 remains the PR runtime."
+}

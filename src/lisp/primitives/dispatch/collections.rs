@@ -2,6 +2,68 @@ use super::*;
 use crate::lisp::types::CharTableRef;
 use crate::lisp::types::Kind;
 
+/// fns.c:plist_put, shared by Fput and Fplist_put's default EQ path.
+/// Existing pairs are mutated in place; only a new property allocates conses.
+pub(super) fn plist_put_eq(
+    interp: &mut Interpreter,
+    plist: Value,
+    property: Value,
+    value: Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let mut tail = plist;
+    let mut previous_value_cell = Value::Nil;
+    let mut tortoise = tail;
+    let mut maximum = 2_isize;
+    let mut remaining = 0_isize;
+    let mut quit_count = 2_u16;
+    while let Kind::Cons(cell) = tail.kind() {
+        let rest = cell.cdr.get();
+        let Kind::Cons(value_cell) = rest.kind() else {
+            break;
+        };
+        if values_eq_in_env(interp, &cell.car.get(), &property, env) {
+            rest.set_car(value)?;
+            return Ok(plist);
+        }
+        previous_value_cell = rest;
+        tail = value_cell.cdr.get();
+        // lisp.h:FOR_EACH_TAIL advances two cells per plist pair. Match its
+        // quit checks and the exact tail supplied to circular_list.
+        quit_count = quit_count.wrapping_sub(1);
+        let compare = if quit_count != 0 {
+            true
+        } else {
+            interp.maybe_quit(env)?;
+            remaining = remaining.wrapping_sub(1);
+            remaining > 0
+        };
+        if compare {
+            if tail.word() == tortoise.word() {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("circular-list"),
+                    tail,
+                ])));
+            }
+        } else {
+            maximum = maximum.wrapping_shl(1);
+            quit_count = maximum as u16;
+            remaining = maximum >> u16::BITS;
+            tortoise = tail;
+        }
+    }
+    if !tail.is_nil() {
+        return Err(plist_type_error(&plist));
+    }
+    let new_pair = Value::cons(property, Value::cons(value, Value::Nil));
+    if previous_value_cell.is_nil() {
+        Ok(new_pair)
+    } else {
+        previous_value_cell.set_cdr(new_pair)?;
+        Ok(plist)
+    }
+}
+
 pub(super) fn fixnum_index_arg(value: &Value) -> Result<i64, LispError> {
     match value.kind() {
         Kind::Integer(index) => Ok(index),
@@ -452,6 +514,9 @@ define_dispatch!(
                 let key = &args[1];
                 let val = &args[2];
                 let testfn = args.get(3);
+                if testfn.is_none_or(|predicate| predicate.is_nil()) {
+                    return plist_put_eq(interp, plist, *key, *val, env);
+                }
                 let mut current = plist;
                 let mut seen = crate::lisp::types::CycleGuard::new();
                 loop {

@@ -1,0 +1,116 @@
+{
+  "checkpoint": "source314",
+  "runtime_source_commit": "2712c05779e47ec9b8a7c89121d1a79fdcc42596",
+  "archive": {
+    "path": "source314-macos-tail-results.tar.gz",
+    "bytes": 909471,
+    "sha256": "a75454592a654ef30d50bd2ea3a15d67b964350173573ffa18bb9630d8959a09",
+    "members": 2029
+  },
+  "tail": {
+    "status": "failed: one GNU Eglot expectation failure and six existing feature-message differences",
+    "files": 200,
+    "matching_outcomes": 3376,
+    "mismatching_outcomes": 7,
+    "total_outcomes": 3383,
+    "successful_processes": 400,
+    "runner_summaries": {
+      "oracle": {
+        "total": 3383,
+        "passed": 3200,
+        "failed": 15,
+        "skipped": 168,
+        "unexpected": 1
+      },
+      "emaxx": {
+        "total": 3383,
+        "passed": 3201,
+        "failed": 14,
+        "skipped": 168,
+        "unexpected": 0
+      }
+    },
+    "source_inputs_verified": 560,
+    "subject_sha256": "c9d0f20c1108f59589990591d41c83a133a0af8a3139edaf4a8cf65656201007",
+    "deadline_seconds": 180
+  },
+  "replay": {
+    "status": "passed separate ordinary Eglot observation; original GNU failure retained",
+    "files": 1,
+    "matching_outcomes": 52,
+    "mismatching_outcomes": 0,
+    "successful_processes": 2,
+    "runner_summaries": {
+      "oracle": {
+        "passed": 45,
+        "failed": 0,
+        "skipped": 7,
+        "total": 52,
+        "unexpected": 0
+      },
+      "emaxx": {
+        "passed": 45,
+        "failed": 0,
+        "skipped": 7,
+        "total": 52,
+        "unexpected": 0
+      }
+    },
+    "unchanged_artifacts": true,
+    "deadline_seconds": 180
+  },
+  "excluded_prerequisite_tools": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-08/symbol-plists/emaxx/target/compat/run-1791514502716938000-61829/tools/rustdoc",
+      "bytes": 10246801,
+      "sha256": "171c855f5dcff7bdfa6c10e3251fcefa14d46f03493ecb4305c6139cc77d9fd6"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-08/symbol-plists/emaxx/target/compat/run-1791514502716938000-61829/tools/clangd",
+      "bytes": 98,
+      "sha256": "6015fc2c17fa2e77e5c01326a93b58eccaecdd28f5f47181328f38b04e8f1073"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-08/symbol-plists/emaxx/target/compat/run-1791514502716938000-61829/tools/cargo",
+      "bytes": 26689971,
+      "sha256": "d92fdab3cc38e1952e00b04d6cf4c725a08fc8519399a3ba76b93932e4985803"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-08/symbol-plists/emaxx/target/compat/run-1791514502716938000-61829/tools/rust-analyzer",
+      "bytes": 36189131,
+      "sha256": "63df1ed6c73dc06ec090597abd0395cbccc8fa704822f3bfe0d03c338960025d"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-08/symbol-plists/emaxx/target/compat/run-1791514502716938000-61829/tools/rustc",
+      "bytes": 640792,
+      "sha256": "2e5d8100af1c46dc9b9f2f8b644f085b7c099dce9f4237ecf304adc3e110c294"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-08/symbol-plists/emaxx/target/compat/run-1791516489985099000-76530/tools/rustdoc",
+      "bytes": 10246801,
+      "sha256": "171c855f5dcff7bdfa6c10e3251fcefa14d46f03493ecb4305c6139cc77d9fd6"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-08/symbol-plists/emaxx/target/compat/run-1791516489985099000-76530/tools/clangd",
+      "bytes": 98,
+      "sha256": "6015fc2c17fa2e77e5c01326a93b58eccaecdd28f5f47181328f38b04e8f1073"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-08/symbol-plists/emaxx/target/compat/run-1791516489985099000-76530/tools/cargo",
+      "bytes": 26689971,
+      "sha256": "d92fdab3cc38e1952e00b04d6cf4c725a08fc8519399a3ba76b93932e4985803"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-08/symbol-plists/emaxx/target/compat/run-1791516489985099000-76530/tools/rust-analyzer",
+      "bytes": 36189131,
+      "sha256": "63df1ed6c73dc06ec090597abd0395cbccc8fa704822f3bfe0d03c338960025d"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-08/symbol-plists/emaxx/target/compat/run-1791516489985099000-76530/tools/rustc",
+      "bytes": 640792,
+      "sha256": "2e5d8100af1c46dc9b9f2f8b644f085b7c099dce9f4237ecf304adc3e110c294"
+    }
+  ],
+  "qualification": "The original frozen prefix, separately bounded Tramp observation, ordinary 200-file tail and single whole-file Eglot replay cover all 519 frozen files. Across these separate attempts 7,915 distinct outcome labels have matching observations; six existing macOS feature-message differences remain strict mismatches. The first run timed out, and the tail retains its GNU Eglot failure. The identical-artifact Eglot replay matches all 52 outcomes but does not explain or repair the earlier failure. This is not one complete passing ordinary frozen run, performance acceptance, or full-goal completion.",
+  "goal_complete": false
+}

@@ -1,0 +1,82 @@
+{
+  "checkpoint": "source315-unapplied-draft",
+  "base": "2712c05779e47ec9b8a7c89121d1a79fdcc42596",
+  "archive": {
+    "path": "source315-compact-symbol-draft.tar.gz",
+    "bytes": 341993,
+    "sha256": "748c5ca33b774cbb7cdb72a6090344bdf4fff09cbfb2e401a7955f18946541d9"
+  },
+  "members": 101,
+  "audit": {
+    "base": "2712c05779e47ec9b8a7c89121d1a79fdcc42596",
+    "profiles": {
+      "gate": {
+        "passed": 126,
+        "inventory": 3066,
+        "binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-values/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-values-2026-10-09/compact-draft1/libtest",
+          "sha256": "55012731bc4cf488b962383a80db2b176543a3d28dea44ee0cd306c569f6e803"
+        },
+        "added": [
+          "lisp::eval::symbol_cells::tests::alias_enumeration_follows_one_target_through_retargeting_and_compaction",
+          "lisp::eval::symbol_cells::tests::compact_fields_preserve_nil_values_void_defaults_and_image_replacement"
+        ]
+      },
+      "release": {
+        "passed": 126,
+        "inventory": 3065,
+        "binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-values/emaxx/target/release/deps/emaxx-e17fcfe01baaf180",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-values-2026-10-09/compact-draft1-release/libtest",
+          "sha256": "0201ac2843ab19558ac72d9e47aade3015804ca32edfd5f428b1d0e5ca701b93"
+        },
+        "added": [
+          "lisp::eval::symbol_cells::tests::alias_enumeration_follows_one_target_through_retargeting_and_compaction",
+          "lisp::eval::symbol_cells::tests::compact_fields_preserve_nil_values_void_defaults_and_image_replacement"
+        ]
+      }
+    },
+    "source_inputs": 560,
+    "auxiliary_inputs": 102,
+    "ordinary_audited": true,
+    "ordinary_processes": 12,
+    "ordinary_comparisons": 6,
+    "original_cell_tests_unchanged": true,
+    "replay_verified": true,
+    "replay_directory": "/var/folders/js/swz7g_zx0qj34jhbbc1hr_6w0000gn/T/emaxx-compact-symbol-replay-6tlev_wp",
+    "patch_sha256": "5dfdc1fd2cf39677dd3f5e4b03aa5b6a4e3d54b5fd3a7e423eba83cf476c30b5",
+    "goal_complete": false,
+    "qualification": "Selected gate/release controls and ordinary executions. Full gate is separate; no complete platform validation, measured speedup, physical symbol footprint accounting or allocated-symbol authority is established."
+  },
+  "gnu_reference_review": {
+    "gnu_source_commit": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+    "files": {
+      "src/lisp.h": "2b3adec8837ab75b3b075cffa37fad65f9f294617f06d423fe23c8bbb90a2a87",
+      "src/data.c": "3c75a20c99ae0f5c809bc7f5a17401e85ba471d671a3de4ab70500a4ef49a179",
+      "src/eval.c": "0c73c3b1723cc969dc3e98bd9ed551ae64cc7e00ee4f36cd1daa0986e2781e01",
+      "src/pdumper.c": "0cb1147dc9107364e4de1a682c592fff10bfd62d0472b1cce54f02aa629e2c20"
+    },
+    "mechanisms": [
+      "lisp.h:Lisp_Symbol holds word-sized value/function/plist; void markers are Qunbound and Qnil",
+      "lisp.h:SET_SYMBOL_ALIAS stores the target pointer; eval.c:Fdefvaralias installs it without a duplicate name/target list",
+      "data.c:find_symbol_value/set_internal follow redirect then read/write actual fields",
+      "pdumper.c:dump_symbol records actual symbol fields and the redirect alternative"
+    ],
+    "deviations": [
+      "Mutable fields still live in a per-interpreter cell; process-shared allocated symbols are not authoritative yet",
+      "The localized-value adapter still distinguishes an absent binding from an explicitly void default through existing enumeration metadata",
+      "Value and alias still have separate slots, not the GNU redirect union; original transition tests are preserved without weakening",
+      "Ordered ID vectors remain temporary enumeration metadata, with no duplicate name, target or Lisp payload"
+    ],
+    "measurement": "Actual cell size 64 bytes is asserted in both gate and release; it is not the full physical symbol footprint or a speedup claim",
+    "goal_complete": false
+  },
+  "remaining_validation": {
+    "full_macos_rust": "running separately; no partial run certified here",
+    "linux": "not launched for this draft",
+    "full_frozen": "not run for this draft",
+    "performance": "not measured for this draft"
+  },
+  "goal_complete": false
+}

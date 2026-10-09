@@ -1,0 +1,77 @@
+{
+  "checkpoint": "source314",
+  "scope": "Selected gate/release and ordinary validation; complete platform gates and performance are separate",
+  "archive": "source314-selected-results.tar.gz",
+  "archive_sha256": "be8f04fe4673748629cb5774e8ee67a576a3d6d8d343c0322a03d1255fdd5e68",
+  "archive_bytes": 852667,
+  "members": 234,
+  "audit": {
+    "base": "b724bab0d945a68f1049233b6212930525a25ded",
+    "source_inputs": 560,
+    "auxiliary_inputs": 102,
+    "profiles": {
+      "gate": {
+        "passed": 24,
+        "failed": 0,
+        "ignored": 0,
+        "inventory": 3064,
+        "previous_inventory": 3058,
+        "added_tests": [
+          "lisp::eval::tests::eval_02::reachable_uninterned_symbol_fields_survive_another_interpreters_collection",
+          "lisp::eval::tests::eval_02::symbol_plists_preserve_clone_sharing_and_interpreter_isolation",
+          "lisp::primitives::tests::symbol_alias_fields_follow_the_actual_load_history_root",
+          "lisp::primitives::tests::symbol_fields_participate_in_weak_fixed_points_and_finalizer_liveness",
+          "lisp::primitives::tests::symbol_fields_preserve_live_children_and_release_unreachable_owners",
+          "lisp::primitives::tests::symbol_plist_put_preserves_shared_cells_and_gnu_error_data"
+        ],
+        "binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-08/symbol-plists/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-progress-2026-10-08/symbol-draft4/libtest",
+          "sha256": "9b02b5d9fc068f0f7764381fc0824dd5a2e7d62ce7b7ae662aca3d439be4ad28"
+        }
+      },
+      "release": {
+        "passed": 24,
+        "failed": 0,
+        "ignored": 0,
+        "inventory": 3063,
+        "previous_inventory": 3057,
+        "added_tests": [
+          "lisp::eval::tests::eval_02::reachable_uninterned_symbol_fields_survive_another_interpreters_collection",
+          "lisp::eval::tests::eval_02::symbol_plists_preserve_clone_sharing_and_interpreter_isolation",
+          "lisp::primitives::tests::symbol_alias_fields_follow_the_actual_load_history_root",
+          "lisp::primitives::tests::symbol_fields_participate_in_weak_fixed_points_and_finalizer_liveness",
+          "lisp::primitives::tests::symbol_fields_preserve_live_children_and_release_unreachable_owners",
+          "lisp::primitives::tests::symbol_plist_put_preserves_shared_cells_and_gnu_error_data"
+        ],
+        "binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-08/symbol-plists/emaxx/target/release/deps/emaxx-e17fcfe01baaf180",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-progress-2026-10-08/symbol-draft4-release/libtest",
+          "sha256": "6ceea3272fed03248c6c8de329927bf278035e73b87c1c0322e05403083d77e8"
+        }
+      }
+    },
+    "ordinary_processes": 12,
+    "ordinary_comparisons": 6,
+    "patch_sha256": "f5c6b8206276a0375492a82a7842922587f6a576a993f0ed2c3900eb45064be9",
+    "replay_directory": "/var/folders/js/swz7g_zx0qj34jhbbc1hr_6w0000gn/T/emaxx-symbol-replay-vqruldis",
+    "replay_verified": true,
+    "full_macos_gate": "running separately; this audit does not certify its outcome",
+    "linux": "not yet launched",
+    "performance": "not measured",
+    "goal_complete": false,
+    "preserved_failures": {
+      "draft2_focused": {
+        "passed": 17,
+        "failed": 1
+      },
+      "draft3_full_first_group": {
+        "passed": 384,
+        "failed": 2,
+        "unstarted_library_tests": 2678
+      },
+      "initial_ordinary_baselines": "retention mismatches and malformed-plist process failure remain raw negative controls"
+    }
+  },
+  "goal_complete": false
+}

@@ -110,10 +110,6 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "the symbol cells: written per symbol from the obarray (dump_symbol)",
     ),
     (
-        "symbol_properties",
-        "written per symbol (dump_symbol's plist)",
-    ),
-    (
         "variable_watchers",
         "written per symbol (dump_symbol's watchers)",
     ),
@@ -200,14 +196,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
         "default_file_modes",
         "emacs.c:init_callproc_1 takes the umask of the new process",
-    ),
-    (
-        "symbol_properties_index",
-        "an index over symbol_properties, rebuilt by set_symbol_plist",
-    ),
-    (
-        "symbol_properties_by_id",
-        "an index over symbol_properties, refilled on lookup",
     ),
     (
         "interned_symbols",

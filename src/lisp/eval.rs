@@ -1366,6 +1366,56 @@ pub(crate) fn purge_freed_records_in_live_states(active: &mut Interpreter) {
     }
 }
 
+/// While symbols are shared between interpreter instances, their per-instance
+/// fields form edges from the symbol, not independent roots. Follow those edges
+/// to a fixed point, including symbols reached through another symbol's fields.
+/// This GC-only walk disappears when each allocated symbol owns its fields.
+fn mark_reached_symbol_fields(active: &Interpreter, marked: &mut LispReachability) -> bool {
+    let epoch = marked.epoch;
+    let mut changed = false;
+    for value in active.globals.reached_symbol_roots(epoch) {
+        changed |= marked.mark(active, &value);
+    }
+    let active_state = std::ptr::from_ref::<InterpreterState>(active) as usize;
+    for state in crate::lisp::alloc::live_states() {
+        if state != active_state {
+            // SAFETY: other registered states are parked during serialized GC.
+            let other = unsafe { Interpreter::registered_gc_view(state) };
+            let mut other_marked = LispReachability::with_epoch(epoch);
+            // As for the parked state's static roots, its weak tables are not
+            // swept by this interpreter and their live entries must survive.
+            other_marked.retaining = true;
+            for value in other.globals.reached_symbol_roots(epoch) {
+                changed |= other_marked.mark(&other, &value);
+            }
+        }
+    }
+    changed
+}
+
+/// Retire weak per-instance cells before sweep_symbols releases their owners.
+pub(crate) fn purge_unmarked_symbol_cells_in_live_states(active: &mut Interpreter, epoch: u32) {
+    if active.globals.sweep_uninterned(epoch) {
+        active.note_obarray_removal();
+    }
+    let active_state = active
+        .state
+        .as_ref()
+        .expect("active interpreter state")
+        .0
+        .as_ptr() as usize;
+    for state in crate::lisp::alloc::live_states() {
+        if state != active_state {
+            // SAFETY: only a parked state's side cells change, before symbols
+            // are freed. No Lisp callbacks or collection occur during cleanup.
+            let mut other = unsafe { Interpreter::registered_gc_view(state) };
+            if other.globals.sweep_uninterned(epoch) {
+                other.note_obarray_removal();
+            }
+        }
+    }
+}
+
 impl RecordState {
     /// The vector slots alloc.c would count for this record (zero for a
     /// kind GNU keeps outside the vectors).
@@ -2583,8 +2633,6 @@ fn ordered_hooks(entries: impl IntoIterator<Item = (String, Vec<Value>)>) -> Ord
 type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::primitives::FnvBuildHasher>;
 type BufferLocalHooks = HashMap<u64, OrderedHooks, crate::lisp::primitives::FnvBuildHasher>;
 
-type OrderedNameIndex = HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>;
-
 /// The obarray enumeration as last built, with the ids it holds: when
 /// only the interned list has grown since (the reader interning new
 /// names, the common case during a compile), the new names are
@@ -2610,19 +2658,6 @@ pub(crate) struct KnownSymbolsKey {
     epoch: u64,
 }
 type RecordIdsByType = HashMap<String, BTreeSet<u64>, crate::lisp::primitives::FnvBuildHasher>;
-
-/// Build a last-wins index over an ordered symbol/value registry.
-///
-/// The vector remains the canonical, deterministic representation used for
-/// enumeration.  Mutations use this index instead of duplicating each live
-/// Lisp value in a second container.
-fn ordered_name_index(entries: &[(String, Value)]) -> OrderedNameIndex {
-    entries
-        .iter()
-        .enumerate()
-        .map(|(index, (name, _))| (name.clone(), index))
-        .collect()
-}
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct MinibufferRuntimeState {
@@ -3971,6 +4006,7 @@ impl Interpreter {
         }
 
         self.mark_static_roots_into(&mut marked);
+        while mark_reached_symbol_fields(self, &mut marked) {}
         // alloc.c marks doomed functions before its weak-table fixed point.
         prepare_finalizers_in_live_states(self, &mut marked);
 
@@ -3978,7 +4014,7 @@ impl Interpreter {
             marked.mark(self, value);
         });
         loop {
-            let mut changed = false;
+            let mut changed = mark_reached_symbol_fields(self, &mut marked);
             let mut index = 0;
             // Marking a retained value can discover another weak table.
             // Read the growing work list one handle at a time.
@@ -4060,8 +4096,8 @@ impl Interpreter {
         let mut mark = |value: &Value| {
             marked.mark(self, value);
         };
-        for (_, value) in self.globals.iter() {
-            mark(value);
+        for value in self.globals.permanent_roots() {
+            mark(&value);
         }
         // The obarray's entries are the process's interned symbols, a root
         // of every collection (`mark_interned_symbol_roots'); the
@@ -4070,13 +4106,6 @@ impl Interpreter {
         // in which a table had changed, for interned names only: the
         // obarray root's own members.
         self.mark_record_holders(&mut mark);
-        // An uninterned symbol whose value cell this state holds (the
-        // cell lives in the table, not in the symbol as C's does): the
-        // table kept the symbol alive through the reference count, and
-        // keeps it so.
-        for symbol in self.globals.uninterned_symbols() {
-            mark(&Value::Symbol(*symbol));
-        }
         for bindings in self.buffer_locals.values() {
             for symbol in bindings.uninterned_symbols() {
                 mark(&Value::Symbol(*symbol));
@@ -4121,9 +4150,6 @@ impl Interpreter {
             mark(value);
         }
         mark(&self.local_time_zone_rule);
-        for (_, value) in &self.symbol_properties {
-            mark(value);
-        }
         for (_, watchers) in &self.variable_watchers {
             for watcher in watchers {
                 mark(watcher);
@@ -4184,9 +4210,6 @@ impl Interpreter {
             for argument in &coding.type_args {
                 mark(argument);
             }
-        }
-        for function in self.globals.function_values() {
-            mark(function);
         }
         mark(&self.alternative_font_family_alist);
         mark(&self.alternative_font_registry_alist);
@@ -4533,7 +4556,7 @@ impl Interpreter {
                 *value = c.copy(value);
             }
             clone.local_time_zone_rule = c.copy(&clone.local_time_zone_rule.clone());
-            for (_, value) in &mut clone.symbol_properties {
+            for value in clone.globals.plists_mut() {
                 *value = c.copy(value);
             }
             for (_, watchers) in &mut clone.variable_watchers {
@@ -4896,10 +4919,6 @@ impl std::ops::DerefMut for Interpreter {
     }
 }
 
-/// Plist positions by symbol id, `None' for a symbol without a plist.
-type SymbolPlistPositions =
-    RefCell<HashMap<u32, Option<usize>, crate::lisp::types::IdentityBuildHasher>>;
-
 /// The uniquely owned editor payload. Thread switching must also save and
 /// restore the per-thread execution fields; moving this allocation alone does
 /// not implement a scheduler. This type is public only as the Deref target.
@@ -4985,18 +5004,6 @@ pub struct InterpreterState {
     /// mutating the host `TZ' would leak state between otherwise isolated
     /// Emacs instances.
     pub(crate) local_time_zone_rule: Value,
-    /// Symbol properties keyed by symbol name.  Each value is the actual live
-    /// Lisp plist, matching GNU symbols' plist cell rather than a Rust-side
-    /// projection that loses `setcar'/`setcdr' mutations.
-    symbol_properties: Vec<(String, Value)>,
-    /// Last-wins position index over `symbol_properties`.  The ordered vector
-    /// remains canonical for deterministic symbol enumeration.
-    symbol_properties_index: OrderedNameIndex,
-    /// The same positions by symbol id, filled as symbols are looked up:
-    /// `get' reaches a plist through the symbol, as XSYMBOL (sym)->u.s.plist
-    /// does, not through a hash of its name.  Cleared whenever positions
-    /// shift.
-    symbol_properties_by_id: SymbolPlistPositions,
     /// Symbols explicitly interned into the standard obarray.
     interned_symbols: Vec<crate::lisp::types::SymbolName>,
     /// The obarray's symbol vector as `mapatoms' last enumerated it, with
@@ -5752,9 +5759,6 @@ impl Interpreter {
                 "vertical-scroll-bar".into(),
                 "vc-directory-exclusion-list".into(),
             ],
-            symbol_properties: builtin_symbol_properties(),
-            symbol_properties_index: HashMap::default(),
-            symbol_properties_by_id: RefCell::new(HashMap::default()),
             interned_symbols: Vec::new(),
             known_symbols_cache: RefCell::new(None),
             obarray_epoch: 0,
@@ -6043,8 +6047,11 @@ impl Interpreter {
         }
 
         interp.register_state_as_root();
-        interp.symbol_properties_index = ordered_name_index(&interp.symbol_properties);
-        interp.symbol_properties_by_id.borrow_mut().clear();
+        for (name, plist) in builtin_symbol_properties() {
+            interp
+                .globals
+                .set_plist(&SymbolName::intern_str(&name), plist);
+        }
         // Startup globals are dumped `defvar'/DEFVAR value cells, hence
         // intrinsically special.  Fold declarations and values through one
         // registration path so a new startup global cannot require a shadow
