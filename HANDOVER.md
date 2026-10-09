@@ -26,9 +26,15 @@ no new login or user approval is required for the authorized branch/CI work.
 
 Source316 is now applied on the task branch as `ee0bddb9`, with all 562 inputs
 identical to its selected validation. It combines source315's compact fields
-and removed alias mirror with a shared value/alias word. Its full macOS Rust
-gate is running; Linux Rust/frozen validation is running and macOS frozen is
-queued after the Rust gate. The [Linux timing evidence](docs/handover/2026-10-09-symbol-fields/source316-linux-symbol-performance-results-manifest.json)
+and removed alias mirror with a shared value/alias word. The
+[complete macOS Rust evidence](docs/handover/2026-10-09-symbol-fields/source316-macos-rust-results-manifest.json)
+verifies **3,165 passes / two existing ignores**. The
+[complete Linux evidence](docs/handover/2026-10-09-symbol-fields/source316-linux-complete-results-manifest.json)
+verifies **3,177 Rust passes / two existing ignores** and **519 frozen files /
+7,928 matching outcomes / 1,038 successful processes**. Raw names, verdicts,
+source/artifact identities and native artifact identity are independently checked.
+The ordinary macOS frozen run is now running with its original selector and
+deadlines. The [Linux timing evidence](docs/handover/2026-10-09-symbol-fields/source316-linux-symbol-performance-results-manifest.json)
 verifies all 192 answers/modes. The three alternating full16 pilots are 2.41%
 faster than current main by raw body aggregate, but still 2.659845× paired GNU.
 Mapcar regresses 2.41%; all samples remain. This is not final performance acceptance.

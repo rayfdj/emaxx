@@ -1,5 +1,25 @@
 # Current goal status — 9 October 2026
 
+## Source316 validation and ownership continuation — 9 October 2026
+
+Source316 is applied on PR81 as `ee0bddb9`. Main contains source314 through
+merged PR80 (`0610bf0c`). The [source316 evidence](runtime-representation-symbol-redirect-draft.md)
+verifies 3,165 macOS Rust passes and 3,177 Linux Rust passes, each with two
+existing ignores; Linux frozen matches all 7,928 outcomes across 519 files.
+The full macOS frozen comparison is running. Three alternating Linux full16
+pilots verify 192 answers/modes and are 2.41% faster than main by body aggregate,
+but still 2.659845× paired GNU; mapcar regresses 2.41%. All samples remain.
+
+The [separate source317 draft](runtime-representation-symbol-registry-draft.md)
+removes the redundant symbol ID registry/mutex and duplicate uninterned names.
+All 175 selected controls per profile and nine ordinary comparisons pass.
+Its original source-layout failures remain preserved. An actual source316
+public-API negative shows a symbol-name property leaking between successive
+editor instances; this remains unresolved. Instance-owned interning/image
+copying, allocated fields, real intervals/pure storage, physical accounting,
+remaining adapters, final audit/validation and performance acceptance remain
+required. Neither these passing gates nor the requested merge completes the goal.
+
 ## Symbol-field checkpoint and separate union draft — 9 October 2026
 
 The [source314 checkpoint](runtime-representation-symbol-fields-draft.md) removes

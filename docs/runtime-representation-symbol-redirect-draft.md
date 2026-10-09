@@ -18,8 +18,8 @@ replacement initializes the selected member before it can be read.
 The per-interpreter cell's measured size is **56 bytes**, versus source315's
 64, asserted in gate and release. This is not the full physical symbol
 footprint: allocated names, indexes, weak side entries and enumeration storage
-remain additional costs. No ordinary read gains a hash lookup or lock. No
-elapsed-time improvement or GNU parity is claimed.
+remain additional costs. No ordinary read gains a hash lookup or lock. The complete physical-footprint saving is unmeasured. Diagnostic timing is
+reported below; GNU parity is not established.
 
 This is a representation change, not a claim that ordinary source315 aliases
 retained their old values: the previous primitive already removed the old
@@ -66,12 +66,19 @@ every sample and slower case remains. Both revisions include the source314
 symbol-lifetime/plist repairs. This is not calibrated nine-round acceptance or
 evidence of complete allocation accounting.
 
-The complete source316 macOS Rust gate is running separately under
-`target/runtime-goal/symbol-ownership-2026-10-09/redirect-draft1-full`; no result
-is claimed yet. Linux Rust/frozen validation is running, and the macOS frozen
-run is queued after its Rust gate. Relevant terminal coverage has not run.
-Source315's complete macOS result does not
-certify source316. Per-instance interning, image copying and allocated-symbol
+The [complete macOS Rust gate](handover/2026-10-09-symbol-fields/source316-macos-rust-results-manifest.json)
+verifies **3,165 passes / two existing ignores**, including native artifact
+identity. The [complete Linux gates](handover/2026-10-09-symbol-fields/source316-linux-complete-results-manifest.json)
+verify **3,177 Rust passes / two existing ignores** and **519 frozen files /
+7,928 matching outcomes / 1,038 successful processes**. Each Linux editor has
+7,670 passes, 47 expected failures and 211 skips. Every raw library name,
+verdict, process record and frozen outcome is checked against the full inventory;
+all 562 runtime inputs match the published source and retained oracle bytes.
+The post-run Rust image retention identifies those artifacts, not per-test use.
+
+The ordinary macOS frozen comparison is running with the original selector and
+deadlines. Relevant source316 terminal coverage has not run. Per-instance
+interning, image copying and allocated-symbol
 authority still must remove the weak side table and GC fixed-point walk.
 Intervals/pure storage, real allocation accounting/counters, internal ownership
 review, final adversarial review and the locked 16-workload/nine-round/every-case
