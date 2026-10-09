@@ -1,7 +1,7 @@
 # Copied symbol payload access — 9 October 2026
 
-Source318 is **applied on the task branch after PR81 merged**. Main remains
-source316 at `30fa6e5b`; the archived unapplied state below is historical.
+PR82 carries **source318 after PR81 merged**. The previous source316 checkpoint
+is retained at `30fa6e5b`; the archived unapplied state below is historical.
 [Applied-source verification](handover/2026-10-09-symbol-fields/source318-applied-source-verification.json)
 checks every runtime byte and mode against its completed validation. Its [portable selected evidence](handover/2026-10-09-symbol-fields/source318-symbol-payload-api-draft-manifest.json)
 contains an incremental patch on local source317 `c7185a61` and a cumulative
@@ -58,9 +58,14 @@ The original macOS frozen run retains both Tramp timeouts at 180 seconds after
 318 complete files / 4,479 matching outcomes. A separate 600-second observation
 now obtains all 59 matching Tramp outcomes: GNU takes 188.635 seconds and Emaxx
 223.763 seconds. It uses the same 562 runtime inputs and image with an
-independently identified rebuilt executable. The remaining 200-file tail is
-running at the original deadline. The original run remains failed; terminal
-validation remains pending. The original
+independently identified rebuilt executable. The [remaining 200-file tail](handover/2026-10-09-symbol-fields/source318-macos-frozen-continuation-results-manifest.json)
+has completed at the original deadline: 3,377 matches, six existing diagnostic
+differences and 400 successful processes, with no unexpected outcome. Every
+native compiler and Eglot outcome matches. Across the separate attempts, all
+519 files are observed with 7,915 matching outcome labels. The [six diagnostic
+issue entries are unchanged from source316](handover/2026-10-09-symbol-fields/source318-existing-macos-diagnostics-audit.json).
+The original run and six differences remain failed; this is not a single
+passing frozen run. Full terminal validation is running separately. The original
 source317 setup failures and source316 ownership negative remain preserved.
 
 The [completed Linux timing diagnostic](handover/2026-10-09-symbol-fields/source318-linux-symbol-performance-results-manifest.json)

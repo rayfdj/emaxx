@@ -23,8 +23,9 @@ PR [#81](https://github.com/rayfdj/emaxx/pull/81) is merged into main as
 complete saved evidence, including both failed macOS Tramp processes and the
 separate matching longer observation. The full goal remains incomplete.
 
-The [source318 continuation](docs/runtime-representation-symbol-payload-api-draft.md)
-is now applied on the task branch. It includes source317's registry removal and
+PR [#82](https://github.com/rayfdj/emaxx/pull/82) carries the
+[source318 continuation](docs/runtime-representation-symbol-payload-api-draft.md).
+It includes source317's registry removal and
 copied payload access; all 562 input bytes/modes match the archived patches,
 strict/selected validation and the complete macOS Rust gate (3,166 passes / two
 existing ignores). The earlier unapplied sections record historical states.
@@ -34,9 +35,13 @@ identity, and **519 frozen files / 7,928 matching outcomes / 1,038 successful
 processes**. Every raw library name, frozen test inventory, verdict, process
 receipt and retained artifact hash is checked. Its macOS frozen comparison
 retains both original 180-second Tramp timeouts after 4,479 matching outcomes.
-A separate 600-second observation now obtains all 59 matching Tramp answers;
-the remaining 200 files are running with the original deadline. Terminal
-validation remains open. This change
+A separate 600-second observation obtains all 59 matching Tramp answers;
+the ordinary 200-file tail adds 3,377 matches and six existing diagnostic
+differences. The [combined macOS evidence](docs/handover/2026-10-09-symbol-fields/source318-macos-frozen-continuation-results-manifest.json)
+observes all 519 files / 7,915 matching outcomes across separate attempts.
+The [six diagnostic issue entries are unchanged](docs/handover/2026-10-09-symbol-fields/source318-existing-macos-diagnostics-audit.json)
+from source316 and remain strict failures. This is not one complete passing
+frozen run. Full terminal validation is running separately. This change
 does not repair the known cross-instance symbol-name property leak. The separate
 source319 ownership experiment is still local and unvalidated as a whole.
 
@@ -60,6 +65,16 @@ editor instances restored from valid images. Original image/link/worker launcher
 failures remain preserved. All local source319 processes have ended. Private image-clone
 isolation, direct allocated fields, descriptor reclamation and other process-wide
 Lisp roots remain unresolved. This is unfinished work, not ownership completion.
+
+The [latest source319 draft5](docs/handover/2026-10-09-symbol-fields/source319-symbol-key-contract-results-manifest.json)
+removes the inconsistent symbol/text borrowing trait and hashes symbol identity.
+Strict checks, **230 controls in each profile** and **nine ordinary GNU comparisons**
+pass. Every previous control remains, with a new nested-editor identity check.
+Both patches replay all 563 inputs. Draft4's public/image/native results remain
+separate historical evidence; the broader draft5 contracts have not run. All
+local draft5 validation processes have ended. Source318's full 226-scenario
+terminal comparison is running after its macOS frozen tail; the ordinary
+harness, actions, comparisons and deadlines are unchanged.
 
 ## Main merge and source316 continuation — 9 October 2026
 

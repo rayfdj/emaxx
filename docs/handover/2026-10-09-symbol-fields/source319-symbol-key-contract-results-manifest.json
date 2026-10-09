@@ -1,0 +1,116 @@
+{
+  "checkpoint": "source319 unapplied owner draft5",
+  "archive": {
+    "path": "source319-symbol-key-contract-results.tar.gz",
+    "bytes": 380676,
+    "sha256": "3e4dfd7d2abcfa2432d33fdec54b58ddf921c3c4a97bac1fa37e178011851f60",
+    "members": 124
+  },
+  "selected_audit": {
+    "checkpoint": "source319 unfinished owner draft5",
+    "status": "passed selected controls",
+    "changed_from_draft4": [
+      "src/lisp/types.rs",
+      "src/lisp/types/symbols.rs"
+    ],
+    "source_inputs_verified": 563,
+    "strict": "zero warnings",
+    "profiles": {
+      "gate": {
+        "selected": 230,
+        "inventory": 3070,
+        "test_binary_sha256": "98578b531e23b51dde883d064e469b94dc1cba2cd86fac9b1b50706672e6f8e2"
+      },
+      "release": {
+        "selected": 230,
+        "inventory": 3069,
+        "test_binary_sha256": "549891c917c1d3dc29ff288c4888b3e91df36626894cd66096d371f64ae07fb0"
+      }
+    },
+    "previous_controls_retained": 229,
+    "added_control": "lisp::types::symbols::tests::nested_editors_keep_same_named_symbols_distinct_and_restore_the_caller",
+    "replays": {
+      "obarray-draft5.patch": {
+        "base": "93b6546f9c54aaecf2237cc751e3f94591066969",
+        "sha256": "59b11299e6329b7bcf205da8a4923ceded35e6eb818ab77f52c752d86f921283",
+        "source_inputs_verified": 563
+      },
+      "obarray-cumulative-draft5.patch": {
+        "base": "30fa6e5b669c5cbd26e842e7675bfc18d306c2b4",
+        "sha256": "f9c53a96f1210b7b08d66deb8f4db7416c44a14567e425da1d3aa632aeb457ce",
+        "source_inputs_verified": 563
+      }
+    },
+    "gnu_source_commit": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+    "gnu_reference": {
+      "path": "src/fns.c",
+      "sha256": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+      "mechanism": "sxhash_eq hashes identity; canonical name lookup has a separate key contract"
+    },
+    "qualification": "SymbolName equality and hashing now both use object identity; only NameEntry borrows text for canonical lookup. Original selectors and fixtures remain. This audit covers strict and selected gate/release validation and exact patches. Draft4 public/native results remain historical and are not new draft5 validation. Ordinary comparisons run separately. Private image-clone ownership, allocated fields, descriptor reclamation, other process roots, physical accounting and full validation remain open.",
+    "goal_complete": false
+  },
+  "ordinary_audit": {
+    "status": "passed",
+    "source_inputs_verified": 563,
+    "processes": 18,
+    "comparisons": 9,
+    "actual_modes": [
+      "interpreted",
+      "bytecode",
+      "native"
+    ],
+    "previous_launcher_and_fixtures_preserved": true,
+    "retained_inputs": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft5-retained-inputs/0-emacs",
+        "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+        "bytes": 9600848
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft5-retained-inputs/1-emacs.pdmp",
+        "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+        "bytes": 22954264
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/release/emaxx",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft5-retained-inputs/2-emaxx",
+        "sha256": "606fc3e677eed06d4ab9dcb553b5165f5e362a0fe75668225cd6d1cf3ef3ad33",
+        "bytes": 13284880
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/release/emaxx.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft5-retained-inputs/3-emaxx.pdmp",
+        "sha256": "896869ae0a71ba16283f3cd7fd402c4e6b69ce537d4cd9ebae4e55c40ab01081",
+        "bytes": 21785008
+      }
+    ],
+    "goal_complete": false
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft5-key-contract/fixture-images/loadup-98578b53-d44829be.pdmp",
+      "bytes": 21807496,
+      "sha256": "967badd07fc846f6a907661626748614e5522f700e8ed4d93b5c57d7ddded8ed"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft5-key-contract/libtest",
+      "bytes": 29978048,
+      "sha256": "98578b531e23b51dde883d064e469b94dc1cba2cd86fac9b1b50706672e6f8e2"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft5-release/fixture-images/loadup-549891c9-d44829be.pdmp",
+      "bytes": 21807512,
+      "sha256": "8211cb9d3e59900ebd6b68c6ce9e4783e3506b9a58afd2332c1dce398666c5d3"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft5-release/libtest",
+      "bytes": 22937840,
+      "sha256": "549891c917c1d3dc29ff288c4888b3e91df36626894cd66096d371f64ae07fb0"
+    }
+  ],
+  "qualification": "Both exact patches reproduce 563 inputs. Strict checks have zero warnings; all 229 earlier controls plus the nested-editor identity control pass in gate and release. All 18 unchanged ordinary processes match in nine comparisons with actual bytecode/native modes. Original source319 failures and draft4 public/native evidence remain separately preserved. Draft5 full platform/frozen/terminal and public native validation have not run; private clone ownership, allocated fields, reclamation, accounting and full-goal performance remain open.",
+  "goal_complete": false
+}

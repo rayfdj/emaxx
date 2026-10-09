@@ -1,7 +1,7 @@
 # Editor-owned symbols — unfinished source319, 9 October 2026
 
-This is a **separately packaged, unapplied draft**. PR82's runtime remains
-source318; main contains source316 through merged PR81 (`30fa6e5b`). The
+This is a **separately packaged, unapplied draft**. PR82's runtime is
+source318; source316 is retained through merged PR81 (`30fa6e5b`). The
 [portable draft and evidence](handover/2026-10-09-symbol-fields/source319-symbol-owner-unfinished-draft-manifest.json)
 include an incremental patch on published `93b6546f` and a cumulative patch on
 main `30fa6e5b`. Both independently replay all **563 inputs and modes**.
@@ -65,6 +65,19 @@ remains recorded. The corrected launcher delegates normal options to the unchang
 CLI; the production library and Lisp input are unchanged. All local validation
 processes for this source319 draft have ended.
 
+The latest [draft5 key-contract correction](handover/2026-10-09-symbol-fields/source319-symbol-key-contract-results-manifest.json)
+removes `SymbolName: Borrow<str>`, whose text equality was inconsistent with the
+symbol's pointer equality. Symbol hashing now uses object identity, following
+GNU `fns.c:sxhash_eq`; canonical text lookup remains in the separate `NameEntry`.
+The new nested-editor control checks distinct same-named keys and restoration of
+the outer editor. All **229 previous controls plus this control pass in both
+profiles**, with the complete inventories retaining every previous test.
+Strict checks have zero warnings; **18 ordinary processes / nine GNU comparisons
+match**, including actual bytecode/native execution. Both updated patches replay
+all 563 source inputs and modes. This is the latest unapplied source319 patch.
+Draft4's public/image/native results above remain its own historical evidence;
+those broader contracts have not yet been repeated for draft5.
+
 The complete platform, frozen, terminal, native artifact identity, module and GC
 contracts are not certified by these selected results. Source319 remains unapplied.
 
@@ -76,9 +89,9 @@ prefixes in dense cell tables across successive editors; they are not a final
 per-editor allocation strategy. The old descriptor allocations
 still use static leaked storage; their reclamation and physical accounting are
 unresolved. Other process-wide Lisp roots, including the Unicode menu table and
-echo state, still need ownership review. `SymbolName` retains the old
-name-borrowing trait whose text equality contract should be removed or separated
-before this draft is accepted. No total-footprint reduction or timing gain is
+echo state, still need ownership review. Draft5 removes the inconsistent
+name-borrowing trait; the other migration adapters remain. No total-footprint
+reduction or timing gain is
 claimed. Allocated authority, removal of the adapters, honest allocation/GC
 counters, final ownership/adversarial audit, final validation and the unchanged
 16-workload/nine-round/every-case GNU criterion remain required.
