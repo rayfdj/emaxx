@@ -304,10 +304,10 @@ impl Interpreter {
     }
 
     fn install_plist(&mut self, name: &str, plist: &Value) {
-        if plist.is_nil() && self.symbol_property_index(name).is_none() {
+        if plist.is_nil() && self.symbol_plist(name).is_nil() {
             return;
         }
-        // Replacing the plist keeps the property index coherent.
+        // The restored symbol owns the same live plist read by every caller.
         let _ = self.set_symbol_plist(name, *plist);
     }
 

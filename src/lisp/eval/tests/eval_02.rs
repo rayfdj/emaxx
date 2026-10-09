@@ -5907,6 +5907,75 @@ fn function_get_autoloads_before_reading_declared_property() {
 }
 
 #[test]
+fn symbol_plists_preserve_clone_sharing_and_interpreter_isolation() {
+    let mut source = Interpreter::new();
+    eval_str_with(
+        &mut source,
+        "(progn
+        (setq plist-copy-root (list 'first (vector 7) 'second 11))
+        (setplist 'plist-copy-owner plist-copy-root))",
+    );
+    let mut clone = source.deep_clone_image();
+    assert_eq!(
+        eval_str_with(
+            &mut clone,
+            "(progn (aset (get 'plist-copy-owner 'first) 0 19)
+                (setcar (cdr (cdr (cdr plist-copy-root))) 23)
+                (list (eq plist-copy-root (symbol-plist 'plist-copy-owner))
+                      (aref (get 'plist-copy-owner 'first) 0)
+                      (get 'plist-copy-owner 'second)))"
+        ),
+        Value::list([Value::T, Value::Integer(19), Value::Integer(23)])
+    );
+    assert_eq!(
+        eval_str_with(
+            &mut source,
+            "(list (eq plist-copy-root (symbol-plist 'plist-copy-owner))
+               (aref (get 'plist-copy-owner 'first) 0)
+               (get 'plist-copy-owner 'second))"
+        ),
+        Value::list([Value::T, Value::Integer(7), Value::Integer(11)])
+    );
+    eval_str_with(&mut clone, "(setplist 'plist-copy-owner nil)");
+    assert!(!source.symbol_plist("plist-copy-owner").is_nil());
+}
+
+#[test]
+fn reachable_uninterned_symbol_fields_survive_another_interpreters_collection() {
+    let mut owner = Interpreter::new();
+    let symbol = eval_str_with(
+        &mut owner,
+        "(progn
+        (setq parked-symbol-root (make-symbol \"parked-fields\"))
+        (set parked-symbol-root (vector 31))
+        (fset parked-symbol-root '(lambda () 37))
+        (setplist parked-symbol-root (list 'field (vector 41)))
+        parked-symbol-root)",
+    );
+    let mut collector = Interpreter::new();
+    collector.set_global_binding("parked-symbol-root", symbol);
+    eval_str_with(
+        &mut collector,
+        "(progn
+        (set parked-symbol-root (vector 43))
+        (fset parked-symbol-root '(lambda () 47))
+        (setplist parked-symbol-root (list 'field (vector 53)))
+        (garbage-collect))",
+    );
+    let check = "(list (aref (symbol-value parked-symbol-root) 0)
+                       (funcall parked-symbol-root)
+                       (aref (get parked-symbol-root 'field) 0))";
+    assert_eq!(
+        eval_str_with(&mut owner, check),
+        Value::list([Value::Integer(31), Value::Integer(37), Value::Integer(41)])
+    );
+    assert_eq!(
+        eval_str_with(&mut collector, check),
+        Value::list([Value::Integer(43), Value::Integer(47), Value::Integer(53)])
+    );
+}
+
+#[test]
 fn symbol_plist_is_the_live_mutable_property_list() {
     assert_eq!(
         eval_str(
@@ -5994,9 +6063,9 @@ fn ordered_global_and_property_indexes_survive_middle_removal() {
     );
     assert_eq!(
         interp
-            .symbol_properties
-            .iter()
-            .filter(|(name, _)| name == "emaxx-index-c")
+            .globals
+            .plists()
+            .filter(|(name, _)| name.as_str() == "emaxx-index-c")
             .count(),
         1
     );

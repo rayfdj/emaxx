@@ -2170,7 +2170,7 @@ define_dispatch!(
                 need_args(name, args, 3)?;
                 // GNU 30.2 fns.c:Fput shares `get's CHECK_SYMBOL/XSYMBOL
                 // treatment of source-positioned symbols.
-                let symbol = checked_symbol_name(interp, &args[0], env)?;
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
                 let property_name = super::misc::bare_symbol_name(interp, env, &args[1]);
                 // GNU Elisp owns `ert-set-test' and `define-symbol-prop',
                 // including duplicate-definition policy and load-history
@@ -2180,22 +2180,16 @@ define_dispatch!(
                 if property_name.as_deref() == Some("ert--test")
                     && matches!(args[2].kind(), Kind::LispRecord(_))
                 {
-                    return interp.ert_set_test(&symbol, &args[2]);
+                    return interp.ert_set_test(symbol.as_str(), &args[2]);
                 }
-                let mut plist = interp.symbol_plist(&symbol).to_vec()?;
-                let mut replaced = false;
-                for pair in plist.as_chunks_mut::<2>().0 {
-                    if values_eq_in_env(interp, &pair[0], &args[1], env) {
-                        pair[1] = args[2];
-                        replaced = true;
-                        break;
-                    }
-                }
-                if !replaced {
-                    plist.push(args[1]);
-                    plist.push(args[2]);
-                }
-                interp.set_symbol_plist(&symbol, Value::list(plist))?;
+                let plist = super::collections::plist_put_eq(
+                    interp,
+                    interp.symbol_plist_symbol(&symbol),
+                    args[1],
+                    args[2],
+                    env,
+                )?;
+                interp.set_symbol_plist_symbol(&symbol, plist)?;
                 Ok(args[2])
             }
         }

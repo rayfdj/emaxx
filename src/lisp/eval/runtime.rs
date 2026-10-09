@@ -2018,9 +2018,6 @@ impl Interpreter {
         let Some(current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
             return;
         };
-        if current_load_list.is_nil() {
-            return;
-        }
         let entry = if kind == "defvar" {
             Value::Symbol(name.to_string().into())
         } else {
@@ -2029,7 +2026,9 @@ impl Interpreter {
                 Value::Symbol(name.to_string().into()),
             )
         };
-        // GNU's LOADHIST_ATTACH conses definitions onto the front, a second
+        // lisp.h:LOADHIST_ATTACH accepts an empty current-load-list too;
+        // the entry remains a root outside a file load (e.g. defvaralias).
+        // GNU conses definitions onto the front, a second
         // definition of the same name in one file included (a file defining
         // `f' twice lists `(defun . f)' twice), so the source-file string
         // remains last until build_load_history reverses the completed

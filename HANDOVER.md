@@ -16,6 +16,19 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
+## Symbol-field continuation — 9 October 2026
+
+Read the [symbol-field continuation](docs/runtime-representation-symbol-fields-draft.md).
+Source314 removes the separate plist store/indexes, preserves live `put` sharing,
+and follows actual uninterned-symbol roots, including aliases and finalizers.
+Its portable selected evidence verifies 560 source inputs, warning-free strict
+checks, 24 focused passes in each profile and 12 matching ordinary GNU/Emaxx
+processes, including real bytecode/native execution. Earlier failed drafts remain
+preserved. The complete macOS gate is running separately; Linux and timing remain
+pending at this checkpoint. Per-instance allocated-symbol ownership and every
+remaining full-goal requirement stay open. No performance or completion claim
+follows from this selected validation.
+
 ## Main merge and terminal continuation — 8 October 2026
 
 PR [#79](https://github.com/rayfdj/emaxx/pull/79) is **merged into main** as

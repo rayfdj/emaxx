@@ -19586,6 +19586,42 @@ fn coding_candidates_resolve_translation_symbols_through_live_properties() {
 }
 
 #[test]
+fn symbol_alias_fields_follow_the_actual_load_history_root() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-load-history-lifetime.el"),
+        include_str!("../../../tests/fixtures/symbol-load-history-lifetime.expected").trim(),
+        "load history retains the alias and its target until the actual root is removed",
+    );
+}
+
+#[test]
+fn symbol_plist_put_preserves_shared_cells_and_gnu_error_data() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-plist-put-sharing.el"),
+        include_str!("../../../tests/fixtures/symbol-plist-put-sharing.expected").trim(),
+        "put and EQ plist-put mutate shared cells and retain GNU error identity",
+    );
+}
+
+#[test]
+fn symbol_fields_participate_in_weak_fixed_points_and_finalizer_liveness() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-field-weak-finalizer.el"),
+        include_str!("../../../tests/fixtures/symbol-field-weak-finalizer.expected").trim(),
+        "weak symbol edges, alias/load-history roots, and finalizers retain GNU lifetimes",
+    );
+}
+
+#[test]
+fn symbol_fields_preserve_live_children_and_release_unreachable_owners() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-field-lifetime.el"),
+        include_str!("../../../tests/fixtures/symbol-field-lifetime.expected").trim(),
+        "symbol value, function and cyclic plist fields are edges, not independent roots",
+    );
+}
+
+#[test]
 fn symbol_properties_preserve_override_order_and_identity() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/overriding-property-identity.el"),

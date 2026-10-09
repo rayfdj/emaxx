@@ -3063,7 +3063,7 @@ fn invoke_native_get(
         }
     }
 
-    let plist = unsafe { &*active.interpreter }.symbol_plist(symbol_name.as_str());
+    let plist = unsafe { &*active.interpreter }.symbol_plist_symbol(&symbol_name);
     let plist = match unsafe { &mut *active.runtime }.heap.encode(&plist) {
         Ok(word) => word,
         Err(error) => {
@@ -3951,6 +3951,7 @@ impl NativeHeap {
         crate::lisp::alloc::sweep_floats(epoch);
         crate::lisp::alloc::sweep_vectors(epoch);
         crate::lisp::eval::purge_freed_records_in_live_states(interpreter);
+        crate::lisp::eval::purge_unmarked_symbol_cells_in_live_states(interpreter, epoch);
         crate::lisp::types::sweep_symbol_cells(epoch);
         crate::lisp::alloc::sweep_strings(epoch);
     }

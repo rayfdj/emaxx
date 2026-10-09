@@ -1487,12 +1487,18 @@ fn read_lisp_file_bytes(
                 return Err(error);
             }
         }
-        let current_load_list = interp
-            .lookup_var("current-load-list", &types::Env::new())
-            .unwrap_or_else(|| {
-                types::Value::list([types::Value::String(load_file.clone().into())])
-            });
-        interp.commit_entire_load_history(&types::Value::string(&load_file), current_load_list);
+        if !stopped {
+            // lread.c:readevalloop commits history only after reaching EOF.
+            // The image handoff stops inside loadup, before its final form
+            // restores the filename in current-load-list. That unfinished
+            // load must not be published as a completed history entry.
+            let current_load_list = interp
+                .lookup_var("current-load-list", &types::Env::new())
+                .unwrap_or_else(|| {
+                    types::Value::list([types::Value::String(load_file.clone().into())])
+                });
+            interp.commit_entire_load_history(&types::Value::string(&load_file), current_load_list);
+        }
         if let Some(message) = warning_message {
             append_message(interp, &message);
         }
@@ -1503,7 +1509,8 @@ fn read_lisp_file_bytes(
         // `do-after-load-evaluation' only after all load bindings unwind.
         // Invoke that actual GNU Elisp owner when it is present; early
         // bootstrap loads deliberately have no such function yet.
-        if outer_load_history.is_none()
+        if !stopped
+            && outer_load_history.is_none()
             && let Ok(after_load) = interp.lookup_function("do-after-load-evaluation", &env)
         {
             interp.call_function_value(
