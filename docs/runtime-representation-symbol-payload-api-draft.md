@@ -47,8 +47,20 @@ identity. All 3,069 library names and raw verdicts, Cargo results, 562 input byt
 and modes, and retained artifact hashes are independently checked. It ran the
 uncommitted API change on source317 `c7185a61`; both portable patch replays match.
 Post-run retained images identify those artifacts, not per-test image use.
-Linux Rust/frozen are [running on published source318](handover/2026-10-09-symbol-fields/source318-linux-launch.json). Its own macOS frozen comparison is running in the source316/318 task checkout;
-terminal validation remains pending. The original
+The [complete Linux evidence](handover/2026-10-09-symbol-fields/source318-linux-complete-results-manifest.json)
+verifies **3,178 Rust passes / two existing ignores**, including native artifact
+identity, plus **519 frozen files / 7,928 matching outcomes / 1,038 successful
+processes**. Each editor has 7,670 passes, 47 expected failures and 211 skips;
+these categories stay distinct. All 3,077 library names, raw outcomes, source
+inputs and retained artifact hashes are checked.
+
+The original macOS frozen run retains both Tramp timeouts at 180 seconds after
+318 complete files / 4,479 matching outcomes. A separate 600-second observation
+now obtains all 59 matching Tramp outcomes: GNU takes 188.635 seconds and Emaxx
+223.763 seconds. It uses the same 562 runtime inputs and image with an
+independently identified rebuilt executable. The remaining 200-file tail is
+running at the original deadline. The original run remains failed; terminal
+validation remains pending. The original
 source317 setup failures and source316 ownership negative remain preserved.
 
 The [completed Linux timing diagnostic](handover/2026-10-09-symbol-fields/source318-linux-symbol-performance-results-manifest.json)

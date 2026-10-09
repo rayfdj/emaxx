@@ -28,7 +28,15 @@ is now applied on the task branch. It includes source317's registry removal and
 copied payload access; all 562 input bytes/modes match the archived patches,
 strict/selected validation and the complete macOS Rust gate (3,166 passes / two
 existing ignores). The earlier unapplied sections record historical states.
-Linux Rust/frozen and diagnostic timing are [running on source318 `93b6546f`](docs/handover/2026-10-09-symbol-fields/source318-linux-launch.json). Its own macOS frozen and terminal validation remain open. This change
+The [completed source318 Linux evidence](docs/handover/2026-10-09-symbol-fields/source318-linux-complete-results-manifest.json)
+verifies **3,178 Rust passes / two existing ignores**, including native artifact
+identity, and **519 frozen files / 7,928 matching outcomes / 1,038 successful
+processes**. Every raw library name, frozen test inventory, verdict, process
+receipt and retained artifact hash is checked. Its macOS frozen comparison
+retains both original 180-second Tramp timeouts after 4,479 matching outcomes.
+A separate 600-second observation now obtains all 59 matching Tramp answers;
+the remaining 200 files are running with the original deadline. Terminal
+validation remains open. This change
 does not repair the known cross-instance symbol-name property leak. The separate
 source319 ownership experiment is still local and unvalidated as a whole.
 
