@@ -28,8 +28,17 @@ preserved. The complete macOS Rust gate now verifies **3,161 passes / two existi
 ignores**, including every raw library name and native artifact identity. Linux
 Rust verifies **3,173 passes / two existing ignores**, and full Linux frozen
 matches **519 files / 7,928 outcomes / 1,038 successful processes**. Each editor
-has 7,670 passes, 47 expected failures and 211 skips. Only the macOS frozen run
-remains active for this checkpoint; source315 validation is separate.
+has 7,670 passes, 47 expected failures and 211 skips.
+
+The [macOS frozen failure and bounded Tramp continuation](docs/handover/2026-10-09-symbol-fields/source314-macos-frozen-incomplete-results-manifest.json)
+retain **318 completed comparisons / 4,479 matching outcomes**, followed by both
+editors timing out in Tramp at the original 180-second limit. The separate
+600-second observation obtains all **59 matching Tramp outcomes**: each editor
+has 52 passes and seven skips. Its subject was rebuilt from the same runtime
+inputs; both executable identities are recorded and the image is unchanged.
+The original failed run remains failed. A separate ordinary tail is running
+exactly the remaining **200 frozen files**, with the unchanged 180-second limit;
+there is no complete macOS frozen result yet. Source315 validation is separate.
 
 Three alternating Linux full16 pilots verify all **192 actual answers/modes**.
 The body aggregate is **2.52% slower than main**, and the paired GNU aggregate is

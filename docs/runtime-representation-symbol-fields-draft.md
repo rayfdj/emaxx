@@ -4,7 +4,8 @@ Source314 continues the full goal; **the architecture and performance goal remai
 incomplete**. The [selected evidence](handover/2026-10-09-symbol-fields/source314-selected-manifest.json)
 identifies every changed input and retains the earlier failures. Complete Linux
 and macOS Rust validation, Linux frozen comparison and Linux diagnostic timing
-have now finished. The full macOS frozen comparison continues separately.
+have now finished. The macOS frozen comparison stopped at a timeout; its
+remaining coverage continues separately, as detailed below.
 
 The existing per-interpreter symbol cell now owns its property list alongside
 the value, function and alias. The separate name-keyed plist vector and both
@@ -66,6 +67,20 @@ The full frozen comparison matches **519 files / 7,928 outcomes** across **1,038
 successful processes**. Each editor has 7,670 passes, 47 expected failures and
 211 skips. No previous library name, frozen selector or expected outcome is lost;
 all six source314 tests extend the prior Linux library inventory.
+
+The [macOS partial and longer-run evidence](handover/2026-10-09-symbol-fields/source314-macos-frozen-incomplete-results-manifest.json)
+preserves the failed frozen attempt: **318 files / 4,479 matching outcomes**
+across 636 successful processes, then both Tramp processes time out at the
+original 180-second test deadline. Two hundred files never start. Following
+the user's instruction to wait reasonably for actual answers, a separate
+600-second Tramp run completes: **59 matching outcomes**, with 52 passes and
+seven skips in each editor. GNU takes 341.8 seconds and Emaxx 577.7 seconds.
+These runs overlapped builds and are not performance acceptance measurements.
+The subject executable was rebuilt from the same 560 runtime inputs; its hash
+differs, and both versions are retained independently. The image and GNU
+executable/image are unchanged. A separate ordinary tail now runs exactly the
+remaining 200 frozen files with the original deadline. None of this converts
+the first failed run into a complete frozen pass.
 
 The [Linux timing audit](handover/2026-10-09-symbol-fields/source314-linux-symbol-performance-results-manifest.json)
 verifies all **192 actual answers and execution modes** across three alternating
