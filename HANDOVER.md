@@ -28,10 +28,19 @@ is now applied on the task branch. It includes source317's registry removal and
 copied payload access; all 562 input bytes/modes match the archived patches,
 strict/selected validation and the complete macOS Rust gate (3,166 passes / two
 existing ignores). The earlier unapplied sections record historical states.
-Linux Rust/frozen and diagnostic timing will run on the published source318
-revision. Its own macOS frozen and terminal validation remain open. This change
+Linux Rust/frozen and diagnostic timing are [running on source318 `93b6546f`](docs/handover/2026-10-09-symbol-fields/source318-linux-launch.json). Its own macOS frozen and terminal validation remain open. This change
 does not repair the known cross-instance symbol-name property leak. The separate
 source319 ownership experiment is still local and unvalidated as a whole.
+
+The [source319 ownership draft](docs/runtime-representation-symbol-owner-draft.md)
+is separately packaged and unapplied. It gives public editor entries their own
+canonical symbols and hash-test descriptors. The original name-property leak
+now matches GNU. True pointer equality exposed a second-editor descriptor
+mismatch; the corrected owner-specific pool now matches the unchanged probe.
+All earlier failures remain preserved. Strict checks and **229 gate controls**
+pass; release and ordinary/native validation are running. Private image-clone
+isolation, direct allocated fields, descriptor reclamation and other process-wide
+Lisp roots remain unresolved. This is unfinished work, not ownership completion.
 
 ## Main merge and source316 continuation — 9 October 2026
 

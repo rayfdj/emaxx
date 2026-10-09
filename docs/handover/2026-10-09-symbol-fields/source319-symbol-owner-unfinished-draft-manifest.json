@@ -1,0 +1,173 @@
+{
+  "checkpoint": "source319 separately packaged unfinished editor-owned symbol draft4",
+  "base": "93b6546f9c54aaecf2237cc751e3f94591066969",
+  "cumulative_base": "30fa6e5b669c5cbd26e842e7675bfc18d306c2b4",
+  "archive": {
+    "path": "source319-symbol-owner-unfinished-draft.tar.gz",
+    "bytes": 624475,
+    "sha256": "c4dbcbe88b33674717d779ed335f05a90c3d8733c1f3d6e49c67604912e7ae31",
+    "members": 164
+  },
+  "public_audit": {
+    "checkpoint": "source319 unfinished editor-owned symbol draft4",
+    "base": "93b6546f9c54aaecf2237cc751e3f94591066969",
+    "source_inputs_verified": 563,
+    "strict": "passed with zero warnings",
+    "probes": {
+      "obarray-draft2-public-deps": {
+        "comparisons": [
+          {
+            "label": "original-name",
+            "exit_codes": [
+              0,
+              0,
+              0
+            ],
+            "gnu": "(t owner-one)\n(t nil)\n",
+            "emaxx": "(t owner-one)\n(t nil)\n",
+            "matches": true
+          },
+          {
+            "label": "hash-types",
+            "exit_codes": [
+              0,
+              0,
+              0
+            ],
+            "gnu": "(t t t t t)\n(t t t t t)\n",
+            "emaxx": "(t t t t t)\n(t t t t t)\n",
+            "matches": true
+          }
+        ],
+        "public_launcher_sha256": "ea2b3d1e2b49c95ba97d8aac2f12eb645ae22feedd1e0e10b0812728b7894907",
+        "subject_sha256": "22ac010a17e01ddba6dff9f8bfd2d08537f9097a47284f4f41369151c55ff1cb",
+        "library_sha256": "c3fa0220e68160115dedc0a712c36b68668004ea3c2878283cd67cf0c10c83e3"
+      },
+      "obarray-draft3-public": {
+        "comparisons": [
+          {
+            "label": "original-name",
+            "exit_codes": [
+              0,
+              0,
+              0
+            ],
+            "gnu": "(t owner-one)\n(t nil)\n",
+            "emaxx": "(t owner-one)\n(t nil)\n",
+            "matches": true
+          },
+          {
+            "label": "hash-types",
+            "exit_codes": [
+              0,
+              0,
+              0
+            ],
+            "gnu": "(t t t t t)\n(t t t t t)\n",
+            "emaxx": "(t t t t t)\n(nil nil nil t t)\n",
+            "matches": false
+          }
+        ],
+        "public_launcher_sha256": "ea2b3d1e2b49c95ba97d8aac2f12eb645ae22feedd1e0e10b0812728b7894907",
+        "subject_sha256": "502fcf081a21b4c01af896e8ee69bb921d5b934f9ce96c4e095311f90da78f35",
+        "library_sha256": "a48e424dff50bbf0eec6b51bc5a40acbecd3a255135f63cc3d8238b0889d6b02"
+      },
+      "obarray-draft4-public": {
+        "comparisons": [
+          {
+            "label": "original-name",
+            "exit_codes": [
+              0,
+              0,
+              0
+            ],
+            "gnu": "(t owner-one)\n(t nil)\n",
+            "emaxx": "(t owner-one)\n(t nil)\n",
+            "matches": true
+          },
+          {
+            "label": "hash-types",
+            "exit_codes": [
+              0,
+              0,
+              0
+            ],
+            "gnu": "(t t t t t)\n(t t t t t)\n",
+            "emaxx": "(t t t t t)\n(t t t t t)\n",
+            "matches": true
+          }
+        ],
+        "public_launcher_sha256": "ea2b3d1e2b49c95ba97d8aac2f12eb645ae22feedd1e0e10b0812728b7894907",
+        "subject_sha256": "eda0c39e3c3de46549e0f651b6ef644d08f4a6e3e9bcb5c27ec87242af777a85",
+        "library_sha256": "f3130e13a71f6b55a52b6e1804b670026a16d9b0de7514c16a21e19cba145787"
+      }
+    },
+    "replays": {
+      "obarray-draft4.patch": {
+        "base": "93b6546f9c54aaecf2237cc751e3f94591066969",
+        "sha256": "d0c7a0a40e2dfcbbd9be723fd6f4ae7d04d94d789feedf40cdd6cd4f5bfdb416",
+        "source_inputs_verified": 563
+      },
+      "obarray-cumulative-draft4.patch": {
+        "base": "30fa6e5b669c5cbd26e842e7675bfc18d306c2b4",
+        "sha256": "71b7b522ab68c0de31ef1b326d2440cbd7b0a48d7d5d1c0d6913c9b56bb76f08",
+        "source_inputs_verified": 563
+      }
+    },
+    "retained_initial_failures": [
+      "draft1 Clippy unused import",
+      "draft2 public launcher missing dependency search path",
+      "draft3 actual second-editor hash descriptor identity mismatch"
+    ],
+    "qualification": "Only strict checks and bounded public API probes are audited here. The original source316 name-property negative now matches GNU. The text-equality shortcut initially hid foreign descriptors; pointer equality exposed the recorded draft3 mismatch, repaired by owner-specific descriptors in draft4. Full selected/platform/frozen/terminal/native/image/GC validation and remaining ownership/allocation work are open. No per-instance allocated-field or performance completion claim.",
+    "goal_complete": false
+  },
+  "gate_audit": {
+    "status": "passed",
+    "selected": 229,
+    "prior_controls_retained": 208,
+    "inventory": 3069,
+    "unchanged_full_inventory": true,
+    "binary_sha256": "6c40d9c2a7773c681502920fa43e5c41a16320b8626e9c4d8f2e69c841902a97",
+    "source_inputs_verified": 563
+  },
+  "excluded_retained_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft2-public-deps/public-instances",
+      "bytes": 13511232,
+      "sha256": "22ac010a17e01ddba6dff9f8bfd2d08537f9097a47284f4f41369151c55ff1cb"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft3-public/libemaxx.rlib",
+      "bytes": 45046096,
+      "sha256": "a48e424dff50bbf0eec6b51bc5a40acbecd3a255135f63cc3d8238b0889d6b02"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft3-public/public-instances",
+      "bytes": 13511008,
+      "sha256": "502fcf081a21b4c01af896e8ee69bb921d5b934f9ce96c4e095311f90da78f35"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-public/libemaxx.rlib",
+      "bytes": 45051728,
+      "sha256": "f3130e13a71f6b55a52b6e1804b670026a16d9b0de7514c16a21e19cba145787"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-public/public-instances",
+      "bytes": 13511392,
+      "sha256": "eda0c39e3c3de46549e0f651b6ef644d08f4a6e3e9bcb5c27ec87242af777a85"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-gate/fixture-images/loadup-6c40d9c2-d44829be.pdmp",
+      "bytes": 21807352,
+      "sha256": "9f1893aab08fa754c0a70650c09effb40b95d9236c7723a69e3049f3e45304e7"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/obarray-draft4-gate/libtest",
+      "bytes": 29778336,
+      "sha256": "6c40d9c2a7773c681502920fa43e5c41a16320b8626e9c4d8f2e69c841902a97"
+    }
+  ],
+  "qualification": "This patch is unapplied to PR82 runtime. Only strict checks, 229 gate controls and bounded public ownership probes are complete in this archive. Every original failure is retained, including the hash descriptor mismatch exposed by true symbol identity. Release/ordinary validation is running separately. Allocated fields, private interpreter image-copy isolation, other process-wide Lisp roots, descriptor allocation ownership, physical accounting and all final validation/performance requirements remain open. The name lookup wrapper compares immutable host text only for canonical lookup; Lisp equality compares objects. No completed ownership or performance claim.",
+  "goal_complete": false
+}

@@ -47,8 +47,8 @@ identity. All 3,069 library names and raw verdicts, Cargo results, 562 input byt
 and modes, and retained artifact hashes are independently checked. It ran the
 uncommitted API change on source317 `c7185a61`; both portable patch replays match.
 Post-run retained images identify those artifacts, not per-test image use.
-Linux Rust/frozen and diagnostic timing will run on the published source318
-revision. Its own macOS frozen and terminal validation remain pending. The original
+Linux Rust/frozen and diagnostic timing are [running on published source318](handover/2026-10-09-symbol-fields/source318-linux-launch.json). Its own macOS frozen comparison is running in the source316/318 task checkout;
+terminal validation remains pending. The original
 source317 setup failures and source316 ownership negative remain preserved.
 
 Continue with instance-owned canonical symbols and graph-preserving image
