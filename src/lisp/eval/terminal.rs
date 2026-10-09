@@ -771,7 +771,7 @@ impl Interpreter {
     }
     pub(crate) fn keyboard_binding_value_on(&self, id: u64, name: &str) -> Option<Value> {
         if id == 0 {
-            self.globals.value_by_name(name).cloned()
+            self.globals.value_by_name(name)
         } else {
             self.terminal_state(id)?.keyboard.get(name).cloned()
         }

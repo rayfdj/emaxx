@@ -1,7 +1,9 @@
 # Copied symbol payload access — 9 October 2026
 
-Source318 is a **separately packaged, unapplied continuation**. PR81's runtime
-remains source316. Its [portable selected evidence](handover/2026-10-09-symbol-fields/source318-symbol-payload-api-draft-manifest.json)
+PR82 carries **source318 after PR81 merged**. The previous source316 checkpoint
+is retained at `30fa6e5b`; the archived unapplied state below is historical.
+[Applied-source verification](handover/2026-10-09-symbol-fields/source318-applied-source-verification.json)
+checks every runtime byte and mode against its completed validation. Its [portable selected evidence](handover/2026-10-09-symbol-fields/source318-symbol-payload-api-draft-manifest.json)
 contains an incremental patch on local source317 `c7185a61` and a cumulative
 patch on published `4dcf9f6a`. Both reproduce all **562 inputs and modes**.
 The full goal remains active and incomplete.
@@ -45,8 +47,35 @@ identity. All 3,069 library names and raw verdicts, Cargo results, 562 input byt
 and modes, and retained artifact hashes are independently checked. It ran the
 uncommitted API change on source317 `c7185a61`; both portable patch replays match.
 Post-run retained images identify those artifacts, not per-test image use.
-Linux, frozen, terminal and timing validation remain pending. The original
+The [complete Linux evidence](handover/2026-10-09-symbol-fields/source318-linux-complete-results-manifest.json)
+verifies **3,178 Rust passes / two existing ignores**, including native artifact
+identity, plus **519 frozen files / 7,928 matching outcomes / 1,038 successful
+processes**. Each editor has 7,670 passes, 47 expected failures and 211 skips;
+these categories stay distinct. All 3,077 library names, raw outcomes, source
+inputs and retained artifact hashes are checked.
+
+The original macOS frozen run retains both Tramp timeouts at 180 seconds after
+318 complete files / 4,479 matching outcomes. A separate 600-second observation
+now obtains all 59 matching Tramp outcomes: GNU takes 188.635 seconds and Emaxx
+223.763 seconds. It uses the same 562 runtime inputs and image with an
+independently identified rebuilt executable. The [remaining 200-file tail](handover/2026-10-09-symbol-fields/source318-macos-frozen-continuation-results-manifest.json)
+has completed at the original deadline: 3,377 matches, six existing diagnostic
+differences and 400 successful processes, with no unexpected outcome. Every
+native compiler and Eglot outcome matches. Across the separate attempts, all
+519 files are observed with 7,915 matching outcome labels. The [six diagnostic
+issue entries are unchanged from source316](handover/2026-10-09-symbol-fields/source318-existing-macos-diagnostics-audit.json).
+The original run and six differences remain failed; this is not a single
+passing frozen run. Full terminal validation is running separately. The original
 source317 setup failures and source316 ownership negative remain preserved.
+
+The [completed Linux timing diagnostic](handover/2026-10-09-symbol-fields/source318-linux-symbol-performance-results-manifest.json)
+independently verifies all **192 actual answers and modes**. Three alternating
+full16 pilots have body ratio **1.005265** against source316 main (0.53% slower).
+Paired GNU aggregates are **2.857181× for source318** and 2.808045× for the baseline.
+Explicit GC regresses 6.33%, bindat 5.28%, interpreted dynamic loops 4.26% and
+mapcar 3.57%; every sample remains. This combined registry/API change has no
+established timing improvement and does not meet calibrated nine-round/every-case
+GNU acceptance. Physical allocation/counter requirements remain unresolved.
 
 Continue with instance-owned canonical symbols and graph-preserving image
 copying, then direct allocated fields. The ID counters, name lookup adapters,

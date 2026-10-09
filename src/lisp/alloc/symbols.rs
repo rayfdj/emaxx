@@ -8,7 +8,7 @@
 //! interned symbols are always reached (the obarray is a root); an
 //! uninterned one lives while something names it, as in C.
 //!
-//! Not C: the cell keeps the host-side key text and its registry key
+//! Not C: the cell keeps the host-side key text
 //! beside the name (the uninterned symbols' identity by text is the
 //! pre-representation deviation the ledger records), the mark is the
 //! epoch word, and the value, function and property cells still live in
@@ -29,9 +29,6 @@ pub struct SymbolCell {
     pub(crate) mark: MarkBit,
     /// The symbol's index into an interpreter's `SymbolCells'.
     pub(crate) id: u32,
-    /// An uninterned symbol's own copy of its key text, for the release
-    /// of its registry entries when the sweep frees the cell.
-    pub(crate) key: Option<Box<str>>,
 }
 
 pub(super) const SYMBOL_CELL_SIZE: usize = std::mem::size_of::<SymbolCell>();

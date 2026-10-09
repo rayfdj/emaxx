@@ -1,0 +1,13 @@
+{
+  "status": "same six diagnostic mismatches",
+  "issue_entries_identical": true,
+  "full_comparison_records_identical": false,
+  "differing_fields": [
+    "timing"
+  ],
+  "source316_audit_sha256": "539cc5444a02ff0167ee05e67226a8d541ab48028d8df9bedf1008c790a98b53",
+  "source318_audit_sha256": "dd9d10e7b8bfefbcf3b5ba9e1b9e2dbfc51f9f338a6beec9370465b279cfa23b",
+  "original_attempt": "A comparison of whole comparison records failed because elapsed timing fields differ; the six actual diagnostic issue entries are byte-equivalent JSON values.",
+  "qualification": "Both attempts remain failed for these six differences. The check establishes that the diagnostic mismatch records are unchanged; it does not normalize output or turn either run into a pass.",
+  "goal_complete": false
+}

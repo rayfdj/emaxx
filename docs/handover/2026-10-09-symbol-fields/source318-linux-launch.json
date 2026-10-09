@@ -1,0 +1,74 @@
+{
+  "dispatch": {
+    "commit": "93b6546f9c54aaecf2237cc751e3f94591066969",
+    "runtime_commit": "93b6546f9c54aaecf2237cc751e3f94591066969",
+    "baseline": "30fa6e5b669c5cbd26e842e7675bfc18d306c2b4",
+    "source_inputs_verified": 562,
+    "ref": "runtime-char-tables",
+    "started": "2026-10-09T08:22:35.912179+00:00",
+    "pull": 82,
+    "url": "https://github.com/rayfdj/emaxx/pull/82",
+    "dispatches": [
+      {
+        "body": {
+          "ref": "runtime-char-tables",
+          "inputs": {
+            "validation": "rust"
+          }
+        },
+        "http_status": 204
+      },
+      {
+        "body": {
+          "ref": "runtime-char-tables",
+          "inputs": {
+            "validation": "frozen"
+          }
+        },
+        "http_status": 204
+      },
+      {
+        "body": {
+          "ref": "runtime-char-tables",
+          "inputs": {
+            "validation": "core-runtime-pair",
+            "baseline_revision": "30fa6e5b669c5cbd26e842e7675bfc18d306c2b4"
+          }
+        },
+        "http_status": 204
+      }
+    ],
+    "goal_complete": false
+  },
+  "observed": "2026-10-09T08:25:45.703843+00:00",
+  "runs": [
+    {
+      "id": 37904576961,
+      "url": "https://github.com/rayfdj/emaxx/actions/runs/37904576961",
+      "status": "in_progress",
+      "conclusion": null,
+      "jobs": [
+        "linux"
+      ]
+    },
+    {
+      "id": 37904574156,
+      "url": "https://github.com/rayfdj/emaxx/actions/runs/37904574156",
+      "status": "in_progress",
+      "conclusion": null,
+      "jobs": [
+        "linux"
+      ]
+    },
+    {
+      "id": 37904571251,
+      "url": "https://github.com/rayfdj/emaxx/actions/runs/37904571251",
+      "status": "in_progress",
+      "conclusion": null,
+      "jobs": [
+        "linux"
+      ]
+    }
+  ],
+  "goal_complete": false
+}

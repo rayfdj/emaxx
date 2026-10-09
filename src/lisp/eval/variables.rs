@@ -1140,17 +1140,17 @@ impl Interpreter {
         let Some(first) = self.globals.alias(symbol) else {
             return Ok(*symbol);
         };
-        let mut seen = vec![*symbol, *first];
-        let mut current = *first;
+        let mut seen = vec![*symbol, first];
+        let mut current = first;
         while let Some(target) = self.globals.alias(&current) {
-            if seen.contains(target) {
+            if seen.contains(&target) {
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("cyclic-variable-indirection".into()),
                     Value::Symbol(*symbol),
                 ])));
             }
-            seen.push(*target);
-            current = *target;
+            seen.push(target);
+            current = target;
         }
         Ok(current)
     }
@@ -1465,7 +1465,7 @@ impl Interpreter {
 
     pub(crate) fn global_binding_value(&self, name: &str) -> Option<Value> {
         self.terminal_keyboard_value(name)
-            .or_else(|| self.globals.value_by_name(name).cloned())
+            .or_else(|| self.globals.value_by_name(name))
     }
 
     pub(crate) fn global_binding_value_symbol(&self, name: &SymbolName) -> Option<Value> {
@@ -1474,7 +1474,7 @@ impl Interpreter {
         {
             return Some(value);
         }
-        self.globals.value(name).cloned()
+        self.globals.value(name)
     }
 
     pub fn set_global_binding(&mut self, name: &str, value: Value) {
@@ -1522,9 +1522,7 @@ impl Interpreter {
         {
             self.update_forwarded_eval_cell(name, &value);
         }
-        if let Some(existing) = self.globals.value_mut(symbol) {
-            *existing = value;
-        } else {
+        if !self.globals.replace_bound_value(symbol, value) {
             self.globals.insert(symbol, value);
         }
     }
@@ -2015,13 +2013,7 @@ impl Interpreter {
         if !self.globals.plain_store(symbol) {
             return false;
         }
-        match self.globals.value_mut(symbol) {
-            Some(existing) => {
-                *existing = value;
-                true
-            }
-            None => false,
-        }
+        self.globals.replace_bound_value(symbol, value)
     }
 
     /// eval.c's SPECPDL_INDEX: the depth of the binding stack, for
@@ -2092,13 +2084,10 @@ impl Interpreter {
         if self.globals.plain_store(symbol) {
             let binding_id = self.next_special_binding_id;
             self.next_special_binding_id += 1;
-            let previous = self.globals.value(symbol).cloned();
+            let previous = self.globals.value(symbol);
 
-            match self.globals.value_mut(symbol) {
-                Some(existing) => *existing = value,
-                None => {
-                    self.globals.insert(symbol, value);
-                }
+            if !self.globals.replace_bound_value(symbol, value) {
+                self.globals.insert(symbol, value);
             }
             let restore = SpecialBindingRestore {
                 binding_id,
@@ -2389,12 +2378,11 @@ impl Interpreter {
             && self.globals.plain_store(&restore.name)
         {
             match restore.previous {
-                Some(value) => match self.globals.value_mut(&restore.name) {
-                    Some(existing) => *existing = value,
-                    None => {
+                Some(value) => {
+                    if !self.globals.replace_bound_value(&restore.name, value) {
                         self.globals.insert(&restore.name, value);
                     }
-                },
+                }
                 None => self.remove_global_binding_symbol(&restore.name),
             }
             return Ok(());

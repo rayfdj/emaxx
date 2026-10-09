@@ -1202,7 +1202,7 @@ impl Interpreter {
             return None;
         }
         let function = match func.kind() {
-            Kind::Symbol(name) => *self.globals.function(&name)?,
+            Kind::Symbol(name) => self.globals.function(&name)?,
             _ => *func,
         };
         let Kind::Closure(closure) = function.kind() else {

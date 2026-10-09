@@ -378,16 +378,14 @@ static INTERNED_SYMBOL_NAMES: ProcessTable<
 /// Access uses the existing runtime ownership boundary, without a second
 /// lock on lookup/allocation. Entries are not GC roots and are removed by
 /// sweep_symbol_cells before the corresponding allocation is released.
-static UNINTERNED_SYMBOL_BOOK: ProcessTable<HashMap<String, SymbolName>> = ProcessTable::new();
+static UNINTERNED_SYMBOL_BOOK: ProcessTable<
+    HashSet<SymbolName, crate::lisp::primitives::FnvBuildHasher>,
+> = ProcessTable::new();
 
-/// Symbol ids are process-wide: the same internal text carries the same id
-/// on every thread, so an interpreter built on one thread (the test image
-/// template) addresses the same cells when it is used on another.  An
-/// interned text keeps its id forever; an uninterned text keeps it while
-/// any state with that text is alive (the count), so a private name that
-/// dies and is minted again gets a fresh id.
-type SymbolIdTable = HashMap<String, (u32, usize), crate::lisp::primitives::FnvBuildHasher>;
-static SYMBOL_IDS: std::sync::Mutex<Option<SymbolIdTable>> = std::sync::Mutex::new(None);
+/// Each allocated symbol owns its id. Both lookup tables above are already
+/// process-wide, so moving an interpreter between serialized OS-thread entries
+/// needs no second name-to-id registry or lock. The counters remain temporary
+/// until symbol fields move out of the per-interpreter indexed adapter.
 static NEXT_SYMBOL_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static NEXT_UNINTERNED_SYMBOL_ID: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
@@ -397,18 +395,8 @@ static NEXT_UNINTERNED_SYMBOL_ID: std::sync::atomic::AtomicU32 =
 /// interned names rather than by every `make-symbol' ever evaluated.
 pub(crate) const UNINTERNED_SYMBOL_ID_BIT: u32 = 1 << 31;
 
-fn symbol_id_for(text: &str, uninterned: bool) -> u32 {
-    let mut registry = SYMBOL_IDS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let registry = registry.get_or_insert_with(HashMap::default);
-    if let Some((id, states)) = registry.get_mut(text) {
-        if uninterned {
-            *states += 1;
-        }
-        return *id;
-    }
-    let id = if uninterned {
+fn next_symbol_id(uninterned: bool) -> u32 {
+    if uninterned {
         let serial = NEXT_UNINTERNED_SYMBOL_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         assert!(
             serial < UNINTERNED_SYMBOL_ID_BIT,
@@ -419,41 +407,27 @@ fn symbol_id_for(text: &str, uninterned: bool) -> u32 {
         let id = NEXT_SYMBOL_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         assert!(id < UNINTERNED_SYMBOL_ID_BIT, "symbol id space exhausted");
         id
-    };
-    registry.insert(text.to_owned(), (id, usize::from(uninterned)));
-    id
+    }
 }
 
-fn registered_symbol_id(text: &str) -> Option<u32> {
-    let registry = SYMBOL_IDS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    registry.as_ref()?.get(text).map(|(id, _)| *id)
-}
-
-/// alloc.c's `sweep_symbols', with the registries an uninterned
-/// symbol's key names released as the cell goes: the id registry's
-/// count and the book of live uninterned symbols.
+/// alloc.c's `sweep_symbols': remove the weak lookup entry before releasing
+/// the allocation whose own text is its key. The book holds no extra string
+/// and never roots a symbol. It is a migration adapter for name-keyed callers.
 pub(crate) fn sweep_symbol_cells(epoch: u32) {
     crate::lisp::alloc::sweep_symbols(epoch, |cell| {
-        let Some(key) = cell.key.as_deref() else {
+        if cell.id & UNINTERNED_SYMBOL_ID_BIT == 0 {
             return;
-        };
-        UNINTERNED_SYMBOL_BOOK.with_borrow_mut(|book| {
-            book.remove(key);
-        });
-        let mut registry = SYMBOL_IDS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let Some(registry) = registry.as_mut() else {
-            return;
-        };
-        if let Some((_, states)) = registry.get_mut(key) {
-            *states = states.saturating_sub(1);
-            if *states == 0 {
-                registry.remove(key);
-            }
         }
+        UNINTERNED_SYMBOL_BOOK.with_borrow_mut(|book| {
+            // Internal constructors can reuse an encoded key. Retire only
+            // this allocation's entry, never a later live symbol's entry.
+            if book
+                .get(cell.internal.as_str())
+                .is_some_and(|symbol| symbol.identity_ptr() == std::ptr::from_ref(cell) as usize)
+            {
+                book.remove(cell.internal.as_str());
+            }
+        });
     });
 }
 
@@ -489,14 +463,13 @@ impl SymbolName {
                     text.as_str()
                 }))
             });
-            let id = symbol_id_for(text.as_str(), false);
+            let id = next_symbol_id(false);
             let name = Self(crate::lisp::alloc::allocate_symbol(
                 crate::lisp::alloc::SymbolCell {
                     internal: text,
                     lisp_name,
                     mark: MarkBit::default(),
                     id,
-                    key: None,
                 },
             ));
             names.insert(name);
@@ -513,12 +486,6 @@ impl SymbolName {
     /// symbols it is about to intern; one growth instead of several).
     pub(crate) fn reserve_interned(additional: usize) {
         INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| names.reserve(additional));
-        let mut registry = SYMBOL_IDS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        registry
-            .get_or_insert_with(HashMap::default)
-            .reserve(additional);
     }
 
     /// The interned state for TEXT, without allocating when it exists.
@@ -533,20 +500,13 @@ impl SymbolName {
 
     /// The id of the state TEXT currently names, if any state does: an
     /// interned name that was never mentioned, or an uninterned symbol that
-    /// died, has no cell anywhere.  This thread's tables answer first; the
-    /// process registry covers a name another thread interned.
+    /// died, has no cell anywhere. Both tables are process-wide, including
+    /// symbols allocated by another serialized OS-thread entry.
     pub(crate) fn id_of(text: &str) -> Option<u32> {
-        if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR)
-            && let Some(name) = Self::live_uninterned(text)
-        {
-            return Some(name.id());
+        if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
+            return Self::live_uninterned(text).map(|name| name.id());
         }
-        if let Some(id) =
-            INTERNED_SYMBOL_NAMES.with_borrow(|names| names.get(text).map(|name| name.0.id))
-        {
-            return Some(id);
-        }
-        registered_symbol_id(text)
+        INTERNED_SYMBOL_NAMES.with_borrow(|names| names.get(text).map(|name| name.id()))
     }
 
     /// The interned symbol named TEXT, through a cache keyed by the text's
@@ -593,22 +553,17 @@ impl SymbolName {
 
     fn new_uninterned(lisp_name: Value, internal: String) -> Self {
         crate::lisp::native_comp::note_lisp_allocation(48);
-        let id = symbol_id_for(internal.as_str(), true);
-        let key = internal
-            .as_str()
-            .contains(UNINTERNED_SYMBOL_MARKER_CHAR)
-            .then(|| Box::<str>::from(internal.as_str()));
+        let id = next_symbol_id(true);
         let name = Self(crate::lisp::alloc::allocate_symbol(
             crate::lisp::alloc::SymbolCell {
                 internal,
                 lisp_name,
                 mark: MarkBit::default(),
                 id,
-                key,
             },
         ));
         UNINTERNED_SYMBOL_BOOK.with_borrow_mut(|book| {
-            book.insert(name.0.internal.as_str().to_owned(), name);
+            book.replace(name);
         });
         name
     }
@@ -3562,6 +3517,54 @@ mod tests {
         };
 
         assert!(actual.ptr_eq(&expected));
+    }
+
+    #[test]
+    fn symbol_ids_resolve_across_serialized_host_threads_and_expire_with_the_object() {
+        const INTERNED: &str = "runtime-symbol-id-thread-probe";
+        let text = make_uninterned_symbol_name("runtime-symbol-id-weak-probe", 317);
+        let first_text = text.clone();
+        let (interned, uninterned) = std::thread::spawn(move || {
+            crate::lisp::runtime::with_runtime(|| {
+                let interned = SymbolName::intern_str(INTERNED);
+                let uninterned = SymbolName::intern_str(&first_text);
+                (interned.id(), uninterned.id())
+            })
+        })
+        .join()
+        .expect("first serialized host entry");
+
+        let second_text = text.clone();
+        std::thread::spawn(move || {
+            crate::lisp::runtime::with_runtime(|| {
+                assert_eq!(SymbolName::id_of(INTERNED), Some(interned));
+                assert_eq!(SymbolName::intern_str(INTERNED).id(), interned);
+                assert_eq!(SymbolName::id_of(&second_text), Some(uninterned));
+                assert_eq!(SymbolName::intern_str(&second_text).id(), uninterned);
+            });
+        })
+        .join()
+        .expect("lookup uses the allocated objects on another OS thread");
+
+        // Both creator frames and their OS threads have ended. Only the weak
+        // name lookup remains; it must not retain the uninterned allocation.
+        let collected_text = text.clone();
+        std::thread::spawn(move || {
+            crate::lisp::runtime::with_runtime(|| {
+                let mut interp = crate::lisp::eval::Interpreter::new();
+                let mut env = super::Env::new();
+                crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
+                    .expect("collect after both creator threads have exited");
+                assert_eq!(SymbolName::id_of(INTERNED), Some(interned));
+                assert_eq!(SymbolName::id_of(&collected_text), None);
+                assert!(SymbolName::live_uninterned(&collected_text).is_none());
+                let replacement = SymbolName::intern_str(&collected_text);
+                assert_ne!(replacement.id(), uninterned);
+                assert_eq!(SymbolName::id_of(&collected_text), Some(replacement.id()));
+            });
+        })
+        .join()
+        .expect("weak entry retires before the symbol allocation is reused");
     }
 
     #[test]
