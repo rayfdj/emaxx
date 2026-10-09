@@ -19622,6 +19622,15 @@ fn symbol_fields_preserve_live_children_and_release_unreachable_owners() {
 }
 
 #[test]
+fn symbol_alias_redirects_preserve_handover_fields_and_reclaim_replaced_targets() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-redirect-lifetime.el"),
+        include_str!("../../../tests/fixtures/symbol-redirect-lifetime.expected").trim(),
+        "GNU alias redirects replace the value, preserve other fields and release old targets",
+    );
+}
+
+#[test]
 fn symbol_properties_preserve_override_order_and_identity() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/overriding-property-identity.el"),
