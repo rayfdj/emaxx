@@ -24,10 +24,16 @@ and follows actual uninterned-symbol roots, including aliases and finalizers.
 Its portable selected evidence verifies 560 source inputs, warning-free strict
 checks, 24 focused passes in each profile and 12 matching ordinary GNU/Emaxx
 processes, including real bytecode/native execution. Earlier failed drafts remain
-preserved. The complete macOS gate is running separately; Linux and timing remain
-pending at this checkpoint. Per-instance allocated-symbol ownership and every
-remaining full-goal requirement stay open. No performance or completion claim
-follows from this selected validation.
+preserved. The complete macOS Rust gate now verifies **3,161 passes / two existing
+ignores**, including every raw library name and native artifact identity. Linux
+Rust and both frozen comparisons continue separately.
+
+Three alternating Linux full16 pilots verify all **192 actual answers/modes**.
+The body aggregate is **2.52% slower than main**, and the paired GNU aggregate is
+**2.896247×**. Bytecode-to-native regresses 20.30%; all samples and regressions
+remain in the linked evidence. Per-instance allocated-symbol ownership, honest
+physical accounting/counters and every other full-goal requirement stay open.
+This diagnostic does not establish calibrated nine-round/every-case GNU parity.
 
 ## Main merge and terminal continuation — 8 October 2026
 

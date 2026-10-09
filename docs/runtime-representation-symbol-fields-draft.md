@@ -2,9 +2,9 @@
 
 Source314 continues the full goal; **the architecture and performance goal remain
 incomplete**. The [selected evidence](handover/2026-10-09-symbol-fields/source314-selected-manifest.json)
-identifies every changed input and retains the earlier failures. Full macOS Rust
-validation is running separately; Linux validation and timing are still pending
-at this selected-evidence checkpoint.
+identifies every changed input and retains the earlier failures. Complete macOS
+Rust validation and Linux diagnostic timing have now finished. Linux Rust and
+both full frozen comparisons continue separately.
 
 The existing per-interpreter symbol cell now owns its property list alongside
 the value, function and alias. The separate name-keyed plist vector and both
@@ -33,8 +33,9 @@ Allocated-symbol authority is **not complete**. Allocated symbols still share
 names/identity across interpreter instances; their mutable cells remain per
 interpreter to preserve isolation. The temporary GC-only fixed-point walk must
 disappear when each instance's allocated symbols own their fields. No ordinary
-access gains a new hash lookup, but this walk and the enlarged dense cell still
-need cost measurement. No speedup or GNU parity is claimed.
+access gains a new hash lookup. The timing below measures the combined change;
+it does not isolate the GC walk or enlarged dense cell. No speedup or GNU parity
+is claimed.
 
 The portable patch replays all **560 runtime/build/test inputs and checkout
 modes** from main `b724bab0`; 102 auxiliary inputs are unchanged. Formatting,
@@ -47,6 +48,28 @@ enumeration count. **Twelve ordinary processes / six comparisons match**, using
 each editor's own executable/image and actual interpreted, bytecode and native
 execution. The GNU reference is the recorded rebuild, not the lost original
 Darwin executable.
+
+The [complete macOS Rust audit](handover/2026-10-09-symbol-fields/source314-macos-rust-results-manifest.json)
+verifies **3,161 passes / two existing ignores**, including native artifact
+identity, actual native thread continuations and public runtime ownership.
+Every one of the 3,064 library names and every Cargo result agrees with its raw
+log. The run started on a dirty `b724bab0` checkout; all 560 original and actual
+post-run source bytes/modes match published `2712c057`. The detached wrapper
+saved the successful command receipt but omitted its final source-after file;
+the independent capture and that limitation are preserved. No test was rerun
+to replace the result.
+
+The [Linux timing audit](handover/2026-10-09-symbol-fields/source314-linux-symbol-performance-results-manifest.json)
+verifies all **192 actual answers and execution modes** across three alternating
+full16 pilots of main `b724bab0` and source314. The raw body geometric ratio is
+**1.025170** (2.52% slower); paired GNU aggregates are **2.896247× for314** and
+2.822171× for main. Bytecode-to-native is the largest raw regression (+20.30%);
+native-to-interpreted improves 6.94%. Every sample and slower case remains.
+Both revisions include the source312 native-GC completion repair. The baseline
+still retains unreachable symbol fields and copies plists on `put`, so these
+diagnostics preserve the cost of changed correctness and allocation behavior.
+They are neither calibrated nine-round acceptance nor evidence of equivalent
+allocation accounting; real counters remain unavailable.
 
 The archive preserves the initial compiler failure, intermediate warnings,
 baseline mismatches, a **17-pass/one-failure** focused run, and a full-gate attempt
