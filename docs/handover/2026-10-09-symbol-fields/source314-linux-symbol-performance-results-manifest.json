@@ -1,0 +1,58 @@
+{
+  "checkpoint": "source314",
+  "source_commit": "2712c05779e47ec9b8a7c89121d1a79fdcc42596",
+  "run_id": 37869847900,
+  "archive": {
+    "path": "source314-linux-symbol-performance-results.tar.gz",
+    "bytes": 3341879,
+    "sha256": "7aaada6c90493d7266fe250b81f469a4481b62935b2de92c7f57b39ea204c826"
+  },
+  "members": 1080,
+  "processes": 192,
+  "raw_body_geometric_ratio": 1.0251703326608117,
+  "paired_gnu_geometric_ratios": {
+    "baseline": 2.822170575045664,
+    "candidate": 2.8962469498471597
+  },
+  "qualification": "Three alternating full16 diagnostic pilots; all samples, actual GNU/Emaxx results and modes verified. Published tracked source, retained GNU/Emaxx executables/images, native payloads, measurement inputs and build messages independently checked. GNU Lisp/bytecode/native-library inventory hashes outside the retained artifact are bound by original pre/post-run receipts, not rehashed from missing remote paths. No calibrated nine-round or every-case3% acceptance. Both revisions include source312 native GC completion. Source314 changes actual symbol retention and put allocation behavior; the unchanged baseline retains unreachable symbol fields. Missing real allocation counters, per-instance allocated-symbol authority and physical accounting remain open. These are before/after diagnostics, not completed equivalent-work acceptance.",
+  "excluded_binaries": [
+    {
+      "path": "source314-linux-pair/raw/core-runtime-pair/artifacts/baseline/emaxx",
+      "bytes": 15507568,
+      "sha256": "0f09ee3fa59a2ca23038d3e476d4c498adcfb739d4b7905940b5142f3558ca7e"
+    },
+    {
+      "path": "source314-linux-pair/raw/core-runtime-pair/artifacts/baseline/emaxx.pdmp",
+      "bytes": 21852248,
+      "sha256": "03bbd9efd6de6bab153b6b68704a28470f52ff396779cb38ecf73a0041c20778"
+    },
+    {
+      "path": "source314-linux-pair/raw/core-runtime-pair/artifacts/candidate/emaxx",
+      "bytes": 15507576,
+      "sha256": "1f15c6e111d8377be1712ba27e23ffc6bae574a7685df92df9490aae0afd6e8f"
+    },
+    {
+      "path": "source314-linux-pair/raw/core-runtime-pair/artifacts/candidate/emaxx.pdmp",
+      "bytes": 21852368,
+      "sha256": "9992d2b5367810f67be149967aae90adc869c39170bff9698cceb76f6b957566"
+    },
+    {
+      "path": "source314-linux-pair/raw/core-runtime-pair/oracle-inputs/emacs",
+      "bytes": 30924408,
+      "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf"
+    },
+    {
+      "path": "source314-linux-pair/raw/core-runtime-pair/oracle-inputs/emacs.pdmp",
+      "bytes": 17723936,
+      "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae"
+    }
+  ],
+  "artifact_zip_receipt": {
+    "run_id": 37869847900,
+    "artifact_id": 11590765250,
+    "commit": "2712c05779e47ec9b8a7c89121d1a79fdcc42596",
+    "sha256": "7b38032c85b34a1491a9a184fb938c2da176e91ddc24339df388bde8f8474b25",
+    "bytes": 41947522
+  },
+  "goal_complete": false
+}

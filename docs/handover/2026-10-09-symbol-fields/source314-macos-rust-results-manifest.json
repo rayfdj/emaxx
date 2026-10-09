@@ -1,0 +1,61 @@
+{
+  "checkpoint": "source314",
+  "archive": {
+    "path": "source314-macos-rust-results.tar.gz",
+    "bytes": 214675,
+    "sha256": "d34f845152e00646685ecf66028dca00136faf04c399d1e52da482578f823f3c"
+  },
+  "members": 39,
+  "audit": {
+    "status": "passed",
+    "source_commit": "2712c05779e47ec9b8a7c89121d1a79fdcc42596",
+    "validation_checkout": {
+      "dirty": true,
+      "head": "b724bab0d945a68f1049233b6212930525a25ded"
+    },
+    "unchanged_source_inputs": 560,
+    "raw_library_names_verified": 3064,
+    "library_passed": 3062,
+    "library_ignored": 2,
+    "cargo_passed": {
+      "bins": 60,
+      "integration": 39
+    },
+    "total_passed": 3161,
+    "native_artifact_identity": "passed",
+    "retained_files_verified": 5,
+    "test_binary_sha256": "9b02b5d9fc068f0f7764381fc0824dd5a2e7d62ce7b7ae662aca3d439be4ad28",
+    "summary_sha256": "7ac392231a287677be9a261087811176e7ca1b190aeb2c8cd0fcd284813c91a6",
+    "wrapper_limit": "The detached wrapper saved the full command exit-zero receipt but did not save its final source-after.json; its observation handle had already disappeared. No wrapper success is inferred. This independent post-run source capture matches the original frozen source and published commit.",
+    "qualification": "Full gate started as a dirty b724bab0 checkout; all 560 pre-run and independently captured post-run bytes/modes match published source314. Each raw library name/verdict and Cargo summary checked. Post-run retained fixture images do not identify per-test use. Frozen comparisons, selected release and performance are separate.",
+    "goal_complete": false
+  },
+  "excluded_binaries": [
+    {
+      "path": "symbol-draft4/full/retained-inputs/fixture-images/loadup-78b3e2e4-d44829be.pdmp",
+      "bytes": 21781424,
+      "sha256": "29e9aae040945aef0070a210ab5cf78d947722cbb9d5101eced4f248fa859d24"
+    },
+    {
+      "path": "symbol-draft4/full/retained-inputs/fixture-images/loadup-9b02b5d9-d44829be.pdmp",
+      "bytes": 21778304,
+      "sha256": "9644291aefc83127f43b85a8ca4e50a046d6190806bd62c5557d0c252d2938a5"
+    },
+    {
+      "path": "symbol-draft4/full/retained-inputs/fixture-images/loadup-cf2fc4f5-d44829be.pdmp",
+      "bytes": 21778456,
+      "sha256": "dbfb2e833cb904484aa1547c0fde25843bca18fb160747d80375c783dd46f01f"
+    },
+    {
+      "path": "symbol-draft4/full/retained-inputs/fixture-images/loadup-f3e37218-d44829be.pdmp",
+      "bytes": 21781440,
+      "sha256": "968aec394dc81714b31742e31893629853bc658e23818bf7517763845861276e"
+    },
+    {
+      "path": "symbol-draft4/full/retained-inputs/libtest",
+      "bytes": 29795088,
+      "sha256": "9b02b5d9fc068f0f7764381fc0824dd5a2e7d62ce7b7ae662aca3d439be4ad28"
+    }
+  ],
+  "goal_complete": false
+}
