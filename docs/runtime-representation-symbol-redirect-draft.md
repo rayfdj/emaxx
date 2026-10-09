@@ -1,9 +1,10 @@
 # Symbol value and alias union — 9 October 2026
 
-Source316 is a **separately packaged, unapplied draft**. Its
+Source316 is **applied on the task branch as `ee0bddb9`**. Its
 [cumulative patch and selected evidence](handover/2026-10-09-symbol-fields/source316-symbol-redirect-draft-manifest.json)
-include source315 on base `2712c057`. PR80's runtime remains source314; the full
-architecture and performance goal remains active and incomplete.
+include source315 on base `2712c057` and preserve its earlier unapplied status.
+PR80 is merged into main as `0610bf0c`; main's runtime remains source314.
+The full architecture and performance goal remains active and incomplete.
 
 GNU `lisp.h:Lisp_Symbol` stores either the plain value or alias target in its
 `val` union. `eval.c:Fdefvaralias` hands a former value to an unbound target

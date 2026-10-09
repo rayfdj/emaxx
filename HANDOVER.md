@@ -16,7 +16,22 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
-## Symbol-field continuation — 9 October 2026
+## Main merge and source316 continuation — 9 October 2026
+
+PR [#80](https://github.com/rayfdj/emaxx/pull/80) is merged into main as
+`0610bf0c6aafbc45101d67efbd19cb058af4fc8f`. It carries source314's symbol
+lifetime/plist repairs and the evidence and separately packaged drafts below.
+The full goal remains active and incomplete. The existing Git credential works;
+no new login or user approval is required for the authorized branch/CI work.
+
+Source316 is now applied on the task branch as `ee0bddb9`, with all 562 inputs
+identical to its selected validation. It combines source315's compact fields
+and removed alias mirror with a shared value/alias word. Its full macOS Rust
+gate is running; Linux gates, frozen comparisons and timing remain pending.
+The archived draft's earlier unapplied status is historical. Main's production
+runtime remains source314 until the next validated merge.
+
+## Symbol-field checkpoint evidence — 9 October 2026
 
 Read the [symbol-field continuation](docs/runtime-representation-symbol-fields-draft.md).
 Source314 removes the separate plist store/indexes, preserves live `put` sharing,
