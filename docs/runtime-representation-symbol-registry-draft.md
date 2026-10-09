@@ -57,3 +57,10 @@ must preserve Rust aliasing when copied symbol handles access the same object.
 Complete source317 platform gates, frozen comparisons, relevant terminal coverage
 and timing have not run. Every other full-goal requirement, including final
 ownership/audit work and the locked performance criterion, remains required.
+
+The [source318 copied-payload API continuation](runtime-representation-symbol-payload-api-draft.md)
+now includes this cleanup and passes 208 controls per profile plus the same nine
+ordinary comparisons. Its cumulative patch applies to the published source316
+base; the incremental base is the locally committed source317 `c7185a61`.
+Source318's full macOS gate is running. Both remain separate from PR81's runtime,
+and the instance-name isolation defect remains open.

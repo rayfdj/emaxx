@@ -20,6 +20,13 @@ copying, allocated fields, real intervals/pure storage, physical accounting,
 remaining adapters, final audit/validation and performance acceptance remain
 required. Neither these passing gates nor the requested merge completes the goal.
 
+The separate [source318 access-API continuation](runtime-representation-symbol-payload-api-draft.md)
+returns symbol payloads by copy and performs explicit stores. Strict checks,
+208 controls per profile, nine ordinary comparisons and both 562-input patch
+replays pass. Its full macOS Rust gate is running. It prepares allocated-field
+mutation but does not implement instance-owned symbols or repair the recorded
+isolation defect; no performance or full-goal completion is claimed.
+
 ## Symbol-field checkpoint and separate union draft — 9 October 2026
 
 The [source314 checkpoint](runtime-representation-symbol-fields-draft.md) removes

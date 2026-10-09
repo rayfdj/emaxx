@@ -50,6 +50,16 @@ public-API probe confirms that mutable symbol-name properties leak into the
 next editor instance. That negative remains open. Instance-owned interning,
 image copying and allocated fields must resolve it; the cleanup alone does not.
 
+The next [copied-payload API draft](docs/runtime-representation-symbol-payload-api-draft.md)
+is separately packaged as **source318, unapplied**. It includes source317 and
+replaces borrowed mutable payloads with copied words and explicit stores, keeping
+the existing lookup and assignment paths. Strict checks, **208 controls per
+profile** and **nine ordinary GNU comparisons** pass. Both patch replays verify
+562 inputs; old assertions and all test inventories remain. Its full macOS Rust
+gate is running in the source317 checkout. Instance-owned interning and allocated
+fields are still unimplemented; the public-instance name-property negative stays
+open. This API preparation does not establish ownership or performance completion.
+
 ## Symbol-field checkpoint evidence — 9 October 2026
 
 Read the [symbol-field continuation](docs/runtime-representation-symbol-fields-draft.md).

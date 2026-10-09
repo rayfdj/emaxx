@@ -1,0 +1,72 @@
+{
+  "checkpoint": "source318 separately packaged, unapplied copied symbol payload API",
+  "base": "c7185a614d256128d00929ee6fc6251149e4766f",
+  "cumulative_base": "4dcf9f6a9b651545a9fba49934131e5488f0a05d",
+  "archive": {
+    "path": "source318-symbol-payload-api-draft.tar.gz",
+    "bytes": 429222,
+    "sha256": "3016ec486bade4781e0f19b84dd6c8a13884dc82b5f0e1af3b9df36f598376a1",
+    "members": 128
+  },
+  "selected_audit": {
+    "checkpoint": "source318 selected copied symbol payload API draft",
+    "base": "c7185a614d256128d00929ee6fc6251149e4766f",
+    "source_inputs_verified": 562,
+    "profiles": {
+      "gate": {
+        "selected": 208,
+        "inventory": 3069,
+        "binary_sha256": "b8fea9d238ade1ad320025d31223d13eec65541c716e50cb958a626472b3af89"
+      },
+      "release": {
+        "selected": 208,
+        "inventory": 3068,
+        "binary_sha256": "47d6b958175beb91b02b07ecdf72eafcb5cb6d2f1a107c5edec897b04bb25601"
+      }
+    },
+    "ordinary_processes": 18,
+    "ordinary_comparisons": 9,
+    "original_controls_retained": 175,
+    "unchanged_full_test_inventory": true,
+    "bounded_test_type_adaptations_verified": true,
+    "ordinary_launcher_unchanged_except_paths": true,
+    "replays": {
+      "payload-draft1.patch": {
+        "base": "c7185a614d256128d00929ee6fc6251149e4766f",
+        "sha256": "57e0e3c1a94ebfbcb68e4694d7be581531bcdc476b31b06bf57f1044fb21874f",
+        "source_inputs_verified": 562
+      },
+      "payload-cumulative.patch": {
+        "base": "4dcf9f6a9b651545a9fba49934131e5488f0a05d",
+        "sha256": "81a97302af85a5cb7bbc5d63cef39632ad7ed2db73e0c596d9abc7d2e62ed988",
+        "source_inputs_verified": 562
+      }
+    },
+    "goal_complete": false,
+    "qualification": "Strict and selected gate/release checks plus nine actual ordinary GNU comparisons. The cumulative patch includes source317. Per-interpreter field tables, process-shared symbol objects, the recorded source316 public-instance ownership negative, full platform/frozen/terminal validation, honest accounting and final performance criteria remain open. This API avoids exposing mutable payload references; it does not implement per-instance interning or allocated fields."
+  },
+  "excluded_retained_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-payload-api-2026-10-09/payload-draft1-gate/fixture-images/loadup-b8fea9d2-d44829be.pdmp",
+      "bytes": 21802392,
+      "sha256": "955c634eceb5a1cfd4025ad7d554e8f2a10bbeeb9be5b5f204d9947a315ac545"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-payload-api-2026-10-09/payload-draft1-gate/libtest",
+      "bytes": 29403280,
+      "sha256": "b8fea9d238ade1ad320025d31223d13eec65541c716e50cb958a626472b3af89"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-payload-api-2026-10-09/payload-draft1-release/fixture-images/loadup-47d6b958-d44829be.pdmp",
+      "bytes": 21802592,
+      "sha256": "278fe0dffa581de96692ad67988ce41eb7e63a4c794e27db708cdcfe63e9ff3d"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-payload-api-2026-10-09/payload-draft1-release/libtest",
+      "bytes": 22930928,
+      "sha256": "47d6b958175beb91b02b07ecdf72eafcb5cb6d2f1a107c5edec897b04bb25601"
+    }
+  ],
+  "qualification": "The cumulative patch includes source317 but does not change PR81 production runtime. Strict checks, 208 retained/affected controls in each profile and nine ordinary GNU comparisons pass. This changes how Rust callers access the existing cells, without allocating replacement payloads, adding lookups, changing fixtures or repairing the recorded source316 instance-name isolation negative. Full source318 macOS validation runs separately; Linux/frozen/terminal/timing and all unfinished full-goal requirements remain.",
+  "goal_complete": false
+}
