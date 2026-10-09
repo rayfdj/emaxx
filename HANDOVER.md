@@ -36,9 +36,15 @@ editors timing out in Tramp at the original 180-second limit. The separate
 600-second observation obtains all **59 matching Tramp outcomes**: each editor
 has 52 passes and seven skips. Its subject was rebuilt from the same runtime
 inputs; both executable identities are recorded and the image is unchanged.
-The original failed run remains failed. A separate ordinary tail is running
-exactly the remaining **200 frozen files**, with the unchanged 180-second limit;
-there is no complete macOS frozen result yet. Source315 validation is separate.
+The original failed run remains failed. The [ordinary tail and Eglot replay](docs/handover/2026-10-09-symbol-fields/source314-macos-tail-results-manifest.json)
+now cover exactly the remaining **200 frozen files**, with the unchanged
+180-second limit. The tail has 3,376 matching outcomes, six existing platform
+diagnostic differences and one GNU Eglot reconnect expectation failure; Emaxx
+passes that test. One separate whole-file Eglot replay matches all 52 outcomes
+with identical executables/images and source inputs. The earlier GNU failure
+remains unexplained and failed. Across the attempts, all 519 files are observed,
+7,915 distinct outcome labels have matches, and six platform differences remain.
+This is not one complete passing frozen run. Source315 validation is separate.
 
 Three alternating Linux full16 pilots verify all **192 actual answers/modes**.
 The body aggregate is **2.52% slower than main**, and the paired GNU aggregate is
@@ -51,8 +57,23 @@ The next [compact-symbol draft](docs/runtime-representation-symbol-values-draft.
 is **packaged separately and unapplied**. Source315 removes duplicated alias
 names/targets and uses single-word value/function payloads. Its exact patch
 replays 560 inputs; strict checks, 126 selected tests per profile and 12 ordinary
-GNU/Emaxx processes pass. All old tests remain. Its complete macOS gate is running;
-its own Linux/frozen/timing evidence is still required. PR80's runtime remains314.
+GNU/Emaxx processes pass. All old tests remain. Its complete macOS gate verifies
+**3,163 passes / two existing ignores**, including native artifact identity.
+Its own Linux/frozen/timing evidence has not run. PR80's runtime remains314.
+
+The cumulative [value/alias-union draft](docs/runtime-representation-symbol-redirect-draft.md)
+is now separately packaged as **source316, still unapplied**. Value and alias
+share one word, and the per-interpreter cell shrinks from 64 to 56 bytes.
+Its patch replays 562 inputs; strict checks and 128 controls per profile pass.
+Eighteen successful ordinary processes give nine matching comparisons, including
+actual native compilation of all three new helpers and their caller. Two earlier
+native-launcher failures and a conservative-stack fixture mismatch remain
+preserved. Its full macOS Rust gate is running at
+`target/runtime-goal/symbol-ownership-2026-10-09/redirect-draft1-full`.
+Complete source316 platform/frozen/timing validation is still required; the
+per-instance allocated-symbol ownership work is not complete. The requested
+main merge carries source314 runtime and these separately packaged drafts;
+it does not complete the full goal.
 
 ## Main merge and terminal continuation — 8 October 2026
 

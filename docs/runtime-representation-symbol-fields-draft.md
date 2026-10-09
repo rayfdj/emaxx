@@ -5,7 +5,7 @@ incomplete**. The [selected evidence](handover/2026-10-09-symbol-fields/source31
 identifies every changed input and retains the earlier failures. Complete Linux
 and macOS Rust validation, Linux frozen comparison and Linux diagnostic timing
 have now finished. The macOS frozen comparison stopped at a timeout; its
-remaining coverage continues separately, as detailed below.
+remaining coverage has separate observations, as detailed below.
 
 The existing per-interpreter symbol cell now owns its property list alongside
 the value, function and alias. The separate name-keyed plist vector and both
@@ -78,9 +78,26 @@ seven skips in each editor. GNU takes 341.8 seconds and Emaxx 577.7 seconds.
 These runs overlapped builds and are not performance acceptance measurements.
 The subject executable was rebuilt from the same 560 runtime inputs; its hash
 differs, and both versions are retained independently. The image and GNU
-executable/image are unchanged. A separate ordinary tail now runs exactly the
-remaining 200 frozen files with the original deadline. None of this converts
-the first failed run into a complete frozen pass.
+executable/image are unchanged.
+
+The [ordinary tail and Eglot replay](handover/2026-10-09-symbol-fields/source314-macos-tail-results-manifest.json)
+cover exactly the remaining **200 frozen files** with the original 180-second
+deadline and all original selectors/outcome checks. All 400 child processes
+exit successfully, including all 177 native compiler outcomes in each editor.
+The tail nevertheless **fails**: 3,376 outcomes match, six existing macOS
+feature-message differences remain, and GNU's `eglot-test-auto-reconnect` fails
+its original server assertion while Emaxx passes. Each editor has 168 skips;
+Emaxx has 3,201 passes/14 expected failures and GNU 3,200 passes/14 expected
+failures/one unexpected failure.
+
+A single separate whole-file Eglot replay matches **all 52 outcomes**, with
+45 passes/seven skips per editor. The executables, images, harness, source,
+environment overrides, selector and deadline match the failed tail. The earlier
+GNU failure remains unexplained and is not relabeled successful. Across these
+separate attempts, all **519 files** are observed and **7,915 distinct outcome
+labels** have matches; six existing diagnostic differences remain strict
+mismatches. This is not one complete passing ordinary frozen run or evidence
+that a runtime repair caused Eglot's later pass.
 
 The [Linux timing audit](handover/2026-10-09-symbol-fields/source314-linux-symbol-performance-results-manifest.json)
 verifies all **192 actual answers and execution modes** across three alternating

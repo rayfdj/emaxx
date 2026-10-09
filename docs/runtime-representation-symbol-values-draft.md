@@ -44,10 +44,16 @@ mutation. The portable patch reproduces all **560 source inputs and checkout
 modes**; 102 auxiliary inputs remain unchanged. The GNU reference is the recorded
 rebuild, not the lost original Darwin executable.
 
-The complete macOS Rust gate is running separately. This archive certifies no
-partial full-run output. Source315 Linux, full frozen and timing have not run;
-source314 results do not certify it. No speedup, complete correctness, physical
-allocation accounting, allocated-symbol authority or GNU parity is claimed.
+The separate [complete macOS Rust evidence](handover/2026-10-09-symbol-fields/source315-macos-rust-results-manifest.json)
+verifies **3,163 passes / two existing ignores**: all 3,066 raw library names,
+60 binary tests and 39 integration tests, including native artifact identity
+and public runtime ownership. Both wrapper source captures and all retained
+inputs agree with the selected draft. Source315 Linux, full frozen and timing
+have not run; source314 results do not certify it. The cumulative
+[source316 continuation](runtime-representation-symbol-redirect-draft.md) now
+shares the value and alias payload. It requires its own complete validation.
+No speedup, physical allocation accounting, allocated-symbol authority or GNU
+parity is claimed.
 
 To reproduce, start at `2712c057`, apply `evidence/compact-draft1.patch` from the
 archive, and run the unchanged goal checks with the pinned GNU build. The archive

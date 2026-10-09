@@ -1,4 +1,32 @@
-# Current goal status — 7 October 2026
+# Current goal status — 9 October 2026
+
+## Symbol-field checkpoint and separate union draft — 9 October 2026
+
+The [source314 checkpoint](runtime-representation-symbol-fields-draft.md) removes
+the separate plist storage/indexes, preserves GNU's in-place plist mutation,
+and reclaims uninterned symbol fields from their actual owners. Load-history
+alias roots and loader EOF handling are repaired. Strict checks are warning-free;
+complete macOS/Linux Rust gates have 3,161/3,173 passes and two existing ignores.
+Linux frozen matches all 7,928 outcomes across 519 files. Separate macOS attempts
+observe every file and match 7,915 distinct outcome labels; six existing platform
+diagnostics remain mismatches. Original Tramp timeouts and a GNU Eglot failure
+remain failed; the later identical-artifact Eglot observation matches. There is
+no single passing full macOS frozen run.
+
+Three alternating full16 Linux pilots match all 192 answers/modes. Source314's
+body aggregate is 2.52% slower than main and 2.896247× its paired GNU execution;
+the largest raw regression is bytecode-to-native (+20.30%). These are diagnostic
+pilots, not the calibrated nine-round/every-case 3% acceptance criterion.
+
+Source315 and cumulative [source316](runtime-representation-symbol-redirect-draft.md)
+remain separately packaged, unapplied continuations. Source315 removes the alias
+mirror and option payload tags; its macOS gate has 3,163 passes/two ignores.
+Source316 shares value and alias in one word, making the per-interpreter cell
+56 bytes. Its strict checks, 128 controls per profile and nine ordinary comparisons
+pass; original setup failures remain preserved. Its full macOS gate is running.
+Allocated-symbol authority, real intervals/pure storage, physical accounting and
+counters, remaining adapters, internal ownership review, final validation/audit
+and performance acceptance remain required. This checkpoint is not goal completion.
 
 ## Checkpoint for main — 8 October 2026
 

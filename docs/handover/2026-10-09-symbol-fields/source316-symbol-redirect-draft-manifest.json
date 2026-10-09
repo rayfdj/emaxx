@@ -1,0 +1,64 @@
+{
+  "checkpoint": "source316 separately packaged and unapplied draft",
+  "archive": {
+    "path": "source316-symbol-redirect-draft.tar.gz",
+    "bytes": 9051998,
+    "sha256": "ccc3aeac33a3bfe0d1e32f416c3237d21c28715bd9d871ac1f79945b4c9c18f6",
+    "members": 150
+  },
+  "audit": {
+    "checkpoint": "source316 draft",
+    "base": "2712c05779e47ec9b8a7c89121d1a79fdcc42596",
+    "profiles": {
+      "gate": {
+        "passed": 128,
+        "inventory": 3068,
+        "retained_binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-ownership-2026-10-09/redirect-draft1/libtest",
+          "sha256": "9cb6c68bf60d54ff3b7b34617fe133cdabeade47d9d9940861f210d51f867e07"
+        }
+      },
+      "release": {
+        "passed": 128,
+        "inventory": 3067,
+        "retained_binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-ownership/emaxx/target/release/deps/emaxx-e17fcfe01baaf180",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-ownership-2026-10-09/redirect-draft1-release/libtest",
+          "sha256": "c5c352f8eb54b4eac1737415ba38d3f119ffa551fb039fab566f13be283d9449"
+        }
+      }
+    },
+    "source_inputs": 562,
+    "auxiliary_inputs": 102,
+    "ordinary_audited": true,
+    "ordinary_processes": 20,
+    "ordinary_successful_processes": 18,
+    "ordinary_comparisons": 9,
+    "preserved_failed_launcher_processes": 2,
+    "replay_verified": true,
+    "replay_directory": "/var/folders/js/swz7g_zx0qj34jhbbc1hr_6w0000gn/T/emaxx-redirect-symbol-replay-uxj206s5",
+    "patch_sha256": "f9b87a73daf2aaa33332e7328a0ab3ee1f522c76c9819fa842ff1b696d3fd92d",
+    "original_test_selectors_retained": true,
+    "existing_test_corrections": [
+      "physical cell size 64 to 56 bytes",
+      "test-only alias removal cannot restore the old overwritten value; value/flag checks retained after a new plain store"
+    ],
+    "goal_complete": false,
+    "qualification": "Selected gate/release controls, exact source replay, and ordinary comparisons only if ordinary_audited is true. The first ordinary cohort has 16 passes/two native launcher failures; only those two were repeated using GNU native-compile by function name. Every original failure is retained. The entry and all three fixture helpers are confirmed native in both successful followups. Value and alias now share a single payload. Allocated-symbol ownership and full-goal architecture, accounting, platform validation and performance acceptance remain incomplete."
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-ownership-2026-10-09/redirect-draft1/libtest",
+      "bytes": 29844176,
+      "sha256": "9cb6c68bf60d54ff3b7b34617fe133cdabeade47d9d9940861f210d51f867e07"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-ownership-2026-10-09/redirect-draft1-release/libtest",
+      "bytes": 22928304,
+      "sha256": "c5c352f8eb54b4eac1737415ba38d3f119ffa551fb039fab566f13be283d9449"
+    }
+  ],
+  "goal_complete": false,
+  "qualification": "This cumulative patch includes source315 and the value/alias union on base2712c057; it replays all 562 inputs. Strict checks and 128 focused tests in each profile pass. Eighteen successful ordinary processes cover nine GNU/Emaxx comparisons, including three compiled helpers and their compiled caller. The first two native launcher failures and the earlier conservative-stack fixture mismatch remain retained. There is no source316 complete Rust/Linux/frozen/performance certification. Source314 remains the PR runtime."
+}
