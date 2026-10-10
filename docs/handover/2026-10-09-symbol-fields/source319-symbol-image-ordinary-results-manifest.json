@@ -1,0 +1,52 @@
+{
+  "checkpoint": "source319 unapplied image draft6",
+  "archive": {
+    "path": "source319-symbol-image-ordinary-results.tar.gz",
+    "bytes": 61678,
+    "sha256": "3d7b677a2ea60d3a0194b32beff9474e3cbdba776a71fa0d358a17622732099f",
+    "members": 90
+  },
+  "audit": {
+    "status": "passed",
+    "source_inputs_verified": 565,
+    "processes": 24,
+    "comparisons": 12,
+    "actual_modes": [
+      "interpreted",
+      "bytecode",
+      "native"
+    ],
+    "identical_editor_arguments": true,
+    "previous_nine_comparisons_preserved": true,
+    "added_graph_comparisons": 3,
+    "retained_inputs": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft6-retained-inputs/0-emacs",
+        "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+        "bytes": 9600848
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft6-retained-inputs/1-emacs.pdmp",
+        "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+        "bytes": 22954264
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/release/emaxx",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft6-retained-inputs/2-emaxx",
+        "sha256": "dab19729c1589788e044333e01a3f297d05f0a6e6c5a2b3ecbfc36bf0cfea8d3",
+        "bytes": 13284880
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/release/emaxx.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft6-retained-inputs/3-emaxx.pdmp",
+        "sha256": "3b64f765f5abd59cb7371643c70527d4534b26bb1bc1e4c8767108391b4d9a75",
+        "bytes": 21785536
+      }
+    ],
+    "qualification": "Ordinary release executables and each editor's own valid image; actual compiler-mode predicates are checked outside execution. Original wrapper preflight failure remains in the selected archive. This is not complete platform or performance validation.",
+    "goal_complete": false
+  },
+  "goal_complete": false
+}
