@@ -1,0 +1,78 @@
+--- a/src/lisp/eval.rs
++++ b/src/lisp/eval.rs
+@@ -5471,6 +5471,11 @@
+     }
+ 
+     pub fn new() -> Self {
++        // Each editor owns the symbols whose fields it will initialize.
++        // Select once before constructing any Lisp object; the public entry
++        // scope restores its caller on exit. Lisp thread state transfers do
++        // not construct a new editor or change this owner.
++        crate::lisp::types::symbols::SymbolOwner::fresh().select();
+         // A new interpreter numbers buffers and edits from the start; the
+         // thread's cached views of buffer state are of some other one.
+         crate::lisp::primitives::forget_buffer_views();
+--- a/src/lisp/eval/tests/eval_02.rs
++++ b/src/lisp/eval/tests/eval_02.rs
+@@ -5907,6 +5907,38 @@
+ }
+ 
+ #[test]
++fn separately_constructed_editors_own_canonical_symbols() {
++    let mut first = Interpreter::new();
++    let first_symbol = eval_str_with(
++        &mut first,
++        "(progn
++           (setq constructed-owner 'constructed-owner)
++           (put-text-property 0 1 'owner constructed-owner
++                              (symbol-name constructed-owner))
++           constructed-owner)",
++    );
++    let mut second = Interpreter::new();
++    let second_symbol = eval_str_with(&mut second, "'constructed-owner");
++    assert_ne!(first_symbol.word(), second_symbol.word());
++    assert_eq!(
++        eval_str_with(
++            &mut second,
++            "(get-text-property 0 'owner (symbol-name 'constructed-owner))"
++        ),
++        Value::Nil
++    );
++    eval_str_with(&mut second, "(garbage-collect)");
++    assert_eq!(
++        eval_str_with(
++            &mut first,
++            "(eq (get-text-property 0 'owner (symbol-name constructed-owner))
++                 constructed-owner)"
++        ),
++        Value::T
++    );
++}
++
++#[test]
+ fn image_clone_symbols_own_names_and_preserve_their_cycles() {
+     let mut source = Interpreter::new();
+     let original = eval_str_with(
+--- a/src/lisp/types/symbols.rs
++++ b/src/lisp/types/symbols.rs
+@@ -130,7 +130,6 @@
+ }
+ 
+ impl SymbolOwner {
+-    #[cfg(test)]
+     pub(crate) fn fresh() -> Self {
+         Self(Rc::default())
+     }
+@@ -140,10 +139,8 @@
+         EditorSymbolScope(ACTIVE.with_borrow_mut(|active| active.replace(Rc::clone(&self.0))))
+     }
+ 
+-    /// Private host-side image fixtures retain the selected editor while
+-    /// inspecting returned Lisp objects. Public entries have their own
+-    /// enclosing scope, which restores the caller on exit.
+-    #[cfg(test)]
++    /// Select at editor construction or a complete host fixture boundary.
++    /// Public entries retain an enclosing scope that restores their caller.
+     pub(crate) fn select(&self) {
+         ACTIVE.with_borrow_mut(|active| *active = Some(Rc::clone(&self.0)));
+     }

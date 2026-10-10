@@ -16,6 +16,58 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
+## Image ownership continuation — 10 October 2026
+
+PR [#82](https://github.com/rayfdj/emaxx/pull/82) is merged; main is
+`265d5ba3405cebe7692560cc29722be65d62237b`, with source318 runtime. The full goal
+is active and incomplete. Existing authorization covers validated task updates,
+Linux CI and main merges; no new authorization is required.
+
+Read the [latest private image-copy continuation](docs/runtime-representation-symbol-image-draft.md).
+The separately packaged, unapplied source319 draft6 relocates canonical and
+private symbols, cyclic name properties, symbol-field keys, local bindings,
+watchers and dependent hash/property keys. Its original graph failure is
+preserved. Strict checks have zero warnings, and **232 controls pass in each
+profile**, preserving every prior control and complete inventory name. The
+[patch and evidence](docs/handover/2026-10-09-symbol-fields/source319-symbol-image-draft-results-manifest.json)
+replay all **565 inputs/modes** from both source318 and current main.
+
+The first ordinary wrapper's stale-manifest preflight failure is retained;
+it executed no runtime comparisons. The corrected coordinator is
+`target/runtime-goal/symbol-obarray-2026-10-09/continue_image2.py`, with state in
+`image-draft6-continuation2-state.json`. Its [ordinary evidence](docs/handover/2026-10-09-symbol-fields/source319-symbol-image-ordinary-results-manifest.json)
+verifies **24 successful processes / twelve matching GNU comparisons**, including
+actual bytecode/native modes and the new graph fixture. The complete macOS Rust
+gate is now running. Do not edit its
+`recovered-2026-10-09/symbol-obarray/emaxx` checkout while validation is active.
+These broader results remain separate from the completed selected evidence.
+
+Source318's ordinary full terminal attempt ended after **430 matching
+comparisons** (419 complete screens and eleven filesystem comparisons), with no
+observed divergence. GNU failed startup readiness in scenario 184,
+`eglot-xref-rename-edits`; **256 comparisons remain unexecuted in that attempt**.
+Its raw log and audit are at
+`target/runtime-goal/symbol-payload-api-2026-10-09/source318-terminal` and
+`source318-terminal-audit.json`. The [closed continuation](docs/handover/2026-10-09-symbol-fields/source318-terminal-continuation-results-manifest.json)
+observes each of the 43 unfinished scenarios once and matches all remaining
+256 comparisons, with unchanged executable/image bytes, actions and deadlines.
+Across attempts, all **226 scenarios / 686 distinct labels** have matching
+observations. Every complete screen, attribute and cursor agrees. Both terminal
+supervisors have exited. The original failed run remains failed; separate
+matching observations are not one complete ordinary pass or an explanation of
+the GNU startup failure.
+
+Private constructor ownership, direct allocated symbol fields, removal of
+ID/enumeration/GC adapters, descriptor reclamation, physical accounting and all
+other completion requirements remain open. No performance gain is claimed.
+The isolated next checkout is
+`target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx`. It starts from the
+exact draft6 inputs and contains a [separately saved constructor experiment](docs/handover/2026-10-09-symbol-fields/allocated-symbol-constructor-unfinished-manifest.json).
+That incremental patch replays its three files, but **has not been compiled or
+tested** and does not move the fields. Finish allocated authority and remove the
+growing dense-ID storage before treating this preparation as ownership or
+performance completion. It is separate from the still-validating draft6 checkout.
+
 ## Source318 application after the main merge — 9 October 2026
 
 PR [#81](https://github.com/rayfdj/emaxx/pull/81) is merged into main as

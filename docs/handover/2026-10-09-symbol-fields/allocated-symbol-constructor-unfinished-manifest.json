@@ -1,0 +1,27 @@
+{
+  "status": "unvalidated preparation; direct allocated fields remain unimplemented",
+  "base": "source319 image draft6, patch f1bc55ab2c03988f9be82651041471bed93f25092889108555634683c0c8c4d6",
+  "patch": {
+    "path": "allocated-symbol-constructor-unfinished.patch",
+    "sha256": "23fc433e8a64f2fbc6ff92cf99fa978f24e16bacf47396cc3c1a3021ef7b5ec0"
+  },
+  "changed_inputs": {
+    "src/lisp/eval.rs": {
+      "before": "9a5cd1b7d26e9acf3fbeca73abf7debf9b5f3c78556906a96a12e09d7a1d6a0b",
+      "after": "2516267008ea96e49dacb6c696f67263cb499860a61a5df85ebf12d780d5f94e"
+    },
+    "src/lisp/eval/tests/eval_02.rs": {
+      "before": "f6ec5e0b703b3e982c6f891f8b15ed8edd041b0d5fd11e8e2a2ec1cba27ab31a",
+      "after": "6faa11393554cae68a4b15371d5cf6f20cd2ebdbb88ed6a9fc7d12de9437dea8"
+    },
+    "src/lisp/types/symbols.rs": {
+      "before": "c6a315d53f6f2f2910088f07cd8816449ed9e711f758478ec9dbfbf28c236a69",
+      "after": "83740279f11c9559c7a6c3956b110a575be963528f7fce76156a25f91472e8cc"
+    }
+  },
+  "checkout": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx",
+  "qualification": "This isolated experiment gives a newly constructed private interpreter fresh canonical symbols and adds an unexecuted owner/name-property isolation control. It has not been compiled or tested. It does not move value/function/plist/alias fields. Growing process-global IDs still make dense per-interpreter tables inappropriate; finish allocated authority/removal before treating this as a performance or complete ownership change.",
+  "goal_complete": false,
+  "patch_replay_verified": true,
+  "validation": "Not compiled or executed; patch replay only."
+}

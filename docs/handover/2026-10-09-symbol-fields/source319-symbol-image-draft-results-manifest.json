@@ -1,0 +1,185 @@
+{
+  "checkpoint": "source319 unapplied owner/image draft6",
+  "archive": {
+    "path": "source319-symbol-image-draft-results.tar.gz",
+    "bytes": 998544,
+    "sha256": "cec22730a676fd504a4d6440bd2ccb0e7694a3474d5bd2e6336224fb81f5ca4e",
+    "members": 156
+  },
+  "selected_audit": {
+    "checkpoint": "source319 unapplied symbol ownership and image-copy draft6",
+    "status": "passed strict and selected gate/release validation",
+    "source_inputs_verified": 565,
+    "strict": "zero warnings",
+    "profiles": {
+      "gate": {
+        "passed": 232,
+        "failed": 0,
+        "ignored": 0,
+        "inventory": 3072,
+        "executable": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft6-relocation/libtest",
+          "sha256": "9e3aa1967ef0673ee85589fbe6ed25ddc5df7cfadd1eee2d0efd9bb2ce24de58"
+        }
+      },
+      "release": {
+        "passed": 232,
+        "failed": 0,
+        "ignored": 0,
+        "inventory": 3071,
+        "executable": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-09/symbol-obarray/emaxx/target/release/deps/emaxx-e17fcfe01baaf180",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft6-release/libtest",
+          "sha256": "aa2e95681be8288d2e97be3f1f27102b6cd59d7d80841a3f7c35ca8ebd14c5ef"
+        }
+      }
+    },
+    "previous_controls_retained": 230,
+    "new_controls": [
+      "lisp::eval::tests::eval_02::image_clone_symbol_graph_preserves_private_keys_and_bindings",
+      "lisp::eval::tests::eval_02::image_clone_symbols_own_names_and_preserve_their_cycles"
+    ],
+    "patch": {
+      "path": "image-draft6.patch",
+      "sha256": "f1bc55ab2c03988f9be82651041471bed93f25092889108555634683c0c8c4d6",
+      "replays": [
+        {
+          "base": "93b6546f9c54aaecf2237cc751e3f94591066969",
+          "source_inputs_verified": 565
+        },
+        {
+          "base": "265d5ba3405cebe7692560cc29722be65d62237b",
+          "source_inputs_verified": 565
+        }
+      ]
+    },
+    "preserved_failures": [
+      {
+        "directory": "image-draft1-negative",
+        "stage": "focused",
+        "exit_code": 101,
+        "detail": "Original and cloned canonical symbols have the same object word; the new isolation assertion fails.",
+        "source_sha256": "8c6cbf51e5d9d674ae0dd241a5dd5d2ab021af7ac815ff74f556a0ff63650133",
+        "receipt_sha256": "9a86a32e3d4ada8cff945cd6ac5c55c5af350605f436a463acb093525fe9a70a",
+        "stdout_sha256": "43d5d4151e2648cc503b97b18226ed91d99ebe8490e0ad9c2a80072818caaf3b",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "directory": "image-draft2-copy",
+        "stage": "check",
+        "exit_code": 101,
+        "detail": "The first copy draft cannot mutate String map keys through iter_mut; Rust rejects it before runtime tests.",
+        "source_sha256": "1765a87f989c099199aec62b53d2ada0fbe542f67fccb47804359eda4c953553",
+        "receipt_sha256": "f99471d00c6b264c307590714c8c0cb99285f8a8b20ba5eff80b6406ee7e70b0",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256": "9cc5347b8196d5879fdf54f4b2ed46f80c3fd0d8052a789be022123fe09450a2"
+      },
+      {
+        "directory": "image-draft3-selected-gate",
+        "stage": "focused",
+        "exit_code": 101,
+        "detail": "229 passes and two failures: one fixture inspects the wrong selected owner, and one expects cross-editor symbol identity.",
+        "source_sha256": "e2ad72d30df1439e513fe116da46a955d3cb07fe9d4ca74c97be3fd50edd8dde",
+        "receipt_sha256": "50a41f9c6afb03edb6f390807f92361a651ffb57d938772136c568cd5e4b84a4",
+        "stdout_sha256": "2fb30fbaddc2d98d8a7079068bc3864989ec6f790090e45df244850729cbcb24",
+        "stderr_sha256": "df123c5a52790d38a9beecb5267745f43d6a56ca37ae05b5ed529a2778ec4a5b"
+      },
+      {
+        "directory": "image-draft4-graph-negative",
+        "stage": "focused",
+        "exit_code": 101,
+        "detail": "The full batch setup has live native relocation state; the existing clone guard correctly rejects it.",
+        "source_sha256": "7676fc81e3a62412be599e95aa78eb2b287ae99d529561b8abffd246417f1202",
+        "receipt_sha256": "dabc8504f3910753843537331dd24ed3e33186e40bab1681edf3faa251369683",
+        "stdout_sha256": "4b1f4a3c2efc8200fb04c8f7d137edcef4135937ba9c16964820c3b036e846f8",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "directory": "image-draft5-graph-negative",
+        "stage": "focused",
+        "exit_code": 101,
+        "detail": "A valid early-Lisp template reaches the graph check: private name/string/buffer property keys and custom identity hashes fail.",
+        "source_sha256": "cf2454c8ef01a801676f4aff994d120a4c5592b83e27ccaca383319d55a59e1e",
+        "receipt_sha256": "95df44829007fe5e86bd7a861ea541f95d6a8c36fe7579e6b4ba82adc0a9e262",
+        "stdout_sha256": "5104a97b6f7a5893719e6bbc611773d1073da49b967b3fb959bfc4a24550ceeb",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "gnu_predicates": 17,
+    "original_failed_predicates": [
+      5,
+      6,
+      9,
+      16
+    ],
+    "gnu_reference": {
+      "src/lisp.h": "2b3adec8837ab75b3b075cffa37fad65f9f294617f06d423fe23c8bbb90a2a87",
+      "src/lread.c": "ff1161e5f00440ce60034e356697c18f4c03111fc17efb1e103a7430e0be3db9",
+      "src/fns.c": "c60679d13b446c6a00fecb30926bb57923aabd65bb564ee96c958ba99b00bc00",
+      "src/pdumper.c": "0cb1147dc9107364e4de1a682c592fff10bfd62d0472b1cce54f02aa629e2c20"
+    },
+    "qualification": "The private image copier relocates symbol objects and name cycles, symbol-field keys, aliases, local bindings, watchers, private property keys and hash descriptors. Hashes are recomputed after relocation; a private custom table invokes its real hash callback. The production dumper still rejects custom hash tests as GNU does. The positioned-symbol control now checks independent canonical symbols while retaining all sharing and native field-mutation checks. The plist fixture selects its source owner before host inspection. Every old test name remains. Ordinary comparisons, full platform gates and broader native contracts are separate. Private constructor ownership, direct allocated fields, enumeration/ID/GC adapters, descriptor reclamation, physical accounting and performance acceptance remain unfinished.",
+    "goal_complete": false
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft1-negative/libtest",
+      "bytes": 29603296,
+      "sha256": "698663e95e9bc0705ef80f68a8c4e03f3cac3c0ab8f1978e3f36f1210bccabd5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft3-hook-keys/libtest",
+      "bytes": 29860336,
+      "sha256": "15ad85fb186f6337e77f5a735e85fb70ec95a05af0f55d18773c8c970cf528fb"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft3-selected-gate/fixture-images/loadup-15ad85fb-d44829be.pdmp",
+      "bytes": 21805328,
+      "sha256": "3f8546462b388b1cae1963a11f5542c73cad82f6d3cfef82c4d484c064983357"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft3-selected-gate/libtest",
+      "bytes": 29860336,
+      "sha256": "15ad85fb186f6337e77f5a735e85fb70ec95a05af0f55d18773c8c970cf528fb"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft4-graph-negative/fixture-images/loadup-32bea241-d44829be.pdmp",
+      "bytes": 21776432,
+      "sha256": "c88c56cc5536b3bc6af45ba6e9b8229f457f5403d1c2ec1cdef0092c6eb42cd8"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft4-graph-negative/libtest",
+      "bytes": 29960400,
+      "sha256": "32bea241fab658a83f368119fa2f1ad846c8510d924fb9de1b1d126bd4e98c99"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft5-graph-negative/libtest",
+      "bytes": 29960400,
+      "sha256": "de19a1af5fd9bf65c38a09d178e50f21d691a80149c7641dcf6938b653ce4df4"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft6-relocation/fixture-images/loadup-9e3aa196-d44829be.pdmp",
+      "bytes": 21805456,
+      "sha256": "1a5db28983c49d64bec9566a76ae276405f457e2958c31bd5d73cb5bed7e7005"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft6-relocation/libtest",
+      "bytes": 29814272,
+      "sha256": "9e3aa1967ef0673ee85589fbe6ed25ddc5df7cfadd1eee2d0efd9bb2ce24de58"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft6-release/fixture-images/loadup-aa2e9568-d44829be.pdmp",
+      "bytes": 21808288,
+      "sha256": "e0c3b08c3552946bf538e4bb91e3ad39ac060035734a9713f92fd2d20d499c4a"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft6-release/libtest",
+      "bytes": 22957920,
+      "sha256": "aa2e95681be8288d2e97be3f1f27102b6cd59d7d80841a3f7c35ca8ebd14c5ef"
+    }
+  ],
+  "wrapper_failure": "The first ordinary wrapper referenced draft5's old source manifest; its preflight correctly rejected src/buffer.rs before building or executing any comparison. The original script, traceback and terminal coordinator state are retained. The corrected wrapper names the exact validated draft6 source manifest and is separate.",
+  "qualification": "Portable unfinished draft and completed strict/selected evidence only: 232 controls per profile, every previous inventory name retained, and one exact patch replayed from checkpoint93b and main265d. Original runtime, compilation and setup failures remain preserved. The corrected ordinary comparisons and subsequent full macOS Rust gate are separate and were not complete when this package was created. Source318 production and terminal evidence remain separate. The full architecture/accounting/performance goal is incomplete.",
+  "goal_complete": false
+}

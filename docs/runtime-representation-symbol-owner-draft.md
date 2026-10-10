@@ -1,5 +1,12 @@
 # Editor-owned symbols — unfinished source319, 9 October 2026
 
+The latest [private image-copy continuation](runtime-representation-symbol-image-draft.md)
+is source319 draft6, dated 10 October. Its exact patch and strict/selected evidence
+supersede the draft5 patch below. It repairs cloned symbol/name ownership and
+dependent graph keys; all 232 controls pass in both profiles. The earlier
+private-clone negative below describes the historical draft4/5 state. Direct
+allocated fields, private constructor ownership and full validation remain open.
+
 This is a **separately packaged, unapplied draft**. PR82's runtime is
 source318; source316 is retained through merged PR81 (`30fa6e5b`). The
 [portable draft and evidence](handover/2026-10-09-symbol-fields/source319-symbol-owner-unfinished-draft-manifest.json)

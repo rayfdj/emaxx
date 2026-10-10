@@ -1,6 +1,6 @@
 # Copied symbol payload access — 9 October 2026
 
-PR82 carries **source318 after PR81 merged**. The previous source316 checkpoint
+PR82 merged **source318 into main `265d5ba3`**. The previous source316 checkpoint
 is retained at `30fa6e5b`; the archived unapplied state below is historical.
 [Applied-source verification](handover/2026-10-09-symbol-fields/source318-applied-source-verification.json)
 checks every runtime byte and mode against its completed validation. Its [portable selected evidence](handover/2026-10-09-symbol-fields/source318-symbol-payload-api-draft-manifest.json)
@@ -65,8 +65,18 @@ native compiler and Eglot outcome matches. Across the separate attempts, all
 519 files are observed with 7,915 matching outcome labels. The [six diagnostic
 issue entries are unchanged from source316](handover/2026-10-09-symbol-fields/source318-existing-macos-diagnostics-audit.json).
 The original run and six differences remain failed; this is not a single
-passing frozen run. Full terminal validation is running separately. The original
-source317 setup failures and source316 ownership negative remain preserved.
+passing frozen run. The original source317 setup failures and source316
+ownership negative remain preserved.
+
+The [completed terminal continuation](handover/2026-10-09-symbol-fields/source318-terminal-continuation-results-manifest.json)
+observes **226 scenarios / 686 distinct matching comparison labels** across
+separate attempts. All 658 complete screen snapshots agree in every row, cell
+attribute and cursor coordinate; 28 comparisons check filesystem state. The
+original full attempt retains its GNU startup failure in scenario 184 after
+430 matching comparisons. One separate observation of each of the 43 unfinished
+scenarios matches all remaining 256 comparisons with identical inputs and the
+original actions/deadlines. Both supervisors have exited. This is not one
+complete passing ordinary run, and the original GNU failure remains unexplained.
 
 The [completed Linux timing diagnostic](handover/2026-10-09-symbol-fields/source318-linux-symbol-performance-results-manifest.json)
 independently verifies all **192 actual answers and modes**. Three alternating
