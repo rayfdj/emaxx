@@ -2,8 +2,10 @@
   "status": "unvalidated preparation; direct allocated fields remain unimplemented",
   "base": "source319 image draft6, patch f1bc55ab2c03988f9be82651041471bed93f25092889108555634683c0c8c4d6",
   "patch": {
-    "path": "allocated-symbol-constructor-unfinished.patch",
-    "sha256": "23fc433e8a64f2fbc6ff92cf99fa978f24e16bacf47396cc3c1a3021ef7b5ec0"
+    "path": "allocated-symbol-constructor-unfinished.patch.gz",
+    "sha256": "201ca43f30cb79a518c4ba17c30ce7f8c02e726fa87626e2341d89de2cc40821",
+    "uncompressed_sha256": "23fc433e8a64f2fbc6ff92cf99fa978f24e16bacf47396cc3c1a3021ef7b5ec0",
+    "format": "gzip-compressed unified diff; decompress before git apply"
   },
   "changed_inputs": {
     "src/lisp/eval.rs": {
@@ -23,5 +25,6 @@
   "qualification": "This isolated experiment gives a newly constructed private interpreter fresh canonical symbols and adds an unexecuted owner/name-property isolation control. It has not been compiled or tested. It does not move value/function/plist/alias fields. Growing process-global IDs still make dense per-interpreter tables inappropriate; finish allocated authority/removal before treating this as a performance or complete ownership change.",
   "goal_complete": false,
   "patch_replay_verified": true,
-  "validation": "Not compiled or executed; patch replay only."
+  "validation": "Not compiled or executed; patch replay only.",
+  "packaging_note": "The original raw unified-diff artifact triggered git diff --check on its blank context lines. The compressed artifact preserves every patch byte; no source or assertion was changed. The first checkpoint commit preserves that packaging failure."
 }
