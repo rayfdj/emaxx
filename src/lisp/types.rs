@@ -9,7 +9,7 @@ use num_traits::ToPrimitive;
 use std::fmt;
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     hash::{BuildHasherDefault, Hasher},
     iter::FromIterator,
     ops::Deref,
@@ -310,6 +310,8 @@ impl From<&SharedText> for String {
     }
 }
 
+pub(crate) mod symbols;
+
 /// A symbol name shared by every live occurrence of the same interned name.
 ///
 /// The ordinary-symbol table deliberately owns its entries for the owning
@@ -360,15 +362,10 @@ impl<T: Default> ProcessTable<T> {
     }
 }
 
-/// The obarray: every interned symbol, keyed by its text; FNV, as the
-/// interpreter's other name-keyed tables, since every name-to-id
-/// resolution hashes here (SipHash was a tenth of a tight interpreted
-/// loop).  The process's, as `Vobarray' is (it was the thread's, and a
-/// collection on another thread swept the name strings of the symbols
-/// only this table held).
-static INTERNED_SYMBOL_NAMES: ProcessTable<
-    HashSet<SymbolName, crate::lisp::primitives::FnvBuildHasher>,
-> = ProcessTable::new();
+/// The canonical table selected by the current editor entry. The table and
+/// its Qsymbol/address references have the same owner; they cannot return an
+/// object retained by a previous editor instance.
+static INTERNED_SYMBOL_NAMES: symbols::InternedNames = symbols::InternedNames;
 
 /// Live uninterned states by their private internal text. Name-keyed
 /// callers must resolve a live key to the existing symbol allocation.
@@ -379,7 +376,7 @@ static INTERNED_SYMBOL_NAMES: ProcessTable<
 /// lock on lookup/allocation. Entries are not GC roots and are removed by
 /// sweep_symbol_cells before the corresponding allocation is released.
 static UNINTERNED_SYMBOL_BOOK: ProcessTable<
-    HashSet<SymbolName, crate::lisp::primitives::FnvBuildHasher>,
+    HashSet<symbols::NameEntry, crate::lisp::primitives::FnvBuildHasher>,
 > = ProcessTable::new();
 
 /// Each allocated symbol owns its id. Both lookup tables above are already
@@ -452,7 +449,7 @@ impl SymbolName {
         }
         INTERNED_SYMBOL_NAMES.with_borrow_mut(|names| {
             if let Some(name) = names.get(text.as_str()) {
-                return *name;
+                return name.0;
             }
             crate::lisp::native_comp::note_lisp_allocation(48);
             let private = text.contains(OBARRAY_SYMBOL_MARKER);
@@ -467,12 +464,12 @@ impl SymbolName {
             let name = Self(crate::lisp::alloc::allocate_symbol(
                 crate::lisp::alloc::SymbolCell {
                     internal: text,
-                    lisp_name,
+                    lisp_name: Cell::new(lisp_name),
                     mark: MarkBit::default(),
                     id,
                 },
             ));
-            names.insert(name);
+            names.insert(symbols::NameEntry(name));
             name
         })
     }
@@ -491,7 +488,8 @@ impl SymbolName {
     /// The interned state for TEXT, without allocating when it exists.
     pub(crate) fn intern_str(text: &str) -> Self {
         if !text.contains(UNINTERNED_SYMBOL_MARKER_CHAR)
-            && let Some(name) = INTERNED_SYMBOL_NAMES.with_borrow(|names| names.get(text).cloned())
+            && let Some(name) =
+                INTERNED_SYMBOL_NAMES.with_borrow(|names| names.get(text).map(|entry| entry.0))
         {
             return name;
         }
@@ -516,13 +514,8 @@ impl SymbolName {
     /// that is not an interned symbol's is not cached (None: the caller
     /// keeps its by-name path, which may still know the name).
     pub(crate) fn interned_cached(text: &str) -> Option<Self> {
-        thread_local! {
-            static BY_ADDRESS: RefCell<
-                HashMap<(usize, usize), SymbolName, crate::lisp::primitives::FnvBuildHasher>,
-            > = RefCell::new(HashMap::default());
-        }
         let key = (text.as_ptr() as usize, text.len());
-        if let Some(symbol) = BY_ADDRESS.with_borrow(|cache| cache.get(&key).cloned())
+        if let Some(symbol) = symbols::with_address_names(|cache| cache.get(&key).cloned())
             && symbol.as_str() == text
         {
             return Some(symbol);
@@ -530,8 +523,9 @@ impl SymbolName {
         if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
             return Self::live_uninterned(text);
         }
-        let symbol = INTERNED_SYMBOL_NAMES.with_borrow(|names| names.get(text).cloned())?;
-        BY_ADDRESS.with_borrow_mut(|cache| {
+        let symbol =
+            INTERNED_SYMBOL_NAMES.with_borrow(|names| names.get(text).map(|entry| entry.0))?;
+        symbols::with_address_names_mut(|cache| {
             // A bounded cache: a runtime-built name whose storage is freed
             // and reused would otherwise pin a stale entry (the text check
             // above keeps such an entry from ever answering wrongly).
@@ -544,7 +538,7 @@ impl SymbolName {
     }
 
     fn live_uninterned(text: &str) -> Option<Self> {
-        UNINTERNED_SYMBOL_BOOK.with_borrow(|book| book.get(text).copied())
+        UNINTERNED_SYMBOL_BOOK.with_borrow(|book| book.get(text).map(|entry| entry.0))
     }
 
     pub(crate) fn make_uninterned(name: Value, visible: &str, id: u64) -> Self {
@@ -557,13 +551,13 @@ impl SymbolName {
         let name = Self(crate::lisp::alloc::allocate_symbol(
             crate::lisp::alloc::SymbolCell {
                 internal,
-                lisp_name,
+                lisp_name: Cell::new(lisp_name),
                 mark: MarkBit::default(),
                 id,
             },
         ));
         UNINTERNED_SYMBOL_BOOK.with_borrow_mut(|book| {
-            book.replace(name);
+            book.replace(symbols::NameEntry(name));
         });
         name
     }
@@ -589,7 +583,7 @@ impl SymbolName {
     }
 
     pub(crate) fn lisp_name(&self) -> Value {
-        self.0.lisp_name
+        self.0.lisp_name.get()
     }
 
     /// The symbol's cell (for the census and the dump).
@@ -597,9 +591,11 @@ impl SymbolName {
         &self.0
     }
 
-    /// The name object in place, for a tracer.
-    pub(crate) fn lisp_name_ref(&self) -> &Value {
-        &self.0.lisp_name
+    /// Finish a graph-copy placeholder after recording the symbol in the memo.
+    /// Its name string's properties may point back to the symbol itself.
+    #[cfg(test)]
+    pub(crate) fn install_copied_name(&self, name: Value) {
+        self.0.lisp_name.set(name);
     }
 }
 
@@ -607,22 +603,7 @@ impl SymbolName {
 /// interned symbol, with its name strings, whether or not any object
 /// names it.
 pub(crate) fn mark_interned_symbol_roots(mark: &mut dyn FnMut(&Value)) {
-    INTERNED_SYMBOL_NAMES.with_borrow(|names| {
-        for name in names {
-            let value = Value::Symbol(*name);
-            if matches!(value.kind(), Kind::Nil | Kind::T) {
-                // During symbol migration, the builtin word is constant
-                // but its SymbolName still has an allocated name cell.
-                // Keep that obarray-owned cell and both name strings.
-                // This adapter goes when the builtin symbol allocation
-                // also owns the value, function and property cells.
-                name.mark_bit().mark(current_mark_epoch());
-                mark(name.lisp_name_ref());
-            } else {
-                mark(&value);
-            }
-        }
-    });
+    symbols::mark_scope_roots(mark);
 }
 
 pub(crate) fn census_live_uninterned_symbols() -> usize {
@@ -631,7 +612,7 @@ pub(crate) fn census_live_uninterned_symbols() -> usize {
 
 impl PartialEq for SymbolName {
     fn eq(&self, other: &Self) -> bool {
-        self.0.ptr_eq(&other.0) || self.as_str() == other.as_str()
+        self.0.ptr_eq(&other.0)
     }
 }
 
@@ -645,13 +626,15 @@ impl PartialOrd for SymbolName {
 
 impl Ord for SymbolName {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.as_str().cmp(other.as_str())
+        self.as_str()
+            .cmp(other.as_str())
+            .then_with(|| self.identity_ptr().cmp(&other.identity_ptr()))
     }
 }
 
 impl std::hash::Hash for SymbolName {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(self.as_str(), state);
+        std::hash::Hash::hash(&self.identity_ptr(), state);
     }
 }
 
@@ -665,12 +648,6 @@ impl Deref for SymbolName {
 
 impl AsRef<str> for SymbolName {
     fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl std::borrow::Borrow<str> for SymbolName {
-    fn borrow(&self) -> &str {
         self.as_str()
     }
 }

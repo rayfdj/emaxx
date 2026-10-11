@@ -4368,7 +4368,12 @@ mod tests {
             vector.get(1).expect("shared reference").word()
         );
         assert_ne!(first.word(), object.word());
-        assert_eq!(symbol_with_pos_parts(&copied, &first), Some((symbol, 79)));
+        let copied_symbol = Value::symbol("copied-positioned-symbol");
+        assert_ne!(copied_symbol.word(), symbol.word());
+        assert_eq!(
+            symbol_with_pos_parts(&copied, &first),
+            Some((copied_symbol, 79))
+        );
         let original = symbol_with_position_pointer(&object)
             .expect("original storage")
             .cast::<usize>();
@@ -4376,7 +4381,10 @@ mod tests {
             original.add(2).write(Value::Integer(83).word());
         }
         assert_eq!(symbol_with_pos_parts(&source, &object), Some((symbol, 83)));
-        assert_eq!(symbol_with_pos_parts(&copied, &first), Some((symbol, 79)));
+        assert_eq!(
+            symbol_with_pos_parts(&copied, &first),
+            Some((copied_symbol, 79))
+        );
     }
 
     #[test]

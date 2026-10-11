@@ -71,4 +71,15 @@ impl LocalCells {
     pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut Value> {
         self.cells.values_mut().map(|(_, value)| value)
     }
+
+    #[cfg(test)]
+    pub(crate) fn map_symbols(&mut self, mut copy: impl FnMut(SymbolName) -> SymbolName) {
+        self.cells = std::mem::take(&mut self.cells)
+            .into_iter()
+            .map(|(_, (symbol, value))| {
+                let symbol = copy(symbol);
+                (symbol.id(), (symbol, value))
+            })
+            .collect();
+    }
 }

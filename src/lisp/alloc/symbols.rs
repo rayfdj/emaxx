@@ -25,7 +25,7 @@ pub struct SymbolCell {
     /// Immutable host lookup key, owned and released with the symbol.
     pub(crate) internal: String,
     /// `SYMBOL_NAME': the Lisp-visible name object.
-    pub(crate) lisp_name: Value,
+    pub(crate) lisp_name: std::cell::Cell<Value>,
     pub(crate) mark: MarkBit,
     /// The symbol's index into an interpreter's `SymbolCells'.
     pub(crate) id: u32,

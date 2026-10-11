@@ -1215,11 +1215,25 @@ impl Buffer {
     /// The undo-list view cache holds a materialized Lisp value built from
     /// template cells, so it is dropped rather than rewritten.
     pub(crate) fn rewrite_lisp_values(&mut self, copy: &mut impl FnMut(&Value) -> Value) {
-        self.text_conversion_style = copy(&self.text_conversion_style);
-        for span in &mut self.text_properties {
-            for (_, value) in &mut span.props {
+        fn rewrite_properties(
+            props: &mut [(String, Value)],
+            copy: &mut impl FnMut(&Value) -> Value,
+        ) {
+            for (name, value) in props {
+                // Property names still use the encoded-name adapter. A
+                // private symbol's key must follow its relocated object.
+                if crate::lisp::types::is_uninterned_symbol(name) {
+                    *name = copy(&Value::symbol(name.as_str()))
+                        .as_symbol()
+                        .expect("a copied property key remains a symbol")
+                        .to_owned();
+                }
                 *value = copy(value);
             }
+        }
+        self.text_conversion_style = copy(&self.text_conversion_style);
+        for span in &mut self.text_properties {
+            rewrite_properties(&mut span.props, copy);
         }
         fn rewrite_undo_entry(entry: &mut UndoEntry, copy: &mut impl FnMut(&Value) -> Value) {
             match entry {
@@ -1238,9 +1252,7 @@ impl Buffer {
                         marker.id = copied;
                     }
                     for span in props {
-                        for (_, value) in &mut span.props {
-                            *value = copy(value);
-                        }
+                        rewrite_properties(&mut span.props, copy);
                     }
                 }
                 UndoEntry::Insert { .. } | UndoEntry::Boundary => {}

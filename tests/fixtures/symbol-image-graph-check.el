@@ -1,0 +1,25 @@
+(list
+ (eq image-graph-canonical 'image-graph-canonical)
+ (eq (symbol-value image-graph-private) image-graph-private)
+ (eq (funcall image-graph-private) image-graph-private)
+ (eq (get image-graph-private image-graph-property) image-graph-private)
+ (eq (get-text-property 0 image-graph-property (symbol-name image-graph-private))
+     image-graph-private)
+ (eq (get-text-property 0 image-graph-property image-graph-string)
+     image-graph-private)
+ (eq (intern "private-node" image-graph-obarray) image-graph-obarray-symbol)
+ (eq (gethash image-graph-private image-graph-eq-table) image-graph-obarray-symbol)
+ (eq (gethash image-graph-private image-graph-user-table) image-graph-obarray-symbol)
+ (eq (hash-table-test image-graph-eq-table) 'eq)
+ (eq (hash-table-test image-graph-user-table) 'image-graph-eq)
+ (eq (funcall image-graph-lambda image-graph-private) image-graph-private)
+ (eq (indirect-variable 'image-graph-alias) 'image-graph-canonical)
+ (eq image-graph-alias image-graph-canonical)
+ (with-current-buffer " *image-symbol-graph*"
+   (eq (symbol-value image-graph-private) image-graph-obarray-symbol))
+ (with-current-buffer " *image-symbol-graph*"
+   (eq (get-text-property 1 image-graph-property) image-graph-private))
+ (progn
+   (setq image-graph-watcher-result nil)
+   (set image-graph-private image-graph-private)
+   (eq (car image-graph-watcher-result) image-graph-private)))

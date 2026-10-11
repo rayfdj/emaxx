@@ -174,7 +174,7 @@ impl Interpreter {
     pub(crate) fn buffer_local_value_key(
         &self,
         buffer_id: u64,
-        key: &'static std::thread::LocalKey<SymbolName>,
+        key: crate::lisp::types::symbols::SymbolKey,
     ) -> Option<Value> {
         key.with(|symbol| {
             if self.has_native_text_conversion_style(symbol.as_str()) {
@@ -1907,10 +1907,7 @@ impl Interpreter {
     /// symbol interned once per thread (a name lookup per search hashed
     /// the name and walked the alias, flag and buffer-local tables by it).
     pub(crate) fn case_fold_search_active(&self, env: &Env) -> bool {
-        thread_local! {
-            static CASE_FOLD_SEARCH: SymbolName = SymbolName::intern_str("case-fold-search");
-        }
-        CASE_FOLD_SEARCH.with(|symbol| {
+        cached_symbol!("case-fold-search").with(|symbol| {
             if self.globals.alias(symbol).is_some() {
                 return self
                     .lookup_var("case-fold-search", env)

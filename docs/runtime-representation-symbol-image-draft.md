@@ -1,7 +1,7 @@
 # Symbol ownership in private image copies — 10 October 2026
 
-This is **unfinished, separately packaged source319 draft6**, not an applied
-runtime change. Main `265d5ba3` contains source318 through merged PR82. The
+This is **unfinished source319 draft6**, now applied on the validation branch.
+Main `55b109e8` contains source318 and the portable draft through merged PR83. The
 [portable patch and selected evidence](handover/2026-10-09-symbol-fields/source319-symbol-image-draft-results-manifest.json)
 continue the [editor ownership draft](runtime-representation-symbol-owner-draft.md).
 The patch independently reproduces all **565 source inputs and modes** from
@@ -62,9 +62,13 @@ draft6 manifest. The [completed ordinary evidence](handover/2026-10-09-symbol-fi
 verifies **24 successful processes / twelve matching comparisons**: every
 previous comparison plus the new graph fixture in interpreted, bytecode and
 native modes. Both editors receive identical arguments and use their own valid
-images; actual compiler-mode predicates pass. The complete macOS Rust gate is
-now running. Consult `image-draft6-continuation2-state.json` and raw receipts;
-the complete gate is not certified by the selected and ordinary results.
+images; actual compiler-mode predicates pass. The [complete macOS Rust gate](handover/2026-10-09-symbol-fields/source319-macos-rust-results-manifest.json)
+now passes **3,169 tests / two existing ignores**, including native artifact
+identity. Every raw library name/verdict, Cargo result, all 565 source inputs
+and four retained executable/image files are checked. Its coordinator has exited.
+The first macOS frozen launcher stopped before comparisons because its draft
+was uncommitted; the unchanged clean-tree requirement remains in force.
+Commit-addressable frozen, Linux and timing validation remain pending. These results do not certify the later field prototype.
 
 Private `Interpreter::new` still inherits the selected owner. Value, function,
 plist and alias fields still live in per-interpreter cells. Direct allocated

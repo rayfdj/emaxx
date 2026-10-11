@@ -16,6 +16,37 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
+## Source319 validation branch — 11 October 2026
+
+Main `55b109e893c16fdd41b963bf46bc40735c19bac4` contains source318 and the
+portable source319 draft through merged PR83. This task branch applies the exact
+source319 image6 runtime: all **565 inputs/modes** match the archived selected,
+ordinary and complete macOS Rust validation. Existing authorization covers
+validated task pushes, Linux CI and main merges. The full goal remains incomplete.
+
+The [complete source319 macOS Rust evidence](docs/handover/2026-10-09-symbol-fields/source319-macos-rust-results-manifest.json)
+verifies **3,169 passes / two existing ignores**, every raw library test name,
+all Cargo results and native artifact identity. The full gate coordinator has
+exited. Its 232 selected controls per profile and twelve ordinary GNU comparisons
+remain valid separate evidence. The first ordinary macOS frozen launcher was rejected before comparisons
+because the draft checkout was uncommitted. Its failed receipt and log remain
+at `symbol-obarray-2026-10-09/source319-macos-frozen`; the clean-tree requirement
+is unchanged. Commit-addressable macOS frozen, Linux validation and timing
+are pending for this applied checkpoint. No new performance
+improvement or full-goal completion is claimed.
+
+The isolated `recovered-2026-10-10/symbol-fields/emaxx` prototype has advanced
+beyond the saved constructor-only patch. It moves function/plist words to the
+allocated symbol and gives private constructors independent canonical owners.
+Its second attempt retained **229 passes / four failed controls**; the next
+attempt passes strict checks and **234 controls in each profile**. GNU confirms the added nine-predicate identity/field fixture. Changes
+to local fixtures preserve parked-editor GC checks, host lifetime checks and
+full image payload checks while removing assumptions that independent editors
+share identical symbol objects. The failed logs and exact source captures stay
+in `allocated-symbols-2026-10-10`; the prototype is not part of this applied
+runtime. Value/alias/flag payloads, dense IDs, enumeration, weak-field GC adapters,
+descriptor reclamation and honest physical accounting remain unfinished.
+
 ## Image ownership continuation — 10 October 2026
 
 PR [#82](https://github.com/rayfdj/emaxx/pull/82) is merged; main is

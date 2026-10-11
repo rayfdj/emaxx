@@ -60,7 +60,7 @@ impl Interpreter {
     /// `cached_symbol!': no name to resolve.
     pub(crate) fn lookup_var_key(
         &self,
-        key: &'static std::thread::LocalKey<SymbolName>,
+        key: crate::lisp::types::symbols::SymbolKey,
         env: &Env,
     ) -> Option<Value> {
         key.with(|symbol| self.lookup_var_symbol(symbol, env))

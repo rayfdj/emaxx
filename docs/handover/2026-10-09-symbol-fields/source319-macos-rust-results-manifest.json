@@ -1,0 +1,57 @@
+{
+  "checkpoint": "source319 unapplied draft, full macOS Rust gate",
+  "archive": {
+    "path": "source319-macos-rust-results.tar.gz",
+    "bytes": 247561,
+    "sha256": "f7fb476a6624492360f19513cc21f12c5676994d64b930efa57ebd4adf0b1132",
+    "members": 42
+  },
+  "audit": {
+    "status": "passed",
+    "draft_base": "ddb32a0fe40b165c34709f1dae484ee9d7e34be1",
+    "draft_patch_sha256": "f1bc55ab2c03988f9be82651041471bed93f25092889108555634683c0c8c4d6",
+    "validation_checkout": {
+      "dirty": true,
+      "head": "ddb32a0fe40b165c34709f1dae484ee9d7e34be1"
+    },
+    "unchanged_source_inputs": 565,
+    "raw_library_names_verified": 3072,
+    "library_passed": 3070,
+    "library_ignored": 2,
+    "cargo_passed": {
+      "bins": 60,
+      "integration": 39
+    },
+    "total_passed": 3169,
+    "native_artifact_identity": "passed",
+    "retained_files_verified": 4,
+    "test_binary_sha256": "9e3aa1967ef0673ee85589fbe6ed25ddc5df7cfadd1eee2d0efd9bb2ce24de58",
+    "summary_sha256": "afaeca17590fe8cbaa3a0297acf93c201514a04f468c85c0717c858a8f8ef157",
+    "qualification": "Full source319 image draft6 macOS Rust gate: all 565 runtime input bytes/modes match the selected gate/release validation, before/after captures and current checkout. The exact patch was replayed from source318 and main265d. Every raw library name/verdict and Cargo result is checked, with only the two existing ignores. Native artifact identity passes. Retained post-run images do not establish per-test use. Linux, frozen, terminal and performance evidence remain separate and incomplete; the next allocated-field prototype has separate failures and is not certified by this run.",
+    "goal_complete": false
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft6-full/full/retained-inputs/fixture-images/loadup-0f384d93-d44829be.pdmp",
+      "bytes": 21782600,
+      "sha256": "845be6cdd7252a720ca078792fdf7a1a3d2cb2d8f9227c116afc178fd9b85a80"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft6-full/full/retained-inputs/fixture-images/loadup-612ab347-d44829be.pdmp",
+      "bytes": 21782584,
+      "sha256": "c067b1f79e76c2c6b129f567361f8cc7ac1bd03c6d76c994872645d32ae08bd7"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft6-full/full/retained-inputs/fixture-images/loadup-9e3aa196-d44829be.pdmp",
+      "bytes": 21779456,
+      "sha256": "c0cd5d6356b6e995c289453ede4d74a83bddaa69b0a422055cad684962f31306"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft6-full/full/retained-inputs/libtest",
+      "bytes": 29814272,
+      "sha256": "9e3aa1967ef0673ee85589fbe6ed25ddc5df7cfadd1eee2d0efd9bb2ce24de58"
+    }
+  ],
+  "goal_complete": false,
+  "qualification": "The source319 symbol-owner and image-copy draft passes the complete macOS Rust gate, with all raw inventories, per-test verdicts, Cargo logs, wrapper receipts and source captures retained. Four large libtest/image inputs remain locally retained and identified here. The exact source also passes 232 selected controls in both profiles and twelve ordinary GNU comparisons. Linux, macOS frozen/terminal and performance evidence are still separate and pending. The allocated-field prototype has its own validation and is not included. The complete goal remains open."
+}

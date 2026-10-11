@@ -5907,6 +5907,72 @@ fn function_get_autoloads_before_reading_declared_property() {
 }
 
 #[test]
+fn image_clone_symbols_own_names_and_preserve_their_cycles() {
+    let mut source = Interpreter::new();
+    let original = eval_str_with(
+        &mut source,
+        "(progn
+           (setq image-symbol-owner 'image-symbol-owner)
+           (put-text-property 0 1 'owner image-symbol-owner
+                              (symbol-name image-symbol-owner))
+           (setplist image-symbol-owner (list 'name (symbol-name image-symbol-owner)))
+           image-symbol-owner)",
+    );
+    let mut clone = source.deep_clone_image();
+    let copied = eval_str_with(&mut clone, "image-symbol-owner");
+    assert_ne!(original.word(), copied.word(), "independent editor symbols");
+    assert_eq!(
+        eval_str_with(
+            &mut clone,
+            "(list (eq image-symbol-owner 'image-symbol-owner)
+                   (eq (get-text-property 0 'owner (symbol-name image-symbol-owner))
+                       image-symbol-owner)
+                   (eq (get image-symbol-owner 'name) (symbol-name image-symbol-owner)))"
+        ),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+    eval_str_with(
+        &mut clone,
+        "(put-text-property 0 1 'owner 'changed (symbol-name image-symbol-owner))",
+    );
+    assert_eq!(
+        eval_str_with(
+            &mut source,
+            "(eq (get-text-property 0 'owner (symbol-name image-symbol-owner))
+                 image-symbol-owner)"
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn image_clone_symbol_graph_preserves_private_keys_and_bindings() {
+    // An image template cannot contain loaded native relocation state. Load
+    // the unchanged GNU early Lisp owners needed by with-current-buffer.
+    let mut source = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    eval_str_with(
+        &mut source,
+        include_str!("../../../../tests/fixtures/symbol-image-graph-setup.el"),
+    );
+    let check = include_str!("../../../../tests/fixtures/symbol-image-graph-check.el");
+    // The identical setup/check files yield seventeen true predicates in
+    // ordinary GNU Emacs. These cover identities, not printed spellings.
+    let expected = Value::list(std::iter::repeat_n(Value::T, 17));
+    assert_eq!(eval_str_with(&mut source, check), expected);
+    let original = eval_str_with(&mut source, "image-graph-private");
+    let mut clone = source.deep_clone_image();
+    let copied = eval_str_with(&mut clone, "image-graph-private");
+    assert_ne!(original.word(), copied.word(), "private symbol relocation");
+    eval_str_with(&mut clone, "(garbage-collect)");
+    assert_eq!(eval_str_with(&mut clone, check), expected);
+    eval_str_with(
+        &mut clone,
+        "(put-text-property 0 1 image-graph-property 'changed image-graph-string)",
+    );
+    assert_eq!(eval_str_with(&mut source, check), expected);
+}
+
+#[test]
 fn symbol_plists_preserve_clone_sharing_and_interpreter_isolation() {
     let mut source = Interpreter::new();
     eval_str_with(
@@ -5937,6 +6003,7 @@ fn symbol_plists_preserve_clone_sharing_and_interpreter_isolation() {
         Value::list([Value::T, Value::Integer(7), Value::Integer(11)])
     );
     eval_str_with(&mut clone, "(setplist 'plist-copy-owner nil)");
+    source.select_symbol_owner();
     assert!(!source.symbol_plist("plist-copy-owner").is_nil());
 }
 
