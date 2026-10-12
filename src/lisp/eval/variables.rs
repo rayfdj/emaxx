@@ -2643,17 +2643,10 @@ impl Interpreter {
     /// to the real lookup, buffer-local bindings included.
     #[inline]
     fn edebug_entered_active(&self, env: &Env) -> bool {
-        // `edebug-entered' can only carry a binding once edebug's defvar
-        // has marked it special, so this single flag read, by the id of
-        // the symbol interned once per thread, is the whole cost until
-        // edebug is actually loaded (it ran on every function call, and
-        // hashed the name each time).
-        // Symbol ids are process-wide: the id read once, then one flag
-        // test per call (a thread-local symbol handle was fetched on
-        // every call before).
-        static EDEBUG_ENTERED_ID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-        let id = *EDEBUG_ENTERED_ID.get_or_init(|| SymbolName::intern_str("edebug-entered").id());
-        self.globals.has_flag_id(id, SPECIAL)
+        // GNU's Qsymbol belongs to the editor that owns its value and
+        // declared-special flag. Keep a direct reference in this owner;
+        // neither a process-wide id nor a name/TLS lookup is needed here.
+        self.globals.edebug_is_special()
             && self
                 .lookup_var("edebug-entered", env)
                 .is_some_and(|value| value.is_truthy())

@@ -1,5 +1,15 @@
 # Symbol ownership in private image copies — 10 October 2026
 
+The latest task-branch continuation is **source320**, which repairs an observed
+owner-specific debugger-context regression in source319. See
+[its selected evidence](handover/2026-10-09-symbol-fields/source320-symbol-owner-fix-selected-results-manifest.json)
+and [the current handover](../HANDOVER.md). Source319's complete Linux gate and
+frozen results are now audited, but its timing pilot regressed 4.93% versus main.
+The macOS frozen attempt remains failed, with the separate longer Tramp answers
+and missing original executable bytes documented. The newer
+[allocated-field prototype](runtime-representation-symbol-payload-authority-draft.md)
+is separate and unapplied.
+
 This is **unfinished source319 draft6**, now applied on the validation branch.
 Main `55b109e8` contains source318 and the portable draft through merged PR83. The
 [portable patch and selected evidence](handover/2026-10-09-symbol-fields/source319-symbol-image-draft-results-manifest.json)

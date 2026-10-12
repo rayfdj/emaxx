@@ -157,10 +157,13 @@ pub(crate) struct SymbolCellSnapshot {
     pub(crate) flags: u8,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct SymbolCells {
     /// Canonical symbols belonging to this editor, retained while parked.
     symbols: crate::lisp::types::symbols::SymbolOwner,
+    /// This editor's Qsymbol reference for the hot debugger flag probe.
+    /// A process-wide id would name an earlier editor's object.
+    edebug_entered: SymbolName,
     /// Interned symbols, indexed by id.
     cells: Vec<SymbolCell>,
     /// Uninterned symbols that acquired a cell, by id: rare, and their ids
@@ -184,6 +187,25 @@ pub(crate) struct SymbolCells {
     /// Temporary ordered enumeration, like values/functions/plists. No
     /// name or target copies; remove when the obarray owns enumeration.
     alias_order: Vec<u32>,
+}
+
+impl Default for SymbolCells {
+    fn default() -> Self {
+        Self {
+            symbols: Default::default(),
+            edebug_entered: SymbolName::intern_str("edebug-entered"),
+            cells: Vec::new(),
+            uninterned: HashMap::default(),
+            order: Vec::new(),
+            bound: 0,
+            function_order: Vec::new(),
+            defined_functions: 0,
+            plist_order: Vec::new(),
+            plists: 0,
+            aliases: 0,
+            alias_order: Vec::new(),
+        }
+    }
 }
 
 impl SymbolCells {
@@ -246,6 +268,7 @@ impl SymbolCells {
         owner: crate::lisp::types::symbols::SymbolOwner,
         mut copy: impl FnMut(SymbolName) -> SymbolName,
     ) {
+        self.edebug_entered = copy(self.edebug_entered);
         let active_order = |order: &[u32], position: fn(&SymbolCell) -> Option<NonZeroU32>| {
             order
                 .iter()
@@ -820,9 +843,9 @@ impl SymbolCells {
             .is_some_and(|cell| cell.flags & flag != 0)
     }
 
-    /// `has_flag' by a symbol's id.
-    pub(crate) fn has_flag_id(&self, id: u32, flag: u8) -> bool {
-        self.cell(id).is_some_and(|cell| cell.flags & flag != 0)
+    /// The actual owner-specific flag, without a name or TLS lookup.
+    pub(crate) fn edebug_is_special(&self) -> bool {
+        self.has_flag(&self.edebug_entered, SPECIAL)
     }
 
     pub(crate) fn has_flag_by_name(&self, name: &str, flag: u8) -> bool {

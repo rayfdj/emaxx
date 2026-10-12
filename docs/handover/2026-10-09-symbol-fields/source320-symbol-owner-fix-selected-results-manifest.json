@@ -1,0 +1,84 @@
+{
+  "archive": {
+    "path": "source320-symbol-owner-fix-selected-results.tar.gz",
+    "bytes": 518995,
+    "sha256": "458af2fd50804746b3f56f43dab1114c05bc85e815c2b0d77c45c28869091f4a",
+    "members": 68
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft7-edebug-negative/libtest",
+      "bytes": 29848720,
+      "sha256": "3c98dfe53bf796836a59dc5565553cd9bdf05fce0ba9df147461f38f3c783113"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft8-edebug-owner/fixture-images/loadup-e26d94f7-d44829be.pdmp",
+      "bytes": 21808344,
+      "sha256": "eb58d6bc3b2d46b918a78c2df7e4a58578a102746562d2dc973b5507177ad2ae"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft8-edebug-owner/libtest",
+      "bytes": 29807904,
+      "sha256": "e26d94f7ee96b99d26b4123cb3233492e2d5484865841a7f6386f99bcad87435"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft8-release/fixture-images/loadup-fde8f9fa-d44829be.pdmp",
+      "bytes": 21808360,
+      "sha256": "c17831ed1610d54055f7ce4c931557afb91b3eda9195612ca4826b32253155ea"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft8-release/libtest",
+      "bytes": 22957200,
+      "sha256": "fde8f9faf1d2ebc6bc2eef5b3dd78184fdf33d83baff7353616a6614e79397e7"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "source320 debugger owner repair",
+  "audit": {
+    "checkpoint": "source320 debugger symbol ownership repair",
+    "status": "strict and selected gate/release passed",
+    "source_inputs_verified": 565,
+    "previous_controls_retained": 232,
+    "new_controls": [
+      "lisp::eval::tests::eval_02::owned_edebug_symbols_preserve_the_debugged_callers_context"
+    ],
+    "profiles": {
+      "gate": {
+        "passed": 233,
+        "failed": 0,
+        "ignored": 0,
+        "inventory": 3073,
+        "executable": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft8-edebug-owner/libtest",
+          "sha256": "e26d94f7ee96b99d26b4123cb3233492e2d5484865841a7f6386f99bcad87435"
+        }
+      },
+      "release": {
+        "passed": 233,
+        "failed": 0,
+        "ignored": 0,
+        "inventory": 3072,
+        "executable": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/release/deps/emaxx-e17fcfe01baaf180",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft8-release/libtest",
+          "sha256": "fde8f9faf1d2ebc6bc2eef5b3dd78184fdf33d83baff7353616a6614e79397e7"
+        }
+      }
+    },
+    "patch": {
+      "path": "image-draft8.patch",
+      "sha256": "3e4bce1a5003d70be3b208ae2a38f1a39501b9ba7761ca81a361d88740c76fa5",
+      "base": "47a05b26876319b28e590a666f9277a2abf46d5a",
+      "replayed_source_inputs": 565
+    },
+    "preserved_negative": {
+      "directory": "image-draft7-edebug-negative",
+      "receipt_sha256": "43c83f7f456c80e96e50ee75793a5e522e21dc447bfc156d87386d711cef6a1c",
+      "source_sha256": "2afb67e65a3428b4228c93371592bca28f989209ef70a55b8cd501bbbb23afde",
+      "stdout_sha256": "6c17a736aeacd3a2543d58eeeed96b4c50316a25cb5674cef57a70dd188d6a39"
+    },
+    "qualification": "Source319 cached edebug-entered as one process-wide symbol ID. The negative retains the missing lexical context in a later owned editor. The repair keeps a direct Qsymbol reference with that editor and relocates it when copying an image, without a per-call name or TLS lookup. The new control uses two actual editor scopes and checks inactive, active and cleared debugger states. All previous controls and inventory names remain. The source319 full platform and timing evidence is historical; this follow-up still needs its own ordinary, full platform and compatibility validation. The allocated-field prototype remains separate. The full goal is incomplete.",
+    "goal_complete": false
+  }
+}

@@ -5907,6 +5907,50 @@ fn function_get_autoloads_before_reading_declared_property() {
 }
 
 #[test]
+fn owned_edebug_symbols_preserve_the_debugged_callers_context() {
+    let _outer = crate::lisp::types::symbols::EditorSymbolScope::enter();
+    let mut first = Interpreter::new();
+    let env = crate::lisp::types::Env::new();
+    first.push_backtrace_frame(Value::symbol("message"), &[]);
+    first.capture_current_backtrace_context(Some("message"), &env, None);
+    assert!(
+        first
+            .backtrace_frames
+            .last()
+            .unwrap()
+            .lexical_context()
+            .is_none()
+    );
+
+    let _inner = crate::lisp::types::symbols::EditorSymbolScope::enter();
+    let mut second = Interpreter::new();
+    eval_str_with(&mut second, "(defvar edebug-entered t)");
+    second.push_backtrace_frame(Value::symbol("message"), &[]);
+    second.capture_current_backtrace_context(Some("message"), &env, None);
+    assert!(
+        second
+            .backtrace_frames
+            .last()
+            .unwrap()
+            .lexical_context()
+            .is_some(),
+        "a later editor must retain the lexical context of its debugged call"
+    );
+    second.pop_backtrace_frame();
+    eval_str_with(&mut second, "(setq edebug-entered nil)");
+    second.push_backtrace_frame(Value::symbol("message"), &[]);
+    second.capture_current_backtrace_context(Some("message"), &env, None);
+    assert!(
+        second
+            .backtrace_frames
+            .last()
+            .unwrap()
+            .lexical_context()
+            .is_none()
+    );
+}
+
+#[test]
 fn image_clone_symbols_own_names_and_preserve_their_cycles() {
     let mut source = Interpreter::new();
     let original = eval_str_with(

@@ -16,6 +16,56 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
+## Source320 debugger repair and allocated fields — 12 October 2026
+
+The full goal is active and incomplete. Main `55b109e8` still contains source318.
+Source319 was pushed as `47a05b26876319b28e590a666f9277a2abf46d5a` on the authorized
+`runtime-char-tables` branch. **Do not merge that checkpoint alone**: the later
+owner/debugger regression below is reproduced and needs the current repair.
+Existing authorization covers validated task pushes, Linux CI and main merges.
+
+The [complete source319 Linux evidence](docs/handover/2026-10-09-symbol-fields/source319-linux-complete-results-manifest.json)
+verifies **3,181 Rust passes / two existing ignores**, native artifact identity,
+and **519 frozen files / 7,928 matching outcomes / 1,038 successful processes**.
+Runs: Rust `38149420204`, frozen `38149421635`, timing `38149423072`. The
+[paired timing evidence](docs/handover/2026-10-09-symbol-fields/source319-linux-symbol-performance-results-manifest.json)
+verifies all 192 actual answers and modes. Its three full16 pilots are **4.93%
+slower than main by body aggregate**, at **2.813528×** paired GNU. Lexical
+interpretation regresses 24.37%, bindat 22.13%, native-to-bytecode 14.68% and undo
+11.83%; all samples remain. This is not calibrated performance acceptance.
+
+The [macOS failed run and separate Tramp observation](docs/handover/2026-10-09-symbol-fields/source319-macos-failed-frozen-and-tramp-results-manifest.json)
+preserve the uncommitted-checkout rejection, then 318 completed comparisons,
+4,472 matching outcome labels and seven differences. Nine files retain strict
+failures, including local socket permission errors in both editors. Both Tramp
+processes timed out at the unchanged 180-second deadline; 200 files were not
+started. The separate 600-second observation obtains **59 matching Tramp
+outcomes**, GNU 216.08 seconds and Emaxx 227.50 seconds. The original failed-run
+Emaxx executable was rebuilt before its bytes were copied; its recorded hash
+remains, but those original bytes were not recovered. Current executable and
+unchanged GNU/images are retained separately. These runs are not a full pass.
+The next full macOS run needs the approved local socket/PTY execution boundary.
+
+The [source320 debugger repair](docs/handover/2026-10-09-symbol-fields/source320-symbol-owner-fix-selected-results-manifest.json)
+replaces the process-wide cached `edebug-entered` ID with the current editor's
+actual Qsymbol reference, relocated during image copying. The original negative
+loses a later editor's lexical context. Strict checks and **233 controls per
+profile** now pass, with every earlier inventory name retained and all 565
+runtime inputs replayed from `47a05b26`. The task branch contains this repair;
+its own full platform, ordinary and compatibility validation remains pending.
+Use `symbol-obarray-2026-10-09/ordinary_owner_fix.py` and
+`validate_owner_fix.py image-draft8-full full` for the prepared local continuation,
+checking saved state/receipts before starting anything twice. Do not edit the
+root runtime while those checks are running. Source319 results do not certify
+this follow-up. Preserve every failed attempt and evidence limitation.
+
+Read the [latest allocated-field continuation](docs/runtime-representation-symbol-payload-authority-draft.md)
+for the separate prototype. It moves all symbol payloads and flags to allocated
+objects and removes the old field-tracing fixed point. All **235 selected controls
+pass in both profiles**, with 566 inputs replayed. IDs, enumeration, ownership
+retirement, descriptor reclamation, honest accounting and all remaining full-goal
+requirements are still open. It is not applied to this task branch or main.
+
 ## Source319 validation branch — 11 October 2026
 
 Main `55b109e893c16fdd41b963bf46bc40735c19bac4` contains source318 and the
