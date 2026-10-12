@@ -1,0 +1,101 @@
+{
+  "archive": {
+    "path": "allocated-symbol-identity-unfinished-results.tar.gz",
+    "bytes": 631529,
+    "sha256": "7ff9b79a7da9db4f80cdd082a8405ad6226e1f2c16bba811a1161a408582d842",
+    "members": 77
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-negative/libtest",
+      "bytes": 29788160,
+      "sha256": "5cd839ec9cacc5437626b457cc2a8bfaebb6c6354fd05f2dbc9ccc53a1561e8c"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft2-gate/fixture-images/loadup-55d47335-d44829be.pdmp",
+      "bytes": 21897392,
+      "sha256": "82bdd75d92f78b2d2f8d5c862d2fb9023aa698874cb50f7924e355211e0cc88c"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft2-gate/libtest",
+      "bytes": 29827920,
+      "sha256": "55d4733549a2d4a2d44e59db87ccce833b3b0a4a500bf1524abcc1aa1e886e08"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-eshell-observation/after-fixture-images/loadup-55d47335-d44829be.pdmp",
+      "bytes": 21783504,
+      "sha256": "c17b0be730bc76c59e629c81aa1e076861bbda458ef8cb6e4ab47bfdeb1073e4"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-eshell-observation/before-fixture-images/loadup-7d097fd3-d44829be.pdmp",
+      "bytes": 21783472,
+      "sha256": "14065658475e65c7d0032509a751cd49b07a26c4d6b6cb83595e874c120231ce"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "unapplied allocated symbol identity draft2",
+  "audit": {
+    "status": "unapplied; strict and 380 selected controls passed; Eshell failure unresolved",
+    "source_inputs_verified": 568,
+    "attempts": [
+      {
+        "label": "fields-identity-negative",
+        "patch": {
+          "label": "fields-identity-negative",
+          "patch": "fields-identity-negative.patch",
+          "sha256": "19c649fe0cb6174b51e75280b9ab2fd084cf5104d54201a8d39c8471babe8f54",
+          "source_inputs": 568,
+          "base": "265d5ba3405cebe7692560cc29722be65d62237b",
+          "replayed": true
+        },
+        "failed_stage": "focused",
+        "passed": 0,
+        "failed": 2,
+        "binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-negative/libtest",
+          "sha256": "5cd839ec9cacc5437626b457cc2a8bfaebb6c6354fd05f2dbc9ccc53a1561e8c"
+        }
+      },
+      {
+        "label": "fields-identity-draft1-gate",
+        "patch": {
+          "label": "fields-identity-draft1-gate",
+          "patch": "fields-identity-draft1-gate.patch",
+          "sha256": "fec3ec6bf0d3b83870a3c1fdd46d2b85d4b64a74e5baa43c16606a0a534b1aff",
+          "source_inputs": 568,
+          "base": "265d5ba3405cebe7692560cc29722be65d62237b",
+          "replayed": true
+        },
+        "failed_stage": "check"
+      },
+      {
+        "label": "fields-identity-draft2-gate",
+        "patch": {
+          "label": "fields-identity-draft2-gate",
+          "patch": "fields-identity-draft2-gate.patch",
+          "sha256": "4436d4391bd7ab506e403779b3433444e6eea8db4ee074bd58d695fbdb8e004f",
+          "source_inputs": 568,
+          "base": "265d5ba3405cebe7692560cc29722be65d62237b",
+          "replayed": true
+        },
+        "failed_stage": null,
+        "passed": 380,
+        "failed": 0,
+        "binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft2-gate/libtest",
+          "sha256": "55d4733549a2d4a2d44e59db87ccce833b3b0a4a500bf1524abcc1aa1e886e08"
+        }
+      }
+    ],
+    "previous_inventory_names_preserved": 3078,
+    "inventory": 3079,
+    "allocated_symbol_bytes": 64,
+    "previous_allocated_symbol_bytes": 72,
+    "eshell_before_and_after": "both fail the unchanged completion-window assertion",
+    "qualification": "Allocated symbol IDs and both numeric ID counters are removed. Locals, aliases, watchers and dump identities use actual objects. Buffer-local keys no longer duplicate their symbol handles. Keyboard Qsymbol references belong to each editor; the new before-change negative fails in the second owner and now passes. The existing host-name adapters, uninterned name book, standard membership tombstones, localized/forwarded adapters, physical accounting, release/full/ordinary validation and performance remain open. The earlier full prototype also has four cross-owner expectation fixtures to repair against GNU observations. The separate Eshell failure is not fixed or waived.",
+    "goal_complete": false
+  },
+  "qualification": "All three cumulative patches replay 568 inputs. The negative fails both the 64-byte layout and editor-specific keyboard-symbol tests. First repair has preserved compile errors; draft2 passes strict checks and 380 selected controls. It removes allocated symbol IDs and their two atomic counters, uses actual symbol identity for locals/aliases/watchers/dumps, and binds keyboard Qsymbols to each editor. The original Eshell assertion fails unchanged both before and after this change. Release, ordinary and full validation have not run. Draft16 broader failures remain open. A 64-byte header is not a whole-process memory or performance result: existing adapter/name structures and 14 per-editor keyboard references remain. Accounting, complete ownership and the full goal remain unfinished."
+}

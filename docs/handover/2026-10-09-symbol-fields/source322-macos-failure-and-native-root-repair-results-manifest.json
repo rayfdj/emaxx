@@ -1,0 +1,273 @@
+{
+  "archive": {
+    "path": "source322-macos-failure-and-native-root-repair-results.tar.gz",
+    "bytes": 377529,
+    "sha256": "3a49b1536f8332e2aa70534d98177c62f804c7f3c1fda834c762372404504281",
+    "members": 76
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-macos-full/full/retained-inputs/fixture-images/loadup-55ac4ab8-5983355c.pdmp",
+      "bytes": 19449376,
+      "sha256": "60aa34c6cdeea9b94f06f2a3c9befd94010f79b43fe12e6ac0aa516d86f110d5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-macos-full/full/retained-inputs/fixture-images/loadup-b171ae9f-d44829be.pdmp",
+      "bytes": 21779272,
+      "sha256": "99a54c202079b9336297fa42d134656104a11b27345e22f12ce5929c21b1e222"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-macos-full/full/retained-inputs/fixture-images/loadup-c366d400-5983355c.pdmp",
+      "bytes": 19449376,
+      "sha256": "815e04ff3692b495e9fdcc7fec0d7a7cb032867053325dca2dced07469babf20"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-macos-full/full/retained-inputs/fixture-images/loadup-c55b8b43-d44829be.pdmp",
+      "bytes": 21776800,
+      "sha256": "4521cac346f927a0eebebf711e7859d80d402d593c68c615f42765fe51e38d43"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-macos-full/full/retained-inputs/fixture-images/loadup-e26d94f7-d44829be.pdmp",
+      "bytes": 21776800,
+      "sha256": "31ef0a3b78e1b4aec226bebc805836dd02bc4d0f5e10dbd88482953cd98ce844"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-macos-full/full/retained-inputs/fixture-images/loadup-f4a554a5-d44829be.pdmp",
+      "bytes": 21779416,
+      "sha256": "5d8859ad18628c56d8bd5b555d0a27c572a34a58a73781f6e0f5e46cae5bed16"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-macos-full/full/retained-inputs/fixture-images/loadup-f7b23000-5983355c.pdmp",
+      "bytes": 19202384,
+      "sha256": "eb232666ed99e90a62dbf6482182f7e2fb1322383487fc2088ed8ead5ab545e4"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-macos-full/full/retained-inputs/fixture-images/loadup-fa0c2031-5983355c.pdmp",
+      "bytes": 19449376,
+      "sha256": "c8479702d5a167416cdda6129a8765fce602e107f356ecbd8e10c91c4a4ccaec"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-macos-full/full/retained-inputs/libtest",
+      "bytes": 29799440,
+      "sha256": "c55b8b437732d53287049bd1a8f25d41442af1358dd0d14b9a51ab47d5489d0d"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-native-identity-failure/retained-inputs/0-emacs",
+      "bytes": 9600848,
+      "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-native-identity-failure/retained-inputs/1-emacs.pdmp",
+      "bytes": 22954264,
+      "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-native-identity-failure/retained-inputs/4-emacs",
+      "bytes": 9600848,
+      "sha256": "7d8944fe2b2bdbd2856cfd4f47dbd5c80db90089ac20be641c10a348bf217e82"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-native-identity-failure/retained-inputs/5-emacs.pdmp",
+      "bytes": 22943008,
+      "sha256": "203b588b9aaac1bd38327569c88d3dbbdf91bf6dbc4c2b4487c68c9bab4004e8"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-native-identity-failure/retained-inputs/8-emaxx",
+      "bytes": 17901392,
+      "sha256": "8512cb942ca215355a090a0887a04aa94d9b9c0f7798c2d0b90d0dbd906be924"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-native-identity-failure/retained-inputs/9-emaxx.pdmp",
+      "bytes": 21785224,
+      "sha256": "96e665a94b9cfec21b829aeb7d9dc8239dff758c821110de2d4f29e1908498a0"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-native-gate/fixture-images/loadup-eb949569-d44829be.pdmp",
+      "bytes": 21779336,
+      "sha256": "9033ef3ad675f79b6ae74356d2b21495a24ceb5bb2d0313ce65da4f2a54aeb1c"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-native-gate/fixture-images/loadup-f4a554a5-d44829be.pdmp",
+      "bytes": 21779320,
+      "sha256": "79ec51b52e1c51a6f34b76a47882d5cc4331b83e5165aeced19f85fefa007df1"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-native-gate/retained-inputs/0-emaxx",
+      "bytes": 17901392,
+      "sha256": "8512cb942ca215355a090a0887a04aa94d9b9c0f7798c2d0b90d0dbd906be924"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-native-gate/retained-inputs/1-emaxx.pdmp",
+      "bytes": 21785072,
+      "sha256": "df133231399e6ecf5e8471b59eff66aab94147a44837cbc52c438a0bdadd7976"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-native-gate/retained-inputs/2-native_comp_identity-17f1af8f10cb4735",
+      "bytes": 1252272,
+      "sha256": "966f0f732bc98a9ba17abdacee916a935a3a61c86c7f522b41d5b54deaa78aca"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "source322 failed full macOS gate; source323 test-only native oracle correction",
+  "failed": {
+    "status": "failed original full attempt; raw evidence verified",
+    "source_commit": "f526af1c9e070c3eda68dd9736067f8cfbf35ea0",
+    "source_inputs_verified": 565,
+    "library_passed": 3072,
+    "library_ignored": 2,
+    "bins_passed": 60,
+    "integration_passed": 29,
+    "integration_failed": 1,
+    "total_passed": 3161,
+    "failed_test": "unchanged_gnu_sources_produce_identical_native_artifacts",
+    "unstarted_integration_targets": [
+      "native_thread_continuations",
+      "package_lifecycle",
+      "runtime_ownership"
+    ],
+    "frozen_comparisons_started": 0,
+    "test_binary_sha256": "c55b8b437732d53287049bd1a8f25d41442af1358dd0d14b9a51ab47d5489d0d",
+    "native_differing_bytes": 88,
+    "native_artifact_abis": [
+      "adba4e3f",
+      "d6eeb69b"
+    ],
+    "retained_gate_inputs": {
+      "gate_status": "failed",
+      "gate_summary_sha256": "c2f01078a702b22f87abc862321aba02de56dd50db023bcdbe90a2621c7e1f1f",
+      "qualification": "Post-run files; no inference that every test used every image.",
+      "status": "retained",
+      "files": [
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "artifact": "libtest",
+          "sha256": "c55b8b437732d53287049bd1a8f25d41442af1358dd0d14b9a51ab47d5489d0d",
+          "bytes": 29799440
+        },
+        {
+          "original": "target/grouped-gate/fixture-images/loadup-55ac4ab8-5983355c.pdmp",
+          "artifact": "fixture-images/loadup-55ac4ab8-5983355c.pdmp",
+          "sha256": "60aa34c6cdeea9b94f06f2a3c9befd94010f79b43fe12e6ac0aa516d86f110d5",
+          "bytes": 19449376
+        },
+        {
+          "original": "target/grouped-gate/fixture-images/loadup-b171ae9f-d44829be.pdmp",
+          "artifact": "fixture-images/loadup-b171ae9f-d44829be.pdmp",
+          "sha256": "99a54c202079b9336297fa42d134656104a11b27345e22f12ce5929c21b1e222",
+          "bytes": 21779272
+        },
+        {
+          "original": "target/grouped-gate/fixture-images/loadup-c366d400-5983355c.pdmp",
+          "artifact": "fixture-images/loadup-c366d400-5983355c.pdmp",
+          "sha256": "815e04ff3692b495e9fdcc7fec0d7a7cb032867053325dca2dced07469babf20",
+          "bytes": 19449376
+        },
+        {
+          "original": "target/grouped-gate/fixture-images/loadup-c55b8b43-d44829be.pdmp",
+          "artifact": "fixture-images/loadup-c55b8b43-d44829be.pdmp",
+          "sha256": "4521cac346f927a0eebebf711e7859d80d402d593c68c615f42765fe51e38d43",
+          "bytes": 21776800
+        },
+        {
+          "original": "target/grouped-gate/fixture-images/loadup-e26d94f7-d44829be.pdmp",
+          "artifact": "fixture-images/loadup-e26d94f7-d44829be.pdmp",
+          "sha256": "31ef0a3b78e1b4aec226bebc805836dd02bc4d0f5e10dbd88482953cd98ce844",
+          "bytes": 21776800
+        },
+        {
+          "original": "target/grouped-gate/fixture-images/loadup-f4a554a5-d44829be.pdmp",
+          "artifact": "fixture-images/loadup-f4a554a5-d44829be.pdmp",
+          "sha256": "5d8859ad18628c56d8bd5b555d0a27c572a34a58a73781f6e0f5e46cae5bed16",
+          "bytes": 21779416
+        },
+        {
+          "original": "target/grouped-gate/fixture-images/loadup-f7b23000-5983355c.pdmp",
+          "artifact": "fixture-images/loadup-f7b23000-5983355c.pdmp",
+          "sha256": "eb232666ed99e90a62dbf6482182f7e2fb1322383487fc2088ed8ead5ab545e4",
+          "bytes": 19202384
+        },
+        {
+          "original": "target/grouped-gate/fixture-images/loadup-fa0c2031-5983355c.pdmp",
+          "artifact": "fixture-images/loadup-fa0c2031-5983355c.pdmp",
+          "sha256": "c8479702d5a167416cdda6129a8765fce602e107f356ecbd8e10c91c4a4ccaec",
+          "bytes": 19449376
+        }
+      ]
+    },
+    "qualification": "All 3074 library names and all four binary targets completed. The integration stage stopped at native artifact identity after three earlier targets; the remaining three targets were not started. The native test used the adjacent GNU build, while Emaxx uses the configured rebuilt oracle. Different ABI hashes are embedded in the retained artifacts. No byte is ignored or normalized; this full attempt remains failed. The queued frozen comparison did not start. A test-path correction needs its own validation.",
+    "goal_complete": false
+  },
+  "repair": {
+    "status": "strict and all seven integration targets passed",
+    "source_inputs_verified": 565,
+    "unchanged_inputs": 564,
+    "changed_inputs": [
+      "tests/native_comp_identity.rs"
+    ],
+    "production_unchanged": true,
+    "passed": 39,
+    "failed": 0,
+    "ignored": 0,
+    "native_identity_fixtures": [
+      [
+        "test/src/comp-resources/comp-test-45603.el",
+        "34536 identical artifact bytes"
+      ],
+      [
+        "test/src/comp-resources/comp-test-funcs-dyn2.el",
+        "no artifact in either editor"
+      ],
+      [
+        "test/src/comp-resources/comp-test-pure.el",
+        "34728 identical artifact bytes"
+      ],
+      [
+        "test/src/comp-resources/comp-test-funcs-dyn.el",
+        "35400 identical artifact bytes"
+      ],
+      [
+        "test/lisp/emacs-lisp/comp-tests.el",
+        "86384 identical artifact bytes"
+      ],
+      [
+        "test/lisp/emacs-lisp/comp-cstr-tests.el",
+        "298232 identical artifact bytes"
+      ],
+      [
+        "test/src/comp-resources/comp-test-funcs.el",
+        "141672 identical artifact bytes"
+      ],
+      [
+        "test/src/comp-tests.el",
+        "1021168 identical artifact bytes"
+      ],
+      [
+        "lisp/emacs-lisp/comp.el",
+        "881800 identical artifact bytes"
+      ]
+    ],
+    "retained_inputs": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/gate/emaxx",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-native-gate/retained-inputs/0-emaxx",
+        "sha256": "8512cb942ca215355a090a0887a04aa94d9b9c0f7798c2d0b90d0dbd906be924",
+        "bytes": 17901392
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/gate/emaxx.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-native-gate/retained-inputs/1-emaxx.pdmp",
+        "sha256": "df133231399e6ecf5e8471b59eff66aab94147a44837cbc52c438a0bdadd7976",
+        "bytes": 21785072
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/gate/deps/native_comp_identity-17f1af8f10cb4735",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-native-gate/retained-inputs/2-native_comp_identity-17f1af8f10cb4735",
+        "sha256": "966f0f732bc98a9ba17abdacee916a935a3a61c86c7f522b41d5b54deaa78aca",
+        "bytes": 1252272
+      }
+    ],
+    "qualification": "Only the native identity fixture oracle selection and its comment change from source322. Exact byte comparison, all nine sources, successful process requirements, isolated homes/tmp directories, subject-first execution and no-byte-compile policy remain unchanged. Other integration tests retain their original oracle choices; this does not certify a complete final macOS gate, frozen, terminal or performance validation. Source322 full failure remains preserved.",
+    "goal_complete": false
+  },
+  "qualification": "The original full run retains 3161 passes, one native identity failure and two existing ignores; three integration targets and every frozen comparison were unstarted. That native fixture chose an adjacent GNU build with a different native ABI. Source323 changes only its oracle-root selection/comment to the configured GNU tree. Strict checks and all seven integration targets pass (39 tests), preserving exact byte comparisons for all nine original native source fixtures. Production is unchanged. Complete source323 macOS/frozen/terminal and Linux results remain pending."
+}

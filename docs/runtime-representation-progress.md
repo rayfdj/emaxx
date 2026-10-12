@@ -1,4 +1,23 @@
-# Current goal status — 9 October 2026
+# Current goal status — 12 October 2026
+
+The full goal remains active and incomplete. Main contains source318 at
+`55b109e8`; PR84 carries the owner/retirement repairs. The source323 checkpoint
+corrects only a native test's configured GNU root. Production remains identical
+to source321/source322. Source322 has 3,183 Linux Rust passes/two existing ignores
+and all 7,928 frozen outcomes observed, with one GNU-only Eglot timeout. Its macOS
+native fixture failure remains preserved; the corrected fixture and all seven
+integration targets now pass (39 tests). Complete platform validation and merge
+are pending. See [HANDOVER.md](../HANDOVER.md) for current commands and evidence.
+
+The separate [allocated-symbol/identity prototype](runtime-representation-symbol-payload-authority-draft.md)
+removes per-symbol metadata/history and then numeric symbol IDs, reducing the
+allocated header from 72 to 64 bytes. Its latest strict/selected gate passes 380
+controls; its preceding full library observation retains 15 failures. It is
+unapplied and has no performance result. The latest production pilots remain
+2.767150× paired GNU and 0.53% slower than main. Ownership/reclamation, remaining
+adapters, physical counters, profiles, final audit, full platform gates and the
+calibrated nine-round/every-case 3% requirement remain open. Earlier sections
+below describe historical checkpoints, not completion of these requirements.
 
 ## Source318 application after the main merge — 9 October 2026
 

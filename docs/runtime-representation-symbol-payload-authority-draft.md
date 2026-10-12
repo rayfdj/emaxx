@@ -1,4 +1,49 @@
-# Obarray-owned enumeration continuation — 12 October 2026
+# Actual symbol identity continuation — 12 October 2026
+
+The latest **unapplied prototype is identity draft2** in
+`target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx`.
+Its [portable cumulative patches and evidence](handover/2026-10-09-symbol-fields/allocated-symbol-identity-unfinished-results-manifest.json)
+replay all 568 inputs from `265d5ba3`. Strict checks have zero warnings;
+**380 selected controls pass**, with all earlier inventory names retained.
+Release, ordinary, complete platform validation and performance remain pending.
+
+The allocated symbol no longer stores a numeric ID, and both symbol-ID atomic
+counters are removed. Local bindings, alias-cycle checks, watchers and dump keys
+use actual object identity. Local binding keys are marked directly, without a
+duplicate symbol payload or an uninterned-ID test; existing binding order is
+preserved. A spare state bit records uninterned construction. Standard-obarray
+membership tombstones and the weak host-name book remain separate limitations.
+
+The old process-wide keyboard ID cache fails when a second editor has its own
+symbols. The new negative retains that failure, alongside the old 72-byte header
+failing the unchanged 64-byte expectation. Keyboard variables now retain fourteen
+Qsymbols in their own editor; the new owner test passes. The header is **64 bytes**,
+but the per-editor references add 112 bytes, and physical accounting still uses
+older estimates. No net memory or performance improvement is claimed. The first
+repair's compile errors remain recorded.
+
+The preceding [allocated-field draft16](handover/2026-10-09-symbol-fields/allocated-symbol-draft16-results-manifest.json)
+passes 379 controls per profile and 21 ordinary GNU comparisons in real execution
+modes. Its two prior fixture repairs keep symbol comparisons inside one editor
+and compare every native name/arity without imposing an unsupported obarray
+iteration order. Actual GNU observations support both contracts.
+
+Draft16's full attempt fails after 689 passes/two failures. A separate continuation
+executes all eight unstarted library groups: the combined inventory has **3,061
+passes, 15 failures and two existing ignores across 3,078 names**. No Cargo stage
+runs. Every failure is retained, including cconv/backquote/EIEIO and locale owner
+comparisons, undo, bytecode switch, native calls, Eshell completion and escaped
+frame reclamation. The ID repair does **not** fix the original Eshell assertion;
+it fails in both before/after observations. These drafts must not be applied as
+validated runtimes. Resolve the observed failures against GNU and the ownership
+contract without weakening equality, dropping assertions or rewriting verdicts.
+
+Remaining host-name adapters, membership, localized/forwarded fields, descriptor
+reclamation, public ownership, physical allocation accounting, profiles, complete
+validation and the full performance criterion remain open. The 64-byte layout
+and selected controls do not complete the architecture or the full goal.
+
+## Historical obarray-owned enumeration continuation
 
 The latest **unapplied prototype is draft15**, with [portable patches, original
 failures and raw evidence](handover/2026-10-09-symbol-fields/allocated-symbol-obarray-unfinished-results-manifest.json).

@@ -1,11 +1,14 @@
 # Symbol ownership in private image copies — 10 October 2026
 
-The current task branch adds only source322's configured-root startup fixture
-correction to source321 production code. Source321 has complete Linux Rust and
-frozen results; its macOS full attempt retains one startup fixture failure.
-The correction passes six startup controls per profile and strict checks; full
-source322 validation remains pending. See the [current handover](../HANDOVER.md)
-for exact evidence and the separate unfinished obarray prototype.
+The current checkpoint adds source323's configured-root native identity fixture
+correction to source321/source322 production code. Source322 passes complete Linux
+Rust checks; its full frozen run retains one GNU-only Eglot timeout among 7,928
+outcomes. Its macOS run retains 3,161 passes, one native artifact mismatch from
+the fixture selecting a different GNU ABI, and two existing ignores. Source323
+uses the configured oracle without changing any byte-comparison assertion;
+strict checks and all 39 integration tests pass. Complete source323 validation
+and the authorized main merge remain pending. See the [current handover](../HANDOVER.md)
+for original failures, the separate GNU observation and unfinished identity draft.
 
 The current task branch carries **source321**, the actual-mark repair for weak
 references to a retired editor's symbols. Its new control retains parked-owner
