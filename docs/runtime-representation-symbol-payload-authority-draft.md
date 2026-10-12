@@ -1,4 +1,57 @@
-# Allocated symbol authority continuation — 12 October 2026
+# Obarray-owned enumeration continuation — 12 October 2026
+
+The latest **unapplied prototype is draft15**, with [portable patches, original
+failures and raw evidence](handover/2026-10-09-symbol-fields/allocated-symbol-obarray-unfinished-results-manifest.json).
+Its checkout is `target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx`.
+All **568 input bytes/modes** replay from `265d5ba3`; strict checks have zero
+warnings. **377 of 379 selected controls pass**; the full inventory preserves
+all earlier names. Release, ordinary and full platform checks have not run for
+this draft. Do not apply it as a validated runtime.
+
+GNU `lread.c:map_obarray` enumerates the obarray, independently of field contents.
+The old prototype's first-binding/definition histories reorder `mapatoms` after
+field changes; identical ordinary programs return eight true predicates in GNU
+and one false/seven true in the old Emaxx prototype. Draft15 removes the dense
+and sparse per-interpreter metadata tables, all four history vectors and their
+GC cleanup. Value/function/plist/alias stores update only the allocated object.
+The remaining per-interpreter `SymbolCells` holds an owner and its Qsymbol
+reference. No per-symbol side metadata remains, but the 72-byte allocated header
+still has host-name/id and localized/forwarded adapters. Physical accounting and
+whole-process memory/performance measurements remain unfinished.
+
+Enumerating actual owner entries exposed a reader defect: a post-read rewrite
+first created private-obarray names in the standard namespace. Text/encoded
+reads now use the existing atom resolver; eval-buffer/region read each form in
+the currently selected obarray before evaluating it. The new GNU observation
+confirms private membership and standard non-membership for all four entries.
+Both new obarray controls pass in draft15. A temporary bit in the existing state
+byte preserves the startup distinction between Lisp definitions and defsubr;
+it must disappear when its consumers use actual function capabilities. Alias
+transitions retain independent classification bits; the existing union control
+checks those transitions and all value/function/plist/GC edges.
+
+The two remaining failures are
+`eieio_persistence_recurses_through_container_values_with_expected_reader_policy`
+and `dump_emacs_portable_restores_context_and_reports_native_image_limit`.
+The first compares identical printed symbol values from different editor owners.
+The second retains a native count of 3,865 but selects a different first function
+from the reconstructed obarray. Preserve all serialization, native identity,
+arity and lifetime requirements when resolving these; neither is waived or
+counted as a pass. The earlier dump member check now captures the writer's
+members at dump time, before diagnostic programs introduce additional names;
+it still requires every captured member after restoration.
+
+Draft12's compile errors, draft13's three failed controls, draft14's lifetime
+compile error and draft15's two failed controls remain preserved, with each
+cumulative patch replayed. The prior draft11 ordinary validation is now closed:
+**30 successful processes / fifteen matching GNU comparisons** in real
+interpreted/bytecode/native modes, with all four executable/image bytes retained.
+Those earlier inputs do not validate draft15. Remaining ownership/name/id,
+localized/forwarded, descriptor reclamation, allocation accounting, profiles,
+full validation, final adversarial review and the unchanged performance criterion
+remain open.
+
+## Historical draft11 continuation
 
 The latest **unapplied prototype is draft11**. Its
 [portable patch and evidence](handover/2026-10-09-symbol-fields/allocated-symbol-authority-draft11-results-manifest.json)

@@ -1,0 +1,238 @@
+{
+  "archive": {
+    "path": "source321-macos-failure-and-startup-repair-results.tar.gz",
+    "bytes": 505396,
+    "sha256": "859ab216693dbdba79744c4662c8339f32b5940db1f8328e6bb3d9a9d40c1b84",
+    "members": 100
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-full/full/retained-inputs/fixture-images/loadup-55ac4ab8-5983355c.pdmp",
+      "bytes": 19449376,
+      "sha256": "60aa34c6cdeea9b94f06f2a3c9befd94010f79b43fe12e6ac0aa516d86f110d5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-full/full/retained-inputs/fixture-images/loadup-b171ae9f-d44829be.pdmp",
+      "bytes": 21779272,
+      "sha256": "99a54c202079b9336297fa42d134656104a11b27345e22f12ce5929c21b1e222"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-full/full/retained-inputs/fixture-images/loadup-c366d400-5983355c.pdmp",
+      "bytes": 19449376,
+      "sha256": "815e04ff3692b495e9fdcc7fec0d7a7cb032867053325dca2dced07469babf20"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-full/full/retained-inputs/fixture-images/loadup-e26d94f7-d44829be.pdmp",
+      "bytes": 21776800,
+      "sha256": "31ef0a3b78e1b4aec226bebc805836dd02bc4d0f5e10dbd88482953cd98ce844"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-full/full/retained-inputs/fixture-images/loadup-f7b23000-5983355c.pdmp",
+      "bytes": 19202384,
+      "sha256": "eb232666ed99e90a62dbf6482182f7e2fb1322383487fc2088ed8ead5ab545e4"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-full/full/retained-inputs/fixture-images/loadup-fa0c2031-5983355c.pdmp",
+      "bytes": 19449376,
+      "sha256": "c8479702d5a167416cdda6129a8765fce602e107f356ecbd8e10c91c4a4ccaec"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-full/full/retained-inputs/libtest",
+      "bytes": 29799440,
+      "sha256": "b171ae9f271af1093c0799ebda127c0de103d2a73b38117a2fe081dfde00070c"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-startup-gate2/libtest",
+      "bytes": 29799440,
+      "sha256": "c55b8b437732d53287049bd1a8f25d41442af1358dd0d14b9a51ab47d5489d0d"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-startup-release/libtest",
+      "bytes": 22957440,
+      "sha256": "43cb3d7775d2d0c8a1e0cd13fe7059a246fd89e5a4f584c60976591526066d92"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "source321 failed full macOS Rust gate and source322 startup fixture correction",
+  "failed_audit": {
+    "status": "failed; complete raw attempted inventory audited",
+    "source_commit": "6392d517178d6134fc120616dde1f548a6929349",
+    "source_inputs_verified": 565,
+    "library_inventory": 3074,
+    "observed": 3074,
+    "passed": 3071,
+    "failed": [
+      "startup::tests::initialize_load_path_uses_gnu_empty_entry_and_dump_phase_rules"
+    ],
+    "ignored": [
+      "tty::tty_differential_end_to_end",
+      "tty::tty_smoke_end_to_end"
+    ],
+    "unexecuted": [],
+    "groups": [
+      {
+        "log": "repeat-01-batch.log",
+        "sha256": "9cc732bd26c794a1e66640fd5a8797fee713fe540a34cb1ece9a9ec6bacb2a09",
+        "passed": 50,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "repeat-01-compat_runtime.log",
+        "sha256": "d2b0de0e0fe2da496be59065b1a4163b3e1aeb53c81bf35d3a10ea412719a639",
+        "passed": 86,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "repeat-01-eval_01.log",
+        "sha256": "32d0d93dd9e3951e14424b60c5ef9514298119ed0d66f224a1677c22bdbbd90d",
+        "passed": 386,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "repeat-01-eval_02.log",
+        "sha256": "91e8852cd7e7a00b1acabc8a15174c8cc84f5201181909b7cc08e2f052d55439",
+        "passed": 301,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "repeat-01-eval_03.log",
+        "sha256": "5ade574b62dd91fcb7703f325d1d7f28d29e1402da5b2a5f8ecf9ad112d5109d",
+        "passed": 321,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "repeat-01-eval_04.log",
+        "sha256": "0fcd2eb2b69bfc607e9a9e185a56827618ccae676500b34ebaa49a16fd49a8b5",
+        "passed": 254,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "repeat-01-eval_05.log",
+        "sha256": "115aa66e48def3c98ab52992a79f462a00ddfbf23c107b1f63d3a695bfaafcd5",
+        "passed": 352,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "repeat-01-lightweight.log",
+        "sha256": "3db841ef995908a6c2864baf9a20a437cc2e71c6692d4b532c8f9d5a37eb89a8",
+        "passed": 571,
+        "failed": 1,
+        "ignored": 0
+      },
+      {
+        "log": "repeat-01-primitives.log",
+        "sha256": "f297bec5bec8813f9f65e2ef7632daa00c1ad3ec9ea4cc31bceecd3ce533c6bf",
+        "passed": 688,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "repeat-01-tty.log",
+        "sha256": "d4a7018558ff1dec5f755b2aea542fc4d54de53c17fe0d4af3c5cea99b969b8a",
+        "passed": 62,
+        "failed": 0,
+        "ignored": 2
+      }
+    ],
+    "retained_inputs": {
+      "gate_status": "failed",
+      "gate_summary_sha256": "af3bdccc6cccf49796960bce7670e0ffdbc96938839976b993547aecc840dc70",
+      "qualification": "Post-run files; no inference that every test used every image.",
+      "status": "retained",
+      "files": [
+        {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "artifact": "libtest",
+          "sha256": "b171ae9f271af1093c0799ebda127c0de103d2a73b38117a2fe081dfde00070c",
+          "bytes": 29799440
+        },
+        {
+          "original": "target/grouped-gate/fixture-images/loadup-55ac4ab8-5983355c.pdmp",
+          "artifact": "fixture-images/loadup-55ac4ab8-5983355c.pdmp",
+          "sha256": "60aa34c6cdeea9b94f06f2a3c9befd94010f79b43fe12e6ac0aa516d86f110d5",
+          "bytes": 19449376
+        },
+        {
+          "original": "target/grouped-gate/fixture-images/loadup-b171ae9f-d44829be.pdmp",
+          "artifact": "fixture-images/loadup-b171ae9f-d44829be.pdmp",
+          "sha256": "99a54c202079b9336297fa42d134656104a11b27345e22f12ce5929c21b1e222",
+          "bytes": 21779272
+        },
+        {
+          "original": "target/grouped-gate/fixture-images/loadup-c366d400-5983355c.pdmp",
+          "artifact": "fixture-images/loadup-c366d400-5983355c.pdmp",
+          "sha256": "815e04ff3692b495e9fdcc7fec0d7a7cb032867053325dca2dced07469babf20",
+          "bytes": 19449376
+        },
+        {
+          "original": "target/grouped-gate/fixture-images/loadup-e26d94f7-d44829be.pdmp",
+          "artifact": "fixture-images/loadup-e26d94f7-d44829be.pdmp",
+          "sha256": "31ef0a3b78e1b4aec226bebc805836dd02bc4d0f5e10dbd88482953cd98ce844",
+          "bytes": 21776800
+        },
+        {
+          "original": "target/grouped-gate/fixture-images/loadup-f7b23000-5983355c.pdmp",
+          "artifact": "fixture-images/loadup-f7b23000-5983355c.pdmp",
+          "sha256": "eb232666ed99e90a62dbf6482182f7e2fb1322383487fc2088ed8ead5ab545e4",
+          "bytes": 19202384
+        },
+        {
+          "original": "target/grouped-gate/fixture-images/loadup-fa0c2031-5983355c.pdmp",
+          "artifact": "fixture-images/loadup-fa0c2031-5983355c.pdmp",
+          "sha256": "c8479702d5a167416cdda6129a8765fce602e107f356ecbd8e10c91c4a4ccaec",
+          "bytes": 19449376
+        }
+      ]
+    },
+    "summary_sha256": "af3bdccc6cccf49796960bce7670e0ffdbc96938839976b993547aecc840dc70",
+    "qualification": "The original full gate remains failed. All 3074 library names executed: 3071 passed, one startup fixture failed and two existing ignores remain. Cargo stages were not run. The startup fixture assumes the adjacent GNU Lisp path for both empty-entry defaults and its explicit EMACSLOADPATH member; actual defaults use the configured rebuilt checkout. Its original exact value, sharing and dump-phase assertions remain recorded. The queued frozen coordinator stopped before running any comparisons.",
+    "goal_complete": false
+  },
+  "repair_audit": {
+    "status": "strict and six startup controls per profile passed",
+    "source_inputs_verified": 565,
+    "unchanged_inputs": 564,
+    "only_changed_input": "src/startup.rs",
+    "production_source_unchanged": true,
+    "source_base": "6392d517178d6134fc120616dde1f548a6929349",
+    "profiles": {
+      "gate": {
+        "passed": 6,
+        "ignored": 0,
+        "inventory": 3074,
+        "binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-startup-gate2/libtest",
+          "sha256": "c55b8b437732d53287049bd1a8f25d41442af1358dd0d14b9a51ab47d5489d0d"
+        }
+      },
+      "release": {
+        "passed": 6,
+        "ignored": 0,
+        "inventory": 3073,
+        "binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/release/deps/emaxx-e17fcfe01baaf180",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-startup-release/libtest",
+          "sha256": "43cb3d7775d2d0c8a1e0cd13fe7059a246fd89e5a4f584c60976591526066d92"
+        }
+      }
+    },
+    "ordinary_gnu_and_emaxx": {
+      "predicates": 3,
+      "comparisons": 1,
+      "actual_results": "(t t t)",
+      "directory": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-startup-empty-path-observation"
+    },
+    "previous_failed_compile": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-startup-gate",
+    "qualification": "Only the existing startup fixture selects the configured GNU Lisp root. The exact three entries, original-string sharing, environment restoration and dump-phase assertions are unchanged. Full source321 macOS failure stays failed; this selected repair does not certify complete source322 validation. GNU lread.c:load_path_default/init_lread choose installation/source paths, substitute defaults for every empty EMACSLOADPATH item and ignore the environment during dumping. The observed ordinary paired run confirms three entries and the required sharing.",
+    "goal_complete": false
+  },
+  "qualification": "All 3074 original library names executed: 3071 pass, one failure and two existing ignores. Cargo stages and frozen comparisons did not start. Six startup controls pass per profile after a two-line fixture path correction; all 564 other captured inputs and all production source remain unchanged. Every original assertion remains. The first repair compile error is retained. Complete source322 platform validation remains pending."
+}

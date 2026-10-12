@@ -1,0 +1,262 @@
+{
+  "archive": {
+    "path": "allocated-symbol-obarray-unfinished-results.tar.gz",
+    "bytes": 770618,
+    "sha256": "7b0e5ea0444d607b2d2d07384d7cf1c9d4fd92f7c052e5a84d848ba69ac82444",
+    "members": 206
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft13-gate/fixture-images/loadup-d085c091-d44829be.pdmp",
+      "bytes": 21815424,
+      "sha256": "26a647ad7986b407b9de60c0083efd06bce80b7e51303504b652dc4000b92883"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft13-gate/libtest",
+      "bytes": 29962624,
+      "sha256": "d085c0919245ba7584cf0fc40357edcc8e12a3c18db2f3e616d5a4e6fd8ae79f"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft15-gate/fixture-images/loadup-3a5b9f34-d44829be.pdmp",
+      "bytes": 21897304,
+      "sha256": "2f2cfbc6b476466f811e46802f47cc3489bce68237e1d6a78ca644cd58db5d65"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft15-gate/libtest",
+      "bytes": 29962816,
+      "sha256": "3a5b9f3433e40a8fa1fd21fe5d7489748d6646fcab421785eb0c957bc8eb0a82"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "unapplied allocated-symbol obarray draft15; validation incomplete",
+  "audit": {
+    "status": "unfinished; all four attempts and GNU evidence verified",
+    "attempts": [
+      {
+        "draft": 12,
+        "source_inputs": 567,
+        "patch": {
+          "draft": 12,
+          "base": "265d5ba3405cebe7692560cc29722be65d62237b",
+          "patch": "fields-draft12.patch",
+          "sha256": "5e5066ff463c44bf627396050eeecaca4dd3fecf5e98908651163b9b0886d33d",
+          "source_inputs": 567,
+          "replayed": true,
+          "validation_status": "separate; no inference from replay"
+        },
+        "stages": {
+          "fmt": {
+            "exit_code": 0,
+            "receipt_sha256": "cfe72d51fac5d18b537cf6c76e68f07b2e00a2a97dbb95f298c50fc0d664319e"
+          },
+          "check": {
+            "exit_code": 101,
+            "receipt_sha256": "a55af7c18e3d7d77c5719e0878656f0ee7c2b2cbb9ab9cde0b4aa2750bad46cd"
+          }
+        }
+      },
+      {
+        "draft": 13,
+        "source_inputs": 567,
+        "patch": {
+          "draft": 13,
+          "base": "265d5ba3405cebe7692560cc29722be65d62237b",
+          "patch": "fields-draft13.patch",
+          "sha256": "bc77d3f5a0aa23b60a7d3229cd7a90b011358008e478d6233e6abac312f91f02",
+          "source_inputs": 567,
+          "replayed": true,
+          "validation_status": "separate; no inference from replay"
+        },
+        "stages": {
+          "fmt": {
+            "exit_code": 0,
+            "receipt_sha256": "8ad7b33e9dcfff5992505ec3e9b9071443371d4344bcf06bed2cbb6f8d0a4bdd"
+          },
+          "check": {
+            "exit_code": 0,
+            "receipt_sha256": "b15a56c8f2bbd09b6d3f450e3700c48a6ef9b2d8bbe263d117d0a16452418170"
+          },
+          "clippy": {
+            "exit_code": 0,
+            "receipt_sha256": "3130935f550f03e7ea9709842824449e995c13320551a7825ebb82b70fea8736"
+          },
+          "diff": {
+            "exit_code": 0,
+            "receipt_sha256": "cd8df52df329fcca8931f1add29fa15c216f2758851bca9df44e2f887e47fab6"
+          },
+          "build": {
+            "exit_code": 0,
+            "receipt_sha256": "e00dbc7b233c3533f9b9a4f47c6e0b2dbcd5452023d8eeb64a26d2c2469461cf"
+          },
+          "inventory": {
+            "exit_code": 0,
+            "receipt_sha256": "cac11731db0086edcc26998cad26e3245544684b678b94a6d7ada6e461060f92"
+          },
+          "focused": {
+            "exit_code": 101,
+            "receipt_sha256": "e8e67b864c666f41a6afd1fe9e8987276f7cb15664e55d862a7bd7af6e7e3bbe"
+          }
+        },
+        "passed": 235,
+        "failed": [
+          "lisp::eval::tests::eval_02::obarray_enumeration_does_not_follow_symbol_field_mutations",
+          "lisp::primitives::tests::dump_emacs_portable_restores_context_and_reports_native_image_limit",
+          "lisp::primitives::tests::reader_interns_vector_symbols_in_the_dynamic_obarray"
+        ],
+        "selection": 238,
+        "inventory": 3077,
+        "binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft13-gate/libtest",
+          "sha256": "d085c0919245ba7584cf0fc40357edcc8e12a3c18db2f3e616d5a4e6fd8ae79f"
+        },
+        "previous_names_preserved": 3076,
+        "previous_selected_controls_preserved": 237
+      },
+      {
+        "draft": 14,
+        "source_inputs": 568,
+        "patch": {
+          "draft": 14,
+          "base": "265d5ba3405cebe7692560cc29722be65d62237b",
+          "patch": "fields-draft14.patch",
+          "sha256": "395229811fc78ff586547f0a309f335e1ec769e99bf2e017d0a0e2dbfe3c1a57",
+          "source_inputs": 568,
+          "replayed": true,
+          "validation_status": "separate; no inference from replay"
+        },
+        "stages": {
+          "fmt": {
+            "exit_code": 0,
+            "receipt_sha256": "c4a793d54f363906d32015ba1a208e6e4459adaa3553afac083e77149ea398b5"
+          },
+          "check": {
+            "exit_code": 101,
+            "receipt_sha256": "da80ad49be4652a88a9a2e9583afe6759b419083d34c394f2a88e41b3452c19c"
+          }
+        }
+      },
+      {
+        "draft": 15,
+        "source_inputs": 568,
+        "patch": {
+          "draft": 15,
+          "base": "265d5ba3405cebe7692560cc29722be65d62237b",
+          "patch": "fields-draft15.patch",
+          "sha256": "4db89a52e47f8cc82b07390709a978a9eeb6d87ea498b4438209bdaa16ccc09e",
+          "source_inputs": 568,
+          "replayed": true,
+          "validation_status": "separate; no inference from replay"
+        },
+        "stages": {
+          "fmt": {
+            "exit_code": 0,
+            "receipt_sha256": "9bd6f77bfdd7c9b0d666792e0c143186b8509f1749cc702ded073ecbb85c19a9"
+          },
+          "check": {
+            "exit_code": 0,
+            "receipt_sha256": "6621db55c0a3ea6254a1dfcb3ccae7c9b9d123b73fb1a3e7dbd5dac804ed0825"
+          },
+          "clippy": {
+            "exit_code": 0,
+            "receipt_sha256": "64fa0654e9de75ddc84b2ce7b68731428a608bbdbc93181edc1e2d14ceacb9c2"
+          },
+          "diff": {
+            "exit_code": 0,
+            "receipt_sha256": "551afab3b2e2c44ac990bf80aa867fa6c19570e4e8ce1397ff27f7dee22791f6"
+          },
+          "build": {
+            "exit_code": 0,
+            "receipt_sha256": "2aa5d8172b0f7091916a3b022fc04cdf0e369dbf64bda59d6d1282077a0e9063"
+          },
+          "inventory": {
+            "exit_code": 0,
+            "receipt_sha256": "c495402eec1ccf7dec2e405260563d3cbc9f26f5bfb994759a84b24aff743383"
+          },
+          "focused": {
+            "exit_code": 101,
+            "receipt_sha256": "f8c82b23eccd10714d7cee50d4e32dd4c75b28dd3a1e0fa811927f52bb0ccc94"
+          }
+        },
+        "passed": 377,
+        "failed": [
+          "lisp::eval::tests::eval_05::eieio_persistence_recurses_through_container_values_with_expected_reader_policy",
+          "lisp::primitives::tests::dump_emacs_portable_restores_context_and_reports_native_image_limit"
+        ],
+        "selection": 379,
+        "inventory": 3078,
+        "binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft15-gate/libtest",
+          "sha256": "3a5b9f3433e40a8fa1fd21fe5d7489748d6646fcab421785eb0c957bc8eb0a82"
+        },
+        "previous_names_preserved": 3076,
+        "previous_selected_controls_preserved": 237
+      }
+    ],
+    "latest_patch": {
+      "draft": 15,
+      "base": "265d5ba3405cebe7692560cc29722be65d62237b",
+      "patch": "fields-draft15.patch",
+      "sha256": "4db89a52e47f8cc82b07390709a978a9eeb6d87ea498b4438209bdaa16ccc09e",
+      "source_inputs": 568,
+      "replayed": true,
+      "validation_status": "separate; no inference from replay"
+    },
+    "gnu_order_negative": {
+      "predicates": 8,
+      "gnu": "(t t t t t t t t)",
+      "prior_emaxx": "(nil t t t t t t t)"
+    },
+    "gnu_reader_membership": {
+      "predicates": 4,
+      "gnu": "(t t t t)"
+    },
+    "qualification": "Draft15 passes strict checks and 377 of 379 selected controls. It removes dense/sparse metadata and all four field-history vectors, with actual owner enumeration and direct field writes. Unpositioned readers now resolve atoms in the active obarray; eval-buffer/region read one form before evaluation. Earlier compile failures, three draft13 failures and both draft15 failures remain explicit. The EIEIO expected-value fixture constructs symbols in another independent editor; the dump native-function fixture expects the same first item from distinct hash-table layouts. Neither failure is counted as a pass or waived; diagnose and preserve equivalent or stronger GNU-backed coverage before validating the prototype. Remaining name/id, localized/forwarded and host-owner adapters, descriptor reclamation, physical accounting and all full-goal requirements remain.",
+    "goal_complete": false
+  },
+  "earlier_ordinary": {
+    "status": "passed",
+    "source_inputs_verified": 566,
+    "processes": 30,
+    "comparisons": 15,
+    "actual_modes": [
+      "interpreted",
+      "bytecode",
+      "native"
+    ],
+    "identical_editor_arguments": true,
+    "previous_nine_comparisons_preserved": true,
+    "added_graph_comparisons": 3,
+    "added_allocated_field_comparisons": 3,
+    "retained_inputs": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft11-ordinary-retained-inputs/0-emacs",
+        "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+        "bytes": 9600848
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft11-ordinary-retained-inputs/1-emacs.pdmp",
+        "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+        "bytes": 22954264
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx/target/release/emaxx",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft11-ordinary-retained-inputs/2-emaxx",
+        "sha256": "cbd22fe7bf6a1ee5cc77676a617827cafa59631b4e3ef7d238394bb401889c0a",
+        "bytes": 13264320
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx/target/release/emaxx.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft11-ordinary-retained-inputs/3-emaxx.pdmp",
+        "sha256": "9b56d1df6697140ac1dab795cae9eac5d6dd9e733a6bd2fd41ae55aff96bda09",
+        "bytes": 21785536
+      }
+    ],
+    "qualification": "Unapplied allocated-field draft11: ordinary release executables and each editor's own valid image; actual compiler-mode predicates are checked outside execution. Original wrapper preflight failure remains in the selected archive. This is not complete platform or performance validation.",
+    "goal_complete": false
+  },
+  "qualification": "The earlier draft11 has 15 matching ordinary GNU comparisons with actual execution modes; that run predates enumeration/reader changes and does not validate draft15. Four cumulative patches replay every captured input, including both new fixtures. The latest 568-input draft has zero-warning strict checks and 377 passes/two failed controls; no release or ordinary run yet. All failures stay failures. Dense symbol metadata, per-field history and its weak sweep are removed, but the full architecture and performance requirements remain open."
+}

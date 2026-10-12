@@ -1,5 +1,12 @@
 # Symbol ownership in private image copies — 10 October 2026
 
+The current task branch adds only source322's configured-root startup fixture
+correction to source321 production code. Source321 has complete Linux Rust and
+frozen results; its macOS full attempt retains one startup fixture failure.
+The correction passes six startup controls per profile and strict checks; full
+source322 validation remains pending. See the [current handover](../HANDOVER.md)
+for exact evidence and the separate unfinished obarray prototype.
+
 The current task branch carries **source321**, the actual-mark repair for weak
 references to a retired editor's symbols. Its new control retains parked-owner
 survival and then requires removal after retirement. Strict checks and 235

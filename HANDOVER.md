@@ -16,6 +16,59 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
+## Source322 startup fixture correction and source321 results — 12 October 2026
+
+The full goal remains **active and incomplete**. Main is `55b109e8`; PR84 remains
+unmerged. Existing approval covers validated task pushes, Linux CI and main
+merges. Source321 `6392d517` now has [complete Linux evidence](docs/handover/2026-10-09-symbol-fields/source321-linux-complete-results-manifest.json):
+**3,183 Rust passes / two existing ignores**, native artifact identity, and
+**519 frozen files / 7,928 matching outcomes / 1,038 successful processes**.
+Runs are Rust `38223356652`, frozen `38223359371`, timing `38223361524`.
+Every prior library name and every frozen inventory entry remains covered.
+
+The [timing pilots](docs/handover/2026-10-09-symbol-fields/source321-linux-symbol-performance-results-manifest.json)
+verify all 192 actual answers and modes. The body aggregate is **0.53% slower
+than main**, at **2.767150× paired GNU**. Explicit GC regresses 8.04% and
+interpreted calls 5.22%; retain all samples. These three pilots are not the
+calibrated nine-round/every-case performance criterion, which remains open.
+
+The [macOS failure and startup repair](docs/handover/2026-10-09-symbol-fields/source321-macos-failure-and-startup-repair-results-manifest.json)
+retain all **3,074 executed library names: 3,071 passes, one failure and two
+existing ignores**. The binary and integration Cargo stages were not started.
+The frozen coordinator stopped before any comparisons. The sole failing existing
+startup fixture assumed `../emacs/lisp` for its empty-entry defaults, while the
+runtime correctly uses the configured rebuilt GNU checkout. Source322 changes
+only those two fixture setup lines. All value, sharing, environment restoration
+and dump-phase assertions remain. Ordinary GNU and Emaxx both return `(t t t)`
+for the three-entry/sharing observation; `lread.c:load_path_default/init_lread`
+provides the source reference. Strict checks have zero warnings and **six startup
+controls pass per profile**, with every inventory name unchanged. The first
+repair's compile error remains in the package. Production source is identical
+to source321; this does not turn its failed full run into a pass.
+
+Continue with `symbol-obarray-2026-10-09/validate_startup_root.py source322-macos-full full`.
+Inspect saved receipts and active processes before launching twice. The updated
+frozen coordinator must follow that exact source and clean commit, with actual
+executable/image retention before any longer timeout observation. Full macOS
+Rust, frozen, affected native/module and terminal checks remain pending. Do not
+edit a runtime checkout during validation. The earlier source321 terminal helper
+was prepared but never launched; update its source/subject references first.
+
+The [separate allocated-symbol continuation](docs/runtime-representation-symbol-payload-authority-draft.md)
+is now **unapplied draft15**, replayable from main `265d5ba3`. It removes the
+dense/sparse metadata table, four field-history vectors and weak metadata sweep.
+The obarray owner now enumerates actual symbols independently of their fields.
+A GNU-confirmed negative shows the old field-based enumeration reorders after
+rebinding. Reader atoms now resolve in the selected obarray before allocation;
+eval-buffer/region read and evaluate one form at a time. All 568 inputs replay;
+strict checks pass and **377 of 379 selected controls pass**. The EIEIO fixture
+compares symbols from separate editors; the native dump fixture gets the same
+native count but a different first function. Both remain failures requiring
+resolution with GNU-backed coverage. There is no draft15 release/ordinary/full
+validation or performance claim. The earlier draft11 ordinary run separately
+matches fifteen comparisons, including actual native modes. All attempts and
+failed results are [packaged](docs/handover/2026-10-09-symbol-fields/allocated-symbol-obarray-unfinished-results-manifest.json).
+
 ## Source321 owner retirement follow-up — 12 October 2026
 
 The full goal remains active and incomplete. Main is still `55b109e8`; the

@@ -374,8 +374,8 @@ mod tests {
     fn initialize_load_path_uses_gnu_empty_entry_and_dump_phase_rules() {
         let _environment = crate::compat::lock_boot_environment_for_write();
         let previous = std::env::var_os("EMACSLOADPATH");
-        let root = crate::compat::project_root()
-            .join("../emacs/lisp")
+        let root = crate::compat::configured_gnu_source_root()
+            .join("lisp")
             .canonicalize()
             .expect("GNU Lisp source root");
         let root_value = Value::String(root.display().to_string().into());
