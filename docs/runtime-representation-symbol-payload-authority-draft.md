@@ -1,4 +1,40 @@
-# Allocated symbol payload continuation — 12 October 2026
+# Allocated symbol authority continuation — 12 October 2026
+
+The latest **unapplied prototype is draft11**. Its
+[portable patch and evidence](handover/2026-10-09-symbol-fields/allocated-symbol-authority-draft11-results-manifest.json)
+replay all 566 inputs from main `265d5ba3`. Strict checks have zero warnings;
+**237 selected controls pass in each profile**, with every older inventory name
+preserved. The working checkout remains
+`target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx`.
+
+The new lifetime negative reproduced a weak key surviving its editor's retirement.
+Weak survival now follows the actual symbol mark, matching GNU `alloc.c`.
+The new control preserves parked-editor survival and requires removal after
+retirement. This repair is separately validated and applied as source321 on the
+task branch; the direct-field prototype remains separate.
+
+The process-lifetime `NO_C_SLOT` thread-local ID hash set is removed. Its existing
+negative name classification now occupies a spare bit in the allocated symbol's
+state byte, removing TLS access and a hash probe from ordinary lexical binding
+checks. The bit is a temporary adapter until dedicated C slots use the allocated
+redirect; it adds no field. The header plus remaining per-symbol metadata still
+totals 96 bytes. No speed or net memory improvement has been measured.
+
+The original draft7 ordinary run now has an audited **15 matching GNU comparisons
+/ 30 successful processes**, including actual bytecode/native modes and retained
+executables/images. Those source inputs precede the retirement and C-slot changes;
+they do not validate draft11. All failed attempts remain preserved. The existing
+startup path fixture was corrected against the configured GNU root and actual
+GNU environment-independence evidence, keeping its exact assertions.
+
+Dense IDs, enumeration, weak metadata cleanup, localized/forwarded storage,
+host text, descriptor reclamation, host-owner lifetime, physical allocation and
+public counters remain open, along with full ordinary/platform/native/terminal
+validation, profiles, final adversarial review and the unchanged performance
+criterion. This checkpoint does not complete the architecture or the full goal.
+
+## Historical draft7 continuation
+
 
 The full goal remains active and incomplete. This is a **separately packaged,
 unapplied prototype**, outside the source320 debugger repair on the task branch.

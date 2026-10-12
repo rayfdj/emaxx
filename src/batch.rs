@@ -1847,7 +1847,7 @@ mod tests {
         // lread.c:init_lread does not read EMACS_TEST_DIRECTORY. This
         // replaces the old assertion that a fabricated recursive path was
         // acceptable as long as standard libraries happened to precede it.
-        let upstream = compat::project_root().join("../emacs");
+        let upstream = compat::configured_gnu_source_root();
         let root = compat::canonicalize_path(&upstream.join("lisp")).expect("GNU Lisp root");
         let _env_write = compat::lock_boot_environment_for_write();
         let previous_test = env::var_os("EMACS_TEST_DIRECTORY");

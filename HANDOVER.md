@@ -16,6 +16,59 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
+## Source321 owner retirement follow-up — 12 October 2026
+
+The full goal remains active and incomplete. Main is still `55b109e8`; the
+validated follow-up is on [PR #84](https://github.com/rayfdj/emaxx/pull/84), with
+complete validation pending before the authorized main merge. Existing approval
+covers validated updates to `runtime-char-tables`, Linux CI and main merges.
+
+Source320 `4905b3e7` now has [complete Linux evidence](docs/handover/2026-10-09-symbol-fields/source320-linux-complete-results-manifest.json):
+**3,182 Rust passes / two existing ignores**, native artifact identity, and
+**519 frozen files / 7,928 matching outcomes / 1,038 successful processes**.
+Runs are Rust `38208053943`, frozen `38208055794`, and timing `38208057264`.
+The [three timing pilots](docs/handover/2026-10-09-symbol-fields/source320-linux-symbol-performance-results-manifest.json)
+verify all 192 actual answers and modes but remain **2.09% slower than main**
+by body aggregate, at **2.877419×** paired GNU. Every unfavorable sample remains;
+this is not nine-round, calibrated or every-case performance acceptance.
+
+The [source320 macOS evidence](docs/handover/2026-10-09-symbol-fields/source320-macos-failed-rust-results-manifest.json)
+retains 2,498 Rust passes, one failed existing startup-path fixture, two existing
+ignores, 572 unexecuted library names and unstarted Cargo stages. The fixture
+assumed an adjacent GNU checkout instead of the configured rebuilt source root.
+Its twelve ordinary GNU comparisons passed separately. The queued macOS frozen
+run was superseded before execution when the owner-retirement negative below
+was reproduced; it performed zero comparisons. No failed run is counted as a pass.
+
+The [source321 repair and selected evidence](docs/handover/2026-10-09-symbol-fields/source321-owner-retirement-selected-results-manifest.json)
+make weak symbol survival follow the actual mark, as GNU `alloc.c:survives_gc_p`
+does. The negative retained a weak key after its editor and obarray owner died.
+The unchanged new control checks survival while the editor is parked and removal
+after retirement. The other change corrects the existing path fixture's build
+root; its exact load-path assertion and environment-independence check remain.
+Two actual GNU processes confirm that `EMACS_TEST_DIRECTORY` does not alter
+`load-path`. Strict checks have zero warnings, **235 controls pass per profile**,
+and **twelve ordinary GNU comparisons** match with actual bytecode/native modes.
+All 565 inputs replay from source320 and all earlier inventory names remain.
+The prior Linux and macOS results do not certify this follow-up.
+
+Continue with `symbol-obarray-2026-10-09/validate_final_owner.py image-draft10-full full`,
+`source321_macos_frozen.py`, and `source321_ci.py`, inspecting receipts before
+starting anything twice. Preserve exact frozen executable/image bytes before
+any longer timeout observation. The new frozen coordinator does this automatically.
+Complete Rust, frozen, affected native/module and terminal checks remain required.
+Do not edit a runtime checkout while its validation is active.
+
+The [separate allocated-field continuation](docs/runtime-representation-symbol-payload-authority-draft.md)
+is still unapplied. Its latest portable draft11 has **237 controls per profile**.
+It includes the ownership repair and replaces the process-lifetime C-slot ID memo
+with an existing symbol state-byte bit, eliminating a TLS/hash lookup for ordinary
+lexical bindings. The allocated header plus remaining metadata still totals 96
+bytes; no net memory or speed gain is claimed. The draft7 fifteen ordinary
+comparisons are historical, not validation of these newer inputs. Dense IDs,
+enumeration, localized/forwarded adapters, descriptor reclamation, host ownership,
+physical accounting, profiles and all other full-goal requirements remain open.
+
 ## Source320 debugger repair and allocated fields — 12 October 2026
 
 The full goal is active and incomplete. Main `55b109e8` still contains source318.

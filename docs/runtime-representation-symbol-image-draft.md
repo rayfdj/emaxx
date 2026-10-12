@@ -1,6 +1,17 @@
 # Symbol ownership in private image copies — 10 October 2026
 
-The latest task-branch continuation is **source320**, which repairs an observed
+The current task branch carries **source321**, the actual-mark repair for weak
+references to a retired editor's symbols. Its new control retains parked-owner
+survival and then requires removal after retirement. Strict checks and 235
+controls per profile pass, along with twelve ordinary GNU comparisons. An
+existing startup fixture now uses the configured GNU source root, preserving its
+original assertions; actual GNU runs confirm the environment-independence rule.
+See the [current handover](../HANDOVER.md) and
+[closed selected evidence](handover/2026-10-09-symbol-fields/source321-owner-retirement-selected-results-manifest.json).
+Complete platform validation is pending. PR84 is not yet merged; the full goal
+and performance criterion remain open. Earlier continuations below are historical.
+
+The previous task-branch continuation was **source320**, which repairs an observed
 owner-specific debugger-context regression in source319. See
 [its selected evidence](handover/2026-10-09-symbol-fields/source320-symbol-owner-fix-selected-results-manifest.json)
 and [the current handover](../HANDOVER.md). Source319's complete Linux gate and

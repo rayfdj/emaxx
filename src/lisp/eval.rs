@@ -3330,10 +3330,9 @@ impl LispReachability {
             Kind::BigInteger(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Float(value) => value.mark_bit().is_marked(self.epoch),
             Kind::StringObject(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Symbol(symbol) => {
-                crate::lisp::types::visible_symbol_name(&symbol) == symbol.as_str()
-                    || symbol.mark_bit().is_marked(self.epoch)
-            }
+            // alloc.c:survives_gc_p tests the symbol's mark. A live owner's
+            // obarray marks its symbols; a retired owner's names are not roots.
+            Kind::Symbol(symbol) => symbol.mark_bit().is_marked(self.epoch),
             Kind::Cons(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Vector(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Closure(value) => value.mark_bit().is_marked(self.epoch),

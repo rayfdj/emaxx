@@ -1,0 +1,184 @@
+{
+  "checkpoint": "source320",
+  "archive": {
+    "path": "source320-linux-symbol-performance-results.tar.gz",
+    "bytes": 3320745,
+    "sha256": "a6a0e38b885b7ecad699deb81a0034f47d44c190beec4eb85cedeeed02bc42f2",
+    "members": 1080
+  },
+  "run_id": 38208057264,
+  "revisions": {
+    "baseline": "55b109e893c16fdd41b963bf46bc40735c19bac4",
+    "candidate": "4905b3e7c7aabe2e25886fe1e0611715db93ec6d"
+  },
+  "results_verified": 192,
+  "raw_body_geometric_ratio": 1.0209413531863833,
+  "paired_gnu_geometric_ratios": {
+    "baseline": 2.814791127462191,
+    "candidate": 2.8774194242560402
+  },
+  "per_case": [
+    {
+      "case": "interpreted-lexical",
+      "candidate_over_baseline": 1.0715589544599076,
+      "gnu_ratios": {
+        "baseline": 2.602627813601094,
+        "candidate": 2.750869961234888
+      }
+    },
+    {
+      "case": "interpreted-dynamic",
+      "candidate_over_baseline": 1.0214404877254515,
+      "gnu_ratios": {
+        "baseline": 2.356243113103594,
+        "candidate": 2.411571680200151
+      }
+    },
+    {
+      "case": "interpreted-calls",
+      "candidate_over_baseline": 1.0389727911227102,
+      "gnu_ratios": {
+        "baseline": 2.884412819714667,
+        "candidate": 2.9490702917360414
+      }
+    },
+    {
+      "case": "bytecode-calls",
+      "candidate_over_baseline": 1.0114924083167482,
+      "gnu_ratios": {
+        "baseline": 2.724383838507509,
+        "candidate": 2.989825772049388
+      }
+    },
+    {
+      "case": "native-execution",
+      "candidate_over_baseline": 1.0338912044540751,
+      "gnu_ratios": {
+        "baseline": 1.4178499073100344,
+        "candidate": 1.4775775794430697
+      }
+    },
+    {
+      "case": "interpreted-to-native",
+      "candidate_over_baseline": 1.0359590041143079,
+      "gnu_ratios": {
+        "baseline": 3.0595333992386267,
+        "candidate": 3.144480797909296
+      }
+    },
+    {
+      "case": "bytecode-to-native",
+      "candidate_over_baseline": 0.9669469883152838,
+      "gnu_ratios": {
+        "baseline": 4.088912968624747,
+        "candidate": 3.762533517667106
+      }
+    },
+    {
+      "case": "native-to-interpreted",
+      "candidate_over_baseline": 1.0353510278066684,
+      "gnu_ratios": {
+        "baseline": 3.0652957717124374,
+        "candidate": 3.1954233319673766
+      }
+    },
+    {
+      "case": "native-to-bytecode",
+      "candidate_over_baseline": 1.026272232214738,
+      "gnu_ratios": {
+        "baseline": 3.1062731480017773,
+        "candidate": 3.2070149351257133
+      }
+    },
+    {
+      "case": "cons-allocation",
+      "candidate_over_baseline": 1.009589833550842,
+      "gnu_ratios": {
+        "baseline": 2.2387289571985716,
+        "candidate": 2.302477808054297
+      }
+    },
+    {
+      "case": "list-traversal",
+      "candidate_over_baseline": 1.0512070981259989,
+      "gnu_ratios": {
+        "baseline": 2.419644447026345,
+        "candidate": 2.47772941153437
+      }
+    },
+    {
+      "case": "mapcar",
+      "candidate_over_baseline": 0.9649321710821573,
+      "gnu_ratios": {
+        "baseline": 2.751661904169439,
+        "candidate": 2.654962348499492
+      }
+    },
+    {
+      "case": "explicit-gc",
+      "candidate_over_baseline": 1.0048634176625795,
+      "gnu_ratios": {
+        "baseline": 1.245407286685765,
+        "candidate": 1.24940051879752
+      }
+    },
+    {
+      "case": "upstream-sort",
+      "candidate_over_baseline": 1.0269724914828906,
+      "gnu_ratios": {
+        "baseline": 5.428421516834214,
+        "candidate": 5.580955850806398
+      }
+    },
+    {
+      "case": "upstream-undo",
+      "candidate_over_baseline": 1.007068980745724,
+      "gnu_ratios": {
+        "baseline": 5.642672375034765,
+        "candidate": 5.71223599777461
+      }
+    },
+    {
+      "case": "upstream-bindat",
+      "candidate_over_baseline": 1.0341687397492947,
+      "gnu_ratios": {
+        "baseline": 3.355502773396112,
+        "candidate": 3.493143179206686
+      }
+    }
+  ],
+  "excluded_retained_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source320-linux-pair/raw/core-runtime-pair/oracle-inputs/emacs.pdmp",
+      "bytes": 17723936,
+      "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source320-linux-pair/raw/core-runtime-pair/oracle-inputs/emacs",
+      "bytes": 30924408,
+      "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source320-linux-pair/raw/core-runtime-pair/artifacts/candidate/emaxx.pdmp",
+      "bytes": 21852368,
+      "sha256": "afde46ee440b36a6abd3b1e52bbcc91d0aa9f8905bd0e75db02fb6058cf08889"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source320-linux-pair/raw/core-runtime-pair/artifacts/candidate/emaxx",
+      "bytes": 15509584,
+      "sha256": "a90c923f18354a6fdaca95f9564792a8f7616dce6dc0c0d1161d02083b9959ce"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source320-linux-pair/raw/core-runtime-pair/artifacts/baseline/emaxx.pdmp",
+      "bytes": 21852368,
+      "sha256": "234b461aac8337968701a9072e34eeeab6954b3d2eb475ce138aabbd93b6d4d3"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source320-linux-pair/raw/core-runtime-pair/artifacts/baseline/emaxx",
+      "bytes": 15500696,
+      "sha256": "6257e2acfe3913b0d88f3c93451e2a1b0bd780a57fc840eabf756e55b77e3c74"
+    }
+  ],
+  "qualification": "Three alternating full16 diagnostic pilots; all samples, actual GNU/Emaxx results and modes verified. Published tracked source, retained GNU/Emaxx executables/images, native payloads, measurement inputs and build messages independently checked. GNU Lisp/bytecode/native-library inventory hashes outside the retained artifact are bound by original pre/post-run receipts, not rehashed from missing remote paths. No calibrated nine-round or every-case3% acceptance. Both revisions contain source318 registry removal and copied field access. The candidate adds editor-owned symbols/hash descriptors and independent private image graphs. The candidate also repairs the debugger owner reference. The separate allocated-field draft is not measured here. Missing real allocation counters, per-instance allocated-symbol authority and physical accounting remain open. These are before/after diagnostics, not completed equivalent-work acceptance.",
+  "goal_complete": false
+}

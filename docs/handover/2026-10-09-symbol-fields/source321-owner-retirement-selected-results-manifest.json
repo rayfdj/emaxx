@@ -1,0 +1,147 @@
+{
+  "archive": {
+    "path": "source321-owner-retirement-selected-results.tar.gz",
+    "bytes": 894313,
+    "sha256": "4a82e5413c34844c96a490af5c98099a1da85b5a502e73ffb4317200db0e1241",
+    "members": 213
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft9-retirement-mark/fixture-images/loadup-66a12755-d44829be.pdmp",
+      "bytes": 21808536,
+      "sha256": "345adfc075f04f07fd80c8cbf7cb8266328c437d52618a4498cdc4a3242ab9ae"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft9-retirement-mark/libtest",
+      "bytes": 29799440,
+      "sha256": "66a12755e266b01bd46f7e417e9bb35614cb5e0143b1c7cba44842ed33ec0f42"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft9-release/fixture-images/loadup-0ebf1eb0-d44829be.pdmp",
+      "bytes": 21808536,
+      "sha256": "7bfdaabb5b1ca1501d2630c7f46dd1f5f70628c17979b028f9314d626141fe06"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft9-release/libtest",
+      "bytes": 22957440,
+      "sha256": "0ebf1eb030e56e8117066cbb628dad297b0d045f19537ccb1b7dde6afc133de5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-final-owner/fixture-images/loadup-b171ae9f-d44829be.pdmp",
+      "bytes": 21808512,
+      "sha256": "dd90c083d13596b1f60a65e77039af8daff45c6fa5c8fc7ebc9822be0a87d313"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-final-owner/libtest",
+      "bytes": 29799440,
+      "sha256": "b171ae9f271af1093c0799ebda127c0de103d2a73b38117a2fe081dfde00070c"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-release/fixture-images/loadup-943588ce-d44829be.pdmp",
+      "bytes": 21808520,
+      "sha256": "38f832929fb04060a1d999bef3a6725814da2f42da111314a2ca3b1377165979"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-release/libtest",
+      "bytes": 22957440,
+      "sha256": "943588ceb9281509c7534bb72913491fc6a6bae2575b13d9b91598d2d9f0cf51"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft8-retirement-negative/libtest",
+      "bytes": 29655856,
+      "sha256": "9d413608618be453afedee7ff63f4c9dd74509a83c8e5198c426a9d6fbd02f05"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "source321 owner retirement and configured startup fixture",
+  "audit": {
+    "checkpoint": "source321 owner retirement and configured path control",
+    "status": "strict and selected gate/release passed",
+    "source_inputs_verified": 565,
+    "previous_controls_retained": 233,
+    "new_controls": [
+      "batch::tests::session_path_does_not_discover_the_gnu_test_tree",
+      "lisp::eval::tests::eval_02::canonical_symbol_weak_keys_follow_the_editors_lifetime"
+    ],
+    "profiles": {
+      "gate": {
+        "passed": 235,
+        "failed": 0,
+        "ignored": 0,
+        "inventory": 3074,
+        "executable": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-final-owner/libtest",
+          "sha256": "b171ae9f271af1093c0799ebda127c0de103d2a73b38117a2fe081dfde00070c"
+        }
+      },
+      "release": {
+        "passed": 235,
+        "failed": 0,
+        "ignored": 0,
+        "inventory": 3073,
+        "executable": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/release/deps/emaxx-e17fcfe01baaf180",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-release/libtest",
+          "sha256": "943588ceb9281509c7534bb72913491fc6a6bae2575b13d9b91598d2d9f0cf51"
+        }
+      }
+    },
+    "patch": {
+      "path": "image-draft10.patch",
+      "sha256": "7a4f9871c2d3bd0367e26e5f9f759dde88d20659b5962a661ff4029d12e74334",
+      "base": "4905b3e7c7aabe2e25886fe1e0611715db93ec6d",
+      "replayed_source_inputs": 565
+    },
+    "preserved_negative": {
+      "directory": "fields-draft8-retirement-negative",
+      "receipt_sha256": "c15a20be9040621c101f8919b96c7145bf9082b32d571097ee9b689870a8d256",
+      "source_sha256": "d61baaa9c7b3e335ab9c2cb0ae9f166e557309be9058fb9bca0cdfaf6d8956cf",
+      "stdout_sha256": "397e5ba470019a6fb39d36a6899901d2a93cbfc43c3a29faec4f029e2b9a6949"
+    },
+    "qualification": "The same canonical-symbol shortcut retained a weak key after its editor retired. The negative is preserved in the allocated-field prototype; this published-runtime follow-up passes the identical parked-owner survival and retirement control in both profiles. Weak survival now tests the actual object mark, following GNU alloc.c. The only other change corrects an existing startup fixture to use the configured GNU source path; the runtime startup implementation and environment-independence assertions are unchanged. Actual GNU processes verify unchanged load-path with and without EMACS_TEST_DIRECTORY. Source320 Linux, failed macOS Rust and timing results remain separate historical evidence. Full validation, remaining architecture and final performance acceptance are open",
+    "goal_complete": false
+  },
+  "ordinary_audit": {
+    "status": "passed",
+    "source_inputs_verified": 565,
+    "processes": 24,
+    "comparisons": 12,
+    "actual_modes": [
+      "interpreted",
+      "bytecode",
+      "native"
+    ],
+    "identical_editor_arguments": true,
+    "previous_nine_comparisons_preserved": true,
+    "added_graph_comparisons": 3,
+    "retained_inputs": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/release/emaxx",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-ordinary-retained-inputs/0-emaxx",
+        "sha256": "94267b0bc0aa858c63136eedb9b0389fb85bcd92c09414e43985e4b1fa69ed27",
+        "bytes": 13283888
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/release/emaxx.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-ordinary-retained-inputs/1-emaxx.pdmp",
+        "sha256": "428188c4d45ec7e8d8611bafb24a7498cc8d27e4c815dd8c288fc110e3081af0",
+        "bytes": 21785312
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-ordinary-retained-inputs/2-emacs",
+        "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+        "bytes": 9600848
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/image-draft10-ordinary-retained-inputs/3-emacs.pdmp",
+        "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+        "bytes": 22954264
+      }
+    ],
+    "qualification": "Source321: ordinary release executables and each editor's own valid image; actual compiler-mode predicates are checked outside execution. Original wrapper preflight failure remains in the selected archive. This is not complete platform or performance validation.",
+    "goal_complete": false
+  }
+}

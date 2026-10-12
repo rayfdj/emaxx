@@ -5951,6 +5951,55 @@ fn owned_edebug_symbols_preserve_the_debugged_callers_context() {
 }
 
 #[test]
+fn canonical_symbol_weak_keys_follow_the_editors_lifetime() {
+    fn insert_from_parked_editor(collector: &mut Interpreter) {
+        let table = eval_str_with(collector, "retired-symbol-table");
+        let _scope = crate::lisp::types::symbols::EditorSymbolScope::enter();
+        let mut owner = Interpreter::new();
+        owner.set_variable("shared-weak-table", table, &mut Env::new());
+        eval_str_with(
+            &mut owner,
+            "(puthash 'retired-canonical-owner (vector 73) shared-weak-table)",
+        );
+        // The parked editor's obarray is a real root even while a different
+        // editor performs the collection. Preserve its key and value.
+        assert_eq!(
+            eval_str_with(
+                collector,
+                "(progn (garbage-collect) (hash-table-count retired-symbol-table))",
+            ),
+            Value::Integer(1)
+        );
+        assert_eq!(
+            eval_str_with(
+                &mut owner,
+                "(aref (gethash 'retired-canonical-owner shared-weak-table) 0)",
+            ),
+            Value::Integer(73)
+        );
+    }
+
+    let mut collector = Interpreter::new();
+    eval_str_with(
+        &mut collector,
+        "(setq retired-symbol-table (make-hash-table :test 'eq :weakness 'key))",
+    );
+    insert_from_parked_editor(&mut collector);
+    // The creator frame, editor and obarray owner are all gone. Only the weak
+    // key remains; clear stale conservative stack slots before collecting.
+    crate::lisp::alloc::clobber_stack();
+    assert_eq!(
+        eval_str_with(
+            &mut collector,
+            "(progn (garbage-collect) (garbage-collect)
+                    (hash-table-count retired-symbol-table))",
+        ),
+        Value::Integer(0),
+        "a retired editor's canonical symbols are not permanent weak roots"
+    );
+}
+
+#[test]
 fn image_clone_symbols_own_names_and_preserve_their_cycles() {
     let mut source = Interpreter::new();
     let original = eval_str_with(
