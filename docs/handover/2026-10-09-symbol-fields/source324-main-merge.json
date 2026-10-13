@@ -1,0 +1,22 @@
+{
+  "observed": "2026-10-13T06:38:29.725588+00:00",
+  "approved_head": "9f28f5c59ea28c3778b6516c80e4bb57728c1386",
+  "runtime_commit": "999362622a68d6508c356541422f7a48ae6e2175",
+  "unchanged_runtime_inputs": 572,
+  "previous_main": "0118975994af1a337c5197bf07a44023bebc02bf",
+  "status": 200,
+  "merge": {
+    "sha": "758d2138e9fe834abf6391a84946af32b30f5c6c",
+    "merged": true,
+    "message": "Pull Request successfully merged"
+  },
+  "goal_complete": false,
+  "verified_pr": {
+    "number": 85,
+    "state": "closed",
+    "merged": true,
+    "merge_commit_sha": "758d2138e9fe834abf6391a84946af32b30f5c6c",
+    "url": "https://github.com/rayfdj/emaxx/pull/85"
+  },
+  "verified_main": "758d2138e9fe834abf6391a84946af32b30f5c6c"
+}

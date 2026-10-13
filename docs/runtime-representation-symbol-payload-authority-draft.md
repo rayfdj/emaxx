@@ -1,9 +1,9 @@
 # Actual symbol identity continuation — 13 October 2026
 
 The published runtime is **source324 `99936262`**, with 572 inputs, on
-[PR85](https://github.com/rayfdj/emaxx/pull/85), following PR84's main merge
-`01189759`. Full Linux frozen matches all 7,928 outcomes; complete Rust checks
-pass 3,190 on Linux and 3,178 on macOS, each with two existing ignores and exact
+[PR85](https://github.com/rayfdj/emaxx/pull/85), merged into main as `758d2138`
+after PR84's `01189759`. Full Linux frozen matches all 7,928 outcomes; complete
+Rust checks pass 3,190 on Linux and 3,178 on macOS, each with two existing ignores and exact
 native artifacts. The original macOS frozen attempt matches 4,479 outcomes before
 both Tramp processes time out. A separate 600-second observation obtains all
 59 actual matching answers. The exact tail adds 3,377 matches and six unchanged
@@ -14,8 +14,8 @@ macOS qualifications; the original frozen verdict is still failed.
 The [current handover](../HANDOVER.md) links the portable evidence and commands.
 
 Three unchanged Linux pilots verify all 192 actual answers/modes. Source324 is
-0.593% faster than main overall, at 2.725557× paired GNU, with an explicit-GC
-regression of 10.54%. The allocation and exact locked-GC profiles narrow the work
+0.593% faster than previous main `01189759` overall, at 2.725557× paired GNU,
+with an explicit-GC regression of 10.54%. The allocation and exact locked-GC profiles narrow the work
 to investigate but do not explain that regression. The 64-byte header still has
 an incorrect 48-byte allocation charge. No final performance acceptance exists.
 

@@ -19,11 +19,11 @@ The [requirement map](docs/runtime-representation-progress.md) tracks the full s
 ## Source324 validation and separate membership continuation — 13 October 2026
 
 The full goal remains **active and incomplete**. Main contains merged
-[PR84](https://github.com/rayfdj/emaxx/pull/84) at
-`0118975994af1a337c5197bf07a44023bebc02bf`; its
-[merge receipt](docs/handover/2026-10-09-symbol-fields/source323-main-merge.json)
-is retained. [PR85](https://github.com/rayfdj/emaxx/pull/85) carries runtime
-source324 `999362622a68d6508c356541422f7a48ae6e2175`, with **572 runtime inputs**.
+[PR85](https://github.com/rayfdj/emaxx/pull/85) at
+`758d2138e9fe834abf6391a84946af32b30f5c6c`; its
+[merge receipt](docs/handover/2026-10-09-symbol-fields/source324-main-merge.json)
+is retained. The runtime is source324
+`999362622a68d6508c356541422f7a48ae6e2175`, with **572 runtime inputs**.
 This evidence update changes no runtime inputs. Existing approval covers
 validated task pushes, Linux CI and main merges; do not ask again.
 
@@ -61,8 +61,7 @@ passes **all 226 original scenarios / 686 comparisons**: 658 screens and 28
 filesystem comparisons. All 24 captured rows, cell attributes and cursor positions
 also match independently of the harness verdict. Original actions, inventory and
 deadlines remain unchanged. Source324 validation is closed with the macOS frozen
-qualifications above. Existing approval covers the PR85 merge; verify its current
-GitHub state before attempting a duplicate merge.
+qualifications above. PR85 is already merged; do not attempt a duplicate merge.
 
 The [three Linux timing pilots](docs/handover/2026-10-09-symbol-fields/source324-linux-symbol-performance-results-manifest.json)
 verify **192 actual answers and execution modes** across all 16 locked workloads.
@@ -84,20 +83,38 @@ self samples concentrate in tracing and collection. Whole-process sampling,
 concurrent validation and a retained release executable make this diagnostic;
 the samples do not establish the cause of the Linux regression or a speed gain.
 
-A second **separate, unapplied GC experiment** is in
+A **separate, unapplied GC experiment** is in
 `target/runtime-goal/recovered-2026-10-13/gc-cons-trace/emaxx`.
 The [draft1 patch and initial evidence](docs/handover/2026-10-09-symbol-fields/gc-cons-trace-draft1-unfinished-results-manifest.json)
 replay all 572 inputs from `99936262`, changing only `src/lisp/eval.rs`.
 GNU `alloc.c:process_mark_stack` motivates marking and tracing cons fields
 without two general tag matches; mark epochs and car-first traversal remain.
 Strict checks have zero warnings. The first selected run records **438 passes /
-96 failures** with the adjacent GNU fixture tree missing. The required symlink
-now points to the existing pinned GNU build; all 534 original selected names are
-running again with unchanged source and assertions. Preserve the initial failure.
-Inspect `gc-cons-trace-draft1-gate-layout` and the active continuation before
-starting another run. No release or speed result exists; keep the experiment
-separate until correctness checks and interleaved equivalent-work measurements
-establish whether it helps. It does not affect source324's closed validation.
+96 failures** with the adjacent GNU fixture tree missing; this remains failed.
+With the required fixture layout, the [completed draft1 evidence](docs/handover/2026-10-09-symbol-fields/gc-cons-trace-draft1-rejected-results-manifest.json)
+passes **534 unchanged controls in each profile**, **28 ordinary comparisons /
+56 processes**, and **192 actual benchmark answers/modes**. Three alternating
+macOS pilots show **1.93% aggregate and 10.49% explicit-GC regressions** versus
+fresh main `758d2138`. **Draft1 is rejected and remains unapplied.** All samples,
+the original setup failure and audit-helper corrections remain preserved.
+
+The generated candidate code calls a 10,132-byte helper with a 224-byte stack
+frame for each queued object; the baseline drains the pending loop within one
+function. That extra call is a concrete cost, not a complete causal explanation
+for the observed slowdown. The isolated checkout now carries **draft2**, adding
+`#[inline(always)]` to keep the helper in the pending loop. Its
+[completed evidence](docs/handover/2026-10-09-symbol-fields/gc-cons-trace-draft2-unapplied-results-manifest.json)
+replays all 572 inputs, passes strict checks without warnings, all **534 controls
+in each profile**, **28 ordinary comparisons / 56 processes**, and **192 actual
+benchmark answers/modes**. Three alternating macOS pilots show **3.11% faster
+explicit GC but 1.15% slower aggregate** against fresh main `758d2138`.
+The compiled pending loop has one 272-byte frame and no per-object helper call;
+its code grows from 10,260 to 10,776 bytes. All samples remain diagnostic.
+**Keep draft2 unapplied: these pilots do not establish an overall benefit.**
+All GC experiment processes have ended. Return to the known constant/store
+identity repair below; do not repeat the completed GC checks or apply either
+experiment as a validated improvement. Source324's closed validation is unaffected,
+and its production GC regression remains open.
 
 The next implementation is the **separate, unapplied membership draft6** in
 `target/runtime-goal/recovered-2026-10-13/symbol-membership/emaxx`.
@@ -138,7 +155,7 @@ Local source324 coordinators and receipts live under
 `target/runtime-goal/symbol-obarray-2026-10-09`: inspect
 `source324-macos-observations/state.json`, `source324-terminal/state.json` and
 `active-continuation-2026-10-13-source324.json`. All source324 validation
-coordinators have ended. The root may now fast-forward to the published merge;
+coordinators have ended. The root has fast-forwarded to the published merge;
 preserve the separate unfinished checkouts and their recorded input identities.
 Large executables/images excluded from portable archives are explicitly listed
 with sizes, hashes and retained local paths; not every artifact is portable.

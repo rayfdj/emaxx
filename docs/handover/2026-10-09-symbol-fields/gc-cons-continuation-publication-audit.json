@@ -1,0 +1,20 @@
+{
+  "status": "all portable archive members and exclusions checked; runtime unchanged",
+  "archives": [
+    {
+      "archive": "gc-cons-trace-draft1-rejected-results.tar.gz",
+      "members": 1339,
+      "excluded_large_inputs": 18,
+      "sha256": "3cf30bc234c1ae0c2b3315f912c48ea4ff8532aeb677a9373cc48cf441d5ab15"
+    },
+    {
+      "archive": "gc-cons-trace-draft2-unapplied-results.tar.gz",
+      "members": 1314,
+      "excluded_large_inputs": 14,
+      "sha256": "d54c1084d9377b945ff458e3c763d81afff2e93151829e9e605f9a22c3b72b17"
+    }
+  ],
+  "unchanged_runtime_inputs": 572,
+  "runtime_commit": "999362622a68d6508c356541422f7a48ae6e2175",
+  "goal_complete": false
+}

@@ -1,8 +1,8 @@
 # Current goal status — 13 October 2026
 
 The full goal is **active and incomplete**.
-[PR85](https://github.com/rayfdj/emaxx/pull/85) delivers source324 `99936262`,
-following PR84's main merge `01189759`.
+[PR85](https://github.com/rayfdj/emaxx/pull/85) is merged into main as `758d2138`,
+delivering source324 `99936262` after PR84's `01189759`.
 Its 572 runtime inputs remain unchanged by this evidence update. Linux frozen
 matches **all 7,928 outcomes**; full Rust passes **3,190 on Linux and 3,178 on
 macOS**, each with two existing ignores and original native artifact identity.
@@ -16,10 +16,23 @@ validation is closed with the macOS qualifications; the full goal remains open.
 See [HANDOVER.md](../HANDOVER.md) for current raw evidence and continuation.
 
 Three Linux pilots verify **192 actual answers/modes**: source324's body aggregate
-is **0.593% faster than main**, but **2.725557× paired GNU**. Explicit GC regresses
-10.54%, mapcar 6.93%, and native-to-bytecode 5.70%. Separate allocation and exact
+is **0.593% faster than previous main `01189759`**, but **2.725557× paired GNU**.
+Explicit GC regresses 10.54%, mapcar 6.93%, and native-to-bytecode 5.70%.
+Separate allocation and exact
 locked-GC profiles are diagnostic, not proof of the regression's cause or final
 performance acceptance. The 48-byte charge still undercounts a 64-byte symbol.
+
+The [separate cons-tracing draft1](handover/2026-10-09-symbol-fields/gc-cons-trace-draft1-rejected-results-manifest.json)
+passes 534 unchanged controls per profile, 28 ordinary comparisons and all 192
+timed answers/modes. It is **rejected and unapplied**: macOS pilots show
+1.93% aggregate and 10.49% explicit-GC regressions versus fresh main `758d2138`.
+Generated code adds a helper call per queued object. The
+[separate inline draft2](handover/2026-10-09-symbol-fields/gc-cons-trace-draft2-unapplied-results-manifest.json)
+passes the same 534 controls per profile, 28 ordinary comparisons and 192 timed
+answers/modes. It removes that helper call but its pilots show 3.11% faster GC
+and 1.15% slower aggregate. It remains unapplied because these pilots do not
+establish an overall benefit. All experiment processes have ended; continue
+the known symbol constant/store repair. No final performance acceptance exists.
 
 The [separate membership draft6](runtime-representation-symbol-payload-authority-draft.md)
 replays 580 inputs, passes strict checks and **403 controls per profile**, and
@@ -41,7 +54,7 @@ this adapter repair and complete library/platform validation remain open.
 | 6. Adversarial audit | Original evaluator, roots, ABI, mutation and evidence-corruption checks remain. Source324 preserves actual completion input identity and nonallocating obarray probes. Draft6 adds membership and image-owner checks without dropping assertions. Final review of runtime, startup, images, native loading, ownership, selection, comparison and reporting remains required. |
 | 7. Equivalent performance | All 16 workloads, calibration, nine rounds and the every-workload upper 95% GNU-ratio ceiling of 1.03 remain locked. Three source324 pilots verify 192 answers/modes: 0.994068× main and 2.725557× GNU overall. All unfavorable samples remain. Missing counters, profile-based slowdown explanations and final calibrated acceptance remain open. |
 | 8. Complete validation | Clean source324 passes strict checks, 3,190 Linux and 3,178 macOS Rust tests (two existing ignores each), native identity and 519 Linux frozen files/7,928 outcomes. The macOS original and separate longer Tramp answer retain distinct verdicts; the exact tail is audited with six unchanged diagnostic differences and all226 original terminal scenarios/686 comparisons pass. Final-source Linux/macOS, release and complete affected contracts remain required after further implementation. |
-| 9. Independently checkable delivery | Portable patches, raw logs, commands, profiles, samples and failed predecessors are retained. Large excluded binary/image inputs are explicitly identified. PR84 is merged; PR85 has closed checkpoint validation and existing merge authorization. Verify its current GitHub state before merging twice. The final adversarial source/evidence review, remaining architecture and unchanged performance requirement remain open. |
+| 9. Independently checkable delivery | Portable patches, raw logs, commands, profiles, samples and failed predecessors are retained. Large excluded binary/image inputs are explicitly identified. PR85 is merged into main `758d2138` with its receipt retained. Both cons-tracing experiments remain separate and unapplied. The final adversarial source/evidence review, remaining architecture and unchanged performance requirement remain open. |
 
 Earlier sections below are historical snapshots, not the current verdict.
 
