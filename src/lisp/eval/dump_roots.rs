@@ -198,11 +198,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "emacs.c:init_callproc_1 takes the umask of the new process",
     ),
     (
-        "interned_symbols",
-        "filled by install_image in the obarray's order",
-    ),
-    ("interned_symbol_names", "the set over interned_symbols"),
-    (
         "minibuffer_selected_window_id",
         "window.c:init_window_once_for_pdumper resets minibuf_selected_window",
     ),

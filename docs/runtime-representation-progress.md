@@ -1,17 +1,17 @@
 # Current goal status — 13 October 2026
 
-The full goal remains active and incomplete. Main contains source318 at
-`55b109e8`; PR84 carries the validated source323 owner/retirement checkpoint.
+The full goal remains active and incomplete. PR84 is merged into main at
+`01189759`, including the source323 owner/retirement fixes and closed evidence.
 Source323 has **3,183 Linux and 3,171 macOS Rust passes**, each with two existing
 ignores, exact native artifacts, **7,928 matching Linux frozen outcomes** and
 **226 passing terminal scenarios / 686 comparisons**. Its original macOS frozen
 run remains failed; separate observations obtain the missing actual GNU answers
 and complete all 519 file inventories, with six unchanged diagnostic differences.
-This is not one passing macOS frozen run. Validation is closed with those limits;
-evidence publication and the authorized PR84 merge are next. See
+This is not one passing macOS frozen run. Validation is closed with those limits.
+See
 [HANDOVER.md](../HANDOVER.md) for raw evidence, original failures and commands.
 
-The separate [allocated-symbol/identity prototype](runtime-representation-symbol-payload-authority-draft.md)
+The [allocated-symbol/identity implementation](runtime-representation-symbol-payload-authority-draft.md)
 removes per-symbol metadata/history and numeric symbol IDs, reducing the allocated
 header from 72 to 64 bytes. Draft5 now passes strict checks, **397 controls per
 profile**, the complete local Rust gate (**3,178 passes / two existing ignores**)
@@ -19,8 +19,10 @@ and **28 ordinary GNU comparisons**. The 15 earlier failures are retained; fourt
 fixture setups now respect editor ownership without dropping assertions, and
 the Eshell regression is repaired through GNU's nonallocating `intern-soft` rule.
 The integrated 572-input patch preserves source323's native fixture and passes
-fresh strict checks and all 39 original integration tests. It remains unapplied
-to the published runtime and needs clean-source platform validation.
+fresh strict checks and all 39 original integration tests. The exact integrated
+inputs are now applied on the task branch as **source324**, based on merged main.
+Complete clean-source platform/frozen/terminal validation is next before its
+main merge; no source324 performance result exists.
 
 No prototype performance improvement is measured. The latest production pilots
 remain **2.767150× paired GNU / 0.53% slower than main `55b109e8`**. Ownership and

@@ -3330,11 +3330,6 @@ mod tests {
                 "locale oracle failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            let expected = Reader::new(&String::from_utf8_lossy(&output.stdout))
-                .read_all()
-                .expect("read locale oracle output")
-                .remove(0);
-
             let options = BatchRunOptions {
                 load_path: compat::emaxx_upstream_load_path(&emacs_repo)
                     .expect("upstream load path"),
@@ -3342,6 +3337,10 @@ mod tests {
             };
             let mut interpreter =
                 initialize_batch_interpreter(&options).expect("init batch interpreter");
+            let expected = Reader::new(&String::from_utf8_lossy(&output.stdout))
+                .read_all()
+                .expect("read locale oracle output")
+                .remove(0);
             let form = Reader::new(expression)
                 .read_all()
                 .expect("read locale startup probe")

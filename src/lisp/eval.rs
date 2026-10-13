@@ -1366,56 +1366,6 @@ pub(crate) fn purge_freed_records_in_live_states(active: &mut Interpreter) {
     }
 }
 
-/// While symbols are shared between interpreter instances, their per-instance
-/// fields form edges from the symbol, not independent roots. Follow those edges
-/// to a fixed point, including symbols reached through another symbol's fields.
-/// This GC-only walk disappears when each allocated symbol owns its fields.
-fn mark_reached_symbol_fields(active: &Interpreter, marked: &mut LispReachability) -> bool {
-    let epoch = marked.epoch;
-    let mut changed = false;
-    for value in active.globals.reached_symbol_roots(epoch) {
-        changed |= marked.mark(active, &value);
-    }
-    let active_state = std::ptr::from_ref::<InterpreterState>(active) as usize;
-    for state in crate::lisp::alloc::live_states() {
-        if state != active_state {
-            // SAFETY: other registered states are parked during serialized GC.
-            let other = unsafe { Interpreter::registered_gc_view(state) };
-            let mut other_marked = LispReachability::with_epoch(epoch);
-            // As for the parked state's static roots, its weak tables are not
-            // swept by this interpreter and their live entries must survive.
-            other_marked.retaining = true;
-            for value in other.globals.reached_symbol_roots(epoch) {
-                changed |= other_marked.mark(&other, &value);
-            }
-        }
-    }
-    changed
-}
-
-/// Retire weak per-instance cells before sweep_symbols releases their owners.
-pub(crate) fn purge_unmarked_symbol_cells_in_live_states(active: &mut Interpreter, epoch: u32) {
-    if active.globals.sweep_uninterned(epoch) {
-        active.note_obarray_removal();
-    }
-    let active_state = active
-        .state
-        .as_ref()
-        .expect("active interpreter state")
-        .0
-        .as_ptr() as usize;
-    for state in crate::lisp::alloc::live_states() {
-        if state != active_state {
-            // SAFETY: only a parked state's side cells change, before symbols
-            // are freed. No Lisp callbacks or collection occur during cleanup.
-            let mut other = unsafe { Interpreter::registered_gc_view(state) };
-            if other.globals.sweep_uninterned(epoch) {
-                other.note_obarray_removal();
-            }
-        }
-    }
-}
-
 impl RecordState {
     /// The vector slots alloc.c would count for this record (zero for a
     /// kind GNU keeps outside the vectors).
@@ -2633,27 +2583,17 @@ fn ordered_hooks(entries: impl IntoIterator<Item = (String, Vec<Value>)>) -> Ord
 type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::primitives::FnvBuildHasher>;
 type BufferLocalHooks = HashMap<u64, OrderedHooks, crate::lisp::primitives::FnvBuildHasher>;
 
-/// The obarray enumeration as last built, with the ids it holds: when
-/// only the interned list has grown since (the reader interning new
-/// names, the common case during a compile), the new names are
-/// appended instead of the tables being walked again (map_obarray walks
-/// one vector).
+/// A snapshot for callbacks that may intern further symbols while enumerating.
+/// Membership comes only from the owning obarray; field stores cannot invalidate it.
 #[derive(Clone)]
 pub(crate) struct KnownSymbolsCache {
     pub(crate) key: KnownSymbolsKey,
     pub(crate) symbols: Rc<Vec<crate::lisp::types::SymbolName>>,
-    pub(crate) seen: HashSet<u32, crate::lisp::types::IdentityBuildHasher>,
 }
 
-/// The sizes of the tables the obarray enumeration is drawn from, and the
-/// removal epoch: equal keys mean an equal enumeration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct KnownSymbolsKey {
-    globals: usize,
-    variable_aliases: usize,
-    functions: usize,
-    symbol_properties: usize,
-    interned_symbols: usize,
+    symbols: usize,
     uninterned_standard: usize,
     epoch: u64,
 }
@@ -2741,6 +2681,24 @@ impl ImageGraphCopier {
         // can point back to this symbol, or share any other copied object.
         self.symbols.insert(symbol.identity_ptr(), copied);
         copied.install_copied_name(self.copy(&symbol.lisp_name()));
+        if let Some(alias) = symbol.cell().alias() {
+            copied.cell().set_alias(self.copy_symbol(alias));
+        } else if let Some(value) = symbol.cell().value() {
+            copied.cell().set_value(self.copy(&value));
+        }
+        copied.cell().flags.set(symbol.cell().flags.get());
+        copied.cell().set_plain_store(symbol.cell().plain_store());
+        copied
+            .cell()
+            .set_function_definition(symbol.cell().has_function_definition());
+        copied
+            .cell()
+            .function
+            .set(self.copy(&symbol.cell().function.get()));
+        copied
+            .cell()
+            .plist
+            .set(self.copy(&symbol.cell().plist.get()));
         copied
     }
 
@@ -3461,6 +3419,11 @@ impl LispReachability {
                 // alloc.c:mark_objects traces SYMBOL_NAME and its intervals;
                 // the host-side key text is the symbol's too.
                 self.enqueue(&symbol.lisp_name());
+                if let Some(root) = symbol.cell().value_or_alias_root() {
+                    self.enqueue(&root);
+                }
+                self.enqueue(&symbol.cell().function.get());
+                self.enqueue(&symbol.cell().plist.get());
             }
             Kind::Finalizer(object) => {
                 // alloc.c traces the function in the reached object itself.
@@ -4037,12 +4000,11 @@ impl Interpreter {
         }
 
         self.mark_static_roots_into(&mut marked);
-        while mark_reached_symbol_fields(self, &mut marked) {}
         // alloc.c marks doomed functions before its weak-table fixed point.
         prepare_finalizers_in_live_states(self, &mut marked);
 
         loop {
-            let mut changed = mark_reached_symbol_fields(self, &mut marked);
+            let mut changed = false;
             let mut index = 0;
             // Marking a retained value can discover another weak table.
             // Read the growing work list one handle at a time.
@@ -4125,9 +4087,6 @@ impl Interpreter {
             marked.mark(self, value);
         };
         self.globals.mark_symbol_roots(&mut mark);
-        for value in self.globals.permanent_roots() {
-            mark(&value);
-        }
         // The obarray's entries are the process's interned symbols, a root
         // of every collection (`mark_interned_symbol_roots'); the
         // enumeration of every symbol a table of this state keys by was
@@ -4136,7 +4095,7 @@ impl Interpreter {
         // obarray root's own members.
         self.mark_record_holders(&mut mark);
         for bindings in self.buffer_locals.values() {
-            for symbol in bindings.uninterned_symbols() {
+            for symbol in bindings.symbols() {
                 mark(&Value::Symbol(*symbol));
             }
         }
@@ -4517,9 +4476,6 @@ impl Interpreter {
             clone
                 .globals
                 .map_symbols(symbol_owner, |symbol| c.copy_symbol(symbol));
-            for symbol in &mut clone.interned_symbols {
-                *symbol = c.copy_symbol(*symbol);
-            }
             for name in &mut clone.special_variables {
                 c.copy_symbol_spelling(name);
             }
@@ -4546,8 +4502,6 @@ impl Interpreter {
                 restriction.beg_marker_id = beginning;
                 restriction.end_marker_id = end;
             }
-            clone.globals.map_values(|value| c.copy(&value));
-            clone.globals.map_functions(|function| c.copy(&function));
             // SAFETY: graph copying invokes no Lisp and changes only the
             // new lists; the template's list links remain untouched.
             for object in unsafe { self.finalizers.iter() } {
@@ -4603,7 +4557,6 @@ impl Interpreter {
                 *value = c.copy(value);
             }
             clone.local_time_zone_rule = c.copy(&clone.local_time_zone_rule.clone());
-            clone.globals.map_plists(|value| c.copy(&value));
             for (symbol, watchers) in &mut clone.variable_watchers {
                 *symbol = c.copy_symbol(*symbol);
                 for watcher in watchers {
@@ -5070,21 +5023,11 @@ pub struct InterpreterState {
     /// mutating the host `TZ' would leak state between otherwise isolated
     /// Emacs instances.
     pub(crate) local_time_zone_rule: Value,
-    /// Symbols explicitly interned into the standard obarray.
-    interned_symbols: Vec<crate::lisp::types::SymbolName>,
-    /// The obarray's symbol vector as `mapatoms' last enumerated it, with
-    /// the sizes of the tables it was drawn from and `obarray_epoch'.
-    /// GNU walks its one obarray table in place; Emaxx draws the
-    /// enumeration from several name tables, so the enumeration is kept
-    /// until one of them changes.
+    /// The actual obarray snapshot used by callbacks; invalidated only by
+    /// membership changes, never by value/function/plist mutations.
     known_symbols_cache: RefCell<Option<KnownSymbolsCache>>,
-    /// Bumped by every removal from the tables the obarray enumeration
-    /// reads (a removal followed by an insertion leaves their sizes alone).
+    /// Membership removal/reinsertion can leave the same symbol count.
     obarray_epoch: u64,
-    /// Membership index for `interned_symbols'.  Keeping insertion order in
-    /// the vector makes completion deterministic, while this set prevents
-    /// source loading from turning symbol interning into a quadratic scan.
-    interned_symbol_names: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
     /// Names removed from the standard obarray while their old symbol cells
     /// remain live.  GNU keeps those cells on the detached symbol object;
     /// this tombstone prevents function/value indexes from accidentally
@@ -5470,6 +5413,11 @@ impl Interpreter {
     }
 
     pub fn new() -> Self {
+        // Each editor owns the symbols whose fields it will initialize.
+        // Select once before constructing any Lisp object; the public entry
+        // scope restores its caller on exit. Lisp thread state transfers do
+        // not construct a new editor or change this owner.
+        crate::lisp::types::symbols::SymbolOwner::fresh().select();
         // A new interpreter numbers buffers and edits from the start; the
         // thread's cached views of buffer state are of some other one.
         crate::lisp::primitives::forget_buffer_views();
@@ -5824,10 +5772,8 @@ impl Interpreter {
                 "vertical-scroll-bar".into(),
                 "vc-directory-exclusion-list".into(),
             ],
-            interned_symbols: Vec::new(),
             known_symbols_cache: RefCell::new(None),
             obarray_epoch: 0,
-            interned_symbol_names: HashSet::default(),
             uninterned_standard_symbol_names: HashSet::default(),
             standard_obarray_id,
             variable_watchers: Vec::new(),

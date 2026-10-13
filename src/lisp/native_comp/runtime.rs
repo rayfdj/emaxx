@@ -3951,7 +3951,6 @@ impl NativeHeap {
         crate::lisp::alloc::sweep_floats(epoch);
         crate::lisp::alloc::sweep_vectors(epoch);
         crate::lisp::eval::purge_freed_records_in_live_states(interpreter);
-        crate::lisp::eval::purge_unmarked_symbol_cells_in_live_states(interpreter, epoch);
         crate::lisp::types::sweep_symbol_cells(epoch);
         crate::lisp::alloc::sweep_strings(epoch);
     }
@@ -7798,25 +7797,14 @@ mod tests {
         // actual native entry must reach Flog's natural-log branch for both
         // forms, not require callers or pretty-printers to avoid that ABI.
         for (arguments, expected) in [
-            (vec![Value::symbol("log"), Value::Integer(80)], 80_f64.ln()),
-            (
-                vec![Value::symbol("log"), Value::Integer(80), Value::Nil],
-                80_f64.ln(),
-            ),
-            (
-                vec![Value::symbol("log"), Value::Integer(8), Value::Integer(2)],
-                3.0,
-            ),
-            (
-                vec![
-                    Value::symbol("log"),
-                    Value::Integer(100),
-                    Value::Integer(10),
-                ],
-                2.0,
-            ),
+            (vec![Value::Integer(80)], 80_f64.ln()),
+            (vec![Value::Integer(80), Value::Nil], 80_f64.ln()),
+            (vec![Value::Integer(8), Value::Integer(2)], 3.0),
+            (vec![Value::Integer(100), Value::Integer(10)], 2.0),
         ] {
             let mut interpreter = Interpreter::new();
+            let mut arguments = arguments;
+            arguments.insert(0, Value::symbol("log"));
             let mut environment = Env::new();
             let mut runtime = NativeRuntime::default();
             let target = if arguments.len() == 2 {
@@ -7847,28 +7835,17 @@ mod tests {
         // The native fixed-arity entry pads an omitted X with Qnil.
         // Solar reaches this ABI through its compiled angle functions.
         for (arguments, expected) in [
+            (vec![Value::Integer(-1)], (-1_f64).atan()),
+            (vec![Value::Integer(-1), Value::Nil], (-1_f64).atan()),
             (
-                vec![Value::symbol("atan"), Value::Integer(-1)],
-                (-1_f64).atan(),
-            ),
-            (
-                vec![Value::symbol("atan"), Value::Integer(-1), Value::Nil],
-                (-1_f64).atan(),
-            ),
-            (
-                vec![
-                    Value::symbol("atan"),
-                    Value::Integer(-1),
-                    Value::Integer(-1),
-                ],
+                vec![Value::Integer(-1), Value::Integer(-1)],
                 (-1_f64).atan2(-1.0),
             ),
-            (
-                vec![Value::symbol("atan"), Value::Integer(1), Value::Integer(0)],
-                1_f64.atan2(0.0),
-            ),
+            (vec![Value::Integer(1), Value::Integer(0)], 1_f64.atan2(0.0)),
         ] {
             let mut interpreter = Interpreter::new();
+            let mut arguments = arguments;
+            arguments.insert(0, Value::symbol("atan"));
             let mut environment = Env::new();
             let mut runtime = NativeRuntime::default();
             let target = if arguments.len() == 2 {
@@ -7897,14 +7874,12 @@ mod tests {
     #[test]
     fn native_funcall_fixed_optional_nil_matches_the_c_abi() {
         for arguments in [
-            vec![Value::symbol("truncate"), Value::float(f64::NAN)],
-            vec![
-                Value::symbol("truncate"),
-                Value::float(f64::NAN),
-                Value::Nil,
-            ],
+            vec![Value::float(f64::NAN)],
+            vec![Value::float(f64::NAN), Value::Nil],
         ] {
             let mut interpreter = Interpreter::new();
+            let mut arguments = arguments;
+            arguments.insert(0, Value::symbol("truncate"));
             let mut environment = Env::new();
             let mut runtime = NativeRuntime::default();
             let target = if arguments.len() == 2 {
@@ -12434,6 +12409,7 @@ mod tests {
     fn escaped_frame_graph_survives_its_owner_and_is_then_reclaimed() {
         #[inline(never)]
         fn setup(holder: &mut Interpreter, through_terminal: bool) -> [usize; 8] {
+            let _scope = crate::lisp::types::symbols::EditorSymbolScope::enter();
             let mut owner = Interpreter::new();
             let frame = owner.selected_frame_id;
             let focus = owner.install_dead_frame();
@@ -12456,6 +12432,9 @@ mod tests {
             drop(state);
             // Batch selection must not install an immortal frontend root.
             owner.note_selected_frame(frame);
+            // Transfer the root into the holder's obarray before the nested
+            // editor and its construction scope are retired.
+            holder.select_symbol_owner();
             holder.set_global_binding(
                 "escaped-frame-root",
                 if through_terminal {

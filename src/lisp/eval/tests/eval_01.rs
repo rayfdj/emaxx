@@ -1127,7 +1127,15 @@ fn load_runs_real_gnu_after_load_forms_after_unbinding_file_context() {
                                  sample-after-load-events))
                        (delete-file file)))"#
             ),
-            eval_str("'(t ((hook t t) (form t)))")
+            // Use this editor's canonical symbols. Calling eval_str again
+            // would create a different editor with distinct hook/form objects.
+            Value::list([
+                Value::T,
+                Value::list([
+                    Value::list([Value::symbol("hook"), Value::T, Value::T]),
+                    Value::list([Value::symbol("form"), Value::T]),
+                ]),
+            ])
         );
     });
 }
@@ -6267,7 +6275,7 @@ fn startup_global_values_and_special_declarations_share_one_registry() {
     let interp = Interpreter::new();
     for (name, _) in &interp.globals {
         assert!(
-            interp.is_special_variable(name),
+            interp.is_special_variable(name.as_str()),
             "startup global `{name}` was not registered as special"
         );
     }

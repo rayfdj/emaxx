@@ -41,9 +41,8 @@ impl Interpreter {
         for symbol in &image.symbols {
             by_name.insert(symbol.symbol.as_str(), symbol);
         }
-        // The initial obarray's symbols, in its order: every table that
-        // `known_symbol_names' enumerates is filled in that order, so
-        // `mapatoms' walks the symbols as the writer's process did.
+        // Restore membership in the actual owner. Mutable fields do not
+        // determine which symbols the obarray enumerates.
         let mut installed: HashSet<&str, crate::lisp::primitives::FnvBuildHasher> =
             HashSet::default();
         for name in &image.obarray {
@@ -74,7 +73,7 @@ impl Interpreter {
             if symbol.flags & FLAG_UNINTERNED_FROM_OBARRAY != 0 {
                 self.uninterned_standard_symbol_names
                     .insert(text.to_owned());
-            } else if symbol.symbol.id() & crate::lisp::types::UNINTERNED_SYMBOL_ID_BIT == 0
+            } else if !symbol.symbol.cell().is_uninterned()
                 && !crate::lisp::types::is_private_obarray_symbol(text)
             {
                 self.intern_symbol_name(text);
@@ -90,6 +89,7 @@ impl Interpreter {
         for (slot, value) in &image.roots {
             self.install_root_slot(*slot, value);
         }
+        *self.known_symbols_cache.borrow_mut() = None;
         self.pdumper_loaded = Some(record);
         Ok(())
     }

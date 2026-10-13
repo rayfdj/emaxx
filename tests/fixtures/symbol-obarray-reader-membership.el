@@ -1,0 +1,15 @@
+(let* ((standard obarray)
+       (names (mapcar (lambda (suffix) (concat "obarray-reader-membership-" suffix))
+                      '("string" "from-string" "buffer" "region")))
+       (obarray (obarray-make)))
+  (read (concat "[" (nth 0 names) "]"))
+  (read-from-string (concat "[" (nth 1 names) "]"))
+  (with-temp-buffer
+    (insert (concat "[" (nth 2 names) "]"))
+    (eval-buffer))
+  (with-temp-buffer
+    (insert (concat "[" (nth 3 names) "]"))
+    (eval-region (point-min) (point-max)))
+  (mapcar (lambda (name) (and (symbolp (intern-soft name obarray))
+                            (not (null (intern-soft name obarray)))
+                            (null (intern-soft name standard)))) names))

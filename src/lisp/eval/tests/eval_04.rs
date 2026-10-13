@@ -3627,13 +3627,17 @@ fn overlay_enumeration_matches_gnu_interval_tree_order() {
 
 #[test]
 fn nested_backquote_decrements_unquote_depth() {
+    let mut interp = gnu_early_lisp_interpreter();
     let expected = Reader::new("`(,1)")
         .read()
         .expect("read succeeds")
         .expect("form is present");
     // GNU (eval FORM) uses a nil lexical environment, so the variable is
     // supplied through eval's LEXICAL alist argument.
-    assert_eq!(eval_str(r#"(eval '``(,,x) '((x . 1)))"#), expected);
+    assert_eq!(
+        eval_str_with(&mut interp, r#"(eval '``(,,x) '((x . 1)))"#),
+        expected
+    );
 }
 
 #[test]

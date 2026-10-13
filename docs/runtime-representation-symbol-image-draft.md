@@ -1,4 +1,12 @@
-# Symbol ownership in private image copies — 10 October 2026
+# Symbol ownership in private image copies — 13 October 2026
+
+PR84 is merged into main at `01189759`, with source323 and its complete evidence.
+The exact locally validated symbol-field integration is now applied on the task
+branch as source324. Its clean-source platform checks remain required before
+the next main merge. See the [current handover](../HANDOVER.md) and
+[symbol-field continuation](runtime-representation-symbol-payload-authority-draft.md).
+
+## Source323 validation and historical continuation
 
 Source323's validation is closed as of 13 October: **3,183 Linux and 3,171 macOS
 Rust passes**, two existing ignores per platform, exact native artifacts,
@@ -8,14 +16,15 @@ identified observations obtain the actual missing GNU answers and cover all
 519 files, retaining six unchanged diagnostic differences. Source322's separate
 Eglot observation also obtains all 52 matching outcomes without rewriting its
 original failed run. The [current handover](../HANDOVER.md) links every archive
-and explains the evidence limits. Publication and the authorized PR84 merge
-are next; the full goal remains incomplete.
+and explains the evidence limits. These results are published on main through
+PR84; the full goal remains incomplete.
 
 The separate allocated-field/identity implementation now passes its complete
 local Rust gate (3,178 passes/two existing ignores), 397 controls per profile and
 28 ordinary comparisons. Its integration delta preserves source323's native
-fixture and passes fresh strict checks and all 39 integration tests. It remains
-unapplied to the published runtime and has no measured performance result. See
+fixture and passes fresh strict checks and all 39 integration tests. That exact
+delta is now source324 on the task branch, awaiting clean platform validation,
+and has no measured performance result. See
 the [architectural continuation](runtime-representation-symbol-payload-authority-draft.md).
 
 ## Historical source321 and image-copy continuation

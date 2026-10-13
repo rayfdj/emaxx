@@ -1646,9 +1646,7 @@ pub(crate) fn read_one_form_in_env(
     text: &str,
     env: &mut Env,
 ) -> Result<(Value, usize), LispError> {
-    let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
-    let reader = crate::lisp::reader::Reader::with_symbol_shorthands(text, symbol_shorthands);
-    read_one_from_reader(interp, reader, env)
+    read_one_from_reader(interp, LispReaderInput::Text(text), env)
 }
 
 pub(crate) fn read_encoded_form_in_env(
@@ -1657,35 +1655,58 @@ pub(crate) fn read_encoded_form_in_env(
     multibyte: bool,
     env: &mut Env,
 ) -> Result<(Value, usize), LispError> {
-    let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
-    let reader = crate::lisp::reader::Reader::from_encoded(bytes, multibyte, symbol_shorthands);
-    read_one_from_reader(interp, reader, env)
+    read_one_from_reader(interp, LispReaderInput::Encoded(bytes, multibyte), env)
+}
+
+enum LispReaderInput<'a> {
+    Text(&'a str),
+    Encoded(&'a [u8], bool),
 }
 
 fn read_one_from_reader(
     interp: &mut Interpreter,
-    mut reader: crate::lisp::reader::Reader<'_>,
+    input: LispReaderInput<'_>,
     env: &mut Env,
 ) -> Result<(Value, usize), LispError> {
-    let value = match reader.read()? {
-        Some(value) => value,
-        None => return Err(end_of_file_error(interp, env)),
+    // lread.c resolves each atom in the selected obarray. A post-read walk
+    // would first intern a private name in the standard table and leak it.
+    let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
+    let shorthands = read_symbol_shorthands_in_env(interp, env)?;
+    let (value, needs_materialization, unescaped, consumed) = {
+        let mut resolve_symbol = |name: &str| intern_in_obarray(interp, &obarray, name);
+        let reader = match input {
+            LispReaderInput::Text(text) => {
+                crate::lisp::reader::Reader::with_symbol_shorthands(text, shorthands)
+            }
+            LispReaderInput::Encoded(bytes, multibyte) => {
+                crate::lisp::reader::Reader::from_encoded(bytes, multibyte, shorthands)
+            }
+        };
+        let mut reader = reader.with_symbol_resolver(&mut resolve_symbol);
+        let value = reader.read()?;
+        let unescaped = reader
+            .unescaped_character_literals()
+            .map(Value::Integer)
+            .collect::<Vec<_>>();
+        (
+            value,
+            reader.emitted_reader_forms(),
+            unescaped,
+            reader.characters_consumed(),
+        )
     };
-    let value = interp.intern_read_symbols_in_value(value, env)?;
-    // Allocate identity-bearing objects before resolving references into
-    // them. The parser-only resolver could not construct cyclic closures
-    // or records and performed a second, competing graph reconstruction.
-    let value = if reader.emitted_reader_forms() {
+    let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
+    // Allocate identity-bearing literals before resolving references into them.
+    let value = if needs_materialization {
         interp.materialize_read_object_literals(value, env)?
     } else {
         value
     };
     interp.set_variable(
         "lread--unescaped-character-literals",
-        Value::list(reader.unescaped_character_literals().map(Value::Integer)),
+        Value::list(unescaped),
         env,
     );
-    let consumed = reader.characters_consumed();
     Ok((value, consumed))
 }
 

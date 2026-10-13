@@ -5908,7 +5908,6 @@ fn function_get_autoloads_before_reading_declared_property() {
 
 #[test]
 fn owned_edebug_symbols_preserve_the_debugged_callers_context() {
-    let _outer = crate::lisp::types::symbols::EditorSymbolScope::enter();
     let mut first = Interpreter::new();
     let env = crate::lisp::types::Env::new();
     first.push_backtrace_frame(Value::symbol("message"), &[]);
@@ -5922,7 +5921,6 @@ fn owned_edebug_symbols_preserve_the_debugged_callers_context() {
             .is_none()
     );
 
-    let _inner = crate::lisp::types::symbols::EditorSymbolScope::enter();
     let mut second = Interpreter::new();
     eval_str_with(&mut second, "(defvar edebug-entered t)");
     second.push_backtrace_frame(Value::symbol("message"), &[]);
@@ -5996,6 +5994,38 @@ fn canonical_symbol_weak_keys_follow_the_editors_lifetime() {
         ),
         Value::Integer(0),
         "a retired editor's canonical symbols are not permanent weak roots"
+    );
+}
+
+#[test]
+fn separately_constructed_editors_own_canonical_symbols() {
+    let mut first = Interpreter::new();
+    let first_symbol = eval_str_with(
+        &mut first,
+        "(progn
+           (setq constructed-owner 'constructed-owner)
+           (put-text-property 0 1 'owner constructed-owner
+                              (symbol-name constructed-owner))
+           constructed-owner)",
+    );
+    let mut second = Interpreter::new();
+    let second_symbol = eval_str_with(&mut second, "'constructed-owner");
+    assert_ne!(first_symbol.word(), second_symbol.word());
+    assert_eq!(
+        eval_str_with(
+            &mut second,
+            "(get-text-property 0 'owner (symbol-name 'constructed-owner))"
+        ),
+        Value::Nil
+    );
+    eval_str_with(&mut second, "(garbage-collect)");
+    assert_eq!(
+        eval_str_with(
+            &mut first,
+            "(eq (get-text-property 0 'owner (symbol-name constructed-owner))
+                 constructed-owner)"
+        ),
+        Value::T
     );
 }
 
@@ -6113,15 +6143,21 @@ fn reachable_uninterned_symbol_fields_survive_another_interpreters_collection() 
         parked-symbol-root)",
     );
     let mut collector = Interpreter::new();
-    collector.set_global_binding("parked-symbol-root", symbol);
-    eval_str_with(
+    // Independent editors must have independent objects. GNU keeps these
+    // fields on the symbol: a second reference to the same object cannot
+    // own a different function or plist. The first editor stays parked
+    // while the second collects, preserving the live-root requirement.
+    let collector_symbol = eval_str_with(
         &mut collector,
         "(progn
+        (setq parked-symbol-root (make-symbol \"parked-fields\"))
         (set parked-symbol-root (vector 43))
         (fset parked-symbol-root '(lambda () 47))
         (setplist parked-symbol-root (list 'field (vector 53)))
-        (garbage-collect))",
+        (garbage-collect)
+        parked-symbol-root)",
     );
+    assert_ne!(symbol.word(), collector_symbol.word());
     let check = "(list (aref (symbol-value parked-symbol-root) 0)
                        (funcall parked-symbol-root)
                        (aref (get parked-symbol-root 'field) 0))";
@@ -6132,6 +6168,17 @@ fn reachable_uninterned_symbol_fields_survive_another_interpreters_collection() 
     assert_eq!(
         eval_str_with(&mut collector, check),
         Value::list([Value::Integer(43), Value::Integer(47), Value::Integer(53)])
+    );
+}
+
+#[test]
+fn symbol_function_and_plist_follow_allocated_identity() {
+    // This exact input is also evaluated by ordinary GNU batch startup.
+    assert_eq!(
+        eval_str(include_str!(
+            "../../../../tests/fixtures/symbol-allocated-fields.el"
+        )),
+        Value::list([Value::T; 9])
     );
 }
 
@@ -8917,8 +8964,9 @@ fn mode_reset_notifies_watchers_before_removing_even_permanent_locals() {
 #[test]
 fn cconv_closure_convert_captures_simple_free_variable() {
     run_with_large_stack(|| {
-        let result = eval_str_with_upstream_batch_feature(
-            "cconv",
+        let (_permit, mut interp) = upstream_batch_interpreter_with_features(&["cconv"]);
+        let result = eval_str_with(
+            &mut interp,
             r#"
             (progn
               (setq lexical-binding t)
@@ -8935,7 +8983,8 @@ fn cconv_closure_convert_captures_simple_free_variable() {
 
         assert_eq!(
             result,
-            eval_str(
+            eval_str_with(
+                &mut interp,
                 "'#'(lambda (x) (internal-make-closure nil (x) nil (internal-get-closed-var 0)))"
             )
         );
@@ -8991,8 +9040,9 @@ fn loaded_gnu_cl_generic_method_keeps_generic_documentation_public() {
 #[test]
 fn cconv_closure_convert_remaps_shadowed_lambda_lifted_variable() {
     run_with_large_stack(|| {
-        let result = eval_str_with_upstream_batch_feature(
-            "cconv",
+        let (_permit, mut interp) = upstream_batch_interpreter_with_features(&["cconv"]);
+        let result = eval_str_with(
+            &mut interp,
             r#"
             (progn
               (setq lexical-binding t)
@@ -9013,7 +9063,8 @@ fn cconv_closure_convert_remaps_shadowed_lambda_lifted_variable() {
 
         assert_eq!(
             result,
-            eval_str(
+            eval_str_with(
+                &mut interp,
                 "'#'(lambda (x)
                       (let ((f #'(lambda (x) x)))
                         (let ((x 'b)
@@ -9081,4 +9132,24 @@ fn upstream_lread_circle_form_passes() {
         ),
         Value::T
     );
+}
+
+#[test]
+fn obarray_enumeration_does_not_follow_symbol_field_mutations() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let result = eval_str_with(
+        &mut interp,
+        include_str!("../../../../tests/fixtures/symbol-obarray-field-order.el"),
+    );
+    assert_eq!(result, Value::list([Value::T; 8]));
+}
+
+#[test]
+fn obarray_readers_do_not_intern_private_names_in_the_standard_table() {
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let result = eval_str_with(
+        &mut interp,
+        include_str!("../../../../tests/fixtures/symbol-obarray-reader-membership.el"),
+    );
+    assert_eq!(result, Value::list([Value::T; 4]));
 }

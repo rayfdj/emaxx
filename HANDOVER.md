@@ -16,7 +16,41 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
-## Source323 validation closed; symbol-field integration ready for publication — 13 October 2026
+## Source324 symbol fields applied for clean validation — 13 October 2026
+
+[PR84](https://github.com/rayfdj/emaxx/pull/84) is **merged into main** at
+`0118975994af1a337c5197bf07a44023bebc02bf`. The
+[verified merge receipt](docs/handover/2026-10-09-symbol-fields/source323-main-merge.json)
+records evidence head `8496b261`, whose 565 runtime inputs are identical to
+validated source323 `0550a70c`. Its complete Rust/Linux/terminal results and
+qualified macOS observations below are now on main. The full goal remains active
+and incomplete; existing approval continues to cover validated task pushes,
+Linux CI and main merges.
+
+The current task branch now applies **source324**, the
+[572-input symbol integration delta](docs/handover/2026-10-09-symbol-fields/allocated-symbol-identity-integration-results-manifest.json).
+All source bytes/modes match the locally validated integration. Symbol fields
+live on the allocated object; numeric IDs, side metadata and field histories
+are removed. The generic programmed-completion and nonallocating `intern-soft`
+repairs are included. The original native artifact fixture is preserved.
+
+Local prototype evidence is **397 selected controls per profile, 3,178 full
+macOS Rust passes/two existing ignores and 28 ordinary GNU comparisons**.
+The integrated inputs additionally pass fresh strict checks and all 39 original
+integration tests. Those earlier local results do not certify this clean commit:
+run complete Linux and macOS Rust, frozen and terminal validation before its
+next main merge. Use the saved `source324-*` receipts and helpers under
+`target/runtime-goal/symbol-obarray-2026-10-09`; inspect active runs before
+launching duplicates and do not edit runtime inputs during validation.
+
+No source324 performance result exists. The 64-byte header still has an old
+48-byte allocation charge, and host-name/membership/forwarded adapters,
+descriptor reclamation and public ownership remain unfinished. Preserve the
+remaining requirements and all earlier failures below. Continue measured
+profiles and the locked performance suite after this representation change is
+validated; the latest source321 pilots remain 2.767150× GNU.
+
+## Historical source323 validation closure — 13 October 2026
 
 The full goal remains **active and incomplete**. Source323 is `0550a70c` on
 the authorized `runtime-char-tables` branch. Main is still `55b109e8` until

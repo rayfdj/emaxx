@@ -519,46 +519,6 @@ pub(crate) fn substitute_object_in_subtree(
     Ok(())
 }
 
-pub(crate) fn default_intern_soft_result(
-    interp: &Interpreter,
-    symbol_name: &str,
-    env: &Env,
-) -> Value {
-    if interp.standard_obarray_symbol_is_uninterned(symbol_name) {
-        Value::Nil
-    } else if matches!(symbol_name, "nil" | "t") {
-        crate::lisp::types::interned_symbol_value(symbol_name.into())
-    // Treating every `:name' as interned is WRONG in one direction and right
-    // in another, and the right direction is the common one.  GNU's
-    // `intern-soft' is a pure `oblookup', so a keyword nobody has interned
-    // answers nil -- Emaxx answers the keyword, which is finding 112.
-    //
-    // But tightening this to a real membership test made things worse, not
-    // better, and the measurement is worth keeping: GNU's preloaded obarray
-    // holds 429 keywords, Emaxx's holds 141.  Requiring real membership
-    // answered nil for 288 of GNU's 429 -- `:key', `:buffer', `:error',
-    // `:host' and so on -- trading one rare false positive for 288 common
-    // false negatives.  The permissive clause is accidentally right for every
-    // keyword GNU actually preloads.
-    //
-    // The honest fix is to seed the missing keywords into the obarray first,
-    // then tighten this; finding 112 stays OPEN until then rather than being
-    // closed by a change that regresses the realistic population.
-    } else if symbol_name.starts_with(':')
-        || interp.lookup_var(symbol_name, env).is_some()
-        || interp.lookup_function(symbol_name, env).is_ok()
-        || is_builtin(symbol_name)
-        // Symbols carrying properties are interned too (defface names have
-        // no value or function cell, but erc's face plumbing intern-softs
-        // "erc-error-face" and expects the symbol back).
-        || !interp.symbol_plist(symbol_name).is_nil()
-    {
-        Value::Symbol(symbol_name.into())
-    } else {
-        Value::Nil
-    }
-}
-
 pub(crate) fn completion_display_name(value: &Value) -> Result<String, LispError> {
     match value.kind() {
         Kind::StringObject(_) => string_text(value),
@@ -786,7 +746,7 @@ fn completion_collection_function(
 
 fn call_programmed_completion(
     interp: &mut Interpreter,
-    input: &str,
+    input: Value,
     collection: &Value,
     predicate: Option<&Value>,
     action: Value,
@@ -799,7 +759,9 @@ fn call_programmed_completion(
         function,
         None,
         &[
-            Value::String(input.into()),
+            // minibuf.c passes the original STRING to the completion table.
+            // Preserve its identity, properties and callback-visible mutation.
+            input,
             predicate.cloned().unwrap_or(Value::Nil),
             action,
         ],
@@ -820,7 +782,7 @@ pub(crate) fn try_completion(
     }
     let input = string_text(&args[0])?;
     if let Some(result) =
-        call_programmed_completion(interp, &input, &args[1], args.get(2), Value::Nil, env)?
+        call_programmed_completion(interp, args[0], &args[1], args.get(2), Value::Nil, env)?
     {
         return Ok(result);
     }
@@ -899,7 +861,7 @@ pub(crate) fn all_completions(
     }
     let input = string_text(&args[0])?;
     if let Some(result) =
-        call_programmed_completion(interp, &input, &args[1], args.get(2), Value::T, env)?
+        call_programmed_completion(interp, args[0], &args[1], args.get(2), Value::T, env)?
     {
         return Ok(result);
     }
@@ -924,7 +886,7 @@ pub(crate) fn test_completion(
     let input = string_text(&args[0])?;
     if let Some(result) = call_programmed_completion(
         interp,
-        &input,
+        args[0],
         &args[1],
         args.get(2),
         Value::Symbol("lambda".into()),

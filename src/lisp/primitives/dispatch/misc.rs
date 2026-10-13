@@ -369,7 +369,7 @@ pub(crate) fn set_internal(
 }
 
 /// data.c:set_internal for the symbol in hand: its alias chain, flags,
-/// scope and cells are read by id (see `resolve_variable_symbol').
+/// scope and cells are read from the object (see `resolve_variable_symbol').
 pub(crate) fn set_internal_symbol(
     interp: &mut Interpreter,
     symbol: &crate::lisp::types::SymbolName,
@@ -387,7 +387,7 @@ pub(crate) fn set_internal_symbol(
     let stored = interp.prepare_variable_assignment_symbol(&resolved, value)?;
     interp.notify_assignment_symbol(&resolved, value, env)?;
     interp.set_symbol_value_cell_resolved(&resolved, stored);
-    if resolved.id() == symbol.id() {
+    if resolved == *symbol {
         interp.learn_plain_store(symbol);
     }
     Ok(())
@@ -787,21 +787,16 @@ define_dispatch!(
                 };
                 let symbol_name = apply_symbol_shorthands_in_env(interp, &symbol_name, env)?;
                 if let Some(obarray) = obarray {
-                    let interned = intern_soft_in_obarray(interp, &obarray, &symbol_name)?;
-                    if interned.is_nil()
-                        && matches!(obarray.kind(), Kind::Record(id) if interp.is_standard_obarray_id(id.id))
-                    {
-                        // Built-in loaddefs entries are part of the standard
-                        // obarray even before their libraries are loaded.  The
-                        // compact preload index does not duplicate those names
-                        // in `known_symbol_names', so consult function/value
-                        // cells after an ordinary standard-obarray miss.
-                        Ok(default_intern_soft_result(interp, &symbol_name, env))
-                    } else {
-                        Ok(interned)
-                    }
+                    // lread.c:Fintern_soft only looks in the requested obarray.
+                    // A function/value probe can intern a missing name and
+                    // change the result of the next lookup.
+                    intern_soft_in_obarray(interp, &obarray, &symbol_name)
                 } else {
-                    Ok(default_intern_soft_result(interp, &symbol_name, env))
+                    Ok(if interp.standard_obarray_contains_symbol(&symbol_name) {
+                        crate::lisp::types::interned_symbol_value(symbol_name)
+                    } else {
+                        Value::Nil
+                    })
                 }
             }
             "unintern" => {
@@ -1568,26 +1563,9 @@ define_dispatch!(
                     && interp.is_standard_obarray_id(id.id)
                 {
                     let symbols = interp.known_symbols_shared();
-                    // nil and t are told apart by symbol id (one per name
-                    // text), not by reading each name's text: the text is
-                    // two pointers away from the enumeration, and a walk
-                    // touched both for every symbol.
-                    thread_local! {
-                        static NIL_AND_T: (u32, u32) = (
-                            crate::lisp::types::SymbolName::intern_str("nil").id(),
-                            crate::lisp::types::SymbolName::intern_str("t").id(),
-                        );
-                    }
-                    let (nil_id, t_id) = NIL_AND_T.with(|ids| *ids);
                     for symbol in symbols.iter() {
-                        let id = symbol.id();
-                        let symbol = if id == nil_id {
-                            Value::Nil
-                        } else if id == t_id {
-                            Value::T
-                        } else {
-                            Value::Symbol(*symbol)
-                        };
+                        // The shared Value constructor preserves the nil/t ABI.
+                        let symbol = Value::Symbol(*symbol);
                         call_function_value(interp, &args[0], &[symbol], env)?;
                     }
                     return Ok(Value::Nil);

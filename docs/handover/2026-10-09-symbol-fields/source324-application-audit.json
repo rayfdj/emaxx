@@ -1,0 +1,8 @@
+{
+  "base": "0118975994af1a337c5197bf07a44023bebc02bf",
+  "source_inputs_verified": 572,
+  "patch_sha256": "d958712a9784ca8c05a32c9e44f4b3c6340d3040f65ac38c5531b17f5f54c5ae",
+  "production_identical_to_locally_validated_identity5": true,
+  "integration_native_fixture_retained": true,
+  "goal_complete": false
+}

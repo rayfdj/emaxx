@@ -26,7 +26,7 @@ pub(crate) const WEIGHT_STRONG: LinkWeight = LinkWeight(1200);
 pub(crate) enum ObjectKey {
     Cons(usize),
     String(usize),
-    Symbol(u32),
+    Symbol(usize),
     SymbolWithPos(usize),
     Vector(usize),
     Float(usize),
@@ -62,7 +62,7 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
             if name == "nil" || name == "t" {
                 return None;
             }
-            ObjectKey::Symbol(name.id())
+            ObjectKey::Symbol(name.identity_ptr())
         }
         Kind::Vector(vector) => ObjectKey::Vector(vector.identity()),
         Kind::SymbolWithPos(object) => ObjectKey::SymbolWithPos(object.identity()),
@@ -2543,11 +2543,9 @@ pub(crate) fn symbol_flags_word(
         SYMBOL_PLAINVAL
     };
     // `unintern' leaves the symbol object with SYMBOL_UNINTERNED; Emaxx
-    // keeps such a name in a set beside its ordinary id, so the record
+    // still keeps standard-obarray removals in a membership set, so the record
     // says both.
-    let interned: u64 = if symbol.id() & crate::lisp::types::UNINTERNED_SYMBOL_ID_BIT != 0
-        || uninterned_from_obarray
-    {
+    let interned: u64 = if symbol.cell().is_uninterned() || uninterned_from_obarray {
         SYMBOL_UNINTERNED
     } else if crate::lisp::types::is_private_obarray_symbol(symbol.as_str()) {
         // lisp.h: interned in some other obarray -- a private obarray's

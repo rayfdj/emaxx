@@ -1,6 +1,13 @@
 # Actual symbol identity continuation — 13 October 2026
 
-The latest **unapplied prototype is identity draft5**, retained in
+The locally validated integration is now **applied as source324 on the task
+branch**, based on main's PR84 merge `01189759`. All 572 source inputs match the
+archived integration byte-for-byte and mode-for-mode. The clean commit still
+requires complete platform/frozen/terminal validation before its main merge.
+No performance gain is claimed. The [current handover](../HANDOVER.md) records
+the latest commands and preserves source323's original failures.
+
+The original **identity draft5 prototype** is retained unchanged in
 `target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx`.
 Its [portable patches and raw results](handover/2026-10-09-symbol-fields/allocated-symbol-identity-draft5-results-manifest.json)
 replay all **572 source inputs** from `265d5ba3`. Strict checks have zero warnings;
@@ -17,8 +24,8 @@ to validated draft5; the sole input difference retains source323's configured-GN
 native fixture. Fresh strict checks and **all 39 original integration tests**
 pass, with all native byte assertions unchanged. Its isolated checkout is
 `target/runtime-goal/recovered-2026-10-13/symbol-fields-integration/emaxx`.
-Publish this delta after PR84's checkpoint merge, preserving the current handover
-and evidence. Then run the required checks on the clean published source.
+The delta is applied after PR84's checkpoint merge, preserving the current
+handover and evidence. Run the required checks on the clean published source.
 
 GNU `lisp.h:Lisp_Symbol`, `data.c` and `alloc.c` remain the architectural reference.
 Value/alias, function, plist and flags belong to the allocated symbol. Actual
@@ -42,8 +49,8 @@ A separate real bug copied the input string before calling programmed completion
 GNU `minibuf.c` passes the original Lisp string. Draft4/5 now preserve identity,
 properties, encoding and callback mutations in all three completion primitives.
 Nine GNU-backed cases cover ASCII, multibyte and unibyte strings. The same defect
-was reproduced in published source323 and is fixed only in the prototype and
-integration delta. This repair alone did not fix Eshell; that failed draft4 run
+was reproduced in source323 and is repaired in source324's integration delta.
+This repair alone did not fix Eshell; that failed draft4 run
 remains recorded alongside draft3's original Eshell failure.
 
 Host strings and weak name bookkeeping, encoded private names, standard-obarray
