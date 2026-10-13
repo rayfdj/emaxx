@@ -1,0 +1,220 @@
+{
+  "archive": {
+    "path": "allocated-symbol-identity-integration-results.tar.gz",
+    "bytes": 610233,
+    "sha256": "6a9432f1771b3a418abf667fcb374481b56d7766bb6f3714943b9bc3b03db67f",
+    "members": 37
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/fixture-images/loadup-559c7300-d44829be.pdmp",
+      "bytes": 21791504,
+      "sha256": "49fcaf356161d12d0e01fa071021bb3223cfc977c9e9a7352f7120b9c02d7148"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/fixture-images/loadup-bb93045b-d44829be.pdmp",
+      "bytes": 21791512,
+      "sha256": "ece58202dde701b7e2488d0fd4146e836aef220abdec930bce2727bd61fb032e"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/0-cli-d8f8c6f574da5766",
+      "bytes": 1238736,
+      "sha256": "1c3624f6d5600c84de4a15a2500d8451e2caa9266cbd5a44e264783b07feef53"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/1-cli_parity-263d9e9300e58966",
+      "bytes": 1269168,
+      "sha256": "44c5047c00cd38bafba5a4d6c1e609e9f1dd5f683aa763b6b9a502c43dcddc32"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/10-loadup-bb93045b-d44829be.pdmp",
+      "bytes": 21791512,
+      "sha256": "ece58202dde701b7e2488d0fd4146e836aef220abdec930bce2727bd61fb032e"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/11-emacs",
+      "bytes": 9600848,
+      "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/12-emacs.pdmp",
+      "bytes": 22954264,
+      "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/2-ert_runner-4843dea00229cbe2",
+      "bytes": 17647408,
+      "sha256": "559c7300f4a15f5177beb806d2b2c7fff2b202d88bdfa30619e7ef99bcacdfa7"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/3-native_comp_identity-17f1af8f10cb4735",
+      "bytes": 1252016,
+      "sha256": "88dbdbd58026ab9d387cb709add0eff5764036ca76e13f8e887e2ab1b9dd9fde"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/5-package_lifecycle-4c3a711d886b990d",
+      "bytes": 1079952,
+      "sha256": "0476399825ed189883205d8f83a6e39dd1c27b81c2e656f7beabd568f405a249"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/6-runtime_ownership-857a07361ab3d26b",
+      "bytes": 17711744,
+      "sha256": "bb93045b76af07bc4176c480e28d3237fd3ccee3a0939f7abe61b72f06172da8"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/7-emaxx",
+      "bytes": 17631008,
+      "sha256": "84124b0d28fe17a3e98b5eb1c5f8d89ce55567a321c2d2083c5636678d85df10"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/8-emaxx.pdmp",
+      "bytes": 21797048,
+      "sha256": "0b1ddda96f0f4ff8fd408d596c381fa55d59aff218e75098388e470ab21d7a26"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/9-loadup-559c7300-d44829be.pdmp",
+      "bytes": 21791504,
+      "sha256": "49fcaf356161d12d0e01fa071021bb3223cfc977c9e9a7352f7120b9c02d7148"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "isolated symbol identity integration onto source323; not published as runtime",
+  "audit": {
+    "status": "passed; isolated integration not yet published",
+    "base_commit": "0550a70c8d8b48ae0369e235e570dc484bea6a44",
+    "source_inputs_verified": 572,
+    "integrated_patch_sha256": "d958712a9784ca8c05a32c9e44f4b3c6340d3040f65ac38c5531b17f5f54c5ae",
+    "replayed": true,
+    "strict_zero_warnings": true,
+    "integration_passed": 39,
+    "original_integration_names_preserved": [
+      "batch_accepts_gnu_quick_and_long_load_options",
+      "batch_accepts_gnu_single_dash_long_spellings_and_rejects_dash_b",
+      "batch_child_load_path_ignores_the_test_directory_like_lread",
+      "batch_eval_error_uses_gnu_stderr_and_exit_status",
+      "batch_eval_interns_the_symbols_it_reads_like_gnu",
+      "batch_exit_and_restart_preserve_a_childs_ignored_hangup_like_gnu",
+      "batch_exit_terminates_owned_children_like_gnu",
+      "batch_funcall_receives_remaining_file_arguments",
+      "batch_kill_emacs_runs_hooks_and_exits_without_lisp_unwinding",
+      "batch_large_lists_complete_and_release_without_exhausting_the_stack",
+      "batch_load_propagates_kill_emacs_instead_of_reporting_a_load_error",
+      "batch_preserves_eval_and_load_action_order",
+      "batch_read_string_consumes_a_line_from_piped_stdin",
+      "batch_stdout_and_stderr_interleave_like_stdio_on_a_shared_descriptor",
+      "batch_symbol_readers_answer_piped_stdin_like_gnu",
+      "dump_file_process_round_trip_or_explicit_native_image_limit",
+      "empty_batch_invocation_succeeds_like_gnu_emacs",
+      "make_fingerprint_replaces_the_default_pattern_with_the_file_s_digest",
+      "sigusr_events_follow_gnu_special_event_map_semantics",
+      "startup_options_after_an_eval_are_sorted_ahead_of_it_like_emacs_c",
+      "c_owned_switches_and_startup_arguments_agree_with_gnu",
+      "dumped_fingerprint_survives_copying_and_resigning_the_executable",
+      "fingerprint_is_the_executable_s_own",
+      "help_text_is_emacs_c_usage_message",
+      "script_with_equals_rewrites_the_argument_before_it_like_emacs_c",
+      "version_report_is_emacs_c_main_s",
+      "ert_buffer_tests",
+      "ert_cmds_tests",
+      "ert_editfns_tests",
+      "unchanged_gnu_sources_produce_identical_native_artifacts",
+      "thread_suspension_and_signals_match_gnu_with_real_native_code",
+      "local_package_archive_lifecycle_matches_gnu_across_restarts_and_failures",
+      "local_package_vc_failures_match_gnu_without_activation_state",
+      "local_package_vc_lifecycle_matches_gnu_across_restarts_and_deletion",
+      "local_package_vc_upgrade_matches_gnu_and_survives_restart",
+      "local_use_package_workflows_match_gnu_across_defer_and_failure",
+      "public_editor_calls_serialize_allocation_collection_and_shutdown",
+      "public_ert_entry_preserves_complete_inventory_and_unexpected_failures",
+      "public_ert_entry_reports_top_level_errors_as_owned_host_data"
+    ],
+    "production_identical_to_validated_identity5": true,
+    "different_validation_inputs": [
+      "tests/native_comp_identity.rs"
+    ],
+    "retained_inputs": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/symbol-fields-integration/emaxx/target/gate/deps/cli-d8f8c6f574da5766",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/0-cli-d8f8c6f574da5766",
+        "sha256": "1c3624f6d5600c84de4a15a2500d8451e2caa9266cbd5a44e264783b07feef53",
+        "bytes": 1238736
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/symbol-fields-integration/emaxx/target/gate/deps/cli_parity-263d9e9300e58966",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/1-cli_parity-263d9e9300e58966",
+        "sha256": "44c5047c00cd38bafba5a4d6c1e609e9f1dd5f683aa763b6b9a502c43dcddc32",
+        "bytes": 1269168
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/symbol-fields-integration/emaxx/target/gate/deps/ert_runner-4843dea00229cbe2",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/2-ert_runner-4843dea00229cbe2",
+        "sha256": "559c7300f4a15f5177beb806d2b2c7fff2b202d88bdfa30619e7ef99bcacdfa7",
+        "bytes": 17647408
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/symbol-fields-integration/emaxx/target/gate/deps/native_comp_identity-17f1af8f10cb4735",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/3-native_comp_identity-17f1af8f10cb4735",
+        "sha256": "88dbdbd58026ab9d387cb709add0eff5764036ca76e13f8e887e2ab1b9dd9fde",
+        "bytes": 1252016
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/symbol-fields-integration/emaxx/target/gate/deps/native_thread_continuations-6e661a27616de947",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/4-native_thread_continuations-6e661a27616de947",
+        "sha256": "627af72d1729fce85c53d7a6cbc0f8b95090204c7bf7ebcac44da4ca67e687b0",
+        "bytes": 972256
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/symbol-fields-integration/emaxx/target/gate/deps/package_lifecycle-4c3a711d886b990d",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/5-package_lifecycle-4c3a711d886b990d",
+        "sha256": "0476399825ed189883205d8f83a6e39dd1c27b81c2e656f7beabd568f405a249",
+        "bytes": 1079952
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/symbol-fields-integration/emaxx/target/gate/deps/runtime_ownership-857a07361ab3d26b",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/6-runtime_ownership-857a07361ab3d26b",
+        "sha256": "bb93045b76af07bc4176c480e28d3237fd3ccee3a0939f7abe61b72f06172da8",
+        "bytes": 17711744
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/symbol-fields-integration/emaxx/target/gate/emaxx",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/7-emaxx",
+        "sha256": "84124b0d28fe17a3e98b5eb1c5f8d89ce55567a321c2d2083c5636678d85df10",
+        "bytes": 17631008
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/symbol-fields-integration/emaxx/target/gate/emaxx.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/8-emaxx.pdmp",
+        "sha256": "0b1ddda96f0f4ff8fd408d596c381fa55d59aff218e75098388e470ab21d7a26",
+        "bytes": 21797048
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/fixture-images/loadup-559c7300-d44829be.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/9-loadup-559c7300-d44829be.pdmp",
+        "sha256": "49fcaf356161d12d0e01fa071021bb3223cfc977c9e9a7352f7120b9c02d7148",
+        "bytes": 21791504
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/fixture-images/loadup-bb93045b-d44829be.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/10-loadup-bb93045b-d44829be.pdmp",
+        "sha256": "ece58202dde701b7e2488d0fd4146e836aef220abdec930bce2727bd61fb032e",
+        "bytes": 21791512
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/11-emacs",
+        "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+        "bytes": 9600848
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-integration-gate/retained-inputs/12-emacs.pdmp",
+        "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+        "bytes": 22954264
+      }
+    ],
+    "prototype_full_audit_sha256": "1ad61e845c441f8b68eed57b83868091fc683bd932ba3d079430659189715cfe",
+    "qualification": "All572 integrated inputs replay from source323. Production bytes/modes are exactly the locally validated identity5 prototype; the only input difference preserves source323 configured-GNU native fixture correction. Strict checks have zero warnings and all39 original integration tests pass, including exact native artifact identity. Executables and post-run images are retained without per-test image-use claims. This is still an unpublished local integration; required clean-source Linux/macOS/frozen/terminal and performance evidence remains separate.",
+    "goal_complete": false
+  },
+  "qualification": "The572-input delta replays from0550a70c and retains its configured-GNU native artifact fixture. Every production byte/mode matches identity5 full local validation. The only different input is that fixture; fresh strict checks have zero warnings and all39 original integration tests pass, including exact native artifacts. Original prototype and root checkouts remain unchanged. This portable patch is still unapplied to the published runtime. It needs clean-source publication/platform validation; remaining representation adapters, ownership, physical accounting, profiles and the full performance goal remain open. Large retained executable/image bytes are explicitly excluded from this archive."
+}

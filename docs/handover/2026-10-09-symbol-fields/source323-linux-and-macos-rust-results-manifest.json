@@ -1,0 +1,268 @@
+{
+  "archive": {
+    "path": "source323-linux-and-macos-rust-results.tar.gz",
+    "bytes": 1934803,
+    "sha256": "6a59707cefb398be3f6233d468a03c3bb76076ad8356c494e5328358a73be7ee",
+    "members": 5293
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-linux-rust/raw/oracle-inputs/emacs",
+      "bytes": 30924408,
+      "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-linux-rust/raw/oracle-inputs/emacs.pdmp",
+      "bytes": 17723936,
+      "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-linux-rust/raw/rust/retained-inputs/fixture-images/loadup-488cdb77-988ea42f.pdmp",
+      "bytes": 21843224,
+      "sha256": "8d35aad26c8c2eef9c20ddc7fcc3f38bcba5a1e992520ac93bd66aa01a5679b9"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-linux-rust/raw/rust/retained-inputs/fixture-images/loadup-a9068d4b-988ea42f.pdmp",
+      "bytes": 21846368,
+      "sha256": "15e5efeeef12a41ffe7bcabaf58dbb6361cff086396860061971d65c1cf43629"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-linux-rust/raw/rust/retained-inputs/fixture-images/loadup-bf98ed66-988ea42f.pdmp",
+      "bytes": 21846360,
+      "sha256": "bc27be3e95b56077921244560d8d796e0edab8181722f86c800e22ca5cdd3fb5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-linux-rust/raw/rust/retained-inputs/libtest",
+      "bytes": 34877448,
+      "sha256": "488cdb778c8b0e7f4b30a084c8f63d36d9a3bd8c8bdd5a4f9fce0e7d008b0238"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-linux-frozen/raw/oracle-inputs/emacs",
+      "bytes": 30924408,
+      "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-linux-frozen/raw/oracle-inputs/emacs.pdmp",
+      "bytes": 17723936,
+      "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-macos-full/full/retained-fixture-images-supplement/loadup-55ac4ab8-5983355c.pdmp",
+      "bytes": 19449376,
+      "sha256": "60aa34c6cdeea9b94f06f2a3c9befd94010f79b43fe12e6ac0aa516d86f110d5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-macos-full/full/retained-fixture-images-supplement/loadup-b171ae9f-d44829be.pdmp",
+      "bytes": 21779272,
+      "sha256": "99a54c202079b9336297fa42d134656104a11b27345e22f12ce5929c21b1e222"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-macos-full/full/retained-fixture-images-supplement/loadup-c366d400-5983355c.pdmp",
+      "bytes": 19449376,
+      "sha256": "815e04ff3692b495e9fdcc7fec0d7a7cb032867053325dca2dced07469babf20"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-macos-full/full/retained-fixture-images-supplement/loadup-c55b8b43-d44829be.pdmp",
+      "bytes": 21776800,
+      "sha256": "4521cac346f927a0eebebf711e7859d80d402d593c68c615f42765fe51e38d43"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-macos-full/full/retained-fixture-images-supplement/loadup-e26d94f7-d44829be.pdmp",
+      "bytes": 21776800,
+      "sha256": "31ef0a3b78e1b4aec226bebc805836dd02bc4d0f5e10dbd88482953cd98ce844"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-macos-full/full/retained-fixture-images-supplement/loadup-eb949569-d44829be.pdmp",
+      "bytes": 21781544,
+      "sha256": "b6e3651a371634db506d4bd76fc0125f4b417b6480649bf4a1d4a924c512b94d"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-macos-full/full/retained-fixture-images-supplement/loadup-f4a554a5-d44829be.pdmp",
+      "bytes": 21779416,
+      "sha256": "5d8859ad18628c56d8bd5b555d0a27c572a34a58a73781f6e0f5e46cae5bed16"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-macos-full/full/retained-fixture-images-supplement/loadup-f7b23000-5983355c.pdmp",
+      "bytes": 19202384,
+      "sha256": "eb232666ed99e90a62dbf6482182f7e2fb1322383487fc2088ed8ead5ab545e4"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-macos-full/full/retained-fixture-images-supplement/loadup-fa0c2031-5983355c.pdmp",
+      "bytes": 19449376,
+      "sha256": "c8479702d5a167416cdda6129a8765fce602e107f356ecbd8e10c91c4a4ccaec"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-macos-full/full/retained-inputs/libtest",
+      "bytes": 29799440,
+      "sha256": "c55b8b437732d53287049bd1a8f25d41442af1358dd0d14b9a51ab47d5489d0d"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "source323 complete Linux validation and full macOS Rust gate",
+  "source_commit": "0550a70c8d8b48ae0369e235e570dc484bea6a44",
+  "linux_rust": {
+    "status": "passed",
+    "source_commit": "0550a70c8d8b48ae0369e235e570dc484bea6a44",
+    "validation_checkout": {
+      "dirty": false,
+      "head": "0550a70c8d8b48ae0369e235e570dc484bea6a44"
+    },
+    "unchanged_source_inputs": 565,
+    "raw_library_names_verified": 3082,
+    "library_passed": 3080,
+    "library_ignored": 2,
+    "cargo_passed": {
+      "bins": 61,
+      "integration": 42
+    },
+    "total_passed": 3183,
+    "native_artifact_identity": "passed",
+    "retained_files_verified": 4,
+    "test_binary_sha256": "488cdb778c8b0e7f4b30a084c8f63d36d9a3bd8c8bdd5a4f9fce0e7d008b0238",
+    "summary_sha256": "216eed89185791e86507ae9c2bc6fcdb1be42a4c8f7bef607ac01e5156921ba2",
+    "qualification": "Full Linux gate records a clean source323 checkout. All 565 frozen runtime inputs match the published commit; every raw library name/verdict, Cargo summary and retained artifact identity is checked. Post-run fixture images do not identify per-test use. Frozen, macOS and performance evidence is separate.",
+    "goal_complete": false,
+    "oracle_inputs_verified": 4,
+    "existing_library_names_preserved": 3082,
+    "added_library_tests": [],
+    "run_id": 38237372980
+  },
+  "linux_frozen": {
+    "status": "matched",
+    "run_id": 38237375664,
+    "published_commit": "0550a70c8d8b48ae0369e235e570dc484bea6a44",
+    "verified_files": 519,
+    "verified_outcomes": 7928,
+    "successful_processes": 1038,
+    "runner_summaries": {
+      "emaxx": {
+        "total": 7928,
+        "passed": 7670,
+        "failed": 47,
+        "skipped": 211,
+        "unexpected": 0
+      },
+      "oracle": {
+        "total": 7928,
+        "passed": 7670,
+        "failed": 47,
+        "skipped": 211,
+        "unexpected": 0
+      }
+    },
+    "pinned_oracle_sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf",
+    "frozen_manifest": {
+      "path": "compat/oracle_tests_all_linux.txt",
+      "sha256": "ca3cbd63e3dfe6893ef688b6ef7413e1ef2134eabc5c284bfd50a1edf4554be7",
+      "recorded_files": 519,
+      "executed_files": 519,
+      "historical_load_errors": 0,
+      "required_outcomes": 7928,
+      "compared_outcomes": 7928
+    },
+    "summary_sha256": "a970daf692bf7edc139d3b9ddf41d79bd3a79b8309f2e88ed7aeeaf88706e3e1",
+    "qualification": "Complete frozen file/test inventory and raw outcomes, comparison issues and successful processes cross-checked. Existing expected failures and skips remain distinct from passes. Binaries and images are identified by runner provenance, not downloaded executable bytes. Darwin adopted its rebuilt pin separately. This Linux audit establishes no macOS or performance result."
+  },
+  "macos_rust": {
+    "status": "passed",
+    "source_commit": "0550a70c8d8b48ae0369e235e570dc484bea6a44",
+    "selected_audit_sha256": "78dbdbb8eddfc4fdd9ffde3943858810e3bf7085508ebe9f7c7f23608f73d551",
+    "validation_checkout": {
+      "dirty": false,
+      "head": "0550a70c8d8b48ae0369e235e570dc484bea6a44"
+    },
+    "unchanged_source_inputs": 565,
+    "raw_library_names_verified": 3074,
+    "library_passed": 3072,
+    "library_ignored": 2,
+    "cargo_passed": {
+      "bins": 60,
+      "integration": 39
+    },
+    "total_passed": 3171,
+    "native_artifact_identity": "passed",
+    "retained_files_verified": 1,
+    "test_binary_sha256": "c55b8b437732d53287049bd1a8f25d41442af1358dd0d14b9a51ab47d5489d0d",
+    "summary_sha256": "178b6d8c99d54b0880f5c303a8766ef048b0bbda1fc0ddbcdf68521a93fd429e",
+    "qualification": "Full source323 macOS Rust gate: all 565 runtime input bytes/modes match the immutable published commit, selected integration controls, before/after captures and current checkout. The sole code change from source322 is the native identity fixture choosing the configured GNU root; original exact byte assertions are preserved. Every raw library name/verdict and Cargo result is checked, with only the two existing ignores. Native artifact identity passes. Retained post-run images do not establish per-test use. Linux, frozen, terminal and performance evidence remain separate and incomplete; the next allocated-field prototype has separate failures and is not certified by this run.",
+    "goal_complete": false
+  },
+  "macos_retention_supplement": {
+    "status": "retained",
+    "retained_at": "2026-10-12T11:20:19.619173+00:00",
+    "gate_summary_sha256": "178b6d8c99d54b0880f5c303a8766ef048b0bbda1fc0ddbcdf68521a93fd429e",
+    "original_retention_manifest_sha256": "1b6c1741468be6cefc69a9ad9d3d41a205467c1ea382cee729a074c29883444d",
+    "original_rust_audit_sha256": "7cc76bfd79f5cb0069eff734f7a8ed6ba9de4d7998de22e1601be35366f478e2",
+    "actual_directory": "/Users/nbmhqa186/projects/emaxx/target/grouped-gate/fixture-images",
+    "wrapper_directory": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source323-macos-full/fixture-images",
+    "gate_environment_source_sha256": "d0f4124b748c8a86d7920d5c2c0835164159c34e9c33b3150f195af26316bdc9",
+    "files": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/grouped-gate/fixture-images/loadup-55ac4ab8-5983355c.pdmp",
+        "artifact": "loadup-55ac4ab8-5983355c.pdmp",
+        "sha256": "60aa34c6cdeea9b94f06f2a3c9befd94010f79b43fe12e6ac0aa516d86f110d5",
+        "bytes": 19449376,
+        "original_mtime_ns": 1790528957640883203
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/grouped-gate/fixture-images/loadup-b171ae9f-d44829be.pdmp",
+        "artifact": "loadup-b171ae9f-d44829be.pdmp",
+        "sha256": "99a54c202079b9336297fa42d134656104a11b27345e22f12ce5929c21b1e222",
+        "bytes": 21779272,
+        "original_mtime_ns": 1791793412941822475
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/grouped-gate/fixture-images/loadup-c366d400-5983355c.pdmp",
+        "artifact": "loadup-c366d400-5983355c.pdmp",
+        "sha256": "815e04ff3692b495e9fdcc7fec0d7a7cb032867053325dca2dced07469babf20",
+        "bytes": 19449376,
+        "original_mtime_ns": 1790529818222031558
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/grouped-gate/fixture-images/loadup-c55b8b43-d44829be.pdmp",
+        "artifact": "loadup-c55b8b43-d44829be.pdmp",
+        "sha256": "4521cac346f927a0eebebf711e7859d80d402d593c68c615f42765fe51e38d43",
+        "bytes": 21776800,
+        "original_mtime_ns": 1791796751492898018
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/grouped-gate/fixture-images/loadup-e26d94f7-d44829be.pdmp",
+        "artifact": "loadup-e26d94f7-d44829be.pdmp",
+        "sha256": "31ef0a3b78e1b4aec226bebc805836dd02bc4d0f5e10dbd88482953cd98ce844",
+        "bytes": 21776800,
+        "original_mtime_ns": 1791783060942594666
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/grouped-gate/fixture-images/loadup-eb949569-d44829be.pdmp",
+        "artifact": "loadup-eb949569-d44829be.pdmp",
+        "sha256": "b6e3651a371634db506d4bd76fc0125f4b417b6480649bf4a1d4a924c512b94d",
+        "bytes": 21781544,
+        "original_mtime_ns": 1791803370862168076
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/grouped-gate/fixture-images/loadup-f4a554a5-d44829be.pdmp",
+        "artifact": "loadup-f4a554a5-d44829be.pdmp",
+        "sha256": "5d8859ad18628c56d8bd5b555d0a27c572a34a58a73781f6e0f5e46cae5bed16",
+        "bytes": 21779416,
+        "original_mtime_ns": 1791799030812709799
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/grouped-gate/fixture-images/loadup-f7b23000-5983355c.pdmp",
+        "artifact": "loadup-f7b23000-5983355c.pdmp",
+        "sha256": "eb232666ed99e90a62dbf6482182f7e2fb1322383487fc2088ed8ead5ab545e4",
+        "bytes": 19202384,
+        "original_mtime_ns": 1790536275440199354
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/grouped-gate/fixture-images/loadup-fa0c2031-5983355c.pdmp",
+        "artifact": "loadup-fa0c2031-5983355c.pdmp",
+        "sha256": "c8479702d5a167416cdda6129a8765fce602e107f356ecbd8e10c91c4a4ccaec",
+        "bytes": 19449376,
+        "original_mtime_ns": 1790530805730171144
+      }
+    ],
+    "qualification": "The initial retention captured only libtest because it used the outer wrapper environment. grouped_gate.gate_environment overrides that fixture directory. This separate supplement preserves all remaining images in the actual directory, including files from prior executions. It does not identify which image any individual test loaded, and it does not modify the original run, audit or retention manifest.",
+    "goal_complete": false
+  },
+  "qualification": "Source323 has 3183 Linux Rust passes/two existing ignores, all519 Linux frozen files/7928 matching outcomes/1038 successful processes, and3171 macOS Rust passes/two existing ignores. Every raw library name, frozen inventory and execution hash is audited. macOS native artifact identity passes. The first macOS retention captured only libtest; a separate supplement preserves nine images from the actual grouped-gate directory without claiming per-test use. Frozen macOS, terminal and performance are separate; their failures are not certified by these green gates. Large binary/image bytes remain locally retained and are explicitly excluded from this portable text archive."
+}

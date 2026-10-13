@@ -1,14 +1,24 @@
 # Symbol ownership in private image copies — 10 October 2026
 
-The current checkpoint adds source323's configured-root native identity fixture
-correction to source321/source322 production code. Source322 passes complete Linux
-Rust checks; its full frozen run retains one GNU-only Eglot timeout among 7,928
-outcomes. Its macOS run retains 3,161 passes, one native artifact mismatch from
-the fixture selecting a different GNU ABI, and two existing ignores. Source323
-uses the configured oracle without changing any byte-comparison assertion;
-strict checks and all 39 integration tests pass. Complete source323 validation
-and the authorized main merge remain pending. See the [current handover](../HANDOVER.md)
-for original failures, the separate GNU observation and unfinished identity draft.
+Source323's validation is closed as of 13 October: **3,183 Linux and 3,171 macOS
+Rust passes**, two existing ignores per platform, exact native artifacts,
+**7,928 matching Linux frozen outcomes** and **226 passing terminal scenarios /
+686 comparisons**. The original macOS frozen run remains failed; separately
+identified observations obtain the actual missing GNU answers and cover all
+519 files, retaining six unchanged diagnostic differences. Source322's separate
+Eglot observation also obtains all 52 matching outcomes without rewriting its
+original failed run. The [current handover](../HANDOVER.md) links every archive
+and explains the evidence limits. Publication and the authorized PR84 merge
+are next; the full goal remains incomplete.
+
+The separate allocated-field/identity implementation now passes its complete
+local Rust gate (3,178 passes/two existing ignores), 397 controls per profile and
+28 ordinary comparisons. Its integration delta preserves source323's native
+fixture and passes fresh strict checks and all 39 integration tests. It remains
+unapplied to the published runtime and has no measured performance result. See
+the [architectural continuation](runtime-representation-symbol-payload-authority-draft.md).
+
+## Historical source321 and image-copy continuation
 
 The current task branch carries **source321**, the actual-mark repair for weak
 references to a retired editor's symbols. Its new control retains parked-owner

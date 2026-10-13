@@ -1,0 +1,250 @@
+{
+  "archive": {
+    "path": "allocated-symbol-identity-draft5-results.tar.gz",
+    "bytes": 1378753,
+    "sha256": "853e72f5c9c0411abe7dc144c5dfcd90eab792446d43e98f4458e735c06e005b",
+    "members": 462
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft2-existing-failures/fixture-images/loadup-55d47335-d44829be.pdmp",
+      "bytes": 21786152,
+      "sha256": "4db92197ba854bc3863e2d84826952fbf23556ebccb258c9c2db82cadbb14b96"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft3-gate/fixture-images/loadup-a0f85381-d44829be.pdmp",
+      "bytes": 21901688,
+      "sha256": "2b9f5b31920962067f35c10bd612eea26f29d7fbc2b70c555ac4d887613f763e"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft3-gate/libtest",
+      "bytes": 29777328,
+      "sha256": "a0f853812585baeb844fcbb3e0a93feb7307ea6e10ea729668543da127d99725"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft4-gate/fixture-images/loadup-06fffdca-d44829be.pdmp",
+      "bytes": 21901824,
+      "sha256": "28f73bceea6af6c30e40b5f0fc89c7dd005ac2ec7c8600a79b562cab2f728d9c"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft4-gate/libtest",
+      "bytes": 29777536,
+      "sha256": "06fffdcaa72b070d443589aa1f5f393ccc4b4ce009b46c2a4f8a233fda63c34a"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-gate/fixture-images/loadup-9b2491d6-d44829be.pdmp",
+      "bytes": 21901936,
+      "sha256": "4d2ea7077db048b5b3dd727935c5c5ce4d7c2b3269c642b3875c7beb95e390a1"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-gate/libtest",
+      "bytes": 29878368,
+      "sha256": "9b2491d6871dc197ff5d3dcdf91142590b184bbcbef278cb532e0e98b5283842"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-gate/retained-fixture-images/loadup-9b2491d6-d44829be.pdmp",
+      "bytes": 21901936,
+      "sha256": "4d2ea7077db048b5b3dd727935c5c5ce4d7c2b3269c642b3875c7beb95e390a1"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-release/fixture-images/loadup-fd0ce312-d44829be.pdmp",
+      "bytes": 21901968,
+      "sha256": "17ec0e56da8e4666cd6c2020b6a59a7c57fe0ca8df9f09b40181f41895165207"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-release/libtest",
+      "bytes": 22896432,
+      "sha256": "fd0ce312779e80e06a53d0bfd4d0d711bfafdd6e80867235dc75c6c4cc98a6a6"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-release/retained-fixture-images/loadup-fd0ce312-d44829be.pdmp",
+      "bytes": 21901968,
+      "sha256": "17ec0e56da8e4666cd6c2020b6a59a7c57fe0ca8df9f09b40181f41895165207"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-full/full/retained-inputs/fixture-images/loadup-8f729d89-d44829be.pdmp",
+      "bytes": 21791448,
+      "sha256": "302ccaa34e850d7c9de416a3caac1f5c79e079e61982c305bb162d571812d092"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-full/full/retained-inputs/fixture-images/loadup-9b2491d6-d44829be.pdmp",
+      "bytes": 21788304,
+      "sha256": "c4ca23016bf65b8d23a9850328404f5e097f23ff01d4c0a78190bc9615430112"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-full/full/retained-inputs/fixture-images/loadup-e90ff4a9-d44829be.pdmp",
+      "bytes": 21791464,
+      "sha256": "6ed69228bd78e010cc895cd63a9d71df1f0b544ada63d38301823525327d3fe8"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-full/full/retained-inputs/libtest",
+      "bytes": 29878368,
+      "sha256": "9b2491d6871dc197ff5d3dcdf91142590b184bbcbef278cb532e0e98b5283842"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-ordinary-retained-inputs/0-emacs",
+      "bytes": 9600848,
+      "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-ordinary-retained-inputs/1-emacs.pdmp",
+      "bytes": 22954264,
+      "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-ordinary-retained-inputs/2-emaxx",
+      "bytes": 13240656,
+      "sha256": "4365cdef5ca1843a726d035300d645704b513b017a92352e27e169e610a93189"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-ordinary-retained-inputs/3-emaxx.pdmp",
+      "bytes": 21794392,
+      "sha256": "ee0a508083b2789659cd122580a9405b239e1c708f9934343e473ba8ad46d9f3"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "unapplied symbol identity draft5 with complete local Rust validation",
+  "base_commit": "265d5ba3405cebe7692560cc29722be65d62237b",
+  "replay": {
+    "base": "265d5ba3405cebe7692560cc29722be65d62237b",
+    "patch": "fields-identity-draft5.patch",
+    "sha256": "56cc1a224c5197d54962f8282f5a6f193f3bfdc5d3a0b600dae383c5b7f54971",
+    "source_inputs": 572,
+    "replayed": true,
+    "validation": "397 selected pass; all fifteen previous library failures now pass; full/release/ordinary checks pending",
+    "goal_complete": false
+  },
+  "selected": {
+    "status": "passed",
+    "source_inputs": 572,
+    "selected": 397,
+    "passed": 397,
+    "failed": 0,
+    "inventory": 3081,
+    "previous_inventory_names_preserved": 3078,
+    "added_tests": [
+      "lisp::primitives::tests::intern_soft_misses_do_not_allocate_canonical_symbols",
+      "lisp::primitives::tests::programmed_completion_preserves_input_identity_properties_and_mutation",
+      "lisp::types::symbols::tests::keyboard_variable_symbols_follow_each_editors_owner"
+    ],
+    "original_fifteen_failure_names_now_passed": [
+      "batch::tests::batch_runtime_applies_the_gnu_locale_startup_policy",
+      "lisp::bytecode::vm::phase_c_tests::executes_switch_fixture",
+      "lisp::eval::tests::eval_02::cconv_closure_convert_captures_simple_free_variable",
+      "lisp::eval::tests::eval_02::cconv_closure_convert_remaps_shadowed_lambda_lifted_variable",
+      "lisp::eval::tests::eval_04::nested_backquote_decrements_unquote_depth",
+      "lisp::eval::tests::eval_05::eieio_method_invocation_order_and_next_arguments_stay_coherent",
+      "lisp::eval::tests::eval_05::eshell_ambiguous_completion_displays_candidates_on_second_attempt",
+      "lisp::native_comp::runtime::tests::escaped_frame_graph_survives_its_owner_and_is_then_reclaimed",
+      "lisp::native_comp::runtime::tests::native_funcall_atan_accepts_an_omitted_or_nil_x",
+      "lisp::native_comp::runtime::tests::native_funcall_fixed_optional_nil_matches_the_c_abi",
+      "lisp::native_comp::runtime::tests::native_funcall_log_accepts_an_omitted_or_nil_base",
+      "lisp::primitives::tests::buffer_undo_list_assignment_preserves_cons_identity",
+      "lisp::primitives::tests::dynamic_buffer_undo_list_binding_restores_native_history",
+      "lisp::primitives::tests::preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior",
+      "lisp::primitives::tests::primitive_undo_consumes_marker_adjustments_with_their_deletion"
+    ],
+    "patch_sha256": "56cc1a224c5197d54962f8282f5a6f193f3bfdc5d3a0b600dae383c5b7f54971",
+    "source_unchanged": true,
+    "retained_binary": {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+      "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-gate/libtest",
+      "sha256": "9b2491d6871dc197ff5d3dcdf91142590b184bbcbef278cb532e0e98b5283842"
+    },
+    "qualification": "Strict checks have zero warnings. All 397 selected controls pass, including all fifteen previous full-library failures, unchanged Eshell assertions, reclamation assertions, programmed-completion input identity/properties/mutation and nonallocating intern-soft misses. The previous failed runs remain failures. Full, release, ordinary, platform and performance validation of this unapplied prototype remain separate and pending. The original published runtime is not changed or certified by this result.",
+    "goal_complete": false
+  },
+  "release": {
+    "status": "passed",
+    "source_inputs": 572,
+    "profile": "release",
+    "selected": 397,
+    "passed": 397,
+    "inventory": 3080,
+    "previous_inventory_names_preserved": 3077,
+    "added_tests": [
+      "lisp::primitives::tests::intern_soft_misses_do_not_allocate_canonical_symbols",
+      "lisp::primitives::tests::programmed_completion_preserves_input_identity_properties_and_mutation",
+      "lisp::types::symbols::tests::keyboard_variable_symbols_follow_each_editors_owner"
+    ],
+    "source_unchanged": true,
+    "retained_binary": {
+      "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx/target/release/deps/emaxx-e17fcfe01baaf180",
+      "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-release/libtest",
+      "sha256": "fd0ce312779e80e06a53d0bfd4d0d711bfafdd6e80867235dc75c6c4cc98a6a6"
+    },
+    "strict_gate_audit_sha256": "1ec32217362c56300f8508d5a3289d7c01e115faec864da548a6b7fd7c28c97e",
+    "qualification": "The same 397 selected controls pass in release with all earlier release inventory names preserved. Inputs match the strict gate validation exactly. This remains an unapplied prototype; full, ordinary, complete platform and performance results are separate.",
+    "goal_complete": false
+  },
+  "full": {
+    "status": "passed",
+    "base_commit": "265d5ba3405cebe7692560cc29722be65d62237b",
+    "cumulative_patch_sha256": "56cc1a224c5197d54962f8282f5a6f193f3bfdc5d3a0b600dae383c5b7f54971",
+    "selected_audit_sha256": "1ec32217362c56300f8508d5a3289d7c01e115faec864da548a6b7fd7c28c97e",
+    "validation_checkout": {
+      "dirty": true,
+      "head": "265d5ba3405cebe7692560cc29722be65d62237b"
+    },
+    "unchanged_source_inputs": 572,
+    "raw_library_names_verified": 3081,
+    "library_passed": 3079,
+    "library_ignored": 2,
+    "cargo_passed": {
+      "bins": 60,
+      "integration": 39
+    },
+    "total_passed": 3178,
+    "native_artifact_identity": "passed",
+    "retained_files_verified": 4,
+    "test_binary_sha256": "9b2491d6871dc197ff5d3dcdf91142590b184bbcbef278cb532e0e98b5283842",
+    "summary_sha256": "f5858587a489826e9b2a7ecd7f461c105c09a57f6f7076a2433b25369c100cdb",
+    "qualification": "Unapplied identity draft5 full macOS Rust gate. All572 runtime inputs match the selected gate/release controls, complete cumulative patch replay and before/after captures. Every original library name/verdict and Cargo summary is checked, including all fifteen previously failing controls. Native artifact identity passes. The validation checkout is intentionally dirty at base265d; this is not a clean published checkpoint. Post-run fixture images do not establish per-test use. Ordinary28 comparisons have separate evidence; Linux/frozen/terminal, remaining architecture/accounting and performance are not certified by this result.",
+    "goal_complete": false
+  },
+  "ordinary": {
+    "status": "passed",
+    "source_inputs_verified": 572,
+    "processes": 56,
+    "comparisons": 28,
+    "actual_modes": [
+      "interpreted",
+      "bytecode",
+      "native"
+    ],
+    "identical_editor_arguments": true,
+    "previous_twenty_one_comparisons_preserved": true,
+    "added_programmed_completion_comparisons": 3,
+    "added_intern_soft_comparisons": 3,
+    "added_original_eshell_comparison": 1,
+    "retained_inputs": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-ordinary-retained-inputs/0-emacs",
+        "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+        "bytes": 9600848
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-ordinary-retained-inputs/1-emacs.pdmp",
+        "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+        "bytes": 22954264
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx/target/release/emaxx",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-ordinary-retained-inputs/2-emaxx",
+        "sha256": "4365cdef5ca1843a726d035300d645704b513b017a92352e27e169e610a93189",
+        "bytes": 13240656
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx/target/release/emaxx.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-identity-draft5-ordinary-retained-inputs/3-emaxx.pdmp",
+        "sha256": "ee0a508083b2789659cd122580a9405b239e1c708f9934343e473ba8ad46d9f3",
+        "bytes": 21794392
+      }
+    ],
+    "qualification": "Unapplied symbol identity draft5: all original21 comparisons plus programmed-completion and intern-soft in all three real modes, and the original Eshell completion body loaded from a real file. Both editors use their own release executable and valid image. Actual mode predicates and all expected answers are checked. This is not full platform or performance validation; prior failed attempts remain unchanged.",
+    "goal_complete": false
+  },
+  "qualification": "The572-input cumulative patch replays from base265d. Strict checks have zero warnings; all397 selected controls pass in both profiles; the full local macOS Rust gate has3178 passes/two existing ignores with native artifact identity; all28 ordinary GNU comparisons match in real interpreted/bytecode/native modes and the original Eshell body. All prior failures remain retained. Fourteen invalid cross-owner fixture setups now preserve their original assertions within the right editor; the real Eshell regression is repaired by making intern-soft lookup nonallocating. The separate programmed-completion repair passes the original Lisp string through callback identity/properties/mutation. That defect was also reproduced in published source323, whose runtime is unchanged by this archive. The prototype native fixture uses the adjacent symlink to the configured GNU tree here; integration onto source323 must preserve its configured-root correction. Allocated symbol IDs/counters and field side metadata are removed, with a64-byte allocated header, but host-name/membership/forwarded adapters, public ownership, physical accounting, Linux/frozen/terminal, profiles and the complete performance goal remain open. This dirty local prototype is not a clean published runtime. Large executable/image bytes are retained locally and explicitly excluded from the portable archive."
+}

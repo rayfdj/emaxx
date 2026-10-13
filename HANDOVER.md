@@ -16,7 +16,91 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
-## Source323 native-oracle fixture correction and unfinished symbol IDs — 12 October 2026
+## Source323 validation closed; symbol-field integration ready for publication — 13 October 2026
+
+The full goal remains **active and incomplete**. Source323 is `0550a70c` on
+the authorized `runtime-char-tables` branch. Main is still `55b109e8` until
+[PR84](https://github.com/rayfdj/emaxx/pull/84) is merged. The checkpoint's
+validation is closed with the qualifications below. Publish this evidence and
+merge PR84 under the existing approval; do not ask for renewed authorization.
+Its production inputs are unchanged from source321. The separate symbol-field
+implementation below is still unapplied to the published runtime.
+
+The [complete Linux and macOS Rust evidence](docs/handover/2026-10-09-symbol-fields/source323-linux-and-macos-rust-results-manifest.json)
+verifies **3,183 Linux Rust passes** and **3,171 macOS Rust passes**, each with
+the two existing ignores. Exact native artifact identity passes. Linux frozen
+run `38237375664` matches **all 519 files / 7,928 outcomes / 1,038 successful
+processes**; Rust run is `38237372980`. All 565 source inputs match the immutable
+commit and every original inventory name remains. The first macOS retention
+captured only libtest; a separate supplement retains nine post-run fixture
+images without inferring which test used them.
+
+The [macOS frozen evidence](docs/handover/2026-10-09-symbol-fields/source323-macos-frozen-observations-results-manifest.json)
+retains the original failed run: **318 completed files / 4,477 matches / two
+internal-wait differences**, then both original 180-second Tramp timeouts and
+200 unstarted files. Emaxx's ERC wait and GNU's Eshell wait fail in that attempt.
+Separate unchanged ERC and Eshell runs obtain **25 matching actual outcomes**;
+a bounded 600-second Tramp observation obtains **59 matches**, with GNU finishing
+in 204.48 seconds and Emaxx in 252.96 seconds. The exact 200-file tail, using its
+original deadlines, adds **3,377 matches and six existing diagnostic differences**.
+All six issue entries are identical to source318 and remain strict differences.
+All 177 native compiler tests in that tail pass in both editors.
+
+Explicit file-to-run mappings cover all **519 files / 7,921 macOS outcomes**.
+The original completed files plus missing coverage give 7,913 matches/eight
+differences; substituting the separately identified successful ERC/Eshell
+observations gives 7,915 matches/six existing differences. Neither is one passing
+frozen run. The original failures remain failed. Both original and rebuilt Emaxx
+executable bytes and the unchanged GNU/image inputs are retained locally; the
+portable manifests explicitly identify excluded large binary/image bytes.
+
+The [complete terminal run](docs/handover/2026-10-09-symbol-fields/source323-macos-terminal-results-manifest.json)
+passes **all 226 original scenarios / 686 comparisons**: 658 screens and 28
+filesystem comparisons. Every recorded row, cell attribute and cursor position
+also matches independently of the ordinary harness verdict. Original actions,
+inventory and deadlines are unchanged. All source323 coordinators have ended.
+
+The [source322 Eglot observation](docs/handover/2026-10-09-symbol-fields/source322-eglot-actual-answer-results-manifest.json)
+also closes: run `38236654817` obtains **52 matching outcomes**, including GNU's
+actual Rust-completion answer in 7.27 seconds. No source, selector, expectation
+or deadline changed and Emaxx was not slowed. The original source322 full run
+remains failed at GNU's internal JSON-RPC timeout.
+
+The [identity draft5 evidence](docs/handover/2026-10-09-symbol-fields/allocated-symbol-identity-draft5-results-manifest.json)
+replays **572 inputs** from `265d5ba3`, passes strict checks with zero warnings,
+**397 selected controls per profile**, the complete local macOS Rust gate
+(**3,178 passes / two existing ignores**) and **28 ordinary GNU comparisons**
+in actual execution modes. Fourteen invalid cross-owner fixture setups now
+preserve their original assertions within the correct editor, including the
+original escaped-frame reclamation requirement. The real Eshell regression is
+fixed by making `intern-soft` probe obarray membership without interning missing
+names, as GNU `lread.c` does. A separate generic completion fix passes the actual
+Lisp input string to callbacks, preserving identity, properties and mutation.
+That completion defect is reproduced in published source323 and is fixed only
+in this prototype. All prior failed attempts remain retained.
+
+The [integration delta](docs/handover/2026-10-09-symbol-fields/allocated-symbol-identity-integration-results-manifest.json)
+replays all 572 inputs from `0550a70c`. Its production bytes/modes match draft5;
+the only validation-input difference preserves source323's configured-GNU native
+fixture. Fresh strict checks and **all 39 original integration tests** pass,
+including exact native artifacts. The isolated checkout is
+`target/runtime-goal/recovered-2026-10-13/symbol-fields-integration/emaxx`.
+After the checkpoint merge, publish this integration on the authorized task
+branch and run clean-source platform/frozen/terminal validation. Do not edit
+runtime inputs while their checks are active. The original prototype is retained
+unchanged in `target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx`.
+
+Allocated symbol fields and actual pointer identity remove the side metadata,
+field histories and numeric IDs, but host-name/membership/forwarded adapters,
+descriptor reclamation, public ownership, physical allocation and public counters
+remain unfinished. The 64-byte symbol header is not a net memory or speed claim;
+the old allocation charge still undercounts it. Latest production timing remains
+**2.767150× GNU / 0.53% slower than main `55b109e8`**, from three source321 pilots.
+There is no new performance result. Measured profiles, remaining representations,
+the final adversarial audit, complete final platform checks and the calibrated
+nine-round/every-workload 3% criterion remain required.
+
+## Historical source323 native-oracle fixture correction and unfinished symbol IDs — 12 October 2026
 
 The full goal remains **active and incomplete**. Main is still `55b109e8`;
 [PR84](https://github.com/rayfdj/emaxx/pull/84) is unmerged. Existing approval

@@ -1,4 +1,60 @@
-# Actual symbol identity continuation — 12 October 2026
+# Actual symbol identity continuation — 13 October 2026
+
+The latest **unapplied prototype is identity draft5**, retained in
+`target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx`.
+Its [portable patches and raw results](handover/2026-10-09-symbol-fields/allocated-symbol-identity-draft5-results-manifest.json)
+replay all **572 source inputs** from `265d5ba3`. Strict checks have zero warnings;
+**397 selected controls pass in gate and release**. The complete local macOS Rust
+gate passes **3,178 tests / two existing ignores**, including original native
+artifact identity. **28 ordinary comparisons / 56 processes** match GNU, with
+actual interpreted, bytecode and native execution modes verified. This dirty
+prototype is not a clean published platform gate; Linux, frozen, terminal and
+performance evidence remain pending for its runtime changes.
+
+The [integration patch](handover/2026-10-09-symbol-fields/allocated-symbol-identity-integration-results-manifest.json)
+replays all 572 inputs from source323 `0550a70c`. Production is byte/mode-identical
+to validated draft5; the sole input difference retains source323's configured-GNU
+native fixture. Fresh strict checks and **all 39 original integration tests**
+pass, with all native byte assertions unchanged. Its isolated checkout is
+`target/runtime-goal/recovered-2026-10-13/symbol-fields-integration/emaxx`.
+Publish this delta after PR84's checkpoint merge, preserving the current handover
+and evidence. Then run the required checks on the clean published source.
+
+GNU `lisp.h:Lisp_Symbol`, `data.c` and `alloc.c` remain the architectural reference.
+Value/alias, function, plist and flags belong to the allocated symbol. Actual
+obarray entries replace dense/sparse metadata and four field-history vectors;
+the reader resolves atoms in the selected obarray before allocating. Actual
+symbol identity replaces numeric IDs and both atomic ID counters. Local binding
+keys are marked directly. Editor-owned keyboard references replace the global
+ID cache. The 64-byte header and fourteen per-editor references (112 bytes) do
+not establish net memory or speed improvement.
+
+All 15 earlier failures remain in the evidence. Fourteen invalid fixture setups
+now select the correct editor before comparing symbols or constructing calls;
+their original value, native, lifetime and escaped-frame reclamation assertions
+remain. The real Eshell regression came from `intern-soft` calling a function
+lookup that created missing canonical symbols. The next lookup then found an
+unbound qualified name and suppressed the real completion fallback. GNU
+`lread.c:Fintern_soft` only probes the obarray. Draft5 removes the fallback;
+the original Eshell test and new ordinary/keyword/Unicode miss controls pass.
+
+A separate real bug copied the input string before calling programmed completion.
+GNU `minibuf.c` passes the original Lisp string. Draft4/5 now preserve identity,
+properties, encoding and callback mutations in all three completion primitives.
+Nine GNU-backed cases cover ASCII, multibyte and unibyte strings. The same defect
+was reproduced in published source323 and is fixed only in the prototype and
+integration delta. This repair alone did not fix Eshell; that failed draft4 run
+remains recorded alongside draft3's original Eshell failure.
+
+Host strings and weak name bookkeeping, encoded private names, standard-obarray
+membership tombstones, localized/forwarded and function-definition adapters,
+descriptor reclamation and public ownership remain unfinished. The existing
+48-byte allocation charge still undercounts the 64-byte header. Physical
+allocation/public counters, profiles, final adversarial review, complete final
+platform validation and the unchanged performance criterion remain required.
+The full goal is active and incomplete.
+
+## Historical identity draft2 — 12 October 2026
 
 The latest **unapplied prototype is identity draft2** in
 `target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx`.
