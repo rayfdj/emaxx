@@ -54,9 +54,15 @@ adds **3,377 matches and six existing feature-diagnostic differences**, all six
 identical to source318. Every process exits successfully and all 177 native tests
 pass in both editors. An explicit file-to-run mapping covers **all 519 files /
 7,921 outcomes: 7,915 matches and six strict differences** across these separate
-attempts. This is not one passing frozen run. All 226 original terminal scenarios
-are still running at this checkpoint; inspect their state before restarting.
-Do not merge PR85 until the terminal audit also closes.
+attempts. This is not one passing frozen run.
+
+The [complete ordinary terminal run](docs/handover/2026-10-09-symbol-fields/source324-macos-terminal-results-manifest.json)
+passes **all 226 original scenarios / 686 comparisons**: 658 screens and 28
+filesystem comparisons. All 24 captured rows, cell attributes and cursor positions
+also match independently of the harness verdict. Original actions, inventory and
+deadlines remain unchanged. Source324 validation is closed with the macOS frozen
+qualifications above. Existing approval covers the PR85 merge; verify its current
+GitHub state before attempting a duplicate merge.
 
 The [three Linux timing pilots](docs/handover/2026-10-09-symbol-fields/source324-linux-symbol-performance-results-manifest.json)
 verify **192 actual answers and execution modes** across all 16 locked workloads.
@@ -78,6 +84,21 @@ self samples concentrate in tracing and collection. Whole-process sampling,
 concurrent validation and a retained release executable make this diagnostic;
 the samples do not establish the cause of the Linux regression or a speed gain.
 
+A second **separate, unapplied GC experiment** is in
+`target/runtime-goal/recovered-2026-10-13/gc-cons-trace/emaxx`.
+The [draft1 patch and initial evidence](docs/handover/2026-10-09-symbol-fields/gc-cons-trace-draft1-unfinished-results-manifest.json)
+replay all 572 inputs from `99936262`, changing only `src/lisp/eval.rs`.
+GNU `alloc.c:process_mark_stack` motivates marking and tracing cons fields
+without two general tag matches; mark epochs and car-first traversal remain.
+Strict checks have zero warnings. The first selected run records **438 passes /
+96 failures** with the adjacent GNU fixture tree missing. The required symlink
+now points to the existing pinned GNU build; all 534 original selected names are
+running again with unchanged source and assertions. Preserve the initial failure.
+Inspect `gc-cons-trace-draft1-gate-layout` and the active continuation before
+starting another run. No release or speed result exists; keep the experiment
+separate until correctness checks and interleaved equivalent-work measurements
+establish whether it helps. It does not affect source324's closed validation.
+
 The next implementation is the **separate, unapplied membership draft6** in
 `target/runtime-goal/recovered-2026-10-13/symbol-membership/emaxx`.
 Its [portable patch and evidence](docs/handover/2026-10-09-symbol-fields/symbol-membership-draft6-ownership-results-manifest.json)
@@ -96,9 +117,12 @@ the [draft5 selected failure](docs/handover/2026-10-09-symbol-fields/symbol-memb
 (399 passes/three image failures), the order reproductions and draft6's initial
 formatting failure. **Fresh same-name constant/store semantics are still wrong**:
 an ordinary valid GNU probe returns 40 true predicates while production returns
-21 false predicates. Draft6 has not repaired that adapter. Ordinary GNU mode
-comparisons and complete library/platform/frozen validation remain required;
-selected passing checks do not certify this draft for application.
+21 false predicates. Draft6 still has **20 false predicates** on that identical
+loadable program. The [separate ordinary continuation](docs/handover/2026-10-09-symbol-fields/symbol-membership-draft6-ordinary-results-manifest.json)
+passes **38 comparisons / 76 processes**, preserving all 28 earlier comparisons
+and adding ten membership cases with actual bytecode/native modes checked.
+The constant/store negative remains separate and unresolved. Complete library,
+platform and frozen validation remain required before applying this draft.
 
 For portable continuation, extract the membership archive and apply
 `evidence/symbol-membership-draft6-formatted-gate/tracked.patch` to a detached
@@ -113,8 +137,9 @@ Rebase only after preserving that exact replay. GNU `lread.c:intern_sym`,
 Local source324 coordinators and receipts live under
 `target/runtime-goal/symbol-obarray-2026-10-09`: inspect
 `source324-macos-observations/state.json`, `source324-terminal/state.json` and
-`active-continuation-2026-10-13-source324.json`. Keep the root clean at source324
-while its coordinator checks that exact HEAD. This evidence checkout is separate.
+`active-continuation-2026-10-13-source324.json`. All source324 validation
+coordinators have ended. The root may now fast-forward to the published merge;
+preserve the separate unfinished checkouts and their recorded input identities.
 Large executables/images excluded from portable archives are explicitly listed
 with sizes, hashes and retained local paths; not every artifact is portable.
 

@@ -1,7 +1,8 @@
 # Current goal status — 13 October 2026
 
-The full goal is **active and incomplete**. Main is PR84's merge `01189759`;
-[PR85](https://github.com/rayfdj/emaxx/pull/85) carries source324 `99936262`.
+The full goal is **active and incomplete**.
+[PR85](https://github.com/rayfdj/emaxx/pull/85) delivers source324 `99936262`,
+following PR84's main merge `01189759`.
 Its 572 runtime inputs remain unchanged by this evidence update. Linux frozen
 matches **all 7,928 outcomes**; full Rust passes **3,190 on Linux and 3,178 on
 macOS**, each with two existing ignores and original native artifact identity.
@@ -9,8 +10,9 @@ The macOS original matches **4,479 outcomes** before both 180-second Tramp
 timeouts; a separate bounded observation obtains **59 actual matching answers**.
 The exact remaining 200 files now add **3,377 matches and six unchanged diagnostic
 differences**. All 519 files are covered across separate attempts, preserving the
-original failure. All 226 terminal scenarios are still running; do not merge
-before that audit closes.
+original failure. **All 226 terminal scenarios / 686 comparisons now pass**,
+including independent full-screen, attribute and cursor checks. Checkpoint
+validation is closed with the macOS qualifications; the full goal remains open.
 See [HANDOVER.md](../HANDOVER.md) for current raw evidence and continuation.
 
 Three Linux pilots verify **192 actual answers/modes**: source324's body aggregate
@@ -22,8 +24,10 @@ performance acceptance. The 48-byte charge still undercounts a 64-byte symbol.
 The [separate membership draft6](runtime-representation-symbol-payload-authority-draft.md)
 replays 580 inputs, passes strict checks and **403 controls per profile**, and
 fixes a global captured-menu-table root retaining another editor's symbol graph.
-It preserves earlier failed attempts and remains unapplied. Same-name detached
-constant/store adapters are unrepaired; ordinary mode and full validation remain.
+It preserves earlier failed attempts and remains unapplied. Its 38 ordinary
+comparisons / 76 processes match GNU in actual modes. The separate identical
+constant/store probe still has 20 false predicates against GNU's 40 true ones;
+this adapter repair and complete library/platform validation remain open.
 
 ## Full-goal requirements — current source324 checkpoint
 
@@ -36,8 +40,8 @@ constant/store adapters are unrepaired; ordinary mode and full validation remain
 | 5. VM/function-call work | Earlier direct bytecode and call paths remain. Linux allocation and macOS locked-GC samples are retained; the latter verifies 24 answers and 32 collections per repetition. These diagnostics do not explain the measured GC regression. Further VM/call profiling and equivalent-work optimizations remain required. |
 | 6. Adversarial audit | Original evaluator, roots, ABI, mutation and evidence-corruption checks remain. Source324 preserves actual completion input identity and nonallocating obarray probes. Draft6 adds membership and image-owner checks without dropping assertions. Final review of runtime, startup, images, native loading, ownership, selection, comparison and reporting remains required. |
 | 7. Equivalent performance | All 16 workloads, calibration, nine rounds and the every-workload upper 95% GNU-ratio ceiling of 1.03 remain locked. Three source324 pilots verify 192 answers/modes: 0.994068× main and 2.725557× GNU overall. All unfavorable samples remain. Missing counters, profile-based slowdown explanations and final calibrated acceptance remain open. |
-| 8. Complete validation | Clean source324 passes strict checks, 3,190 Linux and 3,178 macOS Rust tests (two existing ignores each), native identity and 519 Linux frozen files/7,928 outcomes. The macOS original and separate longer Tramp answer retain distinct verdicts; the exact tail is audited with six unchanged diagnostic differences and terminal checks are active. Final-source Linux/macOS, release and complete affected contracts remain required after further implementation. |
-| 9. Independently checkable delivery | Portable patches, raw logs, commands, profiles, samples and failed predecessors are retained. Large excluded binary/image inputs are explicitly identified. PR84 is merged; PR85 remains pending validation. The final adversarial source/evidence review, remaining architecture and unchanged performance requirement remain open. |
+| 8. Complete validation | Clean source324 passes strict checks, 3,190 Linux and 3,178 macOS Rust tests (two existing ignores each), native identity and 519 Linux frozen files/7,928 outcomes. The macOS original and separate longer Tramp answer retain distinct verdicts; the exact tail is audited with six unchanged diagnostic differences and all226 original terminal scenarios/686 comparisons pass. Final-source Linux/macOS, release and complete affected contracts remain required after further implementation. |
+| 9. Independently checkable delivery | Portable patches, raw logs, commands, profiles, samples and failed predecessors are retained. Large excluded binary/image inputs are explicitly identified. PR84 is merged; PR85 has closed checkpoint validation and existing merge authorization. Verify its current GitHub state before merging twice. The final adversarial source/evidence review, remaining architecture and unchanged performance requirement remain open. |
 
 Earlier sections below are historical snapshots, not the current verdict.
 

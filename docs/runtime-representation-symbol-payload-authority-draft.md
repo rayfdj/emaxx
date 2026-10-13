@@ -1,14 +1,16 @@
 # Actual symbol identity continuation — 13 October 2026
 
 The published runtime is **source324 `99936262`**, with 572 inputs, on
-[PR85](https://github.com/rayfdj/emaxx/pull/85). Main remains PR84's merge
+[PR85](https://github.com/rayfdj/emaxx/pull/85), following PR84's main merge
 `01189759`. Full Linux frozen matches all 7,928 outcomes; complete Rust checks
 pass 3,190 on Linux and 3,178 on macOS, each with two existing ignores and exact
 native artifacts. The original macOS frozen attempt matches 4,479 outcomes before
 both Tramp processes time out. A separate 600-second observation obtains all
 59 actual matching answers. The exact tail adds 3,377 matches and six unchanged
 feature-diagnostic differences, covering all 519 files across separate attempts.
-Terminal validation remains active; the original frozen verdict is still failed.
+All 226 original terminal scenarios / 686 comparisons now pass, including
+independent full-screen/attribute/cursor checks. Validation is closed with those
+macOS qualifications; the original frozen verdict is still failed.
 The [current handover](../HANDOVER.md) links the portable evidence and commands.
 
 Three unchanged Linux pilots verify all 192 actual answers/modes. Source324 is
@@ -33,8 +35,12 @@ per editor and removes the global optional table, with no measured net cost clai
 Draft5's three image failures, the exact startup-order reproductions and draft6's
 formatting failure remain archived. Fresh same-name constant/store behavior is
 still wrong (GNU's valid probe has 40 true predicates; production has 21 false
-predicates), and draft6 has no ordinary mode or complete platform certification.
-Continue against actual GNU constant initialization and `intern_sym` rather than
+predicates). The [draft6 ordinary continuation](handover/2026-10-09-symbol-fields/symbol-membership-draft6-ordinary-results-manifest.json)
+passes 38 comparisons / 76 processes in actual modes, preserving all 28 earlier
+comparisons and adding ten membership cases. The unchanged constant/store probe
+still has 20 false predicates in draft6 against GNU's 40 true predicates.
+Complete library/platform certification remains open. Continue against actual
+GNU constant initialization and `intern_sym` rather than
 name-based exceptions. This draft must remain separate until repaired and
 validated. Host-name and forwarded adapters, reclamation, public ownership,
 physical accounting, real counters and the full goal remain unfinished.
