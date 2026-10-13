@@ -309,6 +309,7 @@ fn run_owned(
     command_line_args: &[String],
     options: &batch::BatchRunOptions,
 ) -> Result<i32, String> {
+    let _symbols = crate::lisp::types::symbols::EditorSymbolScope::enter();
     let mut interpreter = batch::initialize_interactive_interpreter(options)?;
     let mut env: Env = crate::lisp::types::Env::new();
     // emacs.c:init_display establishes the terminal before keyboard.c

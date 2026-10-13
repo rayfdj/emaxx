@@ -480,17 +480,16 @@ struct TestNode {
 const _: () = assert!(std::mem::size_of::<TestNode>() == 56);
 
 #[derive(Default)]
-struct DescriptorPool {
+pub(crate) struct DescriptorPool {
     standard: [Option<&'static HashTableTest>; 3],
     user: Option<&'static TestNode>,
 }
 
-// GNU fns.c keeps user descriptors for the process lifetime and marks their
-// three Lisp fields even after the last table dies. The serialized runtime
-// boundary owns this pool, as it owns the symbol pool; no lookup lock or
-// per-table descriptor registry is needed on the ordinary path.
-static TESTS: crate::lisp::types::ProcessTable<DescriptorPool> =
-    crate::lisp::types::ProcessTable::new();
+// GNU fns.c's standard descriptors and user list refer to that Emacs
+// process's symbols. An embedded editor therefore owns its descriptor pool
+// with its canonical symbols. Ordinary table operations still follow the
+// table's direct descriptor pointer. Descriptor allocations retain the
+// existing static lifetime until their allocation ownership is migrated.
 
 pub(crate) fn descriptor(
     name: Value,
@@ -504,7 +503,7 @@ pub(crate) fn descriptor(
         hash_table_compare_eql, hash_table_compare_equal, hash_table_compare_user,
         hash_table_hash_eq, hash_table_hash_eql, hash_table_hash_equal, hash_table_hash_user,
     };
-    TESTS.with_borrow_mut(|pool| {
+    crate::lisp::types::symbols::with_hash_tests(|pool| {
         let standard_index = standard.map(|test| match test {
             RuntimeHashTest::Eq => 0,
             RuntimeHashTest::Eql => 1,
@@ -516,7 +515,7 @@ pub(crate) fn descriptor(
             return test;
         }
         // fns.c's built-in descriptors have fixed identities. Their first
-        // Rust construction binds the process's allocated symbol words;
+        // Rust construction binds the editor's allocated symbol words;
         // later standard tables never traverse the custom descriptor list.
         let mut node = if standard.is_none() { pool.user } else { None };
         while let Some(current) = node {
@@ -559,16 +558,18 @@ pub(crate) fn descriptor(
     })
 }
 
-pub(crate) fn visit_descriptor_roots(mut visit: impl FnMut(&Value)) {
-    let (standard, mut node) = TESTS.with_borrow(|pool| (pool.standard, pool.user));
-    for test in standard.into_iter().flatten() {
-        visit(&test.name);
-    }
-    while let Some(current) = node {
-        visit(&current.test.name);
-        visit(&current.test.user_compare);
-        visit(&current.test.user_hash);
-        node = current.next;
+impl DescriptorPool {
+    pub(crate) fn mark_roots(&self, visit: &mut dyn FnMut(&Value)) {
+        for test in self.standard.into_iter().flatten() {
+            visit(&test.name);
+        }
+        let mut node = self.user;
+        while let Some(current) = node {
+            visit(&current.test.name);
+            visit(&current.test.user_compare);
+            visit(&current.test.user_hash);
+            node = current.next;
+        }
     }
 }
 

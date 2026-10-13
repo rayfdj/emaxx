@@ -82,6 +82,7 @@ pub fn run_batch_process_with_large_stack(
 ) -> Result<u8, String> {
     lisp::runtime::with_runtime(|| {
         with_batch_stack(|| {
+            let _symbols = crate::lisp::types::symbols::EditorSymbolScope::enter();
             let actions = batch_actions(&options);
             let mut interpreter = initialize_batch_interpreter(&options)?;
             let outcome = run_initialized_batch(&mut interpreter, &options, &actions)?;
@@ -128,6 +129,7 @@ pub fn run_batch_with_actions(
     actions: Vec<BatchAction>,
 ) -> Result<BatchRunOutcome, String> {
     lisp::runtime::with_runtime(|| {
+        let _symbols = crate::lisp::types::symbols::EditorSymbolScope::enter();
         let mut interpreter = initialize_batch_interpreter(&options)?;
         run_initialized_batch(&mut interpreter, &options, &actions)
     })
@@ -496,6 +498,7 @@ pub(crate) fn initialize_interactive_interpreter(
 /// fatal there, as in GNU.
 pub fn startup_image_loads(dump_file: Option<&Path>) -> bool {
     lisp::runtime::with_runtime(|| {
+        let _symbols = crate::lisp::types::symbols::EditorSymbolScope::enter();
         let mut interpreter = Interpreter::new();
         crate::lisp::primitives::pdumper::load_pdump_at_startup(&mut interpreter, dump_file)
             .is_some()
@@ -521,6 +524,7 @@ pub fn version_banner(dump_file: Option<&Path>) -> Result<String, String> {
 }
 
 fn version_banner_owned(dump_file: Option<&Path>) -> Result<String, String> {
+    let _symbols = crate::lisp::types::symbols::EditorSymbolScope::enter();
     let mut interpreter = Interpreter::new();
     let initialized =
         crate::lisp::primitives::pdumper::load_pdump_at_startup(&mut interpreter, dump_file)
@@ -1843,7 +1847,7 @@ mod tests {
         // lread.c:init_lread does not read EMACS_TEST_DIRECTORY. This
         // replaces the old assertion that a fabricated recursive path was
         // acceptable as long as standard libraries happened to precede it.
-        let upstream = compat::project_root().join("../emacs");
+        let upstream = compat::configured_gnu_source_root();
         let root = compat::canonicalize_path(&upstream.join("lisp")).expect("GNU Lisp root");
         let _env_write = compat::lock_boot_environment_for_write();
         let previous_test = env::var_os("EMACS_TEST_DIRECTORY");

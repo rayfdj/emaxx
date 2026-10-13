@@ -1,0 +1,159 @@
+{
+  "archive": {
+    "path": "source322-linux-rust-and-frozen-failure-results.tar.gz",
+    "bytes": 1774429,
+    "sha256": "1e27b93ca6f33d0a488d5a8056f1c908267657c4390ec6ef2fa8254dc0fe284c",
+    "members": 5251
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-linux-rust/raw/oracle-inputs/emacs",
+      "bytes": 30924408,
+      "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-linux-rust/raw/oracle-inputs/emacs.pdmp",
+      "bytes": 17723936,
+      "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-linux-rust/raw/rust/retained-inputs/fixture-images/loadup-488cdb77-988ea42f.pdmp",
+      "bytes": 21843224,
+      "sha256": "d6482893d535410147a13e25488ef5f972645af688607db8132eaf065ba72491"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-linux-rust/raw/rust/retained-inputs/fixture-images/loadup-a9068d4b-988ea42f.pdmp",
+      "bytes": 21846368,
+      "sha256": "94177a41fe6e79fa51cd6bd6a9ee42232ae8dcd8c061ceb558f05e9cad5ec366"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-linux-rust/raw/rust/retained-inputs/fixture-images/loadup-bf98ed66-988ea42f.pdmp",
+      "bytes": 21846360,
+      "sha256": "2c78b1e0e3ce1cc56b134798d1fee94db74315efe11180e42855672fcac5c8b3"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-linux-rust/raw/rust/retained-inputs/libtest",
+      "bytes": 34877448,
+      "sha256": "488cdb778c8b0e7f4b30a084c8f63d36d9a3bd8c8bdd5a4f9fce0e7d008b0238"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-linux-frozen/raw/oracle-inputs/emacs",
+      "bytes": 30924408,
+      "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source322-linux-frozen/raw/oracle-inputs/emacs.pdmp",
+      "bytes": 17723936,
+      "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "source322 complete Linux Rust and failed complete frozen run",
+  "rust": {
+    "status": "passed",
+    "source_commit": "f526af1c9e070c3eda68dd9736067f8cfbf35ea0",
+    "validation_checkout": {
+      "dirty": false,
+      "head": "f526af1c9e070c3eda68dd9736067f8cfbf35ea0"
+    },
+    "unchanged_source_inputs": 565,
+    "raw_library_names_verified": 3082,
+    "library_passed": 3080,
+    "library_ignored": 2,
+    "cargo_passed": {
+      "bins": 61,
+      "integration": 42
+    },
+    "total_passed": 3183,
+    "native_artifact_identity": "passed",
+    "retained_files_verified": 4,
+    "test_binary_sha256": "488cdb778c8b0e7f4b30a084c8f63d36d9a3bd8c8bdd5a4f9fce0e7d008b0238",
+    "summary_sha256": "47aefaf967c6ccbb1f1bb79f8a9f81610ff0bf28f2e82a48b75a24a063393fa6",
+    "qualification": "Full Linux gate records a clean source322 checkout. All 565 frozen runtime inputs match the published commit; every raw library name/verdict, Cargo summary and retained artifact identity is checked. Post-run fixture images do not identify per-test use. Frozen, macOS and performance evidence is separate.",
+    "goal_complete": false,
+    "oracle_inputs_verified": 4,
+    "existing_library_names_preserved": 3082,
+    "added_library_tests": [],
+    "run_id": 38229273200
+  },
+  "frozen": {
+    "status": "failed; exactly one GNU-only JSON-RPC timeout",
+    "run_id": 38229275812,
+    "published_commit": "f526af1c9e070c3eda68dd9736067f8cfbf35ea0",
+    "verified_files": 519,
+    "verified_outcomes": 7928,
+    "matching_outcomes": 7927,
+    "mismatching_outcomes": 1,
+    "successful_processes": 1038,
+    "runner_summaries": {
+      "emaxx": {
+        "total": 7928,
+        "passed": 7670,
+        "failed": 47,
+        "skipped": 211,
+        "unexpected": 0
+      },
+      "oracle": {
+        "total": 7928,
+        "passed": 7669,
+        "failed": 48,
+        "skipped": 211,
+        "unexpected": 1
+      }
+    },
+    "pinned_oracle_sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf",
+    "frozen_manifest": {
+      "path": "compat/oracle_tests_all_linux.txt",
+      "sha256": "ca3cbd63e3dfe6893ef688b6ef7413e1ef2134eabc5c284bfd50a1edf4554be7",
+      "recorded_files": 519,
+      "executed_files": 519,
+      "historical_load_errors": 0,
+      "required_outcomes": 7928,
+      "compared_outcomes": 7928
+    },
+    "summary_sha256": "1aac70fc0af01a8a59bb6c9227fb392a0b6b8157000c65c57fc8570618b8f5d6",
+    "qualification": "All 519 files, 7928 outcomes and 1038 normally exited processes verified. The full run remains FAILED: the GNU Eglot JSON-RPC request expires internally after 10 seconds; Emaxx passes unchanged. No outer process deadline expired. GNU input bytes are retained; Emaxx executable/image bytes are identified only by provenance. A separate observation cannot rewrite this failure. No macOS or performance conclusion.",
+    "oracle_capture": {
+      "format_version": 1,
+      "status": "captured",
+      "source": "/home/runner/work/emaxx/emaxx/emacs",
+      "files": [
+        {
+          "original": "/home/runner/work/emaxx/emaxx/emacs/src/emacs",
+          "artifact": "emacs",
+          "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf",
+          "bytes": 30924408
+        },
+        {
+          "original": "/home/runner/work/emaxx/emaxx/emacs/src/emacs.pdmp",
+          "artifact": "emacs.pdmp",
+          "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae",
+          "bytes": 17723936
+        },
+        {
+          "original": "/home/runner/work/emaxx/emaxx/emacs/src/config.h",
+          "artifact": "config.h",
+          "sha256": "ad0a1b9de2bc321faa4c92425a632884ef2bbdf9fd2917591cb1c833438539a0",
+          "bytes": 115890
+        },
+        {
+          "original": "/home/runner/work/emaxx/emaxx/emacs/src/Makefile",
+          "artifact": "Makefile",
+          "sha256": "cea4d24bdbe0eaf186951ee60a82e6c61f9fd73461afcb13abb06df8b751df03",
+          "bytes": 36149
+        }
+      ],
+      "qualification": "Configured GNU inputs captured before validation; no test result is implied.",
+      "source_commit": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+      "source_tracked_changes": []
+    },
+    "oracle_verification": {
+      "status": "unchanged",
+      "capture_manifest_sha256": "9d701f9f847eea35d34fef0b774d18e07aac8936bfb370a18d9f67aff279c55f",
+      "qualification": "Checks original and retained bytes after validation; does not change gate outcomes.",
+      "files_verified": 4
+    },
+    "goal_complete": false
+  },
+  "qualification": "Linux Rust has 3183 passes/two existing ignores. All 519 frozen files and 7928 outcomes ran; 7927 match. GNU alone fails the Eglot Rust-completion test at its internal JSON-RPC timeout; Emaxx passes. The full frozen run remains failed. A separate unchanged-file observation was dispatched and has no verdict in this archive. Retained GNU inputs and original failures remain intact; no slowdown or verdict substitution is introduced."
+}

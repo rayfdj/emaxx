@@ -200,6 +200,7 @@ fn eval_str(src: &str) -> Value {
 }
 
 fn eval_str_with(interp: &mut Interpreter, src: &str) -> Value {
+    interp.select_symbol_owner();
     let mut env: Env = crate::lisp::types::Env::new();
     let forms = Reader::new(src).read_all().unwrap();
     let mut result = Value::Nil;

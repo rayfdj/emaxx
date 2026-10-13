@@ -2678,9 +2678,11 @@ pub(crate) struct MinibufferRuntimeState {
 /// its clones -- the eval_02 validation run caught exactly that.  The
 /// copier rebuilds each mutable node once (memo per Rc identity, so
 /// sharing *inside* the clone is preserved) and leaves immutable
-/// representations (interned strings, big integers, symbols) shared.
+/// representations (pure strings and big integers) shared. Symbols are
+/// relocated with their mutable name strings into the clone's own obarray.
 #[cfg(test)]
 struct ImageGraphCopier {
+    symbols: std::collections::HashMap<usize, SymbolName>,
     cons: std::collections::HashMap<usize, Value>,
     vectors: std::collections::HashMap<usize, Value>,
     strings: std::collections::HashMap<usize, Value>,
@@ -2703,6 +2705,7 @@ struct ImageGraphCopier {
 impl ImageGraphCopier {
     fn new(record_owner: u32) -> Self {
         Self {
+            symbols: Default::default(),
             cons: Default::default(),
             vectors: Default::default(),
             strings: Default::default(),
@@ -2721,8 +2724,35 @@ impl ImageGraphCopier {
         }
     }
 
+    fn copy_symbol(&mut self, symbol: SymbolName) -> SymbolName {
+        if let Some(copied) = self.symbols.get(&symbol.identity_ptr()) {
+            return *copied;
+        }
+        let copied = if crate::lisp::types::is_uninterned_symbol(symbol.as_str()) {
+            SymbolName::make_uninterned(
+                Value::Nil,
+                crate::lisp::types::visible_symbol_name(symbol.as_str()),
+                crate::lisp::primitives::next_make_symbol_id(),
+            )
+        } else {
+            SymbolName::intern_with_lisp_name(symbol.as_str().to_owned(), Some(Value::Nil))
+        };
+        // Record the object before following its name: a name's properties
+        // can point back to this symbol, or share any other copied object.
+        self.symbols.insert(symbol.identity_ptr(), copied);
+        copied.install_copied_name(self.copy(&symbol.lisp_name()));
+        copied
+    }
+
+    fn copy_symbol_spelling(&mut self, name: &mut String) {
+        if crate::lisp::types::is_uninterned_symbol(name) {
+            *name = self.copy_symbol(SymbolName::intern_str(name)).into_string();
+        }
+    }
+
     fn copy(&mut self, value: &Value) -> Value {
         match value.kind() {
+            Kind::Symbol(symbol) => Value::Symbol(self.copy_symbol(symbol)),
             Kind::Cons(_) => self.copy_cons_chain(value),
             Kind::SymbolWithPos(object) => {
                 if let Some(copied) = self.positioned_symbols.get(&object.identity()) {
@@ -2946,18 +2976,16 @@ impl ImageGraphCopier {
                     copy.set_value(slot, self.copy(&entry));
                 }
                 let test = table.test();
-                if test.standard_test().is_none() {
-                    let name = self.copy(&test.name);
-                    let compare = self.copy(&test.user_compare);
-                    let hash = self.copy(&test.user_hash);
-                    copy.set_test(crate::lisp::alloc::vectors::hash_tables::descriptor(
-                        name,
-                        compare,
-                        hash,
-                        None,
-                        |left, right| left.word() == right.word(),
-                    ));
-                }
+                let name = self.copy(&test.name);
+                let compare = self.copy(&test.user_compare);
+                let hash = self.copy(&test.user_hash);
+                copy.set_test(crate::lisp::alloc::vectors::hash_tables::descriptor(
+                    name,
+                    compare,
+                    hash,
+                    test.standard_test(),
+                    |left, right| left.word() == right.word(),
+                ));
                 copy.set_mutable(table.is_mutable());
                 value
             }
@@ -2986,7 +3014,11 @@ impl ImageGraphCopier {
                         props: span
                             .props
                             .iter()
-                            .map(|(name, prop)| (name.clone(), self.copy(prop)))
+                            .map(|(name, prop)| {
+                                let mut name = name.clone();
+                                self.copy_symbol_spelling(&mut name);
+                                (name, self.copy(prop))
+                            })
                             .collect(),
                     })
                     .collect();
@@ -3298,10 +3330,9 @@ impl LispReachability {
             Kind::BigInteger(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Float(value) => value.mark_bit().is_marked(self.epoch),
             Kind::StringObject(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Symbol(symbol) => {
-                crate::lisp::types::visible_symbol_name(&symbol) == symbol.as_str()
-                    || symbol.mark_bit().is_marked(self.epoch)
-            }
+            // alloc.c:survives_gc_p tests the symbol's mark. A live owner's
+            // obarray marks its symbols; a retired owner's names are not roots.
+            Kind::Symbol(symbol) => symbol.mark_bit().is_marked(self.epoch),
             Kind::Cons(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Vector(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Closure(value) => value.mark_bit().is_marked(self.epoch),
@@ -3429,7 +3460,7 @@ impl LispReachability {
             Kind::Symbol(symbol) => {
                 // alloc.c:mark_objects traces SYMBOL_NAME and its intervals;
                 // the host-side key text is the symbol's too.
-                self.enqueue(symbol.lisp_name_ref());
+                self.enqueue(&symbol.lisp_name());
             }
             Kind::Finalizer(object) => {
                 // alloc.c traces the function in the reached object itself.
@@ -4010,9 +4041,6 @@ impl Interpreter {
         // alloc.c marks doomed functions before its weak-table fixed point.
         prepare_finalizers_in_live_states(self, &mut marked);
 
-        crate::lisp::alloc::vectors::hash_tables::visit_descriptor_roots(|value| {
-            marked.mark(self, value);
-        });
         loop {
             let mut changed = mark_reached_symbol_fields(self, &mut marked);
             let mut index = 0;
@@ -4096,6 +4124,7 @@ impl Interpreter {
         let mut mark = |value: &Value| {
             marked.mark(self, value);
         };
+        self.globals.mark_symbol_roots(&mut mark);
         for value in self.globals.permanent_roots() {
             mark(&value);
         }
@@ -4471,6 +4500,8 @@ impl Interpreter {
                 .all(|terminal| terminal.borrow().device.is_none()),
             "cannot clone an interpreter with live terminal devices"
         );
+        let symbol_owner = crate::lisp::types::symbols::SymbolOwner::fresh();
+        let symbol_scope = symbol_owner.enter();
         let mut clone = self.clone();
         clone.finalizers = crate::lisp::alloc::FinalizerList::default();
         clone.doomed_finalizers = crate::lisp::alloc::FinalizerList::default();
@@ -4478,6 +4509,20 @@ impl Interpreter {
         let mut copier = ImageGraphCopier::new(clone.record_owner);
         {
             let c = &mut copier;
+            // Include canonical symbols without fields, and the allocated
+            // name cells behind the fixed nil/t ABI words.
+            for symbol in self.globals.symbol_owner().names() {
+                c.copy_symbol(symbol);
+            }
+            clone
+                .globals
+                .map_symbols(symbol_owner, |symbol| c.copy_symbol(symbol));
+            for symbol in &mut clone.interned_symbols {
+                *symbol = c.copy_symbol(*symbol);
+            }
+            for name in &mut clone.special_variables {
+                c.copy_symbol_spelling(name);
+            }
             let Kind::Buffer(buffer) = c.copy(&Value::Buffer(self.buffer)).kind() else {
                 unreachable!("a buffer copy has buffer storage")
             };
@@ -4537,23 +4582,30 @@ impl Interpreter {
                 *event = c.copy(event);
             }
             for bindings in clone.buffer_locals.values_mut() {
+                bindings.map_symbols(|symbol| c.copy_symbol(symbol));
                 for value in bindings.values_mut() {
                     *value = c.copy(value);
                 }
             }
             for hooks in clone.buffer_local_hooks.values_mut() {
-                for (_, functions) in hooks.iter_mut() {
-                    for function in functions {
-                        *function = c.copy(function);
-                    }
-                }
+                *hooks = std::mem::take(hooks)
+                    .into_iter()
+                    .map(|(mut name, mut functions)| {
+                        c.copy_symbol_spelling(&mut name);
+                        for function in &mut functions {
+                            *function = c.copy(function);
+                        }
+                        (name, functions)
+                    })
+                    .collect();
             }
             for value in &mut clone.kbd_macro_definition {
                 *value = c.copy(value);
             }
             clone.local_time_zone_rule = c.copy(&clone.local_time_zone_rule.clone());
             clone.globals.map_plists(|value| c.copy(&value));
-            for (_, watchers) in &mut clone.variable_watchers {
+            for (symbol, watchers) in &mut clone.variable_watchers {
+                *symbol = c.copy_symbol(*symbol);
                 for watcher in watchers {
                     *watcher = c.copy(watcher);
                 }
@@ -4641,7 +4693,8 @@ impl Interpreter {
                 c.copy(&clone.alternative_font_family_alist.clone());
             clone.alternative_font_registry_alist =
                 c.copy(&clone.alternative_font_registry_alist.clone());
-            for (_, value) in &mut clone.deferred_defsubst_unbindings {
+            for (name, value) in &mut clone.deferred_defsubst_unbindings {
+                c.copy_symbol_spelling(name);
                 *value = c.copy(value);
             }
             if let Some(error) = &clone.last_thread_error {
@@ -4682,7 +4735,8 @@ impl Interpreter {
                     if let Some(form) = &detail.source_form {
                         detail.source_form = Some(c.copy(form));
                     }
-                    for (_, value) in &mut detail.locals {
+                    for (symbol, value) in &mut detail.locals {
+                        *symbol = c.copy_symbol(*symbol);
                         *value = c.copy(value);
                     }
                 }
@@ -4724,6 +4778,7 @@ impl Interpreter {
                 test.body = c.copy(&test.body.clone());
             }
             for restore in &mut clone.active_special_restores {
+                restore.name = c.copy_symbol(restore.name);
                 if let Some(previous) = &restore.previous {
                     restore.previous = Some(c.copy(previous));
                 }
@@ -4761,28 +4816,46 @@ impl Interpreter {
         // every cached verdict keyed by (or holding) template cells is
         // stale.  All of these repopulate lazily.
         crate::lisp::primitives::forget_buffer_views();
+        *clone.known_symbols_cache.get_mut() = None;
         clone.regexp_syntax_class_cache.get_mut().clear();
         *clone.syntax_segment_cache.get_mut() = None;
         clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
         clone.bc_unwinds.clear();
 
         // Identity-bearing keys acquire new addresses in the test image.
-        // Rehash copied standard tables only after the complete graph is
-        // relocated, preserving cycles and sharing through the copier memo.
+        // Rehash only after the complete graph is relocated, preserving
+        // cycles and sharing through the copier memo. A private template
+        // may also have a user hash callback; invoke its real function on
+        // the copied key. Never retain a template address-derived hash.
+        // The production dumper still rejects user-defined hash tests, as
+        // GNU pdumper.c does. This is the host fixture's graph-copy boundary.
+        clone.inhibit_garbage_collection();
         for table in copier.hash_tables {
-            let Some(test) = table.test().standard_test() else {
-                continue;
-            };
             for (slot, key, _) in table.entries() {
-                table.set_stored_hash(
-                    slot,
-                    crate::lisp::primitives::standard_hash_code(&clone, test, &key, &Env::new()),
-                );
+                let hash = crate::lisp::primitives::hash_table_hash_code(
+                    &mut clone,
+                    table,
+                    &key,
+                    &mut Env::new(),
+                )
+                .expect("copied hash table's function must accept its existing keys");
+                table.set_stored_hash(slot, hash);
             }
             table.rebuild_index();
         }
+        clone.allow_garbage_collection();
 
+        drop(symbol_scope);
+        clone.select_symbol_owner();
         clone
+    }
+
+    /// Select a private editor at the host fixture boundary before reading
+    /// forms or constructing expected Lisp objects. Ordinary interpreter/VM
+    /// execution does not perform this selection on individual operations.
+    #[cfg(test)]
+    pub(crate) fn select_symbol_owner(&self) {
+        self.globals.symbol_owner().select();
     }
 }
 

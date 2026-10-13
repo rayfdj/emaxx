@@ -1,0 +1,44 @@
+{
+  "validated_runtime_commit": "0550a70c8d8b48ae0369e235e570dc484bea6a44",
+  "unchanged_runtime_inputs": 565,
+  "archives": [
+    {
+      "path": "allocated-symbol-identity-draft5-results.tar.gz",
+      "bytes": 1378753,
+      "sha256": "853e72f5c9c0411abe7dc144c5dfcd90eab792446d43e98f4458e735c06e005b",
+      "members": 462
+    },
+    {
+      "path": "allocated-symbol-identity-integration-results.tar.gz",
+      "bytes": 610233,
+      "sha256": "6a9432f1771b3a418abf667fcb374481b56d7766bb6f3714943b9bc3b03db67f",
+      "members": 37
+    },
+    {
+      "path": "source322-eglot-actual-answer-results.tar.gz",
+      "bytes": 379570,
+      "sha256": "44160b4939fa5c4ed950befb2cc9a1ee9bbf2af657ace420de6026e2602b52f3",
+      "members": 26
+    },
+    {
+      "path": "source323-linux-and-macos-rust-results.tar.gz",
+      "bytes": 1934803,
+      "sha256": "6a59707cefb398be3f6233d468a03c3bb76076ad8356c494e5328358a73be7ee",
+      "members": 5293
+    },
+    {
+      "path": "source323-macos-frozen-observations-results.tar.gz",
+      "bytes": 2208806,
+      "sha256": "b547d7cbdc9e03a65f937d51999df2794fa9bd93f1135bd2eaa875e9befcbd9a",
+      "members": 5262
+    },
+    {
+      "path": "source323-macos-terminal-results.tar.gz",
+      "bytes": 742007,
+      "sha256": "04a77819dad2b9cc1a6aa2b85a6c415917598bdf646eb12a5bb024daf7c8a8d4",
+      "members": 11
+    }
+  ],
+  "goal_complete": false,
+  "qualification": "Documentation and evidence publication only. All 565 validated source323 runtime inputs are unchanged. Separate prototype and integration patches remain unapplied to the published runtime. Raw failed and successful runs stay distinct; large binary/image bytes excluded by each manifest remain retained locally."
+}

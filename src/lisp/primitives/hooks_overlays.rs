@@ -27,11 +27,7 @@ pub(crate) fn run_change_hooks(
     // registered.  The function itself never modifies buffer text, so the
     // reentrancy guard above cannot be tripped by it.
     if hook_name == "before-change-functions" && !interp.buffer.borrow().undo_recording_disabled() {
-        thread_local! {
-            static UNDOABLE_CHANGE: crate::lisp::types::SymbolName =
-                crate::lisp::types::SymbolName::intern_str("undo-auto--undoable-change");
-        }
-        let symbol = UNDOABLE_CHANGE.with(Clone::clone);
+        let symbol = cached_symbol!("undo-auto--undoable-change").with(Clone::clone);
         if interp.has_lisp_function_symbol(&symbol) {
             // The callee names its own frame (a name given here was
             // interned again per call).

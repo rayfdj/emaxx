@@ -141,12 +141,11 @@ fn first_difference(left: &[u8], right: &[u8]) -> Option<usize> {
 /// Compiles nine unchanged GNU sources (comp.el itself included) through
 /// both editors and requires byte-identical artifacts.  About eight
 /// minutes on the Linux gate machine; the publication gate refuses
-/// ignored integration tests, and the sibling GNU build it needs is the
-/// oracle every other gate test needs too.
+/// ignored integration tests, and the configured GNU build is the oracle
+/// used by the other gate tests and Emaxx's native compilation ABI.
 #[test]
 fn unchanged_gnu_sources_produce_identical_native_artifacts() {
-    let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let gnu_root = project.join("../emacs");
+    let gnu_root = emaxx::compat::configured_gnu_source_root();
     let gnu = gnu_root.join("src/emacs");
     let subject = PathBuf::from(env!("CARGO_BIN_EXE_emaxx"));
 

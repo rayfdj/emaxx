@@ -1,0 +1,280 @@
+{
+  "archive": {
+    "path": "allocated-symbol-draft16-results.tar.gz",
+    "bytes": 808579,
+    "sha256": "3df65ca8e0324ef4b8412bab89f8b9d842b108039901e8c3d031cfa5b6e8934a",
+    "members": 265
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-gate/fixture-images/loadup-7d097fd3-d44829be.pdmp",
+      "bytes": 21897304,
+      "sha256": "e02bc800b7d3c3b10baa3546659b265fd2a964156018b5a1c04cc45455111986"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-gate/libtest",
+      "bytes": 29962816,
+      "sha256": "7d097fd334297aa9e2a012cc1f20da806ba7dc7caabf418539202ac12b27e7be"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-release/fixture-images/loadup-0505dbb3-d44829be.pdmp",
+      "bytes": 21897264,
+      "sha256": "bd725ab2131e395ddedcf5f41b740467cbe9d03c125e6701cd981b721d9afdb6"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-release/libtest",
+      "bytes": 22896896,
+      "sha256": "0505dbb34a9e955ab069f68cab7c3ea31356000b9175710983b760f6f9e6e061"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-ordinary-retained-inputs/0-emacs",
+      "bytes": 9600848,
+      "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-ordinary-retained-inputs/1-emacs.pdmp",
+      "bytes": 22954264,
+      "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-ordinary-retained-inputs/2-emaxx",
+      "bytes": 13242128,
+      "sha256": "4bd02c507dda49a37353688f920d1aa8875bc4a31513ac838000fe360ca269ad"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-ordinary-retained-inputs/3-emaxx.pdmp",
+      "bytes": 21791800,
+      "sha256": "0730d101445b4de77ba9b9ef5773314d3b4830eebf9c5e9ee82d643aee325292"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-full/full/retained-inputs/fixture-images/loadup-7d097fd3-d44829be.pdmp",
+      "bytes": 21785816,
+      "sha256": "5e2d6d3d078fc993636552bddfc79ea180ccf2f8d34dc810b49768643a65f27f"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-full/full/retained-inputs/libtest",
+      "bytes": 29962816,
+      "sha256": "7d097fd334297aa9e2a012cc1f20da806ba7dc7caabf418539202ac12b27e7be"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-unstarted-groups/retained-inputs/0-emaxx-51c583d2b156da0e",
+      "bytes": 29962816,
+      "sha256": "7d097fd334297aa9e2a012cc1f20da806ba7dc7caabf418539202ac12b27e7be"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "unapplied allocated-symbol draft16; selected and ordinary pass, full fails",
+  "selected": {
+    "status": "strict and 379 controls per profile passed",
+    "source_inputs_verified": 568,
+    "production_unchanged_from_draft15": true,
+    "changed_local_fixtures": [
+      "src/lisp/eval/tests/eval_05.rs",
+      "src/lisp/primitives/tests.rs"
+    ],
+    "patch": {
+      "draft": 16,
+      "base": "265d5ba3405cebe7692560cc29722be65d62237b",
+      "patch": "fields-draft16.patch",
+      "sha256": "a7b15182931a893731e234da1e62b20e12ea75013604c8a74fb27c8a63ca52b5",
+      "source_inputs": 568,
+      "replayed": true,
+      "validation_status": "separate; no inference from replay"
+    },
+    "profiles": {
+      "gate": {
+        "passed": 379,
+        "failed": 0,
+        "ignored": 0,
+        "inventory": 3078,
+        "previous_names_preserved": 3076,
+        "binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-gate/libtest",
+          "sha256": "7d097fd334297aa9e2a012cc1f20da806ba7dc7caabf418539202ac12b27e7be"
+        }
+      },
+      "release": {
+        "passed": 379,
+        "failed": 0,
+        "ignored": 0,
+        "inventory": 3077,
+        "previous_names_preserved": 3075,
+        "binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx/target/release/deps/emaxx-e17fcfe01baaf180",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-release/libtest",
+          "sha256": "0505dbb34a9e955ab069f68cab7c3ea31356000b9175710983b760f6f9e6e061"
+        }
+      }
+    },
+    "gnu_fixture_observations": {
+      "persistence": "(save-ok read-ok)",
+      "obarray-order": "(t t t 3930 \"eval-print-last-sexp\" \"eval-print-last-sexp\")",
+      "obarray-order-varied-names": "nil",
+      "obarray-order-varied-content": "(t t t 4 \"obarray-contract-8b0c0d7f9ebe2e73f0a2c298b9109d3492321c9b0b7a010dca46cbb299f67ced\" \"obarray-contract-42155ee3e0ea7b00c17a72ba8a4d47208402fb4c2a9536e263173d1be5d0f132\")"
+    },
+    "qualification": "Only two local test fixtures change from draft15. EIEIO expected symbols now belong to the tested editor; all four upstream ERT cases and their expected outcomes remain. The dump test now compares every native function name and arity after restoration, instead of the first hash-table entry. GNU demonstrates identical native mappings with different first entries; the two inconclusive preceding observations remain explicit. All prior selected and inventory names remain. Ordinary, complete platform, native/module/terminal and performance validation are separate; ownership/name/id and accounting adapters remain unfinished.",
+    "goal_complete": false
+  },
+  "ordinary": {
+    "status": "passed",
+    "source_inputs_verified": 568,
+    "processes": 42,
+    "comparisons": 21,
+    "actual_modes": [
+      "interpreted",
+      "bytecode",
+      "native"
+    ],
+    "identical_editor_arguments": true,
+    "previous_fifteen_comparisons_preserved": true,
+    "added_obarray_order_comparisons": 3,
+    "added_reader_membership_comparisons": 3,
+    "retained_inputs": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-ordinary-retained-inputs/0-emacs",
+        "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+        "bytes": 9600848
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-ordinary-retained-inputs/1-emacs.pdmp",
+        "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+        "bytes": 22954264
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx/target/release/emaxx",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-ordinary-retained-inputs/2-emaxx",
+        "sha256": "4bd02c507dda49a37353688f920d1aa8875bc4a31513ac838000fe360ca269ad",
+        "bytes": 13242128
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx/target/release/emaxx.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-ordinary-retained-inputs/3-emaxx.pdmp",
+        "sha256": "0730d101445b4de77ba9b9ef5773314d3b4830eebf9c5e9ee82d643aee325292",
+        "bytes": 21791800
+      }
+    ],
+    "qualification": "Unapplied allocated-field draft16: ordinary release executables and each editor's own valid image; actual compiler-mode predicates are checked outside execution. Original wrapper preflight failure remains in the selected archive. This is not complete platform or performance validation.",
+    "goal_complete": false
+  },
+  "full": {
+    "status": "failed; all library names observed across original and diagnostic continuation",
+    "source_inputs": 568,
+    "library_inventory": 3078,
+    "passed": 3061,
+    "failed": 15,
+    "ignored": 2,
+    "groups": [
+      {
+        "group": "eval_01",
+        "origin": "original failed gate",
+        "passed": 386,
+        "failed": 0,
+        "ignored": 0,
+        "log_sha256": "4674dc2dbfa74c1c50b712ee74a9ffbace6393dfbb7e5020adcc0a2626d383c3"
+      },
+      {
+        "group": "eval_02",
+        "origin": "original failed gate",
+        "passed": 303,
+        "failed": 2,
+        "ignored": 0,
+        "log_sha256": "66ad3b68ecdd53b41f50de2ea5c0f3e36a2003d4cba1790c7095c8577460bc71"
+      },
+      {
+        "group": "eval_03",
+        "origin": "separate unexecuted-group continuation",
+        "passed": 321,
+        "failed": 0,
+        "ignored": 0,
+        "log_sha256": "280f1e1912aecd929b62c3e7fa77a3143933e951b6207c05b3c92b36bb64c665"
+      },
+      {
+        "group": "eval_04",
+        "origin": "separate unexecuted-group continuation",
+        "passed": 253,
+        "failed": 1,
+        "ignored": 0,
+        "log_sha256": "13aba09d6b75b1329be0d288c383ba886178cb3cfa6060f603473ca48dd9a068"
+      },
+      {
+        "group": "eval_05",
+        "origin": "separate unexecuted-group continuation",
+        "passed": 350,
+        "failed": 2,
+        "ignored": 0,
+        "log_sha256": "a423ca6d38ea485ea22d0ed15ead8e89fda7ecfbfa62e45eba572c4a487fdd5b"
+      },
+      {
+        "group": "primitives",
+        "origin": "separate unexecuted-group continuation",
+        "passed": 684,
+        "failed": 4,
+        "ignored": 0,
+        "log_sha256": "7ced07d46ff9531ab55d38468177ca3ee6c281381b9ebd7e08b2b1ab6bd7b6b7"
+      },
+      {
+        "group": "compat_runtime",
+        "origin": "separate unexecuted-group continuation",
+        "passed": 86,
+        "failed": 0,
+        "ignored": 0,
+        "log_sha256": "4dfc5ca45a12e52fdc8bf00b8095f2a5dd6f672c8401202268efafa9f84ec5ea"
+      },
+      {
+        "group": "tty",
+        "origin": "separate unexecuted-group continuation",
+        "passed": 62,
+        "failed": 0,
+        "ignored": 2,
+        "log_sha256": "4cc608a955f6810e85c541aa31ace0082241eaaa3451c047bffa9db5efff69c1"
+      },
+      {
+        "group": "batch",
+        "origin": "separate unexecuted-group continuation",
+        "passed": 49,
+        "failed": 1,
+        "ignored": 0,
+        "log_sha256": "07e44d05a90b94e20b4f720a21458c9a2d5884498aa4b2545791f37b20b59223"
+      },
+      {
+        "group": "lightweight",
+        "origin": "separate unexecuted-group continuation",
+        "passed": 567,
+        "failed": 5,
+        "ignored": 0,
+        "log_sha256": "5a6b08fbcb452fc7e77ff4cbfc397a2b8dd1748a5c430c1e6db16bd0548b3134"
+      }
+    ],
+    "failures": [
+      "batch::tests::batch_runtime_applies_the_gnu_locale_startup_policy",
+      "lisp::bytecode::vm::phase_c_tests::executes_switch_fixture",
+      "lisp::eval::tests::eval_02::cconv_closure_convert_captures_simple_free_variable",
+      "lisp::eval::tests::eval_02::cconv_closure_convert_remaps_shadowed_lambda_lifted_variable",
+      "lisp::eval::tests::eval_04::nested_backquote_decrements_unquote_depth",
+      "lisp::eval::tests::eval_05::eieio_method_invocation_order_and_next_arguments_stay_coherent",
+      "lisp::eval::tests::eval_05::eshell_ambiguous_completion_displays_candidates_on_second_attempt",
+      "lisp::native_comp::runtime::tests::escaped_frame_graph_survives_its_owner_and_is_then_reclaimed",
+      "lisp::native_comp::runtime::tests::native_funcall_atan_accepts_an_omitted_or_nil_x",
+      "lisp::native_comp::runtime::tests::native_funcall_fixed_optional_nil_matches_the_c_abi",
+      "lisp::native_comp::runtime::tests::native_funcall_log_accepts_an_omitted_or_nil_base",
+      "lisp::primitives::tests::buffer_undo_list_assignment_preserves_cons_identity",
+      "lisp::primitives::tests::dynamic_buffer_undo_list_binding_restores_native_history",
+      "lisp::primitives::tests::preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior",
+      "lisp::primitives::tests::primitive_undo_consumes_marker_adjustments_with_their_deletion"
+    ],
+    "retained_inputs": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft16-unstarted-groups/retained-inputs/0-emaxx-51c583d2b156da0e",
+        "sha256": "7d097fd334297aa9e2a012cc1f20da806ba7dc7caabf418539202ac12b27e7be",
+        "bytes": 29962816
+      }
+    ],
+    "qualification": "The original full gate stopped after 689 passes and two failures. Its eight unexecuted library groups were run separately with unchanged selectors, source, binary, template policy and deadlines. All 3078 library names are now observed, but no passing full gate or Cargo-stage result is claimed. Four cconv/backquote/EIEIO comparisons visibly involve separate editor owners; batch locale, undo, bytecode switch, native calls, Eshell completion and escaped-frame reclamation also fail and require diagnosis. The later ID-removal prototype has selected coverage only and still fails Eshell. Retained post-run fixture images do not establish which image each individual test used.",
+    "goal_complete": false
+  },
+  "qualification": "The complete cumulative patch replays all 568 inputs from 265d5ba3. GNU-backed fixture corrections preserve same-editor symbol identity and all native names/arities without assuming obarray traversal order. Strict checks and 379 controls pass per profile; 21 ordinary GNU comparisons match in real execution modes. The original full attempt fails after 689 passes/two failures; separate continuation executes the eight unstarted library groups. Combined observed coverage is 3061 passes/15 failures/two existing ignores across all 3078 names; no passing full gate or Cargo result is claimed. Every failure remains unresolved in this patch."
+}

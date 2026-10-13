@@ -1,0 +1,211 @@
+{
+  "archive": {
+    "path": "allocated-symbol-authority-draft11-results.tar.gz",
+    "bytes": 1032578,
+    "sha256": "4d265e53c5e6135d4044b6af979d8cdb927e671b787b4ebd27fd5ae3effda6e2",
+    "members": 237
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft8-retirement-negative/libtest",
+      "bytes": 29655856,
+      "sha256": "9d413608618be453afedee7ff63f4c9dd74509a83c8e5198c426a9d6fbd02f05"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft9-retirement-mark/fixture-images/loadup-579ca43a-d44829be.pdmp",
+      "bytes": 21808776,
+      "sha256": "4b310cf3adf75fcee8095cf540b51fa1a6eb63a2a5da058e982a01f4ed93eb44"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft9-retirement-mark/libtest",
+      "bytes": 29655856,
+      "sha256": "579ca43a700a0fcec682088ada9771ecb18008e6a8f7a3c2cc3f9124aee2b827"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft10-no-id-memo/fixture-images/loadup-7b7ad1c2-d44829be.pdmp",
+      "bytes": 21808768,
+      "sha256": "69b07971a6c5ec1b82f67f7d3687054061a820ebc1fd316fe7336f74c0b36de3"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft10-no-id-memo/libtest",
+      "bytes": 29825840,
+      "sha256": "7b7ad1c2cac3726186ac3d20a4d5ecf8a196837bc8b84d826f6879e5f4575fc6"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft11-release/fixture-images/loadup-789b95f3-d44829be.pdmp",
+      "bytes": 21808888,
+      "sha256": "56d7c8f1607373e929376d59735c874c577531bc4b731ae330f482a31782f021"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft11-release/libtest",
+      "bytes": 22937712,
+      "sha256": "789b95f36167076d6cce7279bd55547e1a3d04ea0a508301b3563c1c776059d1"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft11-gate/fixture-images/loadup-c00ec42a-d44829be.pdmp",
+      "bytes": 21808872,
+      "sha256": "680075af0973f25e70b4743b2a619ac43fa23ca7ec8b390e175cc316eaa9757c"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft11-gate/libtest",
+      "bytes": 29825792,
+      "sha256": "c00ec42a9a056eef9ddc1219776733d611664cd734e7cd071684bf59547a77fb"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "unapplied allocated fields and direct C-slot classification draft11",
+  "audit": {
+    "checkpoint": "unfinished allocated symbol authority and direct C-slot classification draft11",
+    "status": "strict and selected gate/release passed",
+    "source_inputs_verified": 566,
+    "profiles": {
+      "gate": {
+        "passed": 237,
+        "failed": 0,
+        "ignored": 0,
+        "inventory": 3076,
+        "executable": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft11-gate/libtest",
+          "sha256": "c00ec42a9a056eef9ddc1219776733d611664cd734e7cd071684bf59547a77fb"
+        }
+      },
+      "release": {
+        "passed": 237,
+        "failed": 0,
+        "ignored": 0,
+        "inventory": 3075,
+        "executable": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx/target/release/deps/emaxx-e17fcfe01baaf180",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft11-release/libtest",
+          "sha256": "789b95f36167076d6cce7279bd55547e1a3d04ea0a508301b3563c1c776059d1"
+        }
+      }
+    },
+    "previous_controls_retained": 232,
+    "new_controls": [
+      "batch::tests::session_path_does_not_discover_the_gnu_test_tree",
+      "lisp::eval::tests::eval_02::canonical_symbol_weak_keys_follow_the_editors_lifetime",
+      "lisp::eval::tests::eval_02::owned_edebug_symbols_preserve_the_debugged_callers_context",
+      "lisp::eval::tests::eval_02::separately_constructed_editors_own_canonical_symbols",
+      "lisp::eval::tests::eval_02::symbol_function_and_plist_follow_allocated_identity"
+    ],
+    "patch": {
+      "path": "fields-draft11.patch",
+      "sha256": "1c440a7e8d62684dd8a0b5351b6f58a8ceaf4c7eef7fef5f18366f9754357676",
+      "base": "265d5ba3405cebe7692560cc29722be65d62237b",
+      "replayed_source_inputs": 566
+    },
+    "preserved_failures": [
+      {
+        "directory": "fields-draft8-retirement-negative",
+        "stage": "focused",
+        "exit_code": 101,
+        "detail": "The weak key from a retired editor remains because canonical names bypass the actual symbol mark; both positive parked-owner and negative lifetime requirements are preserved.",
+        "source_sha256": "d61baaa9c7b3e335ab9c2cb0ae9f166e557309be9058fb9bca0cdfaf6d8956cf",
+        "receipt_sha256": "c15a20be9040621c101f8919b96c7145bf9082b32d571097ee9b689870a8d256",
+        "stdout_sha256": "397e5ba470019a6fb39d36a6899901d2a93cbfc43c3a29faec4f029e2b9a6949",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "directory": "fields-draft1-function-plist",
+        "stage": "clippy",
+        "exit_code": 101,
+        "detail": "Two collapsible_if findings; no tests executed. Fixed with equivalent let chains, without lint suppressions.",
+        "source_sha256": "f82570bc5fd58a3384a6f7194017f149312ff0cb371d560dfb1b51b42fd95026",
+        "receipt_sha256": "fb1aa78eecd7196f022b7537b737a9af70a1bbe86a84cb28be2048b7217acc66",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256": "a776f44c8b0117bfbc0294916e1eb82054277032b6ce63945864dc6a43825740"
+      },
+      {
+        "directory": "fields-draft2-function-plist",
+        "stage": "focused",
+        "exit_code": 101,
+        "detail": "229 passes and four failures: cross-editor expected symbol identity, shared-object field isolation, a relocated char-table purpose, and lookup in the new owner rather than the original host owner.",
+        "source_sha256": "1b4cee6754e4c501d198a6a0b7e92e264982c858d59bd3fc9c3cc6303c4c8aa8",
+        "receipt_sha256": "28ac067ebd98131e00f72f08a5ebeb825a36d03d46f3367ba4b97c89f52f3d6e",
+        "stdout_sha256": "6e7ab51ed3edba2f5929a1a3da32a0ee38f06b0bd26bdabd11edeebc13bac0af",
+        "stderr_sha256": "a0d15a6654bc2b255f34ed58e902abe0e6fdf182aec8bd07538ad3f6f0660e8c"
+      },
+      {
+        "directory": "fields-draft4-edebug-negative",
+        "stage": "focused",
+        "exit_code": 101,
+        "detail": "A later editor loses its debugged lexical context because edebug-entered was cached by process-wide id.",
+        "source_sha256": "d61abd9452c231287ac07a365a5075a491983d5c5dfba44deb6097189c740f0b",
+        "receipt_sha256": "29006c564de6e6290297a7f952cc421d1142ba320cd68660290542393cf7aafa",
+        "stdout_sha256": "26ee21dc0695b02ad7a804cf3b8605c878781dd784b24ee215bb525561b04a4b",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "directory": "fields-draft6-allocated-payload",
+        "stage": "focused",
+        "exit_code": 101,
+        "detail": "233 pass and two failures: copying enumeration metadata no longer copies allocated fields, and the weak-table liveness predicate always treats canonical symbols as live. The corrected controls copy an actual independent image and inspect the actual GC traversal, retaining all prior semantic assertions.",
+        "source_sha256": "cfdbbe4ac70e8f4e57c6258f3f78d5b8301ac784fb41322cf4991cd1cfa5073a",
+        "receipt_sha256": "594c8400339f8e8fa4c967f4900ba34d10d3af81413ccdf697ee3fffd46d567d",
+        "stdout_sha256": "6979daa4bf1da229564acd4b750d3aefbb215edcdfe8b6ed21e0295e47f0531c",
+        "stderr_sha256": "a0d15a6654bc2b255f34ed58e902abe0e6fdf182aec8bd07538ad3f6f0660e8c"
+      }
+    ],
+    "original_failed_tests": [
+      "lisp::eval::tests::eval_01::load_runs_real_gnu_after_load_forms_after_unbinding_file_context",
+      "lisp::eval::tests::eval_02::reachable_uninterned_symbol_fields_survive_another_interpreters_collection",
+      "lisp::primitives::pdumper::tests::image_round_trips_buffers_markers_finalizers_and_nilled_frames",
+      "lisp::types::tests::symbol_ids_resolve_across_serialized_host_threads_and_expire_with_the_object"
+    ],
+    "gnu_predicates": 9,
+    "physical_sizes": {
+      "allocated_symbol_bytes": 72,
+      "remaining_metadata_bytes": 24,
+      "combined_populated_symbol_bytes": 96,
+      "previous_combined_populated_symbol_bytes": 96
+    },
+    "qualification": "All previous inventory names and selected controls remain. Payloads and flags live on allocated symbols and GC follows their actual fields. Weak references now use the symbol mark, preserving parked owners and releasing a retired owner. Ordinary C-slot classification uses an existing state-byte bit instead of a process-lifetime thread-local ID hash set; its name-classification fallback remains until dedicated slots use the actual allocated redirect. No added field or physical size reduction is claimed. The existing startup fixture uses the configured GNU source root without relaxing its assertions. Previous failed attempts remain. The draft7 ordinary 15 comparisons are historical; these newer source inputs still need their own full ordinary/platform and performance validation. Dense IDs, enumeration, weak metadata cleanup, localized and forwarded adapters, host text, descriptor reclamation, physical accounting, final audit and performance acceptance remain open",
+    "goal_complete": false
+  },
+  "earlier_ordinary_audit": {
+    "status": "passed",
+    "source_inputs_verified": 566,
+    "processes": 30,
+    "comparisons": 15,
+    "actual_modes": [
+      "interpreted",
+      "bytecode",
+      "native"
+    ],
+    "identical_editor_arguments": true,
+    "previous_nine_comparisons_preserved": true,
+    "added_graph_comparisons": 3,
+    "added_allocated_field_comparisons": 3,
+    "retained_inputs": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft7-ordinary-retained-inputs/0-emacs",
+        "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+        "bytes": 9600848
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft7-ordinary-retained-inputs/1-emacs.pdmp",
+        "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+        "bytes": 22954264
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx/target/release/emaxx",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft7-ordinary-retained-inputs/2-emaxx",
+        "sha256": "9a216a128ca66abaf128249f0f9a8b873e2c51d2a200728ccb827b21d5ad966a",
+        "bytes": 13265344
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx/target/release/emaxx.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/allocated-symbols-2026-10-10/fields-draft7-ordinary-retained-inputs/3-emaxx.pdmp",
+        "sha256": "02c9507ff9206cf3dad4c01f570adc4ec173e58e0b859b8f0542279cba40f378",
+        "bytes": 21782960
+      }
+    ],
+    "qualification": "Unapplied allocated-field draft7: ordinary release executables and each editor's own valid image; actual compiler-mode predicates are checked outside execution. Original wrapper preflight failure remains in the selected archive. This is not complete platform or performance validation.",
+    "goal_complete": false
+  },
+  "qualification": "Selected gate/release checks cover the exact newest draft; the fifteen ordinary GNU comparisons belong to draft7 and do not certify subsequent changes. Earlier draft1-7 failures remain in the preceding portable package. The retirement negative and all subsequent attempts are retained here. Full architecture, validation, physical accounting and performance requirements remain open."
+}

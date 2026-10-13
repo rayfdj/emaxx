@@ -1,7 +1,48 @@
 # Symbol ownership in private image copies — 10 October 2026
 
-This is **unfinished, separately packaged source319 draft6**, not an applied
-runtime change. Main `265d5ba3` contains source318 through merged PR82. The
+Source323's validation is closed as of 13 October: **3,183 Linux and 3,171 macOS
+Rust passes**, two existing ignores per platform, exact native artifacts,
+**7,928 matching Linux frozen outcomes** and **226 passing terminal scenarios /
+686 comparisons**. The original macOS frozen run remains failed; separately
+identified observations obtain the actual missing GNU answers and cover all
+519 files, retaining six unchanged diagnostic differences. Source322's separate
+Eglot observation also obtains all 52 matching outcomes without rewriting its
+original failed run. The [current handover](../HANDOVER.md) links every archive
+and explains the evidence limits. Publication and the authorized PR84 merge
+are next; the full goal remains incomplete.
+
+The separate allocated-field/identity implementation now passes its complete
+local Rust gate (3,178 passes/two existing ignores), 397 controls per profile and
+28 ordinary comparisons. Its integration delta preserves source323's native
+fixture and passes fresh strict checks and all 39 integration tests. It remains
+unapplied to the published runtime and has no measured performance result. See
+the [architectural continuation](runtime-representation-symbol-payload-authority-draft.md).
+
+## Historical source321 and image-copy continuation
+
+The current task branch carries **source321**, the actual-mark repair for weak
+references to a retired editor's symbols. Its new control retains parked-owner
+survival and then requires removal after retirement. Strict checks and 235
+controls per profile pass, along with twelve ordinary GNU comparisons. An
+existing startup fixture now uses the configured GNU source root, preserving its
+original assertions; actual GNU runs confirm the environment-independence rule.
+See the [current handover](../HANDOVER.md) and
+[closed selected evidence](handover/2026-10-09-symbol-fields/source321-owner-retirement-selected-results-manifest.json).
+Complete platform validation is pending. PR84 is not yet merged; the full goal
+and performance criterion remain open. Earlier continuations below are historical.
+
+The previous task-branch continuation was **source320**, which repairs an observed
+owner-specific debugger-context regression in source319. See
+[its selected evidence](handover/2026-10-09-symbol-fields/source320-symbol-owner-fix-selected-results-manifest.json)
+and [the current handover](../HANDOVER.md). Source319's complete Linux gate and
+frozen results are now audited, but its timing pilot regressed 4.93% versus main.
+The macOS frozen attempt remains failed, with the separate longer Tramp answers
+and missing original executable bytes documented. The newer
+[allocated-field prototype](runtime-representation-symbol-payload-authority-draft.md)
+is separate and unapplied.
+
+This is **unfinished source319 draft6**, now applied on the validation branch.
+Main `55b109e8` contains source318 and the portable draft through merged PR83. The
 [portable patch and selected evidence](handover/2026-10-09-symbol-fields/source319-symbol-image-draft-results-manifest.json)
 continue the [editor ownership draft](runtime-representation-symbol-owner-draft.md).
 The patch independently reproduces all **565 source inputs and modes** from
@@ -62,9 +103,13 @@ draft6 manifest. The [completed ordinary evidence](handover/2026-10-09-symbol-fi
 verifies **24 successful processes / twelve matching comparisons**: every
 previous comparison plus the new graph fixture in interpreted, bytecode and
 native modes. Both editors receive identical arguments and use their own valid
-images; actual compiler-mode predicates pass. The complete macOS Rust gate is
-now running. Consult `image-draft6-continuation2-state.json` and raw receipts;
-the complete gate is not certified by the selected and ordinary results.
+images; actual compiler-mode predicates pass. The [complete macOS Rust gate](handover/2026-10-09-symbol-fields/source319-macos-rust-results-manifest.json)
+now passes **3,169 tests / two existing ignores**, including native artifact
+identity. Every raw library name/verdict, Cargo result, all 565 source inputs
+and four retained executable/image files are checked. Its coordinator has exited.
+The first macOS frozen launcher stopped before comparisons because its draft
+was uncommitted; the unchanged clean-tree requirement remains in force.
+Commit-addressable frozen, Linux and timing validation remain pending. These results do not certify the later field prototype.
 
 Private `Interpreter::new` still inherits the selected owner. Value, function,
 plist and alias fields still live in per-interpreter cells. Direct allocated

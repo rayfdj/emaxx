@@ -394,6 +394,7 @@ pub(crate) fn eval_lisp(
     environment: &mut Env,
     source: &str,
 ) -> Result<Value, LispError> {
+    interpreter.select_symbol_owner();
     let forms = Reader::new(source).read_all()?;
     let mut result = Value::Nil;
     for form in forms {
@@ -410,6 +411,7 @@ pub(crate) fn call_lisp_function(
     name: &str,
     arguments: &[Value],
 ) -> Result<Value, LispError> {
+    interpreter.select_symbol_owner();
     let function = interpreter.lookup_function(name, environment)?;
     interpreter.call_function_value(function, Some(name), arguments, environment)
 }

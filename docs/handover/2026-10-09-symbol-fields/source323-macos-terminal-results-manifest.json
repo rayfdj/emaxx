@@ -1,0 +1,38 @@
+{
+  "archive": {
+    "path": "source323-macos-terminal-results.tar.gz",
+    "bytes": 742007,
+    "sha256": "04a77819dad2b9cc1a6aa2b85a6c415917598bdf646eb12a5bb024daf7c8a8d4",
+    "members": 11
+  },
+  "excluded_large_inputs": [],
+  "goal_complete": false,
+  "checkpoint": "source323 complete ordinary macOS terminal validation",
+  "audit": {
+    "status": "passed",
+    "exit_code": 0,
+    "runtime_commit": "0550a70c8d8b48ae0369e235e570dc484bea6a44",
+    "source_inputs_verified": 565,
+    "execution_inputs_verified": 11,
+    "selected_scenarios": 226,
+    "started_scenarios": 226,
+    "selected_comparisons": 686,
+    "matching_comparisons": 686,
+    "divergent_labels": [],
+    "unexecuted_labels": [],
+    "screen_comparisons": 658,
+    "filesystem_comparisons": 28,
+    "full_screen_differences": [],
+    "elapsed_seconds": 3432.907201125,
+    "evidence": {
+      "source323-terminal/command.json": "75c356194452a5fa0d85791d957a900b39e756900f788e16acee8e6b9300a731",
+      "source323-terminal/state.json": "fbe8e887f4e505f756c9b252572657809e96f630a439d66efbf4382481d18c6a",
+      "source323-terminal/run.log": "52942150f73feec1b80c0bfb786e4085dcf94335d4c4f1526e77c8631eb14e1c",
+      "source323-terminal/screens.jsonl": "42a82339660183737ae3ee3496f23ab040aac19fc53714b995642c2772318221",
+      "audit_source323_terminal.py": "492058832d5c32c4b1b60d51bec09c5c06c830325d0ea700a935a1c58493682c"
+    },
+    "qualification": "One ordinary terminal attempt, with the original 226-scenario inventory, actions, comparisons and deadlines. The observer retains all 24 rows, attributes and cursor coordinates independently of the harness verdict. This validates the published source323 runtime only; the separate allocated-field/identity prototype and full-goal performance acceptance remain separate. Every full-screen difference remains listed independently of the unchanged ordinary harness verdict.",
+    "goal_complete": false
+  },
+  "qualification": "One complete passing ordinary run: all226 original scenarios,686 comparison labels,658 full screen snapshots and28 filesystem comparisons. Every captured row, cell attribute and cursor coordinate also matches, independently of the unchanged harness verdict. Original inventory/actions/deadlines are retained. The copied Emaxx executable/image identities match the original failed frozen subject, whose actual bytes are retained separately. This validates source323 only, not the unapplied symbol-field integration or performance completion."
+}

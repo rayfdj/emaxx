@@ -157,8 +157,13 @@ pub(crate) struct SymbolCellSnapshot {
     pub(crate) flags: u8,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct SymbolCells {
+    /// Canonical symbols belonging to this editor, retained while parked.
+    symbols: crate::lisp::types::symbols::SymbolOwner,
+    /// This editor's Qsymbol reference for the hot debugger flag probe.
+    /// A process-wide id would name an earlier editor's object.
+    edebug_entered: SymbolName,
     /// Interned symbols, indexed by id.
     cells: Vec<SymbolCell>,
     /// Uninterned symbols that acquired a cell, by id: rare, and their ids
@@ -182,6 +187,25 @@ pub(crate) struct SymbolCells {
     /// Temporary ordered enumeration, like values/functions/plists. No
     /// name or target copies; remove when the obarray owns enumeration.
     alias_order: Vec<u32>,
+}
+
+impl Default for SymbolCells {
+    fn default() -> Self {
+        Self {
+            symbols: Default::default(),
+            edebug_entered: SymbolName::intern_str("edebug-entered"),
+            cells: Vec::new(),
+            uninterned: HashMap::default(),
+            order: Vec::new(),
+            bound: 0,
+            function_order: Vec::new(),
+            defined_functions: 0,
+            plist_order: Vec::new(),
+            plists: 0,
+            aliases: 0,
+            alias_order: Vec::new(),
+        }
+    }
 }
 
 impl SymbolCells {
@@ -224,6 +248,83 @@ impl SymbolCells {
             cell.symbol = Some(*symbol);
         }
         cell
+    }
+
+    pub(crate) fn mark_symbol_roots(&self, mark: &mut dyn FnMut(&Value)) {
+        self.symbols.mark_roots(mark);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn symbol_owner(&self) -> crate::lisp::types::symbols::SymbolOwner {
+        self.symbols.clone()
+    }
+
+    /// Reindex the migration tables for an independent image's new symbols.
+    /// Payloads are still copied by the existing graph walk. The temporary
+    /// id map is used only while cloning, never by ordinary field access.
+    #[cfg(test)]
+    pub(crate) fn map_symbols(
+        &mut self,
+        owner: crate::lisp::types::symbols::SymbolOwner,
+        mut copy: impl FnMut(SymbolName) -> SymbolName,
+    ) {
+        self.edebug_entered = copy(self.edebug_entered);
+        let active_order = |order: &[u32], position: fn(&SymbolCell) -> Option<NonZeroU32>| {
+            order
+                .iter()
+                .enumerate()
+                .filter_map(|(index, id)| {
+                    self.cell(*id)
+                        .and_then(position)
+                        .filter(|position| position.get() as usize == index + 1)
+                        .map(|_| *id)
+                })
+                .collect::<Vec<_>>()
+        };
+        let orders = [
+            active_order(&self.order, |cell| cell.position),
+            active_order(&self.function_order, |cell| cell.function_position),
+            active_order(&self.plist_order, |cell| cell.plist_position),
+            active_order(&self.alias_order, |cell| cell.alias_position),
+        ];
+        let mut ids = HashMap::with_hasher(FnvBuildHasher::default());
+        let old_cells = std::mem::take(&mut self.cells);
+        let old_uninterned = std::mem::take(&mut self.uninterned);
+        for mut cell in old_cells.into_iter().chain(old_uninterned.into_values()) {
+            let Some(symbol) = cell.symbol else {
+                continue;
+            };
+            let copied = copy(symbol);
+            ids.insert(symbol.id(), copied.id());
+            cell.symbol = Some(copied);
+            if let Some(alias) = cell.alias() {
+                cell.payload = SymbolPayload { alias: copy(alias) };
+            }
+            *self.cell_mut(&copied) = cell;
+        }
+        let [values, functions, plists, aliases] =
+            orders.map(|order| order.into_iter().map(|id| ids[&id]).collect::<Vec<_>>());
+        for (kind, order) in [&values, &functions, &plists, &aliases]
+            .into_iter()
+            .enumerate()
+        {
+            for (index, id) in order.iter().enumerate() {
+                let position = NonZeroU32::new(u32::try_from(index + 1).expect("symbol order"));
+                let cell = self.existing_cell_mut(*id).expect("copied symbol cell");
+                match kind {
+                    0 => cell.position = position,
+                    1 => cell.function_position = position,
+                    2 => cell.plist_position = position,
+                    3 => cell.alias_position = position,
+                    _ => unreachable!(),
+                }
+            }
+        }
+        self.order = values;
+        self.function_order = functions;
+        self.plist_order = plists;
+        self.alias_order = aliases;
+        self.symbols = owner;
     }
 
     // --- value cell -----------------------------------------------------
@@ -742,9 +843,9 @@ impl SymbolCells {
             .is_some_and(|cell| cell.flags & flag != 0)
     }
 
-    /// `has_flag' by a symbol's id.
-    pub(crate) fn has_flag_id(&self, id: u32, flag: u8) -> bool {
-        self.cell(id).is_some_and(|cell| cell.flags & flag != 0)
+    /// The actual owner-specific flag, without a name or TLS lookup.
+    pub(crate) fn edebug_is_special(&self) -> bool {
+        self.has_flag(&self.edebug_entered, SPECIAL)
     }
 
     pub(crate) fn has_flag_by_name(&self, name: &str, flag: u8) -> bool {

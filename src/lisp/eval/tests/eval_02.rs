@@ -5907,6 +5907,165 @@ fn function_get_autoloads_before_reading_declared_property() {
 }
 
 #[test]
+fn owned_edebug_symbols_preserve_the_debugged_callers_context() {
+    let _outer = crate::lisp::types::symbols::EditorSymbolScope::enter();
+    let mut first = Interpreter::new();
+    let env = crate::lisp::types::Env::new();
+    first.push_backtrace_frame(Value::symbol("message"), &[]);
+    first.capture_current_backtrace_context(Some("message"), &env, None);
+    assert!(
+        first
+            .backtrace_frames
+            .last()
+            .unwrap()
+            .lexical_context()
+            .is_none()
+    );
+
+    let _inner = crate::lisp::types::symbols::EditorSymbolScope::enter();
+    let mut second = Interpreter::new();
+    eval_str_with(&mut second, "(defvar edebug-entered t)");
+    second.push_backtrace_frame(Value::symbol("message"), &[]);
+    second.capture_current_backtrace_context(Some("message"), &env, None);
+    assert!(
+        second
+            .backtrace_frames
+            .last()
+            .unwrap()
+            .lexical_context()
+            .is_some(),
+        "a later editor must retain the lexical context of its debugged call"
+    );
+    second.pop_backtrace_frame();
+    eval_str_with(&mut second, "(setq edebug-entered nil)");
+    second.push_backtrace_frame(Value::symbol("message"), &[]);
+    second.capture_current_backtrace_context(Some("message"), &env, None);
+    assert!(
+        second
+            .backtrace_frames
+            .last()
+            .unwrap()
+            .lexical_context()
+            .is_none()
+    );
+}
+
+#[test]
+fn canonical_symbol_weak_keys_follow_the_editors_lifetime() {
+    fn insert_from_parked_editor(collector: &mut Interpreter) {
+        let table = eval_str_with(collector, "retired-symbol-table");
+        let _scope = crate::lisp::types::symbols::EditorSymbolScope::enter();
+        let mut owner = Interpreter::new();
+        owner.set_variable("shared-weak-table", table, &mut Env::new());
+        eval_str_with(
+            &mut owner,
+            "(puthash 'retired-canonical-owner (vector 73) shared-weak-table)",
+        );
+        // The parked editor's obarray is a real root even while a different
+        // editor performs the collection. Preserve its key and value.
+        assert_eq!(
+            eval_str_with(
+                collector,
+                "(progn (garbage-collect) (hash-table-count retired-symbol-table))",
+            ),
+            Value::Integer(1)
+        );
+        assert_eq!(
+            eval_str_with(
+                &mut owner,
+                "(aref (gethash 'retired-canonical-owner shared-weak-table) 0)",
+            ),
+            Value::Integer(73)
+        );
+    }
+
+    let mut collector = Interpreter::new();
+    eval_str_with(
+        &mut collector,
+        "(setq retired-symbol-table (make-hash-table :test 'eq :weakness 'key))",
+    );
+    insert_from_parked_editor(&mut collector);
+    // The creator frame, editor and obarray owner are all gone. Only the weak
+    // key remains; clear stale conservative stack slots before collecting.
+    crate::lisp::alloc::clobber_stack();
+    assert_eq!(
+        eval_str_with(
+            &mut collector,
+            "(progn (garbage-collect) (garbage-collect)
+                    (hash-table-count retired-symbol-table))",
+        ),
+        Value::Integer(0),
+        "a retired editor's canonical symbols are not permanent weak roots"
+    );
+}
+
+#[test]
+fn image_clone_symbols_own_names_and_preserve_their_cycles() {
+    let mut source = Interpreter::new();
+    let original = eval_str_with(
+        &mut source,
+        "(progn
+           (setq image-symbol-owner 'image-symbol-owner)
+           (put-text-property 0 1 'owner image-symbol-owner
+                              (symbol-name image-symbol-owner))
+           (setplist image-symbol-owner (list 'name (symbol-name image-symbol-owner)))
+           image-symbol-owner)",
+    );
+    let mut clone = source.deep_clone_image();
+    let copied = eval_str_with(&mut clone, "image-symbol-owner");
+    assert_ne!(original.word(), copied.word(), "independent editor symbols");
+    assert_eq!(
+        eval_str_with(
+            &mut clone,
+            "(list (eq image-symbol-owner 'image-symbol-owner)
+                   (eq (get-text-property 0 'owner (symbol-name image-symbol-owner))
+                       image-symbol-owner)
+                   (eq (get image-symbol-owner 'name) (symbol-name image-symbol-owner)))"
+        ),
+        Value::list([Value::T, Value::T, Value::T])
+    );
+    eval_str_with(
+        &mut clone,
+        "(put-text-property 0 1 'owner 'changed (symbol-name image-symbol-owner))",
+    );
+    assert_eq!(
+        eval_str_with(
+            &mut source,
+            "(eq (get-text-property 0 'owner (symbol-name image-symbol-owner))
+                 image-symbol-owner)"
+        ),
+        Value::T
+    );
+}
+
+#[test]
+fn image_clone_symbol_graph_preserves_private_keys_and_bindings() {
+    // An image template cannot contain loaded native relocation state. Load
+    // the unchanged GNU early Lisp owners needed by with-current-buffer.
+    let mut source = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    eval_str_with(
+        &mut source,
+        include_str!("../../../../tests/fixtures/symbol-image-graph-setup.el"),
+    );
+    let check = include_str!("../../../../tests/fixtures/symbol-image-graph-check.el");
+    // The identical setup/check files yield seventeen true predicates in
+    // ordinary GNU Emacs. These cover identities, not printed spellings.
+    let expected = Value::list(std::iter::repeat_n(Value::T, 17));
+    assert_eq!(eval_str_with(&mut source, check), expected);
+    let original = eval_str_with(&mut source, "image-graph-private");
+    let mut clone = source.deep_clone_image();
+    let copied = eval_str_with(&mut clone, "image-graph-private");
+    assert_ne!(original.word(), copied.word(), "private symbol relocation");
+    eval_str_with(&mut clone, "(garbage-collect)");
+    assert_eq!(eval_str_with(&mut clone, check), expected);
+    eval_str_with(
+        &mut clone,
+        "(put-text-property 0 1 image-graph-property 'changed image-graph-string)",
+    );
+    assert_eq!(eval_str_with(&mut source, check), expected);
+}
+
+#[test]
 fn symbol_plists_preserve_clone_sharing_and_interpreter_isolation() {
     let mut source = Interpreter::new();
     eval_str_with(
@@ -5937,6 +6096,7 @@ fn symbol_plists_preserve_clone_sharing_and_interpreter_isolation() {
         Value::list([Value::T, Value::Integer(7), Value::Integer(11)])
     );
     eval_str_with(&mut clone, "(setplist 'plist-copy-owner nil)");
+    source.select_symbol_owner();
     assert!(!source.symbol_plist("plist-copy-owner").is_nil());
 }
 
