@@ -338,9 +338,7 @@ fn graph_matches(
             if x.as_str() != y.as_str() && name(&x) != name(&y) {
                 return Err(format!("symbol differs: {x:?} vs {y:?}"));
             }
-            if (x.id() & crate::lisp::types::UNINTERNED_SYMBOL_ID_BIT != 0)
-                != (y.id() & crate::lisp::types::UNINTERNED_SYMBOL_ID_BIT != 0)
-            {
+            if x.cell().is_uninterned() != y.cell().is_uninterned() {
                 return Err(format!("internedness differs: {x:?} vs {y:?}"));
             }
             Ok(())
@@ -1313,6 +1311,7 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let source_syntax_table = interp
         .buffer_syntax_table_id(source_id)
         .expect("the buffer set a syntax table");
+    let source_syntax = printed(&mut interp, &Value::CharTable(source_syntax_table));
     let source_finalizers = interp.finalizer_objects();
     let terminal = Value::Terminal(*interp.terminals.first().expect("initial terminal"));
     let roots = vec![(RootSlot::LoadPath, graph), (RootSlot::QuitFlag, terminal)];
@@ -1388,9 +1387,16 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
         .buffer_syntax_table_id(source_id)
         .expect("restored syntax table");
     assert_ne!(loaded_syntax_table, source_syntax_table);
+    // The purpose symbol relocates to the target editor. Check that actual
+    // identity, then compare the complete table payload through its printer.
+    assert_eq!(loaded_syntax_table.purpose(), Value::symbol("syntax-table"));
+    assert_ne!(
+        loaded_syntax_table.purpose().word(),
+        source_syntax_table.purpose().word()
+    );
     assert_eq!(
-        Value::CharTable(loaded_syntax_table),
-        Value::CharTable(source_syntax_table)
+        printed(&mut target, &Value::CharTable(loaded_syntax_table)),
+        source_syntax
     );
     let mark_marker = target
         .buffer_mark_marker_id(source_id)

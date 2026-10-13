@@ -73,6 +73,20 @@ const KEY_NAMES: &[&str] = &[
     "category-table",
     "case-fold-search",
     "undo-auto--undoable-change",
+    "overriding-terminal-local-map",
+    "last-command",
+    "real-last-command",
+    "keyboard-translate-table",
+    "last-repeatable-command",
+    "prefix-arg",
+    "last-prefix-arg",
+    "defining-kbd-macro",
+    "last-kbd-macro",
+    "system-key-alist",
+    "window-system",
+    "default-minibuffer-frame",
+    "input-decode-map",
+    "local-function-key-map",
 ];
 
 struct Symbols {
@@ -130,7 +144,6 @@ impl Default for SymbolOwner {
 }
 
 impl SymbolOwner {
-    #[cfg(test)]
     pub(crate) fn fresh() -> Self {
         Self(Rc::default())
     }
@@ -140,15 +153,20 @@ impl SymbolOwner {
         EditorSymbolScope(ACTIVE.with_borrow_mut(|active| active.replace(Rc::clone(&self.0))))
     }
 
-    /// Private host-side image fixtures retain the selected editor while
-    /// inspecting returned Lisp objects. Public entries have their own
-    /// enclosing scope, which restores the caller on exit.
-    #[cfg(test)]
+    /// Select at editor construction or a complete host fixture boundary.
+    /// Public entries retain an enclosing scope that restores their caller.
     pub(crate) fn select(&self) {
         ACTIVE.with_borrow_mut(|active| *active = Some(Rc::clone(&self.0)));
     }
 
-    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.0.names.borrow().len()
+    }
+
+    pub(crate) fn contains(&self, name: &str) -> bool {
+        self.0.names.borrow().contains(name)
+    }
+
     pub(crate) fn names(&self) -> Vec<SymbolName> {
         self.0.names.borrow().iter().map(|entry| entry.0).collect()
     }
@@ -224,16 +242,41 @@ impl SymbolKey {
         panic!("undeclared editor symbol key");
     }
 
+    fn get(self, symbols: &Symbols) -> SymbolName {
+        symbols.keys[self.0].get().unwrap_or_else(|| {
+            let symbol = SymbolName::intern_str(KEY_NAMES[self.0]);
+            symbols.keys[self.0].set(Some(symbol));
+            symbol
+        })
+    }
+
     pub(crate) fn with<R>(self, body: impl FnOnce(&SymbolName) -> R) -> R {
-        let symbol = with_current(|symbols| {
-            symbols.keys[self.0].get().unwrap_or_else(|| {
-                let symbol = SymbolName::intern_str(KEY_NAMES[self.0]);
-                symbols.keys[self.0].set(Some(symbol));
-                symbol
-            })
-        });
+        let symbol = with_current(|symbols| self.get(symbols));
         body(&symbol)
     }
+}
+
+/// Qsymbol references belong to each editor, like GNU's process references.
+/// The existing terminal forwarding adapter consumes these until keyboard
+/// bindings use an allocated Lisp_Fwd redirect. No symbol-id lookup is needed.
+pub(crate) fn is_keyboard_variable(symbol: &SymbolName) -> bool {
+    const KEYS: [SymbolKey; 14] = [
+        SymbolKey::new("overriding-terminal-local-map"),
+        SymbolKey::new("last-command"),
+        SymbolKey::new("real-last-command"),
+        SymbolKey::new("keyboard-translate-table"),
+        SymbolKey::new("last-repeatable-command"),
+        SymbolKey::new("prefix-arg"),
+        SymbolKey::new("last-prefix-arg"),
+        SymbolKey::new("defining-kbd-macro"),
+        SymbolKey::new("last-kbd-macro"),
+        SymbolKey::new("system-key-alist"),
+        SymbolKey::new("window-system"),
+        SymbolKey::new("default-minibuffer-frame"),
+        SymbolKey::new("input-decode-map"),
+        SymbolKey::new("local-function-key-map"),
+    ];
+    with_current(|symbols| KEYS.iter().any(|key| key.get(symbols) == *symbol))
 }
 
 fn mark_names(symbols: &Symbols, mark: &mut dyn FnMut(&Value)) {
@@ -243,6 +286,11 @@ fn mark_names(symbols: &Symbols, mark: &mut dyn FnMut(&Value)) {
             // Fixed nil/t ABI words still use their allocated name cells.
             name.mark_bit().mark(super::current_mark_epoch());
             mark(&name.lisp_name());
+            if let Some(root) = name.cell().value_or_alias_root() {
+                mark(&root);
+            }
+            mark(&name.cell().function.get());
+            mark(&name.cell().plist.get());
         } else {
             mark(&value);
         }
@@ -264,6 +312,33 @@ pub(super) fn mark_scope_roots(mark: &mut dyn FnMut(&Value)) {
 mod tests {
     use super::{EditorSymbolScope, SymbolName};
     use std::collections::{BTreeSet, HashMap};
+
+    #[test]
+    fn keyboard_variable_symbols_follow_each_editors_owner() {
+        // GNU's keyboard variable references belong to its editor. Embedding
+        // successive editors must not reuse an earlier editor's symbol ids.
+        let _outer = EditorSymbolScope::enter();
+        let outer = SymbolName::intern_str("last-command");
+        assert!(crate::lisp::eval::Interpreter::is_keyboard_variable(&outer));
+        let private = SymbolName::make_uninterned(
+            super::Value::string("last-command"),
+            "last-command",
+            91873,
+        );
+        assert!(!crate::lisp::eval::Interpreter::is_keyboard_variable(
+            &private
+        ));
+        {
+            let _inner = EditorSymbolScope::enter();
+            let inner = SymbolName::intern_str("last-command");
+            assert_ne!(outer, inner);
+            assert!(crate::lisp::eval::Interpreter::is_keyboard_variable(&inner));
+            assert!(!crate::lisp::eval::Interpreter::is_keyboard_variable(
+                &outer
+            ));
+        }
+        assert!(crate::lisp::eval::Interpreter::is_keyboard_variable(&outer));
+    }
 
     #[test]
     fn nested_editors_keep_same_named_symbols_distinct_and_restore_the_caller() {

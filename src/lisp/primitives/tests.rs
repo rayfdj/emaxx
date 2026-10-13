@@ -3444,7 +3444,9 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
     // writer's own handle back while it still holds them (GNU never loads
     // a dump into the process that wrote it).  The obarray's size is the
     // dump-time one; the programs below intern symbols of their own.
-    let dumped_symbol_count = interp.known_symbol_names().len();
+    let source_names: std::collections::HashSet<String> =
+        interp.known_symbol_names().into_iter().collect();
+    let dumped_symbol_count = source_names.len();
     // Every root group of the loadup state prints the same from the
     // restored interpreter (the timer list's due times are relative); taken
     // before the programs below, which update lexical cells. Capture these
@@ -3482,15 +3484,17 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
         "(let ((n 0)) (mapatoms (lambda (_s) (setq n (1+ n)))) n)",
         // The native functions the startup loaded, if any, are native
         // after the round trip (their units reopened, each resolved by
-        // its C name) and the preloaded ones run: the count, the first
-        // one and its arity are the same on both sides.
-        "(let ((n 0) (first nil)) \
+        // its C name) and the preloaded ones run. Check every native name
+        // and arity, not the accidental first bucket occupant: GNU obarrays
+        // with identical native fields can enumerate in different orders.
+        "(let ((n 0) (contracts nil)) \
            (mapatoms (lambda (s) \
              (when (native-comp-function-p (symbol-function s)) \
                (setq n (1+ n)) \
-               (unless first \
-                 (setq first (list s (subr-arity (symbol-function s)))))))) \
-           (list n (string-trim \" a \") first))",
+               (push (list s (subr-arity (symbol-function s))) contracts)))) \
+           (list n (string-trim \" a \") \
+                 (sort contracts (lambda (a b) \
+                                   (string-lessp (car a) (car b))))))",
         "(pdumper-stats)",
     ];
     let mut expected = Vec::new();
@@ -3505,8 +3509,6 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
         let printed = call(&mut interp, "prin1-to-string", &[value], &mut env).expect("print");
         expected.push(string_like(&printed).expect("printed").text);
     }
-    let source_names: std::collections::HashSet<String> =
-        interp.known_symbol_names().into_iter().collect();
     let writer_loaded_a_dump = interp.dump_loaded_p();
     drop(interp);
 
@@ -7647,6 +7649,8 @@ fn preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior() {
              (undo)
              (buffer-string)))
         "#;
+    let mut interp = Interpreter::new();
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let form = Reader::new(program)
         .read()
         .expect("read preloaded undo contract")
@@ -7655,8 +7659,6 @@ fn preloaded_undo_keeps_gnu_lisp_command_ownership_and_behavior() {
         .read()
         .expect("read preloaded undo expectation")
         .expect("preloaded undo expectation");
-    let mut interp = Interpreter::new();
-    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let result = interp
         .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate preloaded undo contract");
@@ -7680,6 +7682,8 @@ fn dynamic_buffer_undo_list_binding_restores_native_history() {
                   (setq temporary-result (list (buffer-string) pending))))
               (list temporary-result (eq buffer-undo-list original))))
         "#;
+    let mut interp = Interpreter::new();
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let form = Reader::new(program)
         .read()
         .expect("read dynamic undo binding contract")
@@ -7688,8 +7692,6 @@ fn dynamic_buffer_undo_list_binding_restores_native_history() {
         .read()
         .expect("read dynamic undo binding expectation")
         .expect("dynamic undo binding expectation");
-    let mut interp = Interpreter::new();
-    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let result = interp
         .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate dynamic undo binding contract");
@@ -7710,11 +7712,11 @@ fn buffer_undo_list_assignment_preserves_cons_identity() {
                 (list extended-is-visible
                       (eq buffer-undo-list original)))))
         "#;
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let form = Reader::new(program)
         .read()
         .expect("read undo-list identity contract")
         .expect("undo-list identity form");
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let result = interp
         .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate undo-list identity contract");
@@ -7735,12 +7737,12 @@ fn primitive_undo_consumes_marker_adjustments_with_their_deletion() {
                 (setq pending (primitive-undo 1 pending))
                 (list (buffer-string) (marker-position marker) pending))))
         "#;
+    let mut interp = Interpreter::new();
+    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let form = Reader::new(program)
         .read()
         .expect("read marker-adjustment undo contract")
         .expect("marker-adjustment undo form");
-    let mut interp = Interpreter::new();
-    crate::test_support::replace_with_gnu_batch_runtime(&mut interp);
     let result = interp
         .eval(&form, &mut crate::lisp::types::Env::new())
         .expect("evaluate marker-adjustment undo contract");
@@ -18411,6 +18413,24 @@ fn concat_preserves_canonical_bytes_properties_and_sequence_characters() {
         include_str!("../../../tests/fixtures/canonical-concat-storage.el"),
         include_str!("../../../tests/fixtures/canonical-concat-storage.expected").trim(),
         "canonical concatenation and Unicode buffer completion",
+    );
+}
+
+#[test]
+fn intern_soft_misses_do_not_allocate_canonical_symbols() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-intern-soft-no-allocation.el"),
+        include_str!("../../../tests/fixtures/symbol-intern-soft-no-allocation.expected").trim(),
+        "intern-soft misses, keyword misses and private symbol probes do not intern names",
+    );
+}
+
+#[test]
+fn programmed_completion_preserves_input_identity_properties_and_mutation() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/completion-programmed-input.el"),
+        include_str!("../../../tests/fixtures/completion-programmed-input.expected").trim(),
+        "programmed completion input identity, properties, encoding and mutation",
     );
 }
 

@@ -11,11 +11,13 @@
 //! Not C: the cell keeps the host-side key text
 //! beside the name (the uninterned symbols' identity by text is the
 //! pre-representation deviation the ledger records), the mark is the
-//! epoch word, and the value, function and property cells still live in
-//! the interpreter's tables by the symbol's id (phase C's next step).
+//! epoch word. Name, value/alias, function, plist and flags are authoritative
+//! object fields. Remaining host name and localized/forwarded adapters
+//! must be removed before this migration is complete.
 
-use super::super::types::{MarkBit, Value};
+use super::super::types::{MarkBit, SymbolName, Value};
 use super::{BlockKind, FREE_MARK, SYMBOLS_PER_BLOCK, blocks_of, new_block, release_block};
+use std::cell::Cell;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
@@ -26,9 +28,147 @@ pub struct SymbolCell {
     pub(crate) internal: String,
     /// `SYMBOL_NAME': the Lisp-visible name object.
     pub(crate) lisp_name: std::cell::Cell<Value>,
+    /// `Lisp_Symbol.u.s.function' and `.plist': one authoritative word each.
+    pub(crate) function: std::cell::Cell<Value>,
+    pub(crate) plist: std::cell::Cell<Value>,
+    /// Lisp_Symbol.val: a value word or an alias object, selected by state.
+    pub(crate) payload: Cell<SymbolPayload>,
+    pub(crate) flags: Cell<u8>,
+    pub(crate) state: Cell<u8>,
     pub(crate) mark: MarkBit,
-    /// The symbol's index into an interpreter's `SymbolCells'.
-    pub(crate) id: u32,
+}
+
+// VALUE_PRESENT retains the existing distinction between an absent binding
+// and a localized, explicitly void default until localized storage is moved.
+const VALUE_PRESENT: u8 = 1;
+const ALIAS: u8 = 2;
+const PLAIN_STORE: u8 = 4;
+// Temporary until all dedicated C slots use the allocated redirect. Keep the
+// existing negative name classification with its object, not a global id set.
+const NO_C_SLOT: u8 = 8;
+// Temporary startup adapter: consumers distinguish Lisp fset from defsubr.
+// Remove after those consumers use the actual function capability. No separate
+// payload, id index, enumeration position or per-symbol allocation is involved.
+const FUNCTION_DEFINITION: u8 = 16;
+// lisp.h: Lisp_Symbol.interned is object state, not an identity-number bit.
+// Standard-obarray removal still has its separate membership adapter.
+const UNINTERNED: u8 = 32;
+
+#[derive(Clone, Copy)]
+pub(crate) union SymbolPayload {
+    value: Value,
+    alias: SymbolName,
+}
+
+impl SymbolPayload {
+    pub(crate) fn unbound() -> Self {
+        Self {
+            value: Value::Unbound,
+        }
+    }
+}
+
+impl Default for SymbolPayload {
+    fn default() -> Self {
+        Self::unbound()
+    }
+}
+
+impl SymbolCell {
+    pub(crate) fn is_uninterned(&self) -> bool {
+        self.state.get() & UNINTERNED != 0
+    }
+
+    pub(crate) fn mark_uninterned(&self) {
+        self.state.set(self.state.get() | UNINTERNED);
+    }
+
+    pub(crate) fn value(&self) -> Option<Value> {
+        (self.state.get() & VALUE_PRESENT != 0).then(|| {
+            // SAFETY: VALUE_PRESENT is set only with the value union member.
+            unsafe { self.payload.get().value }
+        })
+    }
+
+    pub(crate) fn set_value(&self, value: Value) {
+        assert!(self.alias().is_none(), "plain store into a symbol alias");
+        self.payload.set(SymbolPayload { value });
+        self.state.set(self.state.get() | VALUE_PRESENT);
+    }
+
+    pub(crate) fn replace_bound_value(&self, value: Value) -> bool {
+        if self.state.get() & VALUE_PRESENT == 0 {
+            return false;
+        }
+        self.payload.set(SymbolPayload { value });
+        true
+    }
+
+    pub(crate) fn take_value(&self) -> Option<Value> {
+        let value = self.value()?;
+        self.payload.set(SymbolPayload::unbound());
+        self.state.set(self.state.get() & !VALUE_PRESENT);
+        Some(value)
+    }
+
+    pub(crate) fn alias(&self) -> Option<SymbolName> {
+        (self.state.get() & ALIAS != 0).then(|| {
+            // SAFETY: ALIAS is set only with the alias union member.
+            unsafe { self.payload.get().alias }
+        })
+    }
+
+    pub(crate) fn set_alias(&self, target: SymbolName) {
+        self.payload.set(SymbolPayload { alias: target });
+        self.state
+            .set((self.state.get() & !(VALUE_PRESENT | PLAIN_STORE)) | ALIAS);
+    }
+
+    pub(crate) fn clear_alias(&self) -> bool {
+        if self.state.get() & ALIAS == 0 {
+            return false;
+        }
+        self.payload.set(SymbolPayload::unbound());
+        self.state
+            .set(self.state.get() & !(VALUE_PRESENT | ALIAS | PLAIN_STORE));
+        true
+    }
+
+    pub(crate) fn plain_store(&self) -> bool {
+        self.state.get() & PLAIN_STORE != 0
+    }
+
+    pub(crate) fn set_plain_store(&self, plain: bool) {
+        self.state.set(if plain {
+            self.state.get() | PLAIN_STORE
+        } else {
+            self.state.get() & !PLAIN_STORE
+        });
+    }
+
+    pub(crate) fn value_or_alias_root(&self) -> Option<Value> {
+        self.value().or_else(|| self.alias().map(Value::Symbol))
+    }
+
+    pub(crate) fn has_function_definition(&self) -> bool {
+        self.state.get() & FUNCTION_DEFINITION != 0
+    }
+
+    pub(crate) fn set_function_definition(&self, defined: bool) {
+        self.state.set(if defined {
+            self.state.get() | FUNCTION_DEFINITION
+        } else {
+            self.state.get() & !FUNCTION_DEFINITION
+        });
+    }
+
+    pub(crate) fn has_no_c_slot(&self) -> bool {
+        self.state.get() & NO_C_SLOT != 0
+    }
+
+    pub(crate) fn note_no_c_slot(&self) {
+        self.state.set(self.state.get() | NO_C_SLOT);
+    }
 }
 
 pub(super) const SYMBOL_CELL_SIZE: usize = std::mem::size_of::<SymbolCell>();

@@ -394,20 +394,9 @@ pub(crate) fn eval_region_impl(
             .borrow()
             .buffer_substring(start, end)
             .map_err(|error| LispError::Signal(error.to_string()))?;
-        // lread.c reads through `read-symbol-shorthands' (oblookup_
-        // considering_shorthand); load-with-code-conversion binds it from
-        // the file's local variables around the evaluation.
-        let shorthands = read_symbol_shorthands_in_env(interp, env)?;
-        let mut reader = crate::lisp::reader::Reader::with_symbol_shorthands(&text, shorthands);
-        let forms = reader.read_all()?;
-        record_unescaped_character_literals(interp, &reader, env);
+        let mut offset = 0;
         let mut result = Value::Nil;
-        for form in forms {
-            // lread.c reads through the dynamically active `obarray', so a
-            // let-bound private obarray owns the parsed symbols; evaluation
-            // still happens in the fresh readevalloop environment.
-            let form = interp.intern_read_symbols_in_value(form, eval_env)?;
-            let form = interp.materialize_read_object_literals(form, eval_env)?;
+        while let Some(form) = read_next_eval_form(interp, &text, &mut offset, eval_env)? {
             result = eager_expand_eval(interp, &form, eval_env)?;
             if !print_flag.is_nil() {
                 let _ = crate::lisp::primitives::call(
@@ -537,26 +526,10 @@ fn eval_buffer_forms(
             )
         });
     }
-    // lread.c reads through `read-symbol-shorthands' (oblookup_considering_
-    // shorthand); load-with-code-conversion binds it from the file's local
-    // variables around `eval-buffer', so `(defun f-test3 ...)' under
-    // `(("f-" . "elisp--foo-"))' defines `elisp--foo-test3'.
-    let shorthands = read_symbol_shorthands_in_env(interp, env)?;
-    let mut reader = crate::lisp::reader::Reader::with_symbol_shorthands(&text, shorthands);
-    let forms = reader.read_all()?;
-    record_unescaped_character_literals(interp, &reader, env);
     with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
+        let mut offset = 0;
         let mut result = Value::Nil;
-        for form in forms {
-            // lread.c reads through the dynamically active `obarray', so a
-            // let-bound private obarray owns the parsed symbols.
-            let form = interp.intern_read_symbols_in_value(form, eval_env)?;
-            // GNU constructs identity-bearing reader literals before the
-            // form reaches eval-buffer's evaluator.  In particular, native
-            // compilation contexts contain #s records, hash tables, and
-            // circular #[...] constants; leaving ReaderForm markers here
-            // makes the later compiler read fail with invalid-read-syntax.
-            let form = interp.materialize_read_object_literals(form, eval_env)?;
+        while let Some(form) = read_next_eval_form(interp, &text, &mut offset, eval_env)? {
             result = if eager_macroexpand {
                 eager_expand_eval(interp, &form, eval_env)?
             } else {
@@ -565,6 +538,46 @@ fn eval_buffer_forms(
         }
         Ok(result)
     })
+}
+
+/// lread.c:readevalloop reads one form in the currently selected obarray,
+/// then evaluates it before reading the next. Parsing the whole file in the
+/// standard namespace first can leak private names and misses obarray changes
+/// made by earlier forms. The text slice shares the same input allocation.
+fn read_next_eval_form(
+    interp: &mut Interpreter,
+    text: &str,
+    offset: &mut usize,
+    env: &mut Env,
+) -> Result<Option<Value>, LispError> {
+    let shorthands = read_symbol_shorthands_in_env(interp, env)?;
+    let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
+    let (value, consumed, needs_materialization, unescaped) = {
+        let mut resolve_symbol = |name: &str| intern_in_obarray(interp, &obarray, name);
+        let mut reader =
+            crate::lisp::reader::Reader::with_symbol_shorthands(&text[*offset..], shorthands)
+                .with_symbol_resolver(&mut resolve_symbol);
+        let value = reader.read()?;
+        (
+            value,
+            reader.position(),
+            reader.emitted_reader_forms(),
+            reader.unescaped_character_literals().collect::<Vec<_>>(),
+        )
+    };
+    *offset += consumed;
+    if !unescaped.is_empty() {
+        record_unescaped_character_literals(interp, unescaped, env);
+    }
+    value
+        .map(|value| {
+            if needs_materialization {
+                interp.materialize_read_object_literals(value, env)
+            } else {
+                Ok(value)
+            }
+        })
+        .transpose()
 }
 
 /// readevalloop's `internal-interpreter-environment' specbind: run BODY
@@ -947,7 +960,7 @@ fn record_native_source(
 /// literals are added here.
 fn record_unescaped_character_literals(
     interp: &mut Interpreter,
-    reader: &crate::lisp::reader::Reader<'_>,
+    literals: impl IntoIterator<Item = i64>,
     env: &mut Env,
 ) {
     let mut items = interp
@@ -955,7 +968,7 @@ fn record_unescaped_character_literals(
         .and_then(|value| value.to_vec().ok())
         .unwrap_or_default();
     let mut changed = false;
-    for literal in reader.unescaped_character_literals() {
+    for literal in literals {
         let literal = Value::Integer(literal);
         if !items.contains(&literal) {
             items.insert(0, literal);

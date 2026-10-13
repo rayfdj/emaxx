@@ -560,7 +560,7 @@ impl Interpreter {
         if self.globals.has_flag(symbol, SPECIAL) || self.has_c_slot_symbol(symbol) {
             return true;
         }
-        if !self.globals.has_aliases() {
+        if self.globals.alias(symbol).is_none() {
             return false;
         }
         let resolved = self.resolve_variable_symbol(symbol).unwrap_or(*symbol);
@@ -580,17 +580,13 @@ impl Interpreter {
 
     /// Whether SYMBOL names a C-owned value cell (`builtin_var_value'
     /// synthesizes one).  The registry is a match over the names; a name
-    /// outside it is outside it for good, and that verdict is kept per
-    /// symbol id so an interpreted `let' of a lexical variable does not
-    /// walk the match on every binding (a fifth of mule-tests' ucs-names
-    /// cases).  A detached forwarded variable answers false without
-    /// entering the memo, as detachment is undone by a store.
+    /// outside it is outside it for good. Until dedicated slots use the
+    /// allocated redirect, keep that verdict in the symbol's state byte.
+    /// Ordinary lexical bindings then need neither a thread-local lookup nor
+    /// a hash-table probe. A detached forwarded variable must not acquire
+    /// the negative bit, as a later store can restore its dedicated slot.
     pub(crate) fn has_c_slot_symbol(&self, symbol: &SymbolName) -> bool {
-        thread_local! {
-            static NO_C_SLOT: RefCell<HashSet<u32, crate::lisp::types::IdentityBuildHasher>> =
-                RefCell::new(HashSet::default());
-        }
-        if NO_C_SLOT.with_borrow(|known| known.contains(&symbol.id())) {
+        if symbol.cell().has_no_c_slot() {
             return false;
         }
         if self.builtin_var_value(symbol.as_str()).is_some() {
@@ -600,9 +596,7 @@ impl Interpreter {
             .detached_forwarded_variables
             .contains_key(symbol.as_str())
         {
-            NO_C_SLOT.with_borrow_mut(|known| {
-                known.insert(symbol.id());
-            });
+            symbol.cell().note_no_c_slot();
         }
         false
     }
@@ -616,7 +610,7 @@ impl Interpreter {
         if self.globals.has_flag_by_name(name, SPECIAL) || self.builtin_var_value(name).is_some() {
             return true;
         }
-        if !self.globals.has_aliases() {
+        if self.globals.alias_by_name(name).is_none() {
             return false;
         }
         let resolved = self
@@ -733,10 +727,9 @@ impl Interpreter {
     }
 
     pub fn intern_symbol_name(&mut self, name: &str) {
-        self.uninterned_standard_symbol_names.remove(name);
-        if self.interned_symbol_names.insert(name.to_string()) {
-            self.interned_symbols
-                .push(crate::lisp::types::SymbolName::intern_str(name));
+        SymbolName::intern_str(name);
+        if self.uninterned_standard_symbol_names.remove(name) {
+            self.note_obarray_removal();
         }
     }
 
@@ -745,12 +738,8 @@ impl Interpreter {
             return false;
         }
         self.uninterned_standard_symbol_names
-            .insert(name.to_string());
+            .insert(name.to_owned());
         self.note_obarray_removal();
-        if self.interned_symbol_names.remove(name) {
-            self.interned_symbols
-                .retain(|candidate| candidate.as_str() != name);
-        }
         true
     }
 
@@ -955,11 +944,7 @@ impl Interpreter {
         symbol: &SymbolName,
         plist: Value,
     ) -> Result<Value, LispError> {
-        let previous = self.globals.plist(symbol);
         self.globals.set_plist(symbol, plist);
-        if plist.is_nil() && !previous.is_nil() {
-            self.note_obarray_removal();
-        }
         Ok(plist)
     }
 
@@ -970,11 +955,11 @@ impl Interpreter {
     }
 
     /// data.c's SYMBOL_TRAPPED_WRITE test for the symbol in hand: whether
-    /// any watcher is registered under it, by id.
+    /// any watcher is registered under its object identity.
     fn variable_is_watched(&self, symbol: &SymbolName) -> bool {
         self.variable_watchers
             .iter()
-            .any(|(watched, _)| watched.id() == symbol.id())
+            .any(|(watched, _)| watched == symbol)
     }
 
     pub fn variable_watchers(&self, name: &str) -> Vec<Value> {
@@ -1272,12 +1257,7 @@ impl Interpreter {
 
     #[cfg(test)]
     pub fn remove_variable_alias(&mut self, name: &str) -> bool {
-        if self.globals.clear_alias_by_name(name) {
-            self.note_obarray_removal();
-            true
-        } else {
-            false
-        }
+        self.globals.clear_alias_by_name(name)
     }
 
     pub fn indirect_variable_name(&self, name: &str) -> Result<String, LispError> {
@@ -1307,9 +1287,7 @@ impl Interpreter {
         for terminal in &mut self.terminals {
             terminal.borrow_mut().keyboard.remove(name);
         }
-        if self.globals.remove_by_name(name).is_some() {
-            self.note_obarray_removal();
-        }
+        self.globals.remove_by_name(name);
     }
 
     /// `remove_global_binding' for a symbol in hand.
@@ -1318,7 +1296,6 @@ impl Interpreter {
             terminal.borrow_mut().keyboard.remove(symbol.as_str());
         }
         self.globals.remove(symbol);
-        self.note_obarray_removal();
     }
 
     fn normalize_forwarded_eval_cell(&self, name: &str, value: Value) -> Value {
@@ -1619,7 +1596,7 @@ impl Interpreter {
     }
 
     /// `active_global_special_value' for a symbol in hand: the flag and
-    /// the records by id.
+    /// the records by object identity.
     pub(super) fn active_global_special_value_symbol(
         &self,
         symbol: &SymbolName,
@@ -1630,10 +1607,9 @@ impl Interpreter {
         let mut value = self.global_binding_value_symbol(symbol);
         let current_buffer_id = self.current_buffer_id();
         let mut found = false;
-        let id = symbol.id();
         for restore in self.active_special_restores.iter().rev().filter(|restore| {
             !restore.local_binding_killed
-                && restore.name.id() == id
+                && restore.name == *symbol
                 && matches!(restore.scope, SpecialBindingScope::Global)
         }) {
             found = true;
@@ -2101,7 +2077,7 @@ impl Interpreter {
             return Ok(binding_id);
         }
         let resolved = self.resolve_variable_symbol(symbol)?;
-        let unaliased = resolved.id() == symbol.id();
+        let unaliased = resolved == *symbol;
         let value = self.prepare_variable_assignment_symbol(&resolved, value)?;
         let name = resolved.as_str();
         let buffer_id = self.current_buffer_id();

@@ -2484,12 +2484,16 @@ mod phase_c_tests {
 
     fn run2(name: &str, args: &[Value]) -> Result<Value, LispError> {
         let mut interp = Interpreter::new();
+        run2_in(&mut interp, name, args)
+    }
+
+    fn run2_in(interp: &mut Interpreter, name: &str, args: &[Value]) -> Result<Value, LispError> {
         let mut env = Env::new();
         let object = named_objects(ORACLE_ELC2)
             .remove(name)
             .unwrap_or_else(|| panic!("fixture {name} missing"));
         interp.materialize_read_object_literals(Value::Vector(object.constants), &mut env)?;
-        execute(&mut interp, &object, args, &mut env)
+        execute(interp, &object, args, &mut env)
     }
 
     fn run2_with_gnu_early_lisp(name: &str, args: &[Value]) -> Result<Value, LispError> {
@@ -2616,7 +2620,8 @@ mod phase_c_tests {
             ("zeta", "6"),
             ("nomatch", "default"),
         ] {
-            let value = run2("emaxx-fx2-switch", &[Value::symbol(key)]).unwrap();
+            let mut interp = Interpreter::new();
+            let value = run2_in(&mut interp, "emaxx-fx2-switch", &[Value::symbol(key)]).unwrap();
             assert_eq!(format!("{value}"), expected, "case {key}");
         }
     }

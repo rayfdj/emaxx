@@ -1,0 +1,36 @@
+{
+  "archive": {
+    "path": "symbol-membership-draft5-selected-failure-results.tar.gz",
+    "bytes": 178036,
+    "sha256": "197824c8a1b63c01d82a723ca1b60a72297f19e3fc5ada38079fec89d9eb7c24",
+    "members": 30
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft5-selected-gate/fixture-images/loadup-30cf2754-d44829be.pdmp",
+      "bytes": 21902576,
+      "sha256": "525e4f627a3f3858e1c5b0e6dbb8ffea73212ef387cb9a26f7254bd646a2b5aa"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft5-selected-gate/libtest",
+      "bytes": 30036864,
+      "sha256": "30cf2754b34301f529e45864a5c4ace6758229e4cee0745a2103d1af0bfeb478"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "isolated membership draft5 broader gate failure; release not started",
+  "failed_selected": {
+    "passed": 399,
+    "failed": [
+      "lisp::primitives::pdumper::tests::image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots",
+      "lisp::primitives::pdumper::tests::supported_image_starts_in_a_fresh_process_with_new_process_values",
+      "lisp::primitives::tests::fixture_image_directory_dumps_once_and_starts_every_later_boot_from_it"
+    ],
+    "ignored": 0,
+    "inventory_verified": 402,
+    "release": "not started after gate failure",
+    "source_inputs": 580,
+    "goal_complete": false
+  },
+  "qualification": "All402 raw names/verdicts are checked:399pass/three failures/no ignores. The failures are native-image dumping checks rejecting a non-fixed-up native unit. Release was not started. A separate fresh process using retained identical executable bytes passes those three unchanged tests; its executable path and fixture-image directory differ, so that replay does not establish the exact cause or repair and does not replace the original failures. A separate bounded predecessor-sequence diagnostic is running, with no result certified by this package. Current source remains580inputs; the five focused passes in the earlier unfinished package do not imply broader success."
+}

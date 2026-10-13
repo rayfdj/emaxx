@@ -16,7 +16,141 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
-## Source323 validation closed; symbol-field integration ready for publication — 13 October 2026
+## Source324 validation and separate membership continuation — 13 October 2026
+
+The full goal remains **active and incomplete**. Main contains merged
+[PR84](https://github.com/rayfdj/emaxx/pull/84) at
+`0118975994af1a337c5197bf07a44023bebc02bf`; its
+[merge receipt](docs/handover/2026-10-09-symbol-fields/source323-main-merge.json)
+is retained. [PR85](https://github.com/rayfdj/emaxx/pull/85) carries runtime
+source324 `999362622a68d6508c356541422f7a48ae6e2175`, with **572 runtime inputs**.
+This evidence update changes no runtime inputs. Existing approval covers
+validated task pushes, Linux CI and main merges; do not ask again.
+
+Allocated symbols now own their value/alias, function, plist and flags; numeric
+IDs, side metadata and field histories are removed. The integration includes
+GNU's nonallocating `intern-soft` behavior and preserves the actual input string
+passed to programmed completion. See the
+[architectural continuation](docs/runtime-representation-symbol-payload-authority-draft.md).
+
+The [clean platform evidence](docs/handover/2026-10-09-symbol-fields/source324-linux-and-macos-rust-results-manifest.json)
+verifies **3,190 Linux Rust passes** and **3,178 macOS Rust passes**, each with
+the two existing ignores. Strict checks have zero warnings, every prior test
+name remains, and original native artifact identity passes. Linux frozen matches
+**all 519 files / 7,928 outcomes / 1,038 successful processes**, including all
+177 native compiler tests. Rust run is `38337571854`; frozen run is `38337574123`.
+All 572 source inputs and the raw reports, process receipts and inventories are
+checked against source324.
+
+The [initial macOS frozen evidence](docs/handover/2026-10-09-symbol-fields/source324-macos-frozen-and-tramp-results-manifest.json)
+preserves the original failed attempt: **318 completed files / 4,479 matches /
+zero differences**, followed by both original 180-second Tramp timeouts and
+200 unstarted files. A separate unchanged Tramp comparison, bounded at 600 seconds,
+obtains **59 matching actual outcomes**; GNU finishes in **209.04 seconds** and
+Emaxx in **257.31 seconds**. Actual executable/image bytes are retained before
+the observations, with the rebuilt subject's hash identified separately.
+The original remains failed. The [completed 200-file tail](docs/handover/2026-10-09-symbol-fields/source324-macos-tail-and-coverage-results-manifest.json)
+adds **3,377 matches and six existing feature-diagnostic differences**, all six
+identical to source318. Every process exits successfully and all 177 native tests
+pass in both editors. An explicit file-to-run mapping covers **all 519 files /
+7,921 outcomes: 7,915 matches and six strict differences** across these separate
+attempts. This is not one passing frozen run.
+
+The [complete ordinary terminal run](docs/handover/2026-10-09-symbol-fields/source324-macos-terminal-results-manifest.json)
+passes **all 226 original scenarios / 686 comparisons**: 658 screens and 28
+filesystem comparisons. All 24 captured rows, cell attributes and cursor positions
+also match independently of the harness verdict. Original actions, inventory and
+deadlines remain unchanged. Source324 validation is closed with the macOS frozen
+qualifications above. Existing approval covers the PR85 merge; verify its current
+GitHub state before attempting a duplicate merge.
+
+The [three Linux timing pilots](docs/handover/2026-10-09-symbol-fields/source324-linux-symbol-performance-results-manifest.json)
+verify **192 actual answers and execution modes** across all 16 locked workloads.
+Against main `01189759`, the body aggregate is **0.593% faster**, but remains
+**2.725557× paired GNU**. Explicit GC regresses **10.54%**, mapcar **6.93%**, and
+native-to-bytecode transitions **5.70%**; all samples remain visible. This is
+diagnostic evidence, not the calibrated nine-round/every-workload upper 95%
+GNU-ratio ceiling of 1.03. Missing allocation counters and the old 48-byte charge
+for the actual 64-byte symbol header remain unresolved.
+
+The [Linux allocation profile](docs/handover/2026-10-09-symbol-fields/source324-linux-allocation-profile-results-manifest.json)
+runs unchanged upstream allocation tests with five matching outcomes, using
+gate-profile sampling that includes startup. It does not explain the release GC
+regression. A separate
+[macOS locked-GC profile](docs/handover/2026-10-09-symbol-fields/source324-macos-locked-gc-profile-results-manifest.json)
+verifies **24 actual results**, with all **32 requested collections** observed
+in each repetition of the unchanged 100,000-live-cons workload. Emaxx's selected
+self samples concentrate in tracing and collection. Whole-process sampling,
+concurrent validation and a retained release executable make this diagnostic;
+the samples do not establish the cause of the Linux regression or a speed gain.
+
+A second **separate, unapplied GC experiment** is in
+`target/runtime-goal/recovered-2026-10-13/gc-cons-trace/emaxx`.
+The [draft1 patch and initial evidence](docs/handover/2026-10-09-symbol-fields/gc-cons-trace-draft1-unfinished-results-manifest.json)
+replay all 572 inputs from `99936262`, changing only `src/lisp/eval.rs`.
+GNU `alloc.c:process_mark_stack` motivates marking and tracing cons fields
+without two general tag matches; mark epochs and car-first traversal remain.
+Strict checks have zero warnings. The first selected run records **438 passes /
+96 failures** with the adjacent GNU fixture tree missing. The required symlink
+now points to the existing pinned GNU build; all 534 original selected names are
+running again with unchanged source and assertions. Preserve the initial failure.
+Inspect `gc-cons-trace-draft1-gate-layout` and the active continuation before
+starting another run. No release or speed result exists; keep the experiment
+separate until correctness checks and interleaved equivalent-work measurements
+establish whether it helps. It does not affect source324's closed validation.
+
+The next implementation is the **separate, unapplied membership draft6** in
+`target/runtime-goal/recovered-2026-10-13/symbol-membership/emaxx`.
+Its [portable patch and evidence](docs/handover/2026-10-09-symbol-fields/symbol-membership-draft6-ownership-results-manifest.json)
+replay all **580 input bytes/modes** from source324. Strict checks have zero
+warnings and **403 selected controls pass in each of gate and release**.
+It removes standard-obarray membership tombstones, preserves actual detached
+symbol and builtin boolean identity, and moves the captured Unicode menu case
+table into its owning editor. Draft5 exposed that global table retaining a prior
+editor's symbol graph; startup/image order reproductions fail before the fix.
+The added control covers separate editors, image copying and mutation isolation;
+all original image assertions remain. One value word per editor replaces the
+global optional table; no net memory or speed gain is claimed.
+
+Preserve the [earlier unfinished attempts](docs/handover/2026-10-09-symbol-fields/symbol-membership-draft5-unfinished-results-manifest.json),
+the [draft5 selected failure](docs/handover/2026-10-09-symbol-fields/symbol-membership-draft5-selected-failure-results-manifest.json)
+(399 passes/three image failures), the order reproductions and draft6's initial
+formatting failure. **Fresh same-name constant/store semantics are still wrong**:
+an ordinary valid GNU probe returns 40 true predicates while production returns
+21 false predicates. Draft6 still has **20 false predicates** on that identical
+loadable program. The [separate ordinary continuation](docs/handover/2026-10-09-symbol-fields/symbol-membership-draft6-ordinary-results-manifest.json)
+passes **38 comparisons / 76 processes**, preserving all 28 earlier comparisons
+and adding ten membership cases with actual bytecode/native modes checked.
+The constant/store negative remains separate and unresolved. Complete library,
+platform and frozen validation remain required before applying this draft.
+
+For portable continuation, extract the membership archive and apply
+`evidence/symbol-membership-draft6-formatted-gate/tracked.patch` to a detached
+checkout of `99936262`. Its SHA-256 is
+`66fb9775bd28123acb190ee643f74fb2a939ebc84bcf8cea7e038f473a35140b`.
+Verify every entry in the adjacent `source.json`, including file modes;
+`evidence/replay_membership6.py` records both retained draft6 patches.
+Rebase only after preserving that exact replay. GNU `lread.c:intern_sym`,
+`eval.c:Fspecial_variable_p` and the actual constant initialization in `lread.c`,
+`data.c`, `buffer.c` and `font.c` guide the remaining identity/store repair.
+
+Local source324 coordinators and receipts live under
+`target/runtime-goal/symbol-obarray-2026-10-09`: inspect
+`source324-macos-observations/state.json`, `source324-terminal/state.json` and
+`active-continuation-2026-10-13-source324.json`. All source324 validation
+coordinators have ended. The root may now fast-forward to the published merge;
+preserve the separate unfinished checkouts and their recorded input identities.
+Large executables/images excluded from portable archives are explicitly listed
+with sizes, hashes and retained local paths; not every artifact is portable.
+
+Host-name/private-name and forwarded/localized adapters, descriptor reclamation,
+public ownership, physical accounting and real counters, property intervals,
+pure storage, measured VM/call work, final adversarial review, complete final
+platform validation and the unchanged performance criterion remain open. The
+replacement macOS oracle and original `591acf7b` reconstruction limitation remain
+as documented. A checkpoint merge is not completion of the full goal.
+
+## Historical source323 validation closure — 13 October 2026
 
 The full goal remains **active and incomplete**. Source323 is `0550a70c` on
 the authorized `runtime-char-tables` branch. Main is still `55b109e8` until

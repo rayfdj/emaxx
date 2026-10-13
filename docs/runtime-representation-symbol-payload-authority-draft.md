@@ -1,6 +1,53 @@
 # Actual symbol identity continuation — 13 October 2026
 
-The latest **unapplied prototype is identity draft5**, retained in
+The published runtime is **source324 `99936262`**, with 572 inputs, on
+[PR85](https://github.com/rayfdj/emaxx/pull/85), following PR84's main merge
+`01189759`. Full Linux frozen matches all 7,928 outcomes; complete Rust checks
+pass 3,190 on Linux and 3,178 on macOS, each with two existing ignores and exact
+native artifacts. The original macOS frozen attempt matches 4,479 outcomes before
+both Tramp processes time out. A separate 600-second observation obtains all
+59 actual matching answers. The exact tail adds 3,377 matches and six unchanged
+feature-diagnostic differences, covering all 519 files across separate attempts.
+All 226 original terminal scenarios / 686 comparisons now pass, including
+independent full-screen/attribute/cursor checks. Validation is closed with those
+macOS qualifications; the original frozen verdict is still failed.
+The [current handover](../HANDOVER.md) links the portable evidence and commands.
+
+Three unchanged Linux pilots verify all 192 actual answers/modes. Source324 is
+0.593% faster than main overall, at 2.725557× paired GNU, with an explicit-GC
+regression of 10.54%. The allocation and exact locked-GC profiles narrow the work
+to investigate but do not explain that regression. The 64-byte header still has
+an incorrect 48-byte allocation charge. No final performance acceptance exists.
+
+The next **unapplied membership draft6** is retained in
+`target/runtime-goal/recovered-2026-10-13/symbol-membership/emaxx`.
+Its [portable cumulative patch](handover/2026-10-09-symbol-fields/symbol-membership-draft6-ownership-results-manifest.json)
+replays all 580 inputs from `99936262`, with strict zero-warning checks and
+403 selected passes in each of gate and release. Standard-obarray removal now
+changes actual object membership, including preserved builtin nil/t identity,
+printing, image copying and detached lifetime coverage. The process-global
+captured Unicode menu table leaked the previous editor's graph into image roots;
+the table now belongs to each editor and follows its marking/copying/dump path.
+GNU's `keymap.c` has one process-owned table; a Rust process hosting multiple
+editors needs the table under each editor's ownership. This adds one value word
+per editor and removes the global optional table, with no measured net cost claim.
+
+Draft5's three image failures, the exact startup-order reproductions and draft6's
+formatting failure remain archived. Fresh same-name constant/store behavior is
+still wrong (GNU's valid probe has 40 true predicates; production has 21 false
+predicates). The [draft6 ordinary continuation](handover/2026-10-09-symbol-fields/symbol-membership-draft6-ordinary-results-manifest.json)
+passes 38 comparisons / 76 processes in actual modes, preserving all 28 earlier
+comparisons and adding ten membership cases. The unchanged constant/store probe
+still has 20 false predicates in draft6 against GNU's 40 true predicates.
+Complete library/platform certification remains open. Continue against actual
+GNU constant initialization and `intern_sym` rather than
+name-based exceptions. This draft must remain separate until repaired and
+validated. Host-name and forwarded adapters, reclamation, public ownership,
+physical accounting, real counters and the full goal remain unfinished.
+
+## Historical applied identity draft5 and integration evidence
+
+The original **identity draft5 prototype** is retained unchanged in
 `target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx`.
 Its [portable patches and raw results](handover/2026-10-09-symbol-fields/allocated-symbol-identity-draft5-results-manifest.json)
 replay all **572 source inputs** from `265d5ba3`. Strict checks have zero warnings;
@@ -17,8 +64,8 @@ to validated draft5; the sole input difference retains source323's configured-GN
 native fixture. Fresh strict checks and **all 39 original integration tests**
 pass, with all native byte assertions unchanged. Its isolated checkout is
 `target/runtime-goal/recovered-2026-10-13/symbol-fields-integration/emaxx`.
-Publish this delta after PR84's checkpoint merge, preserving the current handover
-and evidence. Then run the required checks on the clean published source.
+The delta is applied after PR84's checkpoint merge, preserving the current
+handover and evidence. Run the required checks on the clean published source.
 
 GNU `lisp.h:Lisp_Symbol`, `data.c` and `alloc.c` remain the architectural reference.
 Value/alias, function, plist and flags belong to the allocated symbol. Actual
@@ -42,8 +89,8 @@ A separate real bug copied the input string before calling programmed completion
 GNU `minibuf.c` passes the original Lisp string. Draft4/5 now preserve identity,
 properties, encoding and callback mutations in all three completion primitives.
 Nine GNU-backed cases cover ASCII, multibyte and unibyte strings. The same defect
-was reproduced in published source323 and is fixed only in the prototype and
-integration delta. This repair alone did not fix Eshell; that failed draft4 run
+was reproduced in source323 and is repaired in source324's integration delta.
+This repair alone did not fix Eshell; that failed draft4 run
 remains recorded alongside draft3's original Eshell failure.
 
 Host strings and weak name bookkeeping, encoded private names, standard-obarray

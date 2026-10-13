@@ -1,0 +1,91 @@
+{
+  "archive": {
+    "path": "symbol-membership-draft6-ordinary-results.tar.gz",
+    "bytes": 81066,
+    "sha256": "4a296a0dc6251de7ad0cf2abf74b41c58d6a9c03d4c7b29288dc19997e41f60e",
+    "members": 258
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft6-ordinary/retained-inputs/044bc6a21aebf00f72a18b3353923aeba4dcee8f92a30025e93f2ea33d3cfa94-emaxx",
+      "bytes": 13208304,
+      "sha256": "044bc6a21aebf00f72a18b3353923aeba4dcee8f92a30025e93f2ea33d3cfa94"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft6-ordinary/retained-inputs/18ce196665fb4714e2c9292453be1501c621be1877a3d9d2eeaa5279afc63754-emaxx.pdmp",
+      "bytes": 21794400,
+      "sha256": "18ce196665fb4714e2c9292453be1501c621be1877a3d9d2eeaa5279afc63754"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft6-ordinary/retained-inputs/29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5-emacs",
+      "bytes": 9600848,
+      "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft6-ordinary/retained-inputs/ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67-emacs.pdmp",
+      "bytes": 22954264,
+      "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "unapplied membership draft6 ordinary modes and remaining constant/store negative",
+  "ordinary": {
+    "status": "passed",
+    "source_inputs_verified": 580,
+    "processes": 76,
+    "comparisons": 38,
+    "actual_modes": [
+      "interpreted",
+      "bytecode",
+      "native"
+    ],
+    "identical_editor_arguments": true,
+    "previous_twenty_eight_comparisons_preserved": true,
+    "added_membership_comparisons": 10,
+    "retained_inputs": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/symbol-membership/emaxx/target/release/emaxx",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft6-ordinary/retained-inputs/044bc6a21aebf00f72a18b3353923aeba4dcee8f92a30025e93f2ea33d3cfa94-emaxx",
+        "sha256": "044bc6a21aebf00f72a18b3353923aeba4dcee8f92a30025e93f2ea33d3cfa94",
+        "bytes": 13208304
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/symbol-membership/emaxx/target/release/emaxx.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft6-ordinary/retained-inputs/18ce196665fb4714e2c9292453be1501c621be1877a3d9d2eeaa5279afc63754-emaxx.pdmp",
+        "sha256": "18ce196665fb4714e2c9292453be1501c621be1877a3d9d2eeaa5279afc63754",
+        "bytes": 21794400
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft6-ordinary/retained-inputs/29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5-emacs",
+        "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+        "bytes": 9600848
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft6-ordinary/retained-inputs/ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67-emacs.pdmp",
+        "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+        "bytes": 22954264
+      }
+    ],
+    "goal_complete": false,
+    "qualification": "Unapplied membership draft6, with all original28 ordinary comparisons and10 added actual membership/printing/boolean/lifetime comparisons. All expected outputs and actual mode predicates are checked from raw output; compiler/image stages have no warnings. Each editor uses its own executable and image. Fresh same-name constant/store adapters remain a separate known negative. This is not a full platform gate, proof of public ownership or a performance result."
+  },
+  "remaining_negative": {
+    "status": "known mismatch remains",
+    "outcomes": {
+      "gnu": {
+        "true": 40,
+        "false": 0
+      },
+      "membership-draft6": {
+        "true": 20,
+        "false": 20
+      }
+    },
+    "unchanged_program_sha256": "a6f979ad4ab01e8304632c63ada49908c3b94b38894db17ba1e0f9efba80299e",
+    "qualification": "The same valid program used for the earlier source324 negative runs through ordinary load in both editors. Both exit0 without stderr. Draft6 still has20 false predicates against GNU40true: actual constant/special state, preserved keyword self-value and fresh same-name stores remain unrepaired. These outcomes are separate from the38 passing ordinary comparisons.",
+    "goal_complete": false
+  },
+  "qualification": "38 actual ordinary GNU comparisons pass, preserving all28 earlier ones and adding10 membership comparisons; actual bytecode/native predicates are checked. The separate valid constant/store program still differs in20 of40predicates. The draft remains unfinished and lacks full library/platform/frozen certification. Retained executable/image bytes are excluded explicitly; no performance result or full-goal completion."
+}

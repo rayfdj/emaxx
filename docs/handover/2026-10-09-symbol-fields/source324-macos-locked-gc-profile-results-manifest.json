@@ -1,0 +1,160 @@
+{
+  "archive": {
+    "path": "source324-macos-locked-gc-profile-results.tar.gz",
+    "bytes": 88653,
+    "sha256": "19aff23e89d326122e0a4c38779785a0300d53517326f364b49e867984513513",
+    "members": 18
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source324-macos-locked-gc-profile/retained-inputs/emaxx-emaxx",
+      "bytes": 13240656,
+      "sha256": "4365cdef5ca1843a726d035300d645704b513b017a92352e27e169e610a93189"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source324-macos-locked-gc-profile/retained-inputs/emaxx-emaxx.pdmp",
+      "bytes": 21794392,
+      "sha256": "ee0a508083b2789659cd122580a9405b239e1c708f9934343e473ba8ad46d9f3"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source324-macos-locked-gc-profile/retained-inputs/oracle-emacs",
+      "bytes": 9600848,
+      "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source324-macos-locked-gc-profile/retained-inputs/oracle-emacs.pdmp",
+      "bytes": 22954264,
+      "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "diagnostic sampling of the unchanged locked explicit-GC body",
+  "audit": {
+    "status": "24 actual outputs and modes verified; two process profiles retained",
+    "diagnostic_only": true,
+    "rows": [
+      {
+        "runner": "oracle",
+        "validated_observations": 12,
+        "mode": {
+          "driver": "interpreted",
+          "garbage-collect": "primitive"
+        },
+        "gc_counts": [
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32
+        ],
+        "result": "live-cons-chain/100000",
+        "sample_sha256": "fab1c063b72de0be470527eb97e77bc6325458ab15b41bcce91272ed4e4c1a66",
+        "top_self_rows": [
+          "__select  (in libsystem_kernel.dylib)        2395",
+          "        process_mark_stack  (in emacs)        1882",
+          "        mark_char_table  (in emacs)        152",
+          "        pdumper_marked_p_impl  (in emacs)        149",
+          "        mach_msg2_trap  (in dyld)        143",
+          "        pdumper_set_marked_impl  (in emacs)        76",
+          "        pdumper_cold_object_p_impl  (in emacs)        36",
+          "        lsl::Allocator::AllocationMetadata::pool(bool) const  (in dyld)        24",
+          "        <deduplicated_symbol>  (in dyld)        21",
+          "        sweep_conses  (in emacs)        19",
+          "        sweep_strings  (in emacs)        16",
+          "        (anonymous namespace)::quickSort<PropertyList::Integer**>(PropertyList::Integer**, PropertyList::Integer**)  (in dyld)        8",
+          "        arith_driver  (in emacs)        7",
+          "        lsl::Allocator::AllocationMetadata::firstAddress() const  (in dyld)        7",
+          "        sweep_vectors  (in emacs)        6"
+        ]
+      },
+      {
+        "runner": "emaxx",
+        "validated_observations": 12,
+        "mode": {
+          "driver": "interpreted",
+          "garbage-collect": "primitive"
+        },
+        "gc_counts": [
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32,
+          32
+        ],
+        "result": "live-cons-chain/100000",
+        "sample_sha256": "a750d02938b180ee9cad15fa8ee1e466d55971bdb0f6c11eb44b127f57114831",
+        "top_self_rows": [
+          "_RNvMst_NtNtCsaaqwzeDW2y3_5emaxx4lisp4evalNtB5_16LispReachability13trace_pending  (in emaxx)        1533",
+          "        _RNvMse_NtNtNtCsaaqwzeDW2y3_5emaxx4lisp11native_comp7runtimeNtB5_10NativeHeap23collect_below_stack_top  (in emaxx)        619",
+          "        _RNvMNtNtNtCsaaqwzeDW2y3_5emaxx4lisp4eval19char_table_snapshotNtB2_23CharTableChainSignature7matches  (in emaxx)        110",
+          "        mach_msg2_trap  (in dyld)        90",
+          "        _RNvNtNtNtCsaaqwzeDW2y3_5emaxx4lisp5types7symbols10mark_names  (in emaxx)        58",
+          "        _RNvNtNtCsaaqwzeDW2y3_5emaxx4lisp5alloc9blocks_of  (in emaxx)        27",
+          "        _RNvNtNtCsaaqwzeDW2y3_5emaxx4lisp11native_comp25finish_garbage_collection  (in emaxx)        24",
+          "        _RNvNtNtCsaaqwzeDW2y3_5emaxx4lisp5alloc8mem_find  (in emaxx)        21",
+          "        _RNvMsl_NtNtNtCsaaqwzeDW2y3_5emaxx4lisp5alloc7vectorsNtB5_10SweepStats5count  (in emaxx)        19",
+          "        _RNvNtNtNtCsaaqwzeDW2y3_5emaxx4lisp11native_comp7runtime11invoke_subr  (in emaxx)        15",
+          "        lsl::Allocator::AllocationMetadata::pool(bool) const  (in dyld)        13",
+          "        <deduplicated_symbol>  (in dyld)        12",
+          "        _RNvMNtNtNtCsaaqwzeDW2y3_5emaxx4lisp4eval19char_table_snapshotNtB2_23CharTableChainSignature7capture  (in emaxx)        10",
+          "        __open  (in dyld)        10",
+          "        _RNvMs0_NtNtNtCsaaqwzeDW2y3_5emaxx4lisp4eval4coreNtB7_11Interpreter9eval_call  (in emaxx)        8",
+          "        __mmap  (in dyld)        8",
+          "        _RNvMs18_NtNtCsaaqwzeDW2y3_5emaxx4lisp5typesNtB6_5Value4cons  (in emaxx)        7",
+          "        _RNvXs_NtNtCslJsSqIQKwiA_5alloc3vec21spec_from_iter_nestedINtB6_3VecjEINtB4_18SpecFromIterNestedjINtNtNtNtCsgtPOCBgevO_4core4iter8adapters3map3MapIB1x_INtNtNtB1F_5slice4iter4IterINtNtB1F_4cell4CellNtNtNtCsaaqwzeDW2y3_5emaxx4lisp5types5ValueEENvMs8_B2S_B2P_3getENCINvNtNtB3c_4eval19char_table_snapshot13capture_slotsB2j_E0EE9from_iterB3e_  (in emaxx)        7",
+          "        __open  (in libsystem_kernel.dylib)        7",
+          "        _RNvMs5_NtNtNtNtCsaaqwzeDW2y3_5emaxx4lisp10primitives7pdumper4loadNtB5_6Loader4load  (in emaxx)        6",
+          "        _RNvNtNtNtCsaaqwzeDW2y3_5emaxx4lisp10primitives6values31values_equal_recursive_with_env  (in emaxx)        6",
+          "        lsl::Allocator::AllocationMetadata::AllocationMetadata(lsl::Allocator::AllocationMetadata*, unsigned long long, unsigned long long, unsigned long long)  (in dyld)        6",
+          "        mi_free  (in emaxx)        6",
+          "        _RINvXs3_NtNtNtCsaaqwzeDW2y3_5emaxx4lisp4eval19char_table_snapshotNtB6_23CharTableChainSignatureNtNtCsgtPOCBgevO_4core4hash4Hash4hashNtNtNtBa_10primitives6regexp13SampledHasherEBc_  (in emaxx)        5",
+          "        _platform_memmove  (in libsystem_platform.dylib)        5",
+          "        _platform_strcmp_noMTE  (in dyld)        5"
+        ]
+      }
+    ],
+    "retained_inputs": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source324-macos-locked-gc-profile/retained-inputs/oracle-emacs",
+        "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+        "bytes": 9600848
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source324-macos-locked-gc-profile/retained-inputs/oracle-emacs.pdmp",
+        "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+        "bytes": 22954264
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx/target/release/emaxx",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source324-macos-locked-gc-profile/retained-inputs/emaxx-emaxx",
+        "sha256": "4365cdef5ca1843a726d035300d645704b513b017a92352e27e169e610a93189",
+        "bytes": 13240656
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx/target/release/emaxx.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source324-macos-locked-gc-profile/retained-inputs/emaxx-emaxx.pdmp",
+        "sha256": "ee0a508083b2789659cd122580a9405b239e1c708f9934343e473ba8ad46d9f3",
+        "bytes": 21794392
+      }
+    ],
+    "goal_complete": false,
+    "qualification": "Diagnostic macOS whole-process samples including startup, preparation and result checking. Twelve repetitions of the unchanged locked32-collection body and100000-cell live graph; ordinary shared Lisp and strict result/mode validator. Concurrent correctness work makes elapsed times ineligible for performance claims. Retained identity5 release production bytes match source324; this is not a fresh clean-source platform gate or an explanation of the Linux baseline/candidate regression by itself. Aggregate sample counts include multiple threads and all process phases; they are not CPU percentages or body-only attribution. Main selected Emaxx self rows are trace_pending1533 and collect_below_stack_top619. The latter includes inlined sweeping and requires finer profiling for attribution."
+  },
+  "qualification": "24 actual results and execution modes checked, all32 collections observed in every repetition. Whole-process macOS sample data includes startup/preparation/checking and multiple threads. Exact executable/image bytes retained locally and excluded explicitly from portable packaging. The largest selected Emaxx self rows are marking and the collection/sweep function. This is neither authoritative timing nor a causal explanation of the Linux10.54% pilot regression."
+}

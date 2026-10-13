@@ -1,0 +1,376 @@
+{
+  "archive": {
+    "path": "source324-linux-symbol-performance-results.tar.gz",
+    "bytes": 3350128,
+    "sha256": "bc7224fef7db053ee9df8af9f5186a9e6000dd77ecece2a1315ad0e2e5aad120",
+    "members": 1084
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source324-linux-performance/raw/core-runtime-pair/artifacts/baseline/emaxx",
+      "bytes": 15509392,
+      "sha256": "54979cb539c2fce015eb219bf811110d33fd72631bc585b5dfb7b5d3017e5ae0"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source324-linux-performance/raw/core-runtime-pair/artifacts/baseline/emaxx.pdmp",
+      "bytes": 21852368,
+      "sha256": "f3e6f26662caa416127f086d18f621481c65461c84b157c40b6ffb36ae41c53c"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source324-linux-performance/raw/core-runtime-pair/artifacts/candidate/emaxx",
+      "bytes": 15449568,
+      "sha256": "7f489699ca4a5bd2bf2722a279fdbe1c396c31625340f0755a553203131836db"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source324-linux-performance/raw/core-runtime-pair/artifacts/candidate/emaxx.pdmp",
+      "bytes": 21860936,
+      "sha256": "73e42393c50426672e61d2fe3ec2d66b3fc70425a4b29a1fb9774bfa3a4d1b06"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source324-linux-performance/raw/core-runtime-pair/oracle-inputs/emacs",
+      "bytes": 30924408,
+      "sha256": "5e1721732427d69d8af63211f1e3833ec21e40f97f4b7f6cd4cb224b72cebfcf"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source324-linux-performance/raw/core-runtime-pair/oracle-inputs/emacs.pdmp",
+      "bytes": 17723936,
+      "sha256": "bf4974228f3b3ea4374cec75a38eeb2bd0e7dd944da5bec4e6ad0387092502ae"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "source324 allocated symbol fields and identity, diagnostic performance",
+  "run_id": 38337576508,
+  "revisions": {
+    "baseline": "0118975994af1a337c5197bf07a44023bebc02bf",
+    "candidate": "999362622a68d6508c356541422f7a48ae6e2175"
+  },
+  "results_verified": 192,
+  "raw_body_geometric_ratio": 0.9940676049805933,
+  "paired_gnu_geometric_ratios": {
+    "baseline": 2.793118030293605,
+    "candidate": 2.7255569647574185
+  },
+  "per_case": [
+    {
+      "case": "interpreted-lexical",
+      "candidate_over_baseline": 0.9490705132746992,
+      "gnu_ratios": {
+        "baseline": 2.385579199338209,
+        "candidate": 2.374376856983162
+      },
+      "body_samples": {
+        "baseline": [
+          0.7997913360595703,
+          0.7755539417266846,
+          0.7907683849334717
+        ],
+        "candidate": [
+          0.7516450881958008,
+          0.7504949569702148,
+          0.726463794708252
+        ]
+      }
+    },
+    {
+      "case": "interpreted-dynamic",
+      "candidate_over_baseline": 0.8702861333045832,
+      "gnu_ratios": {
+        "baseline": 2.1681199333260803,
+        "candidate": 1.8949024386172824
+      },
+      "body_samples": {
+        "baseline": [
+          0.6224074363708496,
+          0.6712560653686523,
+          0.6236157417297363
+        ],
+        "candidate": [
+          0.5427241325378418,
+          0.5482995510101318,
+          0.5413317680358887
+        ]
+      }
+    },
+    {
+      "case": "interpreted-calls",
+      "candidate_over_baseline": 1.0300625500118339,
+      "gnu_ratios": {
+        "baseline": 2.7856175899227305,
+        "candidate": 2.6437730633214445
+      },
+      "body_samples": {
+        "baseline": [
+          1.1435844898223877,
+          1.057732105255127,
+          1.0320441722869873
+        ],
+        "candidate": [
+          1.0895302295684814,
+          1.0826165676116943,
+          1.100153923034668
+        ]
+      }
+    },
+    {
+      "case": "bytecode-calls",
+      "candidate_over_baseline": 0.9588119335682932,
+      "gnu_ratios": {
+        "baseline": 3.350005901477515,
+        "candidate": 3.0281328517191
+      },
+      "body_samples": {
+        "baseline": [
+          1.1915526390075684,
+          1.190988540649414,
+          1.2316508293151855
+        ],
+        "candidate": [
+          1.142474889755249,
+          1.141427993774414,
+          1.149261236190796
+        ]
+      }
+    },
+    {
+      "case": "native-execution",
+      "candidate_over_baseline": 1.0066587473835114,
+      "gnu_ratios": {
+        "baseline": 1.4249605249880497,
+        "candidate": 1.4002572402113287
+      },
+      "body_samples": {
+        "baseline": [
+          1.4091517925262451,
+          1.4342536926269531,
+          1.4891221523284912
+        ],
+        "candidate": [
+          1.4438040256500244,
+          1.4013686180114746,
+          1.461625337600708
+        ]
+      }
+    },
+    {
+      "case": "interpreted-to-native",
+      "candidate_over_baseline": 0.9939838334003458,
+      "gnu_ratios": {
+        "baseline": 2.7718819097110674,
+        "candidate": 2.7404483679869904
+      },
+      "body_samples": {
+        "baseline": [
+          0.7014844417572021,
+          0.6973457336425781,
+          0.7015783786773682
+        ],
+        "candidate": [
+          0.6935341358184814,
+          0.7031118869781494,
+          0.6972641944885254
+        ]
+      }
+    },
+    {
+      "case": "bytecode-to-native",
+      "candidate_over_baseline": 0.9340995657120057,
+      "gnu_ratios": {
+        "baseline": 3.6249258201263026,
+        "candidate": 3.367280049834959
+      },
+      "body_samples": {
+        "baseline": [
+          1.6215791702270508,
+          1.625596523284912,
+          1.625276803970337
+        ],
+        "candidate": [
+          1.5203232765197754,
+          1.5158488750457764,
+          1.5181703567504883
+        ]
+      }
+    },
+    {
+      "case": "native-to-interpreted",
+      "candidate_over_baseline": 0.9496030759460331,
+      "gnu_ratios": {
+        "baseline": 3.0494846044964476,
+        "candidate": 2.9396569723404613
+      },
+      "body_samples": {
+        "baseline": [
+          0.9685730934143066,
+          1.0021100044250488,
+          0.9641234874725342
+        ],
+        "candidate": [
+          0.9491391181945801,
+          0.8977887630462646,
+          0.91975998878479
+        ]
+      }
+    },
+    {
+      "case": "native-to-bytecode",
+      "candidate_over_baseline": 1.0570299337795928,
+      "gnu_ratios": {
+        "baseline": 3.164788974445882,
+        "candidate": 3.3197647495763
+      },
+      "body_samples": {
+        "baseline": [
+          0.9585049152374268,
+          0.95564866065979,
+          0.9483582973480225
+        ],
+        "candidate": [
+          0.9654691219329834,
+          1.0101492404937744,
+          1.0105218887329102
+        ]
+      }
+    },
+    {
+      "case": "cons-allocation",
+      "candidate_over_baseline": 0.9759400092988866,
+      "gnu_ratios": {
+        "baseline": 2.226847280981905,
+        "candidate": 2.1611408334609608
+      },
+      "body_samples": {
+        "baseline": [
+          0.6116483211517334,
+          0.6092672348022461,
+          0.6107323169708252
+        ],
+        "candidate": [
+          0.594158411026001,
+          0.5988502502441406,
+          0.5960381031036377
+        ]
+      }
+    },
+    {
+      "case": "list-traversal",
+      "candidate_over_baseline": 0.9574245416890389,
+      "gnu_ratios": {
+        "baseline": 2.268518745089083,
+        "candidate": 2.170557817117652
+      },
+      "body_samples": {
+        "baseline": [
+          1.0141584873199463,
+          0.9946441650390625,
+          0.989121675491333
+        ],
+        "candidate": [
+          0.9510209560394287,
+          0.9522967338562012,
+          0.9567675590515137
+        ]
+      }
+    },
+    {
+      "case": "mapcar",
+      "candidate_over_baseline": 1.069327111189222,
+      "gnu_ratios": {
+        "baseline": 2.5974102965601307,
+        "candidate": 2.558518890661898
+      },
+      "body_samples": {
+        "baseline": [
+          0.5212514400482178,
+          0.5022368431091309,
+          0.5155014991760254
+        ],
+        "candidate": [
+          0.5524425506591797,
+          0.5512397289276123,
+          0.5124585628509521
+        ]
+      }
+    },
+    {
+      "case": "explicit-gc",
+      "candidate_over_baseline": 1.105427272405246,
+      "gnu_ratios": {
+        "baseline": 1.1652578960860238,
+        "candidate": 1.2690995502367521
+      },
+      "body_samples": {
+        "baseline": [
+          0.26920533180236816,
+          0.24903321266174316,
+          0.2471001148223877
+        ],
+        "candidate": [
+          0.27528810501098633,
+          0.2934854030609131,
+          0.2614879608154297
+        ]
+      }
+    },
+    {
+      "case": "upstream-sort",
+      "candidate_over_baseline": 1.0077402382772374,
+      "gnu_ratios": {
+        "baseline": 5.596270556570133,
+        "candidate": 5.688488726879498
+      },
+      "body_samples": {
+        "baseline": [
+          2.9297168254852295,
+          2.973771095275879,
+          2.7744877338409424
+        ],
+        "candidate": [
+          2.909651517868042,
+          3.050157070159912,
+          2.9523935317993164
+        ]
+      }
+    },
+    {
+      "case": "upstream-undo",
+      "candidate_over_baseline": 1.0257923384527632,
+      "gnu_ratios": {
+        "baseline": 6.908750556377159,
+        "candidate": 6.81795113382127
+      },
+      "body_samples": {
+        "baseline": [
+          1.4155328273773193,
+          1.3766491413116455,
+          1.414463996887207
+        ],
+        "candidate": [
+          1.4780399799346924,
+          1.45094633102417,
+          1.3996944427490234
+        ]
+      }
+    },
+    {
+      "case": "upstream-bindat",
+      "candidate_over_baseline": 1.0404866708487746,
+      "gnu_ratios": {
+        "baseline": 3.480510001497865,
+        "candidate": 3.4565785026417686
+      },
+      "body_samples": {
+        "baseline": [
+          0.958420991897583,
+          0.904545783996582,
+          0.8885660171508789
+        ],
+        "candidate": [
+          0.9470987319946289,
+          0.9411678314208984,
+          0.8830358982086182
+        ]
+      }
+    }
+  ],
+  "qualification": "Three alternating full16 diagnostic pilots; all actual GNU/Emaxx results and modes and every sample independently verified. Published source, retained executables/images, native payloads, measurement inputs and build messages are checked. Remote GNU Lisp/bytecode/native-library paths not retained locally are bound by original before/after receipts, not rehashed from missing paths. Baseline is main01189759 with source323 production; candidate99936262 stores fields on allocated symbols, removes numeric IDs and side metadata, and includes the two generic completion/intern-soft repairs. No calibrated nine-round or every-workload3% acceptance. Missing public allocation counters, incorrect symbol allocation charge, remaining representations and adapters, ownership/reclamation, profiles and the complete performance goal remain open. The separate membership prototype is not measured here."
+}

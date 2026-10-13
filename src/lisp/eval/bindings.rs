@@ -25,13 +25,6 @@ fn module_file_suffix_value() -> Value {
     Value::String(suffix.into())
 }
 
-/// One entry of the obarray enumeration: a source holding the symbol
-/// object, or one holding only its name.
-pub(crate) enum KnownSymbolSource<'a> {
-    Symbol(&'a crate::lisp::types::SymbolName),
-    Name(&'a str),
-}
-
 impl Interpreter {
     pub fn lookup_var(&self, name: &str, env: &Env) -> Option<Value> {
         // data.c:find_symbol_value works on the symbol: a name that is an
@@ -771,15 +764,15 @@ impl Interpreter {
             return Ok(binding);
         };
         let mut current = next;
-        let mut seen: Vec<u32> = vec![symbol.id()];
+        let mut seen = vec![*symbol];
         loop {
-            if seen.contains(&current.id()) {
+            if seen.contains(&current) {
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("cyclic-function-indirection".into()),
                     Value::Symbol(*symbol),
                 ])));
             }
-            seen.push(current.id());
+            seen.push(current);
             let Some(binding) = self.raw_function_binding_symbol(&current, env) else {
                 return Err(LispError::VoidFunction(symbol.as_str().to_string()));
             };
@@ -805,10 +798,10 @@ impl Interpreter {
         };
         let mut seen = Vec::new();
         loop {
-            if current.as_str() == name || seen.contains(&current.id()) {
+            if current.as_str() == name || seen.contains(&current) {
                 return None;
             }
-            seen.push(current.id());
+            seen.push(current);
             match self.raw_function_binding_symbol(&current, env)?.kind() {
                 Kind::Symbol(next) => current = next,
                 other => return Some(other.value()),
@@ -861,155 +854,47 @@ impl Interpreter {
             .collect()
     }
 
-    /// The obarray's symbols, enumerated once per change of the tables
-    /// they are drawn from: `mapatoms' and completion walk twenty thousand
-    /// symbols, and comp.el's `comp--all-classes' does so for every
-    /// compilation.
-    pub(crate) fn known_symbols_shared(&self) -> Rc<Vec<crate::lisp::types::SymbolName>> {
+    /// lread.c:map_obarray enumerates the owning table. Snapshot its symbols
+    /// so a Lisp callback may intern names without borrowing the table across
+    /// evaluation. No field history or id-based deduplication participates.
+    pub(crate) fn known_symbols_shared(&self) -> Rc<Vec<SymbolName>> {
         let key = super::KnownSymbolsKey {
-            globals: self.globals.bound_len(),
-            variable_aliases: self.globals.aliases_len(),
-            functions: self.globals.function_definitions_len(),
-            symbol_properties: self.globals.plists_len(),
-            interned_symbols: self.interned_symbols.len(),
+            symbols: self.globals.names_len(),
             uninterned_standard: self.uninterned_standard_symbol_names.len(),
             epoch: self.obarray_epoch,
         };
         let mut cache = self.known_symbols_cache.borrow_mut();
-        if let Some(cached) = cache.as_mut() {
-            if cached.key == key {
-                return Rc::clone(&cached.symbols);
-            }
-            let old = cached.key;
-            let only_grew = key.epoch == old.epoch
-                && key.uninterned_standard == old.uninterned_standard
-                && key.globals >= old.globals
-                && key.variable_aliases >= old.variable_aliases
-                && key.functions >= old.functions
-                && key.symbol_properties >= old.symbol_properties
-                && key.interned_symbols >= old.interned_symbols;
-            if only_grew {
-                // Nothing left any table (the removal epoch is the
-                // same): the names each table gained since are the
-                // enumeration's new members, appended in table order.
-                // Their names were already in some table or are new to
-                // every table, so the set is the full walk's; the
-                // position of a name new to a table it joined is the
-                // end rather than that table's segment.
-                let symbols = Rc::make_mut(&mut cached.symbols);
-                let mut admit = |symbol: crate::lisp::types::SymbolName| {
-                    let name = symbol.as_str();
-                    if !crate::lisp::types::is_visible_symbol_name(name)
-                        || self.uninterned_standard_symbol_names.contains(name)
-                    {
-                        return;
-                    }
-                    if cached.seen.insert(symbol.id()) {
-                        symbols.push(symbol);
-                    }
-                };
-                for (symbol, _) in self.globals.iter().skip(old.globals) {
-                    admit(*symbol);
-                }
-                for (symbol, _) in self.globals.aliases().skip(old.variable_aliases) {
-                    admit(*symbol);
-                }
-                for (symbol, _) in self.globals.function_definitions().skip(old.functions) {
-                    admit(*symbol);
-                }
-                for (symbol, _) in self.globals.plists().skip(old.symbol_properties) {
-                    admit(*symbol);
-                }
-                for symbol in &self.interned_symbols[old.interned_symbols..] {
-                    admit(*symbol);
-                }
-                cached.key = key;
-                return Rc::clone(&cached.symbols);
-            }
+        if let Some(cached) = cache.as_ref()
+            && cached.key == key
+        {
+            return Rc::clone(&cached.symbols);
         }
-        let symbols = Rc::new(self.for_each_known_symbol(|source| match source {
-            KnownSymbolSource::Symbol(symbol) => *symbol,
-            KnownSymbolSource::Name(name) => crate::lisp::types::SymbolName::intern_str(name),
-        }));
-        let seen = symbols.iter().map(|symbol| symbol.id()).collect();
+        let symbols = Rc::new(
+            self.globals
+                .names()
+                .into_iter()
+                .filter(|symbol| {
+                    let name = symbol.as_str();
+                    crate::lisp::types::is_visible_symbol_name(name)
+                        && !self.uninterned_standard_symbol_names.contains(name)
+                })
+                .collect(),
+        );
         *cache = Some(super::KnownSymbolsCache {
             key,
             symbols: Rc::clone(&symbols),
-            seen,
         });
         symbols
     }
 
-    /// Note a removal from a table the obarray enumeration reads.
     pub(crate) fn note_obarray_removal(&mut self) {
         self.obarray_epoch = self.obarray_epoch.wrapping_add(1);
     }
 
-    /// The obarray's symbols in a fixed order: nil and t, the value cells,
-    /// the variable aliases, the function cells, the plists, then the
-    /// interned list; each name once, the uninterned and per-obarray
-    /// marked names and the names taken out of the standard obarray
-    /// excluded.  MAKE makes an item from the source, which holds either
-    /// the symbol object or only its name.
-    fn for_each_known_symbol<T>(&self, mut make: impl FnMut(KnownSymbolSource<'_>) -> T) -> Vec<T> {
-        use KnownSymbolSource as Source;
-        let candidates = ["nil", "t"]
-            .into_iter()
-            .map(Source::Name)
-            .chain(self.globals.iter().map(|(name, _)| Source::Symbol(name)))
-            .chain(
-                self.globals
-                    .aliases()
-                    .map(|(symbol, _)| Source::Symbol(symbol)),
-            )
-            .chain(
-                self.globals
-                    .function_definitions()
-                    .map(|(symbol, _)| Source::Symbol(symbol)),
-            )
-            .chain(
-                self.globals
-                    .plists()
-                    .map(|(symbol, _)| Source::Symbol(symbol)),
-            )
-            .chain(self.interned_symbols.iter().map(Source::Symbol));
-        let mut items = Vec::new();
-        let mut seen: HashSet<&str, crate::lisp::primitives::FnvBuildHasher> =
-            HashSet::with_capacity_and_hasher(
-                1 << 15,
-                crate::lisp::primitives::FnvBuildHasher::default(),
-            );
-        for candidate in candidates {
-            let name = match &candidate {
-                Source::Symbol(symbol) => symbol.as_str(),
-                Source::Name(name) => name,
-            };
-            if !crate::lisp::types::is_visible_symbol_name(name)
-                || self.uninterned_standard_symbol_names.contains(name)
-            {
-                continue;
-            }
-            if seen.insert(name) {
-                items.push(make(candidate));
-            }
-        }
-        items
-    }
-
-    /// O(1) membership probe for GNU's standard obarray.  Enumeration keeps
-    /// a deterministic vector view for `mapatoms' and completion, but
-    /// `intern-soft' is a hash-table operation upstream and must not rebuild
-    /// that complete view for every lookup.
     pub(crate) fn standard_obarray_contains_symbol(&self, name: &str) -> bool {
-        if self.uninterned_standard_symbol_names.contains(name) {
-            return false;
-        }
-        matches!(name, "nil" | "t")
-            || self.interned_symbol_names.contains(name)
-            || self.globals.is_bound_name(name)
-            || self.globals.alias_by_name(name).is_some()
-            || self.globals.function_definition_by_name(name).is_some()
-            || !self.symbol_plist(name).is_nil()
+        crate::lisp::types::is_visible_symbol_name(name)
+            && !self.uninterned_standard_symbol_names.contains(name)
+            && self.globals.contains_name(name)
     }
 
     pub(crate) fn standard_obarray_symbol_is_uninterned(&self, name: &str) -> bool {
@@ -1218,14 +1103,10 @@ impl Interpreter {
     }
 
     /// GNU keeps macro-ness and callable identity in the same function
-    /// cell. Rebinding changes that payload once; enumeration stores ids.
+    /// cell. Rebinding changes that payload without changing the obarray.
     pub fn set_function_binding(&mut self, name: &str, function: Option<Value>) {
         let symbol = SymbolName::intern_str(name);
-        let was_defined = self.globals.has_function_definition(&symbol);
         self.globals.set_function_definition(&symbol, function);
-        if was_defined && !self.globals.has_function_definition(&symbol) {
-            self.note_obarray_removal();
-        }
         self.note_function_binding_changed();
     }
 

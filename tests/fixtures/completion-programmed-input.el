@@ -1,0 +1,23 @@
+(let (results)
+   (dolist (operation '(try-completion all-completions test-completion))
+     (dolist (sample (list "ab" "éz" (unibyte-string 233 122)))
+       (let* ((input (propertize (copy-sequence sample) 'input-proof 'kept))
+              (predicate (list 'predicate-proof))
+              (answer (cons 'shared 'answer))
+              (expected-action (cond ((eq operation 'all-completions) t)
+                                     ((eq operation 'test-completion) 'lambda)))
+              (observed nil)
+              (returned
+               (funcall operation input
+                        (lambda (argument passed-predicate action)
+                          (setq observed
+                                (list (eq argument input)
+                                      (eq passed-predicate predicate)
+                                      (eq action expected-action)
+                                      (eq (get-text-property 0 'input-proof argument) 'kept)
+                                      (eq (multibyte-string-p argument) (multibyte-string-p input))))
+                          (aset argument 0 ?Z)
+                          answer)
+                        predicate)))
+         (push (list (eq returned answer) observed (= (aref input 0) ?Z)) results))))
+   (nreverse results))

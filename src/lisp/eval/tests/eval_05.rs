@@ -7265,7 +7265,8 @@ fn eieio_method_invocation_order_and_next_arguments_stay_coherent() {
                    (cl--class-allparents (cl-find-class 'D))
                    (cl--class-allparents (cl-find-class 'E)))",
             ),
-            eval_str(
+            eval_str_with(
+                &mut interp,
                 "'((eitest-B eitest-B-base1 eitest-B-base2
                     eieio-default-superclass record atom t)
                    (D D-base1 D-base2 D-base0
@@ -7332,7 +7333,7 @@ fn eieio_persistence_recurses_through_container_values_with_expected_reader_poli
                               (error (list 'read-error error)))))
                        (ignore-errors (delete-file file))))"#,
             ),
-            eval_str("'(save-ok read-ok)"),
+            eval_str_with(&mut interp, "'(save-ok read-ok)"),
             "nested persistence must survive both serialization phases"
         );
         let selector = eval_str_with(

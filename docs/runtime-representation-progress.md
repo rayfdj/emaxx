@@ -1,32 +1,49 @@
 # Current goal status — 13 October 2026
 
-The full goal remains active and incomplete. Main contains source318 at
-`55b109e8`; PR84 carries the validated source323 owner/retirement checkpoint.
-Source323 has **3,183 Linux and 3,171 macOS Rust passes**, each with two existing
-ignores, exact native artifacts, **7,928 matching Linux frozen outcomes** and
-**226 passing terminal scenarios / 686 comparisons**. Its original macOS frozen
-run remains failed; separate observations obtain the missing actual GNU answers
-and complete all 519 file inventories, with six unchanged diagnostic differences.
-This is not one passing macOS frozen run. Validation is closed with those limits;
-evidence publication and the authorized PR84 merge are next. See
-[HANDOVER.md](../HANDOVER.md) for raw evidence, original failures and commands.
+The full goal is **active and incomplete**.
+[PR85](https://github.com/rayfdj/emaxx/pull/85) delivers source324 `99936262`,
+following PR84's main merge `01189759`.
+Its 572 runtime inputs remain unchanged by this evidence update. Linux frozen
+matches **all 7,928 outcomes**; full Rust passes **3,190 on Linux and 3,178 on
+macOS**, each with two existing ignores and original native artifact identity.
+The macOS original matches **4,479 outcomes** before both 180-second Tramp
+timeouts; a separate bounded observation obtains **59 actual matching answers**.
+The exact remaining 200 files now add **3,377 matches and six unchanged diagnostic
+differences**. All 519 files are covered across separate attempts, preserving the
+original failure. **All 226 terminal scenarios / 686 comparisons now pass**,
+including independent full-screen, attribute and cursor checks. Checkpoint
+validation is closed with the macOS qualifications; the full goal remains open.
+See [HANDOVER.md](../HANDOVER.md) for current raw evidence and continuation.
 
-The separate [allocated-symbol/identity prototype](runtime-representation-symbol-payload-authority-draft.md)
-removes per-symbol metadata/history and numeric symbol IDs, reducing the allocated
-header from 72 to 64 bytes. Draft5 now passes strict checks, **397 controls per
-profile**, the complete local Rust gate (**3,178 passes / two existing ignores**)
-and **28 ordinary GNU comparisons**. The 15 earlier failures are retained; fourteen
-fixture setups now respect editor ownership without dropping assertions, and
-the Eshell regression is repaired through GNU's nonallocating `intern-soft` rule.
-The integrated 572-input patch preserves source323's native fixture and passes
-fresh strict checks and all 39 original integration tests. It remains unapplied
-to the published runtime and needs clean-source platform validation.
+Three Linux pilots verify **192 actual answers/modes**: source324's body aggregate
+is **0.593% faster than main**, but **2.725557× paired GNU**. Explicit GC regresses
+10.54%, mapcar 6.93%, and native-to-bytecode 5.70%. Separate allocation and exact
+locked-GC profiles are diagnostic, not proof of the regression's cause or final
+performance acceptance. The 48-byte charge still undercounts a 64-byte symbol.
 
-No prototype performance improvement is measured. The latest production pilots
-remain **2.767150× paired GNU / 0.53% slower than main `55b109e8`**. Ownership and
-reclamation, remaining adapters, physical counters, profiles, final audit, full
-final platform gates and the calibrated nine-round/every-case 3% requirement
-remain open. Earlier sections below record historical checkpoints.
+The [separate membership draft6](runtime-representation-symbol-payload-authority-draft.md)
+replays 580 inputs, passes strict checks and **403 controls per profile**, and
+fixes a global captured-menu-table root retaining another editor's symbol graph.
+It preserves earlier failed attempts and remains unapplied. Its 38 ordinary
+comparisons / 76 processes match GNU in actual modes. The separate identical
+constant/store probe still has 20 false predicates against GNU's 40 true ones;
+this adapter repair and complete library/platform validation remain open.
+
+## Full-goal requirements — current source324 checkpoint
+
+| Requirement | Current evidence and remaining work |
+| --- | --- |
+| 1. Reproducible starting point | Original and corrected baselines and GNU/Emaxx provenance are retained. The replacement macOS oracle is identified; the original `591acf7b` reconstruction limit remains explicit. Final corrected-baseline measurements and provenance remain required. |
+| 2. GNU architectural reference | Object, allocation, VM, native and symbol changes have C mappings. Final review of every deviation, Rust soundness and measured costs remains open. |
+| 3. Compact authoritative objects | One-word values, two-word conses and shared string/vector/native payload work are retained. Source324 puts fields and identity on allocated symbols and removes side metadata, field histories and numeric IDs. Membership draft6 remains separate; remaining host/forwarded adapters, property intervals and pure storage are unfinished. |
+| 4. Allocation, GC and ownership | Existing survival and reclamation coverage remains; source324 ownership tests pass. Draft6 fixes one more cross-editor image root. Descriptor reclamation, public ownership/internal borrow review, honest physical charges, real allocation counters and collection-cost explanations remain open. Seven allocation variables and unsupported `memory-use-counts` are not repaired by this checkpoint. |
+| 5. VM/function-call work | Earlier direct bytecode and call paths remain. Linux allocation and macOS locked-GC samples are retained; the latter verifies 24 answers and 32 collections per repetition. These diagnostics do not explain the measured GC regression. Further VM/call profiling and equivalent-work optimizations remain required. |
+| 6. Adversarial audit | Original evaluator, roots, ABI, mutation and evidence-corruption checks remain. Source324 preserves actual completion input identity and nonallocating obarray probes. Draft6 adds membership and image-owner checks without dropping assertions. Final review of runtime, startup, images, native loading, ownership, selection, comparison and reporting remains required. |
+| 7. Equivalent performance | All 16 workloads, calibration, nine rounds and the every-workload upper 95% GNU-ratio ceiling of 1.03 remain locked. Three source324 pilots verify 192 answers/modes: 0.994068× main and 2.725557× GNU overall. All unfavorable samples remain. Missing counters, profile-based slowdown explanations and final calibrated acceptance remain open. |
+| 8. Complete validation | Clean source324 passes strict checks, 3,190 Linux and 3,178 macOS Rust tests (two existing ignores each), native identity and 519 Linux frozen files/7,928 outcomes. The macOS original and separate longer Tramp answer retain distinct verdicts; the exact tail is audited with six unchanged diagnostic differences and all226 original terminal scenarios/686 comparisons pass. Final-source Linux/macOS, release and complete affected contracts remain required after further implementation. |
+| 9. Independently checkable delivery | Portable patches, raw logs, commands, profiles, samples and failed predecessors are retained. Large excluded binary/image inputs are explicitly identified. PR84 is merged; PR85 has closed checkpoint validation and existing merge authorization. Verify its current GitHub state before merging twice. The final adversarial source/evidence review, remaining architecture and unchanged performance requirement remain open. |
+
+Earlier sections below are historical snapshots, not the current verdict.
 
 ## Source318 application after the main merge — 9 October 2026
 
@@ -1352,7 +1369,7 @@ performance remain required.
 Main remains the fully validated
 source174 checkpoint at `21d20f0e`. No current performance-parity claim exists.
 
-## Full-goal requirements — current
+## Historical full-goal requirements — source312/source313
 
 This map reflects main merge `6ff49314` (PR #79), containing production source312
 and source313's fixture-only census correction. There are 552 runtime/build/fixture

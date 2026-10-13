@@ -379,40 +379,12 @@ static UNINTERNED_SYMBOL_BOOK: ProcessTable<
     HashSet<symbols::NameEntry, crate::lisp::primitives::FnvBuildHasher>,
 > = ProcessTable::new();
 
-/// Each allocated symbol owns its id. Both lookup tables above are already
-/// process-wide, so moving an interpreter between serialized OS-thread entries
-/// needs no second name-to-id registry or lock. The counters remain temporary
-/// until symbol fields move out of the per-interpreter indexed adapter.
-static NEXT_SYMBOL_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-static NEXT_UNINTERNED_SYMBOL_ID: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
-
-/// Uninterned symbols draw ids from their own counter, marked by this bit,
-/// so the dense per-interpreter cell table is sized by the number of
-/// interned names rather than by every `make-symbol' ever evaluated.
-pub(crate) const UNINTERNED_SYMBOL_ID_BIT: u32 = 1 << 31;
-
-fn next_symbol_id(uninterned: bool) -> u32 {
-    if uninterned {
-        let serial = NEXT_UNINTERNED_SYMBOL_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            serial < UNINTERNED_SYMBOL_ID_BIT,
-            "uninterned symbol id space exhausted"
-        );
-        serial | UNINTERNED_SYMBOL_ID_BIT
-    } else {
-        let id = NEXT_SYMBOL_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        assert!(id < UNINTERNED_SYMBOL_ID_BIT, "symbol id space exhausted");
-        id
-    }
-}
-
 /// alloc.c's `sweep_symbols': remove the weak lookup entry before releasing
 /// the allocation whose own text is its key. The book holds no extra string
 /// and never roots a symbol. It is a migration adapter for name-keyed callers.
 pub(crate) fn sweep_symbol_cells(epoch: u32) {
     crate::lisp::alloc::sweep_symbols(epoch, |cell| {
-        if cell.id & UNINTERNED_SYMBOL_ID_BIT == 0 {
+        if !cell.is_uninterned() {
             return;
         }
         UNINTERNED_SYMBOL_BOOK.with_borrow_mut(|book| {
@@ -460,13 +432,16 @@ impl SymbolName {
                     text.as_str()
                 }))
             });
-            let id = next_symbol_id(false);
             let name = Self(crate::lisp::alloc::allocate_symbol(
                 crate::lisp::alloc::SymbolCell {
                     internal: text,
                     lisp_name: Cell::new(lisp_name),
+                    function: Cell::new(Value::Nil),
+                    plist: Cell::new(Value::Nil),
+                    payload: Cell::new(Default::default()),
+                    flags: Cell::new(0),
+                    state: Cell::new(0),
                     mark: MarkBit::default(),
-                    id,
                 },
             ));
             names.insert(symbols::NameEntry(name));
@@ -496,15 +471,12 @@ impl SymbolName {
         Self::intern(text.to_owned())
     }
 
-    /// The id of the state TEXT currently names, if any state does: an
-    /// interned name that was never mentioned, or an uninterned symbol that
-    /// died, has no cell anywhere. Both tables are process-wide, including
-    /// symbols allocated by another serialized OS-thread entry.
-    pub(crate) fn id_of(text: &str) -> Option<u32> {
+    /// The existing object, without allocating.
+    pub(crate) fn find(text: &str) -> Option<Self> {
         if text.contains(UNINTERNED_SYMBOL_MARKER_CHAR) {
-            return Self::live_uninterned(text).map(|name| name.id());
+            return Self::live_uninterned(text);
         }
-        INTERNED_SYMBOL_NAMES.with_borrow(|names| names.get(text).map(|name| name.id()))
+        INTERNED_SYMBOL_NAMES.with_borrow(|names| names.get(text).map(|name| name.0))
     }
 
     /// The interned symbol named TEXT, through a cache keyed by the text's
@@ -547,15 +519,19 @@ impl SymbolName {
 
     fn new_uninterned(lisp_name: Value, internal: String) -> Self {
         crate::lisp::native_comp::note_lisp_allocation(48);
-        let id = next_symbol_id(true);
         let name = Self(crate::lisp::alloc::allocate_symbol(
             crate::lisp::alloc::SymbolCell {
                 internal,
                 lisp_name: Cell::new(lisp_name),
+                function: Cell::new(Value::Nil),
+                plist: Cell::new(Value::Nil),
+                payload: Cell::new(Default::default()),
+                flags: Cell::new(0),
+                state: Cell::new(0),
                 mark: MarkBit::default(),
-                id,
             },
         ));
+        name.cell().mark_uninterned();
         UNINTERNED_SYMBOL_BOOK.with_borrow_mut(|book| {
             book.replace(symbols::NameEntry(name));
         });
@@ -570,12 +546,6 @@ impl SymbolName {
 
     pub(crate) fn identity_ptr(&self) -> usize {
         self.0.identity()
-    }
-
-    /// The process-wide symbol id (see `SymbolCell::id'); an
-    /// uninterned symbol's id carries `UNINTERNED_SYMBOL_ID_BIT'.
-    pub(crate) fn id(&self) -> u32 {
-        self.0.id
     }
 
     pub fn into_string(self) -> String {
@@ -1952,7 +1922,7 @@ pub(crate) fn assq_binding(
     environment: &Value,
     symbol: &SymbolName,
 ) -> Result<Option<SharedCons>, LispError> {
-    assq_environment(environment, |bound| bound.id() == symbol.id())
+    assq_environment(environment, |bound| bound == symbol)
 }
 
 /// `assq_binding' for a name in hand: the binding whose symbol has that
@@ -3505,7 +3475,10 @@ mod tests {
             crate::lisp::runtime::with_runtime(|| {
                 let interned = SymbolName::intern_str(INTERNED);
                 let uninterned = SymbolName::intern_str(&first_text);
-                (interned.id(), uninterned.id())
+                uninterned.cell().set_value(Value::Integer(73));
+                uninterned.cell().function.set(Value::T);
+                uninterned.cell().plist.set(Value::Integer(91));
+                (interned.identity_ptr(), uninterned.identity_ptr())
             })
         })
         .join()
@@ -3514,10 +3487,19 @@ mod tests {
         let second_text = text.clone();
         std::thread::spawn(move || {
             crate::lisp::runtime::with_runtime(|| {
-                assert_eq!(SymbolName::id_of(INTERNED), Some(interned));
-                assert_eq!(SymbolName::intern_str(INTERNED).id(), interned);
-                assert_eq!(SymbolName::id_of(&second_text), Some(uninterned));
-                assert_eq!(SymbolName::intern_str(&second_text).id(), uninterned);
+                assert_eq!(
+                    SymbolName::find(INTERNED).map(|symbol| symbol.identity_ptr()),
+                    Some(interned)
+                );
+                assert_eq!(SymbolName::intern_str(INTERNED).identity_ptr(), interned);
+                assert_eq!(
+                    SymbolName::find(&second_text).map(|symbol| symbol.identity_ptr()),
+                    Some(uninterned)
+                );
+                assert_eq!(
+                    SymbolName::intern_str(&second_text).identity_ptr(),
+                    uninterned
+                );
             });
         })
         .join()
@@ -3528,16 +3510,35 @@ mod tests {
         let collected_text = text.clone();
         std::thread::spawn(move || {
             crate::lisp::runtime::with_runtime(|| {
+                let host = super::symbols::SymbolOwner::default();
                 let mut interp = crate::lisp::eval::Interpreter::new();
                 let mut env = super::Env::new();
                 crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
                     .expect("collect after both creator threads have exited");
-                assert_eq!(SymbolName::id_of(INTERNED), Some(interned));
-                assert_eq!(SymbolName::id_of(&collected_text), None);
+                // The new editor has its own canonical objects. Return to
+                // the original host owner for the unchanged lifetime checks.
+                assert_ne!(SymbolName::intern_str(INTERNED).identity_ptr(), interned);
+                let _host = host.enter();
+                assert_eq!(
+                    SymbolName::find(INTERNED).map(|symbol| symbol.identity_ptr()),
+                    Some(interned)
+                );
+                assert_eq!(
+                    SymbolName::find(&collected_text).map(|symbol| symbol.identity_ptr()),
+                    None
+                );
                 assert!(SymbolName::live_uninterned(&collected_text).is_none());
                 let replacement = SymbolName::intern_str(&collected_text);
-                assert_ne!(replacement.id(), uninterned);
-                assert_eq!(SymbolName::id_of(&collected_text), Some(replacement.id()));
+                // The free list may reuse the old address after reclamation.
+                // The replacement must have freshly initialized object fields.
+                assert!(replacement.cell().is_uninterned());
+                assert!(replacement.cell().value().is_none());
+                assert!(replacement.cell().function.get().is_nil());
+                assert!(replacement.cell().plist.get().is_nil());
+                assert_eq!(
+                    SymbolName::find(&collected_text).map(|symbol| symbol.identity_ptr()),
+                    Some(replacement.identity_ptr())
+                );
             });
         })
         .join()
