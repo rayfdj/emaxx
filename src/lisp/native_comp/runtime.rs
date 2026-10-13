@@ -13,7 +13,7 @@ use super::abi::{
     THREAD_HANDLERLIST_OFFSET, THREAD_STATE_SIZE,
 };
 use crate::lisp::eval::{SavedExcursion, SavedRestriction, SpecialBindingRestore};
-use crate::lisp::primitives::{symbol_with_pos_parts, wrong_type_argument};
+use crate::lisp::primitives::wrong_type_argument;
 #[cfg(test)]
 use crate::lisp::types::SharedCons;
 use crate::lisp::types::{ConsCell, Kind, LispErrorKind, SymbolName, Value};
@@ -2663,36 +2663,24 @@ fn invoke_native_symbol_value(active: &mut ActiveCall, word: NativeWord) -> Opti
     if word & TAG_MASK != TAG_SYMBOL {
         return None;
     }
-    let symbol_state = if word == 0 || word == native_boolean(true) {
-        None
+    let symbol = if word == 0 {
+        crate::lisp::types::symbols::builtin_boolean(false)
+    } else if word == native_boolean(true) {
+        crate::lisp::types::symbols::builtin_boolean(true)
     } else {
-        Some(unsafe { (&*active.runtime).heap.bare_symbol_value_state(word) }?)
+        unsafe { (&*active.runtime).heap.bare_symbol_value_state(word) }?
     };
-    let name = match &symbol_state {
-        Some(symbol) => symbol.as_str(),
-        None if word == 0 => "nil",
-        None => "t",
-    };
-    if let Some(symbol) = &symbol_state
-        && let Some(value) =
-            unsafe { &*active.interpreter }.plain_global_binding_value_symbol(symbol)
+    if let Some(value) = unsafe { &*active.interpreter }.plain_global_binding_value_symbol(&symbol)
     {
         return Some(value.word());
     }
-    let value = match &symbol_state {
-        Some(symbol) => unsafe { &*active.interpreter }.symbol_value_cell_symbol(symbol),
-        None => unsafe { &*active.interpreter }.symbol_value_cell(name),
-    };
+    let value = unsafe { &*active.interpreter }.symbol_value_cell_symbol(&symbol);
     let value = value.map_err(|error| match error.into_kind() {
         // data.c:Fsymbol_value uses the original SYMBOL in xsignal1,
         // not the name of the final cell reached through a variable alias.
         LispErrorKind::Void(_) => LispError::SignalValue(Value::list([
             Value::symbol("void-variable"),
-            match &symbol_state {
-                Some(symbol) => Value::Symbol(*symbol),
-                None if word == 0 => Value::Nil,
-                None => Value::T,
-            },
+            Value::Symbol(symbol),
         ])),
         error => LispError::from(error),
     });
@@ -2997,10 +2985,10 @@ fn native_get_symbol_name(
     symbol: NativeWord,
 ) -> Result<SymbolName, LispError> {
     if symbol == 0 {
-        return Ok(SymbolName::from("nil"));
+        return Ok(crate::lisp::types::symbols::builtin_boolean(false));
     }
     if symbol == native_boolean(true) {
-        return Ok(SymbolName::from("t"));
+        return Ok(crate::lisp::types::symbols::builtin_boolean(true));
     }
     if symbol & TAG_MASK == TAG_SYMBOL
         && let Some(name) = unsafe { (&*active.runtime).heap.bare_symbol_value_state(symbol) }
@@ -3009,16 +2997,11 @@ fn native_get_symbol_name(
     }
 
     let value = decode_word(active, symbol)?;
-    if let Ok(name) = value.as_symbol() {
-        return Ok(SymbolName::from(name));
-    }
-    if unsafe { &*active.interpreter }.symbols_with_positions_enabled()
-        && let Some((bare, _)) = symbol_with_pos_parts(unsafe { &*active.interpreter }, &value)
-        && let Ok(name) = bare.as_symbol()
-    {
-        return Ok(SymbolName::from(name));
-    }
-    Err(wrong_type_argument("symbolp", value))
+    crate::lisp::primitives::checked_symbol_identity(
+        unsafe { &*active.interpreter },
+        &value,
+        unsafe { &*active.environment },
+    )
 }
 
 /// fns.c:Fget: CHECK_SYMBOL, the overriding-plist Fassq/plist_get pair, and
@@ -4138,6 +4121,7 @@ impl NativeHeap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lisp::primitives::symbol_with_pos_parts;
 
     #[test]
     fn positioned_symbol_fields_use_the_public_native_word_without_preparation() {
@@ -6678,6 +6662,80 @@ mod tests {
     }
 
     #[test]
+    fn symbol_constant_native_booleans_keep_their_actual_cells() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let property = Value::symbol("native-boolean-identity");
+        for (old, name) in [(Value::Nil, "nil"), (Value::T, "t")] {
+            crate::lisp::primitives::call(
+                &mut interpreter,
+                "put",
+                &[old, property, Value::Integer(79)],
+                &mut environment,
+            )
+            .expect("property belongs to the original boolean");
+            crate::lisp::primitives::call(&mut interpreter, "unintern", &[old], &mut environment)
+                .expect("remove actual boolean from the obarray");
+            let new = crate::lisp::primitives::call(
+                &mut interpreter,
+                "intern",
+                &[Value::string(name)],
+                &mut environment,
+            )
+            .expect("same-spelled replacement");
+            assert!(!old.eq_value(new));
+            crate::lisp::primitives::call(
+                &mut interpreter,
+                "set",
+                &[new, Value::Integer(31)],
+                &mut environment,
+            )
+            .expect("the replacement has an ordinary value cell");
+            crate::lisp::primitives::call(
+                &mut interpreter,
+                "put",
+                &[new, property, Value::Integer(53)],
+                &mut environment,
+            )
+            .expect("the replacement has its own plist");
+            for entry in [
+                call_symbol_value as *const c_void,
+                call_symbol_value_by_subr as *const c_void,
+            ] {
+                for (symbol, expected) in [(old, old), (new, Value::Integer(31))] {
+                    assert_eq!(
+                        runtime
+                            .invoke(
+                                &mut interpreter,
+                                &mut environment,
+                                entry,
+                                NativeCallingConvention::Fixed,
+                                &[symbol],
+                            )
+                            .expect("native symbol-value reads the actual object"),
+                        expected
+                    );
+                }
+            }
+            for (symbol, expected) in [(old, 79), (new, 53)] {
+                assert_eq!(
+                    runtime
+                        .invoke(
+                            &mut interpreter,
+                            &mut environment,
+                            direct_native_get as *const c_void,
+                            NativeCallingConvention::Fixed,
+                            &[symbol, property],
+                        )
+                        .expect("native get reads the actual object's plist"),
+                    Value::Integer(expected)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn native_symbol_value_errors_preserve_the_original_symbol() {
         // data.c:Fsymbol_value passes the original SYMBOL to xsignal1,
         // not the final alias target or a reconstructed bare symbol.
@@ -6685,10 +6743,16 @@ mod tests {
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
         interpreter
-            .set_variable_alias("value-error-alias", "value-error-target")
+            .set_variable_alias_symbol(
+                &crate::lisp::types::SymbolName::intern_str("value-error-alias"),
+                &crate::lisp::types::SymbolName::intern_str("value-error-target"),
+            )
             .expect("alias to a void variable");
         interpreter
-            .set_variable_alias("value-error-target", "value-error-final")
+            .set_variable_alias_symbol(
+                &crate::lisp::types::SymbolName::intern_str("value-error-target"),
+                &crate::lisp::types::SymbolName::intern_str("value-error-final"),
+            )
             .expect("extend the alias chain after its first link was installed");
         interpreter.set_global_binding("symbols-with-pos-enabled", Value::T);
         let uninterned = crate::lisp::primitives::call(
@@ -6904,7 +6968,10 @@ mod tests {
         );
         interpreter.set_global_binding("native-hot-target", Value::Integer(91));
         interpreter
-            .set_variable_alias("native-hot-global", "native-hot-target")
+            .set_variable_alias_symbol(
+                &crate::lisp::types::SymbolName::intern_str("native-hot-global"),
+                &crate::lisp::types::SymbolName::intern_str("native-hot-target"),
+            )
             .expect("install variable alias");
         assert_eq!(
             runtime

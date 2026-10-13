@@ -92,6 +92,7 @@ const KEY_NAMES: &[&str] = &[
 struct Symbols {
     names: RefCell<Names>,
     by_address: RefCell<AddressNames>,
+    builtins: [Cell<Option<SymbolName>>; 2],
     keys: [Cell<Option<SymbolName>>; KEY_NAMES.len()],
     hash_tests: RefCell<DescriptorPool>,
 }
@@ -101,6 +102,7 @@ impl Default for Symbols {
         Self {
             names: RefCell::new(Names::default()),
             by_address: RefCell::new(AddressNames::default()),
+            builtins: std::array::from_fn(|_| Cell::new(None)),
             keys: std::array::from_fn(|_| Cell::new(None)),
             hash_tests: RefCell::new(DescriptorPool::default()),
         }
@@ -167,6 +169,22 @@ impl SymbolOwner {
         self.0.names.borrow().contains(name)
     }
 
+    pub(crate) fn find(&self, name: &str) -> Option<SymbolName> {
+        self.0.names.borrow().get(name).map(|entry| entry.0)
+    }
+
+    /// lread.c:Funintern removes the bucket entry, preserving the object and
+    /// its fields while it is otherwise reachable. A later miss allocates anew.
+    pub(crate) fn remove(&self, name: &str) -> Option<SymbolName> {
+        let symbol = self.0.names.borrow_mut().take(name)?.0;
+        symbol.cell().mark_uninterned();
+        self.0
+            .by_address
+            .borrow_mut()
+            .retain(|_, cached| *cached != symbol);
+        Some(symbol)
+    }
+
     pub(crate) fn names(&self) -> Vec<SymbolName> {
         self.0.names.borrow().iter().map(|entry| entry.0).collect()
     }
@@ -194,6 +212,39 @@ impl Drop for EditorSymbolScope {
 }
 
 pub(super) struct InternedNames;
+
+pub(super) fn note_builtin_boolean(symbol: SymbolName) {
+    let truth = match symbol.as_str() {
+        "nil" => false,
+        "t" => true,
+        _ => return,
+    };
+    with_current(|symbols| {
+        let slot = &symbols.builtins[usize::from(truth)];
+        if slot.get().is_none() {
+            symbol.cell().mark_builtin_boolean(truth);
+            // lread.c:syms_of_lread initializes the actual Qnil/Qt cells.
+            // A fresh same-named symbol after unintern does not enter here.
+            symbol.cell().set_constant(true);
+            symbol
+                .cell()
+                .flags
+                .set(crate::lisp::eval::symbol_cell_flags::SPECIAL);
+            symbol
+                .cell()
+                .set_value(if truth { Value::T } else { Value::Nil });
+            slot.set(Some(symbol));
+        }
+    });
+}
+
+pub(crate) fn builtin_boolean(truth: bool) -> SymbolName {
+    with_current(|symbols| {
+        symbols.builtins[usize::from(truth)]
+            .get()
+            .unwrap_or_else(|| SymbolName::intern_str(if truth { "t" } else { "nil" }))
+    })
+}
 
 impl InternedNames {
     pub(super) fn with_borrow<R>(&self, body: impl FnOnce(&Names) -> R) -> R {
@@ -280,8 +331,8 @@ pub(crate) fn is_keyboard_variable(symbol: &SymbolName) -> bool {
 }
 
 fn mark_names(symbols: &Symbols, mark: &mut dyn FnMut(&Value)) {
-    for name in symbols.names.borrow().iter() {
-        let value = Value::Symbol(name.0);
+    fn mark_symbol(name: SymbolName, mark: &mut dyn FnMut(&Value)) {
+        let value = Value::Symbol(name);
         if matches!(value.kind(), super::Kind::Nil | super::Kind::T) {
             // Fixed nil/t ABI words still use their allocated name cells.
             name.mark_bit().mark(super::current_mark_epoch());
@@ -294,6 +345,18 @@ fn mark_names(symbols: &Symbols, mark: &mut dyn FnMut(&Value)) {
         } else {
             mark(&value);
         }
+    }
+    for name in symbols.names.borrow().iter() {
+        mark_symbol(name.0, mark);
+    }
+    // GNU's lispsym/static Qsymbol references remain roots after unintern.
+    for name in symbols
+        .builtins
+        .iter()
+        .chain(symbols.keys.iter())
+        .filter_map(Cell::get)
+    {
+        mark_symbol(name, mark);
     }
     symbols.hash_tests.borrow().mark_roots(mark);
 }

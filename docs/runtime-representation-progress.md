@@ -34,13 +34,15 @@ and 1.15% slower aggregate. It remains unapplied because these pilots do not
 establish an overall benefit. All experiment processes have ended; continue
 the known symbol constant/store repair. No final performance acceptance exists.
 
-The [separate membership draft6](runtime-representation-symbol-payload-authority-draft.md)
-replays 580 inputs, passes strict checks and **403 controls per profile**, and
-fixes a global captured-menu-table root retaining another editor's symbol graph.
-It preserves earlier failed attempts and remains unapplied. Its 38 ordinary
-comparisons / 76 processes match GNU in actual modes. The separate identical
-constant/store probe still has 20 false predicates against GNU's 40 true ones;
-this adapter repair and complete library/platform validation remain open.
+The [object-state draft17 continuation](runtime-representation-symbol-payload-authority-draft.md)
+includes membership draft6 and now fixes the known constant/store identity
+probe in interpreted, bytecode and native execution. All 584 input bytes/modes
+replay from source324. Strict checks have zero warnings; all 407 affected controls
+pass in each profile, and all 44 ordinary GNU comparisons / 88 processes match,
+preserving all prior 403 controls and 38 comparisons. Draft15's native-only failure
+and earlier compiler/lint failures remain preserved. Full macOS Rust is running;
+clean platform/frozen/terminal validation and performance remain pending before
+its checkpoint merge. Main is still source324 through `94295d0a`.
 
 ## Full-goal requirements — current source324 checkpoint
 
@@ -48,10 +50,10 @@ this adapter repair and complete library/platform validation remain open.
 | --- | --- |
 | 1. Reproducible starting point | Original and corrected baselines and GNU/Emaxx provenance are retained. The replacement macOS oracle is identified; the original `591acf7b` reconstruction limit remains explicit. Final corrected-baseline measurements and provenance remain required. |
 | 2. GNU architectural reference | Object, allocation, VM, native and symbol changes have C mappings. Final review of every deviation, Rust soundness and measured costs remains open. |
-| 3. Compact authoritative objects | One-word values, two-word conses and shared string/vector/native payload work are retained. Source324 puts fields and identity on allocated symbols and removes side metadata, field histories and numeric IDs. Membership draft6 remains separate; remaining host/forwarded adapters, property intervals and pure storage are unfinished. |
-| 4. Allocation, GC and ownership | Existing survival and reclamation coverage remains; source324 ownership tests pass. Draft6 fixes one more cross-editor image root. Descriptor reclamation, public ownership/internal borrow review, honest physical charges, real allocation counters and collection-cost explanations remain open. Seven allocation variables and unsupported `memory-use-counts` are not repaired by this checkpoint. |
+| 3. Compact authoritative objects | One-word values, two-word conses and shared string/vector/native payload work are retained. Source324 puts fields and identity on allocated symbols and removes side metadata, field histories and numeric IDs. Object-state draft17 adds actual membership/constant/native identity; remaining host/forwarded adapters, property intervals and pure storage are unfinished. |
+| 4. Allocation, GC and ownership | Existing survival and reclamation coverage remains; source324 ownership tests pass. The continuation fixes one more cross-editor image root. Descriptor reclamation, public ownership/internal borrow review, honest physical charges, real allocation counters and collection-cost explanations remain open. Seven allocation variables and unsupported `memory-use-counts` are not repaired by this checkpoint. |
 | 5. VM/function-call work | Earlier direct bytecode and call paths remain. Linux allocation and macOS locked-GC samples are retained; the latter verifies 24 answers and 32 collections per repetition. These diagnostics do not explain the measured GC regression. Further VM/call profiling and equivalent-work optimizations remain required. |
-| 6. Adversarial audit | Original evaluator, roots, ABI, mutation and evidence-corruption checks remain. Source324 preserves actual completion input identity and nonallocating obarray probes. Draft6 adds membership and image-owner checks without dropping assertions. Final review of runtime, startup, images, native loading, ownership, selection, comparison and reporting remains required. |
+| 6. Adversarial audit | Original evaluator, roots, ABI, mutation and evidence-corruption checks remain. Source324 preserves actual completion input identity and nonallocating obarray probes. The continuation adds membership, constant/alias/native and image-owner checks without dropping assertions. Final review of runtime, startup, images, native loading, ownership, selection, comparison and reporting remains required. |
 | 7. Equivalent performance | All 16 workloads, calibration, nine rounds and the every-workload upper 95% GNU-ratio ceiling of 1.03 remain locked. Three source324 pilots verify 192 answers/modes: 0.994068× main and 2.725557× GNU overall. All unfavorable samples remain. Missing counters, profile-based slowdown explanations and final calibrated acceptance remain open. |
 | 8. Complete validation | Clean source324 passes strict checks, 3,190 Linux and 3,178 macOS Rust tests (two existing ignores each), native identity and 519 Linux frozen files/7,928 outcomes. The macOS original and separate longer Tramp answer retain distinct verdicts; the exact tail is audited with six unchanged diagnostic differences and all226 original terminal scenarios/686 comparisons pass. Final-source Linux/macOS, release and complete affected contracts remain required after further implementation. |
 | 9. Independently checkable delivery | Portable patches, raw logs, commands, profiles, samples and failed predecessors are retained. Large excluded binary/image inputs are explicitly identified. PR85 is merged into main `758d2138` with its receipt retained. Both cons-tracing experiments remain separate and unapplied. The final adversarial source/evidence review, remaining architecture and unchanged performance requirement remain open. |

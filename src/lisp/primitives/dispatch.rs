@@ -41,9 +41,7 @@ pub(crate) use lists::{
     next_kbd_macro_event, prepare_kbd_macro_minibuffer_entry,
     read_minibuffer_text_from_kbd_macro_inner,
 };
-pub(crate) use misc_keymaps::{
-    oclosure_type_of, restore_unicode_menu_case_table, unicode_menu_case_table,
-};
+pub(crate) use misc_keymaps::{oclosure_type_of, restore_unicode_menu_case_table};
 mod overlays;
 mod predicates;
 mod search_coding;

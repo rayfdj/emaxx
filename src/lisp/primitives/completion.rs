@@ -292,17 +292,13 @@ pub(crate) fn unintern_from_obarray(
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if interp.is_standard_obarray_id(id.id) {
-        let symbol_name = match target.kind() {
-            Kind::Nil => "nil".to_string(),
-            Kind::T => "t".to_string(),
-            Kind::Symbol(name) => {
-                let visible = crate::lisp::types::visible_symbol_name(&name);
-                if visible != name {
-                    return Ok(false);
-                }
-                visible.to_string()
+        let symbol_name = if let Ok(symbol) = checked_symbol_identity(interp, target, env) {
+            if !interp.standard_obarray_contains_object(&symbol) {
+                return Ok(false);
             }
-            _ => apply_symbol_shorthands_in_env(interp, &string_text(target)?, env)?,
+            symbol.as_str().to_owned()
+        } else {
+            apply_symbol_shorthands_in_env(interp, &string_text(target)?, env)?
         };
         return Ok(interp.unintern_standard_symbol_name(&symbol_name));
     }

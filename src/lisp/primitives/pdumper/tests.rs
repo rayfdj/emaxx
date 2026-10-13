@@ -31,6 +31,256 @@ fn dump(interp: &mut Interpreter, roots: Vec<(RootSlot, Value)>) -> Vec<u8> {
 }
 
 #[test]
+fn symbol_constant_state_survives_image_copy_and_restore() {
+    use crate::lisp::types::Env;
+
+    fn check(interp: &mut Interpreter, graph: Value) {
+        interp.select_symbol_owner();
+        let Kind::Vector(slots) = graph.kind() else {
+            panic!("constant graph remains a vector")
+        };
+        let old_keyword = slots.get(0).expect("detached keyword in graph");
+        let new_keyword = slots.get(1).expect("replacement keyword in graph");
+        let private = slots.get(2).expect("private keyword in graph");
+        let old_constant = slots.get(3).expect("detached built-in constant in graph");
+        let fresh = slots.get(4).expect("replacement plain symbol in graph");
+        let alias = slots.get(5).expect("constant alias in graph");
+        let previous = slots.get(6).expect("original constant value in graph");
+        assert!(!old_keyword.eq_value(new_keyword));
+        assert!(!old_constant.eq_value(fresh));
+        let mut env = Env::new();
+        let mut call = |name: &str, args: &[Value]| {
+            crate::lisp::primitives::call(interp, name, args, &mut env)
+        };
+        for (symbol, value) in [
+            (old_keyword, old_keyword),
+            (old_constant, previous),
+            (alias, old_keyword),
+        ] {
+            for read in ["symbol-value", "default-value", "default-toplevel-value"] {
+                assert!(
+                    call(read, &[symbol])
+                        .expect("constant object operation survives image relocation")
+                        .eq_value(value),
+                    "{read}"
+                );
+            }
+            assert!(
+                call("special-variable-p", &[symbol])
+                    .expect("constant object operation survives image relocation")
+                    .is_truthy()
+            );
+            for store in ["set", "set-default", "set-default-toplevel-value"] {
+                let error = call(store, &[symbol, Value::Integer(47)])
+                    .expect_err("the actual constant object rejects stores");
+                let LispErrorKind::SignalValue(error) = error.into_kind() else {
+                    panic!("setting-constant carries the actual symbol")
+                };
+                assert_eq!(
+                    error
+                        .to_vec()
+                        .expect("setting-constant condition is a list"),
+                    vec![Value::symbol("setting-constant"), symbol],
+                );
+            }
+        }
+        assert!(
+            call("keywordp", &[old_keyword])
+                .expect("constant object operation survives image relocation")
+                .is_nil()
+        );
+        assert!(
+            call("keywordp", &[new_keyword])
+                .expect("constant object operation survives image relocation")
+                .is_truthy()
+        );
+        assert!(
+            call("set", &[new_keyword, new_keyword])
+                .expect("constant object operation survives image relocation")
+                .eq_value(new_keyword)
+        );
+        assert!(
+            call("indirect-variable", &[alias])
+                .expect("constant object operation survives image relocation")
+                .eq_value(old_keyword)
+        );
+        for symbol in [private, fresh] {
+            assert!(
+                call("default-boundp", &[symbol])
+                    .expect("constant object operation survives image relocation")
+                    .is_nil()
+            );
+            assert!(
+                call("special-variable-p", &[symbol])
+                    .expect("constant object operation survives image relocation")
+                    .is_nil()
+            );
+            call("set-default", &[symbol, Value::Integer(71)])
+                .expect("constant object operation survives image relocation");
+            assert_eq!(
+                call("symbol-value", &[symbol])
+                    .expect("constant object operation survives image relocation"),
+                Value::Integer(71)
+            );
+            call("makunbound", &[symbol])
+                .expect("constant object operation survives image relocation");
+            assert!(
+                call("boundp", &[symbol])
+                    .expect("constant object operation survives image relocation")
+                    .is_nil()
+            );
+        }
+    }
+
+    let mut source = Interpreter::new();
+    let form = crate::lisp::reader::Reader::new(
+        r#"(let* ((old (intern ":image-constant-λ"))
+                  (constant (intern "most-positive-fixnum"))
+                  (previous (symbol-value constant))
+                  (alias (make-symbol "image-constant-alias")))
+             (defvaralias alias old)
+             (unintern old)
+             (unintern constant)
+             (vector old (intern ":image-constant-λ")
+                     (make-symbol ":image-constant-λ")
+                     constant (intern "most-positive-fixnum") alias previous))"#,
+    )
+    .read()
+    .expect("constant image setup reads")
+    .expect("constant image setup form");
+    let graph = source
+        .eval(&form, &mut Env::new())
+        .expect("constant image setup");
+    check(&mut source, graph);
+    source.set_global_binding("constant-image-root", graph);
+    let mut copied = source.deep_clone_image();
+    let copied_graph = copied
+        .lookup_var("constant-image-root", &Env::new())
+        .expect("constant object operation survives image relocation");
+    check(&mut copied, copied_graph);
+
+    source.select_symbol_owner();
+    let bytes = dump(&mut source, vec![(RootSlot::LoadPath, graph)]);
+    let mut restored = Interpreter::new();
+    let image = load_image(&bytes, &mut restored).expect("constant image loads");
+    let loaded_graph = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .map(|(_, value)| *value)
+        .expect("constant object operation survives image relocation");
+    restored
+        .install_image(
+            &image,
+            crate::lisp::eval::PdumperLoadRecord {
+                filename: "symbol-constants.pdmp".into(),
+                load_time: std::time::Duration::ZERO,
+                dump_size: bytes.len() as u64,
+            },
+        )
+        .expect("constant image installs");
+    check(&mut restored, loaded_graph);
+}
+
+#[test]
+fn standard_unintern_images_keep_both_same_named_objects() {
+    use crate::lisp::types::Env;
+
+    fn check(interp: &mut Interpreter, graph: Value) {
+        interp.select_symbol_owner();
+        let Kind::Vector(slots) = graph.kind() else {
+            panic!("the symbol graph remains a vector")
+        };
+        let old = slots.get(0).expect("old symbol");
+        let new = slots.get(1).expect("new symbol");
+        assert!(!old.eq_value(new), "same spelling must not merge objects");
+        assert!(old.eq_value(slots.get(2).expect("shared old symbol")));
+        assert!(new.eq_value(slots.get(3).expect("shared new symbol")));
+        let mut env = Env::new();
+        for (symbol, value) in [(old, 17), (new, 43)] {
+            assert_eq!(
+                crate::lisp::primitives::call(interp, "symbol-value", &[symbol], &mut env)
+                    .expect("independent symbol value"),
+                Value::Integer(value)
+            );
+            assert_eq!(
+                crate::lisp::primitives::call(interp, "funcall", &[symbol], &mut env)
+                    .expect("independent function cell"),
+                Value::Integer(value)
+            );
+            assert!(
+                crate::lisp::primitives::call(
+                    interp,
+                    "get",
+                    &[symbol, Value::symbol("owner")],
+                    &mut env,
+                )
+                .expect("self-referential plist")
+                .eq_value(symbol)
+            );
+        }
+        assert!(
+            crate::lisp::primitives::call(interp, "intern-soft", &[old], &mut env)
+                .expect("detached membership")
+                .is_nil()
+        );
+        assert!(
+            crate::lisp::primitives::call(interp, "intern-soft", &[new], &mut env)
+                .expect("current membership")
+                .eq_value(new)
+        );
+    }
+
+    let mut source = Interpreter::new();
+    let form = crate::lisp::reader::Reader::new(
+        r#"(let* ((name (concat "symbol-image-" "detached"))
+                  (old (intern name)) new)
+             (set old 17)
+             (fset old '(lambda () 17))
+             (setplist old (list 'owner old))
+             (unintern old)
+             (setq new (intern (copy-sequence name)))
+             (set new 43)
+             (fset new '(lambda () 43))
+             (setplist new (list 'owner new))
+             (vector old new old new))"#,
+    )
+    .read()
+    .expect("image setup reads")
+    .expect("image setup form");
+    let graph = source.eval(&form, &mut Env::new()).expect("image setup");
+    check(&mut source, graph);
+    source.set_global_binding("membership-image-root", graph);
+    let mut clone = source.deep_clone_image();
+    let copied = clone
+        .lookup_var("membership-image-root", &Env::new())
+        .expect("cloned root");
+    check(&mut clone, copied);
+
+    source.select_symbol_owner();
+    let bytes = dump(&mut source, vec![(RootSlot::LoadPath, graph)]);
+    let mut restored = Interpreter::new();
+    let image = load_image(&bytes, &mut restored).expect("symbol image loads");
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .map(|(_, value)| *value)
+        .expect("loaded graph");
+    restored
+        .install_image(
+            &image,
+            crate::lisp::eval::PdumperLoadRecord {
+                filename: "symbol-membership.pdmp".into(),
+                load_time: std::time::Duration::ZERO,
+                dump_size: bytes.len() as u64,
+            },
+        )
+        .expect("symbol image installs");
+    check(&mut restored, loaded);
+}
+
+#[test]
 fn string_images_preserve_empty_roots_distinct_headers_and_restored_mutability() {
     use crate::lisp::types::{Env, StringObjectRef};
     let mut source = Interpreter::new();
@@ -132,15 +382,7 @@ fn string_images_preserve_empty_roots_distinct_headers_and_restored_mutability()
 
 #[test]
 fn captured_menu_case_table_is_an_independent_image_root() {
-    use crate::lisp::primitives::{restore_unicode_menu_case_table, unicode_menu_case_table};
-    struct Restore(Value);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            restore_unicode_menu_case_table(self.0).expect("restore previous menu table");
-        }
-    }
-    let previous = unicode_menu_case_table();
-    let _restore = Restore(previous);
+    use crate::lisp::primitives::restore_unicode_menu_case_table;
     let mut source = Interpreter::new();
     // This anonymous table is deliberately absent from the Unicode property
     // alist: GNU's captured static root must survive that registry changing.
@@ -149,16 +391,17 @@ fn captured_menu_case_table_is_an_independent_image_root() {
         panic!("char table")
     };
     original.set(81, Value::Integer(122));
-    restore_unicode_menu_case_table(table).expect("install captured table");
+    restore_unicode_menu_case_table(&mut source, table).expect("install captured table");
     let roots = source.dump_root_groups();
     assert!(
         roots.iter().any(|(slot, value)| {
             *slot == RootSlot::UnicodeMenuCaseTable && value.eq_value(table)
         })
     );
-    let bytes = source.with_lisp_stack_roots(&previous, |source| dump(source, roots));
-    restore_unicode_menu_case_table(Value::Nil).expect("clear before load");
+    let bytes = dump(&mut source, roots);
+    restore_unicode_menu_case_table(&mut source, Value::Nil).expect("clear before load");
     let mut target = Interpreter::new();
+    assert!(target.unicode_menu_case_table.is_nil());
     let image = load_image(&bytes, &mut target).expect("restore captured table");
     let loaded = image
         .roots
@@ -166,7 +409,7 @@ fn captured_menu_case_table_is_an_independent_image_root() {
         .find(|(slot, _)| *slot == RootSlot::UnicodeMenuCaseTable)
         .expect("table root is present")
         .1;
-    assert!(unicode_menu_case_table().eq_value(loaded));
+    assert!(target.unicode_menu_case_table.eq_value(loaded));
     assert!(
         !loaded.eq_value(table),
         "the loaded table has its own allocation"
@@ -175,6 +418,30 @@ fn captured_menu_case_table_is_an_independent_image_root() {
         panic!("restored char table")
     };
     assert_eq!(restored.get(81), Value::Integer(122));
+}
+
+#[test]
+fn captured_menu_case_table_belongs_to_its_editor_and_image() {
+    use crate::lisp::primitives::restore_unicode_menu_case_table;
+    let mut source = Interpreter::new();
+    let table = source.make_char_table(None, Value::Nil);
+    let Kind::CharTable(original) = table.kind() else {
+        panic!("char table")
+    };
+    original.set(81, Value::Integer(122));
+    restore_unicode_menu_case_table(&mut source, table).expect("capture source table");
+    let second = Interpreter::new();
+    assert!(second.unicode_menu_case_table.is_nil());
+    assert!(source.unicode_menu_case_table.eq_value(table));
+    let image = source.deep_clone_image();
+    let Kind::CharTable(copied) = image.unicode_menu_case_table.kind() else {
+        panic!("copied char table")
+    };
+    assert!(!Value::CharTable(copied).eq_value(table));
+    assert_eq!(copied.get(81), Value::Integer(122));
+    original.set(81, Value::Integer(97));
+    assert_eq!(copied.get(81), Value::Integer(122));
+    assert!(second.unicode_menu_case_table.is_nil());
 }
 
 #[test]

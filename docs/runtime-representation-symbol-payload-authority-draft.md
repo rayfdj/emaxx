@@ -1,5 +1,26 @@
 # Actual symbol identity continuation — 13 October 2026
 
+The current task continuation is object-state draft17, with 584 exact input
+bytes/modes reproduced from source324. Its [portable implementation](handover/2026-10-09-symbol-fields/symbol-object-state-draft17-results-manifest.json)
+passes strict checks without warnings, all 407 affected controls in each profile
+and 44 ordinary GNU comparisons / 88 successful processes. The original
+40-predicate constant/store probe now agrees with GNU in interpreted, bytecode
+and native execution. The 53 alias/default predicates, image copy/restore and
+native boolean cell/plist controls pass too. All previous control names remain.
+
+Actual object constant/C-slot state replaces name-derived restrictions;
+assignment/default/let and alias creation follow their distinct GNU C entry
+semantics. Native boolean value and property reads retain the owner objects.
+The [draft15 native failure and earlier attempts](handover/2026-10-09-symbol-fields/symbol-object-state-drafts7-15-results-manifest.json)
+remain preserved. The complete macOS Rust gate is running; clean platform,
+frozen, terminal and performance validation remain pending. See the current
+[handover](../HANDOVER.md) before changing either checkout. Main still carries
+source324; this continuation is not completion of the full goal. The header
+remains 64 bytes and is still charged only 48; remaining name/forwarding adapters,
+public ownership/reclamation and other requirements below stay open.
+
+## Published source324 and historical membership draft6
+
 The published runtime is **source324 `99936262`**, with 572 inputs, on
 [PR85](https://github.com/rayfdj/emaxx/pull/85), merged into main as `758d2138`
 after PR84's `01189759`. Full Linux frozen matches all 7,928 outcomes; complete

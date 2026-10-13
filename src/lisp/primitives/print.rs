@@ -291,9 +291,7 @@ pub(crate) fn print_ref_key(
         // Rc allocation, so repeated occurrences must receive one #N label.
         Kind::Closure(lambda) => Some(PrintRefKey::Lambda(lambda.identity())),
         Kind::StringObject(state) => Some(PrintRefKey::StringObject(state.identity())),
-        Kind::Symbol(symbol)
-            if options.gensym && crate::lisp::types::is_uninterned_symbol(&symbol) =>
-        {
+        Kind::Symbol(symbol) if options.gensym && symbol.cell().is_uninterned() => {
             Some(PrintRefKey::Symbol(symbol.to_string()))
         }
         // print.c:1299 `PRINT_CIRCLE_CANDIDATE_P' counts hash tables, so a
@@ -543,7 +541,7 @@ pub(crate) fn print_preprocess(
         let continuous_gensym = options.continuous_numbering
             && matches!(
                 object.kind(),
-                Kind::Symbol(symbol) if crate::lisp::types::is_uninterned_symbol(&symbol)
+                Kind::Symbol(symbol) if symbol.cell().is_uninterned()
             );
         if let Some(index) = positions.get(&key).copied() {
             let state = &entries[index].1;
@@ -688,7 +686,7 @@ pub(crate) fn should_label_value(value: &Value, key: &PrintRefKey, context: &Pri
     }
     context.options.continuous_numbering
         && context.options.gensym
-        && matches!(value.kind(), Kind::Symbol(symbol) if crate::lisp::types::is_uninterned_symbol(&symbol))
+        && matches!(value.kind(), Kind::Symbol(symbol) if symbol.cell().is_uninterned())
 }
 
 pub(crate) fn render_prin1_with_context(
@@ -833,10 +831,13 @@ pub(crate) fn render_princ_integer_as_character(value: &Value) -> Option<String>
     render_integer_as_character(value, false)
 }
 
-pub(crate) fn render_prin1_symbol(symbol: &str, options: PrintOptions) -> String {
+pub(crate) fn render_prin1_symbol(
+    symbol: &crate::lisp::types::SymbolName,
+    options: PrintOptions,
+) -> String {
     let visible = crate::lisp::types::visible_symbol_name(symbol);
     if visible.is_empty() {
-        if options.gensym && crate::lisp::types::is_uninterned_symbol(symbol) {
+        if options.gensym && symbol.cell().is_uninterned() {
             return "#:##".into();
         }
         return "##".into();
@@ -847,7 +848,7 @@ pub(crate) fn render_prin1_symbol(symbol: &str, options: PrintOptions) -> String
         symbol_name_looks_like_number(visible) || first == Some('?') || first == Some('.');
 
     let mut rendered = String::new();
-    if options.gensym && crate::lisp::types::is_uninterned_symbol(symbol) {
+    if options.gensym && symbol.cell().is_uninterned() {
         rendered.push_str("#:");
     }
     // print.c quotes a symbol's confusing characters only under

@@ -1,0 +1,20 @@
+(mapcar
+ (lambda (name)
+   (let* ((old (intern name))
+          (previous (symbol-value old))
+          (removed (unintern old))
+          (new (intern (copy-sequence name)))
+          (keyword (string-prefix-p ":" name)))
+     (list removed (not (eq old new))
+           (eq (symbol-value old) previous)
+           (eq (boundp new) keyword)
+           (eq (special-variable-p new) keyword)
+           (condition-case err (progn (set old 43) nil)
+             (setting-constant (eq (cadr err) old)))
+           (condition-case err
+               (progn (set new 71) (and (not keyword) (= (symbol-value new) 71)))
+             (setting-constant (and keyword (eq (cadr err) new))))
+           (condition-case err
+               (progn (makunbound new) (and (not keyword) (not (boundp new))))
+             (setting-constant (and keyword (eq (cadr err) new)))))))
+ (list "nil" "t" "most-positive-fixnum" "most-negative-fixnum" ":detached-store-λ"))

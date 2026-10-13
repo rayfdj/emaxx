@@ -16,7 +16,65 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
-## Source324 validation and separate membership continuation — 13 October 2026
+## Symbol object state and native identity — 13 October 2026
+
+The full goal is **active and incomplete**. The task continuation now carries
+**584 runtime inputs**, exactly matching the isolated **object-state draft17**
+based on source324 `99936262`. Main remains the validated source324 runtime
+through `94295d0a` until this implementation completes platform validation and
+its authorized merge. No new permission is needed for task-branch pushes,
+Linux CI or the main merge.
+
+The [portable implementation and evidence](docs/handover/2026-10-09-symbol-fields/symbol-object-state-draft17-results-manifest.json)
+include a cumulative patch that replays every input byte and mode from
+`99936262`; its SHA-256 is
+`0c41ecb959d72fc988aee81740a9c6e5ea66fded9f675f55274fb25b206561d0`.
+It includes membership draft6 and its per-editor captured menu table repair.
+Constants, declared-special state and keyword self-values now belong to the
+actual allocated symbols. Fresh same-named objects inherit none of the old
+constant restrictions or C-slot classification. Assignment and default stores
+check the original symbol before following aliases; `let` checks the resolved
+object, and alias creation copies the base object's constant state, following
+GNU `data.c` and `eval.c`. Native `symbol-value` and `get` retain the actual
+builtin boolean identities. The flags follow image copying and restoration.
+The header remains 64 bytes; its incorrect 48-byte allocation charge is unchanged.
+
+Strict checks have **zero warnings**. All **407 affected controls pass in both
+gate and release**, preserving the prior 403 and adding four controls. The
+original 40-predicate GNU probe, previously 20 false in draft6, now matches;
+53 additional alias/default predicates and image copy/restore checks also pass.
+All **44 ordinary comparisons / 88 successful processes** match GNU, preserving
+all 38 previous comparisons and adding six cases across actual interpreted,
+bytecode and native modes. Outputs, mode predicates, source/artifact identities
+and raw process receipts are independently checked.
+
+The [failed predecessors](docs/handover/2026-10-09-symbol-fields/symbol-object-state-drafts7-15-results-manifest.json)
+remain intact. Draft15 passed 406 controls per profile but its original
+40-predicate program failed in native execution with `void-variable (nil)`;
+the other 43 ordinary comparisons matched. The native bridge still reconstructed
+`nil`/`t` by name after removal and replacement. Draft17 repairs that actual
+bridge and passes the unchanged native program. Earlier compiler/lint failures,
+including draft16's unused import, remain failed; no expectations are weakened.
+Large excluded executables/images have explicit retained local paths and hashes.
+
+The complete macOS Rust gate is **running**, with no full-gate verdict certified
+by these packages. Inspect
+`target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft17-validation-queue.json`
+and `symbol-object-state-draft17-macos-full/state.json` before editing the active
+prototype at `target/runtime-goal/recovered-2026-10-13/symbol-membership/emaxx`.
+The main-based integration is at
+`target/runtime-goal/recovered-2026-10-13/symbol-object-integration/emaxx`.
+Clean Linux/frozen/terminal validation and performance observations remain
+required before the checkpoint merge; final goal validation remains separate.
+
+The positive C-slot bit still guards a name-based forwarding adapter; it is not
+a completed forwarding descriptor. Host/private-name and localized/function
+adapters, public ownership and reclamation, physical accounting and counters,
+property intervals/pure storage, measured VM/call work, final adversarial review
+and the unchanged locked performance criterion remain open. No speedup or
+full-goal completion is claimed.
+
+## Historical source324 validation and membership draft6 — 13 October 2026
 
 The full goal remains **active and incomplete**. Main contains merged
 [PR85](https://github.com/rayfdj/emaxx/pull/85) at

@@ -301,8 +301,8 @@ pub(crate) fn checked_symbol_identity(
 ) -> Result<crate::lisp::types::SymbolName, LispError> {
     match value.kind() {
         Kind::Symbol(symbol) => return Ok(symbol),
-        Kind::Nil => return Ok("nil".into()),
-        Kind::T => return Ok("t".into()),
+        Kind::Nil => return Ok(crate::lisp::types::symbols::builtin_boolean(false)),
+        Kind::T => return Ok(crate::lisp::types::symbols::builtin_boolean(true)),
         _ => {}
     }
     if symbols_with_pos_enabled(interp, env)
@@ -310,8 +310,8 @@ pub(crate) fn checked_symbol_identity(
     {
         match symbol.kind() {
             Kind::Symbol(symbol) => return Ok(symbol),
-            Kind::Nil => return Ok("nil".into()),
-            Kind::T => return Ok("t".into()),
+            Kind::Nil => return Ok(crate::lisp::types::symbols::builtin_boolean(false)),
+            Kind::T => return Ok(crate::lisp::types::symbols::builtin_boolean(true)),
             _ => {}
         }
     }

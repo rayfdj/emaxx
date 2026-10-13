@@ -444,6 +444,17 @@ impl SymbolName {
                     mark: MarkBit::default(),
                 },
             ));
+            symbols::note_builtin_boolean(name);
+            // lread.c:intern_sym initializes only keywords in the initial
+            // obarray. Their value is this actual object, including after
+            // it is removed and another symbol takes the same spelling.
+            if !private && name.as_str().starts_with(':') {
+                name.cell().set_constant(true);
+                name.cell()
+                    .flags
+                    .set(crate::lisp::eval::symbol_cell_flags::SPECIAL);
+                name.cell().set_value(Value::Symbol(name));
+            }
             names.insert(symbols::NameEntry(name));
             name
         })
@@ -554,6 +565,18 @@ impl SymbolName {
 
     pub(crate) fn lisp_name(&self) -> Value {
         self.0.lisp_name.get()
+    }
+
+    /// data.c:Fkeywordp: initial-obarray membership and the actual name's
+    /// first byte. Constant state is separate and survives uninterning.
+    pub(crate) fn is_keyword(&self) -> bool {
+        if self.cell().is_uninterned() || is_private_obarray_symbol(self.as_str()) {
+            return false;
+        }
+        let Kind::StringObject(name) = self.lisp_name().kind() else {
+            return false;
+        };
+        name.borrow().bytes().first() == Some(&b':')
     }
 
     /// The symbol's cell (for the census and the dump).
@@ -1512,14 +1535,9 @@ impl Value {
     }
     #[inline]
     pub fn Symbol(name: SymbolName) -> Value {
-        // Temporary until the builtin symbols and their mutable cells
-        // share the same symbol allocation. Private-obarray and uninterned
-        // names carry a distinct internal key and cannot take these arms.
-        match name.as_str() {
-            "nil" => Value::Nil,
-            "t" => Value::T,
-            _ => Value::from_bits(name.identity_ptr() | TAG_SYMBOL),
-        }
+        name.cell()
+            .builtin_boolean()
+            .unwrap_or_else(|| Value::from_bits(name.identity_ptr() | TAG_SYMBOL))
     }
     #[inline]
     pub fn Cons(cell: SharedCons) -> Value {
@@ -2075,11 +2093,7 @@ fn render_error_symbol_name(symbol: &str) -> String {
 }
 
 pub(crate) fn interned_symbol_value(symbol: String) -> Value {
-    match symbol.as_str() {
-        "nil" => Value::Nil,
-        "t" => Value::T,
-        _ => Value::Symbol(symbol.into()),
-    }
+    Value::Symbol(symbol.into())
 }
 
 pub(crate) fn format_float(value: f64) -> String {

@@ -724,8 +724,8 @@ define_dispatch!(
                 // then give this buffer its own cell holding the default
                 // cell's value -- void stays void -- unless it has one
                 // already; a let made for this buffer draws a message.
-                let checked = checked_symbol_name(interp, &args[0], env)?;
-                let symbol = interp.resolve_variable_name(&checked)?;
+                let checked = checked_symbol_identity(interp, &args[0], env)?;
+                let symbol = interp.resolve_variable_symbol(&checked)?;
                 if interp.is_constant_symbol(&symbol) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("setting-constant"),
@@ -758,7 +758,7 @@ define_dispatch!(
                     let value = interp.symbol_value_cell(&symbol).unwrap_or(Value::Unbound);
                     interp.set_buffer_local_value(buffer_id, &symbol, value);
                 }
-                Ok(Value::Symbol(symbol.into()))
+                Ok(Value::Symbol(symbol))
             }
             "buffer-list" => {
                 let bufs: Vec<Value> = interp
