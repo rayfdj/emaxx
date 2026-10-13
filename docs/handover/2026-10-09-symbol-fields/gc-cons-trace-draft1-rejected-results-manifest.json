@@ -1,0 +1,578 @@
+{
+  "archive": {
+    "path": "gc-cons-trace-draft1-rejected-results.tar.gz",
+    "bytes": 5381756,
+    "sha256": "3cf30bc234c1ae0c2b3315f912c48ea4ff8532aeb677a9373cc48cf441d5ab15",
+    "members": 1339
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-gate-layout/fixture-images/loadup-9d291c72-d44829be.pdmp",
+      "bytes": 21919904,
+      "sha256": "ad2ce1020a19ba485f279f701272f95a3c4bcbbdeaf6f4a39fe9b6d40fc9ebe6"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-gate-layout/libtest",
+      "bytes": 29877440,
+      "sha256": "9d291c72e6fa5462e6aa8d7809bc129e008d8a436eaf5fd989979f46032b8ed7"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-release/fixture-images/loadup-ca2b4d1f-d44829be.pdmp",
+      "bytes": 21919904,
+      "sha256": "9a4a93ba1f89ed13abe69087fa1ce40f1941710624dda0b2a648978a3555ce82"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-release/libtest",
+      "bytes": 22896336,
+      "sha256": "ca2b4d1ffaa463f24a5b1475856e0c0042b03b4a71915a45db259fe1fc672022"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-ordinary/retained-inputs/29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5-emacs",
+      "bytes": 9600848,
+      "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-ordinary/retained-inputs/83b5114abcc6d4aa775251e91915bc0219a0c2d9647cd9c5ead0b452b6f7ec01-emaxx.pdmp",
+      "bytes": 21794376,
+      "sha256": "83b5114abcc6d4aa775251e91915bc0219a0c2d9647cd9c5ead0b452b6f7ec01"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-ordinary/retained-inputs/ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67-emacs.pdmp",
+      "bytes": 22954264,
+      "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-ordinary/retained-inputs/e840010bde7ab9da0fca99b858948a539cf7f0edc0816795ffec5e7d45dde05b-emaxx",
+      "bytes": 13223776,
+      "sha256": "e840010bde7ab9da0fca99b858948a539cf7f0edc0816795ffec5e7d45dde05b"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-main-baseline/retained-inputs/29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5-emacs",
+      "bytes": 9600848,
+      "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-main-baseline/retained-inputs/69ef21a8d1e1f7d28fed054400476509f4a8c0aad023e8b4ceaa12fd22eb3ea5-emaxx.pdmp",
+      "bytes": 21794208,
+      "sha256": "69ef21a8d1e1f7d28fed054400476509f4a8c0aad023e8b4ceaa12fd22eb3ea5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-main-baseline/retained-inputs/6ce6e5d06a020144fe9955d5dda69b76ce0ff2ca906294a1d9d0d93519edd0d6-emaxx",
+      "bytes": 13240656,
+      "sha256": "6ce6e5d06a020144fe9955d5dda69b76ce0ff2ca906294a1d9d0d93519edd0d6"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-main-baseline/retained-inputs/ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67-emacs.pdmp",
+      "bytes": 22954264,
+      "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-pair/artifacts/baseline/emaxx",
+      "bytes": 13240656,
+      "sha256": "6ce6e5d06a020144fe9955d5dda69b76ce0ff2ca906294a1d9d0d93519edd0d6"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-pair/artifacts/baseline/emaxx.pdmp",
+      "bytes": 21794208,
+      "sha256": "69ef21a8d1e1f7d28fed054400476509f4a8c0aad023e8b4ceaa12fd22eb3ea5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-pair/artifacts/candidate/emaxx",
+      "bytes": 13223776,
+      "sha256": "e840010bde7ab9da0fca99b858948a539cf7f0edc0816795ffec5e7d45dde05b"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-pair/artifacts/candidate/emaxx.pdmp",
+      "bytes": 21794376,
+      "sha256": "83b5114abcc6d4aa775251e91915bc0219a0c2d9647cd9c5ead0b452b6f7ec01"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-pair/oracle-inputs/emacs",
+      "bytes": 9600848,
+      "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-pair/oracle-inputs/emacs.pdmp",
+      "bytes": 22954264,
+      "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "Unapplied source324 cons-tracing experiment; rejected after measurement",
+  "audit": {
+    "status": "192 actual results and modes independently rechecked; slower draft remains unapplied",
+    "source_inputs": 572,
+    "cases": 16,
+    "processes": 192,
+    "raw_body_geometric_ratio": 1.0192557005290852,
+    "explicit_gc_candidate_over_baseline": 1.1049036608420075,
+    "paired_gnu_geometric_ratios": {
+      "baseline": 2.4028833749706697,
+      "candidate": 2.5075394258941395
+    },
+    "results": [
+      {
+        "case": "interpreted-lexical",
+        "body_samples": {
+          "baseline": [
+            0.44121599197387695,
+            0.4994781017303467,
+            0.5137419700622559
+          ],
+          "candidate": [
+            0.4668920040130615,
+            0.4621710777282715,
+            0.46616697311401367
+          ]
+        },
+        "body_medians": {
+          "baseline": 0.4994781017303467,
+          "candidate": 0.46616697311401367
+        },
+        "gnu_ratios": {
+          "baseline": 2.013220219430465,
+          "candidate": 2.1502537395384436
+        },
+        "candidate_over_baseline": 0.9333081300242534
+      },
+      {
+        "case": "interpreted-dynamic",
+        "body_samples": {
+          "baseline": [
+            0.3382561206817627,
+            0.3529930114746094,
+            0.36610889434814453
+          ],
+          "candidate": [
+            0.3612689971923828,
+            0.36090779304504395,
+            0.360990047454834
+          ]
+        },
+        "body_medians": {
+          "baseline": 0.3529930114746094,
+          "candidate": 0.360990047454834
+        },
+        "gnu_ratios": {
+          "baseline": 1.8746468797230218,
+          "candidate": 1.916999831570736
+        },
+        "candidate_over_baseline": 1.0226549413735344
+      },
+      {
+        "case": "interpreted-calls",
+        "body_samples": {
+          "baseline": [
+            0.6116809844970703,
+            0.669219970703125,
+            0.779573917388916
+          ],
+          "candidate": [
+            0.652350902557373,
+            0.6751720905303955,
+            0.6446809768676758
+          ]
+        },
+        "body_medians": {
+          "baseline": 0.669219970703125,
+          "candidate": 0.652350902557373
+        },
+        "gnu_ratios": {
+          "baseline": 2.3311359851131552,
+          "candidate": 2.3215677823011043
+        },
+        "candidate_over_baseline": 0.9747929397145333
+      },
+      {
+        "case": "bytecode-calls",
+        "body_samples": {
+          "baseline": [
+            0.5381829738616943,
+            0.5384681224822998,
+            0.5741350650787354
+          ],
+          "candidate": [
+            0.5392749309539795,
+            0.5409619808197021,
+            0.5405850410461426
+          ]
+        },
+        "body_medians": {
+          "baseline": 0.5384681224822998,
+          "candidate": 0.5405850410461426
+        },
+        "gnu_ratios": {
+          "baseline": 4.001068817299597,
+          "candidate": 4.1610977447196635
+        },
+        "candidate_over_baseline": 1.0039313721192704
+      },
+      {
+        "case": "native-execution",
+        "body_samples": {
+          "baseline": [
+            0.8592689037322998,
+            0.8555350303649902,
+            0.8732409477233887
+          ],
+          "candidate": [
+            0.8875360488891602,
+            0.84446120262146,
+            0.8464081287384033
+          ]
+        },
+        "body_medians": {
+          "baseline": 0.8592689037322998,
+          "candidate": 0.8464081287384033
+        },
+        "gnu_ratios": {
+          "baseline": 1.5610526347705072,
+          "candidate": 1.5861835858873572
+        },
+        "candidate_over_baseline": 0.9850328867505449
+      },
+      {
+        "case": "interpreted-to-native",
+        "body_samples": {
+          "baseline": [
+            0.40093207359313965,
+            0.4300699234008789,
+            0.4024538993835449
+          ],
+          "candidate": [
+            0.4109959602355957,
+            0.46877193450927734,
+            0.40582704544067383
+          ]
+        },
+        "body_medians": {
+          "baseline": 0.4024538993835449,
+          "candidate": 0.4109959602355957
+        },
+        "gnu_ratios": {
+          "baseline": 2.1298978133992623,
+          "candidate": 2.219178082191781
+        },
+        "candidate_over_baseline": 1.0212249424471598
+      },
+      {
+        "case": "bytecode-to-native",
+        "body_samples": {
+          "baseline": [
+            0.95778489112854,
+            0.9726400375366211,
+            0.9397249221801758
+          ],
+          "candidate": [
+            0.9600920677185059,
+            0.9325499534606934,
+            0.9336709976196289
+          ]
+        },
+        "body_medians": {
+          "baseline": 0.95778489112854,
+          "candidate": 0.9336709976196289
+        },
+        "gnu_ratios": {
+          "baseline": 6.095455244988249,
+          "candidate": 6.0565540558832645
+        },
+        "candidate_over_baseline": 0.9748232680090639
+      },
+      {
+        "case": "native-to-interpreted",
+        "body_samples": {
+          "baseline": [
+            0.5219511985778809,
+            0.5411069393157959,
+            0.5118420124053955
+          ],
+          "candidate": [
+            0.5173330307006836,
+            0.5343749523162842,
+            0.540565013885498
+          ]
+        },
+        "body_medians": {
+          "baseline": 0.5219511985778809,
+          "candidate": 0.5343749523162842
+        },
+        "gnu_ratios": {
+          "baseline": 2.3101515006020135,
+          "candidate": 2.3010681077779287
+        },
+        "candidate_over_baseline": 1.023802519799271
+      },
+      {
+        "case": "native-to-bytecode",
+        "body_samples": {
+          "baseline": [
+            0.5141470432281494,
+            0.5262491703033447,
+            0.5054130554199219
+          ],
+          "candidate": [
+            0.5237770080566406,
+            0.5313348770141602,
+            0.5339498519897461
+          ]
+        },
+        "body_medians": {
+          "baseline": 0.5141470432281494,
+          "candidate": 0.5313348770141602
+        },
+        "gnu_ratios": {
+          "baseline": 2.4038928436865303,
+          "candidate": 2.5367713522587487
+        },
+        "candidate_over_baseline": 1.0334298018677581
+      },
+      {
+        "case": "cons-allocation",
+        "body_samples": {
+          "baseline": [
+            0.34436607360839844,
+            0.3551938533782959,
+            0.3815181255340576
+          ],
+          "candidate": [
+            0.36636996269226074,
+            0.3604469299316406,
+            0.3673830032348633
+          ]
+        },
+        "body_medians": {
+          "baseline": 0.3551938533782959,
+          "candidate": 0.36636996269226074
+        },
+        "gnu_ratios": {
+          "baseline": 1.7131443671911508,
+          "candidate": 1.764006919803518
+        },
+        "candidate_over_baseline": 1.0314648162057631
+      },
+      {
+        "case": "list-traversal",
+        "body_samples": {
+          "baseline": [
+            0.567626953125,
+            0.5992729663848877,
+            0.5664429664611816
+          ],
+          "candidate": [
+            0.6114170551300049,
+            0.5888171195983887,
+            0.5843050479888916
+          ]
+        },
+        "body_medians": {
+          "baseline": 0.567626953125,
+          "candidate": 0.5888171195983887
+        },
+        "gnu_ratios": {
+          "baseline": 1.9150055419977252,
+          "candidate": 1.9527375890113747
+        },
+        "candidate_over_baseline": 1.0373311491935484
+      },
+      {
+        "case": "mapcar",
+        "body_samples": {
+          "baseline": [
+            0.2970890998840332,
+            0.33692097663879395,
+            0.29001593589782715
+          ],
+          "candidate": [
+            0.3130528926849365,
+            0.30562591552734375,
+            0.331636905670166
+          ]
+        },
+        "body_medians": {
+          "baseline": 0.2970890998840332,
+          "candidate": 0.3130528926849365
+        },
+        "gnu_ratios": {
+          "baseline": 1.8214113517867998,
+          "candidate": 2.0945051579446066
+        },
+        "candidate_over_baseline": 1.0537340239245891
+      },
+      {
+        "case": "explicit-gc",
+        "body_samples": {
+          "baseline": [
+            0.15209603309631348,
+            0.16254687309265137,
+            0.1555030345916748
+          ],
+          "candidate": [
+            0.17839694023132324,
+            0.16347908973693848,
+            0.1718158721923828
+          ]
+        },
+        "body_medians": {
+          "baseline": 0.1555030345916748,
+          "candidate": 0.1718158721923828
+        },
+        "gnu_ratios": {
+          "baseline": 0.819788144795566,
+          "candidate": 0.8473011530386665
+        },
+        "candidate_over_baseline": 1.1049036608420075
+      },
+      {
+        "case": "upstream-sort",
+        "body_samples": {
+          "baseline": [
+            1.599100112915039,
+            1.7258989810943604,
+            1.5775458812713623
+          ],
+          "candidate": [
+            1.7020668983459473,
+            1.6940970420837402,
+            1.7192771434783936
+          ]
+        },
+        "body_medians": {
+          "baseline": 1.599100112915039,
+          "candidate": 1.7020668983459473
+        },
+        "gnu_ratios": {
+          "baseline": 4.532671589199622,
+          "candidate": 4.785616175266917
+        },
+        "candidate_over_baseline": 1.0643904559816506
+      },
+      {
+        "case": "upstream-undo",
+        "body_samples": {
+          "baseline": [
+            0.6842629909515381,
+            0.7670369148254395,
+            0.6984250545501709
+          ],
+          "candidate": [
+            0.704179048538208,
+            0.6993670463562012,
+            0.7203130722045898
+          ]
+        },
+        "body_medians": {
+          "baseline": 0.6984250545501709,
+          "candidate": 0.704179048538208
+        },
+        "gnu_ratios": {
+          "baseline": 4.8523943831918075,
+          "candidate": 5.551331049993385
+        },
+        "candidate_over_baseline": 1.0082385274562395
+      },
+      {
+        "case": "upstream-bindat",
+        "body_samples": {
+          "baseline": [
+            0.5285851955413818,
+            0.5595359802246094,
+            0.5344469547271729
+          ],
+          "candidate": [
+            0.5642738342285156,
+            0.5563042163848877,
+            0.5597288608551025
+          ]
+        },
+        "body_medians": {
+          "baseline": 0.5344469547271729,
+          "candidate": 0.5597288608551025
+        },
+        "gnu_ratios": {
+          "baseline": 2.8936543466137925,
+          "candidate": 3.0358677998013737
+        },
+        "candidate_over_baseline": 1.0473047996705973
+      }
+    ],
+    "oracle_verification": {
+      "status": "unchanged",
+      "capture_manifest_sha256": "df9e4cb69e70d5cb6f7ff6890d31d0bdce29299c1687d956eb547784b4fbbe54",
+      "qualification": "Checks original and retained bytes after validation; does not change gate outcomes.",
+      "files_verified": 4
+    },
+    "goal_complete": false,
+    "decision": "Do not apply draft1: these pilots show1.9256%aggregate regression and10.4904%explicitGC regression versus fresh main. Preserve every sample; no calibrated confidence or final performance acceptance claim.",
+    "code_observation": "Retained Mach-O code has trace_pending as the baseline loop; candidate code calls the out-of-line10132-byte mark_and_trace function per queued object. Its224-byte stack frame is entered per call. This is a concrete extra cost and a hypothesis for the slowdown; the measurement does not isolate every contribution.",
+    "environment_review": "The ordinary candidate image build used EMAXX_GC_VERIFY. alloc.rs implements that flag as a process-local OnceLock read from the running process environment; it is not dumped state. The shared performance runner strips all EMAXX_ variables from both editor environments. Both editors execute exactly32 explicit collections in every observed GC body.",
+    "qualification": "A separately recorded one-file prototype, not the main runtime. Three alternating diagnostic full16 pilots on macOS; actual compiler/image/source/native/workload identities and process reports are retained. No full platform certification, resolved calibration, real public allocation counters or nine-round/every-workload3% acceptance. The initial missing-fixture failure and rejected audit-count metadata remain separate and unchanged."
+  },
+  "selected": {
+    "status": "all534 selected controls pass in both gate and release; strict gate checks have zero warnings",
+    "results": [
+      {
+        "profile": "gate",
+        "passed": 534,
+        "failed": 0,
+        "ignored": 0,
+        "source_inputs": 572,
+        "selection_sha256": "2a0c6d7e5d73133a58e318435d5984a9fa7dbaac79a3c053b672bc42aea1a2e2"
+      },
+      {
+        "profile": "release",
+        "passed": 534,
+        "failed": 0,
+        "ignored": 0,
+        "source_inputs": 572,
+        "selection_sha256": "2a0c6d7e5d73133a58e318435d5984a9fa7dbaac79a3c053b672bc42aea1a2e2"
+      }
+    ],
+    "initial_missing_fixture_failure_preserved": true,
+    "goal_complete": false,
+    "qualification": "Selected controls are not full platform validation. Every original397 control and the additional137 GC/root/reclamation-related names remain. The initial438pass/96failure run remains failed; the repeated gate run uses the required adjacentGNUfixture tree, with unchanged source and original assertions."
+  },
+  "ordinary": {
+    "status": "passed",
+    "source_inputs_verified": 572,
+    "processes": 56,
+    "comparisons": 28,
+    "actual_modes": [
+      "interpreted",
+      "bytecode",
+      "native"
+    ],
+    "identical_editor_arguments": true,
+    "previous_twenty_eight_comparisons_preserved": true,
+    "same_twenty_eight_comparison_inventory": true,
+    "retained_inputs": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/gc-cons-trace/emaxx/target/release/emaxx",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-ordinary/retained-inputs/e840010bde7ab9da0fca99b858948a539cf7f0edc0816795ffec5e7d45dde05b-emaxx",
+        "sha256": "e840010bde7ab9da0fca99b858948a539cf7f0edc0816795ffec5e7d45dde05b",
+        "bytes": 13223776
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/gc-cons-trace/emaxx/target/release/emaxx.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-ordinary/retained-inputs/83b5114abcc6d4aa775251e91915bc0219a0c2d9647cd9c5ead0b452b6f7ec01-emaxx.pdmp",
+        "sha256": "83b5114abcc6d4aa775251e91915bc0219a0c2d9647cd9c5ead0b452b6f7ec01",
+        "bytes": 21794376
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-ordinary/retained-inputs/29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5-emacs",
+        "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+        "bytes": 9600848
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/gc-cons-trace-draft1-ordinary/retained-inputs/ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67-emacs.pdmp",
+        "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+        "bytes": 22954264
+      }
+    ],
+    "goal_complete": false,
+    "qualification": "Unapplied cons tracing experiment, preserving all original28 ordinary comparisons. All expected outputs and actual mode predicates are checked from raw output; compiler/image stages have no warnings. Each editor uses its own executable and image. The known source324 constant/store adapters remain separate unfinished architecture. This is not a full platform gate, proof of public ownership or a performance result."
+  },
+  "qualification": "534 selected controls pass in each profile with unchanged assertions and zero-warning strict checks; all28 ordinary comparisons and192 timed answers/modes match. Three alternating full16 pilots on macOS show1.9256%aggregate and10.4904%explicitGC regressions versus fresh main758d2138. Keep this experiment unapplied. The initial438pass/96failure missing-fixture attempt remains in the separately published unfinished archive. Generated-code observations identify an additional per-object helper call, not a complete causal decomposition. No calibrated nine-round performance acceptance or full-platform validation. Large binaries/images are excluded explicitly with retained local paths and identities."
+}
