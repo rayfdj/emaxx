@@ -1118,17 +1118,17 @@ define_dispatch!(
             "fset" => {
                 need_args(name, args, 2)?;
                 // GNU 30.2 data.c:Ffset uses CHECK_SYMBOL/XSYMBOL.
-                let symbol = checked_symbol_name(interp, &args[0], env)?;
-                interp.fset_function(&symbol, args[1], env)
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                interp.fset_function_symbol(&symbol, args[1], env)
             }
             "fmakunbound" => {
                 need_args(name, args, 1)?;
                 // GNU 30.2 data.c:Ffmakunbound uses CHECK_SYMBOL/XSYMBOL and
                 // returns its original symbol argument.
-                let symbol = checked_symbol_name(interp, &args[0], env)?;
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
                 // GNU voids the function cell outright; shadowed stale entries
                 // (repeated defuns push duplicates) must not resurface.
-                interp.remove_all_function_bindings(&symbol);
+                interp.set_function_binding_symbol(&symbol, None);
                 Ok(args[0])
             }
             "funcall-interactively" => {

@@ -548,10 +548,7 @@ impl Interpreter {
         groups.push((RootSlot::SyntaxCodeObjects, self.syntax_code_objects));
         // keymap.c's staticpro'd Unicode table, including a captured table
         // no longer named by char-code-property-alist.
-        groups.push((
-            RootSlot::UnicodeMenuCaseTable,
-            crate::lisp::primitives::unicode_menu_case_table(),
-        ));
+        groups.push((RootSlot::UnicodeMenuCaseTable, self.unicode_menu_case_table));
         groups.push((
             RootSlot::StandardSyntaxTable,
             Value::CharTable(self.standard_syntax_table_id),
@@ -1050,7 +1047,7 @@ mod install {
                         opt_of(value, |v| expect_char_table(v, "standard case table"))?;
                 }
                 RootSlot::UnicodeMenuCaseTable => {
-                    crate::lisp::primitives::restore_unicode_menu_case_table(*value)?;
+                    crate::lisp::primitives::restore_unicode_menu_case_table(self, *value)?;
                 }
                 RootSlot::SyntaxWordChars => {
                     let mut codes = Vec::new();

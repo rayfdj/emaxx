@@ -33,8 +33,8 @@ impl Interpreter {
             // The symbol itself, resolved and assigned by its id.
             let symbol = match sym.kind() {
                 Kind::Symbol(symbol) => symbol,
-                Kind::Nil => SymbolName::intern_str("nil"),
-                Kind::T => SymbolName::intern_str("t"),
+                Kind::Nil => crate::lisp::types::symbols::builtin_boolean(false),
+                Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
                 other => {
                     return Err(LispError::WrongTypeArgument(
                         "symbolp".into(),
@@ -63,9 +63,12 @@ impl Interpreter {
                 result = evaluated;
                 continue;
             }
+            result = evaluated;
+            if self.check_constant_assignment_symbol(&symbol, evaluated)? {
+                continue;
+            }
             let resolved = self.resolve_variable_symbol(&symbol)?;
-            let val = self.prepare_variable_assignment_symbol(&resolved, evaluated)?;
-            result = val;
+            let val = self.prepare_forwarded_assignment_symbol(&resolved, evaluated)?;
             if local_only {
                 self.notify_variable_watchers(
                     resolved.as_str(),

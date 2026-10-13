@@ -27649,3 +27649,57 @@ fn buffer_display_columns_match_gnu_original_line_motion_probe() {
         "original 338-row line/column probe across controls, multibyte text, narrowing and edits",
     );
 }
+
+#[test]
+fn standard_unintern_detaches_the_object_and_preserves_its_fields() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-identity.el"),
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-identity.expected").trim(),
+        "unintern, exact membership, fresh identity, name sharing and independent fields",
+    );
+}
+
+#[test]
+fn standard_unintern_prints_actual_membership() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-printing.el"),
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-printing.expected").trim(),
+        "print-gensym follows the actual symbol membership after its name is reused",
+    );
+}
+
+#[test]
+fn standard_unintern_preserves_builtin_boolean_identity() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-booleans.el"),
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-booleans.expected").trim(),
+        "nil and t keep their original ABI identities when new same-named symbols are interned",
+    );
+}
+
+#[test]
+fn standard_unintern_keeps_live_fields_and_reclaims_detached_objects() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-lifetime.el"),
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-lifetime.expected").trim(),
+        "detached symbol fields survive GC and weak keys disappear after their last Lisp roots leave",
+    );
+}
+
+#[test]
+fn symbol_constant_state_belongs_to_the_actual_object() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-constant-object-state.el"),
+        include_str!("../../../tests/fixtures/symbol-constant-object-state.expected").trim(),
+        "same-spelled replacement symbols do not inherit constant, special, value or store state",
+    );
+}
+
+#[test]
+fn symbol_constant_entry_points_follow_actual_aliases() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-constant-entry-points.el"),
+        include_str!("../../../tests/fixtures/symbol-constant-entry-points.expected").trim(),
+        "constant and default operations preserve actual objects through alias chains",
+    );
+}

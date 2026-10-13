@@ -34,25 +34,33 @@ pub struct SymbolCell {
     /// Lisp_Symbol.val: a value word or an alias object, selected by state.
     pub(crate) payload: Cell<SymbolPayload>,
     pub(crate) flags: Cell<u8>,
-    pub(crate) state: Cell<u8>,
+    pub(crate) state: Cell<u16>,
     pub(crate) mark: MarkBit,
 }
 
 // VALUE_PRESENT retains the existing distinction between an absent binding
 // and a localized, explicitly void default until localized storage is moved.
-const VALUE_PRESENT: u8 = 1;
-const ALIAS: u8 = 2;
-const PLAIN_STORE: u8 = 4;
-// Temporary until all dedicated C slots use the allocated redirect. Keep the
-// existing negative name classification with its object, not a global id set.
-const NO_C_SLOT: u8 = 8;
+const VALUE_PRESENT: u16 = 1;
+const ALIAS: u16 = 2;
+const PLAIN_STORE: u16 = 4;
+// The defining C initializer gives this object its dedicated slot. A later
+// symbol with the same name must not inherit that slot. The remaining slot
+// implementation is a migration adapter, not a negative name-lookup cache.
+const C_SLOT: u16 = 8;
 // Temporary startup adapter: consumers distinguish Lisp fset from defsubr.
 // Remove after those consumers use the actual function capability. No separate
 // payload, id index, enumeration position or per-symbol allocation is involved.
-const FUNCTION_DEFINITION: u8 = 16;
+const FUNCTION_DEFINITION: u16 = 16;
 // lisp.h: Lisp_Symbol.interned is object state, not an identity-number bit.
 // Standard-obarray removal still has its separate membership adapter.
-const UNINTERNED: u8 = 32;
+const UNINTERNED: u16 = 32;
+// The fixed ABI words designate these actual objects, not any later symbol
+// whose name happens to be nil or t after the original is uninterned.
+const BUILTIN_NIL: u16 = 64;
+const BUILTIN_T: u16 = 128;
+// lisp.h: trapped_write == SYMBOL_NOWRITE. This remains on the object
+// after uninterning and is copied/restored with its other header state.
+const CONSTANT: u16 = 256;
 
 #[derive(Clone, Copy)]
 pub(crate) union SymbolPayload {
@@ -75,6 +83,19 @@ impl Default for SymbolPayload {
 }
 
 impl SymbolCell {
+    pub(crate) fn mark_builtin_boolean(&self, truth: bool) {
+        self.state
+            .set(self.state.get() | if truth { BUILTIN_T } else { BUILTIN_NIL });
+    }
+
+    pub(crate) fn builtin_boolean(&self) -> Option<Value> {
+        match self.state.get() & (BUILTIN_NIL | BUILTIN_T) {
+            BUILTIN_NIL => Some(Value::Nil),
+            BUILTIN_T => Some(Value::T),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_uninterned(&self) -> bool {
         self.state.get() & UNINTERNED != 0
     }
@@ -162,16 +183,33 @@ impl SymbolCell {
         });
     }
 
-    pub(crate) fn has_no_c_slot(&self) -> bool {
-        self.state.get() & NO_C_SLOT != 0
+    pub(crate) fn has_c_slot(&self) -> bool {
+        self.state.get() & C_SLOT != 0
     }
 
-    pub(crate) fn note_no_c_slot(&self) {
-        self.state.set(self.state.get() | NO_C_SLOT);
+    pub(crate) fn set_c_slot(&self, present: bool) {
+        self.state.set(if present {
+            (self.state.get() | C_SLOT) & !PLAIN_STORE
+        } else {
+            self.state.get() & !C_SLOT
+        });
+    }
+
+    pub(crate) fn is_constant(&self) -> bool {
+        self.state.get() & CONSTANT != 0
+    }
+
+    pub(crate) fn set_constant(&self, constant: bool) {
+        self.state.set(if constant {
+            (self.state.get() | CONSTANT) & !PLAIN_STORE
+        } else {
+            self.state.get() & !CONSTANT
+        });
     }
 }
 
 pub(super) const SYMBOL_CELL_SIZE: usize = std::mem::size_of::<SymbolCell>();
+const _: () = assert!(SYMBOL_CELL_SIZE == 64);
 
 /// alloc.c's `symbol_free_list', `symbol_block' with `symbol_block_index',
 /// and gcstat's `total_symbols' and `total_free_symbols'.

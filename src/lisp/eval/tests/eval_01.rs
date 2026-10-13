@@ -5940,7 +5940,7 @@ fn builtin_startup_defaults_are_intrinsically_special() {
             "missing `{name}` default"
         );
         assert!(
-            interp.is_special_variable(name),
+            interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(name)),
             "builtin startup variable `{name}` did not inherit special binding semantics"
         );
     }
@@ -6252,7 +6252,7 @@ fn native_overlay_arrow_cluster_matches_xdisp_startup_contract() {
         "overlay-arrow-variable-list",
     ] {
         assert!(
-            interp.is_special_variable(name),
+            interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(name)),
             "xdisp.c startup variable `{name}` must be dynamically special"
         );
     }
@@ -6275,7 +6275,9 @@ fn startup_global_values_and_special_declarations_share_one_registry() {
     let interp = Interpreter::new();
     for (name, _) in &interp.globals {
         assert!(
-            interp.is_special_variable(name.as_str()),
+            interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(
+                name.as_str()
+            )),
             "startup global `{name}` was not registered as special"
         );
     }
@@ -6439,7 +6441,11 @@ fn native_syntax_propertize_progress_is_buffer_local() {
         Some(Value::Integer(-1))
     );
     assert!(interp.is_auto_buffer_local("syntax-propertize--done"));
-    assert!(interp.is_special_variable("syntax-propertize--done"));
+    assert!(
+        interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(
+            "syntax-propertize--done"
+        ))
+    );
     assert_eq!(
         interp.lookup_var("font-lock-defaults", &Env::new()),
         None,
@@ -6454,7 +6460,7 @@ fn native_change_hook_controls_are_bound_and_dynamically_special() {
     for name in GNU_CHANGE_HOOK_SPECIAL_VARIABLES {
         assert_eq!(interp.lookup_var(name, &env), Some(Value::Nil));
         assert!(
-            interp.is_special_variable(name),
+            interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(name)),
             "GNU native change-hook variable `{name}` must be dynamically special"
         );
     }
@@ -6790,7 +6796,7 @@ fn gnu_lread_c_variables_are_declared_special() {
     let interp = Interpreter::new();
     for name in GNU_LREAD_SPECIAL_VARIABLES {
         assert!(
-            interp.is_special_variable(name),
+            interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(name)),
             "GNU lread.c DEFVAR `{name}` must remain dynamically scoped"
         );
         assert!(
@@ -6863,7 +6869,7 @@ fn gnu_emacs_c_locale_variables_exist_before_lisp_startup_policy_runs() {
     let interp = Interpreter::new();
     for name in GNU_EMACS_LOCALE_SPECIAL_VARIABLES {
         assert!(
-            interp.is_special_variable(name),
+            interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(name)),
             "GNU emacs.c locale DEFVAR `{name}` must remain dynamically scoped"
         );
         assert_eq!(

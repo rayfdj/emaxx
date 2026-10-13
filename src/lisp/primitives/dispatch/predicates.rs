@@ -145,10 +145,10 @@ define_dispatch!(
                     .then(|| symbol_with_pos_parts(interp, &args[0]))
                     .flatten()
                     .is_some_and(|(symbol, _)| {
-                        matches!(symbol.kind(), Kind::Symbol(name) if name.starts_with(':'))
+                        matches!(symbol.kind(), Kind::Symbol(name) if name.is_keyword())
                     });
                 Ok(
-                    if matches!(args[0].kind(), Kind::Symbol(symbol) if symbol.starts_with(':'))
+                    if matches!(args[0].kind(), Kind::Symbol(symbol) if symbol.is_keyword())
                         || positioned_keyword
                     {
                         Value::T
@@ -403,20 +403,12 @@ define_dispatch!(
             "boundp" => {
                 need_args(name, args, 1)?;
                 // GNU 30.2 data.c:Fboundp uses CHECK_SYMBOL/XSYMBOL.
-                let symbol = checked_symbol_name(interp, &args[0], env)?;
-                Ok(
-                    if interp.symbol_value_cell(&symbol).is_ok()
-                        || matches!(
-                            symbol.as_str(),
-                            "nil" | "t" | "most-positive-fixnum" | "most-negative-fixnum"
-                        )
-                        || symbol == "buffer-undo-list"
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                Ok(if interp.symbol_value_cell_symbol(&symbol).is_ok() {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "where-is-internal" => {
                 need_arg_range(name, args, 1, 5)?;
@@ -436,8 +428,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 // GNU 30.2 data.c:Fdefault_boundp delegates to
                 // default_value, whose first operation is CHECK_SYMBOL.
-                let symbol = checked_symbol_name(interp, &args[0], env)?;
-                Ok(if interp.is_default_bound(&symbol) {
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                Ok(if interp.default_value_symbol(&symbol)?.is_some() {
                     Value::T
                 } else {
                     Value::Nil
@@ -447,20 +439,12 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 // GNU 30.2 eval.c:Fspecial_variable_p uses
                 // CHECK_SYMBOL/XSYMBOL.
-                let symbol = checked_symbol_name(interp, &args[0], env)?;
-                // GNU: the self-evaluating constants t/nil/keywords are declared
-                // special (erc-button-setup's alist FORM check relies on
-                // (special-variable-p t) being non-nil).
-                Ok(
-                    if matches!(symbol.as_str(), "t" | "nil")
-                        || symbol.starts_with(':')
-                        || interp.is_special_variable(&symbol)
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                Ok(if interp.is_special_variable_symbol(&symbol) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
             "make-variable-buffer-local" => {
                 need_args(name, args, 1)?;
@@ -468,8 +452,8 @@ define_dispatch!(
                 // alias, a void plain value becomes nil, SYMBOL_CONSTANT_P on
                 // VARIABLE signals, then `blv->local_if_set = 1'; VARIABLE is
                 // returned as given (no XSETSYMBOL here).
-                let checked = checked_symbol_name(interp, &args[0], env)?;
-                let symbol = interp.resolve_variable_name(&checked)?;
+                let checked = checked_symbol_identity(interp, &args[0], env)?;
+                let symbol = interp.resolve_variable_symbol(&checked)?;
                 if interp.is_constant_symbol(&checked) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("setting-constant"),
@@ -555,10 +539,10 @@ define_dispatch!(
                 // GNU 30.2 data.c:Ffboundp uses CHECK_SYMBOL/XSYMBOL, so a
                 // positioned symbol denotes its bare symbol exactly while
                 // the dynamic reader switch is enabled.
-                let symbol = checked_symbol_name(interp, &args[0], env)?;
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
                 Ok(
                     if interp
-                        .raw_function_binding(&symbol, env)
+                        .raw_function_binding_symbol(&symbol, env)
                         .is_some_and(|function| !function.is_nil())
                     {
                         Value::T

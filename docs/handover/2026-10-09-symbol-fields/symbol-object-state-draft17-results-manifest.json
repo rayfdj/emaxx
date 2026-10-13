@@ -1,0 +1,131 @@
+{
+  "archive": {
+    "path": "symbol-object-state-draft17-results.tar.gz",
+    "bytes": 624580,
+    "sha256": "683524a560197ac71400a78d1b1c34934a14a4d3a61cb9839581a0f4f71ae57b",
+    "members": 355
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft17-gate/fixture-images/loadup-50cbe35c-d44829be.pdmp",
+      "bytes": 21787568,
+      "sha256": "edbf82eb0adde93bb8d832f6b8538f4e00e735c48cb1fbd848ea87fedc1c7378"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft17-selected-gate/fixture-images/loadup-50cbe35c-d44829be.pdmp",
+      "bytes": 21834600,
+      "sha256": "553fc1f274e9399fe0b73d2c424ac3beee099d987db3b36d00859750f741ded5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft17-selected-gate/libtest",
+      "bytes": 29996512,
+      "sha256": "50cbe35c37ed8f177b01fd0ba0b6bcc1fd00c5c82b6f74497c29a0f8e6ab78e3"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft17-selected-release/fixture-images/loadup-5fe094ce-d44829be.pdmp",
+      "bytes": 21834616,
+      "sha256": "1d94582a37035e1755a7f64be1623d0c62299ba3780500f937fe86e7d337969b"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft17-selected-release/libtest",
+      "bytes": 22782864,
+      "sha256": "5fe094cec2b68c2c340c6c2828c1408d373220704b8b05e50318dc4e2c08b6cb"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft17-ordinary/retained-inputs/29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5-emacs",
+      "bytes": 9600848,
+      "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft17-ordinary/retained-inputs/65dc0fcbbe2b8251d83009191f911949f5b31c5283cd93777639072596ce4c4d-emaxx",
+      "bytes": 13208368,
+      "sha256": "65dc0fcbbe2b8251d83009191f911949f5b31c5283cd93777639072596ce4c4d"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft17-ordinary/retained-inputs/8b7d1ab0bbc5b0a43f3a1703601a4f7d98f897025f3dc3d41e3cee7f3a341bcb-emaxx.pdmp",
+      "bytes": 21791336,
+      "sha256": "8b7d1ab0bbc5b0a43f3a1703601a4f7d98f897025f3dc3d41e3cee7f3a341bcb"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft17-ordinary/retained-inputs/ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67-emacs.pdmp",
+      "bytes": 22954264,
+      "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "symbol object-state draft17; selected and ordinary validation complete; full platforms pending",
+  "source_inputs": 584,
+  "selected": {
+    "results": [
+      {
+        "profile": "gate",
+        "passed": 407,
+        "failed": 0,
+        "ignored": 0,
+        "prior_inventory_preserved": 403,
+        "added_controls": 4,
+        "source_inputs": 584,
+        "source_sha256": "5c20234d2328de82913bb4665e0c72e24aac67c4f004f41eeb5159f82ce94a82",
+        "selected_sha256": "e2b9f8269bab039ee029ef476e0b8aacd1510b4483ed849b2f9f145739e20de6",
+        "binary_sha256": "50cbe35c37ed8f177b01fd0ba0b6bcc1fd00c5c82b6f74497c29a0f8e6ab78e3"
+      },
+      {
+        "profile": "release",
+        "passed": 407,
+        "failed": 0,
+        "ignored": 0,
+        "prior_inventory_preserved": 403,
+        "added_controls": 4,
+        "source_inputs": 584,
+        "source_sha256": "5c20234d2328de82913bb4665e0c72e24aac67c4f004f41eeb5159f82ce94a82",
+        "selected_sha256": "c892f1e1a7e96de5856a5108620d5988042ffcbe2de834f4468ff55980fbead7",
+        "binary_sha256": "5fe094cec2b68c2c340c6c2828c1408d373220704b8b05e50318dc4e2c08b6cb"
+      }
+    ],
+    "qualification": "All prior selected control names preserved in both profiles. Ordinary and complete platform validation are separate. Runtime is unapplied.",
+    "goal_complete": false
+  },
+  "ordinary": {
+    "status": "passed",
+    "source_inputs_verified": 584,
+    "processes": 88,
+    "comparisons": 44,
+    "actual_modes": [
+      "interpreted",
+      "bytecode",
+      "native"
+    ],
+    "identical_editor_arguments": true,
+    "previous_thirty_eight_comparisons_preserved": true,
+    "new_actual_mode_comparisons": 6,
+    "retained_inputs": [
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/symbol-membership/emaxx/target/release/emaxx",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft17-ordinary/retained-inputs/65dc0fcbbe2b8251d83009191f911949f5b31c5283cd93777639072596ce4c4d-emaxx",
+        "sha256": "65dc0fcbbe2b8251d83009191f911949f5b31c5283cd93777639072596ce4c4d",
+        "bytes": 13208368
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/symbol-membership/emaxx/target/release/emaxx.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft17-ordinary/retained-inputs/8b7d1ab0bbc5b0a43f3a1703601a4f7d98f897025f3dc3d41e3cee7f3a341bcb-emaxx.pdmp",
+        "sha256": "8b7d1ab0bbc5b0a43f3a1703601a4f7d98f897025f3dc3d41e3cee7f3a341bcb",
+        "bytes": 21791336
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft17-ordinary/retained-inputs/29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5-emacs",
+        "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5",
+        "bytes": 9600848
+      },
+      {
+        "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/rebuilt-2026-10-01/emacs/src/emacs.pdmp",
+        "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft17-ordinary/retained-inputs/ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67-emacs.pdmp",
+        "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67",
+        "bytes": 22954264
+      }
+    ],
+    "goal_complete": false,
+    "qualification": "Unapplied symbol membership/object-state draft, preserving all38 previous comparisons and adding6constant/alias/default comparisons in actual interpreted/bytecode/native modes. Raw expected answers, same inputs, successful process receipts and artifact hashes are independently checked. Full Rust/platform/frozen validation, remaining name/forwarding adapters, public ownership, physical accounting and performance remain open."
+  },
+  "qualification": "Every source byte/mode replays from99936262. Strict0warnings,4focused controls and407selected perprofile pass. All44ordinary comparisons/88processes match actualGNU answers in actualmodes, retaining every prior38case. The nativeQnil/Qt bridge now reads actualowner objects, fixing the preserved draft15 void-variable(nil) failure on the unchanged original40-predicate program. That failed run remains in the predecessor package; draft16unusedimport failure also remains. FullmacOS Rust gate is running separately with no result certified here. CleanLinux/frozen/terminal/performance and remaining architecture/accounting/publicownership are stillrequired. A local checkpoint is not full goal completion."
+}

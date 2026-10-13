@@ -1040,7 +1040,7 @@ impl Loader<'_> {
         let name_text = name
             .as_string()
             .map_err(|_| LoadError::Error("symbol name is not a string".into()))?;
-        if interned == SYMBOL_UNINTERNED && flags & FLAG_UNINTERNED_FROM_OBARRAY == 0 {
+        if interned == SYMBOL_UNINTERNED {
             return Ok(SymbolName::make_uninterned(
                 name,
                 &name_text,

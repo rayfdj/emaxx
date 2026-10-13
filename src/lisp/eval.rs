@@ -2594,7 +2594,6 @@ pub(crate) struct KnownSymbolsCache {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct KnownSymbolsKey {
     symbols: usize,
-    uninterned_standard: usize,
     epoch: u64,
 }
 type RecordIdsByType = HashMap<String, BTreeSet<u64>, crate::lisp::primitives::FnvBuildHasher>;
@@ -2668,7 +2667,7 @@ impl ImageGraphCopier {
         if let Some(copied) = self.symbols.get(&symbol.identity_ptr()) {
             return *copied;
         }
-        let copied = if crate::lisp::types::is_uninterned_symbol(symbol.as_str()) {
+        let copied = if symbol.cell().is_uninterned() {
             SymbolName::make_uninterned(
                 Value::Nil,
                 crate::lisp::types::visible_symbol_name(symbol.as_str()),
@@ -2687,6 +2686,8 @@ impl ImageGraphCopier {
             copied.cell().set_value(self.copy(&value));
         }
         copied.cell().flags.set(symbol.cell().flags.get());
+        copied.cell().set_constant(symbol.cell().is_constant());
+        copied.cell().set_c_slot(symbol.cell().has_c_slot());
         copied.cell().set_plain_store(symbol.cell().plain_store());
         copied
             .cell()
@@ -4154,6 +4155,7 @@ impl Interpreter {
             mark(&Value::Terminal(*terminal));
         }
         mark(&self.syntax_code_objects);
+        mark(&self.unicode_menu_case_table);
         mark(&Value::CharTable(self.standard_syntax_table_id));
         for table in self
             .standard_category_table_id
@@ -4596,6 +4598,7 @@ impl Interpreter {
                 copy
             };
             clone.syntax_code_objects = c.copy(&clone.syntax_code_objects);
+            clone.unicode_menu_case_table = c.copy(&clone.unicode_menu_case_table);
             clone.standard_syntax_table_id = copy_table(c, clone.standard_syntax_table_id);
             clone.standard_category_table_id = clone
                 .standard_category_table_id
@@ -5033,7 +5036,6 @@ pub struct InterpreterState {
     /// this tombstone prevents function/value indexes from accidentally
     /// making the name look interned again until a reader or `intern' creates
     /// the new canonical name.
-    uninterned_standard_symbol_names: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
     /// Runtime record representing GNU's preloaded standard `obarray'.  Its
     /// symbol view is synthesized from the interpreter's canonical namespace
     /// indexes rather than duplicated in the record's storage slot.
@@ -5297,6 +5299,9 @@ pub struct InterpreterState {
     pub(crate) builtin_doc_offsets: HashMap<String, i64>,
     syntax_word_chars: Vec<u32>,
     syntax_code_objects: Value,
+    /// keymap.c's staticpro'd unicode_case_table belongs to one editor.
+    /// Keeping it with that state also isolates successive embedded editors.
+    pub(crate) unicode_menu_case_table: Value,
     standard_syntax_table_id: CharTableRef,
     // lread.c:Vload_path is a rooted Lisp_Objfwd slot, not a host-side
     // directory vector from which reads reconstruct new Lisp objects.
@@ -5774,7 +5779,6 @@ impl Interpreter {
             ],
             known_symbols_cache: RefCell::new(None),
             obarray_epoch: 0,
-            uninterned_standard_symbol_names: HashSet::default(),
             standard_obarray_id,
             variable_watchers: Vec::new(),
             buffer: crate::lisp::types::BufferRef::new(0, crate::buffer::Buffer::new("*scratch*")),
@@ -5990,6 +5994,7 @@ impl Interpreter {
             builtin_doc_offsets: HashMap::new(),
             syntax_word_chars: Vec::new(),
             syntax_code_objects,
+            unicode_menu_case_table: Value::Nil,
             standard_syntax_table_id,
             load_path: Value::Nil,
             loads_in_progress: Value::Nil,
@@ -7348,6 +7353,19 @@ impl Interpreter {
         // editfns.c:init_editfns: emacs.c:main computes the user names
         // once in every process.
         interp.init_editfns();
+        // data.c, buffer.c and font.c call make_symbol_constant on these
+        // actual C-created objects. Reusing their names does not recreate
+        // either the constant bit or the dedicated C slot.
+        for name in [
+            "most-positive-fixnum",
+            "most-negative-fixnum",
+            "enable-multibyte-characters",
+            "font-weight-table",
+            "font-slant-table",
+            "font-width-table",
+        ] {
+            SymbolName::intern_str(name).cell().set_constant(true);
+        }
         crate::lisp::native_comp::initialize_runtime(&mut interp);
         interp
     }

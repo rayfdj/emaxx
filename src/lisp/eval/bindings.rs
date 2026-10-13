@@ -115,11 +115,16 @@ impl Interpreter {
         resolved: &str,
         resolved_symbol: Option<&SymbolName>,
     ) -> Option<Value> {
-        if self.has_native_text_conversion_style(resolved) {
+        let c_slot = resolved_symbol
+            .copied()
+            .or_else(|| SymbolName::find(resolved))
+            .is_some_and(|symbol| symbol.cell().has_c_slot());
+        let builtin = || c_slot.then(|| self.builtin_var_value(resolved)).flatten();
+        if c_slot && self.has_native_text_conversion_style(resolved) {
             let value = self.buffer.borrow().text_conversion_style;
             return (!matches!(value.kind(), Kind::Unbound)).then_some(value);
         }
-        if resolved == "buffer-undo-list" {
+        if c_slot && resolved == "buffer-undo-list" {
             return Some(crate::lisp::primitives::buffer_undo_list_value(
                 &self.buffer.borrow(),
             ));
@@ -140,7 +145,7 @@ impl Interpreter {
             } else {
                 self.global_value(resolved)
             };
-            return global.or_else(|| self.builtin_var_value(resolved));
+            return global.or_else(builtin);
         }
         // A buffer-local cell always wins over a dynamically bound default.
         // This also covers a plain special that becomes buffer-local while
@@ -162,7 +167,7 @@ impl Interpreter {
             None => self.active_global_special_value(resolved),
         };
         if let Some(value) = active {
-            return value.or_else(|| self.builtin_var_value(resolved));
+            return value.or_else(builtin);
         }
         let global = if let Some(symbol) = resolved_symbol {
             debug_assert_eq!(symbol.as_str(), resolved);
@@ -173,33 +178,13 @@ impl Interpreter {
         if let Some(value) = global {
             return Some(value);
         }
-        self.builtin_var_value(resolved)
+        builtin()
     }
 
     pub fn symbol_value_cell(&self, name: &str) -> Result<Value, LispError> {
-        if let Some(symbol) = SymbolName::interned_cached(name) {
-            return self.symbol_value_cell_symbol(&symbol);
-        }
-        // data.c:find_symbol_value follows a variable alias only when the
-        // symbol is actually redirected.  Keep the overwhelmingly common
-        // plain-value path borrowed; allocating a fresh String for every
-        // native `symbol-value' made compiler propagation spend most of its
-        // time copying already-interned names.
-        let resolved: std::borrow::Cow<'_, str> = if self.direct_variable_alias(name).is_none() {
-            name.into()
-        } else {
-            self.resolve_variable_name(name)?.into()
-        };
-        if resolved != "buffer-undo-list"
-            && !self.globals.has_flag_by_name(resolved.as_ref(), LOCALIZED)
-        {
-            return self
-                .global_value(resolved.as_ref())
-                .or_else(|| self.builtin_var_value(resolved.as_ref()))
-                .ok_or_else(|| LispError::Void(resolved.into_owned()));
-        }
-        self.lookup_var_with_resolved_name(resolved.as_ref(), resolved.as_ref(), &Env::new(), None)?
-            .ok_or_else(|| LispError::Void(resolved.into_owned()))
+        let symbol =
+            SymbolName::interned_cached(name).ok_or_else(|| LispError::Void(name.to_owned()))?;
+        self.symbol_value_cell_symbol(&symbol)
     }
 
     /// The SYMBOL_PLAINVAL case of data.c:find_symbol_value.  Native symbol
@@ -221,10 +206,12 @@ impl Interpreter {
             resolved_owned = self.resolve_variable_symbol(name)?;
             &resolved_owned
         };
-        if resolved.as_str() != "buffer-undo-list" && !self.globals.has_flag(resolved, LOCALIZED) {
+        if (!resolved.cell().has_c_slot() || resolved.as_str() != "buffer-undo-list")
+            && !self.globals.has_flag(resolved, LOCALIZED)
+        {
             return self
                 .global_binding_value_symbol(resolved)
-                .or_else(|| self.builtin_var_value(resolved.as_str()))
+                .or_else(|| self.builtin_symbol_value(resolved))
                 .ok_or_else(|| LispError::Void(resolved.as_str().to_owned()));
         }
         self.lookup_var_with_resolved_name(
@@ -252,6 +239,16 @@ impl Interpreter {
         self.lookup_var(name, env)
     }
 
+    /// The remaining native slot adapter is reached only through the object
+    /// that the C initializer registered, never through a reused spelling.
+    pub(crate) fn builtin_symbol_value(&self, symbol: &SymbolName) -> Option<Value> {
+        symbol
+            .cell()
+            .has_c_slot()
+            .then(|| self.builtin_var_value(symbol.as_str()))
+            .flatten()
+    }
+
     pub(crate) fn builtin_var_value(&self, name: &str) -> Option<Value> {
         // A symbol `makunbound' detached from its C slot stays void until
         // something stores into it again (data.c set_internal).
@@ -259,8 +256,6 @@ impl Interpreter {
             return None;
         }
         match name {
-            "nil" => Some(Value::Nil),
-            "t" => Some(Value::T),
             // casefiddle.c creates this value cell as nil; simple.el installs
             // the real extraction policy during loadup.
             "region-extract-function" => Some(Value::Nil),
@@ -681,7 +676,6 @@ impl Interpreter {
             // eagerly at Interpreter::new (emacs.c set_initial_environment)
             // so their cons chains keep GNU's structural identity; no lazy
             // fallback may resynthesize them.
-            _ if name.starts_with(':') => Some(Value::Symbol(name.to_string().into())),
             _ => None,
         }
     }
@@ -718,14 +712,14 @@ impl Interpreter {
         {
             return Ok(value);
         }
-        let resolved: std::borrow::Cow<'_, str> = if self.globals.alias(name).is_none() {
-            name.as_str().into()
-        } else {
-            self.resolve_variable_name(name.as_str())?.into()
-        };
-        let resolved_symbol = matches!(resolved, std::borrow::Cow::Borrowed(_)).then_some(name);
-        self.find_symbol_value_resolved(resolved.as_ref(), resolved_symbol)
-            .ok_or_else(|| LispError::Void(name.as_str().to_owned()))
+        let resolved = self.resolve_variable_symbol(name)?;
+        self.find_symbol_value_resolved(resolved.as_str(), Some(&resolved))
+            .ok_or_else(|| {
+                LispError::SignalValue(Value::list([
+                    Value::symbol("void-variable"),
+                    Value::Symbol(*name),
+                ]))
+            })
     }
 
     /// Whether SYMBOL has a user-level function definition (defun/fset).
@@ -860,7 +854,6 @@ impl Interpreter {
     pub(crate) fn known_symbols_shared(&self) -> Rc<Vec<SymbolName>> {
         let key = super::KnownSymbolsKey {
             symbols: self.globals.names_len(),
-            uninterned_standard: self.uninterned_standard_symbol_names.len(),
             epoch: self.obarray_epoch,
         };
         let mut cache = self.known_symbols_cache.borrow_mut();
@@ -876,7 +869,6 @@ impl Interpreter {
                 .filter(|symbol| {
                     let name = symbol.as_str();
                     crate::lisp::types::is_visible_symbol_name(name)
-                        && !self.uninterned_standard_symbol_names.contains(name)
                 })
                 .collect(),
         );
@@ -892,13 +884,12 @@ impl Interpreter {
     }
 
     pub(crate) fn standard_obarray_contains_symbol(&self, name: &str) -> bool {
-        crate::lisp::types::is_visible_symbol_name(name)
-            && !self.uninterned_standard_symbol_names.contains(name)
-            && self.globals.contains_name(name)
+        crate::lisp::types::is_visible_symbol_name(name) && self.globals.contains_name(name)
     }
 
-    pub(crate) fn standard_obarray_symbol_is_uninterned(&self, name: &str) -> bool {
-        self.uninterned_standard_symbol_names.contains(name)
+    pub(crate) fn standard_obarray_contains_object(&self, symbol: &SymbolName) -> bool {
+        crate::lisp::types::is_visible_symbol_name(symbol.as_str())
+            && self.globals.find_name(symbol.as_str()) == Some(*symbol)
     }
 
     /// A function cell was bound, rebound or voided: cached funcall
@@ -1003,6 +994,17 @@ impl Interpreter {
     pub(crate) fn set_symbol_value_cell_resolved(&mut self, symbol: &SymbolName, value: Value) {
         let resolved = symbol.as_str();
 
+        if !symbol.cell().has_c_slot() {
+            if let Some(SpecialBindingScope::BufferLocal(buffer_id)) =
+                self.assignment_scope_symbol(symbol)
+            {
+                self.set_buffer_local_value_symbol(buffer_id, symbol, value);
+            } else {
+                self.set_global_binding_resolved(symbol, value);
+            }
+            return;
+        }
+
         if resolved == "buffer-file-name" {
             let file = match value.kind() {
                 Kind::Nil => None,
@@ -1106,7 +1108,15 @@ impl Interpreter {
     /// cell. Rebinding changes that payload without changing the obarray.
     pub fn set_function_binding(&mut self, name: &str, function: Option<Value>) {
         let symbol = SymbolName::intern_str(name);
-        self.globals.set_function_definition(&symbol, function);
+        self.set_function_binding_symbol(&symbol, function);
+    }
+
+    pub(crate) fn set_function_binding_symbol(
+        &mut self,
+        symbol: &SymbolName,
+        function: Option<Value>,
+    ) {
+        self.globals.set_function_definition(symbol, function);
         self.note_function_binding_changed();
     }
 
@@ -1121,12 +1131,21 @@ impl Interpreter {
         definition: Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        self.validate_function_binding(name, &definition)?;
+        self.fset_function_symbol(&SymbolName::intern_str(name), definition, env)
+    }
+
+    pub(crate) fn fset_function_symbol(
+        &mut self,
+        symbol: &SymbolName,
+        definition: Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        self.validate_function_binding_symbol(symbol, &definition)?;
         let installs_trampolines = self
             .lookup_var("native-comp-enable-subr-trampolines", env)
             .is_some_and(|value| value.is_truthy());
         let replaces_primitive = matches!(
-            self.logical_function_binding(name, &Env::new())
+            self.raw_function_binding_symbol(symbol, &Env::new())
                 .map(|v| v.kind()),
             Some(Kind::BuiltinFunc(_))
         );
@@ -1142,12 +1161,12 @@ impl Interpreter {
             self.call_function_value(
                 installer,
                 Some("comp-subr-trampoline-install"),
-                &[Value::symbol(name)],
+                &[Value::Symbol(*symbol)],
                 env,
             )?;
         }
-        self.set_function_binding(
-            name,
+        self.set_function_binding_symbol(
+            symbol,
             if definition.is_nil() {
                 None
             } else {
@@ -1199,26 +1218,34 @@ impl Interpreter {
     }
 
     pub fn validate_function_binding(&self, name: &str, function: &Value) -> Result<(), LispError> {
+        self.validate_function_binding_symbol(&SymbolName::intern_str(name), function)
+    }
+
+    pub(crate) fn validate_function_binding_symbol(
+        &self,
+        symbol: &SymbolName,
+        function: &Value,
+    ) -> Result<(), LispError> {
         let Kind::Symbol(current) = function.kind() else {
             return Ok(());
         };
-        let mut current = current.to_string();
-        let mut seen = vec![name.to_string()];
+        let mut current = current;
+        let mut seen = vec![*symbol];
         loop {
             if seen.iter().any(|existing| existing == &current) {
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("cyclic-function-indirection".into()),
-                    Value::Symbol(name.to_string().into()),
+                    Value::Symbol(*symbol),
                 ])));
             }
-            seen.push(current.clone());
-            let Some(value) = self.globals.function_by_name(&current) else {
+            seen.push(current);
+            let Some(value) = self.globals.function(&current) else {
                 return Ok(());
             };
             let Kind::Symbol(next) = value.kind() else {
                 return Ok(());
             };
-            current = next.to_string();
+            current = next;
         }
     }
 }

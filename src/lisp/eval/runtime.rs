@@ -2015,15 +2015,23 @@ impl Interpreter {
     }
 
     pub(crate) fn record_definition_in_load_history(&mut self, kind: &str, name: &str) {
+        self.record_symbol_definition_in_load_history(kind, &SymbolName::intern_str(name));
+    }
+
+    pub(crate) fn record_symbol_definition_in_load_history(
+        &mut self,
+        kind: &str,
+        symbol: &SymbolName,
+    ) {
         let Some(current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
             return;
         };
         let entry = if kind == "defvar" {
-            Value::Symbol(name.to_string().into())
+            Value::Symbol(*symbol)
         } else {
             Value::cons(
                 Value::Symbol(kind.to_string().into()),
-                Value::Symbol(name.to_string().into()),
+                Value::Symbol(*symbol),
             )
         };
         // lisp.h:LOADHIST_ATTACH accepts an empty current-load-list too;

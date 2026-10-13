@@ -1393,8 +1393,8 @@ impl Interpreter {
                 self.maybe_quit(env)?;
                 let value = cell.car.get();
                 let parameter = match value.kind() {
-                    Kind::Nil => SymbolName::intern_str("nil"),
-                    Kind::T => SymbolName::intern_str("t"),
+                    Kind::Nil => crate::lisp::types::symbols::builtin_boolean(false),
+                    Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
                     _ => self
                         .callable_symbol_name(&value, env)
                         .ok_or_else(|| invalid_function(function))?,
