@@ -1,0 +1,128 @@
+{
+  "archive": {
+    "path": "symbol-membership-draft5-unfinished-results.tar.gz",
+    "bytes": 322753,
+    "sha256": "3d75a27718fcee4d158127d62813e4cea75b9d23b2e0e9320504ab7be746d3ab",
+    "members": 156
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft2/fixture-images/loadup-d49c1e70-d44829be.pdmp",
+      "bytes": 21788584,
+      "sha256": "228b3b192325d4c088873775c740b721454b9c96181d5dd015ef0ae5a395de11"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft3/fixture-images/loadup-12d1f8b7-d44829be.pdmp",
+      "bytes": 21790656,
+      "sha256": "92b1f52c88c42e6e7a2492a7c151ec1cc4510aad7ab4de07a4cfab33148e9fdf"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft4/fixture-images/loadup-92deff7e-d44829be.pdmp",
+      "bytes": 21790632,
+      "sha256": "fcc147c189edc333d8d6bcf0f7534598cd0a7c6f6e670e3c36c9870de80ccc47"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft5/fixture-images/loadup-30cf2754-d44829be.pdmp",
+      "bytes": 21790632,
+      "sha256": "4b160504ee871b14f0f8fc44a1d436277c745079c1a74678774479d75f9fa0dc"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "isolated and unfinished symbol membership draft5",
+  "patch_base": "999362622a68d6508c356541422f7a48ae6e2175",
+  "replay": {
+    "base": "999362622a68d6508c356541422f7a48ae6e2175",
+    "results": [
+      {
+        "draft": 1,
+        "source_inputs": 574,
+        "patch_sha256": "109abc548532d4747d9a848ccaf476d06969591d597809fa3a590029181a3c3f",
+        "source_sha256": "4293d3874cdbf7f62b63d144542611e70616d8b454737c247642e61bc634f5c2",
+        "replayed": true
+      },
+      {
+        "draft": 2,
+        "source_inputs": 578,
+        "patch_sha256": "eb8ac9a6e71b33689cd589200022be840ee6f7e614b23655d1528aae6bb52d9a",
+        "source_sha256": "4d49554a0a87526ca3e8b833b2ec09a26e2529ae8f5bc7f89d780b451f6a4d70",
+        "replayed": true
+      },
+      {
+        "draft": 3,
+        "source_inputs": 578,
+        "patch_sha256": "84eb5bbea4c23d55df4d307e9529a6ab90f8ef40491375176ea1d86e784bd7eb",
+        "source_sha256": "57f04a3ef353289b7d9f6af98b60a467b78bfd4d4860b9fb12cd934206197e2a",
+        "replayed": true
+      },
+      {
+        "draft": 4,
+        "source_inputs": 580,
+        "patch_sha256": "fb0140376028edc8eb5d8a1b25e40ac77f5a0028131246de07e0918de2a5055e",
+        "source_sha256": "8e9a5e9fbd47f1ade340a56be41165d3928a4fe29d6393502cae151ab44c6e7a",
+        "replayed": true
+      },
+      {
+        "draft": 5,
+        "source_inputs": 580,
+        "patch_sha256": "ec7bb9f212291482fcd24519863c161f78b2e35838b91673a7f094053c4b77a7",
+        "source_sha256": "c4d6d751470a1c86403644ba610fccf10141ff1b1669cebf7f1db6643b36d2a9",
+        "replayed": true
+      }
+    ],
+    "goal_complete": false,
+    "qualification": "Every archived intermediate patch reproduces its captured source bytes and executable modes. This is source reconstruction, not validation or acceptance of any failed draft."
+  },
+  "selected_probe": {
+    "status": "five gate controls and strict checks passed",
+    "source_inputs": 580,
+    "tests": [
+      "lisp::primitives::pdumper::tests::standard_unintern_images_keep_both_same_named_objects",
+      "lisp::primitives::tests::standard_unintern_detaches_the_object_and_preserves_its_fields",
+      "lisp::primitives::tests::standard_unintern_keeps_live_fields_and_reclaims_detached_objects",
+      "lisp::primitives::tests::standard_unintern_preserves_builtin_boolean_identity",
+      "lisp::primitives::tests::standard_unintern_prints_actual_membership"
+    ],
+    "patch_sha256": "ec7bb9f212291482fcd24519863c161f78b2e35838b91673a7f094053c4b77a7",
+    "full_goal_complete": false,
+    "qualification": "Only these five controls certify the current isolated draft. All earlier failures are retained. The same-name constant/forwarding behavior remains wrong; selected402 gate/release validation is running separately. This is not a clean published platform, native-mode, full frozen or performance result."
+  },
+  "c_mapping": {
+    "source_commit": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+    "source_files": {
+      "src/lread.c": "ff1161e5f00440ce60034e356697c18f4c03111fc17efb1e103a7430e0be3db9",
+      "src/alloc.c": "0f777658357fa650edb63771682a7b30d86aafc90912e5785a5565974fd36711",
+      "src/lisp.h": "2b3adec8837ab75b3b075cffa37fad65f9f294617f06d423fe23c8bbb90a2a87",
+      "src/print.c": "67abdaeb7a7355292bcc2107da7b476479bc7f46593fe7ec32996ab9706d034e",
+      "src/pdumper.c": "0cb1147dc9107364e4de1a682c592fff10bfd62d0472b1cce54f02aa629e2c20",
+      "src/data.c": "3c75a20c99ae0f5c809bc7f5a17401e85ba471d671a3de4ab70500a4ef49a179"
+    },
+    "mechanisms": [
+      {
+        "gnu": "lread.c:intern_sym/intern_driver/Fintern_soft/Funintern",
+        "change": "Remove actual standard-obarray entry on unintern; allocate a new object on a later miss; test symbol arguments by object identity. Removes the standard-obarray tombstone hash set and clears stale address lookup entries at removal."
+      },
+      {
+        "gnu": "lisp.h:Lisp_Symbol.interned; print.c print_gensym",
+        "change": "Keep membership in allocated symbol state and print its actual state even after its name is reused."
+      },
+      {
+        "gnu": "alloc.c:mark/sweep symbol fields; pdumper.c:dump_symbol",
+        "change": "Trace retained actual objects; new lifetime checks require both reachable-field survival and reclamation after Lisp call boundaries. Image copier uses actual membership, preserving both same-name objects and their sharing/cyclic fields."
+      },
+      {
+        "gnu": "lread.c:init_obarray_once and static Qnil/Qt",
+        "change": "Existing fixed ABI words keep their original canonical objects through two per-owner references and two spare state bits; new same-name objects do not become fixed ABI booleans.",
+        "constraint": "An embedded process has separate symbol owners while retaining the existing nil/t ABI words; adds16bytes per owner, no symbol-header expansion. Cost has not been measured; this is not memory/performance acceptance."
+      }
+    ],
+    "remaining": [
+      "Constant and C-forwarded fields still have name adapters; freshly interned nil/t/fixnum-name stores remain unrepaired.",
+      "Default/alias/watcher and other function consumers still use name adapters; existing selected controls do not prove detached-object semantics in all paths.",
+      "Private obarray names remain encoded and strongly retained; weak-name bookkeeping, physical accounting and public ownership remain incomplete.",
+      "Builtin boolean image restoration and detached symbol census need complete review; header still undercharged48instead64bytes.",
+      "Selected402 gate/release, ordinary/native/dump/release comparisons, full supported platform checks, final audit and performance acceptance remain required."
+    ],
+    "goal_complete": false
+  },
+  "qualification": "All five intermediate patches replay their captured bytes/modes; latest has580 inputs. Draft1 compiler warnings, draft2 malformed printing/boolean fixture failures, and draft4 minimal-interpreter lambda setup failure remain preserved. Draft5 passes strict zero-warning checks and five controls for same-name fields/membership, printing, nil/t identity, weak GC lifetime, image cloning and dump restoration. Initial ordinary identity input had a trailing delimiter and both processes failed; its corrected successor exits zero in allthree editors and distinguishes34 GNU true predicates from22 false predicates in both main323 and source324-production. Edge --eval programs retain extra trailing delimiters consumed after the first form; their raw commands and outputs are preserved and they are not loadable fixture certificates. The lifetime probe initially retained the last detached symbol in GNU while the helper was active; returning before collection produces actual reclamation, with the original output retained and its exact C root undiagnosed. The same-name constant store controls expose an existing defect that this draft has not repaired. The402-control gate/release queue is separate and ongoing, not certified here. No clean published platform, native-mode, full frozen, memory or speed claim follows from this unfinished draft."
+}

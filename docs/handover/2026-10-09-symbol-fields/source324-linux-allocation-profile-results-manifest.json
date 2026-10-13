@@ -1,0 +1,32 @@
+{
+  "archive": {
+    "path": "source324-linux-allocation-profile-results.tar.gz",
+    "bytes": 3135807,
+    "sha256": "e129d935dd529bc35f92c839c826ffc8e9529b87f7833ea19d45d9129c19b592",
+    "members": 30
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/source324-linux-alloc-profile/raw/ordinary-perf-emaxx",
+      "bytes": 20908352,
+      "sha256": "1e58802de74e9d213834a04914bd84a6efc6ac15ff70afe152199722fa210908"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "source324 separate diagnostic allocation-file CPU samples",
+  "run_id": 38340241707,
+  "actual_matching_outcomes": 5,
+  "successful_processes": 2,
+  "exact_subject_sha256": "1e58802de74e9d213834a04914bd84a6efc6ac15ff70afe152199722fa210908",
+  "metadata": {
+    "kind": "diagnostic_only",
+    "frequency_hz": 199,
+    "call_graph": "dwarf,8192",
+    "report_scope": "Emaxx process samples, including startup; no kernel samples",
+    "sha256": {
+      "ordinary-perf.data": "b117b600fccd81922b485f4ef460576ce9f5be1481fdfcad4548aaee0aa4fb25",
+      "ordinary-perf-emaxx": "1e58802de74e9d213834a04914bd84a6efc6ac15ff70afe152199722fa210908"
+    }
+  },
+  "qualification": "The retained profile and exact subject hashes match CI metadata and the ordinary same-input comparison. All five actual outcomes and both zero process exits are verified. This gate-profile process-tree sample includes startup/loading and is not the locked explicit-GC workload, a release measurement, or an uninstrumented timing run. Only a fraction of the recorded samples are selected Emaxx process rows. The largest reported Emaxx self row is regex case-table snapshot validation; these samples do not attribute the separate release explicit-GC regression. The Emaxx image and GNU executable/image are identified by provenance, not retained in this profile artifact. No performance acceptance is established."
+}

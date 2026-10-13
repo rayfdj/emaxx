@@ -1,0 +1,172 @@
+{
+  "archive": {
+    "path": "symbol-membership-draft6-ownership-results.tar.gz",
+    "bytes": 8564386,
+    "sha256": "cb79593e9dadf891f2ce5c52c04e151b422677373ef69769a8aa48b6329641b1",
+    "members": 138
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft5-image-order/01-original-prefix/fixture-images/loadup-30cf2754-d44829be.pdmp",
+      "bytes": 21814816,
+      "sha256": "8003d9da1238bb9019a17c1c30b47fbedf3fc46329da429fc2069931bd9c75d9"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft5-image-order/02-subset-0/fixture-images/loadup-30cf2754-d44829be.pdmp",
+      "bytes": 21801288,
+      "sha256": "e213173535b03dc9b021fa266dbd0f441c1764978090e7afe44fe23df51e6ea3"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft5-image-order/03-subset-0/fixture-images/loadup-30cf2754-d44829be.pdmp",
+      "bytes": 21794712,
+      "sha256": "5c9bee41a01c560561f7bbebd36f013171ff022add1d912ae69d4ff27f2fa088"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft5-image-order/04-subset-0/fixture-images/loadup-30cf2754-d44829be.pdmp",
+      "bytes": 21791440,
+      "sha256": "55bb9154aec4210840b8cb5cf1eeb0874c64e97c379daea533013997bf44a03c"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft5-image-order/05-subset-0/fixture-images/loadup-30cf2754-d44829be.pdmp",
+      "bytes": 21789696,
+      "sha256": "bcf5f3bbe7a2d9b91276bfe2d251587a4f1b27aad0afb566fe164ea55cbc1d1a"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft5-image-order/06-subset-0/fixture-images/loadup-30cf2754-d44829be.pdmp",
+      "bytes": 21788904,
+      "sha256": "17246db170745634e0cb81540037d1dbba32ce761ea129b86270822cb2355b6f"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft5-image-order/07-subset-0/fixture-images/loadup-30cf2754-d44829be.pdmp",
+      "bytes": 21788584,
+      "sha256": "9d47cabb1d1c228d172c7ba7f9e628976a1aa7a2ee377e8a8258552069c3564e"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft5-image-order/08-subset-0/fixture-images/loadup-30cf2754-d44829be.pdmp",
+      "bytes": 21788376,
+      "sha256": "1dd39aabd2b0dd3c1d2263aecbdaabd685c0d40d2b3624ff9011574d4e9eb379"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft5-image-order/09-subset-0/fixture-images/loadup-30cf2754-d44829be.pdmp",
+      "bytes": 21788256,
+      "sha256": "31262b1521fa517df43edf575dfa38c3c2a3e3b9383d987ed332897c03061c01"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft5-image-order-comparison/baseline-both/fixture-images/loadup-5eef878b-d44829be.pdmp",
+      "bytes": 21788240,
+      "sha256": "847fdb64ca8735c5bb7f9ce4472950f5d88d74621867c5b0671b2d6359d24406"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft5-image-order-comparison/baseline-first/fixture-images/loadup-5eef878b-d44829be.pdmp",
+      "bytes": 21788120,
+      "sha256": "35ecf07a69a4f661cf35277fce4a35f89d2d6fa6724dbc6d5e8df4e9a2665b8c"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft5-image-order-comparison/draft-second/fixture-images/loadup-30cf2754-d44829be.pdmp",
+      "bytes": 21788280,
+      "sha256": "f17465bb25e77a1b1416763632999a89871ffdc3e5b6be44ca8297bcb99b59c3"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft6-formatted-gate/fixture-images/loadup-6ce08a68-d44829be.pdmp",
+      "bytes": 21902712,
+      "sha256": "fd1c785b1805cbb2529726831ac0996900374781a232c112e2f3021cb679b8ff"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft6-formatted-gate/libtest",
+      "bytes": 30211072,
+      "sha256": "6ce08a68a0e1cf2b145f574471812418e1a55d29a1c42634b71333641c66caf1"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft6-release/fixture-images/loadup-6c102836-d44829be.pdmp",
+      "bytes": 21902712,
+      "sha256": "c9de05297e6847fdae633631d39ff961b2bafb299bca0197ff7a6d176d533796"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft6-release/libtest",
+      "bytes": 22765552,
+      "sha256": "6c10283650fe74624ae77fee843b48f37564c26d865b02c47de2973321977368"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "isolated membership draft6 ownership repair; full goal incomplete",
+  "validation": {
+    "status": "403 controls pass in both gate and release; strict zero warnings",
+    "audits": [
+      {
+        "profile": "gate",
+        "passed": 403,
+        "ignored": 0,
+        "raw_names_verified": true,
+        "original402_preserved": true,
+        "stages_verified": [
+          "fmt",
+          "check",
+          "clippy",
+          "diff",
+          "build",
+          "inventory",
+          "selected"
+        ],
+        "binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/symbol-membership/emaxx/target/gate/deps/emaxx-51c583d2b156da0e",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft6-formatted-gate/libtest",
+          "sha256": "6ce08a68a0e1cf2b145f574471812418e1a55d29a1c42634b71333641c66caf1"
+        },
+        "patch_sha256": "66fb9775bd28123acb190ee643f74fb2a939ebc84bcf8cea7e038f473a35140b",
+        "source_sha256": "375de21e02a5ab0b0a79a1d715adbe43a8fa766e20ce2397f35cc0e46135b401"
+      },
+      {
+        "profile": "release",
+        "passed": 403,
+        "ignored": 0,
+        "raw_names_verified": true,
+        "original402_preserved": true,
+        "stages_verified": [
+          "build",
+          "inventory",
+          "selected"
+        ],
+        "binary": {
+          "original": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/recovered-2026-10-13/symbol-membership/emaxx/target/release/deps/emaxx-e17fcfe01baaf180",
+          "retained": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-membership-draft6-release/libtest",
+          "sha256": "6c10283650fe74624ae77fee843b48f37564c26d865b02c47de2973321977368"
+        },
+        "patch_sha256": "66fb9775bd28123acb190ee643f74fb2a939ebc84bcf8cea7e038f473a35140b",
+        "source_sha256": "375de21e02a5ab0b0a79a1d715adbe43a8fa766e20ce2397f35cc0e46135b401"
+      }
+    ],
+    "replay": {
+      "base": "999362622a68d6508c356541422f7a48ae6e2175",
+      "results": [
+        {
+          "draft": "symbol-membership-draft6-gate",
+          "source_inputs": 580,
+          "patch_sha256": "b9098c651657c601a3d9eb9bfcb33acc481c43749629fdd29b8a3476bc286912",
+          "source_sha256": "fe1322e14bb553d1db28d7d212fe5b251c3fd301f0e2458ba50a10af77a9174b",
+          "replayed": true
+        },
+        {
+          "draft": "symbol-membership-draft6-formatted-gate",
+          "source_inputs": 580,
+          "patch_sha256": "66fb9775bd28123acb190ee643f74fb2a939ebc84bcf8cea7e038f473a35140b",
+          "source_sha256": "375de21e02a5ab0b0a79a1d715adbe43a8fa766e20ce2397f35cc0e46135b401",
+          "replayed": true
+        }
+      ],
+      "goal_complete": false,
+      "qualification": "Every archived intermediate patch reproduces its captured source bytes and executable modes. This is source reconstruction, not validation or acceptance of any failed draft."
+    },
+    "goal_complete": false,
+    "qualification": "An isolated unfinished membership prototype, not a published runtime or full platform gate. All original draft5 failures and the draft6 formatting failure remain preserved. Fresh same-name constant/store semantics, ordinary GNU execution modes and complete platform validation remain open."
+  },
+  "c_mapping": {
+    "gnu_source": "636f166cfc86aa90d63f592fd99f3fdd9ef95ebd",
+    "keymap_c_sha256": "1c1359b73dcda8b1b76a38972adb4afd7971681d816ff33d2261051100132a05",
+    "c_mechanism": "keymap.c:unicode_case_table and Flookup_key capture one staticpro root per Emacs editor process; the table survives removal from the Unicode property alist.",
+    "repair": "Replace process-global ProcessTable<Option<CharTableRef>> with one Lisp word in InterpreterState. Mark it with the owning editor, preserve the existing image root, and graph-copy it with that editor. A newly constructed editor starts nil.",
+    "reason": "The process hosts successive serialized editors. The global slot exposed the previous editor's mutable symbol fields to a fresh editor through the captured table. The preserved failing root trace reaches a foreign string symbol and its CL/native graph from this root.",
+    "cost": "One word per editor replaces one process-global optional pointer. No additional payload mirror or registry. No net memory or speed improvement measured; public ownership/serialization remains unfinished.",
+    "evidence": "The exact draft5 executable fails after either one of the two startup predecessors; clean source324 passes the recorded first/both sequences. Draft6 preserves every original image assertion and all402 controls, adds one editor/copy control, and passes403 per profile."
+  },
+  "qualification": "Supplements the draft5 unfinished/failure packages. The ordering diagnostic stopped when the last failure changed from a non-fixed-up native unit to a foreign record; its39MB raw root trace is retained and its unrecorded supervisor exit/time are not reconstructed. Both exact baseline sequences pass. All580 inputs of the failed-format and repaired patches replay from99936262. Gate and release each pass403 controls; neither is a full platform gate. No assertion is removed or failure recast. Same-name builtin constant/store controls remain a known unrepaired defect."
+}

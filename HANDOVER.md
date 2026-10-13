@@ -16,39 +16,114 @@ The latest architectural continuation is the separately packaged
 Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
 The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
 
-## Source324 symbol fields applied for clean validation — 13 October 2026
+## Source324 validation and separate membership continuation — 13 October 2026
 
-[PR84](https://github.com/rayfdj/emaxx/pull/84) is **merged into main** at
-`0118975994af1a337c5197bf07a44023bebc02bf`. The
-[verified merge receipt](docs/handover/2026-10-09-symbol-fields/source323-main-merge.json)
-records evidence head `8496b261`, whose 565 runtime inputs are identical to
-validated source323 `0550a70c`. Its complete Rust/Linux/terminal results and
-qualified macOS observations below are now on main. The full goal remains active
-and incomplete; existing approval continues to cover validated task pushes,
-Linux CI and main merges.
+The full goal remains **active and incomplete**. Main contains merged
+[PR84](https://github.com/rayfdj/emaxx/pull/84) at
+`0118975994af1a337c5197bf07a44023bebc02bf`; its
+[merge receipt](docs/handover/2026-10-09-symbol-fields/source323-main-merge.json)
+is retained. [PR85](https://github.com/rayfdj/emaxx/pull/85) carries runtime
+source324 `999362622a68d6508c356541422f7a48ae6e2175`, with **572 runtime inputs**.
+This evidence update changes no runtime inputs. Existing approval covers
+validated task pushes, Linux CI and main merges; do not ask again.
 
-The current task branch now applies **source324**, the
-[572-input symbol integration delta](docs/handover/2026-10-09-symbol-fields/allocated-symbol-identity-integration-results-manifest.json).
-All source bytes/modes match the locally validated integration. Symbol fields
-live on the allocated object; numeric IDs, side metadata and field histories
-are removed. The generic programmed-completion and nonallocating `intern-soft`
-repairs are included. The original native artifact fixture is preserved.
+Allocated symbols now own their value/alias, function, plist and flags; numeric
+IDs, side metadata and field histories are removed. The integration includes
+GNU's nonallocating `intern-soft` behavior and preserves the actual input string
+passed to programmed completion. See the
+[architectural continuation](docs/runtime-representation-symbol-payload-authority-draft.md).
 
-Local prototype evidence is **397 selected controls per profile, 3,178 full
-macOS Rust passes/two existing ignores and 28 ordinary GNU comparisons**.
-The integrated inputs additionally pass fresh strict checks and all 39 original
-integration tests. Those earlier local results do not certify this clean commit:
-run complete Linux and macOS Rust, frozen and terminal validation before its
-next main merge. Use the saved `source324-*` receipts and helpers under
-`target/runtime-goal/symbol-obarray-2026-10-09`; inspect active runs before
-launching duplicates and do not edit runtime inputs during validation.
+The [clean platform evidence](docs/handover/2026-10-09-symbol-fields/source324-linux-and-macos-rust-results-manifest.json)
+verifies **3,190 Linux Rust passes** and **3,178 macOS Rust passes**, each with
+the two existing ignores. Strict checks have zero warnings, every prior test
+name remains, and original native artifact identity passes. Linux frozen matches
+**all 519 files / 7,928 outcomes / 1,038 successful processes**, including all
+177 native compiler tests. Rust run is `38337571854`; frozen run is `38337574123`.
+All 572 source inputs and the raw reports, process receipts and inventories are
+checked against source324.
 
-No source324 performance result exists. The 64-byte header still has an old
-48-byte allocation charge, and host-name/membership/forwarded adapters,
-descriptor reclamation and public ownership remain unfinished. Preserve the
-remaining requirements and all earlier failures below. Continue measured
-profiles and the locked performance suite after this representation change is
-validated; the latest source321 pilots remain 2.767150× GNU.
+The [initial macOS frozen evidence](docs/handover/2026-10-09-symbol-fields/source324-macos-frozen-and-tramp-results-manifest.json)
+preserves the original failed attempt: **318 completed files / 4,479 matches /
+zero differences**, followed by both original 180-second Tramp timeouts and
+200 unstarted files. A separate unchanged Tramp comparison, bounded at 600 seconds,
+obtains **59 matching actual outcomes**; GNU finishes in **209.04 seconds** and
+Emaxx in **257.31 seconds**. Actual executable/image bytes are retained before
+the observations, with the rebuilt subject's hash identified separately.
+The original remains failed. The [completed 200-file tail](docs/handover/2026-10-09-symbol-fields/source324-macos-tail-and-coverage-results-manifest.json)
+adds **3,377 matches and six existing feature-diagnostic differences**, all six
+identical to source318. Every process exits successfully and all 177 native tests
+pass in both editors. An explicit file-to-run mapping covers **all 519 files /
+7,921 outcomes: 7,915 matches and six strict differences** across these separate
+attempts. This is not one passing frozen run. All 226 original terminal scenarios
+are still running at this checkpoint; inspect their state before restarting.
+Do not merge PR85 until the terminal audit also closes.
+
+The [three Linux timing pilots](docs/handover/2026-10-09-symbol-fields/source324-linux-symbol-performance-results-manifest.json)
+verify **192 actual answers and execution modes** across all 16 locked workloads.
+Against main `01189759`, the body aggregate is **0.593% faster**, but remains
+**2.725557× paired GNU**. Explicit GC regresses **10.54%**, mapcar **6.93%**, and
+native-to-bytecode transitions **5.70%**; all samples remain visible. This is
+diagnostic evidence, not the calibrated nine-round/every-workload upper 95%
+GNU-ratio ceiling of 1.03. Missing allocation counters and the old 48-byte charge
+for the actual 64-byte symbol header remain unresolved.
+
+The [Linux allocation profile](docs/handover/2026-10-09-symbol-fields/source324-linux-allocation-profile-results-manifest.json)
+runs unchanged upstream allocation tests with five matching outcomes, using
+gate-profile sampling that includes startup. It does not explain the release GC
+regression. A separate
+[macOS locked-GC profile](docs/handover/2026-10-09-symbol-fields/source324-macos-locked-gc-profile-results-manifest.json)
+verifies **24 actual results**, with all **32 requested collections** observed
+in each repetition of the unchanged 100,000-live-cons workload. Emaxx's selected
+self samples concentrate in tracing and collection. Whole-process sampling,
+concurrent validation and a retained release executable make this diagnostic;
+the samples do not establish the cause of the Linux regression or a speed gain.
+
+The next implementation is the **separate, unapplied membership draft6** in
+`target/runtime-goal/recovered-2026-10-13/symbol-membership/emaxx`.
+Its [portable patch and evidence](docs/handover/2026-10-09-symbol-fields/symbol-membership-draft6-ownership-results-manifest.json)
+replay all **580 input bytes/modes** from source324. Strict checks have zero
+warnings and **403 selected controls pass in each of gate and release**.
+It removes standard-obarray membership tombstones, preserves actual detached
+symbol and builtin boolean identity, and moves the captured Unicode menu case
+table into its owning editor. Draft5 exposed that global table retaining a prior
+editor's symbol graph; startup/image order reproductions fail before the fix.
+The added control covers separate editors, image copying and mutation isolation;
+all original image assertions remain. One value word per editor replaces the
+global optional table; no net memory or speed gain is claimed.
+
+Preserve the [earlier unfinished attempts](docs/handover/2026-10-09-symbol-fields/symbol-membership-draft5-unfinished-results-manifest.json),
+the [draft5 selected failure](docs/handover/2026-10-09-symbol-fields/symbol-membership-draft5-selected-failure-results-manifest.json)
+(399 passes/three image failures), the order reproductions and draft6's initial
+formatting failure. **Fresh same-name constant/store semantics are still wrong**:
+an ordinary valid GNU probe returns 40 true predicates while production returns
+21 false predicates. Draft6 has not repaired that adapter. Ordinary GNU mode
+comparisons and complete library/platform/frozen validation remain required;
+selected passing checks do not certify this draft for application.
+
+For portable continuation, extract the membership archive and apply
+`evidence/symbol-membership-draft6-formatted-gate/tracked.patch` to a detached
+checkout of `99936262`. Its SHA-256 is
+`66fb9775bd28123acb190ee643f74fb2a939ebc84bcf8cea7e038f473a35140b`.
+Verify every entry in the adjacent `source.json`, including file modes;
+`evidence/replay_membership6.py` records both retained draft6 patches.
+Rebase only after preserving that exact replay. GNU `lread.c:intern_sym`,
+`eval.c:Fspecial_variable_p` and the actual constant initialization in `lread.c`,
+`data.c`, `buffer.c` and `font.c` guide the remaining identity/store repair.
+
+Local source324 coordinators and receipts live under
+`target/runtime-goal/symbol-obarray-2026-10-09`: inspect
+`source324-macos-observations/state.json`, `source324-terminal/state.json` and
+`active-continuation-2026-10-13-source324.json`. Keep the root clean at source324
+while its coordinator checks that exact HEAD. This evidence checkout is separate.
+Large executables/images excluded from portable archives are explicitly listed
+with sizes, hashes and retained local paths; not every artifact is portable.
+
+Host-name/private-name and forwarded/localized adapters, descriptor reclamation,
+public ownership, physical accounting and real counters, property intervals,
+pure storage, measured VM/call work, final adversarial review, complete final
+platform validation and the unchanged performance criterion remain open. The
+replacement macOS oracle and original `591acf7b` reconstruction limitation remain
+as documented. A checkpoint merge is not completion of the full goal.
 
 ## Historical source323 validation closure — 13 October 2026
 

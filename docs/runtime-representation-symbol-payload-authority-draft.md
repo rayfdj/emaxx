@@ -1,11 +1,45 @@
 # Actual symbol identity continuation — 13 October 2026
 
-The locally validated integration is now **applied as source324 on the task
-branch**, based on main's PR84 merge `01189759`. All 572 source inputs match the
-archived integration byte-for-byte and mode-for-mode. The clean commit still
-requires complete platform/frozen/terminal validation before its main merge.
-No performance gain is claimed. The [current handover](../HANDOVER.md) records
-the latest commands and preserves source323's original failures.
+The published runtime is **source324 `99936262`**, with 572 inputs, on
+[PR85](https://github.com/rayfdj/emaxx/pull/85). Main remains PR84's merge
+`01189759`. Full Linux frozen matches all 7,928 outcomes; complete Rust checks
+pass 3,190 on Linux and 3,178 on macOS, each with two existing ignores and exact
+native artifacts. The original macOS frozen attempt matches 4,479 outcomes before
+both Tramp processes time out. A separate 600-second observation obtains all
+59 actual matching answers. The exact tail adds 3,377 matches and six unchanged
+feature-diagnostic differences, covering all 519 files across separate attempts.
+Terminal validation remains active; the original frozen verdict is still failed.
+The [current handover](../HANDOVER.md) links the portable evidence and commands.
+
+Three unchanged Linux pilots verify all 192 actual answers/modes. Source324 is
+0.593% faster than main overall, at 2.725557× paired GNU, with an explicit-GC
+regression of 10.54%. The allocation and exact locked-GC profiles narrow the work
+to investigate but do not explain that regression. The 64-byte header still has
+an incorrect 48-byte allocation charge. No final performance acceptance exists.
+
+The next **unapplied membership draft6** is retained in
+`target/runtime-goal/recovered-2026-10-13/symbol-membership/emaxx`.
+Its [portable cumulative patch](handover/2026-10-09-symbol-fields/symbol-membership-draft6-ownership-results-manifest.json)
+replays all 580 inputs from `99936262`, with strict zero-warning checks and
+403 selected passes in each of gate and release. Standard-obarray removal now
+changes actual object membership, including preserved builtin nil/t identity,
+printing, image copying and detached lifetime coverage. The process-global
+captured Unicode menu table leaked the previous editor's graph into image roots;
+the table now belongs to each editor and follows its marking/copying/dump path.
+GNU's `keymap.c` has one process-owned table; a Rust process hosting multiple
+editors needs the table under each editor's ownership. This adds one value word
+per editor and removes the global optional table, with no measured net cost claim.
+
+Draft5's three image failures, the exact startup-order reproductions and draft6's
+formatting failure remain archived. Fresh same-name constant/store behavior is
+still wrong (GNU's valid probe has 40 true predicates; production has 21 false
+predicates), and draft6 has no ordinary mode or complete platform certification.
+Continue against actual GNU constant initialization and `intern_sym` rather than
+name-based exceptions. This draft must remain separate until repaired and
+validated. Host-name and forwarded adapters, reclamation, public ownership,
+physical accounting, real counters and the full goal remain unfinished.
+
+## Historical applied identity draft5 and integration evidence
 
 The original **identity draft5 prototype** is retained unchanged in
 `target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx`.
