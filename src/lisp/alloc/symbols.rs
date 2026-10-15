@@ -378,6 +378,12 @@ pub(crate) fn allocate_symbol(cell: SymbolCell) -> SymbolRef {
     }
 }
 
+/// The next symbol takes a new block (see `ImageRegion').
+pub(super) fn abandon_allocation_frontier() {
+    SYMBOL_FREE_LIST.store(std::ptr::null_mut(), Ordering::Relaxed);
+    SYMBOL_BUMP_NEXT.store(SYMBOL_BUMP_END.load(Ordering::Relaxed), Ordering::Relaxed);
+}
+
 fn bump_symbol() -> *mut SymbolCell {
     let next = SYMBOL_BUMP_NEXT.load(Ordering::Relaxed);
     let end = SYMBOL_BUMP_END.load(Ordering::Relaxed);
@@ -439,7 +445,9 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
     let mut num_free = 0usize;
     let mut num_used = 0usize;
     let mut released = Vec::new();
+    let image = super::image_blocks();
     for start in blocks_of(BlockKind::Symbol) {
+        let image_block = image.contains(&start);
         let lim = if bump_end == start + SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE {
             (bump_next - start) / SYMBOL_CELL_SIZE
         } else {
@@ -452,7 +460,7 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
             // SAFETY: inside a registered symbol block.
             let mark = unsafe { (*cell).mark.raw() };
             if mark == epoch {
-                num_used += 1;
+                num_used += usize::from(!image_block);
                 continue;
             }
             if mark != FREE_MARK {
@@ -472,11 +480,18 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
                 }
             }
             this_free += 1;
+            if image_block {
+                continue;
+            }
             // SAFETY: a free cell's first word is the free-list link.
             unsafe { (*cell.cast::<FreeSymbol>()).next = free_list };
             free_list = cell;
         }
-        if this_free == SYMBOLS_PER_BLOCK && num_free > SYMBOLS_PER_BLOCK {
+        if image_block {
+            if this_free == SYMBOLS_PER_BLOCK {
+                released.push(start);
+            }
+        } else if this_free == SYMBOLS_PER_BLOCK && num_free > SYMBOLS_PER_BLOCK {
             free_list = chain_before;
             released.push(start);
         } else {

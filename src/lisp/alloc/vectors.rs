@@ -400,6 +400,26 @@ unsafe fn setup_on_free_list(header: *mut VectorHeader, nbytes: usize) {
     LAST_INSERTED_FREE_INDEX.store(index, Ordering::Relaxed);
 }
 
+/// A free run in an image block: tagged free, so later sweeps neither clean
+/// nor count it, but on no free list, so it is never reused.
+///
+/// # Safety
+/// As `setup_on_free_list'.
+unsafe fn setup_free_unlinked(header: *mut VectorHeader, nbytes: usize) {
+    debug_assert!(nbytes >= VBLOCK_BYTES_MIN && nbytes.is_multiple_of(ROUNDUP_SIZE));
+    // SAFETY: the caller's contract.
+    unsafe { (*header).size = VectorHeader::pseudovector_size_word(VectorTag::Free, nbytes) };
+}
+
+/// The next vector takes a new block (see `ImageRegion'). Free runs left
+/// behind return to the free lists at the next sweep.
+pub(super) fn abandon_allocation_frontier() {
+    for list in &FREE_LISTS {
+        list.store(std::ptr::null_mut(), Ordering::Relaxed);
+    }
+    LAST_INSERTED_FREE_INDEX.store(FREE_LIST_ARRAY_SIZE, Ordering::Relaxed);
+}
+
 /// alloc.c's `allocate_vector_block'.
 fn allocate_vector_block() -> usize {
     let layout = std::alloc::Layout::from_size_align(VECTOR_BLOCK_SIZE, VECTOR_BLOCK_SIZE)
@@ -1176,7 +1196,9 @@ pub(crate) fn sweep_vectors(epoch: u32) {
     }
     LAST_INSERTED_FREE_INDEX.store(FREE_LIST_ARRAY_SIZE, Ordering::Relaxed);
     let mut stats = SweepStats::default();
+    let image = super::image_blocks();
     for block in blocks_of(BlockKind::VectorBlock) {
+        let image_block = image.contains(&block);
         let mut free_this_block = false;
         let mut vector = block as *mut VectorHeader;
         while vector_in_block(vector, block) {
@@ -1184,7 +1206,9 @@ pub(crate) fn sweep_vectors(epoch: u32) {
             // to where `vector_in_block' fails.
             unsafe {
                 if (*vector).is_marked(epoch) {
-                    stats.count(vector);
+                    if !image_block {
+                        stats.count(vector);
+                    }
                     vector = advance(vector, (*vector).nbytes());
                     continue;
                 }
@@ -1216,6 +1240,8 @@ pub(crate) fn sweep_vectors(epoch: u32) {
                 }
                 if vector as usize == block && !vector_in_block(next, block) {
                     free_this_block = true;
+                } else if image_block {
+                    setup_free_unlinked(vector, total);
                 } else {
                     setup_on_free_list(vector, total);
                 }
@@ -1231,7 +1257,9 @@ pub(crate) fn sweep_vectors(epoch: u32) {
         // SAFETY: a registered large vector.
         unsafe {
             if (*vector).is_marked(epoch) {
-                stats.count(vector);
+                if !image.contains(&start) {
+                    stats.count(vector);
+                }
             } else {
                 let nbytes = (*vector).nbytes();
                 cleanup_vector(vector);

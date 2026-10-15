@@ -984,10 +984,6 @@ impl NativeRuntime {
 
     /// The counters of a process that starts from a dump, once the image
     /// is loaded (see `NativeGcState::baseline_after_image_load').
-    pub(crate) fn garbage_collection_note_image_load_start(&mut self) {
-        self.heap.note_image_load_start();
-    }
-
     pub(crate) fn garbage_collection_baseline_after_image_load(&mut self) {
         self.heap.baseline_after_image_load();
     }
@@ -3650,23 +3646,13 @@ struct NativeGcState {
     /// public threshold variable adjusts the remaining allowance by the
     /// difference between the old and new effective thresholds.
     gc_threshold: i64,
-    /// The allocator census captured by the most recent collection, matching
-    /// the `gcstat' input to `total_bytes_of_live_objects': the objects in
-    /// the allocator's blocks that the image did not bring (see
-    /// `image_bytes').
+    /// The allocator census captured by the most recent collection: the
+    /// `gcstat' input to `total_bytes_of_live_objects'. As in GNU, where a
+    /// dumped object is in pdumper's mapped region and never in a swept
+    /// block, the image's objects are not in it: they are in the
+    /// allocator's image blocks, which the sweeps leave out of the census
+    /// (see `alloc::ImageRegion').
     live_bytes: usize,
-    /// The bytes the image loader allocated (GNU sizes), as `baseline_after_image_load'
-    /// left them.  alloc.c's `total_bytes_of_live_objects' sums `gcstat',
-    /// which the sweep of the allocator's blocks fills: a dumped object is in
-    /// pdumper's mapped region, never in a block, so it never counts toward
-    /// `consing_threshold'.  This loader puts the image's objects in the
-    /// blocks, so the census counts them; taking the image's bytes back out
-    /// is C's rule under this loader (to go when the image is a mapped
-    /// region of its own).
-    image_bytes: usize,
-    /// `lisp_allocated_bytes' when the image load began (`image_bytes' is
-    /// the growth to the baseline).
-    image_load_started: u64,
     /// Last point consumed from LISP_ALLOCATED_BYTES.  Keeping the source
     /// monotonic makes allocations outside native activation visible here.
     observed_allocated_bytes: u64,
@@ -3687,8 +3673,6 @@ impl Default for NativeGcState {
             consing_until_gc: 0,
             gc_threshold: 0,
             live_bytes: 0,
-            image_bytes: 0,
-            image_load_started: 0,
             observed_allocated_bytes: lisp_allocated_bytes(),
             trigger_allocated_bytes: 0,
             collections: 0,
@@ -3729,22 +3713,11 @@ impl NativeGcState {
     /// `maybe_garbage_collect' retunes the counters from the Lisp
     /// variables, and pdumper's objects are not consing.  The bytes the
     /// loader allocated are the baseline from here on.
-    /// The counter as the image load begins: the loader's allocations
-    /// from here to `baseline_after_image_load' are the image's.
-    fn note_image_load_start(&mut self) {
-        self.image_load_started = lisp_allocated_bytes();
-    }
-
     fn baseline_after_image_load(&mut self) {
         self.consing_until_gc = 0;
         self.gc_threshold = 0;
         self.live_bytes = 0;
         self.observed_allocated_bytes = lisp_allocated_bytes();
-        self.image_bytes = usize::try_from(
-            self.observed_allocated_bytes
-                .saturating_sub(self.image_load_started),
-        )
-        .unwrap_or(usize::MAX);
         self.publish_trigger();
     }
 
@@ -3800,7 +3773,7 @@ impl NativeGcState {
     fn collection_finished(&mut self, live_bytes: usize, threshold: i64, percentage: Option<f64>) {
         self.collections += 1;
         self.observed_allocated_bytes = lisp_allocated_bytes();
-        self.live_bytes = live_bytes.saturating_sub(self.image_bytes);
+        self.live_bytes = live_bytes;
         self.gc_threshold = self.consing_threshold(threshold, percentage, 0);
         self.consing_until_gc = self.gc_threshold;
         self.publish_trigger();
@@ -3844,10 +3817,6 @@ impl NativeHeap {
 
     fn collection_might_be_due(&mut self) -> bool {
         self.gc.collection_might_be_due()
-    }
-
-    fn note_image_load_start(&mut self) {
-        self.gc.note_image_load_start();
     }
 
     fn baseline_after_image_load(&mut self) {

@@ -222,6 +222,12 @@ static LIVE_STRINGS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static LIVE_SPANS: AtomicUsize = AtomicUsize::new(0);
 
+/// The next string header takes a new block (see `ImageRegion').
+pub(super) fn abandon_allocation_frontier() {
+    FREE_LIST.store(std::ptr::null_mut(), Ordering::Relaxed);
+    BUMP_NEXT.store(BUMP_END.load(Ordering::Relaxed), Ordering::Relaxed);
+}
+
 /// Ordinary constructors canonicalize empties; restoration and purecopy
 /// allocate distinct headers, as their GNU C paths require.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -401,7 +407,9 @@ pub(crate) fn sweep_strings(epoch: u32) {
     let mut free_count = 0;
     let (mut strings, mut bytes, mut spans) = (0, 0, 0);
     let mut released = Vec::new();
+    let image = super::image_blocks();
     for start in blocks_of(BlockKind::String) {
+        let image_block = image.contains(&start);
         let limit =
             if BUMP_END.load(Ordering::Relaxed) == start + STRINGS_PER_BLOCK * STRING_CELL_SIZE {
                 (BUMP_NEXT.load(Ordering::Relaxed) - start) / STRING_CELL_SIZE
@@ -421,6 +429,9 @@ pub(crate) fn sweep_strings(epoch: u32) {
                         continue;
                     }
                     if mark == epoch {
+                        if image_block {
+                            continue;
+                        }
                         let handle = StringObjectRef::from_raw(cell);
                         let state = handle.borrow();
                         strings += 1;
@@ -432,12 +443,19 @@ pub(crate) fn sweep_strings(epoch: u32) {
                     std::ptr::drop_in_place((*cell).state.get());
                     (*cell).mark.set_raw(FREE_MARK);
                 }
+                block_free += 1;
+                if image_block {
+                    continue;
+                }
                 cell.cast::<*mut StringCell>().write(free_list);
             }
             free_list = cell;
-            block_free += 1;
         }
-        if block_free == STRINGS_PER_BLOCK && free_count > STRINGS_PER_BLOCK {
+        if image_block {
+            if block_free == STRINGS_PER_BLOCK {
+                released.push(start);
+            }
+        } else if block_free == STRINGS_PER_BLOCK && free_count > STRINGS_PER_BLOCK {
             free_list = previous_chain;
             released.push(start);
         } else {

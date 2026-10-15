@@ -390,9 +390,9 @@ pub(crate) fn pdumper_load(
         return Err(PdumperLoadError::Error("a dump is already loaded".into()));
     }
     let started = std::time::Instant::now();
-    interp
-        .native_compiler
-        .garbage_collection_note_image_load_start();
+    // The objects rebuilt from here on are the image's: pdumper's mapped
+    // region, outside the heap's census and never reused.
+    let image_region = crate::lisp::alloc::ImageRegion::open();
     let bytes = match load::ImageBytes::open(path) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -456,6 +456,8 @@ pub(crate) fn pdumper_load(
             counter.store(recorded, std::sync::atomic::Ordering::Relaxed);
         }
     }
+    // Objects made after this are the heap's own.
+    drop(image_region);
     // alloc.c: `consing_until_gc' and `gc_threshold' are plain globals
     // the image does not carry, zero in a process that starts from a
     // dump, and pdumper's objects are not consing.  The loader's

@@ -20,7 +20,7 @@
 
 use super::types::{ConsCell, Kind, Value};
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
@@ -38,7 +38,7 @@ pub(crate) use strings::{
     live_string_object_census, retire_string_data, string_data_size, sweep_strings,
 };
 pub(crate) mod vectors;
-use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 pub use symbols::{SymbolCell, SymbolRef};
 /// The actual header cells this allocator holds, as charged to collection.
 pub(crate) const SYMBOL_CELL_BYTES: usize = symbols::SYMBOL_CELL_SIZE;
@@ -123,6 +123,12 @@ fn register_block(start: usize, kind: BlockKind) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(start, kind);
+    if IMAGE_REGION_OPEN.load(Ordering::Relaxed) {
+        IMAGE_BLOCKS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(start);
+    }
 }
 
 /// alloc.c's `mem_delete'.
@@ -132,6 +138,63 @@ fn unregister_block(start: usize) {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .remove(&start);
     debug_assert!(removed.is_some());
+    IMAGE_BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&start);
+}
+
+/// pdumper's mapped region, as this loader has it. GNU's sweeps never visit
+/// dumped objects, gcstat never counts them (so `total_bytes_of_live_objects'
+/// and the `garbage-collect' census are the heap's own objects), and their
+/// storage is never reused. This loader rebuilds the image's objects in
+/// ordinary blocks, so every block registered while an image loads is an
+/// image block: the sweeps leave its objects out of the census and its freed
+/// cells off the free lists. Dead objects there are still cleaned, because
+/// they own host storage, and a block with nothing live is still released.
+static IMAGE_REGION_OPEN: AtomicBool = AtomicBool::new(false);
+static IMAGE_BLOCKS: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
+
+/// The image blocks, read once by each sweep.
+fn image_blocks() -> BTreeSet<usize> {
+    IMAGE_BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+/// An image load in progress: blocks registered until this is dropped are
+/// image blocks. Opening and closing both start every allocator on fresh
+/// blocks, so no block holds both image objects and the heap's own.
+pub(crate) struct ImageRegion(());
+
+impl ImageRegion {
+    pub(crate) fn open() -> Self {
+        let was_open = IMAGE_REGION_OPEN.swap(true, Ordering::Relaxed);
+        assert!(!was_open, "an image region is already open");
+        abandon_allocation_frontiers();
+        Self(())
+    }
+}
+
+impl Drop for ImageRegion {
+    fn drop(&mut self) {
+        abandon_allocation_frontiers();
+        IMAGE_REGION_OPEN.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Make the next allocation of every kind take a new block. The cells left
+/// behind stay free and return to the free lists at the next sweep (or, in
+/// an image block, stay unused).
+fn abandon_allocation_frontiers() {
+    FREE_LIST.store(std::ptr::null_mut(), Ordering::Relaxed);
+    BUMP_NEXT.store(BUMP_END.load(Ordering::Relaxed), Ordering::Relaxed);
+    FLOAT_FREE_LIST.store(std::ptr::null_mut(), Ordering::Relaxed);
+    FLOAT_BUMP_NEXT.store(FLOAT_BUMP_END.load(Ordering::Relaxed), Ordering::Relaxed);
+    symbols::abandon_allocation_frontier();
+    strings::abandon_allocation_frontier();
+    vectors::abandon_allocation_frontier();
 }
 /// gcstat's `total_conses' and `total_free_conses': raised by allocation
 /// on any thread, set by the sweep (the heap is the process's).
@@ -405,7 +468,9 @@ pub(crate) fn sweep_floats(epoch: u32) -> usize {
     let mut num_free = 0usize;
     let mut num_used = 0usize;
     let mut released = Vec::new();
+    let image = image_blocks();
     for start in blocks_of(BlockKind::Float) {
+        let image_block = image.contains(&start);
         let lim = if bump_end == start + FLOATS_PER_BLOCK * FLOAT_CELL_SIZE {
             (bump_next - start) / FLOAT_CELL_SIZE
         } else {
@@ -418,19 +483,25 @@ pub(crate) fn sweep_floats(epoch: u32) -> usize {
             // SAFETY: inside a registered float block.
             let mark = unsafe { float_mark(cell) };
             if mark.is_marked(epoch) {
-                num_used += 1;
+                num_used += usize::from(!image_block);
                 continue;
             }
-            // SAFETY: an unmarked cell holds no owned storage; clear its
-            // allocation bit and store the free-list link in its one word.
-            unsafe {
-                mark.release();
-                (*cell.cast::<FreeFloat>()).next = free_list;
-            }
+            // An unmarked cell holds no owned storage: clear its allocation
+            // bit (and, outside the image, link it through its one word).
+            mark.release();
             this_free += 1;
+            if image_block {
+                continue;
+            }
+            // SAFETY: the cell is free; its one word is the free-list link.
+            unsafe { (*cell.cast::<FreeFloat>()).next = free_list };
             free_list = cell;
         }
-        if this_free == FLOATS_PER_BLOCK && num_free > FLOATS_PER_BLOCK {
+        if image_block {
+            if this_free == FLOATS_PER_BLOCK {
+                released.push(start);
+            }
+        } else if this_free == FLOATS_PER_BLOCK && num_free > FLOATS_PER_BLOCK {
             free_list = chain_before;
             released.push(start);
         } else {
@@ -1497,7 +1568,9 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
     let mut num_free = 0usize;
     let mut num_used = 0usize;
     let mut released = Vec::new();
+    let image = image_blocks();
     for start in all_blocks() {
+        let image_block = image.contains(&start);
         let lim = if bump_end == start + CELLS_PER_BLOCK * CELL_SIZE {
             (bump_next - start) / CELL_SIZE
         } else {
@@ -1511,7 +1584,7 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
             // readable in every state.
             let mark = unsafe { cons_mark(cell) };
             if mark.is_marked(epoch) {
-                num_used += 1;
+                num_used += usize::from(!image_block);
                 continue;
             }
             if mark.allocated() {
@@ -1527,11 +1600,18 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
                 }
             }
             this_free += 1;
+            if image_block {
+                continue;
+            }
             // SAFETY: a free cell's first word is the free-list link.
             unsafe { (*cell.cast::<FreeCell>()).next = free_list };
             free_list = cell;
         }
-        if this_free == CELLS_PER_BLOCK && num_free > CELLS_PER_BLOCK {
+        if image_block {
+            if this_free == CELLS_PER_BLOCK {
+                released.push(start);
+            }
+        } else if this_free == CELLS_PER_BLOCK && num_free > CELLS_PER_BLOCK {
             // Unhook the block's cells (the ones just linked) and give
             // the block back.
             free_list = chain_before;
