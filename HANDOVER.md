@@ -267,33 +267,44 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   shortened list ends the mapping, a char-table signals `listp`; Emaxx
   copied the sequence first). GNU-compared test.
 - `c100767` the bytecode fast loop dispatches through a 256-entry class
-  table.
+  table; `37a0c4f` inlines it into the frame loop, so a bytecode call and
+  return no longer leave and re-enter it through a prologue twice
+  (bytecode calls 3.18 → 2.87, bytecode-to-native 4.17 → 3.97, undo
+  by 7.7%); `898a088` reads a callee's name from its decoded symbol
+  (bytecode calls 2.83).
+- `77a5be0` native funcall tests the GC trigger before the trampoline too
+  (native execution 1.48 → 1.39). Rejected in the same commit: a per-subr
+  table of `invoke_subr`'s fast cases in place of its name comparisons made
+  native execution 4% slower; its patch is
+  `docs/handover/2026-10-15-performance-round/rejected-native-subr-kind-table.patch`.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
 25 sorting/case-folding/substring tests plus the comparison tests, and 95
-mapping and bytecode tests pass; clippy `-D warnings`, rustfmt and
-`git diff --check` pass. A broad run over the GC, special-form, `eval_` and
-native filters for the interpreter changes had found no failure when CI was
-started; CI's full gate and frozen runs on the round's head are the merge
-evidence.
+mapping and bytecode tests, 208 native-runtime/funcall/GC tests and 189
+bytecode/reclamation/finalizer/weak-table tests pass; clippy `-D warnings`, rustfmt and
+`git diff --check` pass. A broad local run over the GC, special-form, `eval_`
+and native filters was stopped after 89 CPU minutes, with one failure:
+`byte_compile_file_reports_an_unwritable_target_like_gnu`, which cannot
+pass as root (this container's user writes into a mode-555 directory) and
+passes in CI. CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo | 4.33 (5.88 at 10 units: the log grew) | 2.91 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.34 |
 | upstream-sort | 3.26 | 2.65 |
 | interpreted-calls | 2.10 | 1.80 |
 | interpreted-lexical | 2.04 | 1.75 |
 | interpreted-dynamic | 2.14 | 1.89 |
 | mapcar | 2.95 | 2.65 |
-| bytecode-calls | 3.30 | 3.18 |
-| bytecode-to-native | — | 4.17 |
+| bytecode-calls | 3.30 | 2.83 |
+| bytecode-to-native | — | 3.97 |
 | interpreted-to-native | — | 2.24 |
 | native-to-interpreted / -bytecode | — | 1.99 / 2.18 |
 | cons-allocation / list-traversal | 2.24 / — | 1.96 / 1.90 |
-| native-execution | — | 1.48 |
+| native-execution | — | 1.39 |
 | bindat | — | 1.68 |
 | explicit-gc | — | 1.00 |
 
@@ -301,6 +312,12 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 3,104 tests in the counted groups plus the bins and integration groups, the
 two existing ignores), frozen **7,928 of 7,928 outcomes match across 519
 files** with no unsuccessful execution (run 38737719924).
+
+**CI on `352ea91`** (everything through `c100767`): full Rust gate passed
+(run 38751776827; 3,105 tests in the counted groups plus bins and
+integration, the two existing ignores), frozen **7,928 of 7,928 outcomes
+match across 519 files**, no unsuccessful execution (run 38751781622).
+`77a5be0`, `37a0c4f` and `898a088` came after it.
 
 **Findings recorded, not fixed:**
 - Loading prints "Loading FILE..." through Lisp `message`, so in batch it is
@@ -322,13 +339,19 @@ files** with no unsuccessful execution (run 38737719924).
 
 **Where the remaining gap is:** the bytecode VM (bytecode-to-native,
 bytecode-calls and undo's `simple.elc` are its three worst cases): about 13
-instructions of dispatch and 30–50 per op in all, and each call leaves and
-re-enters the fast loop twice; GNU's `exec_byte_code` spends about 24 per op
-including calls. Then the source interpreter's per-form cost (about 420
-instructions per evaluated list form against GNU's 170, spread over frame
-recording, function lookup, subr dispatch and the state checks), the funcall
-path used by `mapcar` and native transitions (about 400 per call against
-GNU's 170), and a per-native-call `setjmp` that Rust's frames require.
+instructions of dispatch and 30–50 per op in all, plus about 800 per
+bytecode call (the callee's closure fields re-read, the backtrace frame,
+the frame vector, funcall depth, the return bookkeeping); GNU's
+`exec_byte_code` spends about 24 per op including calls. Per op, about 6
+instructions are the class dispatch and about 15 are bounds checks, slice
+construction and the push assertion that keep unverified bytecode
+memory-safe; removing them needs a one-time verifier of each function's
+stack depth, constant indices and jump targets. Then the source
+interpreter's per-form cost (about 420 instructions per evaluated list form
+against GNU's 170, spread over frame recording, function lookup, subr
+dispatch and the state checks), the funcall path used by `mapcar` and
+native transitions (about 400 per call against GNU's 170), and a
+per-native-call `setjmp` that Rust's frames require.
 
 ## How the work is split
 
