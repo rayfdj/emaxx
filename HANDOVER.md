@@ -410,7 +410,11 @@ match across 519 files**, no unsuccessful execution (run 38761729296).
 frozen **7,928 of 7,928 outcomes match across 519 files** (run
 38783499025). **CI on `bfb9c1a`** (Bcall into native functions): full
 Rust gate passed (run 38789815645; 3,112 tests), frozen 7,928 of 7,928
-(run 38789820093). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+(run 38789820093). **CI on `36f1a67`** (fixnum fast paths, in-place
+frame pops): full Rust gate passed (run 38803520645; 3,114 tests in the
+counted groups plus bins and integration, the two existing ignores),
+frozen 7,928 of 7,928 across 519 files, no unsuccessful execution (run
+38803524575). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu`.
