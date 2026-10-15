@@ -2643,7 +2643,9 @@ impl Interpreter {
 
     #[inline]
     pub fn pop_backtrace_frame(&mut self) {
-        self.backtrace_frames.pop();
+        if let Some(len) = self.backtrace_frames.len().checked_sub(1) {
+            self.truncate_backtrace_frames(len);
+        }
     }
 
     pub fn backtrace_frames_len(&self) -> usize {
@@ -2654,11 +2656,36 @@ impl Interpreter {
     /// op as a frame (bytecode.c's record_in_backtrace) that outlives the
     /// op itself; the VM balances the stack with this once the signal has
     /// been dispatched.
+    #[inline(always)]
     pub fn truncate_backtrace_frames(&mut self, len: usize) {
         // Lisp words need no destructor, but copied frames can own argument
         // vectors even when their function is immediate and detail is empty.
-        // Dropping every removed frame releases those Rust allocations.
-        self.backtrace_frames.truncate(len);
+        // Dropping every removed frame releases those Rust allocations; a
+        // frame that owns nothing leaves as a specpdl entry does, by the
+        // length moving back. A call's own frame is the usual one.
+        let frames = &mut self.backtrace_frames;
+        if frames.len() == len.wrapping_add(1) && frames[len].owns_nothing() {
+            // SAFETY: the frame holds no allocation and its Drop would do
+            // nothing; forgetting it releases nothing.
+            unsafe { frames.set_len(len) };
+            return;
+        }
+        self.truncate_backtrace_frames_to(len);
+    }
+
+    #[inline(never)]
+    fn truncate_backtrace_frames_to(&mut self, len: usize) {
+        let frames = &mut self.backtrace_frames;
+        while frames.len() > len {
+            let last = frames.len() - 1;
+            if frames[last].owns_nothing() {
+                // SAFETY: the frame holds no allocation and its Drop would
+                // do nothing; forgetting it releases nothing.
+                unsafe { frames.set_len(last) };
+            } else {
+                frames.truncate(last);
+            }
+        }
     }
 
     pub fn set_current_backtrace_debug(&mut self, enabled: bool) {

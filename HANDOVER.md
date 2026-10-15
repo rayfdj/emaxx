@@ -324,6 +324,23 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   into a vector. mapcar 2.68 → 2.30; the other workloads moved within 1%
   (explicit GC, which none of this touches, moved by as much). GNU-compared
   test of the values and errors.
+- The arithmetic and comparison subrs (`+ - * = < > <= >= 1+ 1-`) answer
+  two fixnums (one for `1+`/`1-`) before their general paths, as data.c's
+  FIXNUMP fast paths do; a backtrace frame that owns nothing (no detail,
+  no argument vector of its own) is popped by moving the length back,
+  inline for a call's own frame, instead of through `Vec::truncate` and
+  the frame's drop glue; lexical lookup compares the binding's car with
+  the symbol's word (Fassq's EQ) instead of decoding each car. Instruction
+  ratios: interpreted lexical 1.77 → 1.57, dynamic 1.90 → 1.74, calls
+  1.82 → 1.63, cons allocation 1.98 → 1.78, list traversal 1.92 → 1.72,
+  mapcar 2.30 → 2.08, interpreted-to-native 2.27 → 2.00,
+  native-to-interpreted 1.99 → 1.81, native-to-bytecode 2.17 → 1.99,
+  native execution 1.31 → 1.23, sort 2.66 → 2.50, bindat 1.67 → 1.54,
+  undo 2.81 → 2.76, bytecode-to-native 2.80 → 2.73, bytecode calls 2.33
+  → 2.28. Rejected without a patch (no change in any count): replacing
+  `kind()` matches in the evaluator's hot paths with single tag tests; the
+  instructions attributed to `kind()` were already those tests. GNU-compared
+  test of the fast paths' overflow, float, marker and error cases.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -340,20 +357,20 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.79 |
-| upstream-sort | 3.26 | 2.66 |
-| interpreted-calls | 2.10 | 1.80 |
-| interpreted-lexical | 2.04 | 1.75 |
-| interpreted-dynamic | 2.14 | 1.89 |
-| mapcar | 2.95 | 2.30 |
-| bytecode-calls | 3.30 | 2.32 |
-| bytecode-to-native | — | 2.78 |
-| interpreted-to-native | — | 2.26 |
-| native-to-interpreted / -bytecode | — | 1.97 / 2.17 |
-| cons-allocation / list-traversal | 2.24 / — | 1.96 / 1.90 |
-| native-execution | — | 1.31 |
-| bindat | — | 1.68 |
-| explicit-gc | — | 1.00 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.76 |
+| upstream-sort | 3.26 | 2.50 |
+| interpreted-calls | 2.10 | 1.63 |
+| interpreted-lexical | 2.04 | 1.57 |
+| interpreted-dynamic | 2.14 | 1.74 |
+| mapcar | 2.95 | 2.08 |
+| bytecode-calls | 3.30 | 2.28 |
+| bytecode-to-native | — | 2.73 |
+| interpreted-to-native | — | 2.00 |
+| native-to-interpreted / -bytecode | — | 1.81 / 1.99 |
+| cons-allocation / list-traversal | 2.24 / — | 1.78 / 1.72 |
+| native-execution | — | 1.23 |
+| bindat | — | 1.54 |
+| explicit-gc | — | 1.01 |
 
 Undo's earlier 2.34 at ten units was an artifact: in that pair of runs the
 collector worked more at ten units than at twenty (`mem_find` and the
@@ -376,6 +393,16 @@ match across 519 files**, no unsuccessful execution (run 38751781622).
 (run 38761724660; 3,105 tests in the counted groups plus bins and
 integration, the two existing ignores), frozen **7,928 of 7,928 outcomes
 match across 519 files**, no unsuccessful execution (run 38761729296).
+
+**CI on `cf18c9d`** (byte-code verification): full Rust gate passed (run
+38783494477; 3,111 tests in the counted groups plus bins and integration),
+frozen **7,928 of 7,928 outcomes match across 519 files** (run
+38783499025). **CI on `bfb9c1a`** (Bcall into native functions): full
+Rust gate passed (run 38789815645; 3,112 tests), frozen 7,928 of 7,928
+(run 38789820093). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+fails in this container on `4008098` already (the restored image's first
+native function in `mapatoms` order differs) and passes in CI, like the
+as-root `byte_compile_file_reports_an_unwritable_target_like_gnu`.
 
 **Findings recorded, not fixed:**
 - Loading prints "Loading FILE..." through Lisp `message`, so in batch it is

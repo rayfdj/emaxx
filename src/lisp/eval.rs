@@ -1633,6 +1633,19 @@ struct BacktraceFrame {
     detail: Option<Box<FrameDetail>>,
 }
 
+impl BacktraceFrame {
+    /// Whether dropping the frame releases nothing: no detail and no
+    /// argument vector of its own (the frame of an ordinary call).
+    #[inline(always)]
+    fn owns_nothing(&self) -> bool {
+        self.detail.is_none()
+            && matches!(
+                self.args,
+                FrameArgs::Borrowed { .. } | FrameArgs::NativeWords { .. }
+            )
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct FrameDetail {
     /// Original list form for an unevaluated frame.  GNU backtraces retain

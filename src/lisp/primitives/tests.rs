@@ -27729,6 +27729,26 @@ fn funcall_reaches_subrs_and_counts_lists_like_funcall_subr_and_list_length() {
 }
 
 #[test]
+fn fixnum_arithmetic_fast_paths_keep_gnus_overflow_floats_markers_and_errors() {
+    // The arithmetic and comparison subrs answer two fixnums (or one, for
+    // 1+ and 1-) before their general paths, as data.c's FIXNUMP fast
+    // paths do: overflow still becomes a bignum, and floats, markers and
+    // non-numbers take the general path with GNU's results and errors.
+    let program = r#"(list (+ most-positive-fixnum 1) (- most-negative-fixnum 1) (* most-positive-fixnum 2)
+             (* 3 4) (- 7 9) (+ 1 2) (1+ most-positive-fixnum) (1- most-negative-fixnum) (1+ 5) (1- 5)
+             (< 1 2) (> 1 2) (<= 2 2) (>= 1 2) (= 3 3) (= 3 4) (+ 1 2.0) (< 1 2.5) (1+ 1.5)
+             (condition-case e (< 1 'a) (error e)) (condition-case e (+ 'b 1) (error e))
+             (condition-case e (1+ 'c) (error e))
+             (with-temp-buffer (insert "abc") (list (+ (point-marker) 1) (< (point-min-marker) 2) (1+ (point-marker))))
+             (* most-negative-fixnum -1) (- most-negative-fixnum) (* -1 most-negative-fixnum))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(2305843009213693952 -2305843009213693953 4611686018427387902 12 -2 3 2305843009213693952 -2305843009213693953 6 4 t nil t nil t nil 3.0 t 2.5 (wrong-type-argument number-or-marker-p a) (wrong-type-argument number-or-marker-p b) (wrong-type-argument number-or-marker-p c) (5 t 5) 2305843009213693952 2305843009213693952 2305843009213693952)",
+        "fixnum arithmetic fast paths",
+    );
+}
+
+#[test]
 fn unused_bytecode_destinations_follow_actual_control_flow() {
     let fixture = include_str!("../../../tests/fixtures/bytecode-unused-destinations.el");
     let program = fixture

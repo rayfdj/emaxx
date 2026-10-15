@@ -1951,7 +1951,11 @@ pub(crate) fn assq_binding(
     environment: &Value,
     symbol: &SymbolName,
 ) -> Result<Option<SharedCons>, LispError> {
-    assq_environment(environment, |bound| bound == symbol)
+    // Fassq's EQ: the binding's car is the symbol's own word (its cell's
+    // address with the symbol tag). nil and t, whose words are 0 and 48,
+    // are never bound, and their cells' addresses match no word.
+    let target = symbol.identity_ptr() | TAG_SYMBOL;
+    assq_environment(environment, |bound| bound.word() == target)
 }
 
 /// `assq_binding' for a name in hand: the binding whose symbol has that
@@ -1960,13 +1964,16 @@ pub(crate) fn assq_binding_named(
     environment: &Value,
     name: &str,
 ) -> Result<Option<SharedCons>, LispError> {
-    assq_environment(environment, |bound| bound.as_str() == name)
+    assq_environment(
+        environment,
+        |bound| matches!(bound.kind(), Kind::Symbol(bound) if bound.as_str() == name),
+    )
 }
 
 #[inline]
 fn assq_environment(
     environment: &Value,
-    matches: impl Fn(&SymbolName) -> bool,
+    matches: impl Fn(Value) -> bool,
 ) -> Result<Option<SharedCons>, LispError> {
     let mut tail = match environment.kind() {
         Kind::Cons(cell) => cell,
@@ -1982,7 +1989,7 @@ fn assq_environment(
         {
             let entry = tail.car.get();
             if let Kind::Cons(binding) = (entry).kind()
-                && matches!(binding.car.get().kind(), Kind::Symbol(bound) if matches(&bound))
+                && matches(binding.car.get())
             {
                 return Ok(Some(binding));
             }

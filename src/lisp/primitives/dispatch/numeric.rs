@@ -687,6 +687,25 @@ pub(super) fn direct_equal(
     Ok(if equal { Value::T } else { Value::Nil })
 }
 
+/// Both arguments of a two-argument call, when both are fixnums: data.c's
+/// FIXNUMP fast paths in arith_driver and arithcompare.
+#[inline(always)]
+fn two_fixnums(args: &[Value]) -> Option<(i64, i64)> {
+    match args {
+        [left, right] => Some((left.fixnum()?, right.fixnum()?)),
+        _ => None,
+    }
+}
+
+/// The argument of a one-argument call, when it is a fixnum.
+#[inline(always)]
+fn one_fixnum(args: &[Value]) -> Option<i64> {
+    match args {
+        [value] => value.fixnum(),
+        _ => None,
+    }
+}
+
 /// The subr behind `+', by pointer (data.c/fns.c: called through
 /// the function cell).
 pub(super) fn direct_plus(
@@ -694,6 +713,9 @@ pub(super) fn direct_plus(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
+    if let Some((x, y)) = two_fixnums(args) {
+        return Ok(normalize_integer_value(x + y));
+    }
     if has_float(args) {
         // data.c arith_driver: the accumulator starts from the
         // FIRST argument, not from 0.0 -- (+ -0.0) is -0.0,
@@ -724,6 +746,9 @@ pub(super) fn direct_minus(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
+    if let Some((x, y)) = two_fixnums(args) {
+        return Ok(normalize_integer_value(x - y));
+    }
     if args.is_empty() {
         return Ok(Value::Integer(0));
     }
@@ -770,6 +795,11 @@ pub(super) fn direct_times(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
+    if let Some((x, y)) = two_fixnums(args)
+        && let Some(product) = x.checked_mul(y)
+    {
+        return Ok(normalize_integer_value(product));
+    }
     if has_float(args) {
         let mut product = 1.0;
         for a in args {
@@ -794,6 +824,9 @@ pub(super) fn direct_num_eq(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
+    if let Some((x, y)) = two_fixnums(args) {
+        return Ok(if x == y { Value::T } else { Value::Nil });
+    }
     let name = "=";
     if args.is_empty() {
         return Err(LispError::WrongNumberOfArgs(name.into(), 0));
@@ -813,6 +846,9 @@ pub(super) fn direct_lt(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
+    if let Some((x, y)) = two_fixnums(args) {
+        return Ok(if x < y { Value::T } else { Value::Nil });
+    }
     let name = "<";
     if args.is_empty() {
         return Err(LispError::WrongNumberOfArgs(name.into(), 0));
@@ -832,6 +868,9 @@ pub(super) fn direct_gt(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
+    if let Some((x, y)) = two_fixnums(args) {
+        return Ok(if x > y { Value::T } else { Value::Nil });
+    }
     let name = ">";
     if args.is_empty() {
         return Err(LispError::WrongNumberOfArgs(name.into(), 0));
@@ -851,6 +890,9 @@ pub(super) fn direct_le(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
+    if let Some((x, y)) = two_fixnums(args) {
+        return Ok(if x <= y { Value::T } else { Value::Nil });
+    }
     let name = "<=";
     if args.is_empty() {
         return Err(LispError::WrongNumberOfArgs(name.into(), 0));
@@ -870,6 +912,9 @@ pub(super) fn direct_ge(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
+    if let Some((x, y)) = two_fixnums(args) {
+        return Ok(if x >= y { Value::T } else { Value::Nil });
+    }
     let name = ">=";
     if args.is_empty() {
         return Err(LispError::WrongNumberOfArgs(name.into(), 0));
@@ -889,6 +934,9 @@ pub(super) fn direct_add1(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
+    if let Some(x) = one_fixnum(args) {
+        return Ok(normalize_integer_value(x + 1));
+    }
     let name = "1+";
     need_args(name, args, 1)?;
     if matches!(args[0].kind(), Kind::Float(_)) {
@@ -911,6 +959,9 @@ pub(super) fn direct_sub1(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
+    if let Some(x) = one_fixnum(args) {
+        return Ok(normalize_integer_value(x - 1));
+    }
     let name = "1-";
     need_args(name, args, 1)?;
     if matches!(args[0].kind(), Kind::Float(_)) {
