@@ -2233,6 +2233,14 @@ impl Buffer {
         self.text.line_to_char(index) + 1
     }
 
+    /// search.c's find_newline backward from Z over the whole text: the
+    /// position just after the COUNTth newline before the end, or None when
+    /// the text has fewer. The rope counts only newlines as line breaks.
+    pub fn after_newlines_from_end(&self, count: usize) -> Option<usize> {
+        let newlines = self.text.len_lines() - 1;
+        (count >= 1 && count <= newlines).then(|| self.text.line_to_char(newlines - count + 1) + 1)
+    }
+
     /// Current column (0-based) of point.
     pub fn current_column(&self) -> usize {
         let idx0 = self.pt - 1;

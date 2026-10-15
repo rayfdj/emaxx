@@ -296,10 +296,10 @@ pub(crate) fn message_with_string(
     })
 }
 
-// Shared existing message-log sink. This is deliberately separate from
-// message's echo/capture/stderr path, as xdisp.c:add_to_log requires.
-// Full message_dolog duplicate coalescing and marker restoration remain
-// separate contracts; factoring this sink does not claim to implement them.
+// Shared existing message-log sink: xdisp.c message_dolog with NLFLAG, which
+// Fmessage, message3 and add_to_log all reach. This is deliberately separate
+// from message's echo/capture/stderr path, as xdisp.c:add_to_log requires.
+// Creating the log buffer does not yet call `messages-buffer-mode'.
 pub(crate) fn log_message_text(interp: &mut Interpreter, text: &str, env: &Env) {
     let buffer_name = interp
         .lookup_var("messages-buffer-name", env)
@@ -308,38 +308,155 @@ pub(crate) fn log_message_text(interp: &mut Interpreter, text: &str, env: &Env) 
     let log_max = interp
         .lookup_var("message-log-max", env)
         .unwrap_or(Value::T);
-    if !text.is_empty() && !log_max.is_nil() {
-        let buffer_id = interp
-            .find_buffer(&buffer_name)
-            .map(|(id, _)| id)
-            .unwrap_or_else(|| interp.create_buffer(&buffer_name).0);
-        // xdisp.c message_dolog: `buffer-undo-list' is t and
-        // `cache-long-scans' nil in the log buffer on every message.
-        interp.set_buffer_local_value(buffer_id, "cache-long-scans", Value::Nil);
-        if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
-            buffer.disable_undo();
-            let end = buffer.point_max();
-            buffer.goto_char(end);
-            buffer.insert(&format!("{text}\n"));
-            if let Ok(max_lines) = log_max.as_integer()
-                && max_lines >= 0
-            {
-                let contents = buffer.full_buffer_string();
-                let lines = contents.matches('\n').count();
-                if lines > max_lines as usize {
-                    let drop = lines - max_lines as usize;
-                    let mut offset = 0usize;
-                    for _ in 0..drop {
-                        if let Some(next) = contents[offset..].find('\n') {
-                            offset += next + 1;
-                        }
+    if log_max.is_nil() {
+        return;
+    }
+    let buffer_id = interp
+        .find_buffer(&buffer_name)
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| interp.create_buffer(&buffer_name).0);
+    // xdisp.c message_dolog: `buffer-undo-list' is t and
+    // `cache-long-scans' nil in the log buffer on every message.
+    interp.set_buffer_local_value(buffer_id, "cache-long-scans", Value::Nil);
+    if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+        buffer.disable_undo();
+        // FIXNATP: any other non-nil value keeps every line.
+        let max_lines = log_max
+            .as_fixnum()
+            .ok()
+            .and_then(|max| usize::try_from(max).ok());
+        message_dolog(&mut buffer, text, max_lines);
+    }
+}
+
+/// Append TEXT and a newline at the end of the widened log buffer, fold the
+/// line into an identical previous one (" [N times]") or replace a previous
+/// "...", and keep at most MAX_LINES lines. Point, BEGV and ZV are restored
+/// as GNU's insertion-type-nil markers leave them, and point or ZV at the
+/// end stays at the end.
+fn message_dolog(buffer: &mut crate::buffer::Buffer, text: &str, max_lines: Option<usize>) {
+    fn after_delete(position: &mut usize, from: usize, to: usize) {
+        if *position > to {
+            *position -= to - from;
+        } else if *position > from {
+            *position = from;
+        }
+    }
+    let end = buffer.size_total() + 1;
+    let (begv, zv) = buffer.restriction();
+    let point_at_end = buffer.point() == end;
+    let zv_at_end = zv == end;
+    // Insertion at Z moves none of these: each is at most Z.
+    let mut saved = [buffer.point(), begv, zv];
+    buffer.widen();
+    buffer.goto_char(end);
+    buffer.insert(&format!("{text}\n"));
+    let end = buffer.size_total() + 1;
+    let this_bol = buffer.line_start_at(end - 1);
+    if this_bol > 1 {
+        let prev_bol = buffer.line_start_at(this_bol - 1);
+        let lines = buffer.buffer_substring(prev_bol, end).unwrap_or_default();
+        let this_bol_byte = buffer
+            .buffer_substring(prev_bol, this_bol)
+            .unwrap_or_default()
+            .len();
+        let dups = message_log_check_duplicate(lines.as_bytes(), this_bol_byte);
+        if dups > 0 {
+            let _ = buffer.delete_region(prev_bol, this_bol);
+            for position in &mut saved {
+                after_delete(position, prev_bol, this_bol);
+            }
+            if dups > 1 {
+                // Inserted before markers, before the final newline.
+                let count = format!(" [{dups} times]");
+                let at = buffer.size_total();
+                buffer.goto_char(at);
+                buffer.insert_with_properties_and_markers(&count, None, true);
+                for position in &mut saved {
+                    if *position >= at {
+                        *position += count.len();
                     }
-                    let char_end = contents[..offset].chars().count();
-                    let _ = buffer.delete_region(1, char_end + 1);
                 }
             }
         }
     }
+    if let Some(cut) =
+        max_lines.and_then(|max| buffer.after_newlines_from_end(max.saturating_add(1)))
+    {
+        let _ = buffer.delete_region(1, cut);
+        for position in &mut saved {
+            after_delete(position, 1, cut);
+        }
+    }
+    let end = buffer.size_total() + 1;
+    let [point, begv, zv] = saved;
+    buffer.restore_restriction(begv, if zv_at_end { end } else { zv });
+    buffer.goto_char(if point_at_end { end } else { point });
+}
+
+/// xdisp.c message_log_check_duplicate. LINES runs from the previous line's
+/// start to the end of the log, the newline after the line at THIS_BOL.
+/// 0 if the lines differ, 1 if the new line replaces a previous line that
+/// matched it through "...", or N > 1 for " [N times]".
+fn message_log_check_duplicate(lines: &[u8], this_bol: usize) -> i64 {
+    let len = lines.len() - 1 - this_bol;
+    let mut seen_dots = false;
+    for i in 0..len {
+        if i >= 3 && lines[i - 3..i] == *b"..." {
+            seen_dots = true;
+        }
+        if lines[i] != lines[this_bol + i] {
+            return i64::from(seen_dots);
+        }
+    }
+    let rest = &lines[len..];
+    if rest[0] == b'\n' {
+        return 2;
+    }
+    if let Some(digits) = rest.strip_prefix(b" [") {
+        let (n, tail) = strtoimax(digits);
+        if 0 < n && n < i64::MAX && tail.starts_with(b" times]\n") {
+            return n + 1;
+        }
+    }
+    0
+}
+
+/// C strtoimax in base 10: leading `isspace', an optional sign, then digits,
+/// saturating on overflow. Without digits, 0 and the whole input.
+fn strtoimax(input: &[u8]) -> (i64, &[u8]) {
+    let start = input
+        .iter()
+        .position(|byte| !matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'))
+        .unwrap_or(input.len());
+    let mut rest = &input[start..];
+    let negative = match rest.first() {
+        Some(b'-') => {
+            rest = &rest[1..];
+            true
+        }
+        Some(b'+') => {
+            rest = &rest[1..];
+            false
+        }
+        _ => false,
+    };
+    let digits = rest.iter().take_while(|byte| byte.is_ascii_digit()).count();
+    if digits == 0 {
+        return (0, input);
+    }
+    let value = rest[..digits].iter().try_fold(0i64, |value, digit| {
+        let digit = i64::from(digit - b'0');
+        value.checked_mul(10).and_then(|value| {
+            if negative {
+                value.checked_sub(digit)
+            } else {
+                value.checked_add(digit)
+            }
+        })
+    });
+    let value = value.unwrap_or(if negative { i64::MIN } else { i64::MAX });
+    (value, &rest[digits..])
 }
 
 /// Printing to the `t' stream in an interactive session displays in the
@@ -2647,9 +2764,10 @@ define_dispatch!(
                         let formatted = super::call(interp, "format-message", args, env)?;
                         (string_text(&formatted)?, Some(formatted))
                     };
-                log_message_text(interp, &text, env);
-                // The upstream capture advice ignores `(message nil)' and
-                // `(message "")', which edebug uses to clear the echo area.
+                // Fmessage: `(message nil)' and `(message "")' clear the
+                // echo area (message1 (0)) without logging, which edebug
+                // relies on and the upstream capture advice ignores. Any
+                // other format logs, even when it formats to "".
                 let capturable = !args.is_empty()
                     && !args.first().is_some_and(Value::is_nil)
                     && args
@@ -2657,6 +2775,7 @@ define_dispatch!(
                         .and_then(string_like)
                         .is_none_or(|string| !string.text.is_empty());
                 if capturable {
+                    log_message_text(interp, &text, env);
                     interp.append_message_capture(&text, true, env);
                 }
                 // An interactive session shows the message in the echo area

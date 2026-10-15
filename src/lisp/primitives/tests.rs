@@ -3046,6 +3046,116 @@ fn message_log_disables_undo_in_the_messages_buffer() {
 }
 
 #[test]
+fn message_log_folds_repeated_lines_like_message_dolog() {
+    // xdisp.c message_dolog: a line equal to the previous one replaces it
+    // with " [N times]" (counting on from an existing count), a line that
+    // matched the previous one through "..." replaces it, and the log keeps
+    // the last `message-log-max' lines when that is a natural number.
+    // `(message "")' does not log, but a format giving "" logs an empty
+    // line. Only a newline ends a line. Point and the restriction move as
+    // markers do, and point at the end stays there. Emaxx logged every repetition, so a repeated message
+    // filled the log and every later message trimmed its first line.
+    let program = r#"
+        (let ((log (lambda (thunk)
+                     (with-current-buffer "*Messages*"
+                       (let ((inhibit-read-only t)) (widen) (erase-buffer)))
+                     (funcall thunk)
+                     (with-current-buffer "*Messages*"
+                       (save-restriction (widen) (buffer-string)))))
+              (positions nil))
+          (list
+           (funcall log (lambda () (message "x") (message "x") (message "y")
+                          (message "x") (message "x") (message "x")))
+           (funcall log (lambda () (message "Loading foo...") (message "Loading foo...done")
+                          (message "Loading bar...") (message "Loading baz...done")
+                          (message "abc...") (message "abd")))
+           (funcall log (lambda () (message "") (message nil) (message "%s" "")
+                          (message "%s" "") (message "%s" "")))
+           (funcall log (lambda () (message "z\nx") (message "x") (message "x\n") (message "x\n")))
+           (funcall log (lambda () (message "c [5 times]") (message "c")
+                          (message "d [ 7 times]") (message "d")
+                          (message "e [-2 times]") (message "e")
+                          (message "f [0 times]") (message "f")
+                          (message "g [3 times]x") (message "g")
+                          (message "h [9223372036854775807 times]") (message "h")
+                          (message "i [+4 times]") (message "i")
+                          (message "j[4 times]") (message "j")))
+           (funcall log (lambda () (let ((message-log-max 3))
+                                     (message "a") (message "b") (message "c") (message "c")
+                                     (message "d"))))
+           (replace-regexp-in-string
+            "\r" "<CR>"
+            (funcall log (lambda () (let ((message-log-max 2))
+                                      (message "a") (message "p\rq") (message "p\rq")
+                                      (message "b\rc")))))
+           (funcall log (lambda () (let ((message-log-max 0)) (message "a") (message "b"))))
+           (funcall log (lambda () (let ((message-log-max nil)) (message "a") (message "b"))))
+           (funcall log (lambda () (let ((message-log-max 1.5))
+                                     (message "a") (message "b") (message "c"))))
+           (funcall log (lambda ()
+                          (message "one") (message "two") (message "three")
+                          (with-current-buffer "*Messages*" (goto-char 2) (narrow-to-region 2 7))
+                          (message "four")
+                          (with-current-buffer "*Messages*"
+                            (push (list (point) (point-min) (point-max)) positions))
+                          (let ((message-log-max 2)) (message "five"))
+                          (with-current-buffer "*Messages*"
+                            (push (list (point) (point-min) (point-max)) positions)
+                            (widen) (goto-char (point-max)))
+                          (message "five")
+                          (with-current-buffer "*Messages*"
+                            (push (list (point) (point-max)) positions)
+                            (goto-char (1- (point-max))))
+                          (message "five")
+                          (with-current-buffer "*Messages*"
+                            (push (list (point) (point-max)) positions))))
+           (nreverse positions)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"("x [2 times]
+y
+x [3 times]
+" "Loading foo...done
+Loading bar...
+Loading baz...done
+abc...
+abd
+" " [3 times]
+" "z
+x [2 times]
+x
+
+x
+
+" "c [6 times]
+d [8 times]
+e [-2 times]
+e
+f [0 times]
+f
+g [3 times]x
+g
+h [9223372036854775807 times]
+h
+i [5 times]
+j[4 times]
+j
+" "b
+c [2 times]
+d
+" "p<CR>q [2 times]
+b<CR>c
+" "" "" "a
+b
+c
+" "four
+five [3 times]
+" ((2 2 7) (1 1 1) (21 21) (6 21)))"#,
+        "message log duplicate folding",
+    );
+}
+
+#[test]
 fn copy_keymap_copies_a_list_keymap_like_keymap_c() {
     // keymap.c copy_keymap_1/copy_keymap_item: a fresh spine, copied
     // char-tables, vectors and nested keymaps, fresh `(EVENT . DEFN)'
