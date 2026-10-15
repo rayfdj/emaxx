@@ -13,34 +13,54 @@
 //! table nodes and compares only the other nodes (conses, vectors, records,
 //! strings), which native code can store into directly. Builds with debug
 //! assertions compare the full graph as well and require the same answer.
+//!
+//! A capture of a table whose recent capture still matches is that capture:
+//! the traversal of an unchanged graph records the same nodes in the same
+//! order. The nodes are shared, and a digest taken at capture time stands
+//! for them in hashing.
 
 use super::{CharTableRef, HashSet, Kind, Value};
 use crate::lisp::alloc::vectors::char_tables::char_table_store_epoch;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::hash::{BuildHasher, Hash, Hasher};
+use std::rc::Rc;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CharTableChainSignature {
     root: Option<usize>,
-    nodes: Vec<Node>,
+    nodes: Rc<[Node]>,
+    /// A hash of ROOT and NODES, taken once at capture.
+    digest: u64,
     /// The char-table store count when the nodes last matched in full.
     verified_at: Cell<u64>,
 }
 
-/// Equality and hashing are the captured graph's; when it was last verified
-/// is not part of the signature.
+/// Equality is the captured graph's; when it was last verified is not part
+/// of the signature. Equal graphs have equal digests, so hashing the digest
+/// agrees with equality.
 impl PartialEq for CharTableChainSignature {
     fn eq(&self, other: &Self) -> bool {
-        self.root == other.root && self.nodes == other.nodes
+        self.root == other.root
+            && self.digest == other.digest
+            && (Rc::ptr_eq(&self.nodes, &other.nodes) || self.nodes == other.nodes)
     }
 }
 
 impl Eq for CharTableChainSignature {}
 
-impl std::hash::Hash for CharTableChainSignature {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl Hash for CharTableChainSignature {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         self.root.hash(state);
-        self.nodes.hash(state);
+        self.digest.hash(state);
     }
+}
+
+/// The most recent captures, by root. Raw words, like every cached
+/// signature: they do not root the graph, and `matches' rejects any change.
+const RECENT_CAPTURES: usize = 8;
+
+thread_local! {
+    static RECENT: RefCell<Vec<CharTableChainSignature>> = const { RefCell::new(Vec::new()) };
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -75,12 +95,35 @@ fn same_slots(slots: impl Iterator<Item = Value>, expected: &[usize]) -> bool {
 
 impl CharTableChainSignature {
     pub(crate) fn capture(table: CharTableRef) -> Self {
+        let root = Some(Value::CharTable(table).word());
+        let recent = RECENT.with_borrow(|recent| {
+            recent
+                .iter()
+                .find(|signature| signature.root == root && signature.matches(Some(table)))
+                .cloned()
+        });
+        if let Some(recent) = recent {
+            debug_assert!(
+                recent == Self::capture_fresh(table),
+                "a matching recent capture differs from a fresh one"
+            );
+            return recent;
+        }
+        let fresh = Self::capture_fresh(table);
+        RECENT.with_borrow_mut(|recent| {
+            recent.retain(|signature| signature.root != root);
+            if recent.len() == RECENT_CAPTURES {
+                recent.remove(0);
+            }
+            recent.push(fresh.clone());
+        });
+        fresh
+    }
+
+    fn capture_fresh(table: CharTableRef) -> Self {
         let root = Value::CharTable(table).word();
-        let mut result = Self {
-            root: Some(root),
-            nodes: Vec::new(),
-            verified_at: Cell::new(char_table_store_epoch()),
-        };
+        let verified_at = char_table_store_epoch();
+        let mut nodes = Vec::new();
         let mut pending = vec![Value::CharTable(table)];
         let mut seen = HashSet::with_hasher(crate::lisp::primitives::FnvBuildHasher::default());
         while let Some(value) = pending.pop() {
@@ -114,12 +157,20 @@ impl CharTableChainSignature {
                 _ => continue,
             };
             // A node is recorded before its children are taken from PENDING.
-            result.nodes.push(Node {
+            nodes.push(Node {
                 word: value.word(),
                 payload,
             });
         }
-        result
+        let mut hasher = crate::lisp::primitives::FnvBuildHasher::default().build_hasher();
+        root.hash(&mut hasher);
+        nodes.hash(&mut hasher);
+        Self {
+            root: Some(root),
+            nodes: nodes.into(),
+            digest: hasher.finish(),
+            verified_at: Cell::new(verified_at),
+        }
     }
 
     pub(crate) fn matches(&self, table: Option<CharTableRef>) -> bool {
