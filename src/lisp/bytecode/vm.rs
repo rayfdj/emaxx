@@ -1711,11 +1711,12 @@ fn run_frames(
                     // below the callee's disjoint storage until return/unwind.
                     let call_args = unsafe { interp.bc_stack.slice_from(args_start, argc) };
                     interp.push_backtrace_frame_borrowed(func, call_args);
+                    let callee_name = match func.kind() {
+                        Kind::Symbol(name) => Some(name),
+                        _ => None,
+                    };
                     interp.capture_current_backtrace_context(
-                        match func.kind() {
-                            Kind::Symbol(_) => func.as_symbol().ok(),
-                            _ => None,
-                        },
+                        callee_name.as_ref().map(|name| name.as_str()),
                         env,
                         None,
                     );
