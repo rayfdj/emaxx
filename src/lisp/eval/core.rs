@@ -477,6 +477,27 @@ impl Interpreter {
         }
     }
 
+    /// `eval_list_length' of a form's arguments, inline for the usual
+    /// zero to two elements. FOR_EACH_TAIL's one comparison before the
+    /// second element can find a cycle only in a cell that is its own cdr,
+    /// whose cdr is no nil; its quit check comes after the second element.
+    #[inline(always)]
+    fn short_list_length(&mut self, list: Value, env: &mut Env) -> Result<usize, LispError> {
+        match list.kind() {
+            Kind::Nil => return Ok(0),
+            Kind::Cons(first) => match first.cdr.get().kind() {
+                Kind::Nil => return Ok(1),
+                Kind::Cons(second) if second.cdr.get().is_nil() => {
+                    self.maybe_quit(env)?;
+                    return Ok(2);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        self.eval_list_length(list, env)
+    }
+
     /// fns.c:list_length, including lisp.h:FOR_EACH_TAIL's cycle and
     /// quit checks.  No array of forms is allocated while counting.
     pub(super) fn eval_list_length(
@@ -638,7 +659,7 @@ impl Interpreter {
             }
         };
         let mut args_left = original_args;
-        let nargs = match self.eval_list_length(args_left, env) {
+        let nargs = match self.short_list_length(args_left, env) {
             Ok(count) => count,
             Err(error) => {
                 return self.eval_call_argument_error(depth, unevald_frame, error, env);

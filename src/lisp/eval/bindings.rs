@@ -746,7 +746,22 @@ impl Interpreter {
 
     /// `lookup_function' for the symbol in hand (the alias chain followed
     /// by symbol, as indirect_function does).
+    #[inline]
     pub(crate) fn lookup_function_symbol(
+        &self,
+        symbol: &SymbolName,
+        env: &Env,
+    ) -> Result<Value, LispError> {
+        // A function cell that is no symbol is the function itself; an
+        // alias chain, a void cell or a cycle takes the out-of-line walk.
+        match self.raw_function_binding_symbol(symbol, env) {
+            Some(binding) if !matches!(binding.kind(), Kind::Symbol(_)) => Ok(binding),
+            _ => self.lookup_function_symbol_chain(symbol, env),
+        }
+    }
+
+    #[inline(never)]
+    fn lookup_function_symbol_chain(
         &self,
         symbol: &SymbolName,
         env: &Env,
