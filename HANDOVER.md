@@ -174,11 +174,17 @@ or alignment), not added work; it stays unexplained and is to be rechecked in
 later pilots. Explicit GC does 1.6% more instructions per collection (65.5M
 vs 66.6M: the image-block checks in the sweeps).
 
-Both frozen runs so far (on `23d230a` and `1b14ec4`) match 7,927 of 7,928
-outcomes; the mismatch is the same GNU-side `eglot-test-rust-completion-exit-function`
-failure (`jsonrpc-error` from `rust-analyzer`) both times, with Emaxx passing.
-Because it reproduced, a run of that file alone on PR87's branch is pending to
-show whether GNU fails it there under today's runners too.
+Both full frozen runs (on `23d230a` and `1b14ec4`) match 7,927 of 7,928
+outcomes; the mismatch is GNU's own `eglot-test-rust-completion-exit-function`
+failing (`jsonrpc-error` from `rust-analyzer`) while Emaxx passes. Runs of that
+file alone: PR87's branch passed twice (runs 38713593324, 38715907382); this
+branch failed once (38713596938) and passed once (38715910214). The harness
+runs the two editors concurrently (here 39 s and 45 s, started 3 s apart), each
+with its own `rust-analyzer`, and GNU's test calls itself "pretty brittle"
+about server timing. This branch makes Emaxx much faster, which moves its own
+rust-analyzer tests relative to GNU's. The evidence fits a concurrency timing
+interaction, not a behavior change; it is not proven, and the mismatch is
+recorded as such rather than counted as a match.
 
 ## Task branch: char-table store count for regexp caches (`4057404`)
 
@@ -198,10 +204,22 @@ caught the one test whose hand-written "native" function poked sub-char-table
 memory, a store no native code can make. Its store is now the `aset` subr call
 comp.c emits; every assertion is unchanged. **Startup falls from 3.47 to 1.55
 billion instructions** (GNU 0.32). 494 of 495 regexp/syntax/case/char-table
-tests passed before that test's rewrite; the last passes after it. Remaining
-in this path: captures on cache misses (about 0.32 billion) — building a key
-captures the case-table graph twice and hashing walks it again. CI for this
-commit is pending.
+tests passed before that test's rewrite; the last passes after it.
+
+`4c13fba` closes a hole in that commit: a new table could take a dead table's
+address with its slots written by its constructor, so table creation now
+counts as a store too (unit test added). `8352eb5` reuses a recent capture
+whose table still matches (an unchanged graph is traversed into the same
+nodes) and hashes captures by a digest taken once; debug builds compare every
+reuse with a fresh capture. **Startup: 3.47 → 1.55 → 1.25 billion
+instructions** (GNU 0.32). 106 char-table/case/syntax/regexp tests pass with
+the reuse cross-check.
+
+Pilots of `4057404` against `8a75c7f` (run 38713604238): undo 10% faster (the
+most regexp-heavy body); the other cases move within this runner's noise (GNU's
+own explicit-GC samples spread from 0.19 to 0.32 s), and body timing excludes
+the startup this change mostly speeds up. Diagnostic only. CI's full gate for
+`8352eb5` and frozen for `4c13fba` are pending.
 
 ## How the work is split
 
