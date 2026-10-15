@@ -27708,6 +27708,27 @@ fn bytecode_calls_native_functions_through_the_live_cell_like_funcall_subr() {
 }
 
 #[test]
+fn funcall_reaches_subrs_and_counts_lists_like_funcall_subr_and_list_length() {
+    // Ffuncall calls a symbol's subr directly (funcall_general's first
+    // test), mapcar gathers into an array of the list's length, and
+    // `length' counts tails in place: the values and errors stay GNU's.
+    let program = r#"(list (length '(1 2 3))
+      (condition-case e (length '(1 2 . 3)) (error e))
+      (condition-case e (let ((l (list 1 2 3))) (setcdr (cddr l) l) (length l)) (error (car e)))
+      (mapcar #'1+ '(1 2 3))
+      (condition-case e (mapcar #'1+ '(1 . 2)) (error e))
+      (mapcar #'car-safe '((1) 2 (3)))
+      (condition-case e (mapcar #'1+ '(1 a)) (error e))
+      (condition-case e (funcall #'car) (error e))
+      (funcall #'+ 1 2 3))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(3 (wrong-type-argument listp 3) circular-list (2 3 4) (wrong-type-argument listp 2) (1 nil 3) (wrong-type-argument number-or-marker-p a) (wrong-number-of-arguments #<subr car> 0) 6)",
+        "funcall into subrs and list lengths",
+    );
+}
+
+#[test]
 fn unused_bytecode_destinations_follow_actual_control_flow() {
     let fixture = include_str!("../../../tests/fixtures/bytecode-unused-destinations.el");
     let program = fixture

@@ -977,22 +977,18 @@ define_dispatch!(
                 // fns.c's mapcar1 gathers the results in a SAFE_ALLOCA_LISP
                 // array the collector reaches while the calls go on.
                 let mut results = crate::lisp::alloc::RootedVec::new();
-                map_sequence(interp, &args[0], &args[1], env, |result| {
-                    results.push(result)
-                })?;
+                map_sequence(interp, &args[0], &args[1], env, Some(&mut results))?;
                 Ok(Value::list(results))
             }
             "mapcan" => {
                 need_args(name, args, 2)?;
                 let mut mapped = crate::lisp::alloc::RootedVec::new();
-                map_sequence(interp, &args[0], &args[1], env, |result| {
-                    mapped.push(result)
-                })?;
+                map_sequence(interp, &args[0], &args[1], env, Some(&mut mapped))?;
                 nconc_values(&mapped)
             }
             "mapc" => {
                 need_args(name, args, 2)?;
-                map_sequence(interp, &args[0], &args[1], env, drop)?;
+                map_sequence(interp, &args[0], &args[1], env, None)?;
                 Ok(args[1])
             }
             "eval" => eval_impl(interp, args, env),
@@ -2115,18 +2111,25 @@ pub(super) fn direct_cdr(
 /// it (its errors first), `listp' for a char-table, then FUNCTION on each
 /// element, read only when FUNCTION is called on it. A function that
 /// changes the sequence therefore sees its changes, and a list it makes
-/// shorter ends the mapping early. RESULT receives each value.
+/// shorter ends the mapping early. RESULTS, when given, gathers the values.
 fn map_sequence(
     interp: &mut Interpreter,
     function: &Value,
     sequence: &Value,
     env: &mut crate::lisp::types::Env,
-    mut result: impl FnMut(Value),
+    mut results: Option<&mut crate::lisp::alloc::RootedVec<Value>>,
 ) -> Result<(), LispError> {
     let length = super::call(interp, "length", std::slice::from_ref(sequence), env)?;
     let length = usize::try_from(length.as_integer()?).unwrap_or(0);
+    // mapcar1's SAFE_ALLOCA_LISP array: the results' room is taken once.
+    if let Some(results) = results.as_deref_mut() {
+        results.reserve(length);
+    }
     let mut call = |interp: &mut Interpreter, item: Value, env: &mut _| -> Result<(), LispError> {
-        result(call_function_value(interp, function, &[item], env)?);
+        let value = call_function_value(interp, function, &[item], env)?;
+        if let Some(results) = results.as_deref_mut() {
+            results.push(value);
+        }
         Ok(())
     };
     match sequence.kind() {

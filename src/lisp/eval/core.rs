@@ -1059,9 +1059,51 @@ impl Interpreter {
             if funcall {
                 crate::lisp::native_comp::maybe_gc(interp, env);
             }
-            let result = interp.call_function_body(func, original_name, args, env, funcall);
+            let result = match interp.call_subr_directly(&func, args, env, funcall) {
+                Some(result) => result,
+                None => interp.call_function_body(func, original_name, args, env, funcall),
+            };
             interp.settle_frame_result(result, env)
         })
+    }
+
+    /// eval.c:funcall_general's first test: a symbol whose live function
+    /// cell is a subr (or a native-compiled function) is called through
+    /// funcall_subr at once. Anything else (an alias, an autoload, a special
+    /// form, a lambda, a void cell) takes `call_function_body', which
+    /// reaches the same calls for these two after its general checks.
+    #[inline(always)]
+    fn call_subr_directly(
+        &mut self,
+        func: &Value,
+        args: &[Value],
+        env: &mut Env,
+        funcall: bool,
+    ) -> Option<Result<Value, LispError>> {
+        if self.pending_termination().is_some() || profile_path().is_some() {
+            return None;
+        }
+        let Kind::Symbol(name) = func.kind() else {
+            return None;
+        };
+        let function = self.globals.function(&name)?;
+        match function.kind() {
+            Kind::BuiltinFunc(subr)
+                if subr.descriptor().max_args()
+                    != crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled =>
+            {
+                Some(
+                    primitives::call_with_facts(self, subr.as_str(), subr.facts(), args, env)
+                        .map_err(|error| {
+                            Self::builtin_call_error(subr.as_str(), args.len(), funcall, error)
+                        }),
+                )
+            }
+            Kind::NativeFunction(native) => Some(crate::lisp::native_comp::call_function(
+                self, env, native, args,
+            )),
+            _ => None,
+        }
     }
 
     /// funcall_general after Ffuncall/Bcall has established depth, roots and
@@ -1240,7 +1282,8 @@ impl Interpreter {
     /// through funcall.
     #[inline(always)]
     pub(crate) fn bcall_callee(&self, func: &Value) -> BcallCallee {
-        if profile_path().is_some() {
+        // A termination maybe_gc left pending is funcall's to report.
+        if self.pending_termination().is_some() || profile_path().is_some() {
             return BcallCallee::Funcall;
         }
         let function = match func.kind() {

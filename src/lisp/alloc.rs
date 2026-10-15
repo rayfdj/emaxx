@@ -668,6 +668,12 @@ impl<T> RootedVec<T> {
         self.refresh();
     }
 
+    /// Room for ADDITIONAL more elements, registered once.
+    pub fn reserve(&mut self, additional: usize) {
+        self.inner.reserve(additional);
+        self.refresh();
+    }
+
     pub fn extend(&mut self, values: impl IntoIterator<Item = T>) {
         self.inner.extend(values);
         self.refresh();

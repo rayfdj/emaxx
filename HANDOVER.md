@@ -315,6 +315,15 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   1,145 instructions per iteration, bytecode-to-native 1,080 → 1,126,
   undo +1.5%, also with the callee helpers forced inline); its patch is
   `docs/handover/2026-10-15-performance-round/rejected-run-op-dispatch.patch`.
+- Ffuncall calls a symbol whose live cell is a subr or a native function
+  directly (funcall_general's first test) instead of through
+  `call_function_body`, `call_function_value_inner` and
+  `resolve_symbol_call`; `mapcar` reserves its result array at the
+  sequence's length (mapcar1's SAFE_ALLOCA_LISP) instead of growing it;
+  `length` counts a list's tails in place instead of copying its elements
+  into a vector. mapcar 2.68 → 2.30; the other workloads moved within 1%
+  (explicit GC, which none of this touches, moved by as much). GNU-compared
+  test of the values and errors.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -336,7 +345,7 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | interpreted-calls | 2.10 | 1.80 |
 | interpreted-lexical | 2.04 | 1.75 |
 | interpreted-dynamic | 2.14 | 1.89 |
-| mapcar | 2.95 | 2.68 |
+| mapcar | 2.95 | 2.30 |
 | bytecode-calls | 3.30 | 2.32 |
 | bytecode-to-native | — | 2.78 |
 | interpreted-to-native | — | 2.26 |

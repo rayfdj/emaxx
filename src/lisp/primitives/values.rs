@@ -601,7 +601,16 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
         }
         Kind::Closure(lambda) => Ok(lambda.public_len() as i64),
         Kind::LispRecord(record) => Ok(record.len() as i64),
-        Kind::Cons(_) => Ok(value.to_vec()?.len() as i64),
+        // fns.c:list_length counts the tails in place (FOR_EACH_TAIL and
+        // CHECK_LIST_END), without a copy of the elements.
+        Kind::Cons(_) => {
+            let mut length = 0_i64;
+            value.visit_list_elements(|_| {
+                length += 1;
+                Ok(())
+            })?;
+            Ok(length)
+        }
         _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
     }
 }
