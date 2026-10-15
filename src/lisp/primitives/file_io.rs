@@ -7,13 +7,18 @@ pub(crate) fn format_source_props(
     from: usize,
     to: usize,
 ) -> Option<Vec<(String, Value)>> {
-    let string = string_like(value)?;
-    let mut props = Vec::new();
-    for span in string.props {
+    // The format string's intervals, read in place: `format' asks once per
+    // conversion, and its text is never needed here.
+    let Kind::StringObject(state) = value.kind() else {
+        return None;
+    };
+    let state = state.borrow();
+    let mut props: Vec<(String, Value)> = Vec::new();
+    for span in state.props.iter() {
         if span.start < to && from < span.end {
-            for (name, value) in span.props {
-                if !props.iter().any(|(existing, _)| existing == &name) {
-                    props.push((name, value));
+            for (name, value) in &span.props {
+                if !props.iter().any(|(existing, _)| existing == name) {
+                    props.push((name.clone(), *value));
                 }
             }
         }

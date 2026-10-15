@@ -516,6 +516,21 @@ pub(crate) fn safe_list_length(list: &Value) -> i64 {
 }
 
 pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispError> {
+    // fns.c:Fnthcdr: a small fixnum count walks without circularity checks
+    // (SMALL_LIST_LEN_MAX).
+    if let Kind::Integer(n) = count.kind()
+        && n <= 127
+    {
+        let mut tail = *list;
+        for _ in 0..n.max(0) {
+            match tail.kind() {
+                Kind::Cons(cell) => tail = cell.cdr.get(),
+                Kind::Nil => return Ok(Value::Nil),
+                _ => return Err(wrong_type_argument("listp", *list)),
+            }
+        }
+        return Ok(tail);
+    }
     let mut remaining = match count.kind() {
         Kind::Integer(n) => BigInt::from(n),
         Kind::BigInteger(n) => (n).into(),
