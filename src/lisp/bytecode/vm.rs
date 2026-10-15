@@ -2078,75 +2078,84 @@ fn run_frames(
                     crate::lisp::native_comp::maybe_gc(interp, env);
                     // Only now inspect the live cell/code slots, just as GNU's
                     // packed-closure setup_frame branch does after maybe_gc.
-                    if let Some((callee, callee_function)) = interp.bytecode_callee(&func) {
-                        if let Err(error) =
-                            interp
-                                .bc_stack
-                                .enter_frame(callee.stack_depth, callee_function, pc)
-                        {
-                            let result = interp.settle_frame_result(Err(error), env);
-                            interp.truncate_backtrace_frames(backtrace_depth);
-                            interp.end_funcall();
-                            match result {
-                                Ok(value) => {
-                                    interp.bc_stack.truncate(args_start - 1);
-                                    push!(value);
-                                    continue;
+                    let native = match interp.bcall_callee(&func) {
+                        crate::lisp::eval::BcallCallee::Native(native) => Some(native),
+                        crate::lisp::eval::BcallCallee::Funcall => None,
+                        crate::lisp::eval::BcallCallee::ByteCode(callee, callee_function) => {
+                            if let Err(error) =
+                                interp
+                                    .bc_stack
+                                    .enter_frame(callee.stack_depth, callee_function, pc)
+                            {
+                                let result = interp.settle_frame_result(Err(error), env);
+                                interp.truncate_backtrace_frames(backtrace_depth);
+                                interp.end_funcall();
+                                match result {
+                                    Ok(value) => {
+                                        interp.bc_stack.truncate(args_start - 1);
+                                        push!(value);
+                                        continue;
+                                    }
+                                    Err(error) => return Err(error),
                                 }
-                                Err(error) => return Err(error),
                             }
-                        }
-                        frames.push(BcFrame {
-                            program: std::mem::replace(&mut program, callee),
-                            base: args_start - 1,
-                            handlers_len: handlers.len(),
-                            unwinds_len: interp.bc_unwinds.len(),
-                            backtrace_depth,
-                            op_error_frames,
-                        });
-                        pc = 0;
-                        op_error_frames = 0;
-                        // setup_frame: the callee's frame starts above the
-                        // caller's top; the arguments are copied into it
-                        // (`PUSH (*args)'), the optionals padded, the rest
-                        // gathered.  The caller's own slots -- the function
-                        // and the arguments the backtrace frame borrows --
-                        // stay as they are until Breturn cuts back to them.
-                        let ArgSpec::Packed {
-                            mandatory,
-                            nonrest,
-                            rest,
-                        } = &program.argspec
-                        else {
-                            unreachable!("bytecode_callee selects packed argument lists")
-                        };
-                        let mandatory = *mandatory as usize;
-                        let nonrest = *nonrest as usize;
-                        let rest = *rest;
-                        if argc < mandatory || (!rest && argc > nonrest) {
-                            return Err(packed_arity_error(mandatory, nonrest, argc));
-                        }
-                        let pushed = argc.min(nonrest);
-                        for argument in &call_args[..pushed] {
-                            push!(*argument);
-                        }
-                        if argc > nonrest {
-                            let rest_list = Value::list(call_args[nonrest..].iter().cloned());
-                            push!(rest_list);
-                        } else {
-                            for _ in argc..nonrest {
-                                push!(Value::Nil);
+                            frames.push(BcFrame {
+                                program: std::mem::replace(&mut program, callee),
+                                base: args_start - 1,
+                                handlers_len: handlers.len(),
+                                unwinds_len: interp.bc_unwinds.len(),
+                                backtrace_depth,
+                                op_error_frames,
+                            });
+                            pc = 0;
+                            op_error_frames = 0;
+                            // setup_frame: the callee's frame starts above the
+                            // caller's top; the arguments are copied into it
+                            // (`PUSH (*args)'), the optionals padded, the rest
+                            // gathered.  The caller's own slots -- the function
+                            // and the arguments the backtrace frame borrows --
+                            // stay as they are until Breturn cuts back to them.
+                            let ArgSpec::Packed {
+                                mandatory,
+                                nonrest,
+                                rest,
+                            } = &program.argspec
+                            else {
+                                unreachable!("bytecode_callee selects packed argument lists")
+                            };
+                            let mandatory = *mandatory as usize;
+                            let nonrest = *nonrest as usize;
+                            let rest = *rest;
+                            if argc < mandatory || (!rest && argc > nonrest) {
+                                return Err(packed_arity_error(mandatory, nonrest, argc));
                             }
-                            if rest {
-                                push!(Value::Nil);
+                            let pushed = argc.min(nonrest);
+                            for argument in &call_args[..pushed] {
+                                push!(*argument);
                             }
+                            if argc > nonrest {
+                                let rest_list = Value::list(call_args[nonrest..].iter().cloned());
+                                push!(rest_list);
+                            } else {
+                                for _ in argc..nonrest {
+                                    push!(Value::Nil);
+                                }
+                                if rest {
+                                    push!(Value::Nil);
+                                }
+                            }
+                            program.verified =
+                                super::verify::verified_code(&program, nonrest + usize::from(rest));
+                            continue;
                         }
-                        program.verified =
-                            super::verify::verified_code(&program, nonrest + usize::from(rest));
-                        continue;
-                    }
+                    };
                     let trace_call = trace_errors.then(|| func.to_string());
-                    let result = interp.funcall_body(func, call_args, env);
+                    let result = match native {
+                        Some(native) => {
+                            crate::lisp::native_comp::call_function(interp, env, native, call_args)
+                        }
+                        None => interp.funcall_body(func, call_args, env),
+                    };
                     let result = interp.settle_frame_result(result, env);
                     interp.truncate_backtrace_frames(backtrace_depth);
                     interp.end_funcall();

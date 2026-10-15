@@ -1825,6 +1825,13 @@ enum SavedRestrictionBounds {
     },
 }
 
+/// What Bcall does with its callee (see `Interpreter::bcall_callee').
+pub(crate) enum BcallCallee {
+    ByteCode(crate::lisp::bytecode::ByteCodeObject, Value),
+    Native(crate::lisp::types::NativeFunctionRef),
+    Funcall,
+}
+
 /// How a symbol callee resolved: eval_sub's reading of the function cell.
 #[derive(Clone)]
 pub(crate) enum FunctionResolution {

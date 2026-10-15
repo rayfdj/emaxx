@@ -27678,6 +27678,36 @@ fn verified_bytecode_follows_changed_shared_and_collected_code_like_gnu() {
 }
 
 #[test]
+fn bytecode_calls_native_functions_through_the_live_cell_like_funcall_subr() {
+    // Bcall calls a native-compiled callee directly (funcall_general's
+    // funcall_subr) instead of through the general funcall dispatch: the
+    // live function cell is read at each call, an arity error carries the
+    // same data, and an alias or a non-native definition takes funcall.
+    let program = r#"(progn
+   (require 'bytecomp)
+   (let* ((byte-compile-warnings nil)
+          (call (byte-compile (lambda (x) (assq-delete-all x (list (cons 1 2) (cons 3 4))))))
+          (short (byte-compile (lambda () (assq-delete-all 1))))
+          (name (byte-compile (lambda () (zz-native-callee 5)))))
+     (list (native-comp-function-p (symbol-function 'assq-delete-all))
+           (native-comp-function-p (symbol-function 'ensure-list))
+           (funcall call 1)
+           (condition-case e (funcall short) (error (list (car e) (cddr e))))
+           (progn (fset 'zz-native-callee (symbol-function 'ensure-list))
+                  (funcall name))
+           (progn (fset 'zz-native-callee (lambda (n) (* n 2)))
+                  (funcall name))
+           (progn (fset 'zz-native-callee 'zz-native-alias)
+                  (fset 'zz-native-alias (symbol-function 'ensure-list))
+                  (funcall name)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t t ((3 . 4)) (wrong-number-of-arguments (1)) (5) 10 (5))",
+        "bytecode calls into native functions",
+    );
+}
+
+#[test]
 fn unused_bytecode_destinations_follow_actual_control_flow() {
     let fixture = include_str!("../../../tests/fixtures/bytecode-unused-destinations.el");
     let program = fixture

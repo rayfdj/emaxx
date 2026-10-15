@@ -300,6 +300,21 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   is slow helped undo by 0.3% and cost bytecode calls 1.7%). GNU-compared
   test of changed, shared and collected code; unit tests of the verifier
   and of result retirement.
+- Bcall calls a native-compiled callee directly (funcall_general's
+  funcall_subr) instead of through `funcall_body` and
+  `call_function_value_inner`; the native trampoline's jump buffer is no
+  longer zeroed before `_setjmp` writes it, and the handler reconciliation
+  before and after each native call returns at once when the lists agree.
+  Bytecode-to-native 3.39 → 2.78, native execution 1.39 → 1.31, undo 2.80
+  → 2.79; bytecode calls 2.29 → 2.32 (the callee classification's enum).
+  GNU-compared test of Bcall into native functions through the live cell,
+  arity errors, aliases and redefinition. Rejected: moving the full
+  dispatch into `run_op` so the verified loop runs slow ops, calls and
+  returns without leaving it. The new functions' calls and LLVM's lost
+  inlining cost more than the exits they saved (bytecode calls 1,070 →
+  1,145 instructions per iteration, bytecode-to-native 1,080 → 1,126,
+  undo +1.5%, also with the callee helpers forced inline); its patch is
+  `docs/handover/2026-10-15-performance-round/rejected-run-op-dispatch.patch`.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -316,18 +331,18 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.80 |
-| upstream-sort | 3.26 | 2.67 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.79 |
+| upstream-sort | 3.26 | 2.66 |
 | interpreted-calls | 2.10 | 1.80 |
 | interpreted-lexical | 2.04 | 1.75 |
 | interpreted-dynamic | 2.14 | 1.89 |
 | mapcar | 2.95 | 2.68 |
-| bytecode-calls | 3.30 | 2.29 |
-| bytecode-to-native | — | 3.39 |
-| interpreted-to-native | — | 2.24 |
-| native-to-interpreted / -bytecode | — | 1.99 / 2.17 |
+| bytecode-calls | 3.30 | 2.32 |
+| bytecode-to-native | — | 2.78 |
+| interpreted-to-native | — | 2.26 |
+| native-to-interpreted / -bytecode | — | 1.97 / 2.17 |
 | cons-allocation / list-traversal | 2.24 / — | 1.96 / 1.90 |
-| native-execution | — | 1.39 |
+| native-execution | — | 1.31 |
 | bindat | — | 1.68 |
 | explicit-gc | — | 1.00 |
 
@@ -371,11 +386,12 @@ match across 519 files**, no unsuccessful execution (run 38761729296).
   form). Removing the check would make a parked shell's use undefined
   behavior instead of a panic, so it stays.
 
-**Where the remaining gap is:** the native call path first:
-bytecode-to-native spends about 800 instructions per call into native code
-(funcall dispatch through `call_function_value_inner`, `NativeRuntime::invoke`,
-handler reconciliation before and after, a zeroed jump buffer and `setjmp`,
-the execution guard) where GNU's `funcall_subr` spends about 50. The
+**Where the remaining gap is:** the native call path: a Bcall into
+native code still spends about 550 instructions (the Call arm's funcall
+bookkeeping, `native_comp::call_function`, `NativeRuntime::invoke`,
+`begin_call`/`finish_call`, the execution guard and `setjmp`) where GNU's
+`funcall_subr` spends about 50, and interpreted and native callers still
+reach it through the general funcall dispatch. The
 bytecode VM: verified ops cost 17–20 instructions (GNU about 8), a
 byte-code call and return about 600 (GNU about 300), and each exit from
 and entry to the verified loop about 80, which code dominated by slow ops

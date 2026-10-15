@@ -176,7 +176,9 @@ struct NativeInvocation {
     target: *const c_void,
     arguments: [NativeWord; 8],
     result: NativeWord,
-    jump_buffer: [u8; SYS_JMP_BUF_SIZE],
+    /// Written by the trampoline's `_setjmp` before anything can jump to
+    /// it, as GNU's handler jmp_buf is: never read uninitialized.
+    jump_buffer: MaybeUninit<[u8; SYS_JMP_BUF_SIZE]>,
 }
 
 impl NativeInvocation {
@@ -185,7 +187,7 @@ impl NativeInvocation {
             target,
             arguments: [0; 8],
             result: 0,
-            jump_buffer: [0; SYS_JMP_BUF_SIZE],
+            jump_buffer: MaybeUninit::uninit(),
         }
     }
 
@@ -1209,8 +1211,27 @@ impl NativeRuntime {
         }
     }
 
+    /// Reconcile the Rust handler registrations with the native handler
+    /// list. They agree on every call that pushed and popped no handler.
+    #[inline]
     fn sync_handlers(&mut self, interpreter: &mut Interpreter) -> Result<(), LispError> {
         let current = self.thread.handler();
+        if self
+            .handlers
+            .last()
+            .map_or(current.is_null(), |entry| entry.address() == current)
+        {
+            return Ok(());
+        }
+        self.sync_handlers_unwinding(interpreter, current)
+    }
+
+    #[inline(never)]
+    fn sync_handlers_unwinding(
+        &mut self,
+        interpreter: &mut Interpreter,
+        current: *mut NativeHandler,
+    ) -> Result<(), LispError> {
         while self
             .handlers
             .last()

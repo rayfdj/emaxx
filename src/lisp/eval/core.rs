@@ -1231,25 +1231,35 @@ impl Interpreter {
         result
     }
 
-    /// Bcall can enter packed byte-code closures without a host function
-    /// registry. Classification reads the shared closure's actual code slot.
-    #[inline]
-    pub(crate) fn bytecode_callee(
-        &self,
-        func: &Value,
-    ) -> Option<(crate::lisp::bytecode::ByteCodeObject, Value)> {
+    /// Bcall's callee, read after maybe_gc as bytecode.c reads it: a
+    /// symbol's function cell, or the function itself. A lexical byte-code
+    /// closure gets its frame set up in place (`goto setup_frame'); a
+    /// native-compiled function is called directly, as funcall_general
+    /// calls a SUBR through funcall_subr; anything else (an alias, an
+    /// autoload, a subr, an interpreted function, a void cell) goes
+    /// through funcall.
+    #[inline(always)]
+    pub(crate) fn bcall_callee(&self, func: &Value) -> BcallCallee {
         if profile_path().is_some() {
-            return None;
+            return BcallCallee::Funcall;
         }
         let function = match func.kind() {
-            Kind::Symbol(name) => self.globals.function(&name)?,
+            Kind::Symbol(name) => match self.globals.function(&name) {
+                Some(function) => function,
+                None => return BcallCallee::Funcall,
+            },
             _ => *func,
         };
-        let Kind::Closure(closure) = function.kind() else {
-            return None;
-        };
-        let program = crate::lisp::bytecode::ByteCodeObject::for_call(closure)?;
-        Some((program, function))
+        match function.kind() {
+            Kind::Closure(closure) => {
+                match crate::lisp::bytecode::ByteCodeObject::for_call(closure) {
+                    Some(program) => BcallCallee::ByteCode(program, function),
+                    None => BcallCallee::Funcall,
+                }
+            }
+            Kind::NativeFunction(native) => BcallCallee::Native(native),
+            _ => BcallCallee::Funcall,
+        }
     }
 
     fn call_function_value_inner(

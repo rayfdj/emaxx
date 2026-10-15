@@ -95,7 +95,7 @@ thread_local! {
 /// The verified code for PROGRAM entered with ENTRY_DEPTH operands, if
 /// its code passed verification. The result stays allocated while the code
 /// string is reachable, which a running frame's function guarantees.
-#[inline]
+#[inline(always)]
 pub(crate) fn verified_code(
     program: &ByteCodeObject,
     entry_depth: usize,
