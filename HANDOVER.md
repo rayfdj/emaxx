@@ -147,8 +147,54 @@ or in spilled registers, and it passes normally and under `EMAXX_GC_STRESS`.
 `batch_startup_image_round_trip_or_explicit_native_image_limit` fails
 identically in this container at `23d230a`, which CI passed, so it is
 environmental here (an obarray enumeration order difference). Clippy with
-`-D warnings` passes. CI full gate, frozen and pilots for this change are
-pending.
+`-D warnings` passes.
+
+CI's full gate on `1b14ec4` (run 38703616708, image template on) then failed
+one test, `garbage_collect_reports_the_live_census`: its floors (more than
+10,000 conses, at least one buffer) only held while Emaxx counted its image;
+GNU's own bare census reports 3,173 conses. `8a75c7f` counts image buffers
+again (GNU's `sweep_buffers` counts every live buffer, dumped or not) and
+replaces the floors with a growth check GNU and Emaxx both answer
+`(t t t t t t 20000 50000 500 2000)`. **CI's full gate on `8a75c7f` passes**
+(run 38709432511).
+
+Three paired pilots of `8aafca7` against `23d230a` (run 38702850532), all 192
+answers/modes verified, diagnostic only: bodies **19.8% faster** (geometric
+mean); the geometric GNU ratio goes from **2.777 to 2.210**. Upstream sort
+5.54× → 3.53× GNU with 18 collections (GNU 18, was 139); interpreted calls
+2.85× → 1.48× (15 collections, GNU 27); bindat 3.27× → 1.70×; interpreted
+lexical 2.64× → 1.60×; mapcar 2.96× → 1.90×. Two cases are slower and need
+an explanation: **bytecode-to-native 26% slower** (samples 1.93–1.97 s before,
+2.45–2.46 s after; no collections in either) and **explicit-gc 8% slower**.
+
+Both frozen runs so far (on `23d230a` and `1b14ec4`) match 7,927 of 7,928
+outcomes; the mismatch is the same GNU-side `eglot-test-rust-completion-exit-function`
+failure (`jsonrpc-error` from `rust-analyzer`) both times, with Emaxx passing.
+Because it reproduced, a run of that file alone on PR87's branch is pending to
+show whether GNU fails it there under today's runners too.
+
+## Task branch: char-table store count for regexp caches (`4057404`)
+
+The regexp backend compiles syntax, case and category table contents into its
+patterns, so every cache hit re-walked and compared the whole reachable table
+graph (case-folding search does this on every match). In a startup that loads
+one file this was **1.93 of 3.47 billion instructions**; GNU's whole startup is
+0.32 billion. Char-table and sub-char-table slots change only through
+`set_slot`/`set_extra`, which now count every store; GNU's native compiler
+emits calls for `aset` (it inlines only car/cdr/setcar/setcdr and a few
+predicates and arithmetic operations) and the module API has no raw access.
+While the count is unchanged since a signature last matched in full, a hit
+skips the table nodes and compares only conses, vectors, records and strings,
+which native code can still change directly. Debug-assertion builds (the gate)
+also compare the full graph and require the same answer; that cross-check
+caught the one test whose hand-written "native" function poked sub-char-table
+memory, a store no native code can make. Its store is now the `aset` subr call
+comp.c emits; every assertion is unchanged. **Startup falls from 3.47 to 1.55
+billion instructions** (GNU 0.32). 494 of 495 regexp/syntax/case/char-table
+tests passed before that test's rewrite; the last passes after it. Remaining
+in this path: captures on cache misses (about 0.32 billion) — building a key
+captures the case-table graph twice and hashing walks it again. CI for this
+commit is pending.
 
 ## How the work is split
 
