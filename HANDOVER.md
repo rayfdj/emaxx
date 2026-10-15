@@ -92,8 +92,63 @@ the gate profile, the five affected oracle-compared controls pass
 `allocation_counter_variables_forward_to_the_counters`,
 `float_returns_a_float_argument_itself` and
 `garbage_collect_reports_the_live_census`). The first run of the category test
-failed on `float` and bool vectors, as described above. Complete library,
-platform and frozen validation is required before merging.
+failed on `float` and bool vectors, as described above.
+
+**Linux CI on `23d230a`** (counters, float fix, header charges):
+- Full Rust gate (`frozen-run.yml`, run 38694907626): **3,203 passed, 0
+  failed**, the two existing ignores; strict formatting and lint in CI.
+- Frozen (run 38694910744): **7,927 of 7,928 outcomes match across 519
+  files**. The one mismatch is GNU's: `eglot-test-rust-completion-exit-function`
+  failed in the oracle with `jsonrpc-error` while waiting on the external
+  `rust-analyzer` server (the server was then killed); Emaxx passed. The run
+  is recorded as failed; a fresh frozen run is pending.
+- Three paired pilots against PR87's head (run 38694913972), all 192
+  answers/modes verified: body geometric ratio **1.0118** (diagnostic only).
+  Every case is within about ±1% except **mapcar, 16.5% slower with 32
+  collections instead of 22**. The heaps are identical; the cause is the
+  broken GC trigger below, which the larger honest header charges made
+  worse. The same pilots show the trigger bug across the suite (Emaxx/GNU
+  collections): sort 139/18, interpreted calls 80/27, bindat 54/9,
+  interpreted lexical 40/13, undo 23/6.
+
+## Task branch: image objects outside the GC census (`8aafca7`)
+
+The collection trigger was wrong. GNU's `total_bytes_of_live_objects` counts
+only objects in swept blocks; pdumper's mapped objects are never counted, and
+`gc-cons-percentage` scales the threshold from that live heap. Emaxx rebuilt
+the image in ordinary blocks and subtracted everything the loader allocated
+(16.67 MB, transient garbage included) from a census of 14–16 MB, so live
+bytes saturated to **zero at every collection** (measured with a throwaway
+diagnostic build) and Emaxx collected every `gc-cons-threshold` bytes
+regardless of heap size.
+
+Now blocks registered while an image loads are image blocks (`alloc::ImageRegion`,
+a guard held by `pdumper_load`). Sweeps still clean dead objects there (they
+own host storage) and release empty blocks, but leave image objects out of the
+census and their freed cells off the free lists, as GNU never reuses dumped
+storage. Opening and closing the region move every allocator to new blocks;
+the allocation fast path is unchanged. The `image_bytes` subtraction is gone.
+
+Measured locally: a bare `-Q` session's live bytes are 1.18 MB (GNU's
+non-dumped heap is about 0.58 MB; Emaxx makes more symbols and strings after
+load and charges larger headers), so Emaxx now collects every ~148k conses
+where GNU collects every ~73k. Upstream sorting now collects 0 and 1 times
+for one and two units, as GNU does (4 and 8 before). The `garbage-collect`
+census now has GNU's shape: the heap's own objects.
+
+**Validation:** 331 of the 333 locally selected GC, allocation and image
+tests passed on the first run. `escaped_frame_graph_survives_its_owner_and_is_then_reclaimed`
+failed from register allocation in the test itself: gdb showed the first
+iteration's unhidden terminal word left in the test function's `rbp`, spilled
+by `flush_stack_call_func` as a root after the second iteration reused the
+cell. `1b14ec4` decodes in an `#[inline(never)]` helper, as the survival check
+already did; the assertion is unchanged, gdb finds no hidden word on the stack
+or in spilled registers, and it passes normally and under `EMAXX_GC_STRESS`.
+`batch_startup_image_round_trip_or_explicit_native_image_limit` fails
+identically in this container at `23d230a`, which CI passed, so it is
+environmental here (an obarray enumeration order difference). Clippy with
+`-D warnings` passes. CI full gate, frozen and pilots for this change are
+pending.
 
 ## How the work is split
 
