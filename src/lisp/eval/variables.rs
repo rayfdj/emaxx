@@ -1447,7 +1447,7 @@ impl Interpreter {
     }
 
     pub(crate) fn global_binding_value_symbol(&self, name: &SymbolName) -> Option<Value> {
-        if name.cell().has_c_slot()
+        if name.cell().is_kboard_forwarded()
             && Self::is_keyboard_variable(name)
             && let Some(value) = self.terminal_keyboard_value(name.as_str())
         {
@@ -2144,7 +2144,7 @@ impl Interpreter {
             self.set_global_binding_resolved(&resolved, value);
             SpecialBindingRestore {
                 binding_id,
-                keyboard_terminal_id: if resolved.cell().has_c_slot()
+                keyboard_terminal_id: if resolved.cell().is_kboard_forwarded()
                     && Self::is_keyboard_variable(&resolved)
                 {
                     self.keyboard_binding_terminal(name)
@@ -2746,6 +2746,13 @@ impl Interpreter {
         {
             return;
         }
+        // keyboard.c's toplevel reports an uncaught error through an
+        // outermost `handler-bind' (debug-early--handler); signal_or_quit
+        // stops its search at a matching `condition-case', which then
+        // discards the report, so take no copy for it.
+        if self.condition_case_catches(error) {
+            return;
+        }
         let frames = self.backtrace_frames_snapshot();
         self.batch_error_backtrace = Some(BatchErrorBacktrace {
             enabled: self
@@ -2958,6 +2965,25 @@ impl Interpreter {
             ActiveHandler::Bind(conditions, _) => conditions
                 .iter()
                 .any(|symbol| Self::condition_symbol_matches(symbol, &error_type, &condition_list)),
+        })
+    }
+
+    /// Whether an active `condition-case' catches ERROR.
+    fn condition_case_catches(&mut self, error: &LispError) -> bool {
+        if !self
+            .active_handlers
+            .iter()
+            .any(|handler| matches!(handler, ActiveHandler::Case(_)))
+        {
+            return false;
+        }
+        let error_type = error.condition_type();
+        let condition_list = self.error_condition_names(&error_type);
+        self.active_handlers.iter().any(|handler| match handler {
+            ActiveHandler::Case(heads) => heads
+                .iter()
+                .any(|head| Self::clause_head_matches(head, &error_type, &condition_list)),
+            ActiveHandler::Module | ActiveHandler::Bind(..) => false,
         })
     }
 

@@ -51,6 +51,7 @@ impl std::hash::Hash for NameEntry {
 
 const KEY_NAMES: &[&str] = &[
     "parse-sexp-lookup-properties",
+    "cache-long-scans",
     "char-property-alias-alist",
     "search-spaces-regexp",
     "symbol",
@@ -319,24 +320,35 @@ impl SymbolKey {
 /// The existing terminal forwarding adapter consumes these until keyboard
 /// bindings use an allocated Lisp_Fwd redirect. No symbol-id lookup is needed.
 pub(crate) fn is_keyboard_variable(symbol: &SymbolName) -> bool {
-    const KEYS: [SymbolKey; 14] = [
-        SymbolKey::new("overriding-terminal-local-map"),
-        SymbolKey::new("last-command"),
-        SymbolKey::new("real-last-command"),
-        SymbolKey::new("keyboard-translate-table"),
-        SymbolKey::new("last-repeatable-command"),
-        SymbolKey::new("prefix-arg"),
-        SymbolKey::new("last-prefix-arg"),
-        SymbolKey::new("defining-kbd-macro"),
-        SymbolKey::new("last-kbd-macro"),
-        SymbolKey::new("system-key-alist"),
-        SymbolKey::new("window-system"),
-        SymbolKey::new("default-minibuffer-frame"),
-        SymbolKey::new("input-decode-map"),
-        SymbolKey::new("local-function-key-map"),
-    ];
+    const KEYS: [SymbolKey; KEYBOARD_VARIABLES.len()] = {
+        let mut keys = [SymbolKey(0); KEYBOARD_VARIABLES.len()];
+        let mut index = 0;
+        while index < keys.len() {
+            keys[index] = SymbolKey::new(KEYBOARD_VARIABLES[index]);
+            index += 1;
+        }
+        keys
+    };
     with_current(|symbols| KEYS.iter().any(|key| key.get(symbols) == *symbol))
 }
+
+/// The variables keyboard.h keeps in each terminal's KBOARD.
+pub(crate) const KEYBOARD_VARIABLES: [&str; 14] = [
+    "overriding-terminal-local-map",
+    "last-command",
+    "real-last-command",
+    "keyboard-translate-table",
+    "last-repeatable-command",
+    "prefix-arg",
+    "last-prefix-arg",
+    "defining-kbd-macro",
+    "last-kbd-macro",
+    "system-key-alist",
+    "window-system",
+    "default-minibuffer-frame",
+    "input-decode-map",
+    "local-function-key-map",
+];
 
 fn mark_names(symbols: &Symbols, mark: &mut dyn FnMut(&Value)) {
     fn mark_symbol(name: SymbolName, mark: &mut dyn FnMut(&Value)) {

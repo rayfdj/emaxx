@@ -1842,6 +1842,7 @@ enum SavedRestrictionBounds {
 pub(crate) enum BcallCallee {
     ByteCode(crate::lisp::bytecode::ByteCodeObject, Value),
     Native(crate::lisp::types::NativeFunctionRef),
+    Subr(crate::lisp::types::BuiltinRef),
     Funcall,
 }
 

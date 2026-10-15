@@ -64,6 +64,10 @@ const CONSTANT: u16 = 256;
 // lisp.h: redirect == SYMBOL_FORWARDED to a Lisp_Intfwd. Set together with
 // VALUE_PRESENT; the payload is the forwarded counter word.
 const INT_FORWARD: u16 = 512;
+// lisp.h: redirect == SYMBOL_FORWARDED to a Lisp_Kboard_Objfwd. Set with
+// C_SLOT on the variables whose values live in each terminal's KBOARD, so
+// other forwarded variables are known not to be one without a name check.
+const KBOARD_FORWARD: u16 = 1024;
 
 #[derive(Clone, Copy)]
 pub(crate) union SymbolPayload {
@@ -123,6 +127,21 @@ impl SymbolCell {
             return Some(unsafe { self.payload.get().value });
         }
         (state & INT_FORWARD != 0).then(|| self.forwarded_value())
+    }
+
+    /// data.c:find_symbol_value's SYMBOL_PLAINVAL case: the value of a
+    /// bound symbol that is no alias, no C variable and not localized in
+    /// any buffer.  Any other symbol, or a void one, answers None.
+    #[inline(always)]
+    pub(crate) fn plain_value(&self) -> Option<Value> {
+        use crate::lisp::eval::symbol_cell_flags::LOCALIZED;
+        if self.state.get() & (VALUE_PRESENT | ALIAS | C_SLOT | INT_FORWARD) == VALUE_PRESENT
+            && self.flags.get() & LOCALIZED == 0
+        {
+            // SAFETY: VALUE_PRESENT without INT_FORWARD selects the value member.
+            return Some(unsafe { self.payload.get().value });
+        }
+        None
     }
 
     /// data.c:do_symval_forwarding: `make_int (*intvar)'.
@@ -188,6 +207,20 @@ impl SymbolCell {
         }
         self.payload.set(SymbolPayload { value });
         self.state.set(self.state.get() | VALUE_PRESENT);
+    }
+
+    /// data.c:set_internal's SYMBOL_PLAINVAL, untrapped case: store VALUE
+    /// into a bound symbol whose assignments are learned to be plain stores.
+    /// Any other symbol, or a void one, is left alone and answers false.
+    #[inline(always)]
+    pub(crate) fn store_plain_value(&self, value: Value) -> bool {
+        if self.state.get() & (PLAIN_STORE | VALUE_PRESENT | INT_FORWARD)
+            != PLAIN_STORE | VALUE_PRESENT
+        {
+            return false;
+        }
+        self.payload.set(SymbolPayload { value });
+        true
     }
 
     pub(crate) fn replace_bound_value(&self, value: Value) -> bool {
@@ -270,11 +303,22 @@ impl SymbolCell {
     }
 
     pub(crate) fn set_c_slot(&self, present: bool) {
+        let kboard =
+            if crate::lisp::types::symbols::KEYBOARD_VARIABLES.contains(&self.internal.as_str()) {
+                KBOARD_FORWARD
+            } else {
+                0
+            };
         self.state.set(if present {
-            (self.state.get() | C_SLOT) & !PLAIN_STORE
+            (self.state.get() | C_SLOT | kboard) & !PLAIN_STORE
         } else {
-            self.state.get() & !C_SLOT
+            self.state.get() & !(C_SLOT | KBOARD_FORWARD)
         });
+    }
+
+    /// Whether this C variable is one of a terminal's KBOARD variables.
+    pub(crate) fn is_kboard_forwarded(&self) -> bool {
+        self.state.get() & KBOARD_FORWARD != 0
     }
 
     pub(crate) fn is_constant(&self) -> bool {

@@ -65,7 +65,7 @@ pub struct Buffer {
     pub last_name: Option<String>,
 
     /// The text.
-    text: Rope,
+    text: BufferText,
 
     /// Derived character view of the most recently read Rope chunk. Syntax
     /// and motion code commonly scan adjacent characters through `char_at`;
@@ -251,6 +251,72 @@ struct UndoListView {
 
 #[derive(Default)]
 struct UndoListViewCache(RefCell<Option<UndoListView>>);
+
+/// The buffer's rope with its character and byte counts, GNU's Z and
+/// Z_BYTE kept beside the text.  A text of up to about a kilobyte is a
+/// single ropey leaf, whose counts ropey finds by scanning the leaf on
+/// every length query; the buffer's own queries read these instead.  All
+/// changes go through `insert' and `remove', which keep the counts.
+#[derive(Clone, Default)]
+struct BufferText {
+    rope: Rope,
+    chars: usize,
+    bytes: usize,
+}
+
+impl BufferText {
+    fn from_str(text: &str) -> Self {
+        Self {
+            rope: Rope::from_str(text),
+            chars: ropey::str_utils::byte_to_char_idx(text, text.len()),
+            bytes: text.len(),
+        }
+    }
+
+    fn len_chars(&self) -> usize {
+        self.chars
+    }
+
+    fn len_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn insert(&mut self, char_index: usize, text: &str) {
+        self.rope.insert(char_index, text);
+        self.chars += ropey::str_utils::byte_to_char_idx(text, text.len());
+        self.bytes += text.len();
+        debug_assert_eq!(
+            (self.chars, self.bytes),
+            (self.rope.len_chars(), self.rope.len_bytes())
+        );
+    }
+
+    fn remove(&mut self, range: std::ops::Range<usize>) {
+        self.rope.remove(range.clone());
+        self.chars -= range.len();
+        self.bytes = self.rope.len_bytes();
+        debug_assert_eq!(self.chars, self.rope.len_chars());
+    }
+
+    /// `remove' for a caller that already holds the removed text.
+    fn remove_text(&mut self, range: std::ops::Range<usize>, removed: &str) {
+        self.rope.remove(range.clone());
+        self.chars -= range.len();
+        self.bytes -= removed.len();
+        debug_assert_eq!(
+            (self.chars, self.bytes),
+            (self.rope.len_chars(), self.rope.len_bytes())
+        );
+    }
+}
+
+impl std::ops::Deref for BufferText {
+    type Target = Rope;
+
+    fn deref(&self) -> &Rope {
+        &self.rope
+    }
+}
 
 /// REMAINING characters of a rope from char index NEXT, read chunk by
 /// chunk in place: a ropey `Chars' iterator allocates its node stack. In
@@ -482,7 +548,7 @@ impl std::error::Error for BufferError {}
 impl Buffer {
     /// Create an empty buffer with the given name.
     pub fn new(name: &str) -> Self {
-        let text = Rope::new();
+        let text = BufferText::default();
         Buffer {
             name: name.to_string(),
             last_name: None,
@@ -521,7 +587,7 @@ impl Buffer {
 
     /// Create a buffer from a string (useful for tests and loading files).
     pub fn from_text(name: &str, s: &str) -> Self {
-        let text = Rope::from_str(s);
+        let text = BufferText::from_str(s);
         let len = text.len_chars();
         Buffer {
             name: name.to_string(),
@@ -700,7 +766,7 @@ impl Buffer {
             *position = remap(*position);
         }
 
-        self.text = Rope::from_str(&text);
+        self.text = BufferText::from_str(&text);
         self.invalidate_char_cache();
         self.saved_text = saved_text;
         self.multibyte = enabled;
@@ -1106,7 +1172,7 @@ impl Buffer {
     /// constant time and never changes once cloned, so a scan can read
     /// characters by index without holding the buffer borrowed.
     pub fn text_rope(&self) -> Rope {
-        self.text.clone()
+        self.text.rope.clone()
     }
 
     pub fn full_buffer_string(&self) -> String {
@@ -1707,7 +1773,7 @@ impl Buffer {
 
         let from_byte = self.marker_byte_position(from);
         let to_byte = self.marker_byte_position(to);
-        self.text.remove(from0..to0);
+        self.text.remove_text(from0..to0, &deleted);
         self.invalidate_char_cache();
 
         // Adjust point
@@ -2092,7 +2158,7 @@ impl Buffer {
     /// retains the buffer object.  GNU Fkill_buffer clears undo, intervals
     /// and overlays and frees text; file slots remain readable afterwards.
     pub(crate) fn release_killed_storage(&mut self) {
-        self.text = Rope::new();
+        self.text = BufferText::default();
         *self.char_cache.get_mut() = RopeCharCache::default();
         self.saved_text = String::new();
         self.edits = std::collections::VecDeque::new();
@@ -2168,7 +2234,7 @@ impl Buffer {
         Buffer {
             name: parts.name,
             last_name: None,
-            text: Rope::from_str(&parts.text),
+            text: BufferText::from_str(&parts.text),
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: parts.pt,
             mark: BufferMark::Position(parts.mark),

@@ -27749,6 +27749,63 @@ fn fixnum_arithmetic_fast_paths_keep_gnus_overflow_floats_markers_and_errors() {
 }
 
 #[test]
+fn interpreted_lambda_calls_keep_gnus_backtrace_frames_and_arity_errors() {
+    // A form calling an interpreted function enters funcall_lambda straight
+    // from eval_sub, as GNU does: the caller and callee frames, their
+    // evaluated arguments and the arity and argument-type errors stay GNU's.
+    let program = r#"(progn
+   (defun zz-bt-callee (a b)
+     (list (backtrace-frame 0 'zz-bt-callee)
+           (backtrace-frame 1 'zz-bt-callee)
+           (let ((n 0) (seen nil))
+             (mapbacktrace (lambda (evald fun args _flags)
+                             (when (and (< n 3) (memq fun '(zz-bt-callee zz-bt-caller)))
+                               (push (list evald fun args) seen))
+                             (setq n (1+ n))))
+             (nreverse seen))
+           (+ a b)))
+   (defun zz-bt-caller (x) (zz-bt-callee x (* x 2)))
+   (list (zz-bt-caller 3)
+         (condition-case err (zz-bt-callee 1) (error (car err)))
+         (let ((debug-on-error nil))
+           (condition-case err (zz-bt-callee 'a 1) (error err)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(((t zz-bt-callee 3 6) (t zz-bt-caller 3) nil 9) wrong-number-of-arguments (wrong-type-argument number-or-marker-p a))",
+        "interpreted lambda calls and backtrace frames",
+    );
+}
+
+#[test]
+fn kept_buffer_counts_keyboard_variables_and_symbol_binds_stay_gnus() {
+    // The buffer keeps its character and byte counts (GNU's Z and Z_BYTE)
+    // through inserts, deletions and erasure; KBOARD variables bind as
+    // before; Bvarbind binds the constant's own symbol, uninterned or not;
+    // an error a condition-case catches still reaches it unchanged.
+    let program = r#"(list
+ (with-temp-buffer
+   (insert "héllo\nwörld\n")
+   (let ((a (list (buffer-size) (position-bytes (point-max)) (line-beginning-position 0))))
+     (delete-region 2 4)
+     (insert "ß")
+     (list a (buffer-size) (position-bytes (point-max)) (buffer-string)
+           (progn (goto-char 3) (forward-line 1) (point))
+           (progn (goto-char (point-max)) (forward-line -1) (point))
+           (progn (erase-buffer) (list (buffer-size) (position-bytes 1) (line-beginning-position))))))
+ (let ((last-command 'zz-cmd)) (list last-command (symbol-value 'last-command)))
+ (let* ((s (make-symbol "zz-unint-var"))
+        (f (let ((lexical-binding nil))
+             (byte-compile `(lambda () (let ((,s 5)) (list (symbol-value ',s) (boundp 'zz-unint-var))))))))
+   (list (funcall f) (boundp s)))
+ (condition-case err (let ((debug-on-error nil)) (car 1)) (error err)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(((12 15 7) 11 14 \"hlo\nwörld\nß\" 5 5 (0 1 1)) (zz-cmd zz-cmd) ((5 nil) nil) (wrong-type-argument listp 1))",
+        "kept buffer counts, keyboard variables and symbol binds",
+    );
+}
+
+#[test]
 fn unused_bytecode_destinations_follow_actual_control_flow() {
     let fixture = include_str!("../../../tests/fixtures/bytecode-unused-destinations.el");
     let program = fixture

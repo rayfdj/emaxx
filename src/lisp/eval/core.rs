@@ -542,6 +542,7 @@ impl Interpreter {
         }
     }
 
+    #[inline(always)]
     pub(super) fn eval_call(
         &mut self,
         source_form: &Value,
@@ -842,7 +843,7 @@ impl Interpreter {
         Err(error)
     }
 
-    #[inline]
+    #[inline(always)]
     fn finish_eval_call(
         &mut self,
         depth: usize,
@@ -881,6 +882,22 @@ impl Interpreter {
             return result;
         }
         match (callable_name.as_ref(), prepared) {
+            // eval_sub's apply_lambda for an interpreted closure: the frame
+            // recorded for the call takes the evaluated arguments, and
+            // funcall_lambda runs under it.
+            (Some(name), FunctionResolution::Resolved(func))
+                if matches!(func.kind(), Kind::Closure(closure) if !closure.is_bytecode())
+                    && self.pending_termination().is_none()
+                    && profile_path().is_none() =>
+            {
+                self.set_backtrace_args(Value::Symbol(*name), args);
+                self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+                let result =
+                    self.funcall_interpreted_lambda(func, Some(CallName::Symbol(name)), args, env);
+                let result = self.settle_frame_result(result, env);
+                self.truncate_backtrace_frames(depth);
+                result
+            }
             (Some(name), FunctionResolution::Resolved(func)) => {
                 self.pop_backtrace_frame();
                 self.call_function_value_named(func, Some(CallName::Symbol(name)), args, env, false)
@@ -1092,18 +1109,27 @@ impl Interpreter {
                 if subr.descriptor().max_args()
                     != crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled =>
             {
-                Some(
-                    primitives::call_with_facts(self, subr.as_str(), subr.facts(), args, env)
-                        .map_err(|error| {
-                            Self::builtin_call_error(subr.as_str(), args.len(), funcall, error)
-                        }),
-                )
+                Some(self.call_subr(subr, args, env, funcall))
             }
             Kind::NativeFunction(native) => Some(crate::lisp::native_comp::call_function(
                 self, env, native, args,
             )),
             _ => None,
         }
+    }
+
+    /// eval.c:funcall_subr: a subr (not a special form) found in the live
+    /// function cell, called with its arguments.
+    #[inline(always)]
+    pub(crate) fn call_subr(
+        &mut self,
+        subr: crate::lisp::types::BuiltinRef,
+        args: &[Value],
+        env: &mut Env,
+        funcall: bool,
+    ) -> Result<Value, LispError> {
+        primitives::call_with_facts(self, subr.as_str(), subr.facts(), args, env)
+            .map_err(|error| Self::builtin_call_error(subr.as_str(), args.len(), funcall, error))
     }
 
     /// funcall_general after Ffuncall/Bcall has established depth, roots and
@@ -1302,6 +1328,12 @@ impl Interpreter {
                 }
             }
             Kind::NativeFunction(native) => BcallCallee::Native(native),
+            Kind::BuiltinFunc(subr)
+                if subr.descriptor().max_args()
+                    != crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled =>
+            {
+                BcallCallee::Subr(subr)
+            }
             _ => BcallCallee::Funcall,
         }
     }

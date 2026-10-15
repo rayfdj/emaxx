@@ -352,6 +352,35 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   whole `eval_sub` costs 2,770 instructions a unit, Emaxx's `eval_call`,
   `eval_sub` and `finish_eval_call` 6,355; lexical lookup is already
   cheaper than GNU's `Fassq`.
+- A form calling an interpreted function enters `funcall_interpreted_lambda`
+  straight from `finish_eval_call` with its frame already recorded, as
+  eval_sub calls funcall_lambda, instead of going through
+  `call_function_value_named`, `call_function_body` and the general
+  funcall dispatch; `eval_call` and `finish_eval_call` are inlined into
+  `eval_sub`. Interpreted calls 1.53 → 1.45, sort 2.50 → 2.37,
+  interpreted lexical 1.48 → 1.44. GNU-compared test of the caller and
+  callee backtrace frames, `mapbacktrace`, and the arity and argument
+  errors through interpreted calls.
+- Undo and the byte-code slow path. The buffer keeps its character and
+  byte counts beside the rope (GNU's Z and Z_BYTE): ropey stores a text of
+  up to about a kilobyte as a single leaf and recounted its characters,
+  line breaks and UTF-16 units on every length query and bounds check,
+  about 350 instructions each and 642 times per undo iteration; deletion
+  takes the byte count from the text it already copies for undo. The batch
+  error backtrace is not copied for an error an active `condition-case`
+  catches (keyboard.c's toplevel reports through an outermost
+  `handler-bind`, which a catching `condition-case` pre-empts). A C
+  variable read tests a KBOARD bit set with its C slot before comparing
+  the symbol with the 14 keyboard variables. Bvarbind and the native
+  specbind bind the constant's own symbol instead of interning its name
+  again; the message log stores `cache-long-scans` through the cached
+  symbol. Bcall calls a subr found in the live function cell directly
+  (funcall_subr), as Ffuncall already did, and the verified loop answers
+  Bvarref of a plain bound symbol and Bvarset of a learned plain store
+  (bytecode.c's SYMBOL_PLAINVAL cases) without leaving. Undo 2.69 → 2.45
+  (3.37 to 3.06 million instructions per unit). GNU-compared test of the
+  kept counts through inserts, deletions and erasure, a let-bound
+  keyboard variable, an uninterned Bvarbind and a caught error.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -368,19 +397,19 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.76 |
-| upstream-sort | 3.26 | 2.50 |
-| interpreted-calls | 2.10 | 1.54 |
-| interpreted-lexical | 2.04 | 1.48 |
-| interpreted-dynamic | 2.14 | 1.61 |
-| mapcar | 2.95 | 1.81 |
-| bytecode-calls | 3.30 | 2.28 |
-| bytecode-to-native | — | 2.73 |
-| interpreted-to-native | — | 2.00 |
-| native-to-interpreted / -bytecode | — | 1.81 / 1.99 |
-| cons-allocation / list-traversal | 2.24 / — | 1.65 / 1.59 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.45 |
+| upstream-sort | 3.26 | 2.31 |
+| interpreted-calls | 2.10 | 1.45 |
+| interpreted-lexical | 2.04 | 1.44 |
+| interpreted-dynamic | 2.14 | 1.58 |
+| mapcar | 2.95 | 1.82 |
+| bytecode-calls | 3.30 | 2.25 |
+| bytecode-to-native | — | 2.72 |
+| interpreted-to-native | — | 1.85 |
+| native-to-interpreted / -bytecode | — | 1.71 / 1.90 |
+| cons-allocation / list-traversal | 2.24 / — | 1.61 / 1.55 |
 | native-execution | — | 1.23 |
-| bindat | — | 1.54 |
+| bindat | — | 1.46 |
 | explicit-gc | — | 1.01 |
 
 Undo's earlier 2.34 at ten units was an artifact: in that pair of runs the
@@ -417,7 +446,10 @@ frozen 7,928 of 7,928 across 519 files, no unsuccessful execution (run
 38803524575). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
-as-root `byte_compile_file_reports_an_unwritable_target_like_gnu`.
+as-root `byte_compile_file_reports_an_unwritable_target_like_gnu`, and
+`print_prunes_charset_properties_like_print_prune_string_charset`, where
+this container's GNU build itself disagrees with the expected text (under
+`default` it prints the Latin-1 string without its `charset` property).
 
 **Findings recorded, not fixed:**
 - Loading prints "Loading FILE..." through Lisp `message`, so in batch it is

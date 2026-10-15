@@ -317,7 +317,8 @@ pub(crate) fn log_message_text(interp: &mut Interpreter, text: &str, env: &Env) 
         .unwrap_or_else(|| interp.create_buffer(&buffer_name).0);
     // xdisp.c message_dolog: `buffer-undo-list' is t and
     // `cache-long-scans' nil in the log buffer on every message.
-    interp.set_buffer_local_value(buffer_id, "cache-long-scans", Value::Nil);
+    cached_symbol!("cache-long-scans")
+        .with(|symbol| interp.set_buffer_local_value_symbol(buffer_id, symbol, Value::Nil));
     if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
         buffer.disable_undo();
         // FIXNATP: any other non-nil value keeps every line.

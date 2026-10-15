@@ -1122,6 +1122,37 @@ fn run_verified(
                 });
             }};
         }
+        // Bvarref's SYMBOL_PLAINVAL case; any other variable, or a void
+        // one, takes the full arm.
+        macro_rules! varref {
+            ($index:expr) => {{
+                let index = usize::from($index);
+                // SAFETY: verified against this vector's length.
+                let symbol = unsafe { object.constants.get_unchecked(index) };
+                let Kind::Symbol(name) = symbol.kind() else {
+                    slow!()
+                };
+                let Some(value) = name.cell().plain_value() else {
+                    slow!()
+                };
+                push!(value);
+            }};
+        }
+        // Bvarset's SYMBOL_PLAINVAL, untrapped case: the store alone.
+        macro_rules! varset {
+            ($index:expr) => {{
+                let index = usize::from($index);
+                // SAFETY: verified against this vector's length.
+                let symbol = unsafe { object.constants.get_unchecked(index) };
+                let Kind::Symbol(name) = symbol.kind() else {
+                    slow!()
+                };
+                if !name.cell().store_plain_value(*slot!(0)) {
+                    slow!();
+                }
+                drop_values!(1);
+            }};
+        }
         macro_rules! constant {
             ($index:expr) => {{
                 let index = usize::from($index);
@@ -1321,6 +1352,12 @@ fn run_verified(
             0o101 => car_cdr!(false, false),
             0o242 => car_cdr!(true, true),
             0o243 => car_cdr!(false, true),
+            0o010..=0o015 => varref!(u16::from(byte - 0o010)),
+            0o016 => varref!(fetch!()),
+            0o017 => varref!(fetch2!()),
+            0o020..=0o025 => varset!(u16::from(byte - 0o020)),
+            0o026 => varset!(fetch!()),
+            0o027 => varset!(fetch2!()),
             _ => slow!(),
         }
     };
@@ -1763,12 +1800,19 @@ fn run_frames(
                 }
                 Op::VarBind(index) => {
                     // bytecode.c:Bvarbind is specbind on the constant.
+                    // A symbol constant is bound as that very object, as
+                    // Bvarref and Bvarset read and set it, uninterned or not.
                     let name = program.constant(index);
-                    let name = name.as_symbol().map_err(|_| {
-                        LispError::Signal("varbind constant must be a symbol".into())
-                    })?;
                     let value = pop!();
-                    let restore = interp.bind_special_variable(name, value, env)?;
+                    let restore = match name.kind() {
+                        Kind::Symbol(symbol) => interp.bind_special_symbol(&symbol, value, env)?,
+                        _ => {
+                            let name = name.as_symbol().map_err(|_| {
+                                LispError::Signal("varbind constant must be a symbol".into())
+                            })?;
+                            interp.bind_special_variable(name, value, env)?
+                        }
+                    };
                     interp.bc_unwinds.push(UnwindEntry::Binding(restore));
                 }
                 Op::Unbind(count) => {
@@ -2078,9 +2122,7 @@ fn run_frames(
                     crate::lisp::native_comp::maybe_gc(interp, env);
                     // Only now inspect the live cell/code slots, just as GNU's
                     // packed-closure setup_frame branch does after maybe_gc.
-                    let native = match interp.bcall_callee(&func) {
-                        crate::lisp::eval::BcallCallee::Native(native) => Some(native),
-                        crate::lisp::eval::BcallCallee::Funcall => None,
+                    let callee = match interp.bcall_callee(&func) {
                         crate::lisp::eval::BcallCallee::ByteCode(callee, callee_function) => {
                             if let Err(error) =
                                 interp
@@ -2148,13 +2190,17 @@ fn run_frames(
                                 super::verify::verified_code(&program, nonrest + usize::from(rest));
                             continue;
                         }
+                        callee => callee,
                     };
                     let trace_call = trace_errors.then(|| func.to_string());
-                    let result = match native {
-                        Some(native) => {
+                    let result = match callee {
+                        crate::lisp::eval::BcallCallee::Native(native) => {
                             crate::lisp::native_comp::call_function(interp, env, native, call_args)
                         }
-                        None => interp.funcall_body(func, call_args, env),
+                        crate::lisp::eval::BcallCallee::Subr(subr) => {
+                            interp.call_subr(subr, call_args, env, true)
+                        }
+                        _ => interp.funcall_body(func, call_args, env),
                     };
                     let result = interp.settle_frame_result(result, env);
                     interp.truncate_backtrace_frames(backtrace_depth);

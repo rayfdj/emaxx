@@ -3556,12 +3556,17 @@ extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
         let result = (|| {
             let symbol = decode_word(active, symbol)?;
             let value = decode_word(active, value)?;
-            let name = symbol
-                .as_symbol()
-                .map_err(|_| wrong_type_argument("symbolp", symbol))?;
-            let restore =
-                unsafe { &mut *active.interpreter }
-                    .bind_special_dynamic(name, value, unsafe { &mut *active.environment })?;
+            let interpreter = unsafe { &mut *active.interpreter };
+            let environment = unsafe { &mut *active.environment };
+            let restore = match symbol.kind() {
+                Kind::Symbol(name) => interpreter.bind_special_symbol(&name, value, environment)?,
+                _ => {
+                    let name = symbol
+                        .as_symbol()
+                        .map_err(|_| wrong_type_argument("symbolp", symbol))?;
+                    interpreter.bind_special_dynamic(name, value, environment)?
+                }
+            };
             unsafe { &mut *active.runtime }.record_unwind(
                 unsafe { &*active.interpreter },
                 UnwindAction::Special(restore),
