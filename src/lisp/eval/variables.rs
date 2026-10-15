@@ -2670,14 +2670,17 @@ impl Interpreter {
         ) {
             return;
         }
-        let frames = self.backtrace_frames_snapshot();
+        // Every frame the error unwinds through reports it here; only a
+        // deeper stack than the one already recorded replaces it, so decide
+        // before copying the frames.
         if self
             .batch_error_backtrace
             .as_ref()
-            .is_some_and(|snapshot| snapshot.frames.len() >= frames.len())
+            .is_some_and(|snapshot| snapshot.frames.len() >= self.backtrace_frames.len())
         {
             return;
         }
+        let frames = self.backtrace_frames_snapshot();
         self.batch_error_backtrace = Some(BatchErrorBacktrace {
             enabled: self
                 .lookup_var("backtrace-on-error-noninteractive", env)
