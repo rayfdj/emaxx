@@ -20,7 +20,7 @@ records the GNU counter contract.
 | --- | --- |
 | **Main** `94295d0a` | Source324: one-word values, 16-byte cons payloads, shared object work, and symbol value/function/plist/flags on the allocated symbols. |
 | **[PR87](https://github.com/rayfdj/emaxx/pull/87)** `35c6cd9b` (`runtime-char-tables`) | Object-state draft17: membership, constants, aliases, same-name replacement, image restoration and native `nil`/`t` identity. 584 runtime inputs. |
-| **Task branch** `claude/awesome-newton-yk6sae` | Stacked on PR87: allocation counters, forwarded counter variables and actual header charges (below). |
+| **Task branch** `claude/awesome-newton-yk6sae` | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
 
 **PR87 evidence in this repository:** strict checks with zero warnings, 407
 affected controls in each of gate and release, and 44 ordinary GNU comparisons /
@@ -226,6 +226,110 @@ this time. Median per-file setup in the frozen logs: Emaxx 970 ms, GNU 92 ms
 (at `23d230a`: 1,177 ms and 107 ms). **CI's full gate on `8352eb5`** (run
 38717322155): **3,204 passed, 0 failed**, the two existing ignores.
 
+## Task branch: performance round on undo, sorting and the call path
+
+Measured with `callgrind` instruction counts on the locked workloads: each
+editor runs a case at two sizes and the difference per unit is the body's
+cost, startup cancelled (`--divisor` large enough that startup noise of a
+few hundred thousand instructions stays below 1%). Diagnostic only; timing
+pilots come at the merge. Every change below is GNU-compared or keeps the
+recorded behavior, and most exposed a behavior difference that is now fixed.
+
+- `1ca6ab0` **`*Messages*` folds repeated lines** as `message_dolog` does
+  ("Undo [1200 times]"), replaces a line matched through "...", trims to
+  `message-log-max` through the rope's line index, and restores point and
+  the restriction as GNU's markers would. Emaxx logged every "Undo", filled
+  the log to 1,000 lines and re-copied the buffer on every message.
+  `(message "%s" "")` now logs an empty line, as Fmessage does.
+- `fe2bc37` the batch error backtrace was copied (every frame's arguments)
+  at every frame an error unwound through, then discarded; the depth is
+  compared first now.
+- `5714ffd` a buffer switch reloaded the eight forwarded evaluator cells by
+  name; it now does so only when either buffer has a local binding of one,
+  and the paths that drop a current buffer's locals refresh them
+  themselves (GNU-compared test with a buffer-local `max-lisp-eval-depth`).
+- `37cc968` `format` read its format string's properties through a full
+  decode per conversion; `nthcdr`/`nth` built a bignum and a SipHash table
+  per call (GNU walks counts up to 127 directly; so does Emaxx now).
+- `2c7c55f` `compare-buffer-substrings` copied both ranges through rope
+  slices; it reads them in place now, and signals `args-out-of-range` for
+  bounds outside the accessible region where Emaxx clamped them.
+- `45929f3` `eval` answers symbols and immediates inline below the top
+  level, and special forms are found through the subr's cached facts
+  instead of their names; `1fccdb1` the GC check tests the active runtime's
+  trigger before the register-spilling trampoline; `fd81bb1` argument lists
+  of up to two elements are counted inline (FOR_EACH_TAIL's quit check
+  kept) and a function cell that is no symbol is read inline; `b9f7d06`
+  backtrace frame details (an interpreted call's recorded parameters) are
+  pooled instead of allocated twice per call.
+- `63eb047` `mapcar`/`mapc`/`mapcan` read each element when its call comes
+  (GNU's `mapcar1`: a function that changes the sequence sees the change, a
+  shortened list ends the mapping, a char-table signals `listp`; Emaxx
+  copied the sequence first). GNU-compared test.
+- `c100767` the bytecode fast loop dispatches through a 256-entry class
+  table.
+
+**Local validation of this round** (gate profile, `--test-threads=1`): the
+36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
+25 sorting/case-folding/substring tests plus the comparison tests, and 95
+mapping and bytecode tests pass; clippy `-D warnings`, rustfmt and
+`git diff --check` pass. A broad run over the GC, special-form, `eval_` and
+native filters for the interpreter changes had found no failure when CI was
+started; CI's full gate and frozen runs on the round's head are the merge
+evidence.
+
+Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
+
+| Case | Before | Now |
+| --- | --- | --- |
+| upstream-undo | 4.33 (5.88 at 10 units: the log grew) | 2.91 |
+| upstream-sort | 3.26 | 2.65 |
+| interpreted-calls | 2.10 | 1.80 |
+| interpreted-lexical | 2.04 | 1.75 |
+| interpreted-dynamic | 2.14 | 1.89 |
+| mapcar | 2.95 | 2.65 |
+| bytecode-calls | 3.30 | 3.18 |
+| bytecode-to-native | — | 4.17 |
+| interpreted-to-native | — | 2.24 |
+| native-to-interpreted / -bytecode | — | 1.99 / 2.18 |
+| cons-allocation / list-traversal | 2.24 / — | 1.96 / 1.90 |
+| native-execution | — | 1.48 |
+| bindat | — | 1.68 |
+| explicit-gc | — | 1.00 |
+
+**CI on `2c7c55f`:** full Rust gate passed (run 38737706552, every group;
+3,104 tests in the counted groups plus the bins and integration groups, the
+two existing ignores), frozen **7,928 of 7,928 outcomes match across 519
+files** with no unsuccessful execution (run 38737719924).
+
+**Findings recorded, not fixed:**
+- Loading prints "Loading FILE..." through Lisp `message`, so in batch it is
+  also logged in `*Messages*` and obeys `inhibit-message`; GNU's
+  `message_with_string` writes it only to stderr in batch. Switching needs a
+  separate quiet mode for `batch.rs`'s image reconstruction, which relies on
+  `inhibit-message` to keep that chatter out of stderr.
+- GNU 30.2's `mapconcat` crashes (segfault) when FUNCTION shortens the list
+  it maps (`eassert (nmapped == leni)` is off in release builds and the
+  uninitialized tail is concatenated); Emaxx concatenates what was mapped.
+  Exclude that case from oracle comparisons.
+- Library tests share one process heap and are not thread-safe: run the gate
+  locally with `--test-threads=1`, as CI does; parallel runs crash in string
+  data.
+- Keeping the interpreter state behind `Option` costs a test and branch per
+  field access (about 18 of the 108 instructions `eval_sub` spends per list
+  form). Removing the check would make a parked shell's use undefined
+  behavior instead of a panic, so it stays.
+
+**Where the remaining gap is:** the bytecode VM (bytecode-to-native,
+bytecode-calls and undo's `simple.elc` are its three worst cases): about 13
+instructions of dispatch and 30–50 per op in all, and each call leaves and
+re-enters the fast loop twice; GNU's `exec_byte_code` spends about 24 per op
+including calls. Then the source interpreter's per-form cost (about 420
+instructions per evaluated list form against GNU's 170, spread over frame
+recording, function lookup, subr dispatch and the state checks), the funcall
+path used by `mapcar` and native transitions (about 400 per call against
+GNU's 170), and a per-native-call `setjmp` that Rust's frames require.
+
 ## How the work is split
 
 - **Linux (cloud sessions):** build GNU 30.2 at `636f166c` locally with the
@@ -256,12 +360,15 @@ and failures are still recorded.
 
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
-2. **Performance, worst ratios first.** Upstream sorting (5.44×) and undo
-   (5.50×), then the call path (interpreted 2.87×, bytecode 2.90×,
-   bytecode-to-native 3.79×), then GC and the mapcar regression. Iterate with
-   instruction counts (callgrind) on the locked workloads for both editors;
-   timing pilots at merges. Remaining adapters that show up in profiles are
-   fixed as performance work.
+2. **Performance, worst ratios first** (instruction ratios in the section
+   above). The bytecode VM next: keep calls and returns inside the fast loop,
+   keep the stack top in a register across ops, and consider validating each
+   function's bytecode once (stack depth, constant indices, jump targets) so
+   per-op checks can go, as GNU trusts validated code. Then the source
+   interpreter's per-form cost and the funcall/native-transition path.
+   Iterate with instruction counts (callgrind) on the locked workloads for
+   both editors; timing pilots at merges. Remaining adapters that show up in
+   profiles are fixed as performance work.
 3. **Remaining architecture and ownership:** symbol host-name, buffer-local and
    function adapters; text-property intervals (also needed for
    `intervals-consed`); pure storage (check what the pinned GNU revision
