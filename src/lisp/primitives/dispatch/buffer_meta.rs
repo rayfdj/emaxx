@@ -28,12 +28,15 @@ fn coding_charset_list_is_ascii_compatible(interp: &Interpreter, value: &Value) 
     })
 }
 
-fn comparison_substring(
-    interp: &Interpreter,
+/// One `compare-buffer-substrings' operand: its buffer and ordered bounds,
+/// nil bounds meaning the buffer's accessible region. editfns.c signals
+/// `args-out-of-range' with the original bounds for a range outside it.
+fn comparison_range<'a>(
+    interp: &'a Interpreter,
     buffer: &Value,
     start: &Value,
     end: &Value,
-) -> Result<String, LispError> {
+) -> Result<(std::cell::Ref<'a, crate::buffer::Buffer>, usize, usize), LispError> {
     let buffer_id = if buffer.is_nil() {
         interp.current_buffer_id()
     } else {
@@ -42,19 +45,25 @@ fn comparison_substring(
     let buffer = interp
         .get_buffer_by_id(buffer_id)
         .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-    let start = if start.is_nil() {
+    let from = if start.is_nil() {
         buffer.point_min()
     } else {
         position_from_value(interp, start)?
     };
-    let end = if end.is_nil() {
+    let to = if end.is_nil() {
         buffer.point_max()
     } else {
         position_from_value(interp, end)?
     };
-    buffer
-        .buffer_substring(start, end)
-        .map_err(|error| LispError::Signal(error.to_string()))
+    let (from, to) = (from.min(to), from.max(to));
+    if from < buffer.point_min() || to > buffer.point_max() {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            *start,
+            *end,
+        ])));
+    }
+    Ok((buffer, from, to))
 }
 
 define_dispatch!(
@@ -125,18 +134,13 @@ define_dispatch!(
             }
             "compare-buffer-substrings" => {
                 need_args(name, args, 6)?;
-                let left = comparison_substring(interp, &args[0], &args[1], &args[2])?;
-                let right = comparison_substring(interp, &args[3], &args[4], &args[5])?;
                 // GNU editfns.c consults `case-fold-search' in the current
                 // buffer, even when either substring belongs to another
                 // buffer.  Its canonical table is extra slot one of the
                 // current downcase table; Emaxx's lazily initialized standard
                 // table has the same effective mapping in the downcase table
                 // until a materialized canonical slot exists.
-                let canonical_table = if interp
-                    .lookup_var("case-fold-search", env)
-                    .is_some_and(|value| value.is_truthy())
-                {
+                let canonical_table = if interp.case_fold_search_active(env) {
                     let downcase_table = interp.current_case_table_id();
                     Some(
                         match interp
@@ -150,9 +154,24 @@ define_dispatch!(
                 } else {
                     None
                 };
+                // Both operands are read in place, as editfns.c reads the
+                // buffer text; neither is copied.
+                let interp = &*interp;
+                let substring_error =
+                    |error: crate::buffer::BufferError| LispError::Signal(error.to_string());
+                let (left_buffer, left_start, left_end) =
+                    comparison_range(interp, &args[0], &args[1], &args[2])?;
+                let left = left_buffer
+                    .substring_chars(left_start, left_end)
+                    .map_err(substring_error)?;
+                let (right_buffer, right_start, right_end) =
+                    comparison_range(interp, &args[3], &args[4], &args[5])?;
+                let right = right_buffer
+                    .substring_chars(right_start, right_end)
+                    .map_err(substring_error)?;
                 Ok(Value::Integer(compare_buffer_substrings(
-                    &left,
-                    &right,
+                    left,
+                    right,
                     |character| {
                         let code = character as u32;
                         let Some(table) = canonical_table else {

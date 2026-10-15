@@ -888,6 +888,54 @@ fn compiled_time_string_results_keep_text_property_mutation() {
 }
 
 #[test]
+fn compare_buffer_substrings_reads_both_ranges_in_place_like_editfns() {
+    // editfns.c compares the two ranges character by character in the
+    // buffers themselves. The ranges here cross the rope's chunks in a
+    // multibyte buffer and in an ASCII one, come reversed or whole, and
+    // fold case through the current buffer's `case-fold-search'. A range
+    // outside a buffer's accessible region signals `args-out-of-range'
+    // with the original bounds; Emaxx clamped it and compared what was
+    // left.
+    let program = r#"
+        (with-temp-buffer
+          (dotimes (i 400) (insert (format "line %03d é\n" i)))
+          (let ((other (generate-new-buffer " other")))
+            (unwind-protect
+                (progn
+                  (with-current-buffer other
+                    (dotimes (i 400) (insert (format "line %03d e\n" i))))
+                  (list (compare-buffer-substrings nil 1 2000 nil 1 2000)
+                        (compare-buffer-substrings nil 1 2000 other 1 2000)
+                        (compare-buffer-substrings nil 2000 1 other 1 2000)
+                        (compare-buffer-substrings nil 1500 3000 nil 1500 2999)
+                        (compare-buffer-substrings other 900 1300 other 13 413)
+                        (compare-buffer-substrings other 1 4401 other nil nil)
+                        (compare-buffer-substrings other 1000 4000 other 1012 4012)
+                        (progn (goto-char (point-max)) (insert "LINE")
+                               (let ((case-fold-search t))
+                                 (compare-buffer-substrings nil (- (point-max) 4) (point-max) nil 1 5)))
+                        (let ((case-fold-search nil))
+                          (compare-buffer-substrings nil (- (point-max) 4) (point-max) nil 1 5))
+                        (condition-case err (compare-buffer-substrings other 1 4402 nil 1 5)
+                          (error err))
+                        (condition-case err (compare-buffer-substrings nil 1 5 nil 0 5)
+                          (error err))
+                        (save-restriction
+                          (narrow-to-region 10 20)
+                          (list (compare-buffer-substrings nil nil nil nil 10 20)
+                                (condition-case err (compare-buffer-substrings nil 9 20 nil 10 20)
+                                  (error err))
+                                (condition-case err (compare-buffer-substrings nil 10 20 nil 21 10)
+                                  (error err))))))
+              (kill-buffer other))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(0 10 10 1500 -1 0 1 0 -1 (args-out-of-range 1 4402) (args-out-of-range 0 5) (0 (args-out-of-range 9 20) (args-out-of-range 21 10)))",
+        "compare-buffer-substrings ranges",
+    );
+}
+
+#[test]
 fn compare_buffer_substrings_accepts_current_buffer_and_bounds_as_nil() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();

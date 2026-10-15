@@ -252,6 +252,45 @@ struct UndoListView {
 #[derive(Default)]
 struct UndoListViewCache(RefCell<Option<UndoListView>>);
 
+/// REMAINING characters of a rope from char index NEXT, read chunk by
+/// chunk in place: a ropey `Chars' iterator allocates its node stack. In
+/// an ASCII rope a char index is a byte index, found without counting.
+struct RopeChars<'a> {
+    rope: &'a Rope,
+    ascii: bool,
+    chars: std::str::Chars<'a>,
+    next: usize,
+    remaining: usize,
+}
+
+impl Iterator for RopeChars<'_> {
+    type Item = char;
+
+    fn next(&mut self) -> Option<char> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let character = match self.chars.next() {
+            Some(character) => character,
+            None => {
+                let (chunk, byte) = if self.ascii {
+                    let (chunk, chunk_start, _, _) = self.rope.chunk_at_byte(self.next);
+                    (chunk, self.next - chunk_start)
+                } else {
+                    let (chunk, _, chunk_start, _) = self.rope.chunk_at_char(self.next);
+                    let byte = ropey::str_utils::char_to_byte_idx(chunk, self.next - chunk_start);
+                    (chunk, byte)
+                };
+                self.chars = chunk[byte..].chars();
+                self.chars.next()?
+            }
+        };
+        self.next += 1;
+        self.remaining -= 1;
+        Some(character)
+    }
+}
+
 #[derive(Clone, Default)]
 struct RopeCharCache {
     start: usize,
@@ -1120,6 +1159,28 @@ impl Buffer {
             current_byte = next;
         }
         Some(self.text.len_chars() + 1)
+    }
+
+    /// The characters `buffer_substring' returns for [FROM, TO), read from
+    /// the rope in place.
+    pub fn substring_chars(
+        &self,
+        from: usize,
+        to: usize,
+    ) -> Result<impl Iterator<Item = char> + '_, BufferError> {
+        let (from, to) = if from <= to { (from, to) } else { (to, from) };
+        let from = from.max(self.begv);
+        let to = to.min(self.zv);
+        if from > to {
+            return Err(BufferError::InvalidPosition(from));
+        }
+        Ok(RopeChars {
+            rope: &self.text,
+            ascii: self.text.len_bytes() == self.text.len_chars(),
+            chars: "".chars(),
+            next: from - 1,
+            remaining: to - from,
+        })
     }
 
     /// Get a substring. Positions are 1-based, range is [from, to).

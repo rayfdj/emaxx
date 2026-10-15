@@ -1063,12 +1063,10 @@ pub(crate) fn invisibility_spec_matches(spec: &Value, value: &Value) -> bool {
 }
 
 pub(crate) fn compare_buffer_substrings(
-    left: &str,
-    right: &str,
+    mut left_chars: impl Iterator<Item = char>,
+    mut right_chars: impl Iterator<Item = char>,
     mut canonicalize: impl FnMut(char) -> u32,
 ) -> i64 {
-    let mut left_chars = left.chars();
-    let mut right_chars = right.chars();
     let mut matched = 0i64;
 
     loop {
