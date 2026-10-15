@@ -87,6 +87,14 @@ const KEY_NAMES: &[&str] = &[
     "default-minibuffer-frame",
     "input-decode-map",
     "local-function-key-map",
+    "quit-flag",
+    "inhibit-quit",
+    "throw-on-input",
+    "overriding-plist-environment",
+    "load-path",
+    "max-lisp-eval-depth",
+    "debug-on-next-call",
+    "symbols-with-pos-enabled",
 ];
 
 struct Symbols {

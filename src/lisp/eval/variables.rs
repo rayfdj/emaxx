@@ -6,6 +6,18 @@ use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::SymbolName;
 
+/// The variables forwarded to evaluator cells (`update_forwarded_eval_cell').
+const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 8] = [
+    cached_symbol!("quit-flag"),
+    cached_symbol!("inhibit-quit"),
+    cached_symbol!("throw-on-input"),
+    cached_symbol!("overriding-plist-environment"),
+    cached_symbol!("load-path"),
+    cached_symbol!("max-lisp-eval-depth"),
+    cached_symbol!("debug-on-next-call"),
+    cached_symbol!("symbols-with-pos-enabled"),
+];
+
 #[derive(Default)]
 struct ReadSymbolContainers {
     cons: HashSet<usize>,
@@ -311,9 +323,21 @@ impl Interpreter {
 
     pub fn clear_buffer_local_state(&mut self, buffer_id: u64) {
         self.reset_buffer_text_conversion_style(buffer_id);
-        self.buffer_locals.remove(&buffer_id);
+        self.remove_buffer_locals(buffer_id);
         self.buffer_local_hooks.remove(&buffer_id);
         self.buffer_case_tables.retain(|(id, _)| *id != buffer_id);
+    }
+
+    /// Drop every local binding of BUFFER_ID. A current buffer's evaluator
+    /// cells return to the global values, as GNU's swap_in_global_binding
+    /// does for each killed local.
+    pub(super) fn remove_buffer_locals(&mut self, buffer_id: u64) {
+        let refresh =
+            buffer_id == self.current_buffer_id() && self.has_forwarded_eval_local(buffer_id);
+        self.buffer_locals.remove(&buffer_id);
+        if refresh {
+            self.refresh_forwarded_eval_cells();
+        }
     }
 
     // `kill-all-local-variables' keeps buffer-local hook functions whose
@@ -332,7 +356,7 @@ impl Interpreter {
             })
             .map(|(name, values)| (name.clone(), values.clone()))
             .collect::<Vec<_>>();
-        self.buffer_locals.remove(&buffer_id);
+        self.remove_buffer_locals(buffer_id);
         if permanent_hooks.is_empty() {
             self.buffer_local_hooks.remove(&buffer_id);
         } else {
@@ -1333,22 +1357,37 @@ impl Interpreter {
     }
 
     pub(super) fn refresh_forwarded_eval_cells(&mut self) {
-        for name in [
-            "quit-flag",
-            "inhibit-quit",
-            "throw-on-input",
-            "overriding-plist-environment",
-            "load-path",
-            "max-lisp-eval-depth",
-            "debug-on-next-call",
-            "symbols-with-pos-enabled",
-        ] {
+        for key in FORWARDED_EVAL_CELLS {
+            let name = key.with(|symbol| *symbol);
+            let name = name.as_str();
             if let Some(value) = self
                 .buffer_local_value(self.current_buffer_id(), name)
                 .or_else(|| self.global_binding_value(name))
             {
                 self.update_forwarded_eval_cell(name, &value);
             }
+        }
+    }
+
+    /// Whether BUFFER_ID has a local binding of a variable whose evaluator
+    /// cell holds the current buffer's value.
+    pub(super) fn has_forwarded_eval_local(&self, buffer_id: u64) -> bool {
+        self.buffer_locals.get(&buffer_id).is_some_and(|locals| {
+            FORWARDED_EVAL_CELLS
+                .iter()
+                .any(|key| key.with(|symbol| locals.binding(symbol).is_some()))
+        })
+    }
+
+    /// The cells after the current buffer changed from PREVIOUS. Without a
+    /// local binding in either buffer each cell holds the global value
+    /// before and after (set_buffer_internal_2 swaps only the buffers'
+    /// local bindings), so only such a binding calls for a refresh.
+    pub(super) fn refresh_forwarded_eval_cells_after_switch(&mut self, previous: u64) {
+        if self.has_forwarded_eval_local(previous)
+            || self.has_forwarded_eval_local(self.current_buffer_id())
+        {
+            self.refresh_forwarded_eval_cells();
         }
     }
 

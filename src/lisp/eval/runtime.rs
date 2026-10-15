@@ -405,7 +405,7 @@ impl Interpreter {
         self.current_buffer_id = id;
         // A localized GNU forwarding symbol loads the newly current
         // buffer's cell into its C variable during a buffer switch.
-        self.refresh_forwarded_eval_cells();
+        self.refresh_forwarded_eval_cells_after_switch(current_id);
         Ok(())
     }
 
@@ -1205,7 +1205,7 @@ impl Interpreter {
         self.delete_buffer_overlays(id);
         let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
         self.detach_markers_for_buffer(id);
-        self.buffer_locals.remove(&id);
+        self.remove_buffer_locals(id);
         self.buffer_local_hooks.remove(&id);
         self.labeled_restrictions
             .retain(|restriction| restriction.buffer_id != id);

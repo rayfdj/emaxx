@@ -3923,10 +3923,12 @@ impl Interpreter {
                 .set_flag_by_name(symbol.as_str(), symbol_cell_flags::LOCALIZED);
             locals.insert(&symbol, value);
         }
-        if locals.is_empty() {
-            self.buffer_locals.remove(&id);
-        } else {
+        self.remove_buffer_locals(id);
+        if !locals.is_empty() {
             self.buffer_locals.insert(id, locals);
+            if id == self.current_buffer_id() {
+                self.refresh_forwarded_eval_cells();
+            }
         }
     }
 

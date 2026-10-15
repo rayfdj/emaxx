@@ -3046,6 +3046,42 @@ fn message_log_disables_undo_in_the_messages_buffer() {
 }
 
 #[test]
+fn a_buffer_local_eval_depth_applies_only_in_its_buffer() {
+    // The evaluator's cell for `max-lisp-eval-depth' holds the current
+    // buffer's value: a local limit applies in its buffer, the global one
+    // in another buffer, and again after `kill-all-local-variables' or
+    // after killing the current buffer that held the local binding. A
+    // buffer switch refreshes the cells only when one of the two buffers
+    // has such a local binding, so the paths that drop the current
+    // buffer's locals refresh them themselves.
+    let program = r#"
+        (progn
+          (defalias 'forwarded-cell-deep
+            (lambda (n) (if (> n 0) (1+ (forwarded-cell-deep (1- n))) 0)))
+          (let ((probe (lambda ()
+                         (condition-case nil (forwarded-cell-deep 150)
+                           (excessive-lisp-nesting 'too-deep)))))
+            (with-temp-buffer
+              (setq-local max-lisp-eval-depth 200)
+              (list (funcall probe)
+                    (with-temp-buffer (funcall probe))
+                    (funcall probe)
+                    (progn (kill-all-local-variables) (funcall probe))
+                    (progn (setq-local max-lisp-eval-depth 200)
+                           (let ((buffer (current-buffer)))
+                             (with-temp-buffer
+                               (let ((inner (current-buffer)))
+                                 (set-buffer buffer)
+                                 (kill-buffer buffer)
+                                 (list (eq (current-buffer) inner) (funcall probe))))))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(too-deep 150 too-deep 150 (nil 150))",
+        "buffer-local eval depth",
+    );
+}
+
+#[test]
 fn message_log_folds_repeated_lines_like_message_dolog() {
     // xdisp.c message_dolog: a line equal to the previous one replaces it
     // with " [N times]" (counting on from an existing count), a line that
