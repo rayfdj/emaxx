@@ -218,8 +218,12 @@ the reuse cross-check.
 Pilots of `4057404` against `8a75c7f` (run 38713604238): undo 10% faster (the
 most regexp-heavy body); the other cases move within this runner's noise (GNU's
 own explicit-GC samples spread from 0.19 to 0.32 s), and body timing excludes
-the startup this change mostly speeds up. Diagnostic only. CI's full gate for
-`8352eb5` and frozen for `4c13fba` are pending.
+the startup this change mostly speeds up. Diagnostic only.
+
+**Frozen on `4c13fba`** (run 38716001257): **all 7,928 outcomes match across
+519 files**, no unsuccessful execution; GNU's eglot rust-analyzer test passed
+this time. Median per-file setup in the frozen logs: Emaxx 970 ms, GNU 92 ms
+(at `23d230a`: 1,177 ms and 107 ms). CI's full gate for `8352eb5` is pending.
 
 ## How the work is split
 
