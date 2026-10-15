@@ -1574,12 +1574,12 @@ define_dispatch!(
             }
             "memory-use-counts" => {
                 need_args(name, args, 0)?;
-                // GNU's seven counters are incremented at type-specific C arena
-                // allocation sites and survive GC.  Rust ownership has neither
-                // those arenas nor equivalent category accounting; allocator
-                // byte totals or live-object scans would not implement this API.
-                Err(LispError::Signal(
-                    "GNU allocation counters are unavailable in the Rust ownership backend".into(),
+                // alloc.c:Fmemory_use_counts: `make_int' of each counter, in
+                // DEFVAR order. The words are the allocator's own, raised at
+                // its allocation points and never lowered by collection.
+                Ok(Value::list(
+                    crate::lisp::alloc::counters::memory_use_counts()
+                        .map(crate::lisp::primitives::normalize_integer_value),
                 ))
             }
             "num-processors" => {
@@ -1923,7 +1923,7 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
         entry(
             "symbols",
             &[
-                crate::lisp::eval::GNU_SYMBOL_SIZE as i64,
+                crate::lisp::eval::SYMBOL_SIZE as i64,
                 census.symbols as i64,
                 0,
             ],
@@ -1931,7 +1931,7 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
         entry(
             "strings",
             &[
-                crate::lisp::eval::GNU_STRING_SIZE as i64,
+                crate::lisp::eval::STRING_HEADER_SIZE as i64,
                 census.strings as i64,
                 0,
             ],

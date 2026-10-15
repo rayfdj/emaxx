@@ -4156,41 +4156,83 @@ fn compiled_regexp_introspection_preserves_the_real_backend_boundary() {
 
 #[test]
 fn memory_use_counts_exposes_the_allocation_telemetry_boundary_honestly() {
-    let contract_program = r#"
-        (let ((counts (memory-use-counts)))
-          (list
-           (subr-arity (symbol-function 'memory-use-counts))
-           (length counts)
-           (mapcar #'integerp counts)))"#;
-    let contract_expected = "((0 . 0) 7 (t t t t t t t))";
-    assert_upstream_primitive_contract(&format!("(prin1 {contract_program})"), contract_expected);
+    // alloc.c:Fmemory_use_counts: no arguments, seven natural numbers.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((counts (memory-use-counts)))
+            (list
+             (subr-arity (symbol-function 'memory-use-counts))
+             (length counts)
+             (mapcar #'natnump counts)))"#,
+        "((0 . 0) 7 (t t t t t t t))",
+        "memory-use-counts contract",
+    );
+}
 
-    let mut interp = Interpreter::new();
-    let mut env = crate::lisp::types::Env::new();
-    let form = Reader::new(
-        r#"
-        (list
-         (subr-arity (symbol-function 'memory-use-counts))
-         (condition-case error-data
-             (memory-use-counts)
-           (error error-data)))"#,
-    )
-    .read()
-    .expect("allocation-counter boundary program should parse")
-    .expect("allocation-counter boundary program should contain a form");
-    let actual = interp
-        .eval(&form, &mut env)
-        .expect("allocation-counter boundary should be catchable");
-    let expected = Reader::new(
-        "((0 . 0) \
-         (error \"GNU allocation counters are unavailable in the Rust ownership backend\"))",
-    )
-    .read()
-    .expect("allocation-counter boundary expectation should parse")
-    .expect("allocation-counter boundary expectation should contain a form");
-    assert!(
-        values_equal(&interp, &actual, &expected),
-        "allocation-counter boundary was not explicit:\nactual: {actual:?}\nexpected: {expected:?}"
+#[test]
+fn memory_use_counts_counts_actual_allocations_by_category() {
+    // Each delta is taken against the same measurement around an
+    // allocation-free (or empty) form, so the measurement's own consing
+    // cancels. The values are alloc.c's increments: one per cons, float,
+    // symbol and string, the words asked for by allocate_vectorlike, and the
+    // string's bytes (two per `é' in a multibyte string).
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((delta (lambda (index thunk)
+                         (let ((before (nth index (memory-use-counts))))
+                           (funcall thunk)
+                           (- (nth index (memory-use-counts)) before)))))
+            (list
+             (- (funcall delta 0 (lambda () (make-list 100 nil)))
+                (funcall delta 0 (lambda () (make-list 0 nil))))
+             (- (funcall delta 1 (lambda () (float 3)))
+                (funcall delta 1 (lambda () (float 3.0))))
+             (- (funcall delta 2 (lambda () (make-vector 10 nil)))
+                (funcall delta 2 (lambda () (make-vector 0 nil))))
+             (- (funcall delta 3 (lambda () (make-symbol "x")))
+                (funcall delta 3 (lambda () "x")))
+             (- (funcall delta 4 (lambda () (make-string 5 ?a)))
+                (funcall delta 4 (lambda () (make-string 0 ?a))))
+             (- (funcall delta 4 (lambda () (make-string 3 ?é)))
+                (funcall delta 4 (lambda () (make-string 0 ?é))))
+             (- (funcall delta 6 (lambda () (make-string 5 ?a)))
+                (funcall delta 6 (lambda () (make-string 0 ?a))))
+             (- (funcall delta 2 (lambda () (make-bool-vector 1000 nil)))
+                (funcall delta 2 (lambda () (make-bool-vector 0 nil))))))"#,
+        "(100 1 10 1 5 6 1 16)",
+        "allocation counter deltas",
+    );
+}
+
+#[test]
+fn allocation_counter_variables_forward_to_the_counters() {
+    // lread.c:defvar_int: reads and stores reach the C counter, so a store
+    // restarts the count, `let' restores the outer word on exit (dropping
+    // what was counted inside), stores are integer-checked, collection never
+    // lowers a counter, and `makunbound' makes the symbol plain while the
+    // counter itself keeps counting for `memory-use-counts'.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+            (progn (setq vector-cells-consed 7) (make-vector 3 nil) vector-cells-consed)
+            (= vector-cells-consed (nth 2 (memory-use-counts)))
+            (progn (setq vector-cells-consed 100)
+                   (let ((vector-cells-consed 0)) (make-vector 5 nil))
+                   vector-cells-consed)
+            (condition-case err (setq vector-cells-consed 'x) (error err))
+            (condition-case err (setq vector-cells-consed 1.5) (error err))
+            (let* ((before (memory-use-counts))
+                   (after (progn (garbage-collect) (memory-use-counts)))
+                   (ok t))
+              (while before
+                (unless (<= (car before) (car after)) (setq ok nil))
+                (setq before (cdr before) after (cdr after)))
+              ok)
+            (progn (makunbound 'symbols-consed)
+                   (list (boundp 'symbols-consed)
+                         (progn (setq symbols-consed 'plain) symbols-consed)
+                         (let ((before (nth 3 (memory-use-counts))))
+                           (make-symbol "y")
+                           (> (nth 3 (memory-use-counts)) before)))))"#,
+        "(10 t 100 (wrong-type-argument integerp x) (wrong-type-argument integerp 1.5) t (nil plain t))",
+        "allocation counter forwarding",
     );
 }
 
@@ -15118,9 +15160,12 @@ fn garbage_collect_reports_the_live_census() {
     assert!(count_of("string-bytes") > 10_000, "string-bytes: {counts}");
     assert!(count_of("buffers") >= 1, "buffers: {counts}");
 
-    // alloc.c:Fgarbage_collect reports GNU C layout constants.  This catches
-    // accidental leakage of Rust host representation sizes into the public
-    // rows (notably symbol, string, vector-slot, interval, and buffer sizes).
+    // alloc.c:Fgarbage_collect reports each kind's object size. Conses,
+    // vectors, vector slots and floats are GNU's C layouts and this
+    // allocator's. Symbol and string headers report the actual 64- and
+    // 48-byte cells the collector charges (GNU's are 48 and 32): an explicit
+    // difference, not a matching answer. Interval and buffer rows still carry
+    // GNU's constants. Any other size change must fail here.
     let sizes_form = Reader::new(
         r#"(mapcar (lambda (entry) (list (car entry) (nth 1 entry)))
                    (garbage-collect))"#,
@@ -15134,7 +15179,7 @@ fn garbage_collect_reports_the_live_census() {
         .to_string();
     assert_eq!(
         sizes,
-        "((conses 16) (symbols 48) (strings 32) (string-bytes 1) \
+        "((conses 16) (symbols 64) (strings 48) (string-bytes 1) \
 (vectors 16) (vector-slots 8) (floats 8) (intervals 56) (buffers 992))"
     );
 

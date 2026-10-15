@@ -423,7 +423,7 @@ impl SymbolName {
             if let Some(name) = names.get(text.as_str()) {
                 return name.0;
             }
-            crate::lisp::native_comp::note_lisp_allocation(48);
+            crate::lisp::native_comp::note_lisp_allocation(crate::lisp::alloc::SYMBOL_CELL_BYTES);
             let private = text.contains(OBARRAY_SYMBOL_MARKER);
             let lisp_name = lisp_name.unwrap_or_else(|| {
                 Value::String(SharedText::from(if private {
@@ -529,7 +529,7 @@ impl SymbolName {
     }
 
     fn new_uninterned(lisp_name: Value, internal: String) -> Self {
-        crate::lisp::native_comp::note_lisp_allocation(48);
+        crate::lisp::native_comp::note_lisp_allocation(crate::lisp::alloc::SYMBOL_CELL_BYTES);
         let name = Self(crate::lisp::alloc::allocate_symbol(
             crate::lisp::alloc::SymbolCell {
                 internal,
@@ -1103,16 +1103,20 @@ const _: () = {
 // independently of GC. Runtime serialization is required by that allocator;
 // running tests serially does not itself establish public API soundness.
 pub(crate) fn note_string_allocation(bytes: usize) {
-    // alloc.c allocates a 32-byte Lisp_String plus `sdata_size': an 8-byte
-    // back-pointer, the bytes, a terminating NUL, at least the 16-byte free
-    // form, rounded to the 8-byte sdata alignment on the supported GNU ABI.
+    // The actual string header cell (GNU's Lisp_String is 32 bytes) plus
+    // alloc.c's `sdata_size': an 8-byte back-pointer, the bytes, a
+    // terminating NUL, at least the 16-byte free form, rounded to the 8-byte
+    // sdata alignment. The data charge is still GNU's formula, not a
+    // measurement of this string's own storage.
     let sdata = 8_usize
         .saturating_add(bytes)
         .saturating_add(1)
         .max(16)
         .div_ceil(8)
         .saturating_mul(8);
-    crate::lisp::native_comp::note_lisp_allocation(32_usize.saturating_add(sdata));
+    crate::lisp::native_comp::note_lisp_allocation(
+        crate::lisp::alloc::STRING_CELL_BYTES.saturating_add(sdata),
+    );
 }
 
 #[derive(Default)]

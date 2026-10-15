@@ -2682,6 +2682,10 @@ impl ImageGraphCopier {
         copied.install_copied_name(self.copy(&symbol.lisp_name()));
         if let Some(alias) = symbol.cell().alias() {
             copied.cell().set_alias(self.copy_symbol(alias));
+        } else if let Some(counter) = symbol.cell().forwarded_counter() {
+            // The copy forwards to the same process-wide word; copying its
+            // current integer would freeze the counter in the new editor.
+            copied.cell().forward_to_counter(counter);
         } else if let Some(value) = symbol.cell().value() {
             copied.cell().set_value(self.copy(&value));
         }
@@ -3204,13 +3208,16 @@ pub(crate) struct LiveObjectCensus {
     pub(crate) overlay_node_bytes: usize,
 }
 
-// alloc.c:total_bytes_of_live_objects and Fgarbage_collect report GNU C
-// allocation layouts, not the host language's representation sizes. These
-// are the configured GNU Emacs layouts for the supported 64-bit targets;
-// `header_size + word_size' is the size of a one-slot vector row.
+// alloc.c:total_bytes_of_live_objects and Fgarbage_collect report the
+// allocation layouts. Conses, floats and vector words match the GNU C
+// layouts on the supported 64-bit targets; `header_size + word_size' is the
+// size of a one-slot vector row. Symbol and string headers are charged as
+// the cells this allocator actually holds (64 and 48 bytes, where GNU's
+// Lisp_Symbol and Lisp_String are 48 and 32): a smaller charge would
+// undercount live bytes and delay collection.
 pub(crate) const GNU_CONS_SIZE: usize = 16;
-pub(crate) const GNU_SYMBOL_SIZE: usize = 48;
-pub(crate) const GNU_STRING_SIZE: usize = 32;
+pub(crate) const SYMBOL_SIZE: usize = crate::lisp::alloc::SYMBOL_CELL_BYTES;
+pub(crate) const STRING_HEADER_SIZE: usize = crate::lisp::alloc::STRING_CELL_BYTES;
 pub(crate) const GNU_VECTOR_SIZE: usize = 16;
 pub(crate) const GNU_VECTOR_SLOT_SIZE: usize = 8;
 pub(crate) const GNU_FLOAT_SIZE: usize = 8;
@@ -3573,18 +3580,18 @@ impl LispReachability {
 }
 
 impl LiveObjectCensus {
-    /// alloc.c:total_bytes_of_live_objects.  These are the GNU C layouts for
-    /// the supported 64-bit ABI: Lisp_Cons=16, Lisp_Symbol=48,
-    /// Lisp_String=32, Lisp_Float=8, interval=56, and one vector word=8.
+    /// alloc.c:total_bytes_of_live_objects: Lisp_Cons=16, Lisp_Float=8,
+    /// interval=56 and one vector word=8 as in the GNU C layouts; symbol and
+    /// string headers at this allocator's actual cell sizes.
     pub(crate) fn total_bytes_of_live_objects(&self) -> usize {
         self.conses
             .saturating_mul(GNU_CONS_SIZE)
-            .saturating_add(self.symbols.saturating_mul(GNU_SYMBOL_SIZE))
+            .saturating_add(self.symbols.saturating_mul(SYMBOL_SIZE))
             .saturating_add(self.string_bytes)
             .saturating_add(self.vector_slots.saturating_mul(GNU_VECTOR_SLOT_SIZE))
             .saturating_add(self.floats.saturating_mul(GNU_FLOAT_SIZE))
             .saturating_add(self.intervals.saturating_mul(GNU_INTERVAL_SIZE))
-            .saturating_add(self.strings.saturating_mul(GNU_STRING_SIZE))
+            .saturating_add(self.strings.saturating_mul(STRING_HEADER_SIZE))
             .saturating_add(self.hash_table_bytes)
             .saturating_add(self.overlay_node_bytes)
     }
@@ -6188,11 +6195,8 @@ impl Interpreter {
                 "compose-chars-after-function",
                 Value::symbol("compose-chars-after"),
             ),
-            // The *-consed counters are live allocation telemetry; Emaxx does
-            // not count allocations, so they start at zero rather than at a
-            // frozen snapshot of the oracle's own counters (which the first
-            // draft of this tranche fabricated).
-            ("cons-cells-consed", Value::Integer(0)),
+            // The *-consed counters are alloc.c's own words, forwarded by
+            // `mark_forwarded_variables', not values stored here.
             ("current-key-remap-sequence", Value::Nil),
             ("current-time-list", Value::T),
             ("cursor-in-echo-area", Value::Nil),
@@ -6219,9 +6223,6 @@ impl Interpreter {
             ("enable-disabled-menus-and-buttons", Value::Nil),
             ("extra-keyboard-modifiers", Value::Integer(0)),
             ("float-output-format", Value::Nil),
-            // Zeroed like its *-consed siblings: live allocation telemetry
-            // (the frozen oracle snapshot here survived the first sweep).
-            ("floats-consed", Value::Integer(0)),
             // font.c:5965; init_font later applies EMACS_FONT_LOG policy.
             ("font-log", Value::Nil),
             ("fontification-functions", Value::Nil),
@@ -6254,7 +6255,6 @@ impl Interpreter {
             // compiled cconv and macroexp libraries.
             ("internal-make-interpreted-closure-function", Value::Nil),
             ("internal-when-entered-debugger", Value::Integer(-1)),
-            ("intervals-consed", Value::Integer(0)),
             ("large-hscroll-threshold", Value::Integer(10000)),
             ("last-command-event", Value::Nil),
             ("line-prefix", Value::Nil),
@@ -6323,10 +6323,7 @@ impl Interpreter {
             ("resume-tty-functions", Value::Nil),
             ("scroll-bar-adjust-thumb-portion", Value::T),
             ("shared-game-score-directory", Value::Nil),
-            ("string-chars-consed", Value::Integer(0)),
-            ("strings-consed", Value::Integer(0)),
             ("suspend-tty-functions", Value::Nil),
-            ("symbols-consed", Value::Integer(0)),
             ("system-key-alist", Value::Nil),
             ("tab-bar--dragging-in-progress", Value::Nil),
             ("tab-bar-separator-image-expression", Value::Nil),
@@ -6339,7 +6336,6 @@ impl Interpreter {
             ("unread-input-method-events", Value::Nil),
             ("unread-post-input-method-events", Value::Nil),
             ("use-default-font-for-symbols", Value::T),
-            ("vector-cells-consed", Value::Integer(0)),
             ("where-is-preferred-modifier", Value::Nil),
             ("wrap-prefix", Value::Nil),
             ("write-region-annotate-functions", Value::Nil),

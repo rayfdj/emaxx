@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
+pub(crate) mod counters;
 mod finalizers;
 mod strings;
 mod symbols;
@@ -39,6 +40,9 @@ pub(crate) use strings::{
 pub(crate) mod vectors;
 use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 pub use symbols::{SymbolCell, SymbolRef};
+/// The actual header cells this allocator holds, as charged to collection.
+pub(crate) const SYMBOL_CELL_BYTES: usize = symbols::SYMBOL_CELL_SIZE;
+pub(crate) const STRING_CELL_BYTES: usize = strings::STRING_CELL_SIZE;
 pub(crate) use symbols::{allocate_symbol, live_symbols, sweep_symbols};
 pub use vectors::{ClosureRef, VectorHeader, VectorRef, VectorTag, VectorlikeRef};
 pub(crate) use vectors::{
@@ -367,6 +371,7 @@ pub(crate) fn allocate_float(value: f64) -> FloatRef {
         head
     };
     LIVE_FLOATS.store(LIVE_FLOATS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+    counters::tally(&counters::FLOATS_CONSED, 1);
     // SAFETY: SLOT is a free cell of a float block. Initialize its one word
     // and the block's allocation/mark bits before publishing a handle.
     unsafe {
@@ -1297,6 +1302,7 @@ pub(crate) fn allocate_cons(cell: ConsCell) -> ConsRef {
     let serial = SERIAL.load(Ordering::Relaxed) + 1;
     SERIAL.store(serial, Ordering::Relaxed);
     LIVE_CONSES.store(LIVE_CONSES.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+    counters::tally(&counters::CONS_CELLS_CONSED, 1);
     // SAFETY: SLOT is an uninitialized (free) cell of a block; every
     // field is written before a handle is made.
     unsafe {

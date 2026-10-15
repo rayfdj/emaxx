@@ -442,6 +442,20 @@ pub(crate) fn pdumper_load(
     // baseline below.)
     interp.set_symbol_value_cell("gcs-done", Value::Integer(0));
     interp.set_symbol_value_cell("gc-elapsed", Value::float(0.0));
+    // pdumper.c:dump_fwd_int restores each DEFVAR_INT word from the dump,
+    // and the dump's objects are mapped, not consed: the allocation counters
+    // stand where the image recorded them, whatever this loader allocated
+    // while rebuilding those objects.
+    for symbol in &image.symbols {
+        let name = symbol.symbol.as_str();
+        if let Some((_, counter)) = crate::lisp::alloc::counters::FORWARDED_COUNTERS
+            .iter()
+            .find(|(counter_name, _)| *counter_name == name)
+            && let Some(Ok(recorded)) = symbol.value.map(|value| value.as_integer())
+        {
+            counter.store(recorded, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
     // alloc.c: `consing_until_gc' and `gc_threshold' are plain globals
     // the image does not carry, zero in a process that starts from a
     // dump, and pdumper's objects are not consing.  The loader's

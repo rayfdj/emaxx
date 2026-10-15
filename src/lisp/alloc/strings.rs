@@ -303,6 +303,16 @@ pub(crate) fn allocate_string<E>(
     if kind == StringAllocation::Pure {
         assert!(state.props.is_empty(), "pure strings have no intervals");
     } else {
+        if kind == StringAllocation::Ordinary {
+            // alloc.c:make_clear_multibyte_string: allocate_string's
+            // `++strings_consed' and `string_chars_consed += nbytes'.
+            // Restored image strings are pdumper's objects, not consing.
+            super::counters::tally(&super::counters::STRINGS_CONSED, 1);
+            super::counters::tally(
+                &super::counters::STRING_CHARS_CONSED,
+                state.storage_bytes() as i64,
+            );
+        }
         super::super::types::note_string_allocation(state.storage_bytes());
         LIVE_STRINGS.store(LIVE_STRINGS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
         LIVE_BYTES.store(

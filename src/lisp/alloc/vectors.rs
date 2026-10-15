@@ -483,6 +483,12 @@ fn allocate_vector_from_block(nbytes: usize) -> *mut VectorHeader {
 /// included) from a block, or on its own past `VBLOCK_BYTES_MAX'.  The
 /// header is the caller's to write.
 fn allocate_vectorlike(nbytes: usize) -> *mut VectorHeader {
+    // alloc.c:allocate_vectorlike: `vector_cells_consed += len', the words
+    // after the header that were asked for, before block rounding.
+    super::counters::tally(
+        &super::counters::VECTOR_CELLS_CONSED,
+        (nbytes.saturating_sub(HEADER_SIZE) / WORD_SIZE) as i64,
+    );
     let nbytes = vroundup(nbytes).max(VBLOCK_BYTES_MIN);
     if nbytes <= VBLOCK_BYTES_MAX {
         allocate_vector_from_block(nbytes)

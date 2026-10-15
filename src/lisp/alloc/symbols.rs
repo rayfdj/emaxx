@@ -19,7 +19,7 @@ use super::super::types::{MarkBit, SymbolName, Value};
 use super::{BlockKind, FREE_MARK, SYMBOLS_PER_BLOCK, blocks_of, new_block, release_block};
 use std::cell::Cell;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 
 /// alloc.c's `struct Lisp_Symbol', as this implementation keeps it.
 #[repr(C)]
@@ -61,11 +61,22 @@ const BUILTIN_T: u16 = 128;
 // lisp.h: trapped_write == SYMBOL_NOWRITE. This remains on the object
 // after uninterning and is copied/restored with its other header state.
 const CONSTANT: u16 = 256;
+// lisp.h: redirect == SYMBOL_FORWARDED to a Lisp_Intfwd. Set together with
+// VALUE_PRESENT; the payload is the forwarded counter word.
+const INT_FORWARD: u16 = 512;
 
 #[derive(Clone, Copy)]
 pub(crate) union SymbolPayload {
     value: Value,
     alias: SymbolName,
+    /// `Lisp_Intfwd.intvar': one of alloc.c's process-wide counters.
+    counter: &'static AtomicI64,
+}
+
+/// data.c:store_symval_forwarding's Lisp_Fwd_Int case: the store has passed
+/// CHECK_INTEGER and the intmax_t range check before reaching the cell.
+fn forwarded_integer(value: Value) -> Option<i64> {
+    value.as_integer().ok()
 }
 
 impl SymbolPayload {
@@ -104,31 +115,95 @@ impl SymbolCell {
         self.state.set(self.state.get() | UNINTERNED);
     }
 
+    #[inline]
     pub(crate) fn value(&self) -> Option<Value> {
-        (self.state.get() & VALUE_PRESENT != 0).then(|| {
-            // SAFETY: VALUE_PRESENT is set only with the value union member.
-            unsafe { self.payload.get().value }
-        })
+        let state = self.state.get();
+        if state & (VALUE_PRESENT | INT_FORWARD) == VALUE_PRESENT {
+            // SAFETY: VALUE_PRESENT without INT_FORWARD selects the value member.
+            return Some(unsafe { self.payload.get().value });
+        }
+        (state & INT_FORWARD != 0).then(|| self.forwarded_value())
+    }
+
+    /// data.c:do_symval_forwarding: `make_int (*intvar)'.
+    #[cold]
+    fn forwarded_value(&self) -> Value {
+        // SAFETY: INT_FORWARD is set only with the counter union member.
+        let counter = unsafe { self.payload.get().counter };
+        crate::lisp::primitives::normalize_integer_value(counter.load(Ordering::Relaxed))
+    }
+
+    /// lread.c:defvar_int: the symbol's value is the C counter itself.
+    pub(crate) fn forward_to_counter(&self, counter: &'static AtomicI64) {
+        assert!(self.alias().is_none(), "forwarding a symbol alias");
+        self.payload.set(SymbolPayload { counter });
+        self.state
+            .set((self.state.get() & !PLAIN_STORE) | VALUE_PRESENT | INT_FORWARD);
+    }
+
+    pub(crate) fn is_forwarded_counter(&self) -> bool {
+        self.state.get() & INT_FORWARD != 0
+    }
+
+    /// The counter this symbol forwards to, for copying the redirect itself.
+    pub(crate) fn forwarded_counter(&self) -> Option<&'static AtomicI64> {
+        // SAFETY: INT_FORWARD is set only with the counter union member.
+        self.is_forwarded_counter()
+            .then(|| unsafe { self.payload.get().counter })
+    }
+
+    /// data.c:store_symval_forwarding into the counter. Callers check
+    /// FWD_INT first; a value that cannot live there (only a store that
+    /// data.c:set_internal would make plain) detaches and stores plainly.
+    #[cold]
+    fn store_forwarded(&self, value: Value) {
+        match forwarded_integer(value) {
+            Some(integer) => {
+                // SAFETY: INT_FORWARD is set only with the counter union member.
+                unsafe { self.payload.get().counter }.store(integer, Ordering::Relaxed);
+            }
+            None => {
+                self.detach_counter();
+                self.payload.set(SymbolPayload { value });
+                self.state.set(self.state.get() | VALUE_PRESENT);
+            }
+        }
+    }
+
+    /// data.c:set_internal storing Qunbound into a forwarded symbol:
+    /// `sym->u.s.redirect = SYMBOL_PLAINVAL'. The counter keeps counting;
+    /// only this symbol stops forwarding to it, and it is left void.
+    fn detach_counter(&self) {
+        self.payload.set(SymbolPayload::unbound());
+        self.state
+            .set(self.state.get() & !(VALUE_PRESENT | INT_FORWARD));
     }
 
     pub(crate) fn set_value(&self, value: Value) {
         assert!(self.alias().is_none(), "plain store into a symbol alias");
+        if self.state.get() & INT_FORWARD != 0 {
+            return self.store_forwarded(value);
+        }
         self.payload.set(SymbolPayload { value });
         self.state.set(self.state.get() | VALUE_PRESENT);
     }
 
     pub(crate) fn replace_bound_value(&self, value: Value) -> bool {
-        if self.state.get() & VALUE_PRESENT == 0 {
+        let state = self.state.get();
+        if state & VALUE_PRESENT == 0 {
             return false;
         }
-        self.payload.set(SymbolPayload { value });
+        if state & INT_FORWARD != 0 {
+            self.store_forwarded(value);
+        } else {
+            self.payload.set(SymbolPayload { value });
+        }
         true
     }
 
     pub(crate) fn take_value(&self) -> Option<Value> {
         let value = self.value()?;
-        self.payload.set(SymbolPayload::unbound());
-        self.state.set(self.state.get() & !VALUE_PRESENT);
+        self.detach_counter();
         Some(value)
     }
 
@@ -142,7 +217,7 @@ impl SymbolCell {
     pub(crate) fn set_alias(&self, target: SymbolName) {
         self.payload.set(SymbolPayload { alias: target });
         self.state
-            .set((self.state.get() & !(VALUE_PRESENT | PLAIN_STORE)) | ALIAS);
+            .set((self.state.get() & !(VALUE_PRESENT | PLAIN_STORE | INT_FORWARD)) | ALIAS);
     }
 
     pub(crate) fn clear_alias(&self) -> bool {
@@ -168,6 +243,11 @@ impl SymbolCell {
     }
 
     pub(crate) fn value_or_alias_root(&self) -> Option<Value> {
+        // A forwarded counter is an integer word, never an object to trace;
+        // reading it here could allocate a bignum during collection.
+        if self.is_forwarded_counter() {
+            return None;
+        }
         self.value().or_else(|| self.alias().map(Value::Symbol))
     }
 
@@ -284,6 +364,7 @@ pub(crate) fn allocate_symbol(cell: SymbolCell) -> SymbolRef {
         head
     };
     LIVE_SYMBOLS.store(LIVE_SYMBOLS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+    super::counters::tally(&super::counters::SYMBOLS_CONSED, 1);
     // SAFETY: SLOT is a free cell of a symbol block; every field is
     // written before a handle is made.
     unsafe {

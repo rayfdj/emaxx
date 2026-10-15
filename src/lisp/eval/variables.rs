@@ -1174,6 +1174,13 @@ impl Interpreter {
             }
             self.globals.set_flag(&symbol, flags);
         }
+        // alloc.c's DEFVAR_INT counters: reads, stores and bindings of these
+        // symbols act on the allocator's own words.
+        for (name, counter) in &crate::lisp::alloc::counters::FORWARDED_COUNTERS {
+            SymbolName::intern_str(name)
+                .cell()
+                .forward_to_counter(counter);
+        }
     }
 
     /// data.c:set_internal storing Qunbound into a forwarded symbol:
