@@ -70,16 +70,30 @@ performance contract's allocation evidence.
   (GNU: 48 and 32), in the GC tally, live bytes and the `garbage-collect`
   report. The lower charges undercounted live bytes and delayed collection.
 
+- The counters exposed a real `float` deviation: GNU returns a float argument
+  itself, while Emaxx allocated a copy (`(eq f (float f))` was nil). Fixed.
+
 **Explicit differences that remain:** `intervals-consed` is never raised
 because text properties are not yet allocated intervals. Vector cells count
 Emaxx's actual vector-like sizes, so pseudovectors laid out differently from GNU
 (bignums, hash tables and others) differ, and objects Emaxx keeps outside the
-Lisp heap are not counted. The `garbage-collect` report shows 64/48 where GNU
-shows 48/32. String data is still charged by GNU's `sdata` formula, not
-measured.
+Lisp heap are not counted. In particular, **bool vectors** (and other
+interpreter records) keep their slots in a host vector, one Lisp value per
+bit, so only the record object is counted: `(make-bool-vector 1000 nil)` adds
+16 vector cells in GNU and a fixed record size in Emaxx. That representation
+(a word per bit where GNU packs bits) is open architecture work. The
+`garbage-collect` report shows 64/48 where GNU shows 48/32. String data is
+still charged by GNU's `sdata` formula, not measured.
 
-**Validation so far:** pending; complete library, platform and frozen
-validation is required before merging.
+**Validation so far:** cargo check, rustfmt and `git diff --check` pass. In
+the gate profile, the five affected oracle-compared controls pass
+(`memory_use_counts_exposes_the_allocation_telemetry_boundary_honestly`,
+`memory_use_counts_counts_actual_allocations_by_category`,
+`allocation_counter_variables_forward_to_the_counters`,
+`float_returns_a_float_argument_itself` and
+`garbage_collect_reports_the_live_census`). The first run of the category test
+failed on `float` and bool vectors, as described above. Complete library,
+platform and frozen validation is required before merging.
 
 ## How the work is split
 

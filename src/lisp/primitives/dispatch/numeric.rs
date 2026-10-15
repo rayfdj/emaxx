@@ -293,6 +293,11 @@ define_dispatch!(
             }
             "float" => {
                 need_args(name, args, 1)?;
+                // floatfns.c:Ffloat: "If ARG is a float, give 'em the same
+                // float back" -- the same object, with no allocation.
+                if matches!(args[0].kind(), Kind::Float(_)) {
+                    return Ok(args[0]);
+                }
                 Ok(Value::float(numeric_to_f64(interp, &args[0])?))
             }
 
