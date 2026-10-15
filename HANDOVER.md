@@ -223,7 +223,8 @@ the startup this change mostly speeds up. Diagnostic only.
 **Frozen on `4c13fba`** (run 38716001257): **all 7,928 outcomes match across
 519 files**, no unsuccessful execution; GNU's eglot rust-analyzer test passed
 this time. Median per-file setup in the frozen logs: Emaxx 970 ms, GNU 92 ms
-(at `23d230a`: 1,177 ms and 107 ms). CI's full gate for `8352eb5` is pending.
+(at `23d230a`: 1,177 ms and 107 ms). **CI's full gate on `8352eb5`** (run
+38717322155): **3,204 passed, 0 failed**, the two existing ignores.
 
 ## How the work is split
 
