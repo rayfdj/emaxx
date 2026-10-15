@@ -581,7 +581,20 @@ pub(crate) fn with_current_runtime<R>(body: impl FnOnce(&mut NativeRuntime) -> R
 /// spills callee-saved registers before the conservative collector scans the
 /// stack, exactly as the generated native call path does.
 pub(crate) fn maybe_gc_active() {
-    if ACTIVE_CALL.with(|active| active.get().is_null()) {
+    let active = ACTIVE_CALL.with(Cell::get);
+    if active.is_null() {
+        return;
+    }
+    // lisp.h:maybe_gc's inline `consing_until_gc < 0' guard: the trampoline
+    // spills the registers for the collector only once the active runtime's
+    // trigger is reached. Below it the collector's own first test returns
+    // without changing anything.
+    // SAFETY: the active call's runtime outlives the activation, and this
+    // reads one counter without holding the reference across a call.
+    if unsafe { &*(*active).runtime }
+        .heap
+        .collection_cannot_be_due()
+    {
         return;
     }
     #[cfg(any(
@@ -3817,6 +3830,11 @@ impl NativeHeap {
 
     fn collection_might_be_due(&mut self) -> bool {
         self.gc.collection_might_be_due()
+    }
+
+    /// `collection_might_be_due's first test alone, which reads only.
+    fn collection_cannot_be_due(&self) -> bool {
+        lisp_allocated_bytes() < self.gc.trigger_allocated_bytes
     }
 
     fn baseline_after_image_load(&mut self) {
