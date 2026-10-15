@@ -145,7 +145,9 @@ impl SymbolCell {
         self.state.get() & INT_FORWARD != 0
     }
 
-    /// The counter this symbol forwards to, for copying the redirect itself.
+    /// The counter this symbol forwards to, for the test image copier, which
+    /// copies the redirect itself.
+    #[cfg(test)]
     pub(crate) fn forwarded_counter(&self) -> Option<&'static AtomicI64> {
         // SAFETY: INT_FORWARD is set only with the counter union member.
         self.is_forwarded_counter()
