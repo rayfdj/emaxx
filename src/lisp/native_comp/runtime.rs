@@ -12491,6 +12491,14 @@ mod tests {
             ]
             .map(|value| value.word() ^ HIDE)
         }
+        // Decode the hidden words only in frames of their own, as `check'
+        // does: unhidden words left in this test's callee-saved registers
+        // would be spilled and scanned as roots by the next collection,
+        // where the next iteration may have reused the same cells.
+        #[inline(never)]
+        fn reclaimed(heap: &mut NativeHeap, hidden: [usize; 8]) -> bool {
+            hidden.iter().all(|word| heap.decode(word ^ HIDE).is_err())
+        }
         #[inline(never)]
         fn check(heap: &mut NativeHeap, holder: &mut Interpreter, hidden: [usize; 8]) {
             for word in hidden {
@@ -12553,12 +12561,10 @@ mod tests {
                 &mut holder,
                 &environment,
             );
-            for word in hidden {
-                assert!(
-                    heap.decode(word ^ HIDE).is_err(),
-                    "unreachable frame graph must be reclaimed"
-                );
-            }
+            assert!(
+                reclaimed(&mut heap, hidden),
+                "unreachable frame graph must be reclaimed"
+            );
         }
     }
 
