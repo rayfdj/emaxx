@@ -419,7 +419,7 @@ pub(crate) fn call_c_primitive(
     crate::lisp::primitives::call_with_facts(
         interp,
         name,
-        crate::lisp::primitives::name_facts(name),
+        &crate::lisp::primitives::name_facts(name),
         arguments,
         env,
     )

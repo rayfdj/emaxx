@@ -1167,6 +1167,7 @@ impl Interpreter {
     /// function cell. Aliases and redefinitions therefore select the actual
     /// callable before any subr metadata is consulted. Ffuncall and Bcall do
     /// this after collection; source evaluation does it before its arguments.
+    #[inline]
     fn resolve_symbol_call(
         &mut self,
         name: &SymbolName,

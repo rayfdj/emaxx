@@ -113,9 +113,8 @@ impl NativeSubr {
         }
     }
 
-    pub(crate) fn facts(&'static self) -> crate::lisp::primitives::NameFacts {
-        *self
-            .facts
+    pub(crate) fn facts(&'static self) -> &'static crate::lisp::primitives::NameFacts {
+        self.facts
             .get_or_init(|| crate::lisp::primitives::compute_name_facts(self.name))
     }
 }
@@ -153,7 +152,7 @@ impl BuiltinRef {
         self.0
     }
 
-    pub(crate) fn facts(self) -> crate::lisp::primitives::NameFacts {
+    pub(crate) fn facts(self) -> &'static crate::lisp::primitives::NameFacts {
         self.0.facts()
     }
 

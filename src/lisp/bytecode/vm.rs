@@ -585,7 +585,7 @@ fn prim(
         }
     };
     interp.with_lisp_stack_roots(&args, |interp| {
-        primitives::call_with_facts(interp, name, facts, args, env)
+        primitives::call_with_facts(interp, name, &facts, args, env)
     })
 }
 

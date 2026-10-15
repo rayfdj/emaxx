@@ -392,14 +392,38 @@ pub fn call(
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    call_with_facts(interp, name, name_facts(name), args, env)
+    call_with_facts(interp, name, &name_facts(name), args, env)
 }
 
 /// `call' for callers that already fetched the name's facts this call.
+#[inline(always)]
 pub(crate) fn call_with_facts(
     interp: &mut Interpreter,
     name: &str,
-    facts: NameFacts,
+    facts: &NameFacts,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    // funcall_subr's usual case: an ordinary subr with a function pointer
+    // and the arguments within its arity.
+    if facts.builtin
+        && !facts.special_form
+        && args.len() >= usize::from(facts.min_args)
+        && facts
+            .max_args
+            .is_none_or(|maximum| args.len() <= usize::from(maximum))
+        && let Some(direct) = facts.direct
+    {
+        return direct(interp, args, env);
+    }
+    call_with_facts_general(interp, name, facts, args, env)
+}
+
+#[inline(never)]
+fn call_with_facts_general(
+    interp: &mut Interpreter,
+    name: &str,
+    facts: &NameFacts,
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {

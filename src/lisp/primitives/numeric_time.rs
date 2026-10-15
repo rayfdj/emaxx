@@ -31,6 +31,7 @@ pub(crate) const MOST_NEGATIVE_FIXNUM: i64 = -(1_i64 << 61);
 
 /// GNU lisp.h's `make_int`: keep values in the immediate fixnum range and
 /// represent every other mathematical integer as a bignum.
+#[inline]
 pub(crate) fn normalize_integer_value(value: i64) -> Value {
     if (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&value) {
         Value::Integer(value)

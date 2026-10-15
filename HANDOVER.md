@@ -341,6 +341,17 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   `kind()` matches in the evaluator's hot paths with single tag tests; the
   instructions attributed to `kind()` were already those tests. GNU-compared
   test of the fast paths' overflow, float, marker and error cases.
+- `call_with_facts` is an inline arity check and the subr's function
+  pointer, with its general path (special forms, file name handlers,
+  unknown names) out of line; a subr's `NameFacts` are read by reference
+  from their cache instead of copied per call; `resolve_symbol_call` is
+  inlined; the fixnum fast paths build their result inline. Interpreted
+  lexical 1.57 → 1.48, dynamic 1.74 → 1.61, calls 1.63 → 1.54, cons
+  allocation 1.78 → 1.65, list traversal 1.72 → 1.59, mapcar 2.08 → 1.81.
+  On cons allocation the remaining gap is the evaluator itself: GNU's
+  whole `eval_sub` costs 2,770 instructions a unit, Emaxx's `eval_call`,
+  `eval_sub` and `finish_eval_call` 6,355; lexical lookup is already
+  cheaper than GNU's `Fassq`.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -359,15 +370,15 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | --- | --- | --- |
 | upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.76 |
 | upstream-sort | 3.26 | 2.50 |
-| interpreted-calls | 2.10 | 1.63 |
-| interpreted-lexical | 2.04 | 1.57 |
-| interpreted-dynamic | 2.14 | 1.74 |
-| mapcar | 2.95 | 2.08 |
+| interpreted-calls | 2.10 | 1.54 |
+| interpreted-lexical | 2.04 | 1.48 |
+| interpreted-dynamic | 2.14 | 1.61 |
+| mapcar | 2.95 | 1.81 |
 | bytecode-calls | 3.30 | 2.28 |
 | bytecode-to-native | — | 2.73 |
 | interpreted-to-native | — | 2.00 |
 | native-to-interpreted / -bytecode | — | 1.81 / 1.99 |
-| cons-allocation / list-traversal | 2.24 / — | 1.78 / 1.72 |
+| cons-allocation / list-traversal | 2.24 / — | 1.65 / 1.59 |
 | native-execution | — | 1.23 |
 | bindat | — | 1.54 |
 | explicit-gc | — | 1.01 |

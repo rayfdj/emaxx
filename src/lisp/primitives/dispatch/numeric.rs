@@ -714,7 +714,7 @@ pub(super) fn direct_plus(
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     if let Some((x, y)) = two_fixnums(args) {
-        return Ok(normalize_integer_value(x + y));
+        return Ok(Value::Integer(x + y));
     }
     if has_float(args) {
         // data.c arith_driver: the accumulator starts from the
@@ -747,7 +747,7 @@ pub(super) fn direct_minus(
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     if let Some((x, y)) = two_fixnums(args) {
-        return Ok(normalize_integer_value(x - y));
+        return Ok(Value::Integer(x - y));
     }
     if args.is_empty() {
         return Ok(Value::Integer(0));
@@ -798,7 +798,7 @@ pub(super) fn direct_times(
     if let Some((x, y)) = two_fixnums(args)
         && let Some(product) = x.checked_mul(y)
     {
-        return Ok(normalize_integer_value(product));
+        return Ok(Value::Integer(product));
     }
     if has_float(args) {
         let mut product = 1.0;
@@ -935,7 +935,7 @@ pub(super) fn direct_add1(
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     if let Some(x) = one_fixnum(args) {
-        return Ok(normalize_integer_value(x + 1));
+        return Ok(Value::Integer(x + 1));
     }
     let name = "1+";
     need_args(name, args, 1)?;
@@ -960,7 +960,7 @@ pub(super) fn direct_sub1(
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     if let Some(x) = one_fixnum(args) {
-        return Ok(normalize_integer_value(x - 1));
+        return Ok(Value::Integer(x - 1));
     }
     let name = "1-";
     need_args(name, args, 1)?;
