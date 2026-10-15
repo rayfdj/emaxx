@@ -658,7 +658,7 @@ const FAST_OPS: [FastOp; 256] = {
 /// The operand stack is held directly for the whole run. An op
 /// that cannot complete here (a call, a variable, a signal, an operand of
 /// another kind) is left untouched at PC for the full dispatch.
-#[inline(never)]
+#[inline(always)]
 fn run_fast(
     object: &ByteCodeObject,
     code: &[u8],
