@@ -1358,7 +1358,22 @@ fn run_verified(
             0o020..=0o025 => varset!(u16::from(byte - 0o020)),
             0o026 => varset!(fetch!()),
             0o027 => varset!(fetch2!()),
-            _ => slow!(),
+            // Every other opcode, named so that the match covers all 256
+            // bytes and its jump table needs no range check.
+            0o000
+            | 0o030..=0o037
+            | 0o050..=0o071
+            | 0o073..=0o074
+            | 0o076
+            | 0o103..=0o107
+            | 0o112..=0o122
+            | 0o135..=0o136
+            | 0o140..=0o200
+            | 0o212..=0o241
+            | 0o244
+            | 0o247..=0o261
+            | 0o264..=0o265
+            | 0o267..=0o277 => slow!(),
         }
     };
     // SAFETY: sp stayed within the active frame.

@@ -381,6 +381,11 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   (3.37 to 3.06 million instructions per unit). GNU-compared test of the
   kept counts through inserts, deletions and erasure, a let-bound
   keyboard variable, an uninterned Bvarbind and a caught error.
+- The verified loop's opcode match names every byte instead of ending in
+  a default arm, so rustc proves it covers all 256 and LLVM's jump table
+  needs one compare fewer per op (it still range-checks: it keeps the 64
+  constant opcodes as one range outside the table). Undo 2.45 → 2.37,
+  bytecode calls 2.25 → 2.19, bytecode-to-native 2.72 → 2.68.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -397,14 +402,14 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.45 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.37 |
 | upstream-sort | 3.26 | 2.31 |
 | interpreted-calls | 2.10 | 1.45 |
 | interpreted-lexical | 2.04 | 1.44 |
 | interpreted-dynamic | 2.14 | 1.58 |
 | mapcar | 2.95 | 1.82 |
-| bytecode-calls | 3.30 | 2.25 |
-| bytecode-to-native | — | 2.72 |
+| bytecode-calls | 3.30 | 2.19 |
+| bytecode-to-native | — | 2.68 |
 | interpreted-to-native | — | 1.85 |
 | native-to-interpreted / -bytecode | — | 1.71 / 1.90 |
 | cons-allocation / list-traversal | 2.24 / — | 1.61 / 1.55 |
