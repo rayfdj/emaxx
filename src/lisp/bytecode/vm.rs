@@ -587,6 +587,72 @@ enum FastExit {
 /// exec_byte_code's dispatch loop for the ops that need nothing but the
 /// operand stack and the program: stack shuffles, constants, jumps,
 /// car/cdr, cons, eq, fixnum arithmetic and comparison, vector aref/aset.
+/// run_fast's arm for each opcode byte. A dense class lets one load and
+/// one jump select the arm, where matching the byte itself left LLVM
+/// testing the call, stack-ref and constant ranges ahead of its table.
+#[derive(Clone, Copy)]
+enum FastOp {
+    Slow,
+    Call,
+    StackRef,
+    StackSet,
+    Dup,
+    Discard,
+    DiscardN,
+    Constant,
+    Goto,
+    GotoIfNil,
+    GotoIfNonNil,
+    GotoIfNilElsePop,
+    GotoIfNonNilElsePop,
+    Return,
+    Not,
+    Cons,
+    Eq,
+    Consp,
+    Arithmetic,
+    Comparison,
+    Unary,
+    Aref,
+    Aset,
+    CarCdr,
+}
+
+const FAST_OPS: [FastOp; 256] = {
+    let mut table = [FastOp::Slow; 256];
+    let mut byte = 0;
+    while byte < 256 {
+        table[byte] = match byte as u8 {
+            super::B_CALL..=0o047 => FastOp::Call,
+            0o001..=0o007 => FastOp::StackRef,
+            super::B_STACK_SET | super::B_STACK_SET2 => FastOp::StackSet,
+            0o211 => FastOp::Dup,
+            0o210 => FastOp::Discard,
+            super::B_DISCARDN => FastOp::DiscardN,
+            super::B_CONSTANT2 | 0o300..=0o377 => FastOp::Constant,
+            0o202 => FastOp::Goto,
+            0o203 => FastOp::GotoIfNil,
+            0o204 => FastOp::GotoIfNonNil,
+            0o205 => FastOp::GotoIfNilElsePop,
+            0o206 => FastOp::GotoIfNonNilElsePop,
+            0o207 => FastOp::Return,
+            0o77 => FastOp::Not,
+            0o102 => FastOp::Cons,
+            0o75 => FastOp::Eq,
+            0o72 => FastOp::Consp,
+            0o134 | 0o132 | 0o137 | 0o245 | 0o246 => FastOp::Arithmetic,
+            0o125..=0o131 => FastOp::Comparison,
+            0o124 | 0o123 | 0o133 => FastOp::Unary,
+            0o110 => FastOp::Aref,
+            0o111 => FastOp::Aset,
+            0o100 | 0o101 | 0o242 | 0o243 => FastOp::CarCdr,
+            _ => FastOp::Slow,
+        };
+        byte += 1;
+    }
+    table
+};
+
 /// Dispatches directly on the canonical opcode, as bytecode.c's FETCH/NEXT,
 /// without first building an Instr and switching on its Op a second time.
 /// The operand stack is held directly for the whole run. An op
@@ -657,11 +723,11 @@ fn run_fast(
             offset,
             byte,
         };
-        match byte {
+        match FAST_OPS[usize::from(byte)] {
             // Bcall's argument count uses the same checked operand reader
             // as the other packed families. Keep the instruction needed
             // by the full call/error path without decoding the opcode again.
-            super::B_CALL..=0o047 => {
+            FastOp::Call => {
                 let count = operand!(reader.family_operand(super::B_CALL));
                 *pc = offset;
                 return FastExit::Slow(super::Instr {
@@ -670,14 +736,14 @@ fn run_fast(
                     op: Op::Call(count),
                 });
             }
-            0o001..=0o007 => {
+            FastOp::StackRef => {
                 let n = operand!(reader.family_operand(super::B_STACK_REF));
                 at = reader.cursor;
                 let index = ops.len() - 1 - n as usize;
                 let value = ops[index];
                 ops.push_within_frame(value);
             }
-            super::B_STACK_SET | super::B_STACK_SET2 => {
+            FastOp::StackSet => {
                 let n = operand!(if byte == super::B_STACK_SET {
                     reader.fetch()
                 } else {
@@ -690,15 +756,15 @@ fn run_fast(
                 std::mem::replace(&mut ops[slot], value).discard();
             }
             // Bdup.
-            0o211 => {
+            FastOp::Dup => {
                 let top = *ops.last().expect("validated bytecode");
                 ops.push_within_frame(top);
             }
             // Bdiscard.
-            0o210 => {
+            FastOp::Discard => {
                 pop!().discard();
             }
-            super::B_DISCARDN => {
+            FastOp::DiscardN => {
                 let raw = operand!(reader.fetch()) as u8;
                 at = reader.cursor;
                 let count = raw & 0x7f;
@@ -715,7 +781,7 @@ fn run_fast(
                     }
                 }
             }
-            super::B_CONSTANT2 | 0o300..=0o377 => {
+            FastOp::Constant => {
                 let index = if byte == super::B_CONSTANT2 {
                     let index = operand!(reader.fetch2());
                     at = reader.cursor;
@@ -730,12 +796,12 @@ fn run_fast(
                 ));
                 ops.push_within_frame(object.constant(index));
             }
-            0o202 => {
+            FastOp::Goto => {
                 let target = operand!(reader.fetch2());
                 at = reader.cursor;
                 jump!(target);
             }
-            0o203 => {
+            FastOp::GotoIfNil => {
                 let target = operand!(reader.fetch2());
                 at = reader.cursor;
                 let value = pop!();
@@ -745,7 +811,7 @@ fn run_fast(
                     jump!(target);
                 }
             }
-            0o204 => {
+            FastOp::GotoIfNonNil => {
                 let target = operand!(reader.fetch2());
                 at = reader.cursor;
                 let value = pop!();
@@ -755,7 +821,7 @@ fn run_fast(
                     jump!(target);
                 }
             }
-            0o205 => {
+            FastOp::GotoIfNilElsePop => {
                 let target = operand!(reader.fetch2());
                 at = reader.cursor;
                 if ops.last().expect("validated bytecode").is_nil() {
@@ -764,7 +830,7 @@ fn run_fast(
                     pop!().discard();
                 }
             }
-            0o206 => {
+            FastOp::GotoIfNonNilElsePop => {
                 let target = operand!(reader.fetch2());
                 at = reader.cursor;
                 if !ops.last().expect("validated bytecode").is_nil() {
@@ -774,22 +840,22 @@ fn run_fast(
                 }
             }
             // Breturn.
-            0o207 => {
+            FastOp::Return => {
                 return FastExit::Return(pop!());
             }
             // Bnot.
-            0o77 => {
+            FastOp::Not => {
                 let top = ops.last_mut().expect("validated bytecode");
                 *top = if top.is_nil() { Value::T } else { Value::Nil };
             }
             // Bcons.
-            0o102 => {
+            FastOp::Cons => {
                 let b = pop!();
                 let top = ops.last_mut().expect("validated bytecode");
                 *top = Value::cons(*top, b);
             }
             // Beq.
-            0o75 => {
+            FastOp::Eq => {
                 let len = ops.len();
                 if matches!(ops[len - 1].kind(), Kind::SymbolWithPos(_))
                     || matches!(ops[len - 2].kind(), Kind::SymbolWithPos(_))
@@ -801,7 +867,7 @@ fn run_fast(
                 ops.truncate(len - 1);
             }
             // Bconsp.
-            0o72 => {
+            FastOp::Consp => {
                 let is_cons = match ops.last().expect("validated bytecode").kind() {
                     Kind::Cons(_) => true,
                     // A keymap record reads as a cons; the full arm asks.
@@ -811,7 +877,7 @@ fn run_fast(
                 *ops.last_mut().expect("validated bytecode") =
                     if is_cons { Value::T } else { Value::Nil };
             }
-            0o134 | 0o132 | 0o137 | 0o245 | 0o246 => {
+            FastOp::Arithmetic => {
                 let len = ops.len();
                 let (Kind::Integer(x), Kind::Integer(y)) =
                     (ops[len - 2].kind(), ops[len - 1].kind())
@@ -835,7 +901,7 @@ fn run_fast(
                 ops[len - 2] = Value::Integer(n);
                 ops.truncate(len - 1);
             }
-            0o125..=0o131 => {
+            FastOp::Comparison => {
                 let len = ops.len();
                 let (Kind::Integer(x), Kind::Integer(y)) =
                     (ops[len - 2].kind(), ops[len - 1].kind())
@@ -852,7 +918,7 @@ fn run_fast(
                 ops[len - 2] = if holds { Value::T } else { Value::Nil };
                 ops.truncate(len - 1);
             }
-            0o124 | 0o123 | 0o133 => {
+            FastOp::Unary => {
                 let Kind::Integer(x) = ops.last().expect("validated bytecode").kind() else {
                     slow!();
                 };
@@ -865,7 +931,7 @@ fn run_fast(
                 *ops.last_mut().expect("validated bytecode") = Value::Integer(n);
             }
             // Baref.
-            0o110 => {
+            FastOp::Aref => {
                 let len = ops.len();
                 let Kind::Integer(index) = ops[len - 1].kind() else {
                     slow!()
@@ -882,7 +948,7 @@ fn run_fast(
                 ops.truncate(len - 1);
             }
             // Baset.
-            0o111 => {
+            FastOp::Aset => {
                 // Stack: [.. vector index value]; aset returns the value.
                 let len = ops.len();
                 let Kind::Integer(index) = ops[len - 2].kind() else {
@@ -901,7 +967,7 @@ fn run_fast(
                 ops[len - 3] = ops[len - 1];
                 ops.truncate(len - 2);
             }
-            0o100 | 0o101 | 0o242 | 0o243 => {
+            FastOp::CarCdr => {
                 // bytecode.c reads the car or cdr of the object on the stack
                 // top and stores it there: the operand is read in place,
                 // never copied first.
@@ -921,7 +987,7 @@ fn run_fast(
                 let top = ops.last_mut().expect("validated bytecode");
                 std::mem::replace(top, replacement).discard();
             }
-            _ => slow!(),
+            FastOp::Slow => slow!(),
         }
     }
 }
