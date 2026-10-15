@@ -2126,8 +2126,12 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
         interpreter.with_native_backtrace_frame(original_function, call_arguments, |interpreter| {
             interpreter.capture_current_backtrace_context(None, environment, None);
 
-            // Ffuncall calls maybe_gc after record_in_backtrace and before dispatch.
-            unsafe { emaxx_native_gc_trampoline() };
+            // Ffuncall calls maybe_gc after record_in_backtrace and before
+            // dispatch; the registers are spilled for the collector only
+            // once the trigger is reached (`maybe_gc_active').
+            if !runtime.heap.collection_cannot_be_due() {
+                unsafe { emaxx_native_gc_trampoline() };
+            }
             // The collection's hooks/finalizers may replace the function cell.
             // Resolve it only after collection, including changes of callable
             // kind. The fallback reuses this same Ffuncall frame and depth.

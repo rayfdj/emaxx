@@ -1,0 +1,408 @@
+diff --git a/src/lisp/native_comp/runtime.rs b/src/lisp/native_comp/runtime.rs
+index 0a7c71a..d13fbc3 100644
+--- a/src/lisp/native_comp/runtime.rs
++++ b/src/lisp/native_comp/runtime.rs
+@@ -1447,38 +1447,142 @@ impl NativeRuntime {
+     }
+ }
+ 
++/// The cases `invoke_subr' answers at the GNU word ABI, found once for each
++/// subr from its name; the name was compared against every case on each
++/// call from native code.
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum SubrKind {
++    Other,
++    Null,
++    Consp,
++    Atom,
++    BareSymbolP,
++    Stringp,
++    Car,
++    CarSafe,
++    Cdr,
++    CdrSafe,
++    Listp,
++    Nlistp,
++    Identity,
++    Funcall,
++    Lt,
++    Gt,
++    Le,
++    Ge,
++    NumEq,
++    Plus,
++    Minus,
++    Cons,
++    Eq,
++    Symbolp,
++    TypeOf,
++    SymbolValue,
++    Assq,
++    Memq,
++    Get,
++    Apply,
++    Mapcar,
++    Maphash,
++    Nreverse,
++    Length,
++    PlistMember,
++    MakeClosure,
++    List,
++}
++
++impl SubrKind {
++    fn of(name: &str) -> Self {
++        match name {
++            "null" => Self::Null,
++            "consp" => Self::Consp,
++            "atom" => Self::Atom,
++            "bare-symbol-p" => Self::BareSymbolP,
++            "stringp" => Self::Stringp,
++            "car" => Self::Car,
++            "car-safe" => Self::CarSafe,
++            "cdr" => Self::Cdr,
++            "cdr-safe" => Self::CdrSafe,
++            "listp" => Self::Listp,
++            "nlistp" => Self::Nlistp,
++            "identity" => Self::Identity,
++            "funcall" => Self::Funcall,
++            "<" => Self::Lt,
++            ">" => Self::Gt,
++            "<=" => Self::Le,
++            ">=" => Self::Ge,
++            "=" => Self::NumEq,
++            "+" => Self::Plus,
++            "-" => Self::Minus,
++            "cons" => Self::Cons,
++            "eq" => Self::Eq,
++            "symbolp" => Self::Symbolp,
++            "type-of" => Self::TypeOf,
++            "symbol-value" => Self::SymbolValue,
++            "assq" => Self::Assq,
++            "memq" => Self::Memq,
++            "get" => Self::Get,
++            "apply" => Self::Apply,
++            "mapcar" => Self::Mapcar,
++            "maphash" => Self::Maphash,
++            "nreverse" => Self::Nreverse,
++            "length" => Self::Length,
++            "plist-member" => Self::PlistMember,
++            "make-closure" => Self::MakeClosure,
++            "list" => Self::List,
++            _ => Self::Other,
++        }
++    }
++}
++
++fn subr_kind(index: usize) -> Option<SubrKind> {
++    static KINDS: OnceLock<Box<[SubrKind]>> = OnceLock::new();
++    KINDS
++        .get_or_init(|| {
++            super::abi::native_subrs()
++                .iter()
++                .map(|subroutine| SubrKind::of(subroutine.name))
++                .collect()
++        })
++        .get(index)
++        .copied()
++}
++
+ #[inline(always)]
+ fn invoke_context_free_subr(index: usize, arguments: &[NativeWord]) -> Option<NativeWord> {
+-    let subroutine = super::abi::native_subrs().get(index)?;
+-    match (subroutine.name, arguments) {
+-        ("null", [value]) => Some(native_boolean(*value == 0)),
+-        ("consp", [value]) => Some(native_boolean(native_consp(*value))),
+-        ("atom", [value]) => Some(native_boolean(!native_consp(*value))),
+-        ("bare-symbol-p", [value]) => Some(native_boolean(*value & TAG_MASK == TAG_SYMBOL)),
+-        ("stringp", [value]) => Some(direct_native_stringp(*value)),
+-        ("car", [value]) if *value == 0 || native_consp(*value) => Some(if native_consp(*value) {
+-            unsafe { native_car(*value) }
+-        } else {
+-            0
+-        }),
+-        ("car-safe", [value]) => Some(if native_consp(*value) {
++    match (subr_kind(index)?, arguments) {
++        (SubrKind::Null, [value]) => Some(native_boolean(*value == 0)),
++        (SubrKind::Consp, [value]) => Some(native_boolean(native_consp(*value))),
++        (SubrKind::Atom, [value]) => Some(native_boolean(!native_consp(*value))),
++        (SubrKind::BareSymbolP, [value]) => Some(native_boolean(*value & TAG_MASK == TAG_SYMBOL)),
++        (SubrKind::Stringp, [value]) => Some(direct_native_stringp(*value)),
++        (SubrKind::Car, [value]) if *value == 0 || native_consp(*value) => {
++            Some(if native_consp(*value) {
++                unsafe { native_car(*value) }
++            } else {
++                0
++            })
++        }
++        (SubrKind::CarSafe, [value]) => Some(if native_consp(*value) {
+             unsafe { native_car(*value) }
+         } else {
+             0
+         }),
+-        ("cdr", [value]) if *value == 0 || native_consp(*value) => Some(if native_consp(*value) {
+-            unsafe { native_cdr(*value) }
+-        } else {
+-            0
+-        }),
+-        ("cdr-safe", [value]) => Some(if native_consp(*value) {
++        (SubrKind::Cdr, [value]) if *value == 0 || native_consp(*value) => {
++            Some(if native_consp(*value) {
++                unsafe { native_cdr(*value) }
++            } else {
++                0
++            })
++        }
++        (SubrKind::CdrSafe, [value]) => Some(if native_consp(*value) {
+             unsafe { native_cdr(*value) }
+         } else {
+             0
+         }),
+-        ("listp", [value]) => Some(native_boolean(*value == 0 || native_consp(*value))),
+-        ("nlistp", [value]) => Some(native_boolean(*value != 0 && !native_consp(*value))),
+-        ("identity", [value]) => Some(*value),
++        (SubrKind::Listp, [value]) => Some(native_boolean(*value == 0 || native_consp(*value))),
++        (SubrKind::Nlistp, [value]) => Some(native_boolean(*value != 0 && !native_consp(*value))),
++        (SubrKind::Identity, [value]) => Some(*value),
+         _ => None,
+     }
+ }
+@@ -1495,6 +1599,7 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord
+             );
+             return 0;
+         };
++        let kind = subr_kind(index).unwrap_or(SubrKind::Other);
+         // A generated handler pop updates the ABI thread state first.  Bring
+         // the Rust-owned handler stack to that exact state before any C-subr
+         // behavior, including allocation and otherwise non-signaling word
+@@ -1508,7 +1613,7 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord
+         }
+         // GNU native code enters Ffuncall directly. After synchronizing
+         // handlers, use the same call path before unrelated primitive checks.
+-        if subroutine.name == "funcall"
++        if kind == SubrKind::Funcall
+             && let Some(result) = invoke_native_funcall(active, arguments)
+         {
+             return result;
+@@ -1517,12 +1622,12 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord
+             && let (Some(left), Some(right)) =
+                 (decode_fixnum(arguments[0]), decode_fixnum(arguments[1]))
+         {
+-            let result = match subroutine.name {
+-                "<" => Some(left < right),
+-                ">" => Some(left > right),
+-                "<=" => Some(left <= right),
+-                ">=" => Some(left >= right),
+-                "=" => Some(left == right),
++            let result = match kind {
++                SubrKind::Lt => Some(left < right),
++                SubrKind::Gt => Some(left > right),
++                SubrKind::Le => Some(left <= right),
++                SubrKind::Ge => Some(left >= right),
++                SubrKind::NumEq => Some(left == right),
+                 _ => None,
+             };
+             if let Some(result) = result {
+@@ -1532,9 +1637,9 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord
+             // machine accumulator. Two fixnums cannot overflow i64; return
+             // their immediate result without staging or decoding Values.
+             // Bignum results and every other operand use the general path.
+-            let integer = match subroutine.name {
+-                "+" => Some(left + right),
+-                "-" => Some(left - right),
++            let integer = match kind {
++                SubrKind::Plus => Some(left + right),
++                SubrKind::Minus => Some(left - right),
+                 _ => None,
+             };
+             if let Some(integer) = integer
+@@ -1543,61 +1648,65 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord
+                 return ((integer as NativeWord) << FIXNUM_BITS) | TAG_FIXNUM_LOW;
+             }
+         }
+-        if subroutine.name == "cons" && arguments.len() == 2 {
++        if kind == SubrKind::Cons && arguments.len() == 2 {
+             return unsafe { &mut *active.runtime }
+                 .heap
+                 .cons(arguments[0], arguments[1]);
+         }
+-        match (subroutine.name, arguments) {
+-            ("eq", [left, right])
++        match (kind, arguments) {
++            (SubrKind::Eq, [left, right])
+                 if left == right
+                     || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
+             {
+                 return native_boolean(left == right);
+             }
+-            ("null", [value]) => return native_boolean(*value == 0),
+-            ("consp", [value]) => return native_boolean(native_consp(*value)),
+-            ("atom", [value]) => return native_boolean(!native_consp(*value)),
+-            ("bare-symbol-p", [value]) => {
++            (SubrKind::Null, [value]) => return native_boolean(*value == 0),
++            (SubrKind::Consp, [value]) => return native_boolean(native_consp(*value)),
++            (SubrKind::Atom, [value]) => return native_boolean(!native_consp(*value)),
++            (SubrKind::BareSymbolP, [value]) => {
+                 return native_boolean(*value & TAG_MASK == TAG_SYMBOL);
+             }
+-            ("symbolp", [value])
++            (SubrKind::Symbolp, [value])
+                 if *value & TAG_MASK == TAG_SYMBOL
+                     || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
+             {
+                 return native_boolean(*value & TAG_MASK == TAG_SYMBOL);
+             }
+-            ("car", [value]) if *value == 0 || native_consp(*value) => {
++            (SubrKind::Car, [value]) if *value == 0 || native_consp(*value) => {
+                 return if native_consp(*value) {
+                     unsafe { native_car(*value) }
+                 } else {
+                     0
+                 };
+             }
+-            ("car-safe", [value]) => {
++            (SubrKind::CarSafe, [value]) => {
+                 return if native_consp(*value) {
+                     unsafe { native_car(*value) }
+                 } else {
+                     0
+                 };
+             }
+-            ("cdr", [value]) if *value == 0 || native_consp(*value) => {
++            (SubrKind::Cdr, [value]) if *value == 0 || native_consp(*value) => {
+                 return if native_consp(*value) {
+                     unsafe { native_cdr(*value) }
+                 } else {
+                     0
+                 };
+             }
+-            ("cdr-safe", [value]) => {
++            (SubrKind::CdrSafe, [value]) => {
+                 return if native_consp(*value) {
+                     unsafe { native_cdr(*value) }
+                 } else {
+                     0
+                 };
+             }
+-            ("listp", [value]) => return native_boolean(*value == 0 || native_consp(*value)),
+-            ("nlistp", [value]) => return native_boolean(*value != 0 && !native_consp(*value)),
+-            ("list", values) => {
++            (SubrKind::Listp, [value]) => {
++                return native_boolean(*value == 0 || native_consp(*value));
++            }
++            (SubrKind::Nlistp, [value]) => {
++                return native_boolean(*value != 0 && !native_consp(*value));
++            }
++            (SubrKind::List, values) => {
+                 let heap = &mut unsafe { &mut *active.runtime }.heap;
+                 return values
+                     .iter()
+@@ -1609,70 +1718,70 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord
+         // These are direct translations of the corresponding C-owned word
+         // operations in data.c and alloc.c.  Keep them at the GNU ABI instead
+         // of decoding into Emaxx's richer interpreter representation.
+-        match (subroutine.name, arguments) {
+-            ("eq", [left, right]) => match native_eq(active, *left, *right) {
++        match (kind, arguments) {
++            (SubrKind::Eq, [left, right]) => match native_eq(active, *left, *right) {
+                 Ok(equal) => return native_boolean(equal),
+                 Err(error) => {
+                     remember_helper_error(active, error);
+                     return 0;
+                 }
+             },
+-            ("symbolp", [value]) => match native_symbolp(active, *value) {
++            (SubrKind::Symbolp, [value]) => match native_symbolp(active, *value) {
+                 Ok(is_symbol) => return native_boolean(is_symbol),
+                 Err(error) => {
+                     remember_helper_error(active, error);
+                     return 0;
+                 }
+             },
+-            ("type-of", [value]) => {
++            (SubrKind::TypeOf, [value]) => {
+                 if let Some(result) = native_scalar_type_word(*value) {
+                     return result;
+                 }
+             }
+-            ("symbol-value", [symbol]) => {
++            (SubrKind::SymbolValue, [symbol]) => {
+                 if let Some(result) = invoke_native_symbol_value(active, *symbol) {
+                     return result;
+                 }
+             }
+             _ => {}
+         }
+-        if subroutine.name == "assq" && arguments.len() == 2 {
++        if kind == SubrKind::Assq && arguments.len() == 2 {
+             return native_assq(active, arguments[0], arguments[1]);
+         }
+-        if subroutine.name == "memq" && arguments.len() == 2 {
++        if kind == SubrKind::Memq && arguments.len() == 2 {
+             return native_memq(active, arguments[0], arguments[1]);
+         }
+-        if subroutine.name == "get" && arguments.len() == 2 {
++        if kind == SubrKind::Get && arguments.len() == 2 {
+             return invoke_native_get(active, arguments[0], arguments[1]);
+         }
+-        if subroutine.name == "apply"
++        if kind == SubrKind::Apply
+             && let Some(result) = invoke_native_apply(active, arguments)
+         {
+             return result;
+         }
+-        if subroutine.name == "mapcar"
++        if kind == SubrKind::Mapcar
+             && let Some(result) = invoke_native_mapcar(active, arguments)
+         {
+             return result;
+         }
+-        if subroutine.name == "maphash"
++        if kind == SubrKind::Maphash
+             && let Some(result) = invoke_native_maphash(active, arguments)
+         {
+             return result;
+         }
+-        if subroutine.name == "nreverse"
++        if kind == SubrKind::Nreverse
+             && let [sequence] = arguments
+             && let Some(result) = invoke_native_nreverse(active, *sequence)
+         {
+             return result;
+         }
+-        if subroutine.name == "length"
++        if kind == SubrKind::Length
+             && let [sequence] = arguments
+             && let Some(result) = invoke_native_length(active, *sequence)
+         {
+             return result;
+         }
+-        if subroutine.name == "plist-member" {
++        if kind == SubrKind::PlistMember {
+             match arguments {
+                 [plist, property] => return native_plist_member(active, *plist, *property, 0),
+                 [plist, property, predicate] => {
+@@ -1681,7 +1790,7 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord
+                 _ => {}
+             }
+         }
+-        if subroutine.name == "make-closure" {
++        if kind == SubrKind::MakeClosure {
+             return invoke_native_make_closure(active, arguments);
+         }
+         let mut decoded = smallvec::SmallVec::<[Value; 8]>::new();
+@@ -2126,8 +2235,12 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
+         interpreter.with_native_backtrace_frame(original_function, call_arguments, |interpreter| {
+             interpreter.capture_current_backtrace_context(None, environment, None);
+ 
+-            // Ffuncall calls maybe_gc after record_in_backtrace and before dispatch.
+-            unsafe { emaxx_native_gc_trampoline() };
++            // Ffuncall calls maybe_gc after record_in_backtrace and before
++            // dispatch; the registers are spilled for the collector only
++            // once the trigger is reached (`maybe_gc_active').
++            if !runtime.heap.collection_cannot_be_due() {
++                unsafe { emaxx_native_gc_trampoline() };
++            }
+             // The collection's hooks/finalizers may replace the function cell.
+             // Resolve it only after collection, including changes of callable
+             // kind. The fallback reuses this same Ffuncall frame and depth.
