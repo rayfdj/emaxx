@@ -3130,6 +3130,45 @@ fn a_buffer_local_eval_depth_applies_only_in_its_buffer() {
 }
 
 #[test]
+fn mapping_reads_each_element_when_its_call_comes_like_mapcar1() {
+    // fns.c's mapcar, mapc and mapcan take Flength first (its errors,
+    // then listp for a char-table), and mapcar1 reads each element only
+    // when FUNCTION is called on it: a car, an AREF, a string character
+    // at its byte cursor, a bool-vector bit. A function that changes the
+    // sequence sees its changes, and a list it shortens ends the mapping.
+    // A closure maps over its slots. Emaxx copied the sequence first and
+    // signalled vectorp for a char-table.
+    let program = r#"
+        (list
+         (let ((l (list 1 2 3))) (mapcar (lambda (x) (setcar (cddr l) 30) x) l))
+         (let ((l (list 1 2 3 4))) (mapcar (lambda (x) (setcdr (cdr l) nil) x) l))
+         (let ((v (vector 1 2 3))) (mapcar (lambda (x) (aset v 2 30) x) v))
+         (let ((l (list 1 2 3 4)) seen)
+           (list (eq (mapc (lambda (x) (push x seen) (setcdr (cdr l) nil)) l) l)
+                 (nreverse seen)))
+         (let ((l (list 1 2 3))) (mapcan (lambda (x) (setcar (cddr l) 30) (list x)) l))
+         (let ((s (copy-sequence "abc"))) (mapcar (lambda (c) (aset s 2 122) c) s))
+         (let ((s (copy-sequence "abc"))) (mapcar (lambda (c) (aset s 2 8364) c) s))
+         (let ((m (mapcar #'identity (make-byte-code 0 "\300\207" [7] 1))))
+           (list (length m) (nth 0 m) (nth 2 m) (nth 3 m)))
+         (mapcar #'identity (string-to-unibyte "\300a"))
+         (mapcar #'identity (string 97 233 8364))
+         (mapcar #'identity (bool-vector t nil t))
+         (mapconcat #'number-to-string [1 2 3] ",")
+         (mapcar nil nil)
+         (condition-case e (mapcar nil (list 1)) (error e))
+         (condition-case e (mapc #'identity (make-char-table nil)) (error (list (car e) (cadr e))))
+         (condition-case e (mapcan #'list '(1 2 . 3)) (error e))
+         (condition-case e (mapcar #'identity (let ((l (list 1 2))) (nconc l l))) (error (car e)))
+         (condition-case e (mapcar #'identity 5) (error e)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"((1 2 30) (1 2) (1 2 30) (t (1 2)) (1 2 30) (97 98 122) (97 98 8364) (4 0 [7] 1) (192 97) (97 233 8364) (t nil t) "1,2,3" nil (void-function nil) (wrong-type-argument listp) (wrong-type-argument listp 3) circular-list (wrong-type-argument sequencep 5))"#,
+        "mapping functions",
+    );
+}
+
+#[test]
 fn message_log_folds_repeated_lines_like_message_dolog() {
     // xdisp.c message_dolog: a line equal to the previous one replaces it
     // with " [N times]" (counting on from an existing count), a line that

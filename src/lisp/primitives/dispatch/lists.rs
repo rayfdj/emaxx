@@ -974,30 +974,25 @@ define_dispatch!(
             // metadata consumed by function definition.
             "mapcar" => {
                 need_args(name, args, 2)?;
-                let list = sequence_values(interp, &args[1])?;
                 // fns.c's mapcar1 gathers the results in a SAFE_ALLOCA_LISP
                 // array the collector reaches while the calls go on.
-                let mut results = crate::lisp::alloc::RootedVec::with_capacity(list.len());
-                for item in list {
-                    results.push(call_function_value(interp, &args[0], &[item], env)?);
-                }
+                let mut results = crate::lisp::alloc::RootedVec::new();
+                map_sequence(interp, &args[0], &args[1], env, |result| {
+                    results.push(result)
+                })?;
                 Ok(Value::list(results))
             }
             "mapcan" => {
                 need_args(name, args, 2)?;
-                let list = sequence_values(interp, &args[1])?;
-                let mut mapped = crate::lisp::alloc::RootedVec::with_capacity(list.len());
-                for item in list {
-                    mapped.push(call_function_value(interp, &args[0], &[item], env)?);
-                }
+                let mut mapped = crate::lisp::alloc::RootedVec::new();
+                map_sequence(interp, &args[0], &args[1], env, |result| {
+                    mapped.push(result)
+                })?;
                 nconc_values(&mapped)
             }
             "mapc" => {
                 need_args(name, args, 2)?;
-                let list = sequence_values(interp, &args[1])?;
-                for item in &list {
-                    let _ = call_function_value(interp, &args[0], std::slice::from_ref(item), env)?;
-                }
+                map_sequence(interp, &args[0], &args[1], env, drop)?;
                 Ok(args[1])
             }
             "eval" => eval_impl(interp, args, env),
@@ -2114,4 +2109,72 @@ pub(super) fn direct_cdr(
     args[0]
         .cdr()
         .map_err(|_| wrong_type_argument("listp", args[0]))
+}
+
+/// fns.c's mapping entry and mapcar1: SEQUENCE's length as Flength counts
+/// it (its errors first), `listp' for a char-table, then FUNCTION on each
+/// element, read only when FUNCTION is called on it. A function that
+/// changes the sequence therefore sees its changes, and a list it makes
+/// shorter ends the mapping early. RESULT receives each value.
+fn map_sequence(
+    interp: &mut Interpreter,
+    function: &Value,
+    sequence: &Value,
+    env: &mut crate::lisp::types::Env,
+    mut result: impl FnMut(Value),
+) -> Result<(), LispError> {
+    let length = super::call(interp, "length", std::slice::from_ref(sequence), env)?;
+    let length = usize::try_from(length.as_integer()?).unwrap_or(0);
+    let mut call = |interp: &mut Interpreter, item: Value, env: &mut _| -> Result<(), LispError> {
+        result(call_function_value(interp, function, &[item], env)?);
+        Ok(())
+    };
+    match sequence.kind() {
+        Kind::Nil => {}
+        Kind::CharTable(_) => {
+            return Err(LispError::WrongTypeArgument("listp".into(), *sequence));
+        }
+        Kind::Cons(_) => {
+            let mut tail = *sequence;
+            for _ in 0..length {
+                let Kind::Cons(cell) = tail.kind() else {
+                    break;
+                };
+                call(interp, cell.car.get(), env)?;
+                tail = cell.cdr.get();
+            }
+        }
+        Kind::Vector(vector) => {
+            for index in 0..length {
+                call(interp, vector.get(index).unwrap_or(Value::Nil), env)?;
+            }
+        }
+        Kind::Closure(closure) => {
+            for index in 0..length {
+                call(interp, closure.get(index).unwrap_or(Value::Nil), env)?;
+            }
+        }
+        Kind::StringObject(string) => {
+            let mut offset = 0;
+            for _ in 0..length {
+                let Some(code) = string.borrow().character_advance(&mut offset) else {
+                    break;
+                };
+                call(interp, Value::Integer(code), env)?;
+            }
+        }
+        Kind::Record(id) if is_bool_vector_value(interp, sequence) => {
+            // A bool vector keeps one slot a bit in its record; each bit is
+            // read when its call comes.
+            for index in 0..length {
+                let item = interp
+                    .find_record(id)
+                    .and_then(|record| record.slots.get(index).copied())
+                    .unwrap_or(Value::Nil);
+                call(interp, item, env)?;
+            }
+        }
+        _ => return Err(LispError::WrongTypeArgument("vectorp".into(), *sequence)),
+    }
+    Ok(())
 }

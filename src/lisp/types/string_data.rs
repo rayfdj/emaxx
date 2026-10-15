@@ -566,6 +566,18 @@ impl SharedStringState {
         Some(offset)
     }
 
+    /// character.h:fetch_string_char_advance: the character at byte
+    /// OFFSET, a unibyte string's byte as itself, advancing the cursor.
+    pub(crate) fn character_advance(&self, offset: &mut usize) -> Option<i64> {
+        let (code, width) = if self.is_multibyte() {
+            decode_character(self.bytes().get(*offset..)?).ok()?
+        } else {
+            (u32::from(*self.bytes().get(*offset)?), 1)
+        };
+        *offset += width;
+        Some(i64::from(code))
+    }
+
     /// character.h:fetch_string_char_as_multibyte_advance reads one
     /// character from the actual bytes, promoting an unibyte octet to
     /// byte8 before any case-table lookup. The caller owns the byte cursor.
