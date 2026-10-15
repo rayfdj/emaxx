@@ -317,7 +317,11 @@ files** with no unsuccessful execution (run 38737719924).
 (run 38751776827; 3,105 tests in the counted groups plus bins and
 integration, the two existing ignores), frozen **7,928 of 7,928 outcomes
 match across 519 files**, no unsuccessful execution (run 38751781622).
-`77a5be0`, `37a0c4f` and `898a088` came after it.
+
+**CI on `4008098`** (everything through `898a088`): full Rust gate passed
+(run 38761724660; 3,105 tests in the counted groups plus bins and
+integration, the two existing ignores), frozen **7,928 of 7,928 outcomes
+match across 519 files**, no unsuccessful execution (run 38761729296).
 
 **Findings recorded, not fixed:**
 - Loading prints "Loading FILE..." through Lisp `message`, so in batch it is
