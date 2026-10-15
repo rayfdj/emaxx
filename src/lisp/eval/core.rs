@@ -135,7 +135,7 @@ macro_rules! define_native_forms {
         }
 
         impl NativeForm {
-            fn for_name(name: &str) -> Option<Self> {
+            pub(crate) fn for_name(name: &str) -> Option<Self> {
                 match name {
                     $($($name)|+ => Some(Self::$variant),)+
                     _ => None,
@@ -276,7 +276,25 @@ impl Interpreter {
         None
     }
 
+    /// eval_sub. A symbol or a self-evaluating immediate returns before
+    /// the quit, collection and depth steps; below the outermost
+    /// evaluation that test is inlined into every caller, so an argument
+    /// that is a variable or a constant costs its lookup alone and a form
+    /// takes the out-of-line path.
+    #[inline]
     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
+        if self.lisp_eval_depth != 0 && self.pending_termination.is_none() {
+            match expr.kind() {
+                Kind::Symbol(name) => return self.lookup_symbol(&name, env),
+                Kind::Nil | Kind::T | Kind::Integer(_) => return Ok(*expr),
+                _ => {}
+            }
+        }
+        self.eval_sub(expr, env)
+    }
+
+    #[inline(never)]
+    fn eval_sub(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
         let outermost = self.lisp_eval_depth == 0;
         if outermost {
             self.clear_batch_error_backtrace();
@@ -651,7 +669,7 @@ impl Interpreter {
                 return self.eval_call_argument_error(depth, unevald_frame, error, env);
             }
             if descriptor.max_args() == NativeMaxArgs::Unevalled
-                && let Some(native_form) = NativeForm::for_name(subr.as_str())
+                && let Some(native_form) = subr.facts().native_form
             {
                 let result = self.eval_native_form(native_form, &original_args, env);
                 let result = self.settle_frame_result(result, env);

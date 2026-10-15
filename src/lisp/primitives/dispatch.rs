@@ -158,6 +158,8 @@ pub(crate) struct NameFacts {
     /// The GNU subr's declared maximum argument count; None for MANY,
     /// UNEVALLED, and names outside the generated C manifest.
     pub(crate) max_args: Option<u16>,
+    /// The evaluator's arm for a special form, found once by name.
+    pub(crate) native_form: Option<crate::lisp::eval::NativeForm>,
 }
 
 macro_rules! define_dispatch_modules {
@@ -321,6 +323,7 @@ pub(crate) fn compute_name_facts(name: &str) -> NameFacts {
         (&raw mut (*facts_ptr).direct).write(direct);
         (&raw mut (*facts_ptr).min_args).write(min_args);
         (&raw mut (*facts_ptr).max_args).write(max_args);
+        (&raw mut (*facts_ptr).native_form).write(crate::lisp::eval::NativeForm::for_name(name));
         facts.assume_init()
     }
 }
