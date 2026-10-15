@@ -166,6 +166,13 @@ mean); the geometric GNU ratio goes from **2.777 to 2.210**. Upstream sort
 lexical 2.64× → 1.60×; mapcar 2.96× → 1.90×. Two cases are slower and need
 an explanation: **bytecode-to-native 26% slower** (samples 1.93–1.97 s before,
 2.45–2.46 s after; no collections in either) and **explicit-gc 8% slower**.
+Locally, callgrind gives the same work per iteration for bytecode-to-native
+before and after (1,719.9 vs 1,724.2 instructions) and cachegrind's simulated
+caches show essentially no misses in either build, so that slowdown is a
+placement effect the simulator does not model (branch aliasing, 4K aliasing
+or alignment), not added work; it stays unexplained and is to be rechecked in
+later pilots. Explicit GC does 1.6% more instructions per collection (65.5M
+vs 66.6M: the image-block checks in the sweeps).
 
 Both frozen runs so far (on `23d230a` and `1b14ec4`) match 7,927 of 7,928
 outcomes; the mismatch is the same GNU-side `eglot-test-rust-completion-exit-function`

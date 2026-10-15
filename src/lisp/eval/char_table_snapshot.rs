@@ -6,7 +6,9 @@
 //! without rebuilding the graph, a visited set or a signature vector.
 //!
 //! Char-table and sub-char-table slots change only through their Rust
-//! setters, which count every store (`char_table_store_epoch'). While that
+//! setters, which count every store and every new table or subtable
+//! (`char_table_store_epoch'), so a dead table's address reused by a new
+//! one cannot match by its raw word. While that
 //! count is unchanged since the nodes last matched in full, a hit skips the
 //! table nodes and compares only the other nodes (conses, vectors, records,
 //! strings), which native code can store into directly. Builds with debug
@@ -194,5 +196,33 @@ impl Node {
                 _ => false,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lisp::types::SubCharTableRef;
+
+    #[test]
+    fn making_or_storing_into_a_table_changes_the_store_count() {
+        // A new table may take a dead one's address: its creation must
+        // invalidate fast hits as any slot store does.
+        let before = char_table_store_epoch();
+        let table = CharTableRef::new(Value::Nil, Value::Nil, 0);
+        assert_ne!(char_table_store_epoch(), before, "char table creation");
+        let before = char_table_store_epoch();
+        let _sub = SubCharTableRef::new(1, 0, Value::Nil);
+        assert_ne!(char_table_store_epoch(), before, "subtable creation");
+        let before = char_table_store_epoch();
+        table.set(97, Value::T);
+        assert_ne!(char_table_store_epoch(), before, "slot store");
+        let before = char_table_store_epoch();
+        let signature = CharTableChainSignature::capture(table);
+        assert!(signature.matches(Some(table)));
+        assert_eq!(char_table_store_epoch(), before, "reads store nothing");
+        // A store the signature does not cover by value still invalidates.
+        table.set(98, Value::T);
+        assert!(!signature.matches(Some(table)));
     }
 }
