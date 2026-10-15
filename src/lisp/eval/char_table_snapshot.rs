@@ -4,13 +4,41 @@
 //! contents, so native stores as well as Lisp setters must invalidate a cache.
 //! Capture the traversal on a miss; a hit compares each payload in place,
 //! without rebuilding the graph, a visited set or a signature vector.
+//!
+//! Char-table and sub-char-table slots change only through their Rust
+//! setters, which count every store (`char_table_store_epoch'). While that
+//! count is unchanged since the nodes last matched in full, a hit skips the
+//! table nodes and compares only the other nodes (conses, vectors, records,
+//! strings), which native code can store into directly. Builds with debug
+//! assertions compare the full graph as well and require the same answer.
 
 use super::{CharTableRef, HashSet, Kind, Value};
+use crate::lisp::alloc::vectors::char_tables::char_table_store_epoch;
+use std::cell::Cell;
 
-#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct CharTableChainSignature {
     root: Option<usize>,
     nodes: Vec<Node>,
+    /// The char-table store count when the nodes last matched in full.
+    verified_at: Cell<u64>,
+}
+
+/// Equality and hashing are the captured graph's; when it was last verified
+/// is not part of the signature.
+impl PartialEq for CharTableChainSignature {
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root && self.nodes == other.nodes
+    }
+}
+
+impl Eq for CharTableChainSignature {}
+
+impl std::hash::Hash for CharTableChainSignature {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.root.hash(state);
+        self.nodes.hash(state);
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -49,6 +77,7 @@ impl CharTableChainSignature {
         let mut result = Self {
             root: Some(root),
             nodes: Vec::new(),
+            verified_at: Cell::new(char_table_store_epoch()),
         };
         let mut pending = vec![Value::CharTable(table)];
         let mut seen = HashSet::with_hasher(crate::lisp::primitives::FnvBuildHasher::default());
@@ -95,11 +124,48 @@ impl CharTableChainSignature {
         if self.root != table.map(|table| Value::CharTable(table).word()) {
             return false;
         }
-        self.nodes.iter().all(|node| {
+        let epoch = char_table_store_epoch();
+        if self.verified_at.get() == epoch {
+            // No table slot changed, so every edge out of a table node is the
+            // captured one and each other node is still reached through it.
+            let matched = self
+                .nodes
+                .iter()
+                .all(|node| node.is_table() || node.matches_current());
+            debug_assert_eq!(
+                matched,
+                self.nodes.iter().all(Node::matches_current),
+                "char-table store count missed a table change"
+            );
+            return matched;
+        }
+        let matched = self.nodes.iter().all(Node::matches_current);
+        if matched {
+            self.verified_at.set(epoch);
+        }
+        matched
+    }
+}
+
+impl Node {
+    fn is_table(&self) -> bool {
+        matches!(
+            self.payload,
+            Payload::CharTable(_) | Payload::SubCharTable(..)
+        )
+    }
+
+    /// Nodes are compared in capture order, so a node is read only after
+    /// the node it was reached through has matched (or, on the fast path,
+    /// is a table node whose slots the unchanged store count vouches for).
+    fn matches_current(&self) -> bool {
+        let node = self;
+        {
             // SAFETY: the current root is live. Every other node was reached
-            // through a preceding node, whose complete current slots have
-            // already matched. A replaced edge returns false before its old
-            // referent is read. This check neither calls Lisp nor collects;
+            // through a preceding node whose complete current slots have
+            // already matched, or through a table node no store has changed
+            // since the graph last matched in full. A replaced edge returns
+            // false before its old referent is read. This check neither calls Lisp nor collects;
             // runtime ownership excludes a concurrent native mutation.
             // Raw words do not root the cached graph across collections.
             let current = unsafe { Value::from_word(node.word) };
@@ -127,6 +193,6 @@ impl CharTableChainSignature {
                 }
                 _ => false,
             }
-        })
+        }
     }
 }

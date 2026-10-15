@@ -11196,13 +11196,19 @@ mod tests {
     fn native_char_table_stores_invalidate_warm_regexp_syntax_caches() {
         use crate::lisp::types::CharTableRef;
 
+        // What comp.c emits for `(aset table ?a value)': a call of the `aset'
+        // subr through the native subr table. GNU's native compiler inlines
+        // only car/cdr/setcar/setcdr and a few predicates and arithmetic
+        // operations, so native code reaches a char table's slots only
+        // through such calls; the descriptor mutation below covers the
+        // inlined `setcar'.
         unsafe extern "C" fn replace_ascii(table: NativeWord, value: NativeWord) -> NativeWord {
-            unsafe {
-                let root = (table - TAG_VECTORLIKE) as *mut NativeWord;
-                let leaf = (*root.add(4) - TAG_VECTORLIKE) as *mut NativeWord;
-                *leaf.add(2 + 97) = value;
-                table
-            }
+            let aset = super::super::abi::native_subrs()
+                .iter()
+                .position(|subroutine| subroutine.name == "aset")
+                .expect("aset belongs to the configured GNU ABI");
+            invoke_subr(aset, &[table, Value::Integer(97).word(), value]);
+            table
         }
 
         fn matches_word(interpreter: &mut Interpreter, environment: &mut Env) -> Value {
