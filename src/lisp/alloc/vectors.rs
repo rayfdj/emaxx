@@ -657,6 +657,16 @@ impl VectorRef {
         self.cells().get(index).map(Cell::get)
     }
 
+    /// `AREF` without the bounds check.
+    ///
+    /// # Safety
+    /// INDEX is below `len()`.
+    #[inline(always)]
+    pub(crate) unsafe fn get_unchecked(&self, index: usize) -> Value {
+        // SAFETY: the caller keeps INDEX within the inline slots.
+        unsafe { self.cells().get_unchecked(index).get() }
+    }
+
     /// `ASET`: one store into the authoritative slot. The caller checks
     /// the Lisp index and reports the primitive's GNU error before this.
     #[inline]
@@ -768,6 +778,16 @@ impl ClosureRef {
 
     pub(crate) fn slots(&self) -> impl DoubleEndedIterator<Item = Value> + ExactSizeIterator + '_ {
         self.cells().iter().map(Cell::get)
+    }
+
+    /// `AREF` without the bounds check.
+    ///
+    /// # Safety
+    /// INDEX is below `public_len()`.
+    #[inline(always)]
+    pub(crate) unsafe fn get_unchecked(&self, index: usize) -> Value {
+        // SAFETY: the caller keeps INDEX within the inline slots.
+        unsafe { self.cells().get_unchecked(index).get() }
     }
 
     #[inline]

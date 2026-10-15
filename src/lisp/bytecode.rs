@@ -6,6 +6,7 @@
 //! Whole-program decoding remains available for diagnostics. Execution
 //! fetches instructions from the original string at its current byte cursor.
 
+pub(crate) mod verify;
 pub mod vm;
 
 use super::types::{Kind, Value, VectorRef};
@@ -645,6 +646,17 @@ impl CodeBytes {
         };
         body(state.borrow().bytes())
     }
+
+    /// `with_bytes', also telling BODY whether the verifier's results for
+    /// the string are those of these bytes (see `verify').
+    #[inline]
+    pub(crate) fn with_bytes_and_state<R>(&self, body: impl FnOnce(&[u8], bool) -> R) -> R {
+        let Kind::StringObject(string) = self.original.kind() else {
+            unreachable!("validated code string")
+        };
+        let current = string.code_state() == crate::lisp::alloc::CodeState::Current;
+        body(string.borrow().bytes(), current)
+    }
 }
 
 /// Entry fields read from the shared closure. The VM uses this same value;
@@ -656,6 +668,8 @@ pub struct ByteCodeObject {
     /// The original CLOSURE_CONSTANTS object, not a snapshot of its slots.
     pub constants: VectorRef,
     pub stack_depth: usize,
+    /// The verifier's result for this code, once a frame runs it.
+    pub(crate) verified: Option<&'static verify::VerifiedCode>,
 }
 
 /// Decode only the instruction about to execute. Bounds checks protect Rust
@@ -739,6 +753,55 @@ impl ByteCodeObject {
         Self::from_fields(closure.public_len(), |index| closure.get(index))
     }
 
+    /// bytecode.c's Bcall test before `goto setup_frame', and setup_frame's
+    /// reads of the closure: a fixnum argument template, the code string,
+    /// the constants vector and the depth. None for any closure that is
+    /// not such a byte-code function (or whose fields `from_closure'
+    /// rejects), which the caller then calls through funcall.
+    #[inline]
+    pub(crate) fn for_call(closure: crate::lisp::types::ClosureRef) -> Option<Self> {
+        if closure.public_len() < 4 {
+            return None;
+        }
+        // SAFETY: the closure has at least four slots.
+        let (arguments, code, constants, depth) = unsafe {
+            (
+                closure.get_unchecked(0),
+                closure.get_unchecked(1),
+                closure.get_unchecked(2),
+                closure.get_unchecked(3),
+            )
+        };
+        let template = arguments
+            .fixnum()
+            .filter(|template| (0..=0x7FFF).contains(template))?;
+        let Kind::StringObject(string) = code.kind() else {
+            return None;
+        };
+        let Kind::Vector(constants) = constants.kind() else {
+            return None;
+        };
+        let depth = depth.fixnum().filter(|depth| *depth >= 0)?;
+        // Verified code is unibyte: any change to the string retires its
+        // results.
+        if string.code_state() != crate::lisp::alloc::CodeState::Current
+            && string.borrow().is_multibyte()
+        {
+            return None;
+        }
+        Some(ByteCodeObject {
+            argspec: ArgSpec::Packed {
+                mandatory: (template & 0x7F) as u8,
+                nonrest: ((template >> 8) & 0x7F) as u8,
+                rest: template & 0x80 != 0,
+            },
+            code: CodeBytes { original: code },
+            constants,
+            stack_depth: depth as usize,
+            verified: None,
+        })
+    }
+
     fn from_fields(
         len: usize,
         field: impl Fn(usize) -> Option<Value>,
@@ -777,6 +840,7 @@ impl ByteCodeObject {
             code,
             constants,
             stack_depth: depth as usize,
+            verified: None,
         }))
     }
 }

@@ -277,6 +277,29 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   table of `invoke_subr`'s fast cases in place of its name comparisons made
   native execution 4% slower; its patch is
   `docs/handover/2026-10-15-performance-round/rejected-native-subr-kind-table.patch`.
+- Byte-code verification (`src/lisp/bytecode/verify.rs`): GNU trusts the
+  compiler (BYTE_CODE_SAFE is off); Emaxx checked stack bounds, constant
+  indices and code bounds at every op to stay memory-safe on any closure.
+  A function's code is now verified once: from the entry and every branch,
+  handler and switch target, each reachable instruction decodes within the
+  code, reads a constant within the vector, finds its operands, stays
+  within the declared depth and is reached with one operand count.
+  Verified code runs in `run_verified`, with the stack top in a local
+  pointer, one jump table on the opcode and no bounds checks; other code
+  runs the checked loop as before. A result belongs to the code string's
+  current bytes: any exclusive borrow of the string retires it (a byte in
+  the string cell's padding), its collection drops it, and the fast loop
+  is entered only where the verified operand count is the stack's, so a
+  mis-modeled slow op costs the fast loop, never safety. Bcall reads a
+  byte-code callee's fields directly (setup_frame's reads) instead of
+  revalidating them through `closure_program`. Bytecode calls 2.83 →
+  2.29, bytecode-to-native 3.97 → 3.39. Undo's byte-code spends about 1%
+  more of undo: its code leaves the fast loop every few ops, and each exit
+  and entry now crosses a call (inlining `run_verified` into the frame
+  loop was worse for both workloads; skipping the loop when its first op
+  is slow helped undo by 0.3% and cost bytecode calls 1.7%). GNU-compared
+  test of changed, shared and collected code; unit tests of the verifier
+  and of result retirement.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -293,20 +316,27 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.34 |
-| upstream-sort | 3.26 | 2.65 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.80 |
+| upstream-sort | 3.26 | 2.67 |
 | interpreted-calls | 2.10 | 1.80 |
 | interpreted-lexical | 2.04 | 1.75 |
 | interpreted-dynamic | 2.14 | 1.89 |
-| mapcar | 2.95 | 2.65 |
-| bytecode-calls | 3.30 | 2.83 |
-| bytecode-to-native | — | 3.97 |
+| mapcar | 2.95 | 2.68 |
+| bytecode-calls | 3.30 | 2.29 |
+| bytecode-to-native | — | 3.39 |
 | interpreted-to-native | — | 2.24 |
-| native-to-interpreted / -bytecode | — | 1.99 / 2.18 |
+| native-to-interpreted / -bytecode | — | 1.99 / 2.17 |
 | cons-allocation / list-traversal | 2.24 / — | 1.96 / 1.90 |
 | native-execution | — | 1.39 |
 | bindat | — | 1.68 |
 | explicit-gc | — | 1.00 |
+
+Undo's earlier 2.34 at ten units was an artifact: in that pair of runs the
+collector worked more at ten units than at twenty (`mem_find` and the
+stack scan came out negative in the difference), hiding about 0.57 million
+instructions per unit. The like-for-like figure before byte-code
+verification was about 2.80 as well. A pair with negative collector
+functions in its difference is not a measurement; repeat it.
 
 **CI on `2c7c55f`:** full Rust gate passed (run 38737706552, every group;
 3,104 tests in the counted groups plus the bins and integration groups, the
@@ -341,16 +371,16 @@ match across 519 files**, no unsuccessful execution (run 38761729296).
   form). Removing the check would make a parked shell's use undefined
   behavior instead of a panic, so it stays.
 
-**Where the remaining gap is:** the bytecode VM (bytecode-to-native,
-bytecode-calls and undo's `simple.elc` are its three worst cases): about 13
-instructions of dispatch and 30–50 per op in all, plus about 800 per
-bytecode call (the callee's closure fields re-read, the backtrace frame,
-the frame vector, funcall depth, the return bookkeeping); GNU's
-`exec_byte_code` spends about 24 per op including calls. Per op, about 6
-instructions are the class dispatch and about 15 are bounds checks, slice
-construction and the push assertion that keep unverified bytecode
-memory-safe; removing them needs a one-time verifier of each function's
-stack depth, constant indices and jump targets. Then the source
+**Where the remaining gap is:** the native call path first:
+bytecode-to-native spends about 800 instructions per call into native code
+(funcall dispatch through `call_function_value_inner`, `NativeRuntime::invoke`,
+handler reconciliation before and after, a zeroed jump buffer and `setjmp`,
+the execution guard) where GNU's `funcall_subr` spends about 50. The
+bytecode VM: verified ops cost 17–20 instructions (GNU about 8), a
+byte-code call and return about 600 (GNU about 300), and each exit from
+and entry to the verified loop about 80, which code dominated by slow ops
+(undo's `simple.elc`) pays every few ops; running slow ops and calls
+without leaving the loop is the structural fix. Then the source
 interpreter's per-form cost (about 420 instructions per evaluated list form
 against GNU's 170, spread over frame recording, function lookup, subr
 dispatch and the state checks), the funcall path used by `mapcar` and
@@ -388,11 +418,10 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above). The bytecode VM next: keep calls and returns inside the fast loop,
-   keep the stack top in a register across ops, and consider validating each
-   function's bytecode once (stack depth, constant indices, jump targets) so
-   per-op checks can go, as GNU trusts validated code. Then the source
-   interpreter's per-form cost and the funcall/native-transition path.
+   above). Byte-code is verified once and runs without per-op checks; next
+   the native call path (bytecode-to-native is the worst ratio), then
+   running slow ops, calls and returns without leaving the verified loop,
+   then the source interpreter's per-form cost and the funcall path.
    Iterate with instruction counts (callgrind) on the locked workloads for
    both editors; timing pilots at merges. Remaining adapters that show up in
    profiles are fixed as performance work.

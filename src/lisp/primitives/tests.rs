@@ -27634,6 +27634,50 @@ fn bytecode_live_fetch_preserves_changed_widths_operands_and_suspended_callers()
 }
 
 #[test]
+fn verified_bytecode_follows_changed_shared_and_collected_code_like_gnu() {
+    // The VM runs verified code without per-op checks; each case changes
+    // what the verifier saw. Bytes changed between calls; bytes changed
+    // during a call and the function run (and verified) again before the
+    // suspended caller resumes on the changed bytes; one code string run
+    // by functions of two shapes; code strings collected and reused.
+    let program = r#"(let* ((results nil)
+       (code (unibyte-string 192 135))
+       (f (make-byte-code 0 code [10 20] 1)))
+  (push (funcall f) results)
+  (aset code 0 193)
+  (push (funcall f) results)
+  (let* ((outer-code (unibyte-string 192 32 136 193 135))
+         (depth 0)
+         (constants (vector nil 30 40))
+         (outer (make-byte-code 0 outer-code constants 1)))
+    (aset constants 0
+          (lambda ()
+            (when (= depth 0)
+              (setq depth 1)
+              (aset outer-code 3 194)
+              (push (funcall outer) results))))
+    (push (funcall outer) results))
+  (let* ((shared (unibyte-string 192 135))
+         (small (make-byte-code 0 shared [50] 1))
+         (large (make-byte-code 0 shared [60 70] 2)))
+    (push (list (funcall small) (funcall large) (funcall small)) results))
+  (let ((sum 0))
+    (dotimes (round 2)
+      (dotimes (i 40)
+        (setq sum (+ sum (funcall (make-byte-code
+                                   0 (unibyte-string 192 135)
+                                   (vector (* (1+ round) i)) 1)))))
+      (garbage-collect))
+    (push sum results))
+  (nreverse results))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(10 20 40 40 (50 60 50) 2340)",
+        "verified bytecode invalidation",
+    );
+}
+
+#[test]
 fn unused_bytecode_destinations_follow_actual_control_flow() {
     let fixture = include_str!("../../../tests/fixtures/bytecode-unused-destinations.el");
     let program = fixture

@@ -28,6 +28,19 @@ pub(crate) struct StringCell {
     mark: MarkBit,
     pure: bool,
     permanent_empty: bool,
+    /// A `CodeState': whether the bytecode verifier holds a result for
+    /// this string as a function's code.
+    code: Cell<u8>,
+}
+
+/// The bytecode verifier's view of a string (see `bytecode::verify'): no
+/// result, a result for the current bytes, or results made stale by a
+/// change to the string. Any exclusive borrow counts as a change.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum CodeState {
+    Unverified = 0,
+    Current = 1,
+    Stale = 2,
 }
 
 pub(super) const STRING_CELL_SIZE: usize = std::mem::size_of::<StringCell>();
@@ -49,6 +62,7 @@ impl StringCell {
             mark,
             pure,
             permanent_empty: false,
+            code: Cell::new(CodeState::Unverified as u8),
         }
     }
 }
@@ -125,7 +139,23 @@ impl StringObjectRef {
         assert!(!cell.pure, "pure string cannot be mutably borrowed");
         assert_eq!(cell.borrows.get(), 0, "string already borrowed");
         cell.borrows.set(-1);
+        if cell.code.get() == CodeState::Current as u8 {
+            cell.code.set(CodeState::Stale as u8);
+        }
         StringBorrowMut(cell)
+    }
+
+    pub(crate) fn code_state(&self) -> CodeState {
+        match self.cell().code.get() {
+            0 => CodeState::Unverified,
+            1 => CodeState::Current,
+            _ => CodeState::Stale,
+        }
+    }
+
+    /// The verifier now holds a result for these bytes.
+    pub(crate) fn set_code_current(&self) {
+        self.cell().code.set(CodeState::Current as u8);
     }
 
     pub(crate) fn mark_bit(&self) -> StringMark<'_> {
@@ -440,6 +470,9 @@ pub(crate) fn sweep_strings(epoch: u32) {
                         continue;
                     }
                     debug_assert_eq!((*cell).borrows.get(), 0, "unmarked string borrow");
+                    if (*cell).code.get() != CodeState::Unverified as u8 {
+                        crate::lisp::bytecode::verify::forget(cell as usize);
+                    }
                     std::ptr::drop_in_place((*cell).state.get());
                     (*cell).mark.set_raw(FREE_MARK);
                 }

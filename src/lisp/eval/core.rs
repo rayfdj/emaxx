@@ -1233,6 +1233,7 @@ impl Interpreter {
 
     /// Bcall can enter packed byte-code closures without a host function
     /// registry. Classification reads the shared closure's actual code slot.
+    #[inline]
     pub(crate) fn bytecode_callee(
         &self,
         func: &Value,
@@ -1247,10 +1248,7 @@ impl Interpreter {
         let Kind::Closure(closure) = function.kind() else {
             return None;
         };
-        if !closure.is_bytecode() || !matches!(closure.parameters().kind(), Kind::Integer(_)) {
-            return None;
-        }
-        let program = crate::lisp::bytecode::vm::closure_program(closure).ok()?;
+        let program = crate::lisp::bytecode::ByteCodeObject::for_call(closure)?;
         Some((program, function))
     }
 

@@ -1839,6 +1839,13 @@ impl Value {
     pub(crate) fn discard(self) {
         let _ = self;
     }
+
+    /// lisp.h's `FIXNUMP' and `XFIXNUM' in one test of the tag bits, for
+    /// a caller that needs no other kind.
+    #[inline(always)]
+    pub(crate) fn fixnum(self) -> Option<i64> {
+        (self.0 & 3 == TAG_INT0).then_some((self.0 as i64) >> 2)
+    }
 }
 
 /// eval.c's `Vinternal_interpreter_environment' as one scope holds it:

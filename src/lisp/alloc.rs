@@ -34,7 +34,7 @@ pub use strings::StringObjectRef;
 #[cfg(test)]
 pub(crate) use strings::string_data_census;
 pub(crate) use strings::{
-    PendingStringData, StringAllocation, allocate_string, borrowed_string_roots,
+    CodeState, PendingStringData, StringAllocation, allocate_string, borrowed_string_roots,
     live_string_object_census, retire_string_data, string_data_size, sweep_strings,
 };
 pub(crate) mod vectors;

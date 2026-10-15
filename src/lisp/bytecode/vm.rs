@@ -346,7 +346,22 @@ struct BcFrame {
 /// A signal from an unwind form replaces the one in flight (each signal
 /// during unbind_to starts its own unwinding in C, the remaining forms
 /// still run), so the last signal is the one that leaves.
+#[inline]
 fn leave_frame(interp: &mut Interpreter, env: &mut Env, frame: &BcFrame) -> Result<(), LispError> {
+    if interp.bc_unwinds.len() > frame.unwinds_len {
+        return leave_frame_unwinding(interp, env, frame);
+    }
+    interp.truncate_backtrace_frames(frame.backtrace_depth);
+    interp.end_funcall();
+    Ok(())
+}
+
+#[inline(never)]
+fn leave_frame_unwinding(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    frame: &BcFrame,
+) -> Result<(), LispError> {
     let mut last_error = None;
     while interp.bc_unwinds.len() > frame.unwinds_len {
         let Some(entry) = interp.bc_unwinds.pop() else {
@@ -992,6 +1007,328 @@ fn run_fast(
     }
 }
 
+/// `run_fast' for verified code, entered at an instruction whose verified
+/// operand count is the stack's (see `verify::VerifiedCode::admits').
+/// Like bytecode.c with BYTE_CODE_SAFE off, it checks neither the code's
+/// bounds, nor the stack's, nor constant indices: verification proved
+/// that every instruction reachable from here lies within the code, finds
+/// its operands, stays within the frame's declared depth and reads a
+/// constant within the vector. The stack top lives in a local pointer and
+/// is stored back on the way out; nothing here runs Lisp or collects.
+/// The ops and their exits are run_fast's.
+#[inline(never)]
+fn run_verified(
+    object: &ByteCodeObject,
+    code: &[u8],
+    ops: &mut BcStack,
+    pc: &mut usize,
+    quitcounter: &mut u8,
+) -> FastExit {
+    let words = ops.words.as_mut_ptr().cast::<Value>();
+    // SAFETY: top lies within the active frame.
+    let mut sp = unsafe { words.add(ops.top) };
+    let mut at = *pc;
+    let exit = 'run: loop {
+        let offset = at;
+        // SAFETY (all code reads below): verified instructions, operands
+        // included, lie within the code.
+        let byte = unsafe { *code.get_unchecked(at) };
+        at += 1;
+        macro_rules! fetch {
+            () => {{
+                let value = u16::from(unsafe { *code.get_unchecked(at) });
+                at += 1;
+                value
+            }};
+        }
+        macro_rules! fetch2 {
+            () => {{
+                let value = u16::from_le_bytes(unsafe {
+                    [*code.get_unchecked(at), *code.get_unchecked(at + 1)]
+                });
+                at += 2;
+                value
+            }};
+        }
+        // SAFETY (stack accesses below): verification found at least the
+        // op's operands on the stack and room for its pushes.
+        macro_rules! slot {
+            ($n:expr) => {
+                unsafe { &mut *sp.sub($n + 1) }
+            };
+        }
+        macro_rules! push {
+            ($value:expr) => {{
+                let value = $value;
+                unsafe {
+                    sp.write(value);
+                    sp = sp.add(1);
+                }
+            }};
+        }
+        macro_rules! drop_values {
+            ($count:expr) => {
+                sp = unsafe { sp.sub($count) }
+            };
+        }
+        macro_rules! slow {
+            () => {{
+                *pc = offset;
+                break 'run match super::fetch_instruction(code, offset, object.constants.len()) {
+                    Ok(instruction) => FastExit::Slow(instruction),
+                    Err(error) => FastExit::Error(error),
+                };
+            }};
+        }
+        macro_rules! jump {
+            ($target:expr) => {{
+                let destination = usize::from($target);
+                if destination < at {
+                    *quitcounter = quitcounter.wrapping_add(1);
+                    if *quitcounter == 0 {
+                        *quitcounter = 1;
+                        *pc = destination;
+                        break 'run FastExit::QuitCheck;
+                    }
+                }
+                at = destination;
+            }};
+        }
+        // One arm per opcode, so the dispatch is a single jump table and an
+        // operand packed in the opcode is a constant in its arm.
+        macro_rules! stack_ref {
+            ($n:expr) => {{
+                let n: usize = $n;
+                let value = *slot!(n);
+                push!(value);
+            }};
+        }
+        macro_rules! stack_set {
+            ($n:expr) => {{
+                // `*(top - N) = POP'.
+                let n = usize::from($n);
+                *slot!(n) = *slot!(0);
+                drop_values!(1);
+            }};
+        }
+        macro_rules! call {
+            ($count:expr) => {{
+                let count = $count;
+                *pc = offset;
+                break 'run FastExit::Slow(super::Instr {
+                    offset,
+                    len: at - offset,
+                    op: Op::Call(count),
+                });
+            }};
+        }
+        macro_rules! constant {
+            ($index:expr) => {{
+                let index = usize::from($index);
+                // SAFETY: verified against this vector's length.
+                push!(unsafe { object.constants.get_unchecked(index) });
+            }};
+        }
+        macro_rules! goto_if {
+            ($jump_when_nil:expr) => {{
+                let target = fetch2!();
+                let is_nil = slot!(0).is_nil();
+                drop_values!(1);
+                if is_nil == $jump_when_nil {
+                    jump!(target);
+                }
+            }};
+        }
+        macro_rules! goto_if_else_pop {
+            ($jump_when_nil:expr) => {{
+                let target = fetch2!();
+                if slot!(0).is_nil() == $jump_when_nil {
+                    jump!(target);
+                } else {
+                    drop_values!(1);
+                }
+            }};
+        }
+        // A fixnum operation on the two top operands; anything else (or an
+        // overflow, or a zero divisor) goes to the full arm.
+        macro_rules! arithmetic {
+            ($op:ident) => {{
+                let (Some(x), Some(y)) = (slot!(1).fixnum(), slot!(0).fixnum()) else {
+                    slow!();
+                };
+                let Some(n) = x.$op(y) else { slow!() };
+                *slot!(1) = Value::Integer(n);
+                drop_values!(1);
+            }};
+        }
+        macro_rules! comparison {
+            ($op:tt) => {{
+                let (Some(x), Some(y)) = (slot!(1).fixnum(), slot!(0).fixnum()) else {
+                    slow!();
+                };
+                *slot!(1) = if x $op y { Value::T } else { Value::Nil };
+                drop_values!(1);
+            }};
+        }
+        macro_rules! unary {
+            ($op:expr) => {{
+                let Some(x) = slot!(0).fixnum() else { slow!() };
+                let Some(n) = $op(x) else { slow!() };
+                *slot!(0) = Value::Integer(n);
+            }};
+        }
+        macro_rules! car_cdr {
+            ($car:expr, $safe:expr) => {{
+                let replacement = match slot!(0).kind() {
+                    Kind::Cons(cell) => {
+                        if $car {
+                            cell.car.get()
+                        } else {
+                            cell.cdr.get()
+                        }
+                    }
+                    Kind::Nil => continue,
+                    _ if $safe => Value::Nil,
+                    // The full arm signals wrong-type-argument.
+                    _ => slow!(),
+                };
+                *slot!(0) = replacement;
+            }};
+        }
+        match byte {
+            0o001 => stack_ref!(1),
+            0o002 => stack_ref!(2),
+            0o003 => stack_ref!(3),
+            0o004 => stack_ref!(4),
+            0o005 => stack_ref!(5),
+            0o006 => stack_ref!(usize::from(fetch!())),
+            0o007 => stack_ref!(usize::from(fetch2!())),
+            0o040..=0o045 => call!(u16::from(byte - super::B_CALL)),
+            0o046 => call!(fetch!()),
+            0o047 => call!(fetch2!()),
+            super::B_STACK_SET => stack_set!(fetch!()),
+            super::B_STACK_SET2 => stack_set!(fetch2!()),
+            // Bdup.
+            0o211 => {
+                let top = *slot!(0);
+                push!(top);
+            }
+            // Bdiscard.
+            0o210 => drop_values!(1),
+            super::B_DISCARDN => {
+                let raw = fetch!();
+                let count = usize::from(raw & 0x7f);
+                if raw & 0x80 != 0 {
+                    let top = *slot!(0);
+                    drop_values!(count);
+                    *slot!(0) = top;
+                } else {
+                    drop_values!(count);
+                }
+            }
+            super::B_CONSTANT.. => constant!(byte - super::B_CONSTANT),
+            super::B_CONSTANT2 => constant!(fetch2!()),
+            // Bgoto.
+            0o202 => {
+                let target = fetch2!();
+                jump!(target);
+            }
+            0o203 => goto_if!(true),
+            0o204 => goto_if!(false),
+            0o205 => goto_if_else_pop!(true),
+            0o206 => goto_if_else_pop!(false),
+            // Breturn.
+            0o207 => {
+                let value = *slot!(0);
+                drop_values!(1);
+                break 'run FastExit::Return(value);
+            }
+            // Bnot.
+            0o077 => {
+                let top = slot!(0);
+                *top = if top.is_nil() { Value::T } else { Value::Nil };
+            }
+            // Bcons.
+            0o102 => {
+                let cdr = *slot!(0);
+                let car = *slot!(1);
+                *slot!(1) = Value::cons(car, cdr);
+                drop_values!(1);
+            }
+            // Beq.
+            0o075 => {
+                let (left, right) = (*slot!(1), *slot!(0));
+                if matches!(left.kind(), Kind::SymbolWithPos(_))
+                    || matches!(right.kind(), Kind::SymbolWithPos(_))
+                {
+                    slow!();
+                }
+                let equal = crate::lisp::primitives::values_eq_plain(&left, &right);
+                *slot!(1) = if equal { Value::T } else { Value::Nil };
+                drop_values!(1);
+            }
+            // Bconsp.
+            0o072 => {
+                let is_cons = match slot!(0).kind() {
+                    Kind::Cons(_) => true,
+                    // A keymap record reads as a cons; the full arm asks.
+                    Kind::Record(_) => slow!(),
+                    _ => false,
+                };
+                *slot!(0) = if is_cons { Value::T } else { Value::Nil };
+            }
+            0o134 => arithmetic!(checked_add),
+            0o132 => arithmetic!(checked_sub),
+            0o137 => arithmetic!(checked_mul),
+            0o245 => arithmetic!(checked_div),
+            0o246 => arithmetic!(checked_rem),
+            0o125 => comparison!(==),
+            0o126 => comparison!(>),
+            0o127 => comparison!(<),
+            0o130 => comparison!(<=),
+            0o131 => comparison!(>=),
+            0o124 => unary!(|x: i64| x.checked_add(1)),
+            0o123 => unary!(|x: i64| x.checked_sub(1)),
+            0o133 => unary!(i64::checked_neg),
+            // Baref.
+            0o110 => {
+                let Some(index) = slot!(0).fixnum().filter(|index| *index >= 0) else {
+                    slow!()
+                };
+                let Some(value) =
+                    crate::lisp::primitives::vector_aref_fast(slot!(1), index as usize)
+                else {
+                    slow!();
+                };
+                *slot!(1) = value;
+                drop_values!(1);
+            }
+            // Baset: [.. vector index value]; aset returns the value.
+            0o111 => {
+                let Some(index) = slot!(1).fixnum().filter(|index| *index >= 0) else {
+                    slow!()
+                };
+                let value = *slot!(0);
+                if crate::lisp::primitives::vector_aset_fast(slot!(2), index as usize, &value)
+                    .is_none()
+                {
+                    slow!();
+                }
+                *slot!(2) = value;
+                drop_values!(2);
+            }
+            0o100 => car_cdr!(true, false),
+            0o101 => car_cdr!(false, false),
+            0o242 => car_cdr!(true, true),
+            0o243 => car_cdr!(false, true),
+            _ => slow!(),
+        }
+    };
+    // SAFETY: sp stayed within the active frame.
+    ops.top = unsafe { sp.offset_from(words) as usize };
+    exit
+}
+
 impl TraceLispRoots for ByteCodeObject {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         marker.value(&self.code.original());
@@ -1221,6 +1558,13 @@ fn run_frames(
             }
         }
     }
+    // The verifier's result for this code lets the fast loop run it
+    // without per-op checks.
+    let entry_depth = match program.argspec {
+        ArgSpec::Packed { nonrest, rest, .. } => usize::from(nonrest) + usize::from(rest),
+        ArgSpec::Legacy(_) => 0,
+    };
+    program.verified = super::verify::verified_code(&program, entry_depth);
     let mut handlers: Vec<Handler> = Vec::new();
     let mut frames: Vec<BcFrame> = Vec::new();
     let mut pc = 0usize;
@@ -1300,15 +1644,26 @@ fn run_frames(
             // not run, which the full dispatch below runs once.
             // No Lisp callback, collection, or string store occurs in the
             // fast loop. Release its byte borrow before the full dispatch.
-            let exit = program.code.with_bytes(|code| {
-                run_fast(
-                    &program,
-                    code,
-                    &mut interp.bc_stack,
-                    &mut pc,
-                    &mut quitcounter,
-                )
-            });
+            let exit = program
+                .code
+                .with_bytes_and_state(|code, current| match program.verified {
+                    Some(verified) if current && verified.admits(pc, interp.bc_stack.len()) => {
+                        run_verified(
+                            &program,
+                            code,
+                            &mut interp.bc_stack,
+                            &mut pc,
+                            &mut quitcounter,
+                        )
+                    }
+                    _ => run_fast(
+                        &program,
+                        code,
+                        &mut interp.bc_stack,
+                        &mut pc,
+                        &mut quitcounter,
+                    ),
+                });
             last_instruction = None;
             // Carry the already fetched instruction into the slow dispatch.
             // No callback runs between these loops, so fetching it again
@@ -1742,14 +2097,13 @@ fn run_frames(
                             }
                         }
                         frames.push(BcFrame {
-                            program: program.clone(),
+                            program: std::mem::replace(&mut program, callee),
                             base: args_start - 1,
                             handlers_len: handlers.len(),
                             unwinds_len: interp.bc_unwinds.len(),
                             backtrace_depth,
                             op_error_frames,
                         });
-                        program = callee;
                         pc = 0;
                         op_error_frames = 0;
                         // setup_frame: the callee's frame starts above the
@@ -1768,6 +2122,7 @@ fn run_frames(
                         };
                         let mandatory = *mandatory as usize;
                         let nonrest = *nonrest as usize;
+                        let rest = *rest;
                         if argc < mandatory || (!rest && argc > nonrest) {
                             return Err(packed_arity_error(mandatory, nonrest, argc));
                         }
@@ -1782,10 +2137,12 @@ fn run_frames(
                             for _ in argc..nonrest {
                                 push!(Value::Nil);
                             }
-                            if *rest {
+                            if rest {
                                 push!(Value::Nil);
                             }
                         }
+                        program.verified =
+                            super::verify::verified_code(&program, nonrest + usize::from(rest));
                         continue;
                     }
                     let trace_call = trace_errors.then(|| func.to_string());
