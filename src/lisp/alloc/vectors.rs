@@ -1082,6 +1082,17 @@ struct SweepStats {
 }
 
 impl SweepStats {
+    /// An image object stays out of gcstat's object totals, as a dumped one
+    /// does. alloc.c:sweep_buffers counts every live buffer, dumped or not,
+    /// so a buffer still counts in the buffers row.
+    ///
+    /// # Safety
+    /// HEADER is an allocated, marked vector.
+    unsafe fn count_image(&mut self, header: *mut VectorHeader) {
+        // SAFETY: the caller's contract.
+        self.buffers += usize::from(unsafe { (*header).tag() } == VectorTag::Buffer);
+    }
+
     /// # Safety
     /// HEADER is an allocated, marked vector.
     unsafe fn count(&mut self, header: *mut VectorHeader) {
@@ -1206,7 +1217,9 @@ pub(crate) fn sweep_vectors(epoch: u32) {
             // to where `vector_in_block' fails.
             unsafe {
                 if (*vector).is_marked(epoch) {
-                    if !image_block {
+                    if image_block {
+                        stats.count_image(vector);
+                    } else {
                         stats.count(vector);
                     }
                     vector = advance(vector, (*vector).nbytes());
@@ -1257,7 +1270,9 @@ pub(crate) fn sweep_vectors(epoch: u32) {
         // SAFETY: a registered large vector.
         unsafe {
             if (*vector).is_marked(epoch) {
-                if !image.contains(&start) {
+                if image.contains(&start) {
+                    stats.count_image(vector);
+                } else {
                     stats.count(vector);
                 }
             } else {

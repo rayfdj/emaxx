@@ -15145,32 +15145,44 @@ fn garbage_collect_reports_the_live_census() {
         .expect("evaluate garbage-collect shape program");
     assert_eq!(result.to_string(), expected);
 
-    // The census itself: a booted image holds its preloaded Lisp, so the
-    // discriminating counts cannot be anywhere near the old zeros.
-    let counts_form = Reader::new(
-        r#"(mapcar (lambda (entry) (cons (car entry) (nth 2 entry)))
-                   (garbage-collect))"#,
-    )
-    .read_all()
-    .expect("read garbage-collect counts program")
-    .remove(0);
-    let counts = interp
-        .eval(&counts_form, &mut crate::lisp::types::Env::new())
-        .expect("evaluate garbage-collect counts program")
-        .to_string();
-    let count_of = |key: &str| -> i64 {
-        let marker = format!("({key} . ");
-        let start = counts.find(&marker).map(|at| at + marker.len());
-        start
-            .and_then(|at| counts[at..].split(')').next())
-            .and_then(|digits| digits.parse().ok())
-            .unwrap_or_else(|| panic!("no {key} count in {counts}"))
-    };
-    assert!(count_of("conses") > 10_000, "conses: {counts}");
-    assert!(count_of("symbols") > 1_000, "symbols: {counts}");
-    assert!(count_of("strings") > 100, "strings: {counts}");
-    assert!(count_of("string-bytes") > 10_000, "string-bytes: {counts}");
-    assert!(count_of("buffers") >= 1, "buffers: {counts}");
+    // The census itself counts the heap's own live objects: GNU never counts
+    // dumped objects (a bare session reports about 3,000 conses), and image
+    // objects stay out here likewise, so absolute floors cannot tell a real
+    // census from a fabricated one. Holding new live objects must raise each
+    // row by at least their number, in GNU and here; every live buffer
+    // counts, as alloc.c:sweep_buffers counts dumped buffers too.
+    let growth_program = r#"(let* ((count (lambda (census key) (nth 2 (assq key census))))
+                  (before (garbage-collect))
+                  (conses (make-list 20000 nil))
+                  (text (make-string 50000 ?x))
+                  (strings (mapcar #'number-to-string (number-sequence 1 500)))
+                  (symbols (mapcar (lambda (n) (make-symbol (number-to-string n)))
+                                   (number-sequence 1 2000)))
+                  (buffer (get-buffer-create " *census-probe*"))
+                  (after (garbage-collect))
+                  (grew (lambda (key at-least)
+                          (>= (- (funcall count after key) (funcall count before key))
+                              at-least))))
+             (prog1 (list (funcall grew 'conses 20000)
+                          (funcall grew 'string-bytes 50000)
+                          (funcall grew 'strings 500)
+                          (funcall grew 'symbols 2000)
+                          (funcall grew 'buffers 1)
+                          (> (funcall count after 'buffers) 1)
+                          (length conses) (length text) (length strings) (length symbols))
+               (kill-buffer buffer)))"#;
+    let growth_expected = "(t t t t t t 20000 50000 500 2000)";
+    assert_upstream_primitive_contract(&format!("(prin1 {growth_program})"), growth_expected);
+    // This test's interpreter: a second batch interpreter cannot load the
+    // preloaded native units while this one holds them.
+    let growth_form = Reader::new(growth_program)
+        .read_all()
+        .expect("read garbage-collect growth program")
+        .remove(0);
+    let growth = interp
+        .eval(&growth_form, &mut crate::lisp::types::Env::new())
+        .expect("evaluate garbage-collect growth program");
+    assert_eq!(growth.to_string(), growth_expected);
 
     // alloc.c:Fgarbage_collect reports each kind's object size. Conses,
     // vectors, vector slots and floats are GNU's C layouts and this
