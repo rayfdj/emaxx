@@ -1673,7 +1673,44 @@ impl BacktraceFrame {
     }
 
     fn detail_mut(&mut self) -> &mut FrameDetail {
-        self.detail.get_or_insert_with(Box::default)
+        self.detail.get_or_insert_with(|| {
+            FRAME_DETAIL_POOL
+                .try_with(|pool| pool.try_borrow_mut().ok()?.pop())
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+        })
+    }
+}
+
+/// Most frames that carry a detail are interpreted calls recording their
+/// parameters, and a box per call made every call allocate and free twice
+/// (the box and its locals). Released details keep their capacity here.
+/// Cleared entries leave stale words only in heap capacity, which the
+/// conservative stack scan never reads.
+const FRAME_DETAIL_POOL_LIMIT: usize = 64;
+
+thread_local! {
+    // The boxes themselves are what a frame's `detail' reuses.
+    #[allow(clippy::vec_box)]
+    static FRAME_DETAIL_POOL: RefCell<Vec<Box<FrameDetail>>> = const { RefCell::new(Vec::new()) };
+}
+
+impl Drop for BacktraceFrame {
+    fn drop(&mut self) {
+        let Some(mut detail) = self.detail.take() else {
+            return;
+        };
+        detail.source_form = None;
+        detail.locals.clear();
+        detail.lexical_context = None;
+        let _ = FRAME_DETAIL_POOL.try_with(|pool| {
+            if let Ok(mut pool) = pool.try_borrow_mut()
+                && pool.len() < FRAME_DETAIL_POOL_LIMIT
+            {
+                pool.push(detail);
+            }
+        });
     }
 }
 
