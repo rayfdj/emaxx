@@ -1852,6 +1852,8 @@ Closure integration (source checks and execution validation pending):
   behavior from a predicate's symbol name. Sorting now calls the resolved
   function with ordinary bindings and errors. Rust's comparison schedule
   still differs from GNU Timsort and remains an explicit open finding.
+  (Resolved October 2026: `sort` runs a port of sort.c's Timsort, and the
+  predicate sees GNU's calls in GNU's order; see HANDOVER.md.)
 - GNU controls for original and renamed closure sharing, mutation, binding
   order, cycles, reader types, and live/dead reclamation are preserved in
   `closure-authoritative-*-gnu-controls-1.json`. New regression tests and

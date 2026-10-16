@@ -718,6 +718,25 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   argument" with the keyword (spliced when it is a list, as
   `signal_error` does); they were wrong-number-of-arguments. Found while
   checking the sort port below against GNU.
+- `sort` runs GNU's Timsort (sort.c, CPython's listsort with powersort
+  merging; `sequences/timsort.rs`). Rust's `sort_by` wanted a three-way
+  answer, so a comparison called the predicate a second time whenever the
+  first answered nil, and its merge order is not GNU's: the sort workload
+  called its predicate 64,700 times a unit against GNU's 35,600. That was
+  the comparison-schedule finding in
+  `docs/runtime-representation-progress.md`. The predicate now sees GNU's
+  calls in GNU's order: a trace of every call (5.7 MB over lists and
+  vectors of 2 to 3,000 entries, `:key`, `:reverse`, copies, ascending,
+  descending and interleaved runs that gallop, `value<`, signals at many
+  points and the argument forms) is byte-identical to GNU's. A signal
+  leaves a vector sorted in place as sort.c leaves its slots: once a merge
+  has outgrown sort.c's 256-slot stack array (or from the start when keys
+  were allocated, at 128 entries or more) the merge's temporary run is put
+  back; before that the run is lost and stale copies stay, as GNU's
+  abandoned stack array leaves them. A list is sorted in a copy and keeps
+  its order. Oracle tests pin a short sort's calls, checksums of longer
+  ones and a vector after a signal. Sort 1.97 → 1.36 at four and eight
+  units (below).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -764,15 +783,22 @@ variable reads, 177 of 178 insertion, hook, read-only, undo and lexical
 tests with the new one (the other is the save-buffer test below); for
 undo's lazy entries and the ASCII copies, 558 of 559 undo, string-coding,
 multibyte, unibyte, handler, message, insertion and dump tests (the other
-is the print-charset test below). CI's full gate and frozen runs are the
-merge evidence.
+is the print-charset test below); for the unrooted op arguments, the
+sort arguments and the sort port, 583 of 583 sort, byte-code, VM, root,
+collection, weak-table, undo, string-coding and handler tests (on the
+build before the signal handling and argument changes) and 13 of 13 sort
+tests on the final build, with the five new ones. Under
+`EMAXX_GC_STRESS` (a collection at every `maybe_gc`) the 47 VM unit
+tests pass; the 49 byte-code tests that boot a full batch interpreter
+take hours each under it and were not run to the end. CI's full gate and
+frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.93 |
-| upstream-sort | 3.26 | 1.86 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.85 |
+| upstream-sort (4 units) | 3.26 (at 1 unit) | 1.36 |
 | interpreted-calls | 2.10 | 1.16 |
 | interpreted-lexical | 2.04 | 1.21 |
 | interpreted-dynamic | 2.14 | 1.31 |
@@ -786,8 +812,15 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | bindat | — | 1.18 |
 | explicit-gc | — | 0.89 |
 
-The table is one full run of all sixteen on `9eb7217`, with sort and
-undo measured again after the C-style variable reads.
+The table is one full run of all sixteen on `9eb7217`, with undo
+measured again after the sort port and sort at four and eight units.
+Sort at one and two units read 1.84 before the port and 1.12 after it,
+but after it Emaxx's two collections fell at both sizes, out of the
+difference, while one of GNU's fell in it; at four and eight units it
+reads 1.97 before (two collections each in the difference) and 1.36
+after (one of Emaxx's, two of GNU's; 1.44 without collections, an
+Emaxx collection costing about twice GNU's). Count each editor's
+collections in a difference before reading a ratio.
 Interpreted calls and lexical read 1.24 to 1.27 across this round's
 builds before the unchecked shell with no change on their path
 (`eval_sub` layout); undo read 2.03 to 2.06 on the same code (the
@@ -955,7 +988,7 @@ this container's GNU build itself disagrees with the expected text (under
   48-byte `ByteCodeObject` in and out of it) and the return 122. GNU's
   setup_frame and Breturn together are about 100: its frame lives in the
   byte-code stack and its running state in registers.
-- **Source interpreter** (lexical 1.21, calls 1.16, sort 1.92): an
+- **Source interpreter** (lexical 1.21, calls 1.16, sort 1.36): an
   iteration of interpreted calls is 3,854 instructions against GNU's
   3,315 (4,022 before the shell's parked test became an assertion and the
   parameters moved beside the frames). What is left is spread: the frame
@@ -965,8 +998,10 @@ this container's GNU build itself disagrees with the expected text (under
   close to their minimum), the subr dispatch through `call_with_facts`,
   and an interpreted call's `funcall_interpreted_lambda` (300), and
   `maybe_gc` at each list form (two thread-local reads and the owning
-  runtime's trigger, where GNU tests one global counter). Sort is mostly this path too:
-  `eval_sub` spends about 400 instructions of its own on each of 473,000
+  runtime's trigger, where GNU tests one global counter). Sort is mostly this path too
+  (`eval_sub` is 44% of it since the port, 118 million instructions a
+  unit at one and two units); before the port
+  `eval_sub` spent about 400 instructions of its own on each of 473,000
   list forms a unit, where GNU's spends 111 on each of 548,000 forms
   (symbols included); per form the backtrace record costs about 65 (the
   push 20, the argument update 27, the pop 12, the debugger-context test
@@ -980,18 +1015,20 @@ this container's GNU build itself disagrees with the expected text (under
   GNU's 147 across Ffuncall, funcall_general and funcall_subr;
   `Value::cons` is 37 against `Fcons`' 27 (the per-cell serial, the
   allocated and mark bits, and a live count GNU does not keep).
-- Undo's remainder (1.93; about 2.42 million instructions a unit
-  against GNU's 1.25 million) is broad: allocation (about 250,000 a unit
-  in malloc and free, plus the rope's `from_str` 93,000; the window
-  configuration snapshot copies its lists on each restore, about 19,000;
-  `ert-set-test` grows a vector each run, about 15,000), the source
-  interpreter (`eval_sub` 181,000 against 90,000), ops run in place
-  (`op_in_place` and `exec_op` about 105,000 for 770 ops, `prim` about
-  110 a call with its argument rooting), plain subr calls (`call_plain`
-  about 196 a call, 340 a unit), byte-code frame entry (290 a call, 165
-  a unit), the string adapters (`decode_bytes`/`encode_text` 57,000) and
-  native code's subr calls (`invoke_subr`, `invoke_native_funcall`
-  65,000).
+- Undo's remainder (1.85; about 2.32 million instructions a unit
+  against GNU's 1.25 million) is broad: allocation (230,000 to 290,000
+  a unit in malloc and free as the allocator's state varies, plus the rope's `from_str` 93,000: a buffer of up
+  to about a kilobyte is one ropey leaf, whose counts ropey rescans on
+  each bounds check, two or three times an insertion or deletion and
+  once a chunk lookup; the window configuration snapshot copies its
+  lists on each restore, about 19,000; `ert-set-test` grows a vector
+  each run, about 15,000), the source interpreter (`eval_sub` 181,000
+  against 90,000), ops run in place (`op_in_place` and `exec_op` about
+  105,000 for 770 ops), plain subr calls (`call_plain` about 196 a call,
+  340 a unit), byte-code frame entry (290 a call, 165 a unit), the
+  message log (about 17,000 a message against GNU's 9,000, mostly the
+  rope's rescans) and native code's subr calls (`invoke_subr`,
+  `invoke_native_funcall` 65,000).
 
 ## How the work is split
 
@@ -1024,8 +1061,9 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 2.10, undo 1.93 to 1.97, sort
-   1.86, bytecode calls 1.85). The remaining costs are listed under "Where the
+   above; worst now bytecode-to-native 2.10, bytecode calls 1.85, undo
+   1.85, native-to-bytecode 1.60, interpreted-to-native 1.46, native-to-
+   interpreted 1.42, sort 1.36). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code
    frames kept in the byte-code stack, as GNU's are, instead of a
@@ -1033,7 +1071,7 @@ and failures are still recorded.
    decoded closure was measured and saves nothing); the interpreter and funcall paths are spread over
    many small steps, each worth about 1%. The source interpreter is now
    the largest shared cost: `eval_sub` is 64 to 71% of interpreted
-   dynamic, cons allocation and the native-to-* loops and 37% of sort, at
+   dynamic, cons allocation and the native-to-* loops and 44% of sort, at
    330 to 400 instructions a list form against GNU's 110. Each step costs
    two to three times GNU's (the 64-byte frame record and its argument
    update, the resolution enum, the descriptor read twice, the generic
@@ -1042,7 +1080,12 @@ and failures are still recorded.
    (resolve, count, check and call with the descriptor read once and the
    frame written once) and a smaller frame record, not more 1% trims.
    Changes to `eval_sub`'s inlined body move its register allocation;
-   measure interpreted calls and lexical with each. Micro-changes measure within
+   measure interpreted calls and lexical with each. Undo's rope rescans
+   (above) would go with a buffer text that keeps a small text in one
+   string with its counts and moves to a rope past a kilobyte or so;
+   `BufferText` keeps the rope private to `buffer.rs`, except the clone
+   `text_rope` lends the regexp, syntax and coding scans.
+   Micro-changes measure within
    about 1% of noise: keep only what moves the counts, record the rest.
    Iterate with instruction counts (callgrind) on the locked workloads for
    both editors; timing pilots at merges. Remaining adapters that show up in

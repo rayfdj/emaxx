@@ -1745,6 +1745,94 @@ fn sort_sorts_in_place_only_when_asked_or_called_with_two_arguments() {
 }
 
 #[test]
+fn sort_calls_the_predicate_in_timsorts_order() {
+    // sort.c's Timsort: every comparison of a short sort in order, then
+    // the count and a positional checksum of the comparisons and of the
+    // result for a long scrambled list with equal keys (runs, binary
+    // insertion and merges), a reversed sort, a vector, and runs that
+    // interleave in blocks (galloping).  A predicate sees these exact
+    // calls, so its side effects and its answers for an inconsistent
+    // order follow GNU's.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((state 7)
+                  (rand (lambda (m)
+                          (setq state (% (+ (* state 1103515245) 12345) 2147483648))
+                          (% (/ state 65536) m)))
+                  (keyed (lambda (n m)
+                           (let ((i -1) l)
+                             (dotimes (_ n) (push (cons (funcall rand m) (setq i (1+ i))) l))
+                             l)))
+                  (log nil)
+                  (pred (lambda (a b) (push (list (cdr a) (cdr b)) log) (< (car a) (car b))))
+                  (sum (lambda (items)
+                         (let ((sum 0))
+                           (dolist (item items sum)
+                             (setq sum (% (+ (* sum 31)
+                                             (if (consp item)
+                                                 (+ (* 1009 (car item)) (cadr item))
+                                               item))
+                                          1000000007))))))
+                  (traced (lambda (sorted)
+                            (prog1 (list (length log) (funcall sum (nreverse log))
+                                         (funcall sum (mapcar #'cdr sorted)))
+                              (setq log nil)))))
+             (list
+              (progn (sort (funcall keyed 12 4) pred) (prog1 (nreverse log) (setq log nil)))
+              (funcall traced (sort (funcall keyed 300 10) pred))
+              (funcall traced (sort (funcall keyed 100 3) :lessp pred :reverse t))
+              (funcall traced (append (sort (vconcat (funcall keyed 150 1000)) :lessp pred) nil))
+              (funcall traced
+                       (sort (mapcar (lambda (k) (cons k k))
+                                     (append (number-sequence 0 200 2)
+                                             (number-sequence 1 201 2)
+                                             (number-sequence 300 250 -1)))
+                             pred))))"#,
+        "(((10 11) (9 10) (9 11) (9 10) (8 9) (8 11) (7 8) (7 11) (6 8) (6 11) (6 7) (5 7) \
+         (5 9) (5 8) (4 5) (4 6) (4 11) (3 7) (3 11) (3 6) (2 7) (2 8) (2 9) (2 10) (1 7) \
+         (1 11) (1 3) (0 7) (0 9) (0 10) (0 2)) (1873 894399106 682825943) \
+         (488 235025414 924669266) (892 327427164 362282841) (476 832379101 213032295))",
+        "Timsort comparison schedule",
+    );
+}
+
+#[test]
+fn a_signal_from_the_predicate_leaves_a_vector_as_timsort_left_it() {
+    // sort.c works in a vector's own slots.  A signal while a merge's
+    // temporary run sits in the C stack array abandons the run, leaving
+    // stale copies (994 distinct values of 1,000 here); once a merge has
+    // outgrown that array, the cleanup puts the run back.  A list is sorted
+    // in a copy (fns.c:sort_list) and keeps its order.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((orig (mapcar (lambda (i) (% (* i 37) 1001)) (number-sequence 1 1000)))
+                  (sum (lambda (items)
+                         (let ((s 0))
+                           (dolist (x items s) (setq s (% (+ (* s 31) x) 1000000007))))))
+                  (run (lambda (stop)
+                         (let ((v (vconcat orig)) (l (copy-sequence orig)) (n 0))
+                           (list (condition-case nil
+                                     (progn (sort v (lambda (a b)
+                                                      (when (= (setq n (1+ n)) stop)
+                                                        (error "Stop"))
+                                                      (< a b)))
+                                            'done)
+                                   (error n))
+                                 (funcall sum (append v nil))
+                                 (length (delete-dups (append v nil)))
+                                 (progn (setq n 0)
+                                        (condition-case nil
+                                            (sort l (lambda (a b)
+                                                      (when (= (setq n (1+ n)) stop)
+                                                        (error "Stop"))
+                                                      (< a b)))
+                                          (error nil))
+                                        (equal l orig)))))))
+             (mapcar run '(50 1500 9000)))"#,
+        "((50 329895207 1000 t) (1500 402671903 994 t) (done 436778830 1000 nil))",
+        "vector after a sort predicate's signal",
+    );
+}
+
+#[test]
 fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let form = Reader::new(

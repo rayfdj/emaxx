@@ -655,8 +655,27 @@ define_dispatch!(
                     }
                 }
                 let (kind, items) = sort_sequence_kind_and_items(&args[0])?;
-                let sorted =
-                    sort_sequence_items(interp, items, key.as_ref(), lessp.as_ref(), reverse, env)?;
+                let sorted = match sort_sequence_items(
+                    interp,
+                    items,
+                    key.as_ref(),
+                    lessp.as_ref(),
+                    reverse,
+                    env,
+                ) {
+                    Ok(sorted) => sorted,
+                    Err(failure) => {
+                        // sort.c permutes a vector's own slots: a signal
+                        // leaves one sorted in place as far as the sort got.
+                        if in_place
+                            && matches!(kind, SortSequenceKind::Vector(_))
+                            && let Some(items) = &failure.items
+                        {
+                            write_sorted_sequence(&args[0], &kind, items)?;
+                        }
+                        return Err(failure.error);
+                    }
+                };
                 if in_place {
                     write_sorted_sequence(&args[0], &kind, &sorted)?;
                     Ok(args[0])
