@@ -419,6 +419,21 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   ranges: equal, differing, prefix either way, empty, reversed, another
   buffer, case kept. Measured and dropped: one borrow of the state in
   `begin_funcall` (no case moved).
+- Ffuncall's frame (unnamed and named calls, and native code's Ffuncall)
+  is written and popped in place, as eval_sub's is, instead of through a
+  scope helper with a closure and a drop guard, which cost about 70
+  instructions a call. The guard also popped the frame when a caught Rust
+  panic unwound through it; no production path continues after a panic
+  (the batch driver reports it and ends, the module ABI aborts), and
+  eval_sub never had the guard, so the scoped form is kept only for the
+  tests that unwind through a borrowed frame. A form's head and `eval`'s
+  argument fast path find a symbol by its tag and one bound
+  (`Value::symbol_cell`) instead of the whole kind dispatch. mapcar 1.85
+  → 1.54, sort 2.18 → 2.14, bindat 1.35 → 1.33, native-to-interpreted
+  1.64 → 1.62, native-to-bytecode 1.82 → 1.80, native execution 1.21 →
+  1.20, interpreted calls 1.38 → 1.36. Measured and dropped: leaving a
+  generic byte op's operands on the byte-code stack for its subr instead
+  of rooting a copy (undo moved 0.2%).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -436,18 +451,18 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | Case | Before | Now |
 | --- | --- | --- |
 | upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.37–2.42 |
-| upstream-sort | 3.26 | 2.18 |
-| interpreted-calls | 2.10 | 1.38 |
+| upstream-sort | 3.26 | 2.14 |
+| interpreted-calls | 2.10 | 1.36 |
 | interpreted-lexical | 2.04 | 1.35 |
 | interpreted-dynamic | 2.14 | 1.48 |
-| mapcar | 2.95 | 1.85 |
+| mapcar | 2.95 | 1.54 |
 | bytecode-calls | 3.30 | 2.19 |
 | bytecode-to-native | — | 2.66 |
 | interpreted-to-native | — | 1.77 |
-| native-to-interpreted / -bytecode | — | 1.64 / 1.82 |
+| native-to-interpreted / -bytecode | — | 1.62 / 1.80 |
 | cons-allocation / list-traversal | 2.24 / — | 1.51 / 1.47 |
-| native-execution | — | 1.21 |
-| bindat | — | 1.35 |
+| native-execution | — | 1.20 |
+| bindat | — | 1.33 |
 | explicit-gc | — | 1.01 |
 
 The table is the full run on `41be443`. Undo moves between 2.37 and
@@ -489,7 +504,11 @@ frozen 7,928 of 7,928 across 519 files, no unsuccessful execution (run
 counts, Bcall subrs, in-loop varref/varset): full Rust gate passed (run
 38819256699; 3,116 tests in the counted groups plus bins and
 integration), frozen 7,928 of 7,928 across 519 files, no unsuccessful
-execution (run 38819259588). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+execution (run 38819259588). **CI on `41be443`** (covering `6761153`
+too: word tests, closures from funcall, the opcode match): full Rust gate
+passed (run 38828973274; 3,118 tests in the counted groups plus bins and
+integration), frozen 7,928 of 7,928 across 519 files, no unsuccessful
+execution (run 38828975757). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -542,8 +561,9 @@ this container's GNU build itself disagrees with the expected text (under
   thread-local pointer (9), the frame record (17) and kind dispatches. An
   interpreted call adds about 386 in `funcall_interpreted_lambda` and 90
   for the frame detail that records its locals.
-- **Ffuncall into a subr** (mapcar 1.85): about 270 per call against GNU's
-  147 across Ffuncall, funcall_general and funcall_subr; `Value::cons` is
+- **Ffuncall into a subr** (mapcar 1.54 after the in-place frame): about
+  200 per call against GNU's 147 across Ffuncall, funcall_general and
+  funcall_subr; `Value::cons` is
   51 against `Fcons`' 27 (five counters, a per-cell serial and the mark
   bit per cons).
 - Undo's remainder is broad: the byte-code slow path, `prim`'s name

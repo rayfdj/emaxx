@@ -2281,6 +2281,30 @@ impl Value {
         matches!(self.kind(), Kind::Nil | Kind::T | Kind::Symbol(_))
     }
 
+    /// The symbol a word names, without nil, t and the unbound marker:
+    /// `Kind::Symbol' by the tag and one compare, since every symbol cell
+    /// lies far above those small words.
+    #[inline(always)]
+    pub(crate) fn symbol_cell(self) -> Option<SymbolName> {
+        if self.0 & TAG_MASK == TAG_SYMBOL && self.0 >= 0x80 {
+            // SAFETY: a symbol-tagged word other than nil, t and unbound
+            // names an allocated symbol cell, as in `kind'.
+            Some(SymbolName::from_ref(unsafe {
+                crate::lisp::alloc::SymbolRef::from_raw(
+                    self.0 as *mut crate::lisp::alloc::SymbolCell,
+                )
+            }))
+        } else {
+            None
+        }
+    }
+
+    /// nil, t or a fixnum: the immediates `eval' returns as they are.
+    #[inline(always)]
+    pub(crate) fn is_nil_t_or_fixnum(self) -> bool {
+        self.0 == 0 || self.0 == Value::T.0 || self.0 & 3 == TAG_INT0
+    }
+
     /// `CONSP': the tag alone.
     #[inline(always)]
     pub fn is_cons(&self) -> bool {

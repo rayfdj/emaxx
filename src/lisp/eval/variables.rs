@@ -2447,7 +2447,11 @@ impl Interpreter {
 
     /// eval.c:record_in_backtrace borrows the activation's arguments.
     /// Keep that borrow inside this scope, including Rust panic unwinding.
-    #[inline]
+    /// Production calls write and pop their frame in place (a Rust panic
+    /// ends the process: the batch driver reports it and the module ABI
+    /// aborts); this scoped form, which also pops on a caught unwind, is
+    /// kept for the tests that unwind through a borrowed frame.
+    #[cfg(test)]
     pub(crate) fn with_backtrace_frame<R>(
         &mut self,
         function: Value,
@@ -2457,7 +2461,7 @@ impl Interpreter {
         self.with_backtrace_arguments(function, FrameArgs::borrowed(args), body)
     }
 
-    #[inline]
+    #[cfg(test)]
     fn with_backtrace_arguments<R>(
         &mut self,
         function: Value,
@@ -2527,21 +2531,17 @@ impl Interpreter {
         }
     }
 
-    /// The same, for native Ffuncall's word vector.
-    pub(crate) fn with_native_backtrace_frame<R>(
-        &mut self,
-        function: Value,
-        args: &[usize],
-        body: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        self.with_backtrace_arguments(
+    /// The frame native Ffuncall records: FUNCTION with the native words.
+    #[inline(always)]
+    pub(crate) fn push_native_backtrace_frame(&mut self, function: Value, args: &[usize]) {
+        self.push_plain_backtrace_frame(
             function,
             FrameArgs::NativeWords {
                 ptr: args.as_ptr(),
                 len: args.len(),
             },
-            body,
-        )
+            true,
+        );
     }
 
     /// A frame that outlives the scope holding its arguments (a byte op

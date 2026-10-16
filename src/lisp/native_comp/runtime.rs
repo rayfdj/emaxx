@@ -2143,84 +2143,87 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
         remember_helper_error(active, error);
         return Some(0);
     }
-    let result =
-        interpreter.with_native_backtrace_frame(original_function, call_arguments, |interpreter| {
-            interpreter.capture_current_backtrace_context(None, environment, None);
+    // The frame is written and popped in place, as eval_sub's is.
+    let depth = interpreter.backtrace_frames_len();
+    interpreter.push_native_backtrace_frame(original_function, call_arguments);
+    let result = {
+        interpreter.capture_current_backtrace_context(None, environment, None);
 
-            // Ffuncall calls maybe_gc after record_in_backtrace and before
-            // dispatch; the registers are spilled for the collector only
-            // once the trigger is reached (`maybe_gc_active').
-            if !runtime.heap.collection_cannot_be_due() {
-                unsafe { emaxx_native_gc_trampoline() };
+        // Ffuncall calls maybe_gc after record_in_backtrace and before
+        // dispatch; the registers are spilled for the collector only
+        // once the trigger is reached (`maybe_gc_active').
+        if !runtime.heap.collection_cannot_be_due() {
+            unsafe { emaxx_native_gc_trampoline() };
+        }
+        // The collection's hooks/finalizers may replace the function cell.
+        // Resolve it only after collection, including changes of callable
+        // kind. The fallback reuses this same Ffuncall frame and depth.
+        let result = match direct_funcall_target(interpreter, environment, &original_function) {
+            Some(target) => target.invoke(active, call_arguments),
+            None => {
+                let decoded = call_arguments
+                    .iter()
+                    .map(|word| {
+                        runtime
+                            .heap
+                            .decode(*word)
+                            .map_err(|error| super::lisp::native_ice(&error))
+                    })
+                    .collect::<Result<smallvec::SmallVec<[Value; 8]>, _>>();
+                decoded
+                    .and_then(|args| {
+                        interpreter.funcall_body(original_function, &args, environment)
+                    })
+                    .and_then(|value| {
+                        runtime
+                            .heap
+                            .encode(&value)
+                            .map_err(|error| super::lisp::native_ice(&error))
+                    })
             }
-            // The collection's hooks/finalizers may replace the function cell.
-            // Resolve it only after collection, including changes of callable
-            // kind. The fallback reuses this same Ffuncall frame and depth.
-            let result = match direct_funcall_target(interpreter, environment, &original_function) {
-                Some(target) => target.invoke(active, call_arguments),
-                None => {
-                    let decoded = call_arguments
-                        .iter()
-                        .map(|word| {
-                            runtime
-                                .heap
-                                .decode(*word)
-                                .map_err(|error| super::lisp::native_ice(&error))
-                        })
-                        .collect::<Result<smallvec::SmallVec<[Value; 8]>, _>>();
-                    decoded
-                        .and_then(|args| {
-                            interpreter.funcall_body(original_function, &args, environment)
-                        })
+        };
+        let result = match result.map_err(LispError::into_kind) {
+            Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
+                // eval.c:Ffuncall calls call_debugger with (exit VALUE) before
+                // dropping its backtrace record when backtrace-debug marked the
+                // frame.  Keep the native word live until the debugger receives
+                // the same Lisp object, then encode the debugger's return value.
+                let value = runtime
+                    .heap
+                    .decode(word)
+                    .map_err(|error| super::lisp::native_ice(&error));
+                value.and_then(|value| {
+                    let argument = Value::list([Value::symbol("exit"), value]);
+                    interpreter
+                        .call_debugger(argument, environment)
                         .and_then(|value| {
                             runtime
                                 .heap
                                 .encode(&value)
                                 .map_err(|error| super::lisp::native_ice(&error))
                         })
-                }
-            };
-            let result = match result.map_err(LispError::into_kind) {
-                Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
-                    // eval.c:Ffuncall calls call_debugger with (exit VALUE) before
-                    // dropping its backtrace record when backtrace-debug marked the
-                    // frame.  Keep the native word live until the debugger receives
-                    // the same Lisp object, then encode the debugger's return value.
-                    let value = runtime
-                        .heap
-                        .decode(word)
-                        .map_err(|error| super::lisp::native_ice(&error));
-                    value.and_then(|value| {
-                        let argument = Value::list([Value::symbol("exit"), value]);
-                        interpreter
-                            .call_debugger(argument, environment)
-                            .and_then(|value| {
-                                runtime
-                                    .heap
-                                    .encode(&value)
-                                    .map_err(|error| super::lisp::native_ice(&error))
-                            })
-                    })
-                }
-                Ok(word) => Ok(word),
-                Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
-                    Err(LispError::from(error))
-                }
-                Err(error) => match interpreter
-                    .dispatch_handler_bindings(LispError::from(error), environment)
-                {
+                })
+            }
+            Ok(word) => Ok(word),
+            Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
+                Err(LispError::from(error))
+            }
+            Err(error) => {
+                match interpreter.dispatch_handler_bindings(LispError::from(error), environment) {
                     Ok(value) => runtime
                         .heap
                         .encode(&value)
                         .map_err(|error| super::lisp::native_ice(&error)),
                     Err(error) => Err(error),
-                },
-            };
-            if let Err(error) = &result {
-                interpreter.capture_batch_error_backtrace(error, environment);
+                }
             }
-            result
-        });
+        };
+        if let Err(error) = &result {
+            interpreter.capture_batch_error_backtrace(error, environment);
+        }
+        result
+    };
+    interpreter.truncate_backtrace_frames(depth);
     interpreter.end_funcall();
 
     Some(match result {
