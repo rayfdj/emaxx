@@ -27806,6 +27806,57 @@ fn kept_buffer_counts_keyboard_variables_and_symbol_binds_stay_gnus() {
 }
 
 #[test]
+fn funcall_reaches_interpreted_closures_like_funcall_lambda() {
+    // Ffuncall, apply, sort and mapcar call an interpreted closure (a value
+    // or a symbol's live cell) through funcall_lambda: the values, optional
+    // and rest parameters, aliases, arity errors and recorded frames stay
+    // GNU's.
+    let program = r#"(progn
+  (defun zz-fc-add (a &optional b &rest more) (list a b more))
+  (defalias 'zz-fc-alias 'zz-fc-add)
+  (defun zz-fc-frames (&rest args)
+    (let ((seen nil) (n 0))
+      (mapbacktrace (lambda (evald fun fargs _flags)
+                      (when (and (< n 6) (memq fun '(funcall apply zz-fc-frames zz-fc-alias)))
+                        (push (list evald fun fargs) seen))
+                      (setq n (1+ n))))
+      (list args (nreverse seen))))
+  (let ((f (lambda (x y) (list y x))))
+    (list (funcall f 1 2)
+          (apply f '(3 4))
+          (funcall 'zz-fc-add 1)
+          (funcall #'zz-fc-add 1 2 3 4)
+          (funcall 'zz-fc-alias 5)
+          (sort (list 3 1 2) (lambda (a b) (< a b)))
+          (mapcar (lambda (x) (* x x)) '(1 2 3))
+          (condition-case err (funcall f 1) (error (car err)))
+          (condition-case err (funcall 'zz-fc-add) (error (car err)))
+          (funcall 'zz-fc-frames 1 2)
+          (apply #'zz-fc-frames '(3 4)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((2 1) (4 3) (1 nil nil) (1 2 (3 4)) (5 nil nil) (1 2 3) (1 4 9) wrong-number-of-arguments wrong-number-of-arguments ((1 2) ((t zz-fc-frames (1 2)) (t funcall (zz-fc-frames 1 2)))) ((3 4) ((t zz-fc-frames (3 4)) (t apply (zz-fc-frames (3 4))))))",
+        "funcall into interpreted closures",
+    );
+}
+
+#[test]
+fn let_finds_local_special_declarations_by_symbol_like_flet() {
+    // Flet's Fmemq of the variable in the lexical environment: a locally
+    // special uninterned symbol leaves the interned one of that name
+    // lexical, and the declared symbol itself binds dynamically.
+    let program = r#"(let ((u (make-symbol "zz-ls")))
+  (list (eval `(progn (defvar ,u) (let ((zz-ls 5)) (list (boundp 'zz-ls) zz-ls))) t)
+        (eval '(progn (defvar zz-ls2) (let ((zz-ls2 6)) (list (boundp 'zz-ls2) zz-ls2))) t)
+        (eval `(progn (defvar ,u) (let ((,u 7)) (list (boundp ',u) (symbol-value ',u)))) t)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((nil 5) (t 6) (t 7))",
+        "local special declarations by symbol",
+    );
+}
+
+#[test]
 fn unused_bytecode_destinations_follow_actual_control_flow() {
     let fixture = include_str!("../../../tests/fixtures/bytecode-unused-destinations.el");
     let program = fixture

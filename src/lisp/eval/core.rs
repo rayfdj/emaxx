@@ -281,9 +281,10 @@ impl Interpreter {
     /// evaluation that test is inlined into every caller, so an argument
     /// that is a variable or a constant costs its lookup alone and a form
     /// takes the out-of-line path.
-    #[inline]
+    #[inline(always)]
     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
-        if self.lisp_eval_depth != 0 && self.pending_termination.is_none() {
+        let state: &InterpreterState = self;
+        if state.lisp_eval_depth != 0 && state.pending_termination.is_none() {
             match expr.kind() {
                 Kind::Symbol(name) => return self.lookup_symbol(&name, env),
                 Kind::Nil | Kind::T | Kind::Integer(_) => return Ok(*expr),
@@ -295,11 +296,14 @@ impl Interpreter {
 
     #[inline(never)]
     fn eval_sub(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
-        let outermost = self.lisp_eval_depth == 0;
+        // The entry tests read the state through one borrow.
+        let state: &InterpreterState = self;
+        let outermost = state.lisp_eval_depth == 0;
+        let terminating = state.pending_termination.is_some();
         if outermost {
             self.clear_batch_error_backtrace();
         }
-        if self.pending_termination.is_some() {
+        if terminating {
             return Err(LispError::Terminate(
                 self.pending_termination()
                     .cloned()
@@ -309,7 +313,7 @@ impl Interpreter {
         // eval_sub: a symbol or a self-evaluating object returns before the
         // quit, collection and depth tests; the body below is inlined here,
         // one function as eval_sub is (its result crossed two frames before).
-        if !matches!(expr.kind(), Kind::Cons(_)) {
+        if !expr.is_cons() {
             let result = self.eval_inner(expr, env);
             if outermost && result.is_ok() {
                 self.clear_batch_error_backtrace();
@@ -324,7 +328,10 @@ impl Interpreter {
         // scan; the ordinary interpreter collects when its consing counter
         // says alloc.c would.
         crate::lisp::native_comp::maybe_gc(self, env);
-        self.lisp_eval_depth += 1;
+        let state: &mut InterpreterState = self;
+        state.lisp_eval_depth += 1;
+        let deeper =
+            i64::try_from(state.lisp_eval_depth).unwrap_or(i64::MAX) > state.max_lisp_eval_depth;
         // eval.c:2504-2509.  GNU increments separately in `eval_sub' and
         // `Ffuncall'; this is the eval_sub half.  Public
         // `call_function_value' below owns the Ffuncall half, while direct
@@ -342,7 +349,7 @@ impl Interpreter {
         // raised a plain `error' where GNU raises `excessive-lisp-nesting'
         // carrying the depth -- a condition this tree already defines
         // (eval.rs:732) and never signalled.
-        if self.lisp_eval_depth_exceeded() {
+        if deeper && self.lisp_eval_depth_exceeded() {
             let reached = self.lisp_eval_depth;
             self.lisp_eval_depth -= 1;
             return Err(LispError::SignalValue(Value::list([
@@ -472,7 +479,14 @@ impl Interpreter {
                     Some(value) => self.callable_symbol_name(value, env),
                 };
                 // Regular function call
-                self.eval_call(expr, head_value.as_ref(), callable_name, args_cell, env)
+                self.eval_call(
+                    expr,
+                    head,
+                    head_value.as_ref(),
+                    callable_name,
+                    args_cell,
+                    env,
+                )
             }
         }
     }
@@ -546,6 +560,7 @@ impl Interpreter {
     pub(super) fn eval_call(
         &mut self,
         source_form: &Value,
+        original_function: Value,
         head: Option<&Value>,
         callable_name: Option<SymbolName>,
         args_list: Option<SharedCons>,
@@ -565,7 +580,6 @@ impl Interpreter {
         if unevald_frame {
             self.push_unevaluated_backtrace_frame(source_form);
         }
-        let original_function = source_form.cons_values().expect("a call is a cons").0;
         let original_args = args_list.map_or(Value::Nil, Value::Cons);
         let prepared = loop {
             let resolution = if let Some(name) = callable_name.as_ref() {
@@ -1076,7 +1090,7 @@ impl Interpreter {
             if funcall {
                 crate::lisp::native_comp::maybe_gc(interp, env);
             }
-            let result = match interp.call_subr_directly(&func, args, env, funcall) {
+            let result = match interp.call_subr_directly(&func, original_name, args, env, funcall) {
                 Some(result) => result,
                 None => interp.call_function_body(func, original_name, args, env, funcall),
             };
@@ -1093,6 +1107,7 @@ impl Interpreter {
     fn call_subr_directly(
         &mut self,
         func: &Value,
+        original_name: Option<CallName<'_>>,
         args: &[Value],
         env: &mut Env,
         funcall: bool,
@@ -1100,8 +1115,13 @@ impl Interpreter {
         if self.pending_termination().is_some() || profile_path().is_some() {
             return None;
         }
-        let Kind::Symbol(name) = func.kind() else {
-            return None;
+        let name = match func.kind() {
+            Kind::Symbol(name) => name,
+            // funcall_lambda for an interpreted closure called as a value.
+            Kind::Closure(closure) if !closure.is_bytecode() => {
+                return Some(self.funcall_interpreted_lambda(*func, original_name, args, env));
+            }
+            _ => return None,
         };
         let function = self.globals.function(&name)?;
         match function.kind() {
@@ -1114,6 +1134,15 @@ impl Interpreter {
             Kind::NativeFunction(native) => Some(crate::lisp::native_comp::call_function(
                 self, env, native, args,
             )),
+            Kind::Closure(closure) if !closure.is_bytecode() => {
+                let name = CallName::Symbol(&name);
+                Some(self.funcall_interpreted_lambda(
+                    function,
+                    original_name.or(Some(name)),
+                    args,
+                    env,
+                ))
+            }
             _ => None,
         }
     }

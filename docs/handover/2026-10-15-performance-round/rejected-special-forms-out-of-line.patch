@@ -1,0 +1,84 @@
+diff --git a/src/lisp/eval/control_forms.rs b/src/lisp/eval/control_forms.rs
+index a9994d8..cbffaa5 100644
+--- a/src/lisp/eval/control_forms.rs
++++ b/src/lisp/eval/control_forms.rs
+@@ -16,6 +16,7 @@ impl Interpreter {
+         Ok(value)
+     }
+ 
++    #[inline(never)]
+     pub(super) fn sf_if(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+         // Fif: eval_sub (XCAR (args)); then Fcar (XCDR (args)) or Fprogn
+         // (Fcdr (XCDR (args))).
+@@ -33,6 +34,7 @@ impl Interpreter {
+         }
+     }
+ 
++    #[inline(never)]
+     pub(super) fn sf_cond(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+         for clause in list_forms(args) {
+             let clause_items = clause.to_vec()?;
+@@ -50,6 +52,7 @@ impl Interpreter {
+         Ok(Value::Nil)
+     }
+ 
++    #[inline(never)]
+     pub(super) fn sf_and(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+         let mut result = Value::T;
+         for form in list_forms(args) {
+@@ -61,6 +64,7 @@ impl Interpreter {
+         Ok(result)
+     }
+ 
++    #[inline(never)]
+     pub(super) fn sf_or(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+         for form in list_forms(args) {
+             let val = self.eval(&form, env)?;
+@@ -147,6 +151,7 @@ impl Interpreter {
+         }
+     }
+ 
++    #[inline(never)]
+     pub(super) fn sf_prog1(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+         let Some((first, _)) = list_next(args) else {
+             return Ok(Value::Nil);
+@@ -201,6 +206,7 @@ impl Interpreter {
+         }
+     }
+ 
++    #[inline(never)]
+     pub(super) fn sf_let(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+         // eval.c:Flet uses a Lisp-word array for values, then rereads the
+         // binding list. Every inline word is initialized, including slots
+@@ -302,6 +308,7 @@ impl Interpreter {
+         }
+     }
+ 
++    #[inline(never)]
+     pub(super) fn sf_letstar(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+         // eval.c FletX: FOR_EACH_TAIL (varlist) -- a non-list signals
+         // wrong-type-argument listp.
+diff --git a/src/lisp/eval/definitions.rs b/src/lisp/eval/definitions.rs
+index 97da22a..7ce7d58 100644
+--- a/src/lisp/eval/definitions.rs
++++ b/src/lisp/eval/definitions.rs
+@@ -3,6 +3,7 @@ use super::*;
+ use crate::lisp::types::Kind;
+ 
+ impl Interpreter {
++    #[inline(never)]
+     pub(super) fn sf_setq(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+         self.sf_setq_internal(args, env, false)
+     }
+diff --git a/src/lisp/eval/loops.rs b/src/lisp/eval/loops.rs
+index 20632d1..15370cb 100644
+--- a/src/lisp/eval/loops.rs
++++ b/src/lisp/eval/loops.rs
+@@ -1,6 +1,7 @@
+ use super::*;
+ 
+ impl Interpreter {
++    #[inline(never)]
+     pub(super) fn sf_while(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
+         // GNU eval.c's Fwhile takes an unevalled `args' whose car is TEST;
+         // `(while)' therefore signals wrong-number-of-arguments rather than

@@ -109,6 +109,7 @@ pub enum VectorTag {
 }
 
 impl VectorTag {
+    #[inline(always)]
     fn from_word(word: usize) -> Self {
         match word {
             1 => Self::Free,
@@ -236,6 +237,7 @@ impl VectorHeader {
         self.tag() != VectorTag::Free && self.mark_bit().is_marked(epoch)
     }
 
+    #[inline(always)]
     fn tag(&self) -> VectorTag {
         if self.size & PSEUDOVECTOR_FLAG == 0 {
             VectorTag::Normal

@@ -2025,13 +2025,16 @@ fn improper_environment(environment: &Value, circular: bool) -> LispError {
 /// Flet's `Fmemq (var, Vinternal_interpreter_environment)': whether NAME
 /// is an entry of the environment itself, a bare symbol declared locally
 /// special.
-pub(crate) fn environment_declares_special(environment: &Value, name: &str) -> bool {
+/// Flet's `Fmemq (var, Vinternal_interpreter_environment)': whether SYMBOL
+/// itself (EQ, its word) is declared special in the lexical environment.
+pub(crate) fn environment_declares_special(environment: &Value, symbol: &SymbolName) -> bool {
+    let target = symbol.identity_ptr() | TAG_SYMBOL;
     let mut tail = match environment.kind() {
         Kind::Cons(cell) => cell,
         _ => return false,
     };
     loop {
-        if matches!(tail.car.get().kind(), Kind::Symbol(entry) if entry.as_str() == name) {
+        if tail.car.get().word() == target {
             return true;
         }
         let next = match tail.cdr.get().kind() {
@@ -2256,8 +2259,10 @@ impl Value {
 
     // Predicates
 
+    /// `NILP': nil is the word zero.
+    #[inline(always)]
     pub fn is_nil(&self) -> bool {
-        matches!(self.kind(), Kind::Nil)
+        self.0 == 0
     }
 
     pub fn is_truthy(&self) -> bool {
@@ -2276,12 +2281,16 @@ impl Value {
         matches!(self.kind(), Kind::Nil | Kind::T | Kind::Symbol(_))
     }
 
+    /// `CONSP': the tag alone.
+    #[inline(always)]
     pub fn is_cons(&self) -> bool {
-        matches!(self.kind(), Kind::Cons(_))
+        self.0 & TAG_MASK == TAG_CONS
     }
 
+    /// `LISTP': nil or a cons, by the word alone.
+    #[inline(always)]
     pub fn is_list(&self) -> bool {
-        matches!(self.kind(), Kind::Nil | Kind::Cons(_))
+        self.0 == 0 || self.0 & TAG_MASK == TAG_CONS
     }
 
     // Accessors
@@ -3175,7 +3184,10 @@ mod tests {
         assert!(
             matches!(tail.kind(), Kind::Cons(cell) if matches!(outer.environment().kind(), Kind::Cons(o) if SharedCons::ptr_eq(&cell, &o)))
         );
-        assert!(!environment_declares_special(frame.environment(), "cell"));
+        assert!(!environment_declares_special(
+            frame.environment(),
+            &SymbolName::intern_str("cell")
+        ));
     }
 
     #[test]

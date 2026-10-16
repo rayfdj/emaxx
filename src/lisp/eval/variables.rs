@@ -571,9 +571,9 @@ impl Interpreter {
     /// whether NAME is declared locally special in the current
     /// environment. The Lisp environment itself is authoritative, including
     /// bare symbols installed or mutated after a closure was constructed.
-    pub(crate) fn local_special_active(&self, name: &str, env: &Env) -> bool {
+    pub(crate) fn local_special_active(&self, symbol: &SymbolName, env: &Env) -> bool {
         crate::lisp::types::current_environment(env).is_some_and(|environment| {
-            crate::lisp::types::environment_declares_special(environment, name)
+            crate::lisp::types::environment_declares_special(environment, symbol)
         })
     }
 
@@ -598,7 +598,7 @@ impl Interpreter {
     pub(crate) fn binding_is_dynamic_symbol(&self, symbol: &SymbolName, env: &Env) -> bool {
         self.lambda_capture_override() == Some(false)
             || self.is_special_variable_symbol(symbol)
-            || self.local_special_active(symbol.as_str(), env)
+            || self.local_special_active(symbol, env)
     }
 
     /// Only the object registered by a C initializer owns its dedicated slot.
@@ -2565,6 +2565,7 @@ impl Interpreter {
     /// eval.c's set_backtrace_args on the frame eval_sub recorded before
     /// the arguments were evaluated: the frame now names the function and
     /// holds the evaluated arguments (nargs no longer UNEVALLED).
+    #[inline(always)]
     pub(super) fn set_backtrace_args(&mut self, function: Value, args: &[Value]) {
         if let Some(frame) = self.backtrace_frames.last_mut() {
             frame.function = FrameFunction::Owned(function);

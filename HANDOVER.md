@@ -386,6 +386,32 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   needs one compare fewer per op (it still range-checks: it keeps the 64
   constant opcodes as one range outside the table). Undo 2.45 → 2.37,
   bytecode calls 2.25 → 2.19, bytecode-to-native 2.72 → 2.68.
+- `NILP`, `CONSP` and `LISTP` test the word (nil is the word zero) instead
+  of decoding the whole kind, which compiled to a jump table or two tests
+  at many sites; `eval_sub` and `eval` read their entry and depth tests
+  through one borrow of the interpreter state instead of one per field
+  (each a parked-shell test); `eval_call` takes the form's head from
+  `eval_sub` instead of decoding the form again; Ffuncall (and so `apply`,
+  `sort`, `mapcar`) calls an interpreted closure, given as a value or
+  found in a symbol's live cell, through `funcall_interpreted_lambda` at
+  once, as funcall_general calls funcall_lambda; `let` finds a local
+  special declaration by the symbol's word (Flet's Fmemq) instead of
+  comparing names; `eval`, `set_backtrace_args` and the vector header's
+  tag decoding are always inlined. Interpreted lexical 1.44 → 1.35, calls
+  1.45 → 1.38, cons allocation 1.61 → 1.52, sort 2.31 → 2.21,
+  native-to-interpreted 1.71 → 1.66, bytecode-to-native 2.68 → 2.64.
+  GNU-compared tests of closures called through funcall, apply, sort and
+  mapcar (values, optional and rest parameters, an alias, arity errors
+  and the recorded frames) and of local special declarations by symbol.
+  Rejected: moving the hot special forms out of line so that
+  `eval_native_form` is a thin dispatcher (its prologue and epilogue cost
+  about 20 instructions a form); each form's own frame cost more
+  (lexical +1.8%, cons allocation +2.5%); patch
+  `docs/handover/2026-10-15-performance-round/rejected-special-forms-out-of-line.patch`.
+  Also rejected: decoding a symbol word with one `< 128` test before the
+  nil/t/unbound compares, and `SYMBOLP` as a tag test (lexical +1.3%,
+  cons allocation +1.2%, no case better); patch
+  `docs/handover/2026-10-15-performance-round/rejected-symbol-tag-tests.patch`.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -403,16 +429,16 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | Case | Before | Now |
 | --- | --- | --- |
 | upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.37 |
-| upstream-sort | 3.26 | 2.31 |
-| interpreted-calls | 2.10 | 1.45 |
-| interpreted-lexical | 2.04 | 1.44 |
+| upstream-sort | 3.26 | 2.21 |
+| interpreted-calls | 2.10 | 1.38 |
+| interpreted-lexical | 2.04 | 1.35 |
 | interpreted-dynamic | 2.14 | 1.58 |
 | mapcar | 2.95 | 1.82 |
 | bytecode-calls | 3.30 | 2.19 |
-| bytecode-to-native | — | 2.68 |
+| bytecode-to-native | — | 2.64 |
 | interpreted-to-native | — | 1.85 |
-| native-to-interpreted / -bytecode | — | 1.71 / 1.90 |
-| cons-allocation / list-traversal | 2.24 / — | 1.61 / 1.55 |
+| native-to-interpreted / -bytecode | — | 1.66 / 1.90 |
+| cons-allocation / list-traversal | 2.24 / — | 1.52 / 1.55 |
 | native-execution | — | 1.23 |
 | bindat | — | 1.46 |
 | explicit-gc | — | 1.01 |
@@ -448,15 +474,25 @@ Rust gate passed (run 38789815645; 3,112 tests), frozen 7,928 of 7,928
 frame pops): full Rust gate passed (run 38803520645; 3,114 tests in the
 counted groups plus bins and integration, the two existing ignores),
 frozen 7,928 of 7,928 across 519 files, no unsuccessful execution (run
-38803524575). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+38803524575). **CI on `7172429`** (eval_sub's lambda calls, kept buffer
+counts, Bcall subrs, in-loop varref/varset): full Rust gate passed (run
+38819256699; 3,116 tests in the counted groups plus bins and
+integration), frozen 7,928 of 7,928 across 519 files, no unsuccessful
+execution (run 38819259588). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
-as-root `byte_compile_file_reports_an_unwritable_target_like_gnu`, and
+as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
+`save_buffer_skips_unmodified_and_unchanged_files` (root writes the
+read-only file instead of being asked), and
 `print_prunes_charset_properties_like_print_prune_string_charset`, where
 this container's GNU build itself disagrees with the expected text (under
 `default` it prints the Latin-1 string without its `charset` property).
 
 **Findings recorded, not fixed:**
+- GNU's `Fapply` with a one-element spread list stores that element into
+  its own argument array (`args[nargs - 1] = XCAR (spread_arg)`), which is
+  the `apply` frame's argument vector: a backtrace taken inside shows
+  `(apply f 3)` for `(apply f '(3))`. Emaxx's frame keeps `(3)`.
 - Loading prints "Loading FILE..." through Lisp `message`, so in batch it is
   also logged in `*Messages*` and obeys `inhibit-message`; GNU's
   `message_with_string` writes it only to stderr in batch. Switching needs a
