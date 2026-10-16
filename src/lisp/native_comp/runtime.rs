@@ -425,15 +425,14 @@ thread_local! {
 static NATIVE_EXECUTION_LOCK: Mutex<()> = Mutex::new(());
 static ACTIVE_NATIVE_HEAP: AtomicPtr<NativeHeap> = AtomicPtr::new(std::ptr::null_mut());
 
-#[derive(Default)]
-struct NativeExecutionOwnership {
-    activations: usize,
-    lock: Option<MutexGuard<'static, ()>>,
-}
-
 thread_local! {
-    static NATIVE_EXECUTION_OWNERSHIP: RefCell<NativeExecutionOwnership> =
-        RefCell::new(NativeExecutionOwnership::default());
+    /// The thread's live native activations. A plain counter, read and
+    /// written on every native call; the lock below changes hands only
+    /// when the count leaves or returns to zero.
+    static NATIVE_EXECUTION_ACTIVATIONS: Cell<usize> = const { Cell::new(0) };
+    /// The execution lock while the thread has an activation.
+    static NATIVE_EXECUTION_LOCK_HELD: RefCell<Option<MutexGuard<'static, ()>>> =
+        const { RefCell::new(None) };
 }
 
 struct NativeExecutionGuard {
@@ -442,33 +441,43 @@ struct NativeExecutionGuard {
 }
 
 impl NativeExecutionGuard {
+    #[inline]
     fn enter() -> Self {
-        NATIVE_EXECUTION_OWNERSHIP.with(|ownership| {
-            let mut ownership = ownership.borrow_mut();
-            if ownership.activations == 0 {
-                ownership.lock = Some(
-                    NATIVE_EXECUTION_LOCK
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner),
-                );
-            }
-            ownership.activations += 1;
-        });
+        let activations = NATIVE_EXECUTION_ACTIVATIONS.get();
+        if activations == 0 {
+            Self::acquire();
+        }
+        NATIVE_EXECUTION_ACTIVATIONS.set(activations + 1);
         Self {
             _not_send: PhantomData,
         }
     }
+
+    #[cold]
+    #[inline(never)]
+    fn acquire() {
+        let lock = NATIVE_EXECUTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        NATIVE_EXECUTION_LOCK_HELD.with_borrow_mut(|held| *held = Some(lock));
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn release() {
+        let lock = NATIVE_EXECUTION_LOCK_HELD.with_borrow_mut(Option::take);
+        drop(lock);
+    }
 }
 
 impl Drop for NativeExecutionGuard {
+    #[inline]
     fn drop(&mut self) {
-        NATIVE_EXECUTION_OWNERSHIP.with(|ownership| {
-            let mut ownership = ownership.borrow_mut();
-            ownership.activations -= 1;
-            if ownership.activations == 0 {
-                ownership.lock.take();
-            }
-        });
+        let activations = NATIVE_EXECUTION_ACTIVATIONS.get() - 1;
+        NATIVE_EXECUTION_ACTIVATIONS.set(activations);
+        if activations == 0 {
+            Self::release();
+        }
     }
 }
 
@@ -4850,21 +4859,15 @@ mod tests {
         let first = NativeExecutionGuard::enter();
         let second = NativeExecutionGuard::enter();
         drop(first);
-        NATIVE_EXECUTION_OWNERSHIP.with(|ownership| {
-            let ownership = ownership.borrow();
-            assert_eq!(ownership.activations, 1);
-            assert!(ownership.lock.is_some());
-        });
+        assert_eq!(NATIVE_EXECUTION_ACTIVATIONS.get(), 1);
+        assert!(NATIVE_EXECUTION_LOCK_HELD.with_borrow(Option::is_some));
         assert!(matches!(
             NATIVE_EXECUTION_LOCK.try_lock(),
             Err(std::sync::TryLockError::WouldBlock),
         ));
         drop(second);
-        NATIVE_EXECUTION_OWNERSHIP.with(|ownership| {
-            let ownership = ownership.borrow();
-            assert_eq!(ownership.activations, 0);
-            assert!(ownership.lock.is_none());
-        });
+        assert_eq!(NATIVE_EXECUTION_ACTIVATIONS.get(), 0);
+        assert!(NATIVE_EXECUTION_LOCK_HELD.with_borrow(Option::is_none));
     }
 
     extern "C" fn add_one_fixnum(value: NativeWord) -> NativeWord {

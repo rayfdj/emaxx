@@ -653,6 +653,12 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   Measured and not kept: lending the byte-code frame stack of each VM
   activation from a per-thread pool cost about as much as the vector
   growth it saved, and bytecode calls 0.9% more.
+- The native execution guard (the OS-thread lock that serializes native
+  activations) counted a thread's activations in a `RefCell` borrowed on
+  every native call's entry and exit; the count is a constant-initialized
+  thread-local `Cell` now, and the lock's cell is touched only when the
+  count leaves or returns to zero. Bytecode-to-native 2.30 → 2.25,
+  interpreted-to-native and native-to-interpreted about 0.6% lower.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -688,8 +694,9 @@ handler and signal tests; for the native runtime's unchecked shell, 397
 of 398 native tests (the other is the image round trip below); for
 undo's allocations, 418 of 419 handler, condition, signal, feature,
 message, substring, multibyte, coding and dump tests (the other is the
-image round trip). CI's full gate and frozen runs are the merge
-evidence.
+image round trip); for the activation counter, 446 of 447 native and
+thread tests (the other is the image round trip). CI's full gate and
+frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
@@ -702,21 +709,22 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | interpreted-dynamic | 2.14 | 1.31 |
 | mapcar | 2.95 | 1.35 |
 | bytecode-calls | 3.30 | 1.86 |
-| bytecode-to-native | — | 2.30 |
-| interpreted-to-native | — | 1.49 |
-| native-to-interpreted / -bytecode | — | 1.44 / 1.61 |
+| bytecode-to-native | — | 2.25 |
+| interpreted-to-native | — | 1.48 |
+| native-to-interpreted / -bytecode | — | 1.43 / 1.61 |
 | cons-allocation / list-traversal | 2.24 / — | 1.36 / 1.31 |
 | native-execution | — | 1.17 |
 | bindat | — | 1.19 |
 | explicit-gc | — | 0.89 |
 
-The table is one full run of all sixteen on this round's last commit.
+The table is one full run of all sixteen on `62986d1`'s build, with
+undo measured again after the allocation fixes and the native crossings
+after the execution guard's counter.
 Interpreted calls and lexical read 1.24 to 1.27 across this round's
 builds before the unchecked shell with no change on their path
 (`eval_sub` layout); undo read 2.03 to 2.06 on the same code (the
 allocator's state, below; it read 1.97 and 1.99 on two builds before
-the allocation fixes, and 1.93 after them, measured on their own build
-as the table's other rows are on the one before). Earlier, undo
+the allocation fixes and 1.93 after them). Earlier, undo
 moved between 2.37 and 2.42 from one build to the next with no code
 change on its path: the
 difference sits in glibc's `_int_malloc`, `malloc_consolidate` and
@@ -791,7 +799,11 @@ lists): full Rust gate passed on each (runs 38904376618 and
 38904379904 and 38906541122). **CI on `c1c555e`** (the unchecked
 interpreter shell): full Rust gate passed (run 38916491905; 3,125 tests,
 2 ignored, plus bins and integration), frozen 7,928 of 7,928 across 519
-files, no unsuccessful execution (run 38916498890). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+files, no unsuccessful execution (run 38916498890). **CI on `62986d1`**
+(the parameters beside the frames, the unchecked native shell): full
+Rust gate passed (run 38922630018; 3,125 tests, 2 ignored, plus bins
+and integration), frozen 7,928 of 7,928 across 519 files, no
+unsuccessful execution (run 38922634093). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -834,10 +846,10 @@ this container's GNU build itself disagrees with the expected text (under
   behavior instead of a panic, so it stays.
 
 **Where the remaining gap is** (instruction counts per unit on `41be443`):
-- **Native calls** (bytecode-to-native 2.30): a Bcall into native code
+- **Native calls** (bytecode-to-native 2.25): a Bcall into native code
   costs about 400 instructions in the native layer (`invoke` 142, the
   active-runtime lookup and arity check about 60, `finish_call` 48,
-  `setjmp` about 38, the execution guard 17, the trampoline 28) where
+  `setjmp` about 38, the trampoline 28) where
   GNU's `funcall_subr` spends about 50; a plain call now goes through
   `call_plain` instead of the full Bcall arm (about 300 before), plus the
   code string's re-check after it. What is left is the design: thread-local swaps,
@@ -922,7 +934,7 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 2.30, undo 1.93, sort 1.92,
+   above; worst now bytecode-to-native 2.25, undo 1.93, sort 1.92,
    bytecode calls 1.86). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code
