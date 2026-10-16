@@ -805,6 +805,30 @@ impl Interpreter {
         )
     }
 
+    /// `finish_eval_call' for a native-compiled function or a byte-code
+    /// function: the frame recorded for the call takes the evaluated
+    /// arguments, the function runs under it, and the frame is popped.
+    #[inline(never)]
+    fn eval_call_compiled(
+        &mut self,
+        depth: usize,
+        name: &SymbolName,
+        func: Value,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        self.set_backtrace_args(Value::Symbol(*name), args);
+        self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+        let result = match (func.native_function_ref(), func.closure_ref()) {
+            (Some(native), _) => crate::lisp::native_comp::call_function(self, env, native, args),
+            (None, Some(closure)) => self.execute_bytecode_funcall_body(closure, args, env),
+            (None, None) => unreachable!("a native-compiled or byte-code function"),
+        };
+        let result = self.settle_frame_result(result, env);
+        self.truncate_backtrace_frames(depth);
+        result
+    }
+
     /// eval_sub's UNEVALLED subr branch.  The caller has already recorded
     /// the frame and checked the complete argument list and minimum arity.
     fn eval_native_form(
@@ -951,6 +975,20 @@ impl Interpreter {
                 let result = self.settle_frame_result(result, env);
                 self.truncate_backtrace_frames(depth);
                 result
+            }
+            // eval_sub's own call of a native-compiled subr (funcall_subr)
+            // or, through apply_lambda, of a byte-code function: the frame
+            // recorded for the call takes the evaluated arguments, as for
+            // a subr or an interpreted closure above.
+            (Some(name), FunctionResolution::Resolved(func))
+                if (func.native_function_ref().is_some()
+                    || func
+                        .closure_ref()
+                        .is_some_and(|closure| closure.is_bytecode()))
+                    && self.pending_termination().is_none()
+                    && profile_path().is_none() =>
+            {
+                self.eval_call_compiled(depth, name, func, args, env)
             }
             (Some(name), FunctionResolution::Resolved(func)) => {
                 self.pop_backtrace_frame();
@@ -1192,26 +1230,33 @@ impl Interpreter {
         if self.pending_termination().is_some() || profile_path().is_some() {
             return None;
         }
-        let name = match func.kind() {
-            Kind::Symbol(name) => name,
+        // The callee and its function cell are tested by tag and header,
+        // as funcall_general's SUBRP and CLOSUREP tests are.
+        let Some(name) = func.symbol_cell() else {
             // funcall_lambda for an interpreted closure called as a value.
-            Kind::Closure(closure) if !closure.is_bytecode() => {
-                return Some(self.funcall_interpreted_lambda(*func, original_name, args, env));
-            }
-            _ => return None,
+            return match func.closure_ref() {
+                Some(closure) if !closure.is_bytecode() => {
+                    Some(self.funcall_interpreted_lambda(*func, original_name, args, env))
+                }
+                _ => None,
+            };
         };
         let function = self.globals.function(&name)?;
-        match function.kind() {
-            Kind::BuiltinFunc(subr)
-                if subr.descriptor().max_args()
-                    != crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled =>
+        if let Some(subr) = function.builtin_ref() {
+            if subr.descriptor().max_args()
+                == crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled
             {
-                Some(self.call_subr(subr, args, env, funcall))
+                return None;
             }
-            Kind::NativeFunction(native) => Some(crate::lisp::native_comp::call_function(
+            return Some(self.call_subr(subr, args, env, funcall));
+        }
+        if let Some(native) = function.native_function_ref() {
+            return Some(crate::lisp::native_comp::call_function(
                 self, env, native, args,
-            )),
-            Kind::Closure(closure) if !closure.is_bytecode() => {
+            ));
+        }
+        match function.closure_ref() {
+            Some(closure) if !closure.is_bytecode() => {
                 let name = CallName::Symbol(&name);
                 Some(self.funcall_interpreted_lambda(
                     function,

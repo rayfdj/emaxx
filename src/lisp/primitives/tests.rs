@@ -27990,6 +27990,54 @@ fn byte_code_predicates_memq_and_full_arms_run_in_the_loop_like_gnu() {
 }
 
 #[test]
+fn eval_calls_compiled_functions_under_its_own_frame_like_gnu() {
+    // eval_sub calls a native-compiled subr (funcall_subr) and, through
+    // apply_lambda, a byte-code function under the frame it recorded for
+    // the form: the frame shows the evaluated arguments while the callee
+    // runs and the unevaluated ones while they are evaluated, and arity
+    // errors, errors in the callee or an argument, and throws pass through
+    // it as GNU's do.
+    let program = r#"(progn
+  (defalias 'zz-ef-bc
+    (byte-compile
+     (lambda (x &optional y)
+       (let (seen)
+         (mapbacktrace
+          (lambda (evald fun args _flags)
+            (when (eq fun 'zz-ef-bc) (push (list evald fun args) seen))))
+         (list x y seen)))))
+  (defalias 'zz-ef-err (byte-compile (lambda (x) (car x))))
+  (defalias 'zz-ef-frames
+    (lambda ()
+      (let (seen)
+        (mapbacktrace
+         (lambda (evald fun args _flags)
+           (when (memq fun '(last butlast)) (push (list evald fun args) seen))))
+        (list seen))))
+  (list (eval '(zz-ef-bc (+ 1 2)) t)
+        (eval '(zz-ef-bc 'a "b") t)
+        (eval '(let ((v 5)) (zz-ef-bc v (* v 2))) t)
+        (condition-case e (eval '(zz-ef-bc) t) (error e))
+        (condition-case e (eval '(zz-ef-bc 1 2 3) t) (error e))
+        (condition-case e (eval '(zz-ef-err 7) t) (error e))
+        (condition-case e (eval '(zz-ef-err (car 5)) t) (error e))
+        (catch 'zz-ef-tag (eval '(zz-ef-bc (throw 'zz-ef-tag 'thrown)) t))
+        (native-comp-function-p (symbol-function 'last))
+        (eval '(last '(1 2 3)) t)
+        (eval '(let ((n 2)) (last '(1 2 3) n)) t)
+        (eval '(butlast '(1 2 3 4) 2) t)
+        (condition-case e (eval '(last) t) (error (car e)))
+        (condition-case e (eval '(last '(1) 1 2) t) (error (car e)))
+        (condition-case e (eval '(butlast 5) t) (error e))
+        (eval '(last (zz-ef-frames)) t)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((3 nil ((t zz-ef-bc (3)))) (a \"b\" ((t zz-ef-bc (a \"b\")))) (5 10 ((t zz-ef-bc (5 10)))) (wrong-number-of-arguments (1 . 2) 0) (wrong-number-of-arguments (1 . 2) 3) (wrong-type-argument listp 7) (wrong-type-argument listp 5) thrown t (3) (2 3) (1 2) wrong-number-of-arguments wrong-number-of-arguments (wrong-type-argument sequencep 5) (((nil last ((zz-ef-frames))))))",
+        "eval calling compiled functions",
+    );
+}
+
+#[test]
 fn let_finds_local_special_declarations_by_symbol_like_flet() {
     // Flet's Fmemq of the variable in the lexical environment: a locally
     // special uninterned symbol leaves the interned one of that name

@@ -562,6 +562,28 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   multiply) instead of FNV, which ran eight rounds a key byte by byte;
   `case-fold-search`, read through them on every buffer comparison, cost
   sort about 9 million instructions a unit. Sort 2.03 → 2.01.
+- `eval` calls a native-compiled function, or a byte-code function, under
+  the frame it recorded for the form, as eval_sub calls a native subr
+  (funcall_subr) or applies a byte-code function (apply_lambda): the frame
+  takes the evaluated arguments and the callee runs at once
+  (`eval_call_compiled`). It popped that frame, pushed another and went
+  through the general funcall dispatch. Interpreted-to-native 1.63 →
+  1.57, native-to-bytecode 1.73 → 1.69, native-to-interpreted 1.55 → 1.50
+  (undo read 2.04 once, but nearly all of that was the allocator).
+  Measured and not kept: classifying a resolved closure or native
+  function by its header before `kind` in `eval_call`'s resolution loop
+  (interpreted calls and lexical about 1.5% slower from `eval_sub`'s
+  layout, the native cases no faster).
+- Ffuncall's first test (`call_subr_directly`, funcall_general's SUBRP
+  and CLOSUREP) reads the callee symbol and its function cell by tag and
+  header where it built the whole kind classification twice, 22
+  instructions a call. Mapcar 1.45 → 1.43. Measured on the way: the same
+  test written with `bool::then` and a closure compiled the subr call out
+  of line, 30 instructions a call worse. Noted, not changed: mapcar's
+  result buffer is zeroed with `memset` (16 instructions an element in
+  callgrind, which counts each repetition of `rep stosb`), where GNU's
+  `xzalloc` of a large array gets fresh zero pages from `calloc`; in time
+  it is well under 1%.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -596,11 +618,11 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | interpreted-calls | 2.10 | 1.24 |
 | interpreted-lexical | 2.04 | 1.27 |
 | interpreted-dynamic | 2.14 | 1.39 |
-| mapcar | 2.95 | 1.46 |
+| mapcar | 2.95 | 1.43 |
 | bytecode-calls | 3.30 | 1.87 |
 | bytecode-to-native | — | 2.37 |
-| interpreted-to-native | — | 1.63 |
-| native-to-interpreted / -bytecode | — | 1.55 / 1.73 |
+| interpreted-to-native | — | 1.57 |
+| native-to-interpreted / -bytecode | — | 1.50 / 1.69 |
 | cons-allocation / list-traversal | 2.24 / — | 1.41 / 1.37 |
 | native-execution | — | 1.21 |
 | bindat | — | 1.27 |
@@ -608,7 +630,10 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 The table is the full run of all sixteen on `d20ca14`, with sort,
 explicit GC, interpreted calls and cons allocation measured again after
-the bitmap sweep, and sort after the identity-hashed local bindings.
+the bitmap sweep, sort after the identity-hashed local bindings, and
+the interpreted-to-native, native-to-bytecode and native-to-interpreted
+cases after the compiled callees under eval's frame, and mapcar after
+the tag-tested funcall.
 Interpreted calls, lexical and dynamic, cons allocation and bindat read
 up to 1.5% above the previous run with no change on their paths
 (`eval_sub` layout and allocator noise; bindat measured 1.26 on the
@@ -671,7 +696,10 @@ tag tests, jump-table verification): full Rust gate passed (run
 38864051065). **CI on `d20ca14`** (ops in place, plain subr and native
 calls): full Rust gate passed (run 38874710028; 3,123 tests, 2 ignored,
 plus bins and integration), frozen 7,928 of 7,928 across 519 files, no
-unsuccessful execution (run 38874712632). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+unsuccessful execution (run 38874712632). **CI on `40de0bc`** (bitmap
+sweep): full Rust gate passed (run 38881670816; 3,123 tests, 2 ignored,
+plus bins and integration), frozen 7,928 of 7,928 across 519 files, no
+unsuccessful execution (run 38881676646). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -793,9 +821,21 @@ and failures are still recorded.
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code
    frames kept in the byte-code stack, as GNU's are, instead of a
-   `BcFrame` vector holding copies of the decoded object; slow ops without
-   leaving the verified loop); the interpreter and funcall paths are spread over
-   many small steps, each worth about 1%. Micro-changes measure within
+   `BcFrame` vector holding copies of the decoded object, or a decoded
+   closure cached per closure with a collection epoch so a freed and
+   reused address cannot match); the interpreter and funcall paths are spread over
+   many small steps, each worth about 1%. The source interpreter is now
+   the largest shared cost: `eval_sub` is 64 to 71% of interpreted
+   dynamic, cons allocation and the native-to-* loops and 37% of sort, at
+   330 to 400 instructions a list form against GNU's 110. Each step costs
+   two to three times GNU's (the 64-byte frame record and its argument
+   update, the resolution enum, the descriptor read twice, the generic
+   argument loop, the arity check repeated in `call_with_facts`), so the
+   next gain there is a restructured subr-call path in `eval_call`
+   (resolve, count, check and call with the descriptor read once and the
+   frame written once) and a smaller frame record, not more 1% trims.
+   Changes to `eval_sub`'s inlined body move its register allocation;
+   measure interpreted calls and lexical with each. Micro-changes measure within
    about 1% of noise: keep only what moves the counts, record the rest.
    Iterate with instruction counts (callgrind) on the locked workloads for
    both editors; timing pilots at merges. Remaining adapters that show up in
