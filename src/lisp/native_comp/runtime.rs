@@ -278,9 +278,18 @@ unsafe fn invoke_platform(invocation: *mut NativeInvocation) -> Result<bool, Str
     Ok(unsafe { native_call_trampoline(invocation) } != 0)
 }
 
+/// The word at offset 64 of an invocation's escape buffer: the
+/// trampoline's own record (see `emaxx_native_longjmp'), where glibc's
+/// `_setjmp' stores `__mask_was_saved', which it always sets to 0.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const NATIVE_ESCAPE_MARKER: u32 = 0x454d_4158;
+
 // System V x86-64: the first six words travel in registers and the last two
-// on the stack.  `rbx` keeps the invocation pointer across `_setjmp`, which
-// saves and restores it, so a `longjmp` back here still finds the record.
+// on the stack.  The escape buffer records what `_setjmp' would for a
+// return through `emaxx_native_longjmp': the callee-saved registers (`rbx'
+// is the invocation pointer), the stack pointer below the saved registers
+// and the resume address, then the marker. A `longjmp' resumes at 1 with
+// the trampoline's frame as it was.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 core::arch::global_asm!(
     r#"
@@ -295,10 +304,16 @@ native_call_trampoline:
     push rbx
     push r12
     mov rbx, rdi
-    lea rdi, [rbx + {jump_buffer}]
-    call _setjmp@PLT
-    test eax, eax
-    jnz 1f
+    mov [rbx + {jump_buffer}], rbx
+    mov [rbx + {jump_buffer} + 8], rbp
+    mov [rbx + {jump_buffer} + 16], r12
+    mov [rbx + {jump_buffer} + 24], r13
+    mov [rbx + {jump_buffer} + 32], r14
+    mov [rbx + {jump_buffer} + 40], r15
+    mov [rbx + {jump_buffer} + 48], rsp
+    lea rax, [rip + 1f]
+    mov [rbx + {jump_buffer} + 56], rax
+    mov dword ptr [rbx + {jump_buffer} + 64], {marker}
     mov rax, [rbx + {target}]
     mov rdi, [rbx + {arguments}]
     mov rsi, [rbx + {arguments} + 8]
@@ -321,16 +336,34 @@ native_call_trampoline:
     pop rbp
     ret
     .size native_call_trampoline, .-native_call_trampoline
+
+    .p2align 4
+    .globl emaxx_native_longjmp
+    .hidden emaxx_native_longjmp
+    .type emaxx_native_longjmp, @function
+emaxx_native_longjmp:
+    mov rbx, [rdi]
+    mov rbp, [rdi + 8]
+    mov r12, [rdi + 16]
+    mov r13, [rdi + 24]
+    mov r14, [rdi + 32]
+    mov r15, [rdi + 40]
+    mov rsp, [rdi + 48]
+    jmp qword ptr [rdi + 56]
+    .size emaxx_native_longjmp, .-emaxx_native_longjmp
     "#,
     target = const std::mem::offset_of!(NativeInvocation, target),
     arguments = const std::mem::offset_of!(NativeInvocation, arguments),
     result = const std::mem::offset_of!(NativeInvocation, result),
     jump_buffer = const std::mem::offset_of!(NativeInvocation, jump_buffer),
+    marker = const NATIVE_ESCAPE_MARKER,
 );
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 unsafe extern "C" {
     fn native_call_trampoline(invocation: *mut NativeInvocation) -> std::ffi::c_int;
+    /// longjmp to an invocation's escape buffer (the trampoline's record).
+    fn emaxx_native_longjmp(buffer: *mut c_void) -> !;
 }
 
 // System V counterpart of alloc.c:flush_stack_call_func.  The generated
@@ -3293,7 +3326,16 @@ unsafe extern "C" {
     fn platform_longjmp(buffer: *mut c_void, value: std::ffi::c_int) -> !;
 }
 
+/// longjmp to BUFFER: a handler's buffer, which generated code filled
+/// with `_setjmp', or an invocation's escape buffer.
 unsafe fn jump_nonlocal(buffer: *mut c_void) -> ! {
+    // SAFETY: both kinds of buffer are larger than 68 bytes, and glibc's
+    // `_setjmp' wrote the word at 64 of a handler's.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if unsafe { buffer.cast::<u8>().add(64).cast::<u32>().read_unaligned() } == NATIVE_ESCAPE_MARKER
+    {
+        unsafe { emaxx_native_longjmp(buffer) }
+    }
     unsafe { platform_longjmp(buffer, 1) }
 }
 
