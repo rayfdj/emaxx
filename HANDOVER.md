@@ -557,6 +557,11 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   `lookup_var_symbol` for plain cells, for the change-hook variables
   insertion reads (about 250 instructions a lookup, three an insertion):
   those variables are not plain cells, so it never applied.
+- The buffers' local-binding table and each buffer's bindings hash their
+  keys (a buffer id, a symbol's address) with the identity hasher (one
+  multiply) instead of FNV, which ran eight rounds a key byte by byte;
+  `case-fold-search`, read through them on every buffer comparison, cost
+  sort about 9 million instructions a unit. Sort 2.03 → 2.01.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -587,7 +592,7 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | Case | Before | Now |
 | --- | --- | --- |
 | upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.11 |
-| upstream-sort | 3.26 | 2.03 |
+| upstream-sort | 3.26 | 2.01 |
 | interpreted-calls | 2.10 | 1.24 |
 | interpreted-lexical | 2.04 | 1.27 |
 | interpreted-dynamic | 2.14 | 1.39 |
@@ -603,7 +608,7 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 The table is the full run of all sixteen on `d20ca14`, with sort,
 explicit GC, interpreted calls and cons allocation measured again after
-the bitmap sweep.
+the bitmap sweep, and sort after the identity-hashed local bindings.
 Interpreted calls, lexical and dynamic, cons allocation and bindat read
 up to 1.5% above the previous run with no change on their paths
 (`eval_sub` layout and allocator noise; bindat measured 1.26 on the
@@ -663,7 +668,10 @@ unsuccessful execution (run 38852471256). **CI on `0b0b6dc`** (evaluator
 tag tests, jump-table verification): full Rust gate passed (run
 38864048354; 3,122 tests, 2 ignored, plus bins and integration), frozen
 7,928 of 7,928 across 519 files, no unsuccessful execution (run
-38864051065). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+38864051065). **CI on `d20ca14`** (ops in place, plain subr and native
+calls): full Rust gate passed (run 38874710028; 3,123 tests, 2 ignored,
+plus bins and integration), frozen 7,928 of 7,928 across 519 files, no
+unsuccessful execution (run 38874712632). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -714,7 +722,7 @@ this container's GNU build itself disagrees with the expected text (under
   48-byte `ByteCodeObject` in and out of it) and the return 122. GNU's
   setup_frame and Breturn together are about 100: its frame lives in the
   byte-code stack and its running state in registers.
-- **Source interpreter** (lexical 1.27, calls 1.24, sort 2.03): an
+- **Source interpreter** (lexical 1.27, calls 1.24, sort 2.01): an
   iteration of interpreted calls is 4,022 instructions against GNU's
   3,315. What is left is spread: parked-shell tests (about 300 an
   iteration; each step that takes the shell after a call tests it again),
@@ -780,7 +788,7 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 2.37, undo 2.11, sort 2.03,
+   above; worst now bytecode-to-native 2.37, undo 2.11, sort 2.01,
    bytecode calls 1.87). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code

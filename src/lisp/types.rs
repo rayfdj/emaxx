@@ -56,6 +56,10 @@ impl Hasher for IdentityHasher {
     fn write_usize(&mut self, value: usize) {
         self.0 = value as u64;
     }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
 }
 
 pub(crate) type IdentityBuildHasher = BuildHasherDefault<IdentityHasher>;

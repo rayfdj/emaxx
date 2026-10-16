@@ -2646,7 +2646,7 @@ fn ordered_hooks(entries: impl IntoIterator<Item = (String, Vec<Value>)>) -> Ord
     hooks
 }
 
-type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::primitives::FnvBuildHasher>;
+type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::types::IdentityBuildHasher>;
 type BufferLocalHooks = HashMap<u64, OrderedHooks, crate::lisp::primitives::FnvBuildHasher>;
 
 /// A snapshot for callbacks that may intern further symbols while enumerating.

@@ -9,13 +9,13 @@
 //! for a void local.
 
 use super::super::types::{SymbolName, Value};
-use crate::lisp::primitives::FnvBuildHasher;
+use crate::lisp::types::IdentityBuildHasher;
 use crate::lisp::types::Kind;
 use hashlink::LinkedHashMap;
 
 #[derive(Clone, Default)]
 pub(crate) struct LocalCells {
-    cells: LinkedHashMap<SymbolName, Value, FnvBuildHasher>,
+    cells: LinkedHashMap<SymbolName, Value, IdentityBuildHasher>,
     /// How many of the bindings are of the variables whose evaluator cells
     /// hold the current buffer's value (`is_forwarded_eval_cell'), so that
     /// a buffer switch need not look each of them up.
