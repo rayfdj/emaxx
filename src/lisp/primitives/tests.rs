@@ -27917,6 +27917,39 @@ fn bytecode_calls_switch_frames_like_setup_frame() {
 }
 
 #[test]
+fn evaluator_tag_tests_keep_gnus_list_and_symbol_errors() {
+    // eval_sub, Fsetq, Flet, funcall_lambda and Fcar/Fcdr test a form's
+    // conses, nil, t and symbols by the word's tag: improper argument
+    // lists, constants and non-symbols signal as GNU's do, and unbinding a
+    // dynamic variable that was void leaves it void.
+    let program = r#"(list
+  (condition-case e (eval '(+ 1 . 2) t) (error e))
+  (condition-case e (eval '(car . 1) t) (error e))
+  (condition-case e (eval '(list 1 2 . 3) t) (error e))
+  (condition-case e (eval '(setq nil 1) t) (error e))
+  (condition-case e (eval '(setq t 1) t) (error e))
+  (condition-case e (eval '(setq 5 1) t) (error e))
+  (condition-case e (eval '(setq zz-tag-a) t) (error e))
+  (condition-case e (eval '(let ((zz-tag-b 1 2)) zz-tag-b) t) (error e))
+  (condition-case e (eval '(let (5) 1) t) (error e))
+  (condition-case e (eval '(let ((zz-tag-c . 3)) zz-tag-c) t) (error e))
+  (condition-case e (funcall (lambda (&optional a b) (list a b)) 1) (error e))
+  (condition-case e (funcall '(lambda (nil) 1) 2) (error e))
+  (condition-case e (funcall '(lambda (t) 1) 2) (error e))
+  (progn (makunbound 'zz-tag-dyn)
+         (list (eval '(let ((zz-tag-dyn 1)) (boundp 'zz-tag-dyn)) nil)
+               (boundp 'zz-tag-dyn)))
+  (let ((x '(1 2 3))) (list (car x) (cdr x) (car nil) (cdr nil)
+                            (condition-case e (car 5) (error e))))
+  (mapcar #'symbolp (list nil t 'a 5 "s")))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((wrong-type-argument listp 2) (wrong-type-argument listp 1) (wrong-type-argument listp 3) (setting-constant nil) (setting-constant t) (wrong-type-argument symbolp 5) (wrong-number-of-arguments setq 1) (error \"`let' bindings can have only one value-form\" zz-tag-b 1 2) (wrong-type-argument listp 5) (wrong-type-argument listp 3) (1 nil) (setting-constant nil) (setting-constant t) (t nil) (1 (2 3) nil nil (wrong-type-argument listp 5)) (t t t nil nil))",
+        "evaluator tag tests",
+    );
+}
+
+#[test]
 fn let_finds_local_special_declarations_by_symbol_like_flet() {
     // Flet's Fmemq of the variable in the lexical environment: a locally
     // special uninterned symbol leaves the interned one of that name

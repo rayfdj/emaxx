@@ -2338,7 +2338,7 @@ pub(crate) fn make_runtime_keymap(_interp: &mut Interpreter, prompt: Value) -> V
     } else {
         Value::list([prompt])
     };
-    Value::cons(Value::symbol("keymap"), tail)
+    Value::cons(keymap_symbol(), tail)
 }
 
 pub(crate) fn make_runtime_full_keymap(interp: &mut Interpreter, prompt: Value) -> Value {
@@ -2348,13 +2348,19 @@ pub(crate) fn make_runtime_full_keymap(interp: &mut Interpreter, prompt: Value) 
     } else {
         Value::list([prompt])
     };
-    Value::cons(Value::symbol("keymap"), Value::cons(table, tail))
+    Value::cons(keymap_symbol(), Value::cons(table, tail))
+}
+
+/// Qkeymap: the cached symbol, not an intern of its name.
+#[inline]
+fn keymap_symbol() -> Value {
+    cached_symbol!("keymap").with(|symbol| Value::Symbol(*symbol))
 }
 
 pub(crate) fn is_keymap_placeholder(value: &Value) -> bool {
     value
         .cons_values()
-        .is_some_and(|(head, _)| head.eq_value(Value::symbol("keymap")))
+        .is_some_and(|(head, _)| head.eq_value(keymap_symbol()))
 }
 
 pub(crate) fn is_keymap_value(_interp: &Interpreter, value: &Value) -> bool {
@@ -2536,10 +2542,7 @@ pub(crate) fn map_keymap_own_entries(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let map = keymap;
-    let mut tail = if map
-        .car()
-        .is_ok_and(|head| head.eq_value(Value::symbol("keymap")))
-    {
+    let mut tail = if map.car().is_ok_and(|head| head.eq_value(keymap_symbol())) {
         map.cdr()?
     } else {
         map
@@ -2547,7 +2550,7 @@ pub(crate) fn map_keymap_own_entries(
     let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![map, tail, Value::Nil]);
     let mut seen = HashSet::new();
     while let Some((entry, _)) = tail.cons_values() {
-        if entry.eq_value(Value::symbol("keymap")) || is_keymap_value(interp, &entry) {
+        if entry.eq_value(keymap_symbol()) || is_keymap_value(interp, &entry) {
             break;
         }
         if !seen.insert(tail.word()) {
@@ -2653,7 +2656,7 @@ fn store_in_keymap(
         if !seen.insert(tail.word()) {
             break;
         }
-        if entry.eq_value(Value::symbol("keymap")) {
+        if entry.eq_value(keymap_symbol()) {
             break;
         }
         match entry.kind() {
@@ -2931,7 +2934,7 @@ fn keymap_own_sparse_binding(
     if !is_keymap_value(interp, keymap) {
         return Ok(None);
     }
-    let keymap_tag = Value::symbol("keymap");
+    let keymap_tag = keymap_symbol();
     let mut tail = keymap.cdr()?;
     let mut cycle = crate::lisp::types::CycleGuard::new();
     while let Kind::Cons(cell) = tail.kind() {
@@ -3021,10 +3024,7 @@ pub(crate) fn keymap_access_event(
             return Ok(binding.filter(Value::is_nil));
         }
     }
-    let tail = if map
-        .car()
-        .is_ok_and(|head| head.eq_value(Value::symbol("keymap")))
-    {
+    let tail = if map.car().is_ok_and(|head| head.eq_value(keymap_symbol())) {
         map.cdr()?
     } else {
         map
@@ -3044,7 +3044,7 @@ pub(crate) fn keymap_access_event(
         let Some((binding, _)) = roots[1].cons_values() else {
             break;
         };
-        let value = if binding.eq_value(Value::symbol("keymap")) {
+        let value = if binding.eq_value(keymap_symbol()) {
             if found && roots[2].is_nil() {
                 break;
             }
@@ -3056,7 +3056,7 @@ pub(crate) fn keymap_access_event(
                         roots[3].set_cdr(parent)?;
                     } else {
                         roots[3] = Value::cons(roots[2], parent);
-                        roots[2] = Value::cons(Value::symbol("keymap"), roots[3]);
+                        roots[2] = Value::cons(keymap_symbol(), roots[3]);
                     }
                 }
                 break;
@@ -3113,7 +3113,7 @@ pub(crate) fn keymap_access_event(
                 if roots[3].cons_values().is_some() {
                     roots[3].set_cdr(tail)?;
                 } else {
-                    roots[2] = Value::cons(Value::symbol("keymap"), Value::cons(roots[2], tail));
+                    roots[2] = Value::cons(keymap_symbol(), Value::cons(roots[2], tail));
                 }
                 roots[3] = tail;
             }

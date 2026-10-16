@@ -392,16 +392,18 @@ fn verify(
                     return None;
                 }
                 // Bswitch's jump table is the constant pushed just before
-                // it; its targets are reached with both operands popped.
+                // it; its targets are reached with both operands popped
+                // (the table and the value under it).
                 if decode_instr(code, next).is_ok_and(|switch| switch.op == Op::Switch)
                     && let Some(table) = constants.get(index)
                     && let Kind::HashTable(table) = table.kind()
                 {
+                    let target_depth = after.checked_sub(2)?;
                     let mut slot = 0;
                     while let Some((index, _, target)) = table.entry_at_or_after(slot) {
                         slot = index + 1;
                         if let Some(target) = target.fixnum() {
-                            flow.reach(usize::try_from(target).ok()?, after - 1)?;
+                            flow.reach(usize::try_from(target).ok()?, target_depth)?;
                         }
                     }
                 }

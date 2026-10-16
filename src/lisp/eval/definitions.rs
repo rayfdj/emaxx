@@ -17,10 +17,7 @@ impl Interpreter {
         // its value form signals wrong-number-of-arguments with the count
         // read so far.
         let mut result = Value::Nil;
-        let mut cur = match args.kind() {
-            Kind::Cons(cell) => Some(cell),
-            _ => None,
-        };
+        let mut cur = args.cons_ref();
         let mut nargs = 0usize;
         while let Some(symbol_cell) = cur {
             let sym = symbol_cell.car.get();
@@ -31,15 +28,14 @@ impl Interpreter {
             cur = next_cons(&value_cell);
             nargs += 2;
             // The symbol itself, resolved and assigned by its id.
-            let symbol = match sym.kind() {
-                Kind::Symbol(symbol) => symbol,
-                Kind::Nil => crate::lisp::types::symbols::builtin_boolean(false),
-                Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
-                other => {
-                    return Err(LispError::WrongTypeArgument(
-                        "symbolp".into(),
-                        other.value(),
-                    ));
+            let symbol = match sym.symbol_cell() {
+                Some(symbol) => symbol,
+                None if sym.is_nil() => crate::lisp::types::symbols::builtin_boolean(false),
+                None if sym.word() == Value::T.word() => {
+                    crate::lisp::types::symbols::builtin_boolean(true)
+                }
+                None => {
+                    return Err(LispError::WrongTypeArgument("symbolp".into(), sym));
                 }
             };
             // Fsetq: the value, then the lexical alist, then Fset -- for

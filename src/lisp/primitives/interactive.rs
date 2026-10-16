@@ -299,11 +299,14 @@ pub(crate) fn checked_symbol_identity(
     value: &Value,
     env: &Env,
 ) -> Result<crate::lisp::types::SymbolName, LispError> {
-    match value.kind() {
-        Kind::Symbol(symbol) => return Ok(symbol),
-        Kind::Nil => return Ok(crate::lisp::types::symbols::builtin_boolean(false)),
-        Kind::T => return Ok(crate::lisp::types::symbols::builtin_boolean(true)),
-        _ => {}
+    if let Some(symbol) = value.symbol_cell() {
+        return Ok(symbol);
+    }
+    if value.is_nil() {
+        return Ok(crate::lisp::types::symbols::builtin_boolean(false));
+    }
+    if value.word() == Value::T.word() {
+        return Ok(crate::lisp::types::symbols::builtin_boolean(true));
     }
     if symbols_with_pos_enabled(interp, env)
         && let Some((symbol, _)) = symbol_with_pos_parts(interp, value)

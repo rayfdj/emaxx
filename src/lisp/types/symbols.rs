@@ -50,6 +50,7 @@ impl std::hash::Hash for NameEntry {
 }
 
 const KEY_NAMES: &[&str] = &[
+    "keymap",
     "parse-sexp-lookup-properties",
     "cache-long-scans",
     "char-property-alias-alist",

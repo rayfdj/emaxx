@@ -469,6 +469,40 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   and not kept: the switch alone between runs of the loop (no gain, the
   two re-entries stayed), and a version that re-tested the shell in each
   switch arm (27 instructions a call).
+- The verifier gave Bswitch's targets one operand too many: Bswitch pops
+  both the jump table and the value, so its targets are reached two below
+  the table's push, not one. Every function with a jump table (`pcase`, a
+  `cond` on `eq`) failed verification on the disagreeing paths and ran
+  in the unverified loop; `primitive-undo` was one. The targets now get the
+  right depth (checked against GNU's disassembly of `primitive-undo`; a
+  test runs a jump-table function through the verified loop).
+- The evaluator tests conses, nil, t and symbols by the word's tag
+  (`Value::cons_ref`, `Value::builtin_ref`, `symbol_cell`, `is_symbol`,
+  `car`/`cdr`) where it built the whole kind classification: Fassq over
+  the lexical environment, the argument count and walk, the function
+  cell's subr test, the list iterators, `setq`, `let`'s binding parts and
+  the lambda list. The kind dispatches cost 685 instructions an iteration
+  of interpreted calls and now cost 62. `eval_sub` reads its entry tests
+  (depth, pending termination, quit) through one borrow of the state and
+  sends anything unusual to the general entry; a form then takes
+  maybe_gc, the depth step and its call path with the cell in hand. A
+  variable reference in `eval` reads a lexical binding or a plain value
+  cell from the state it already holds (`lookup_symbol_plain`) and goes
+  past the lexical environment once for any other symbol
+  (`lookup_symbol_global`). `capture_current_backtrace_context` is always
+  inlined (out of line it cost sort 12 million instructions a unit).
+  Unbinding a variable that was void no longer hashes its name into every
+  terminal's keyboard-variable table: only the KBOARD variables have
+  terminal values. `Value::symbol` looks a name up before copying it, and
+  the keymap code compares with the cached `keymap` symbol (GNU's
+  `EQ (head, Qkeymap)`) instead of interning the name on every test, which
+  had cost undo 29,000 instructions a unit in the interned-name table.
+  Ratios against `29e7780`: interpreted calls 1.32 → 1.25, lexical 1.35
+  → 1.26, dynamic 1.47 → 1.37, sort 2.13 → 2.09, interpreted-to-native
+  1.73 → 1.64, native-to-interpreted 1.60 → 1.55, native-to-bytecode
+  1.78 → 1.73, cons allocation 1.50 → 1.41, list traversal 1.45 → 1.37,
+  bindat 1.32 → 1.26, undo 2.37 → 2.35, bytecode calls 1.88 → 1.87; the
+  others within 0.4%.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -478,7 +512,11 @@ bytecode/reclamation/finalizer/weak-table tests pass; clippy `-D warnings`, rust
 `git diff --check` pass. For the in-loop frame switch: 681 of 683
 byte-code, backtrace, native, funcall, unwind, handler, condition, catch,
 throw, debug, nesting and compiled-code tests pass; the two others are
-the as-root and image round-trip failures below, which pass in CI. A broad local run over the GC, special-form, `eval_`
+the as-root and image round-trip failures below, which pass in CI. For
+the evaluator's tag tests and the verifier fix: 349 evaluation, `let`,
+lambda, funcall, `setq`, keyboard, backtrace, binding, quit and nesting
+tests and 188 keymap, interning, verification, undo and jump-table tests
+pass, with the three new tests. A broad local run over the GC, special-form, `eval_`
 and native filters was stopped after 89 CPU minutes, with one failure:
 `byte_compile_file_reports_an_unwritable_target_like_gnu`, which cannot
 pass as root (this container's user writes into a mode-555 directory) and
@@ -488,23 +526,24 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.37–2.42 |
-| upstream-sort | 3.26 | 2.13 |
-| interpreted-calls | 2.10 | 1.36 |
-| interpreted-lexical | 2.04 | 1.35 |
-| interpreted-dynamic | 2.14 | 1.48 |
-| mapcar | 2.95 | 1.45 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.35 |
+| upstream-sort | 3.26 | 2.09 |
+| interpreted-calls | 2.10 | 1.25 |
+| interpreted-lexical | 2.04 | 1.26 |
+| interpreted-dynamic | 2.14 | 1.37 |
+| mapcar | 2.95 | 1.46 |
 | bytecode-calls | 3.30 | 1.87 |
-| bytecode-to-native | — | 2.63 |
-| interpreted-to-native | — | 1.77 |
-| native-to-interpreted / -bytecode | — | 1.62 / 1.80 |
-| cons-allocation / list-traversal | 2.24 / — | 1.50 / 1.45 |
+| bytecode-to-native | — | 2.64 |
+| interpreted-to-native | — | 1.64 |
+| native-to-interpreted / -bytecode | — | 1.55 / 1.73 |
+| cons-allocation / list-traversal | 2.24 / — | 1.41 / 1.37 |
 | native-execution | — | 1.20 |
-| bindat | — | 1.33 |
+| bindat | — | 1.26 |
 | explicit-gc | — | 1.01 |
 
-The table is the full run on `41be443`; the rows a later commit moved
-were measured again on that commit. Undo moves between 2.37 and
+The table is the full run of all sixteen on this round's last commit
+(undo, bindat and interpreted calls measured again after its last
+change). Undo moves between 2.37 and
 2.42 from one build to the next with no code change on its path: the
 difference sits in glibc's `_int_malloc`, `malloc_consolidate` and
 `unlink_chunk` (the allocator's free-list state), not in Emaxx code.
@@ -553,7 +592,10 @@ counted groups, 2 ignored, plus bins and integration), frozen 7,928 of
 7,928 across 519 files, no unsuccessful execution (run 38835662192).
 **CI on `dee8061`** (frameless Fcons): full Rust gate passed (run
 38838677038; 3,119 tests, 2 ignored), frozen 7,928 of 7,928 across 519
-files, no unsuccessful execution (run 38838679538). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+files, no unsuccessful execution (run 38838679538). **CI on `29e7780`**
+(in-loop byte-code frames): full Rust gate passed (run 38852469382; 3,120
+tests, 2 ignored), frozen 7,928 of 7,928 across 519 files, no
+unsuccessful execution (run 38852471256). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -603,22 +645,27 @@ this container's GNU build itself disagrees with the expected text (under
   48-byte `ByteCodeObject` in and out of it) and the return 122. GNU's
   setup_frame and Breturn together are about 100: its frame lives in the
   byte-code stack and its running state in registers.
-- **Source interpreter** (lexical 1.35, calls 1.38, sort 2.21): every
-  list form pays a 167-instruction common path (GNU's whole `eval_sub`
-  averages 178 a form), a subr call 112 more and a special form 157 more.
-  The common path is spread over small steps: parked-shell tests (about
-  18 a form, kept deliberately), `maybe_gc` through the active runtime's
-  thread-local pointer (9), the frame record (17) and kind dispatches. An
-  interpreted call adds about 386 in `funcall_interpreted_lambda` and 90
-  for the frame detail that records its locals.
+- **Source interpreter** (lexical 1.26, calls 1.25, sort 2.09): an
+  iteration of interpreted calls is 4,022 instructions against GNU's
+  3,315. What is left is spread: parked-shell tests (about 300 an
+  iteration; each step that takes the shell after a call tests it again),
+  the frame record and its argument update (about 23 and 15 a call),
+  `resolve_symbol_call` and the argument count (about 27 and 25 a form,
+  close to their minimum), the subr dispatch through `call_with_facts`,
+  and an interpreted call's `funcall_interpreted_lambda` (340) with the
+  frame detail that records its locals. Sort is mostly this path too
+  (`eval_sub` 3.2 times GNU's self cost), plus the buffer comparisons.
 - **Ffuncall into a subr** (mapcar 1.45): about 200 per call against
   GNU's 147 across Ffuncall, funcall_general and funcall_subr;
   `Value::cons` is 37 against `Fcons`' 27 (the per-cell serial, the
   allocated and mark bits, and a live count GNU does not keep).
-- Undo's remainder is broad: the byte-code slow path, `prim`'s name
+- Undo's remainder is broad: the byte-code slow path (ops the verified
+  loop leaves for, Bswitch's `gethash` by name among them), `prim`'s name
   lookup and argument rooting (about 190 a call, 675 calls a unit), the
   string adapters (`string_like` decoding), error matching through
-  `Vec<String>` condition names, and allocation.
+  `Vec<String>` condition names, and allocation (about 400,000
+  instructions a unit in malloc and free, the rope's `from_str`
+  included).
 
 ## How the work is split
 
@@ -651,7 +698,7 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 2.63, undo about 2.4, sort 2.13,
+   above; worst now bytecode-to-native 2.64, undo 2.35, sort 2.09,
    bytecode calls 1.87). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code

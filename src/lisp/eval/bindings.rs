@@ -25,6 +25,34 @@ fn module_file_suffix_value() -> Value {
     Value::String(suffix.into())
 }
 
+impl InterpreterState {
+    /// eval_sub's two common variable references, read from the state the
+    /// caller holds: a lexical binding (Fassq over the interpreter
+    /// environment), or a plain untrapped symbol's value cell
+    /// (SYMBOL_PLAINVAL). None for every other symbol, which no lexical
+    /// binding names and `lookup_symbol_global' resolves.
+    #[inline(never)]
+    pub(crate) fn lookup_symbol_plain(
+        &self,
+        name: &SymbolName,
+        env: &Env,
+    ) -> Option<Result<Value, LispError>> {
+        if let Some(environment) = current_environment(env) {
+            match assq_binding(environment, name) {
+                Ok(Some(binding)) => return Some(Ok(binding.cdr.get())),
+                Ok(None) => {}
+                Err(error) => return Some(Err(error)),
+            }
+        }
+        if self.globals.plain_store(name)
+            && let Some(value) = self.globals.value(name)
+        {
+            return Some(Ok(value));
+        }
+        None
+    }
+}
+
 impl Interpreter {
     pub fn lookup_var(&self, name: &str, env: &Env) -> Option<Value> {
         // data.c:find_symbol_value works on the symbol: a name that is an
@@ -707,6 +735,11 @@ impl Interpreter {
         {
             return Ok(binding.cdr.get());
         }
+        self.lookup_symbol_global(name)
+    }
+
+    /// `lookup_symbol' past the lexical environment: find_symbol_value.
+    pub(crate) fn lookup_symbol_global(&self, name: &SymbolName) -> Result<Value, LispError> {
         if self.globals.plain_store(name)
             && let Some(value) = self.globals.value(name)
         {
@@ -755,7 +788,7 @@ impl Interpreter {
         // A function cell that is no symbol is the function itself; an
         // alias chain, a void cell or a cycle takes the out-of-line walk.
         match self.raw_function_binding_symbol(symbol, env) {
-            Some(binding) if !matches!(binding.kind(), Kind::Symbol(_)) => Ok(binding),
+            Some(binding) if binding.symbol_cell().is_none() => Ok(binding),
             _ => self.lookup_function_symbol_chain(symbol, env),
         }
     }

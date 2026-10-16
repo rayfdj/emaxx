@@ -665,7 +665,8 @@ impl From<String> for SymbolName {
 
 impl From<&str> for SymbolName {
     fn from(text: &str) -> Self {
-        Self::intern(text.to_owned())
+        // An existing name is found without copying the text first.
+        Self::intern_str(text)
     }
 }
 
@@ -1975,10 +1976,10 @@ fn assq_environment(
     environment: &Value,
     matches: impl Fn(Value) -> bool,
 ) -> Result<Option<SharedCons>, LispError> {
-    let mut tail = match environment.kind() {
-        Kind::Cons(cell) => cell,
-        Kind::Nil => return Ok(None),
-        _ => return Err(improper_environment(environment, false)),
+    let mut tail = match environment.cons_ref() {
+        Some(cell) => cell,
+        None if environment.is_nil() => return Ok(None),
+        None => return Err(improper_environment(environment, false)),
     };
     // FOR_EACH_TAIL's cycle check (Brent): the tortoise moves to the hare
     // at every power of two.
@@ -1988,16 +1989,17 @@ fn assq_environment(
     loop {
         {
             let entry = tail.car.get();
-            if let Kind::Cons(binding) = (entry).kind()
+            if let Some(binding) = entry.cons_ref()
                 && matches(binding.car.get())
             {
                 return Ok(Some(binding));
             }
         }
-        let next = match tail.cdr.get().kind() {
-            Kind::Cons(cell) => cell,
-            Kind::Nil => return Ok(None),
-            _ => return Err(improper_environment(environment, false)),
+        let rest = tail.cdr.get();
+        let next = match rest.cons_ref() {
+            Some(cell) => cell,
+            None if rest.is_nil() => return Ok(None),
+            None => return Err(improper_environment(environment, false)),
         };
         if next.as_ptr() == tortoise {
             return Err(improper_environment(environment, true));
@@ -2277,8 +2279,11 @@ impl Value {
         self.0 & TAG_MASK == TAG_STRING
     }
 
+    /// SYMBOLP: nil, t or a symbol cell -- the symbol tag on any word but
+    /// the unbound marker's.
+    #[inline(always)]
     pub fn is_symbol(&self) -> bool {
-        matches!(self.kind(), Kind::Nil | Kind::T | Kind::Symbol(_))
+        self.0 & TAG_MASK == TAG_SYMBOL && self.0 != Value::Unbound.0
     }
 
     /// The symbol a word names, without nil, t and the unbound marker:
@@ -2309,6 +2314,35 @@ impl Value {
     #[inline(always)]
     pub fn is_cons(&self) -> bool {
         self.0 & TAG_MASK == TAG_CONS
+    }
+
+    /// XCONS after CONSP: the cell, by the tag alone. `kind' builds the
+    /// whole classification, which a site that wants a cons or nothing
+    /// does not need.
+    #[inline(always)]
+    pub(crate) fn cons_ref(self) -> Option<SharedCons> {
+        if self.0 & TAG_MASK == TAG_CONS {
+            // SAFETY: as `kind's cons arm.
+            Some(unsafe { SharedCons::from_raw((self.0 & !TAG_MASK) as *const ConsCell) })
+        } else {
+            None
+        }
+    }
+
+    /// SUBRP for a C primitive (not a native-compiled function), by the
+    /// tag and the header alone.
+    #[inline(always)]
+    pub(crate) fn builtin_ref(self) -> Option<BuiltinRef> {
+        if self.0 & TAG_MASK != TAG_VECTORLIKE {
+            return None;
+        }
+        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        // SAFETY: as `kind's vectorlike arm.
+        unsafe {
+            (crate::lisp::alloc::vectors::header_tag(header) == crate::lisp::alloc::VectorTag::Subr
+                && !crate::lisp::alloc::vectors::subr_is_allocated(header))
+            .then(|| BuiltinRef::from_raw(header as usize))
+        }
     }
 
     /// `LISTP': nil or a cons, by the word alone.
@@ -2380,18 +2414,18 @@ impl Value {
     }
 
     pub fn car(&self) -> Result<Value, LispError> {
-        match self.kind() {
-            Kind::Cons(cell) => Ok(cell.car.get()),
-            Kind::Nil => Ok(Value::Nil),
-            _ => Err(LispError::WrongTypeArgument("listp".into(), *self)),
+        match self.cons_ref() {
+            Some(cell) => Ok(cell.car.get()),
+            None if self.is_nil() => Ok(Value::Nil),
+            None => Err(LispError::WrongTypeArgument("listp".into(), *self)),
         }
     }
 
     pub fn cdr(&self) -> Result<Value, LispError> {
-        match self.kind() {
-            Kind::Cons(cell) => Ok(cell.cdr.get()),
-            Kind::Nil => Ok(Value::Nil),
-            _ => Err(LispError::WrongTypeArgument("listp".into(), *self)),
+        match self.cons_ref() {
+            Some(cell) => Ok(cell.cdr.get()),
+            None if self.is_nil() => Ok(Value::Nil),
+            None => Err(LispError::WrongTypeArgument("listp".into(), *self)),
         }
     }
 

@@ -3150,6 +3150,38 @@ mod tests {
     }
 
     #[test]
+    fn switch_targets_are_verified_with_both_operands_popped() {
+        // (lambda (x) (cond ((eq x 'a) 1) ((eq x 'b) 2) (t 3))) compiled to
+        // a jump table: dup; constant table; switch; constant 3; return /
+        // 5: constant 1; return / 7: constant 2; return. The editor exists
+        // before the reader interns the table's keys.
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let form = super::super::super::reader::Reader::new(
+            r##"#[257 "\211\300\267\303\207\301\207\302\207"
+                   [#s(hash-table test eq data (a 5 b 7)) 1 2 3] 3]"##,
+        )
+        .read()
+        .expect("read byte-code object")
+        .expect("byte-code object form");
+        let closure = interp.eval(&form, &mut env).expect("byte-code closure");
+        let Kind::Closure(closure_ref) = closure.kind() else {
+            panic!("a byte-code closure")
+        };
+        let program = ByteCodeObject::for_call(closure_ref).expect("packed byte code");
+        let verified = super::super::verify::verified_code(&program, 1).expect("verified");
+        // Bswitch pops the table and the value: each target, like the
+        // fall-through, starts with the argument alone.
+        assert!(verified.admits(3, 1) && verified.admits(5, 1) && verified.admits(7, 1));
+        for (argument, expected) in [("a", 1), ("b", 2), ("c", 3)] {
+            let value = interp
+                .call_function_value(closure, None, &[Value::symbol(argument)], &mut env)
+                .expect("call");
+            assert_eq!(value.fixnum(), Some(expected));
+        }
+    }
+
+    #[test]
     fn executes_arithmetic_fixture() {
         // (defun emaxx-fx-add (a b) (+ a b 1))
         let value = run("emaxx-fx-add", &[Value::Integer(2), Value::Integer(3)]).unwrap();

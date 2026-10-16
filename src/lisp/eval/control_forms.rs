@@ -176,13 +176,15 @@ impl Interpreter {
     /// elements); a dotted element signals listp on its tail, as Fcar of
     /// Fcdr does.
     fn let_binding_parts(binding: &Value) -> Result<(Value, Option<Value>), LispError> {
-        let Kind::Cons(cell) = binding.kind() else {
+        let Some(cell) = binding.cons_ref() else {
             return Err(wrong_type_argument("listp", *binding));
         };
         let name = cell.car.get();
         let rest = cell.cdr.get();
+        if rest.is_nil() {
+            return Ok((name, None));
+        }
         match rest.kind() {
-            Kind::Nil => Ok((name, None)),
             Kind::Cons(second) => {
                 if !second.cdr.get().is_nil() {
                     return Err(LispError::SignalValue(Value::cons(

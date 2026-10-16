@@ -1278,8 +1278,11 @@ impl Interpreter {
 
     /// `remove_global_binding' for a symbol in hand.
     pub(crate) fn remove_global_binding_symbol(&mut self, symbol: &SymbolName) {
-        for terminal in &mut self.terminals {
-            terminal.borrow_mut().keyboard.remove(symbol.as_str());
+        // Only a KBOARD variable has terminal-local values.
+        if symbol.cell().is_kboard_forwarded() {
+            for terminal in &mut self.terminals {
+                terminal.borrow_mut().keyboard.remove(symbol.as_str());
+            }
         }
         self.globals.remove(symbol);
     }
@@ -2607,7 +2610,7 @@ impl Interpreter {
     /// replaces the full variable lookup (whose builtin-variable fallback
     /// tables are a measurable per-call cost); with edebug loaded, defer
     /// to the real lookup, buffer-local bindings included.
-    #[inline]
+    #[inline(always)]
     fn edebug_entered_active(&self, env: &Env) -> bool {
         // GNU's Qsymbol belongs to the editor that owns its value and
         // declared-special flag. Keep a direct reference in this owner;
@@ -2618,7 +2621,7 @@ impl Interpreter {
                 .is_some_and(|value| value.is_truthy())
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn capture_current_backtrace_context(
         &mut self,
         function_name: Option<&str>,

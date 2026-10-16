@@ -172,10 +172,7 @@ define_native_forms! {
 /// The cell after CELL, when its cdr is one (`CONSP (XCDR (tail))').
 #[inline]
 pub(super) fn next_cons(cell: &crate::lisp::types::ConsCell) -> Option<SharedCons> {
-    match cell.cdr.get().kind() {
-        Kind::Cons(next) => Some(next),
-        _ => None,
-    }
+    cell.cdr.get().cons_ref()
 }
 
 /// A walk over a list's elements by its cells (eval_sub's `while (CONSP
@@ -186,10 +183,7 @@ pub(super) struct ListForms(Option<SharedCons>);
 /// The elements of LIST, from its first cell.
 #[inline]
 pub(super) fn list_forms(list: &Value) -> ListForms {
-    ListForms(match list.kind() {
-        Kind::Cons(cell) => Some(cell),
-        _ => None,
-    })
+    ListForms(list.cons_ref())
 }
 
 impl Iterator for ListForms {
@@ -209,28 +203,19 @@ impl Iterator for ListForms {
 /// loops do).
 #[inline]
 pub(super) fn list_next(tail: &Value) -> Option<(Value, Value)> {
-    match tail.kind() {
-        Kind::Cons(cell) => Some((cell.car.get(), cell.cdr.get())),
-        _ => None,
-    }
+    tail.cons_ref().map(|cell| (cell.car.get(), cell.cdr.get()))
 }
 
 /// Fcar of a list: the first element, nil for nil.
 #[inline]
 pub(super) fn list_car(list: &Value) -> Value {
-    match list.kind() {
-        Kind::Cons(cell) => cell.car.get(),
-        _ => Value::Nil,
-    }
+    list.cons_ref().map_or(Value::Nil, |cell| cell.car.get())
 }
 
 /// Fcdr of a list: the rest, nil for nil.
 #[inline]
 pub(super) fn list_cdr(list: &Value) -> Value {
-    match list.kind() {
-        Kind::Cons(cell) => cell.cdr.get(),
-        _ => Value::Nil,
-    }
+    list.cons_ref().map_or(Value::Nil, |cell| cell.cdr.get())
 }
 
 /// Fnth: the Nth element, nil past the end.
@@ -264,7 +249,7 @@ impl Interpreter {
     /// enables that mode while macroexpanding source forms, so this is part of
     /// ordinary evaluator dispatch rather than merely a predicate detail.
     fn callable_symbol_name(&self, value: &Value, env: &Env) -> Option<SymbolName> {
-        if let Kind::Symbol(name) = value.kind() {
+        if let Some(name) = value.symbol_cell() {
             return Some(name);
         }
         if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
@@ -286,7 +271,10 @@ impl Interpreter {
         let state: &InterpreterState = self;
         if state.lisp_eval_depth != 0 && state.pending_termination.is_none() {
             if let Some(name) = expr.symbol_cell() {
-                return self.lookup_symbol(&name, env);
+                if let Some(result) = state.lookup_symbol_plain(&name, env) {
+                    return result;
+                }
+                return self.lookup_symbol_global(&name);
             }
             if expr.is_nil_t_or_fixnum() {
                 return Ok(*expr);
@@ -297,6 +285,43 @@ impl Interpreter {
 
     #[inline(never)]
     fn eval_sub(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
+        // A form below the outermost evaluation, with no termination or
+        // quit pending: the entry tests read the state through one borrow,
+        // and every other case takes the general entry.
+        let state: &mut InterpreterState = self;
+        if state.lisp_eval_depth == 0
+            || state.pending_termination.is_some()
+            || !state.quit_flag.is_nil()
+        {
+            return self.eval_sub_general(expr, env);
+        }
+        let Some(cell) = expr.cons_ref() else {
+            return self.eval_inner(expr, env);
+        };
+        // eval.c:2502's maybe_gc, then the depth increment (see
+        // `eval_sub_general').
+        crate::lisp::native_comp::maybe_gc(self, env);
+        let state: &mut InterpreterState = self;
+        state.lisp_eval_depth += 1;
+        if i64::try_from(state.lisp_eval_depth).unwrap_or(i64::MAX) > state.max_lisp_eval_depth
+            && self.lisp_eval_depth_exceeded()
+        {
+            let reached = self.lisp_eval_depth;
+            self.lisp_eval_depth -= 1;
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("excessive-lisp-nesting"),
+                Value::Integer(reached as i64),
+            ])));
+        }
+        let result = self.eval_cons(expr, cell, env);
+        self.lisp_eval_depth -= 1;
+        result
+    }
+
+    /// eval_sub at the outermost evaluation, with a termination or a quit
+    /// pending.
+    #[inline(never)]
+    fn eval_sub_general(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
         // The entry tests read the state through one borrow.
         let state: &InterpreterState = self;
         let outermost = state.lisp_eval_depth == 0;
@@ -460,38 +485,47 @@ impl Interpreter {
 
             Kind::Symbol(name) => self.lookup_symbol(&name, env),
 
-            Kind::Cons(cell) => {
-                // eval_sub: XCAR (form) read for its symbol (copied only
-                // when it is something else), XCDR (form) held by its
-                // cell, CHECK_LIST (original_args).
-                let head = cell.car.get();
-                let (head_symbol, head_value) = match head.symbol_cell() {
-                    Some(name) => (Some(name), None),
-                    None => (None, Some(head)),
-                };
-                let tail = cell.cdr.get();
-                let args_cell: Option<SharedCons> = if tail.is_nil() {
-                    None
-                } else if let Kind::Cons(args) = tail.kind() {
-                    Some(args)
-                } else {
-                    return Err(eval_list_type_error(tail));
-                };
-                let callable_name = match head_value.as_ref() {
-                    None => head_symbol,
-                    Some(value) => self.callable_symbol_name(value, env),
-                };
-                // Regular function call
-                self.eval_call(
-                    expr,
-                    head,
-                    head_value.as_ref(),
-                    callable_name,
-                    args_cell,
-                    env,
-                )
-            }
+            Kind::Cons(cell) => self.eval_cons(expr, cell, env),
         }
+    }
+
+    /// eval_sub's form: EXPR, whose cell is CELL.
+    #[inline(always)]
+    fn eval_cons(
+        &mut self,
+        expr: &Value,
+        cell: SharedCons,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        // eval_sub: XCAR (form) read for its symbol (copied only
+        // when it is something else), XCDR (form) held by its
+        // cell, CHECK_LIST (original_args).
+        let head = cell.car.get();
+        let (head_symbol, head_value) = match head.symbol_cell() {
+            Some(name) => (Some(name), None),
+            None => (None, Some(head)),
+        };
+        let tail = cell.cdr.get();
+        let args_cell: Option<SharedCons> = if tail.is_nil() {
+            None
+        } else if let Some(args) = tail.cons_ref() {
+            Some(args)
+        } else {
+            return Err(eval_list_type_error(tail));
+        };
+        let callable_name = match head_value.as_ref() {
+            None => head_symbol,
+            Some(value) => self.callable_symbol_name(value, env),
+        };
+        // Regular function call
+        self.eval_call(
+            expr,
+            head,
+            head_value.as_ref(),
+            callable_name,
+            args_cell,
+            env,
+        )
     }
 
     /// `eval_list_length' of a form's arguments, inline for the usual
@@ -500,17 +534,20 @@ impl Interpreter {
     /// whose cdr is no nil; its quit check comes after the second element.
     #[inline(always)]
     fn short_list_length(&mut self, list: Value, env: &mut Env) -> Result<usize, LispError> {
-        match list.kind() {
-            Kind::Nil => return Ok(0),
-            Kind::Cons(first) => match first.cdr.get().kind() {
-                Kind::Nil => return Ok(1),
-                Kind::Cons(second) if second.cdr.get().is_nil() => {
-                    self.maybe_quit(env)?;
-                    return Ok(2);
-                }
-                _ => {}
-            },
-            _ => {}
+        if list.is_nil() {
+            return Ok(0);
+        }
+        if let Some(first) = list.cons_ref() {
+            let rest = first.cdr.get();
+            if rest.is_nil() {
+                return Ok(1);
+            }
+            if let Some(second) = rest.cons_ref()
+                && second.cdr.get().is_nil()
+            {
+                self.maybe_quit(env)?;
+                return Ok(2);
+            }
         }
         self.eval_list_length(list, env)
     }
@@ -527,7 +564,7 @@ impl Interpreter {
         let mut maximum = 2usize;
         let mut remaining = 0isize;
         let mut quit_count = 2u16;
-        while let Kind::Cons(cell) = tail.kind() {
+        while let Some(cell) = tail.cons_ref() {
             length += 1;
             tail = cell.cdr.get();
             quit_count = quit_count.wrapping_sub(1);
@@ -731,11 +768,11 @@ impl Interpreter {
         let limit = fixed_max.map_or(nargs, usize::from);
         let mut argnum = 0usize;
         for slot in &mut argvals[..limit] {
-            let cell = match args_left.kind() {
-                Kind::Cons(cell) => Some(cell),
-                _ if subr.is_some() && fixed_max.is_none() => break,
-                Kind::Nil => None,
-                _ => {
+            let cell = match args_left.cons_ref() {
+                Some(cell) => Some(cell),
+                None if subr.is_some() && fixed_max.is_none() => break,
+                None if args_left.is_nil() => None,
+                None => {
                     let error = LispError::WrongTypeArgument("listp".into(), args_left);
                     return self.eval_call_argument_error(depth, unevald_frame, error, env);
                 }
@@ -1269,8 +1306,8 @@ impl Interpreter {
         env: &Env,
     ) -> Result<FunctionResolution, LispError> {
         let function = self.lookup_function_symbol(name, env)?;
-        Ok(match function.kind() {
-            Kind::BuiltinFunc(subr)
+        Ok(match function.builtin_ref() {
+            Some(subr)
                 if subr.descriptor().max_args()
                     != crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled =>
             {
@@ -1581,13 +1618,16 @@ impl Interpreter {
             let mut optional = false;
             let mut rest = false;
             let mut previous_rest = false;
-            while let Kind::Cons(cell) = parameters.kind() {
+            while let Some(cell) = parameters.cons_ref() {
                 self.maybe_quit(env)?;
                 let value = cell.car.get();
-                let parameter = match value.kind() {
-                    Kind::Nil => crate::lisp::types::symbols::builtin_boolean(false),
-                    Kind::T => crate::lisp::types::symbols::builtin_boolean(true),
-                    _ => self
+                let parameter = match value.symbol_cell() {
+                    Some(name) => name,
+                    None if value.is_nil() => crate::lisp::types::symbols::builtin_boolean(false),
+                    None if value.word() == Value::T.word() => {
+                        crate::lisp::types::symbols::builtin_boolean(true)
+                    }
+                    None => self
                         .callable_symbol_name(&value, env)
                         .ok_or_else(|| invalid_function(function))?,
                 };
