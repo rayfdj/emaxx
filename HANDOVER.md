@@ -698,6 +698,17 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   and handler vectors lent from a pool in the interpreter state (no
   thread-local, kept only once allocated) saved 0.36% of undo, inside the
   noise, with bytecode calls even.
+- `prim`, the VM's call of a primitive for a dedicated op (`Bnth`,
+  `Bsubstring`, `Bconcat2`, ...), opened an explicit stack-root scope
+  for its arguments (`with_lisp_stack_roots`: an `Rc` clone, a `RefCell`
+  borrow and a slot, then the guard's drop, about 120 instructions),
+  though they are a small array on the Rust stack, which the conservative
+  scan reads as it reads a C function's locals; the explicit scopes
+  predate that scan (the honesty audit's item (c)). The arguments are
+  passed by value now, and `prim_rooted` keeps the scope for the two ops
+  whose arguments are drained into a heap vector (`insert` and `concat`
+  of N). Undo 1.88 → 1.86 (about 45,000 instructions a unit outside the
+  allocator).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,

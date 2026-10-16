@@ -851,7 +851,7 @@ fn unwind_one(
             // GNU records bcall0 for functions (24.4+) and prog_ignore
             // for the obsolete forms-list shape.
             interp.with_lisp_stack_roots(&handler, |interp| {
-                let is_function = prim(interp, "functionp", std::slice::from_ref(&handler), env)?;
+                let is_function = prim(interp, "functionp", [handler], env)?;
                 if is_function.is_truthy() {
                     interp.call_function_value(handler, None, &[], env)?;
                 } else if let Ok(forms) = handler.to_vec() {
@@ -929,7 +929,24 @@ fn prim_facts(name: &'static str) -> crate::lisp::primitives::NameFacts {
 /// opcodes (`Bnth', `Bpoint', ...), so their dispatch facts are cached by
 /// string address: the general string-keyed probe ran once per executed
 /// opcode and was a measurable slice of `nth'-heavy bytecode.
-fn prim(
+///
+/// ARGS are passed by value, so they lie in this frame (or its caller's)
+/// for the call, where the conservative stack scan finds them as it finds
+/// a C function's locals (alloc.c:mark_stack); `prim_rooted' takes an
+/// argument vector held elsewhere.
+fn prim<const N: usize>(
+    interp: &mut Interpreter,
+    name: &'static str,
+    args: [Value; N],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let facts = prim_facts(name);
+    primitives::call_with_facts(interp, name, &facts, &args, env)
+}
+
+/// `prim' with arguments in a heap vector, rooted for the call as
+/// SAFE_ALLOCA_LISP roots a C function's allocated argument array.
+fn prim_rooted(
     interp: &mut Interpreter,
     name: &'static str,
     args: &[Value],
@@ -2032,7 +2049,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                     }
                     Err(error) => return Err(error),
                 },
-                _ => prim(interp, "symbol-value", &[name], env)?,
+                _ => prim(interp, "symbol-value", [name], env)?,
             };
             push!(value);
         }
@@ -2045,7 +2062,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                     crate::lisp::primitives::set_internal_symbol(interp, &symbol, value, env)?;
                 }
                 _ => {
-                    prim(interp, "set", &[name, value], env)?;
+                    prim(interp, "set", [name, value], env)?;
                 }
             }
         }
@@ -2157,7 +2174,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                     Err(error) => match error.kind() {
                         LispErrorKind::Throw(thrown, thrown_value) => {
                             let matched = interp.with_lisp_stack_roots(&error, |interp| {
-                                prim(interp, "eq", &[tag, *thrown], env)
+                                prim(interp, "eq", [tag, *thrown], env)
                             })?;
                             if matched.is_truthy() {
                                 Ok(*thrown_value)
@@ -2189,11 +2206,11 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
             // bind standard-output to it (GNU temp_output_buffer_setup
             // specbinds, so Bunbind pops it).
             let name = pop!();
-            let buffer = prim(interp, "get-buffer-create", &[name], env)?;
+            let buffer = prim(interp, "get-buffer-create", [name], env)?;
             let saved = interp.current_buffer_id();
             let buffer_id = interp.resolve_buffer_id(&buffer)?;
             let _ = interp.set_current_buffer_id(buffer_id);
-            prim(interp, "erase-buffer", &[], env)?;
+            prim(interp, "erase-buffer", [], env)?;
             let _ = interp.set_current_buffer_id(saved);
             let restore = interp.bind_special_variable("standard-output", buffer, env)?;
             interp.bc_unwinds.push(UnwindEntry::Binding(restore));
@@ -2211,7 +2228,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                 if show.is_truthy() {
                     interp.call_function_value(show, None, std::slice::from_ref(&buffer), env)?;
                 } else {
-                    prim(interp, "display-buffer", &[buffer], env)?;
+                    prim(interp, "display-buffer", [buffer], env)?;
                 }
                 Ok::<_, LispError>(())
             })?;
@@ -2260,7 +2277,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                 Op::CurrentBuffer => "current-buffer",
                 _ => "widen",
             };
-            let value = prim(interp, name, &[], env)?;
+            let value = prim(interp, name, [], env)?;
             push!(value);
         }
         // One-argument buffer/navigation ops (TOP = F(TOP)).
@@ -2289,13 +2306,13 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                 Op::MatchBeginning => "match-beginning",
                 _ => "match-end",
             };
-            let value = prim(interp, name, &[a], env)?;
+            let value = prim(interp, name, [a], env)?;
             push!(value);
         }
         Op::IndentTo => {
             // GNU passes an explicit nil MINIMUM.
             let column = pop!();
-            let value = prim(interp, "indent-to", &[column, Value::Nil], env)?;
+            let value = prim(interp, "indent-to", [column, Value::Nil], env)?;
             push!(value);
         }
         // Two-argument region/motion ops.
@@ -2313,7 +2330,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                 Op::DeleteRegion => "delete-region",
                 _ => "narrow-to-region",
             };
-            let value = prim(interp, name, &[a, b], env)?;
+            let value = prim(interp, name, [a, b], env)?;
             push!(value);
         }
         Op::SetMarker => {
@@ -2323,7 +2340,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
             let value = prim(
                 interp,
                 "set-marker",
-                &[marker, position, position_buffer],
+                [marker, position, position_buffer],
                 env,
             )?;
             push!(value);
@@ -2331,7 +2348,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
         Op::InsertN(n) => {
             let start = interp.bc_stack.len() - n as usize;
             let items: Vec<Value> = interp.bc_stack.drain_from(start).collect();
-            let value = prim(interp, "insert", &items, env)?;
+            let value = prim_rooted(interp, "insert", &items, env)?;
             push!(value);
         }
         Op::PushCatch { target } => {
@@ -2376,7 +2393,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
         Op::Switch => {
             let table = pop!();
             let value = pop!();
-            let dest = prim(interp, "gethash", &[value, table, Value::Nil], env)?;
+            let dest = prim(interp, "gethash", [value, table, Value::Nil], env)?;
             if let Kind::Integer(dest) = dest.kind() {
                 *pc = dest as usize;
             }
@@ -2389,7 +2406,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
         Op::ConcatN(n) => {
             let start = interp.bc_stack.len() - n as usize;
             let items: Vec<Value> = interp.bc_stack.drain_from(start).collect();
-            let value = prim(interp, "concat", &items, env)?;
+            let value = prim_rooted(interp, "concat", &items, env)?;
             push!(value);
         }
         Op::List1 | Op::List2 | Op::List3 | Op::List4 => {
@@ -2440,7 +2457,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                 Op::Leq => "<=",
                 _ => ">=",
             };
-            let value = prim(interp, name, &[a, b], env)?;
+            let value = prim(interp, name, [a, b], env)?;
             push!(value);
         }
         Op::Plus | Op::Diff | Op::Mult => {
@@ -2462,7 +2479,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                 Op::Diff => "-",
                 _ => "*",
             };
-            let value = prim(interp, name, &[a, b], env)?;
+            let value = prim(interp, name, [a, b], env)?;
             push!(value);
         }
         Op::Max | Op::Min => {
@@ -2478,7 +2495,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                 return Ok(());
             }
             let name = if matches!(op, Op::Max) { "max" } else { "min" };
-            let value = prim(interp, name, &[a, b], env)?;
+            let value = prim(interp, name, [a, b], env)?;
             push!(value);
         }
         // Two-argument primitive ops.
@@ -2525,7 +2542,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                 _ => "nconc",
             };
             let call_args = [a, b];
-            let value = match prim(interp, name, &call_args, env) {
+            let value = match prim(interp, name, call_args, env) {
                 Ok(value) => value,
                 Err(error) => {
                     // bytecode.c's record_in_backtrace covers
@@ -2566,7 +2583,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                 _ => {
                     let name = if matches!(op, Op::Car) { "car" } else { "cdr" };
                     let call_args = [a];
-                    let value = match prim(interp, name, &call_args, env) {
+                    let value = match prim(interp, name, call_args, env) {
                         Ok(value) => value,
                         Err(error) => {
                             // bytecode.c records the signaling op
@@ -2608,7 +2625,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                 Op::Sub1 => "1-",
                 _ => "-",
             };
-            let value = prim(interp, name, &[a], env)?;
+            let value = prim(interp, name, [a], env)?;
             push!(value);
         }
         Op::Consp => {
@@ -2649,7 +2666,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                 Op::Upcase => "upcase",
                 _ => "downcase",
             };
-            let value = prim(interp, name, &[a], env)?;
+            let value = prim(interp, name, [a], env)?;
             push!(value);
         }
         // Three-argument primitive ops.
@@ -2663,7 +2680,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                 _ => "concat",
             };
             let call_args = [a, b, c];
-            let value = match prim(interp, name, &call_args, env) {
+            let value = match prim(interp, name, call_args, env) {
                 Ok(value) => value,
                 Err(error) => {
                     if matches!(op, Op::Aset)
@@ -2689,7 +2706,7 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
             let c = pop!();
             let b = pop!();
             let a = pop!();
-            let value = prim(interp, "concat", &[a, b, c, d], env)?;
+            let value = prim(interp, "concat", [a, b, c, d], env)?;
             push!(value);
         }
         Op::StackRef(_)
@@ -3263,7 +3280,7 @@ fn run_frames(
                         }
                         let matched_value = match (&handler.kind, error.kind()) {
                             (HandlerKind::Catch(tag), LispErrorKind::Throw(thrown, value)) => {
-                                let same = prim(interp, "eq", &[*tag, *thrown], env)?;
+                                let same = prim(interp, "eq", [*tag, *thrown], env)?;
                                 if same.is_truthy() { Some(*value) } else { None }
                             }
                             (HandlerKind::ConditionCase(_), LispErrorKind::Throw(_, _))
@@ -3807,19 +3824,14 @@ mod native_surface_tests {
         let function = prim(
             &mut interp,
             "make-byte-code",
-            &[Value::Integer(0), code, constants, Value::Integer(1)],
+            [Value::Integer(0), code, constants, Value::Integer(1)],
             &mut env,
         )
         .expect("alloc.c:Fmake_byte_code retains the supplied constants vector");
-        let stored = prim(
-            &mut interp,
-            "aref",
-            &[function, Value::Integer(2)],
-            &mut env,
-        )
-        .expect("CLOSURE_CONSTANTS");
+        let stored = prim(&mut interp, "aref", [function, Value::Integer(2)], &mut env)
+            .expect("CLOSURE_CONSTANTS");
         assert_eq!(
-            prim(&mut interp, "eq", &[constants, stored], &mut env)
+            prim(&mut interp, "eq", [constants, stored], &mut env)
                 .expect("original vector identity"),
             Value::T,
         );
@@ -3832,7 +3844,7 @@ mod native_surface_tests {
         prim(
             &mut interp,
             "aset",
-            &[constants, Value::Integer(0), Value::Integer(29)],
+            [constants, Value::Integer(0), Value::Integer(29)],
             &mut env,
         )
         .expect("data.c:Faset changes the original vector slot");
@@ -3861,7 +3873,7 @@ mod native_surface_tests {
         let function = prim(
             &mut interp,
             "make-byte-code",
-            &[Value::Integer(257), code, constants, Value::Integer(3)],
+            [Value::Integer(257), code, constants, Value::Integer(3)],
             &mut env,
         )
         .expect("bytecode function with one stack argument");
@@ -3902,7 +3914,7 @@ mod native_surface_tests {
         prim(
             &mut interp,
             "aset",
-            &[constants, Value::Integer(0), Value::Nil],
+            [constants, Value::Integer(0), Value::Nil],
             &mut env,
         )
         .expect("replace the sole reference to the old constant");
@@ -3929,7 +3941,7 @@ mod native_surface_tests {
         let object = prim(
             &mut interp,
             "make-byte-code",
-            &[
+            [
                 Value::Integer(257),
                 code,
                 Value::vector([]),
@@ -3956,7 +3968,7 @@ mod native_surface_tests {
         let object = prim(
             &mut interp,
             "make-byte-code",
-            &[
+            [
                 Value::Integer(257),
                 code,
                 Value::vector([]),
@@ -3973,7 +3985,7 @@ mod native_surface_tests {
                 .call_function_value(object, None, std::slice::from_ref(&argument), &mut env)
                 .expect("return the original argument");
             assert_eq!(
-                prim(&mut interp, "eq", &[argument, returned], &mut env,)
+                prim(&mut interp, "eq", [argument, returned], &mut env,)
                     .expect("compare Lisp object identity"),
                 Value::T,
                 "the argument prologue must not allocate a different string",
@@ -3994,7 +4006,7 @@ mod native_surface_tests {
         let object = prim(
             &mut interp,
             "make-byte-code",
-            &[
+            [
                 Value::Integer(257),
                 code,
                 Value::vector([]),
@@ -4012,7 +4024,7 @@ mod native_surface_tests {
                 .call_function_value(object, None, std::slice::from_ref(&compact), &mut env)
                 .expect("bytecode returns the original argument");
             assert_eq!(
-                prim(&mut interp, "eq", &[compact, returned], &mut env).expect("string identity"),
+                prim(&mut interp, "eq", [compact, returned], &mut env).expect("string identity"),
                 Value::T,
             );
         }
@@ -4021,7 +4033,7 @@ mod native_surface_tests {
         let argument = prim(
             &mut interp,
             "error-message-string",
-            &[Value::list([
+            [Value::list([
                 Value::symbol("wrong-type-argument"),
                 Value::symbol("listp"),
                 Value::T,
@@ -4033,24 +4045,19 @@ mod native_surface_tests {
             .call_function_value(object, None, std::slice::from_ref(&argument), &mut env)
             .unwrap();
         assert_eq!(
-            prim(&mut interp, "eq", &[argument, value], &mut env).expect("same diagnostic object"),
+            prim(&mut interp, "eq", [argument, value], &mut env).expect("same diagnostic object"),
             Value::T,
         );
         assert_eq!(
-            prim(
-                &mut interp,
-                "multibyte-string-p",
-                std::slice::from_ref(&argument),
-                &mut env
-            )
-            .expect("print buffer is multibyte"),
+            prim(&mut interp, "multibyte-string-p", [argument], &mut env)
+                .expect("print buffer is multibyte"),
             Value::T,
         );
 
         prim(
             &mut interp,
             "put-text-property",
-            &[
+            [
                 Value::Integer(0),
                 Value::Integer(1),
                 Value::Symbol("field".into()),
@@ -4064,7 +4071,7 @@ mod native_surface_tests {
             prim(
                 &mut interp,
                 "get-text-property",
-                &[Value::Integer(0), Value::Symbol("field".into()), argument,],
+                [Value::Integer(0), Value::Symbol("field".into()), argument,],
                 &mut env,
             )
             .unwrap(),
@@ -4073,15 +4080,10 @@ mod native_surface_tests {
         // Ferror_message_string's allocation-free (error STRING) branch
         // returns that exact string, including its properties.
         let plain_error = Value::list([Value::symbol("error"), argument]);
-        let returned = prim(
-            &mut interp,
-            "error-message-string",
-            &[plain_error],
-            &mut env,
-        )
-        .expect("original error string");
+        let returned = prim(&mut interp, "error-message-string", [plain_error], &mut env)
+            .expect("original error string");
         assert_eq!(
-            prim(&mut interp, "eq", &[argument, returned], &mut env).expect("fast-return identity"),
+            prim(&mut interp, "eq", [argument, returned], &mut env).expect("fast-return identity"),
             Value::T,
         );
     }
@@ -4099,7 +4101,7 @@ mod native_surface_tests {
         let value = prim(
             &mut interp,
             "byte-code",
-            &[
+            [
                 primitives::bytes_to_shared_unibyte_value(&[192, 193, 92, 135]),
                 Value::vector([Value::Integer(40), Value::Integer(2)]),
                 Value::Integer(4),
@@ -4109,7 +4111,7 @@ mod native_surface_tests {
         .unwrap();
         assert_eq!(value, Value::Integer(42));
         assert_eq!(
-            prim(&mut interp, "internal-stack-stats", &[], &mut env).unwrap(),
+            prim(&mut interp, "internal-stack-stats", [], &mut env).unwrap(),
             Value::Nil
         );
     }
