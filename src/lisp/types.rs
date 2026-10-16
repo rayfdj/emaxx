@@ -2943,8 +2943,8 @@ impl LispErrorKind {
             LispErrorKind::VoidFunction(_) => "void-function".into(),
             LispErrorKind::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments".into(),
             LispErrorKind::Signal(_) => "error".into(),
-            LispErrorKind::SignalValue(value) => match value.car().map(|v| v.kind()) {
-                Ok(Kind::Symbol(symbol)) => symbol.to_string(),
+            LispErrorKind::SignalValue(value) => match value.car_if_list().map(|v| v.kind()) {
+                Some(Kind::Symbol(symbol)) => symbol.as_str().to_owned(),
                 _ => "error".into(),
             },
             LispErrorKind::ErtTestFailed(_) => "ert-test-failed".into(),

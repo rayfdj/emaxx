@@ -1311,7 +1311,7 @@ impl NativeRuntime {
         let is_throw = matches!(error.kind(), LispErrorKind::Throw(_, _));
         let (condition, conditions) =
             if is_throw || matches!(error.kind(), LispErrorKind::Terminate(_)) {
-                (String::new(), Vec::new())
+                (String::new(), crate::lisp::eval::ConditionNames::new())
             } else {
                 let condition = error.condition_type();
                 let conditions = interpreter.error_condition_names(&condition);

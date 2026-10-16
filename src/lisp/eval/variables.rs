@@ -2932,16 +2932,35 @@ impl Interpreter {
     }
 
     /// The `error-conditions' of CONDITION, or empty when undefined.
-    pub(crate) fn error_condition_names(&mut self, condition: &str) -> Vec<String> {
-        self.get_symbol_property(condition, "error-conditions")
-            .and_then(|value| value.to_vec().ok())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| item.symbol_str().map(str::to_string))
-                    .collect()
+    /// CONDITION's `error-conditions', the symbols of the property's
+    /// list in order (none for a circular or dotted list), read in place:
+    /// a signal's handler walk asks for them each time.
+    pub(crate) fn error_condition_names(&mut self, condition: &str) -> ConditionNames {
+        let mut names = ConditionNames::new();
+        let Some(value) = self.get_symbol_property(condition, "error-conditions") else {
+            return names;
+        };
+        let mut push = |item: Value| match item.kind() {
+            Kind::Symbol(name) => names.push(name),
+            Kind::Nil => names.push(crate::lisp::types::symbols::builtin_boolean(false)),
+            Kind::T => names.push(crate::lisp::types::symbols::builtin_boolean(true)),
+            _ => {}
+        };
+        if matches!(value.kind(), Kind::Vector(_)) {
+            // A vector reads as `to_vec' gives it, marker first.
+            value.to_vec().into_iter().flatten().for_each(push);
+            return names;
+        }
+        if value
+            .visit_list_elements(|item| {
+                push(item);
+                Ok(())
             })
-            .unwrap_or_default()
+            .is_err()
+        {
+            return ConditionNames::new();
+        }
+        names
     }
 
     /// GNU handler matching (`eval.c:find_handler_clause' ->
@@ -2956,7 +2975,7 @@ impl Interpreter {
     pub(super) fn condition_symbol_matches(
         symbol: &str,
         error_type: &str,
-        condition_list: &[String],
+        condition_list: &[SymbolName],
     ) -> bool {
         if symbol == "t" {
             return true;
@@ -2964,13 +2983,13 @@ impl Interpreter {
         if condition_list.is_empty() {
             return symbol == error_type;
         }
-        condition_list.iter().any(|entry| entry == symbol)
+        condition_list.iter().any(|entry| entry.as_str() == symbol)
     }
 
     pub(crate) fn clause_head_matches(
         head: &Value,
         error_type: &str,
-        condition_list: &[String],
+        condition_list: &[SymbolName],
     ) -> bool {
         match head.kind() {
             Kind::T => true,

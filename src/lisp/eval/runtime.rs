@@ -2166,15 +2166,27 @@ impl Interpreter {
         self.globals.function_definition_by_name(name).is_some()
     }
 
+    /// Whether FEATURE names a symbol in `features' (read in place; a
+    /// circular or dotted list has none).
     pub fn has_feature(&self, feature: &str) -> bool {
-        self.global_value("features")
-            .unwrap_or_else(|| self.features_value())
-            .to_vec()
-            .is_ok_and(|features| {
-                features
-                    .iter()
-                    .any(|value| matches!(value.kind(), Kind::Symbol(name) if name == feature))
+        let features = self
+            .global_value("features")
+            .unwrap_or_else(|| self.features_value());
+        let named = |value: &Value| matches!(value.kind(), Kind::Symbol(name) if name == feature);
+        if matches!(features.kind(), Kind::Vector(_)) {
+            // A vector reads as `to_vec' gives it, marker first.
+            return features
+                .to_vec()
+                .is_ok_and(|features| features.iter().any(named));
+        }
+        let mut found = false;
+        features
+            .visit_list_elements(|value| {
+                found = found || named(&value);
+                Ok(())
             })
+            .is_ok()
+            && found
     }
 
     pub(super) fn features_value(&self) -> Value {
@@ -2277,7 +2289,7 @@ impl Interpreter {
                     && self
                         .error_condition_names(&error.condition_type())
                         .iter()
-                        .any(|name| name == "error") =>
+                        .any(|name| name.as_str() == "error") =>
             {
                 self.clear_batch_error_backtrace();
                 Ok(Value::Nil)

@@ -1718,6 +1718,9 @@ impl Drop for BacktraceFrame {
     }
 }
 
+/// A signaled condition's `error-conditions' (see `error_condition_names').
+pub(crate) type ConditionNames = smallvec::SmallVec<[SymbolName; 8]>;
+
 /// A parameter an interpreted call bound (funcall_lambda's bindings, which
 /// `backtrace--locals' and the debugger's frame context report), kept on
 /// a stack beside the frames instead of in each frame: FRAME is the index

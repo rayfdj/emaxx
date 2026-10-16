@@ -322,10 +322,7 @@ pub(crate) fn log_message_text(interp: &mut Interpreter, text: &str, env: &Env) 
     if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
         buffer.disable_undo();
         // FIXNATP: any other non-nil value keeps every line.
-        let max_lines = log_max
-            .as_fixnum()
-            .ok()
-            .and_then(|max| usize::try_from(max).ok());
+        let max_lines = log_max.fixnum().and_then(|max| usize::try_from(max).ok());
         message_dolog(&mut buffer, text, max_lines);
     }
 }
@@ -357,10 +354,12 @@ fn message_dolog(buffer: &mut crate::buffer::Buffer, text: &str, max_lines: Opti
     if this_bol > 1 {
         let prev_bol = buffer.line_start_at(this_bol - 1);
         let lines = buffer.buffer_substring(prev_bol, end).unwrap_or_default();
-        let this_bol_byte = buffer
-            .buffer_substring(prev_bol, this_bol)
-            .unwrap_or_default()
-            .len();
+        // The previous line is the start of LINES, THIS_BOL - PREV_BOL
+        // characters long.
+        let this_bol_byte = lines
+            .char_indices()
+            .nth(this_bol - prev_bol)
+            .map_or(lines.len(), |(byte, _)| byte);
         let dups = message_log_check_duplicate(lines.as_bytes(), this_bol_byte);
         if dups > 0 {
             let _ = buffer.delete_region(prev_bol, this_bol);

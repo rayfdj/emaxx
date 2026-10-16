@@ -1165,7 +1165,7 @@ impl Buffer {
     pub fn buffer_string(&self) -> String {
         let start = self.begv - 1;
         let end = self.zv - 1;
-        self.text.slice(start..end).to_string()
+        String::from(self.text.slice(start..end))
     }
 
     /// A shared handle on the text as it is now: ropey's rope clones in
@@ -1176,7 +1176,7 @@ impl Buffer {
     }
 
     pub fn full_buffer_string(&self) -> String {
-        self.text.to_string()
+        String::from(&self.text.rope)
     }
 
     /// Text of up to COUNT lines starting at 1-based LINE, one string per
@@ -1188,7 +1188,7 @@ impl Buffer {
         let end = start.saturating_add(count).min(total);
         (start..end)
             .map(|index| {
-                let mut text = self.text.line(index).to_string();
+                let mut text = String::from(self.text.line(index));
                 while text.ends_with(['\n', '\r']) {
                     text.pop();
                 }
@@ -1275,7 +1275,7 @@ impl Buffer {
         if from > to {
             return Err(BufferError::InvalidPosition(from));
         }
-        Ok(self.text.slice((from - 1)..(to - 1)).to_string())
+        Ok(String::from(self.text.slice((from - 1)..(to - 1))))
     }
 
     pub fn substring_property_spans(&self, from: usize, to: usize) -> Vec<TextPropertySpan> {
@@ -2218,7 +2218,7 @@ impl Buffer {
     pub(crate) fn image_parts(&self) -> BufferImage {
         BufferImage {
             name: self.name.clone(),
-            text: self.text.to_string(),
+            text: String::from(&self.text.rope),
             pt: self.pt,
             mark: self.mark(),
             mark_active: self.mark_active,

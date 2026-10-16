@@ -2896,7 +2896,7 @@ pub(crate) fn find_coding_systems_region_internal_value(
             ])));
         }
         StringLike {
-            text: text.slice(from - 1..to - 1).to_string(),
+            text: String::from(text.slice(from - 1..to - 1)),
             props: Vec::new(),
             multibyte: buffer.is_multibyte(),
             extended_chars: buffer.substring_extended_chars(from, to),
