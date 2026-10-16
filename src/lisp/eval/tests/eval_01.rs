@@ -2863,7 +2863,16 @@ fn assert_eval_string_ops() {
         Value::Nil
     );
     assert_eq!(
-        eval_str(r#"(equal (sort '(3 1 2) #'< :in-place t) '(1 2 3))"#),
+        eval_str(r#"(equal (sort '(3 1 2) :lessp #'< :in-place t) '(1 2 3))"#),
+        Value::T
+    );
+    // fns.c:Fsort takes a positional predicate only in the two-argument
+    // call; with keywords after it, the argument list is invalid.
+    assert_eq!(
+        eval_str(
+            r#"(equal (condition-case err (sort '(3 1 2) #'< :in-place t) (error err))
+                      '(error "Invalid argument list"))"#
+        ),
         Value::T
     );
     assert_eq!(

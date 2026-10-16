@@ -917,7 +917,12 @@ counted groups, the two ignores, plus bins and integration), frozen
 38940597467). **On `3f61e10`** (the C-style variable reads): full Rust
 gate passed (run 38941429841; 3,126 tests with the new one), frozen
 7,928 of 7,928 across 519 files, no unsuccessful execution (run
-38941434201). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+38941434201). **On `2529c2e`** (the sort port and argument forms): the
+Rust gate failed in its first group (run 38959692157):
+`eval_string_ops` expected `(sort '(3 1 2) #'< :in-place t)` to sort,
+which GNU rejects with "Invalid argument list" (a positional predicate
+only in the two-argument call); the next commit corrects the test.
+Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
