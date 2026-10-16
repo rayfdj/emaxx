@@ -879,18 +879,25 @@ impl Drop for NativeSharedState {
 impl std::ops::Deref for NativeRuntime {
     type Target = NativeSharedState;
 
+    /// The native call path reaches the heap, the thread cell and the link
+    /// table through here several times a call; the test stays a debug
+    /// assertion, as for the interpreter's shell.
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
-        self.shared
-            .as_deref()
-            .expect("native runtime shell is parked")
+        debug_assert!(self.shared.is_some(), "native runtime shell is parked");
+        // SAFETY: every runtime is built with its shared state (`Default'),
+        // and only a test moves it from one shell to another (as a thread
+        // switch would), using neither shell while it has none.
+        unsafe { self.shared.as_deref().unwrap_unchecked() }
     }
 }
 
 impl std::ops::DerefMut for NativeRuntime {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.shared
-            .as_deref_mut()
-            .expect("native runtime shell is parked")
+        debug_assert!(self.shared.is_some(), "native runtime shell is parked");
+        // SAFETY: as Deref's.
+        unsafe { self.shared.as_deref_mut().unwrap_unchecked() }
     }
 }
 

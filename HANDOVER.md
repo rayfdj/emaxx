@@ -633,6 +633,12 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   leaves as an ordinary call's does. Interpreted calls 1.20 → 1.17, sort
   1.95 → 1.93. Measured on the way: trimming the entries in every frame
   pop instead gave each pop a test and gained nothing.
+- The native runtime's `Deref` to its shared state (heap, thread cell,
+  link table), reached several times a native call, tested for a parked
+  shell the same way; every runtime is built with the state and only a
+  test moves it between shells, so the test is a debug assertion now.
+  Bytecode-to-native 2.35 → 2.30, native-to-bytecode 1.63 → 1.61,
+  interpreted-to-native 1.50 → 1.49, native execution 1.18 → 1.17.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -664,33 +670,35 @@ funcall, binding, unwind and backtrace tests and 179 of 180 byte-code,
 closure and verifier tests with the new one (the other is the as-root
 failure); for the parameters beside the frames, 335 of 335 backtrace,
 debugger, Edebug, ert, lambda, funcall, thread, root, copy, collection,
-handler and signal tests. CI's full gate and frozen runs are the merge
-evidence.
+handler and signal tests; for the native runtime's unchecked shell, 397
+of 398 native tests (the other is the image round trip below). CI's full
+gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.97 |
-| upstream-sort | 3.26 | 1.95 |
-| interpreted-calls | 2.10 | 1.20 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.99 |
+| upstream-sort | 3.26 | 1.92 |
+| interpreted-calls | 2.10 | 1.16 |
 | interpreted-lexical | 2.04 | 1.21 |
-| interpreted-dynamic | 2.14 | 1.32 |
-| mapcar | 2.95 | 1.37 |
+| interpreted-dynamic | 2.14 | 1.31 |
+| mapcar | 2.95 | 1.35 |
 | bytecode-calls | 3.30 | 1.86 |
-| bytecode-to-native | — | 2.35 |
-| interpreted-to-native | — | 1.51 |
-| native-to-interpreted / -bytecode | — | 1.44 / 1.63 |
-| cons-allocation / list-traversal | 2.24 / — | 1.36 / 1.32 |
-| native-execution | — | 1.18 |
-| bindat | — | 1.20 |
+| bytecode-to-native | — | 2.30 |
+| interpreted-to-native | — | 1.49 |
+| native-to-interpreted / -bytecode | — | 1.44 / 1.61 |
+| cons-allocation / list-traversal | 2.24 / — | 1.36 / 1.31 |
+| native-execution | — | 1.17 |
+| bindat | — | 1.19 |
 | explicit-gc | — | 0.89 |
 
 The table is one full run of all sixteen on this round's last commit.
 Interpreted calls and lexical read 1.24 to 1.27 across this round's
 builds before the unchecked shell with no change on their path
 (`eval_sub` layout); undo read 2.03 to 2.06 on the same code (the
-allocator's state, below). Earlier, undo
+allocator's state, below; it read 1.97 and 1.99 on the last two
+builds). Earlier, undo
 moved between 2.37 and 2.42 from one build to the next with no code
 change on its path: the
 difference sits in glibc's `_int_malloc`, `malloc_consolidate` and
@@ -762,7 +770,10 @@ funcall, the error-free probes) and **on `6118781`** (shared handler
 lists): full Rust gate passed on each (runs 38904376618 and
 38906537195; 3,124 tests, 2 ignored, plus bins and integration), frozen
 7,928 of 7,928 across 519 files, no unsuccessful execution (runs
-38904379904 and 38906541122). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+38904379904 and 38906541122). **CI on `c1c555e`** (the unchecked
+interpreter shell): full Rust gate passed (run 38916491905; 3,125 tests,
+2 ignored, plus bins and integration), frozen 7,928 of 7,928 across 519
+files, no unsuccessful execution (run 38916498890). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -805,7 +816,7 @@ this container's GNU build itself disagrees with the expected text (under
   behavior instead of a panic, so it stays.
 
 **Where the remaining gap is** (instruction counts per unit on `41be443`):
-- **Native calls** (bytecode-to-native 2.37): a Bcall into native code
+- **Native calls** (bytecode-to-native 2.30): a Bcall into native code
   costs about 400 instructions in the native layer (`invoke` 142, the
   active-runtime lookup and arity check about 60, `finish_call` 48,
   `setjmp` about 38, the execution guard 17, the trampoline 28) where
@@ -823,15 +834,17 @@ this container's GNU build itself disagrees with the expected text (under
   48-byte `ByteCodeObject` in and out of it) and the return 122. GNU's
   setup_frame and Breturn together are about 100: its frame lives in the
   byte-code stack and its running state in registers.
-- **Source interpreter** (lexical 1.21, calls 1.20, sort 1.95): an
-  iteration of interpreted calls is 3,912 instructions against GNU's
-  3,315 (4,022 before the shell's parked test became an assertion). What
-  is left is spread: the frame record and its argument update (about 23
-  and 15 a call),
+- **Source interpreter** (lexical 1.21, calls 1.16, sort 1.92): an
+  iteration of interpreted calls is 3,854 instructions against GNU's
+  3,315 (4,022 before the shell's parked test became an assertion and the
+  parameters moved beside the frames). What is left is spread: the frame
+  record and its argument update (about 23 and 15 a call, the update
+  calling `FrameArgs`' drop glue out of line),
   `resolve_symbol_call` and the argument count (about 27 and 25 a form,
   close to their minimum), the subr dispatch through `call_with_facts`,
-  and an interpreted call's `funcall_interpreted_lambda` (340) with the
-  frame detail that records its locals. Sort is mostly this path too:
+  and an interpreted call's `funcall_interpreted_lambda` (300), and
+  `maybe_gc` at each list form (two thread-local reads and the owning
+  runtime's trigger, where GNU tests one global counter). Sort is mostly this path too:
   `eval_sub` spends about 400 instructions of its own on each of 473,000
   list forms a unit, where GNU's spends 111 on each of 548,000 forms
   (symbols included); per form the backtrace record costs about 65 (the
@@ -890,7 +903,7 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 2.35, undo 1.97, sort 1.95,
+   above; worst now bytecode-to-native 2.30, undo 1.99, sort 1.92,
    bytecode calls 1.86). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code
