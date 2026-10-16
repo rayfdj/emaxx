@@ -1375,7 +1375,7 @@ impl RecordState {
     }
 
     pub(crate) fn symbol_type_name(&self) -> Option<&str> {
-        self.type_tag.as_symbol().ok()
+        self.type_tag.symbol_str()
     }
 
     /// `symbol_type_name' for the sweep, which must not read the type

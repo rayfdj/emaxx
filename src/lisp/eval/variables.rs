@@ -35,7 +35,7 @@ struct ReadSymbolContainers {
 impl BacktraceFrame {
     pub(super) fn function_snapshot(&self) -> Value {
         self.source_form()
-            .and_then(|form| form.car().ok())
+            .and_then(|form| form.car_if_list())
             .unwrap_or_else(|| self.function.value())
     }
 
@@ -1502,7 +1502,7 @@ impl Interpreter {
                 .to_vec()
                 .unwrap_or_default()
                 .into_iter()
-                .filter_map(|feature| feature.as_symbol().ok().map(str::to_string))
+                .filter_map(|feature| feature.symbol_str().map(str::to_string))
                 .collect();
         }
         if self
@@ -2924,7 +2924,7 @@ impl Interpreter {
             .map(|items| {
                 items
                     .iter()
-                    .filter_map(|item| item.as_symbol().ok().map(str::to_string))
+                    .filter_map(|item| item.symbol_str().map(str::to_string))
                     .collect()
             })
             .unwrap_or_default()

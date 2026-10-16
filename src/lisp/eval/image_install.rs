@@ -273,7 +273,7 @@ impl Interpreter {
                 .to_vec()
                 .unwrap_or_default()
                 .into_iter()
-                .filter_map(|feature| feature.as_symbol().ok().map(str::to_string))
+                .filter_map(|feature| feature.symbol_str().map(str::to_string))
                 .collect();
         }
         self.update_forwarded_eval_cell(name, value);

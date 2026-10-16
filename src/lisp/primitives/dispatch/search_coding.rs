@@ -529,7 +529,7 @@ define_dispatch!(
                 let literal = args.get(2).is_some_and(Value::is_truthy);
                 let replace_index = args
                     .get(4)
-                    .and_then(|value| value.as_integer().ok())
+                    .and_then(|value| value.integer_value())
                     .unwrap_or(0)
                     .max(0) as usize;
                 let match_data = interp

@@ -695,7 +695,7 @@ fn choose_write_coding(
         }
     }
     if force_raw {
-        let raw = coding.as_symbol().ok().is_some_and(|name| {
+        let raw = coding.symbol_str().is_some_and(|name| {
             matches!(
                 interp.coding_system_kind_name(name).as_deref(),
                 Some("raw-text" | "no-conversion")
@@ -755,7 +755,7 @@ pub(crate) fn write_region_value_with_logical_path(
     validate_file_name(&path)?;
     let existed_before_write = fs::symlink_metadata(&path).is_ok();
     if normalized[6].is_truthy()
-        && normalized[6].as_symbol().ok() != Some("excl")
+        && normalized[6].symbol_str() != Some("excl")
         && existed_before_write
         && !call_named_function(
             interp,
@@ -857,14 +857,14 @@ fn write_region_with_coding(
         env,
     )?;
     let write_result = (|| {
-        let exclusive = args[6].as_symbol().ok() == Some("excl");
+        let exclusive = args[6].symbol_str() == Some("excl");
         if args[3].is_nil() && !exclusive {
             return fs::write(path, &bytes).map_err(|error| file_output_error(path, &error));
         }
         let offset = args
             .get(3)
             .filter(|value| value.is_truthy())
-            .and_then(|value| value.as_integer().ok());
+            .and_then(|value| value.integer_value());
         let append = args[3].is_truthy() && offset.is_none();
         let mut file = fs::OpenOptions::new()
             .create(true)
@@ -1818,7 +1818,7 @@ pub(crate) fn insert_file_contents(
     let recorded = interp
         .lookup_var("coding-system-for-read", env)
         .filter(|value| !value.is_nil())
-        .and_then(|value| value.as_symbol().ok().map(str::to_string))
+        .and_then(|value| value.symbol_str().map(str::to_string))
         .filter(|request| {
             let canonical = interp
                 .coding_system_canonical_name(request)
@@ -1890,7 +1890,7 @@ pub(crate) fn finish_insert_file_contents(
                     Kind::Symbol(symbol) => interp.lookup_function(&symbol, env)?,
                     function => function.value(),
                 };
-                let original_name = hook.as_symbol().ok();
+                let original_name = hook.symbol_str();
                 let result = interp.call_function_value(
                     function,
                     original_name,

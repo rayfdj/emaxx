@@ -345,7 +345,7 @@ pub(crate) fn function_arity_value(
                 .into_iter()
                 .map(|parameter| {
                     arity_bare_symbol(interp, &parameter, positions_enabled)
-                        .and_then(|symbol| symbol.as_symbol().ok().map(str::to_string))
+                        .and_then(|symbol| symbol.symbol_str().map(str::to_string))
                         .ok_or_else(|| invalid_function_arity(function))
                 })
                 .collect::<Result<Vec<_>, _>>()?;

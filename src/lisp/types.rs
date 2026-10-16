@@ -2416,6 +2416,17 @@ impl Value {
         }
     }
 
+    /// `as_integer' for a caller that only asks whether the value is an
+    /// integer in range: no error is built for any other value.
+    #[inline]
+    pub fn integer_value(&self) -> Option<i64> {
+        match self.kind() {
+            Kind::Integer(n) => Some(n),
+            Kind::BigInteger(n) => n.to_i64(),
+            _ => None,
+        }
+    }
+
     pub fn as_integer(&self) -> Result<i64, LispError> {
         // GNU's CHECK_INTEGER names `integerp'; CHECK_FIXNUM names `fixnump'
         // and is spelled `as_fixnum' above.
@@ -2451,12 +2462,43 @@ impl Value {
         }
     }
 
+    /// `as_symbol' for a caller that only asks: None for a value that is
+    /// no symbol, with no error built.
+    #[inline]
+    pub fn symbol_str(&self) -> Option<&str> {
+        match self.kind() {
+            Kind::Nil => Some("nil"),
+            Kind::T => Some("t"),
+            Kind::Symbol(_) => Some(self.symbol_name_by_tag().expect("symbol tag")),
+            _ => None,
+        }
+    }
+
     pub fn as_symbol(&self) -> Result<&str, LispError> {
         match self.kind() {
             Kind::Nil => Ok("nil"),
             Kind::T => Ok("t"),
             Kind::Symbol(_) => Ok(self.symbol_name_by_tag().expect("symbol tag")),
             _ => Err(LispError::WrongTypeArgument("symbolp".into(), *self)),
+        }
+    }
+
+    /// `car' for a caller that only asks: None for a value that is no
+    /// list, with no error built.
+    #[inline]
+    pub fn car_if_list(&self) -> Option<Value> {
+        match self.cons_ref() {
+            Some(cell) => Some(cell.car.get()),
+            None => self.is_nil().then_some(Value::Nil),
+        }
+    }
+
+    /// `cdr' for a caller that only asks, as `car_if_list'.
+    #[inline]
+    pub fn cdr_if_list(&self) -> Option<Value> {
+        match self.cons_ref() {
+            Some(cell) => Some(cell.cdr.get()),
+            None => self.is_nil().then_some(Value::Nil),
         }
     }
 

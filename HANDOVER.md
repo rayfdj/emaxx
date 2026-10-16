@@ -584,6 +584,17 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   callgrind, which counts each repetition of `rep stosb`), where GNU's
   `xzalloc` of a large array gets fresh zero pages from `calloc`; in time
   it is well under 1%.
+- Value conversions asked only whether they apply (`as_integer().ok()`,
+  `as_symbol().ok()`, `car().ok()`, `cdr().ok()`, about 240 sites) built a boxed
+  error with a `String` for every miss and dropped it; they now call
+  `integer_value`, `symbol_str`, `car_if_list` and `cdr_if_list`, which
+  answer the same without building one. A syntax-table entry's matching
+  character (`nil` in most entries) was one: undo spent about 25,000
+  instructions a unit in these errors' allocation and release.
+  Remaining on undo's error path: `handler-bind` dispatch clones the
+  active handler list and builds the condition names as `Vec<String>` per
+  signal, and conditions match by name where GNU compares symbols (an
+  uninterned condition symbol with a registered name would match).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,

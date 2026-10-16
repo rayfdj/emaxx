@@ -214,13 +214,13 @@ fn symbol_property_by_eq(
         if guard.step(crate::lisp::types::ConsCell::identity(cell)) {
             return None;
         }
-        let key = tail.car().ok()?;
-        let rest = tail.cdr().ok()?;
-        let value = rest.car().ok()?;
+        let key = tail.car_if_list()?;
+        let rest = tail.cdr_if_list()?;
+        let value = rest.car_if_list()?;
         if values_eq_in_env(interp, &key, property, env) {
             return Some(value);
         }
-        tail = rest.cdr().ok()?;
+        tail = rest.cdr_if_list()?;
     }
     None
 }
@@ -244,36 +244,36 @@ fn overriding_plist_property(
         if entry_guard.step(crate::lisp::types::ConsCell::identity(entries_cell)) {
             break;
         }
-        let entry = entries.car().ok()?;
+        let entry = entries.car_if_list()?;
         let entry_key = entry
             .car()
             .ok()
             .and_then(|key| bare_symbol_name(interp, env, &key));
         if entry_key.as_deref() == Some(symbol) {
-            let mut plist = entry.cdr().ok()?;
+            let mut plist = entry.cdr_if_list()?;
             let mut plist_guard = crate::lisp::types::CycleGuard::new();
             while let Kind::Cons(ref plist_cell) = plist.kind() {
                 if plist_guard.step(crate::lisp::types::ConsCell::identity(plist_cell)) {
                     break;
                 }
-                let key = plist.car().ok()?;
-                let rest = plist.cdr().ok()?;
+                let key = plist.car_if_list()?;
+                let rest = plist.cdr_if_list()?;
                 if !matches!(rest.kind(), Kind::Cons(_)) {
                     break;
                 }
                 if bare_symbol_name(interp, env, &key).as_deref() == Some(property) {
-                    let value = rest.car().ok()?;
+                    let value = rest.car_if_list()?;
                     // plist_get stops at the first key, even when its
                     // value is nil. Fget then falls back to the real
                     // plist instead of examining a later duplicate.
                     return (!value.is_nil()).then_some(value);
                 }
-                plist = rest.cdr().ok()?;
+                plist = rest.cdr_if_list()?;
             }
             // GNU reads only the first assq hit before the real plist.
             return None;
         }
-        entries = entries.cdr().ok()?;
+        entries = entries.cdr_if_list()?;
     }
     None
 }
@@ -415,8 +415,7 @@ define_dispatch!(
                     .unwrap_or(Value::Nil);
                 // lread.c:Fread and Fread_positioning_symbols share these
                 // defaults and resolve read-minibuffer through its cell.
-                if matches!(source.kind(), Kind::T) || source.as_symbol().ok() == Some("read-char")
-                {
+                if matches!(source.kind(), Kind::T) || source.symbol_str() == Some("read-char") {
                     call_named_function(
                         interp,
                         "read-minibuffer",
@@ -965,7 +964,7 @@ define_dispatch!(
                     );
                 }
                 if let (Some(symbol), Some((file, _, _))) =
-                    (args[0].as_symbol().ok(), autoload_parts(&value))
+                    (args[0].symbol_str(), autoload_parts(&value))
                 {
                     interp.load_autoload_target(&file, env)?;
                     value = interp.lookup_function(symbol, env)?;

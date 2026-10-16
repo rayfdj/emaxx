@@ -68,7 +68,7 @@ impl CircularReadMaterializer<'_> {
         let Some((head, tail)) = value.cons_values() else {
             return false;
         };
-        if head.as_symbol().ok() != Some("quote") {
+        if head.symbol_str() != Some("quote") {
             return false;
         }
         let Some((literal, end)) = tail.cons_values() else {
@@ -845,14 +845,14 @@ pub(super) enum MacroCaller {
 fn macro_environment_expander(macro_environment: Option<&Value>, name: &str) -> Option<Value> {
     let mut entries = *macro_environment?;
     while let Kind::Cons(_) = entries.kind() {
-        let entry = entries.car().ok()?;
+        let entry = entries.car_if_list()?;
         if let Kind::Cons(_) = entry.kind() {
-            let symbol = entry.car().ok()?;
-            if symbol.as_symbol().ok()? == name {
-                return entry.cdr().ok();
+            let symbol = entry.car_if_list()?;
+            if symbol.symbol_str()? == name {
+                return entry.cdr_if_list();
             }
         }
-        entries = entries.cdr().ok()?;
+        entries = entries.cdr_if_list()?;
     }
     None
 }

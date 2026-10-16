@@ -541,7 +541,7 @@ fn ccl_valids(interp: &Interpreter, coding: &str) -> Option<[u8; 256]> {
             Kind::Integer(byte) => (byte, byte),
             other => {
                 let (from, to) = other.value().cons_values()?;
-                (from.as_integer().ok()?, to.as_integer().ok()?)
+                (from.integer_value()?, to.integer_value()?)
             }
         };
         for byte in from.max(0)..=to.min(255) {
@@ -1451,8 +1451,8 @@ pub(crate) fn detect_coding(
                 .and_then(|bom| bom.cons_values())
                 .and_then(|(sig, nosig)| {
                     Some((
-                        sig.as_symbol().ok()?.to_string(),
-                        nosig.as_symbol().ok()?.to_string(),
+                        sig.symbol_str()?.to_string(),
+                        nosig.symbol_str()?.to_string(),
                     ))
                 })?;
             let ascii = src.units.iter().all(|unit| (0..0x80).contains(unit));
@@ -1473,10 +1473,7 @@ pub(crate) fn detect_coding(
             let pair = coding_system_property(interp, &canonical, ":bom")
                 .and_then(|bom| bom.cons_values())
                 .and_then(|(le, be)| {
-                    Some((
-                        le.as_symbol().ok()?.to_string(),
-                        be.as_symbol().ok()?.to_string(),
-                    ))
+                    Some((le.symbol_str()?.to_string(), be.symbol_str()?.to_string()))
                 })?;
             if detect_utf_16(src, &mut info) {
                 if info.found & MASK_UTF_16_LE != 0 {
@@ -1549,7 +1546,7 @@ pub(crate) fn detect_coding(
                 } else {
                     nosig
                 };
-                return pick.as_symbol().ok().map(str::to_string).or(Some(this));
+                return pick.symbol_str().map(str::to_string).or(Some(this));
             }
             Some(this)
         } else if category == CODING_CATEGORY_UTF_16_AUTO {
@@ -1563,7 +1560,7 @@ pub(crate) fn detect_coding(
                 } else {
                     None
                 };
-                return pick.and_then(|value| value.as_symbol().ok().map(str::to_string));
+                return pick.and_then(|value| value.symbol_str().map(str::to_string));
             }
             Some(this)
         } else {

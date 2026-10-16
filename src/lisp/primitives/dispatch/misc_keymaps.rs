@@ -683,7 +683,7 @@ define_dispatch!(
                 let mut call_args = Vec::with_capacity(args.len());
                 call_args.push(args[0]);
                 call_args.extend_from_slice(&args[2..]);
-                interp.call_function_value(function, args[1].as_symbol().ok(), &call_args, env)
+                interp.call_function_value(function, args[1].symbol_str(), &call_args, env)
             }
             "symbol-function" => direct_symbol_function(interp, args, env),
             "symbol-name" => direct_symbol_name(interp, args, env),
@@ -1694,7 +1694,7 @@ pub(crate) fn oclosure_type_of(value: &Value) -> Option<String> {
     };
     // GNU oclosure-type recognizes a closure whose public slot four is a
     // symbol.  Read the actual slot without reconstructing closure metadata.
-    (lambda.public_len() > 4).then(|| lambda.documentation()?.as_symbol().ok().map(String::from))?
+    (lambda.public_len() > 4).then(|| lambda.documentation()?.symbol_str().map(String::from))?
 }
 
 fn widget_get(interp: &Interpreter, widget: &Value, property: &Value) -> Result<Value, LispError> {

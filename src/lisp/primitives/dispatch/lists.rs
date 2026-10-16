@@ -154,7 +154,7 @@ fn execute_kbd_macro(
 fn increment_num_input_keys(interp: &mut Interpreter, env: &mut Env) {
     let count = interp
         .lookup_var("num-input-keys", env)
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .unwrap_or(0);
     interp.set_variable(
         "num-input-keys",

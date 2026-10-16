@@ -243,11 +243,11 @@ pub(crate) fn print_options(interp: &Interpreter, env: &Env) -> PrintOptions {
             .is_some_and(|value| value.is_truthy()),
         length: interp
             .lookup_var("print-length", env)
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .and_then(|value| usize::try_from(value).ok()),
         level: interp
             .lookup_var("print-level", env)
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .and_then(|value| usize::try_from(value).ok()),
         quoted: interp
             .lookup_var("print-quoted", env)
@@ -1894,7 +1894,7 @@ impl CallableReader<'_> {
         // callback can redefine that function, including during unread.
         let callable = resolve_callable(self.interp, &self.source, self.env)?;
         self.interp
-            .call_function_value(callable, self.source.as_symbol().ok(), args, self.env)
+            .call_function_value(callable, self.source.symbol_str(), args, self.env)
     }
 }
 

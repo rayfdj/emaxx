@@ -535,7 +535,7 @@ fn plist_integer(plist: &Value, property: &str) -> Option<i64> {
         let rest = cell.cdr.get();
         let (value, tail) = rest.cons_cells()?;
         if matches!(cell.car.get().kind(), Kind::Symbol(name) if name == property) {
-            return value.get().as_integer().ok();
+            return value.get().integer_value();
         }
         current = tail.get();
     }

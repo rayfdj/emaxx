@@ -1368,7 +1368,7 @@ pub(crate) fn restore_active_minibuffer(interp: &mut Interpreter, state: ActiveM
 fn completing_read_initial_input(args: &[Value]) -> Option<String> {
     args.get(4).and_then(|value| {
         let value = if matches!(value.kind(), Kind::Cons(_)) {
-            value.car().ok()?
+            value.car_if_list()?
         } else {
             *value
         };
@@ -1833,7 +1833,7 @@ pub(crate) fn push_minibuffer_history(
     items.insert(0, Value::String(text.into()));
     let limit = interp
         .lookup_var("history-length", env)
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .unwrap_or(100);
     if limit >= 0 {
         items.truncate(limit as usize);
@@ -1893,7 +1893,7 @@ pub(crate) fn interactive_minibuffer_command_loop(
     let history_position = history_spec
         .cdr()
         .ok()
-        .and_then(|position| position.as_integer().ok())
+        .and_then(|position| position.integer_value())
         .unwrap_or(0);
     interp.set_buffer_local_value(buffer_id, "minibuffer-history-variable", history_variable);
     interp.set_buffer_local_value(

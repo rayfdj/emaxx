@@ -1525,9 +1525,9 @@ pub(crate) fn resolve_tty_face_attrs(
             .and_then(|alist| alist.to_vec().ok())
             .and_then(|entries| {
                 entries.into_iter().find_map(|entry| {
-                    let key = entry.car().ok()?;
+                    let key = entry.car_if_list()?;
                     matches!(key.kind(), Kind::Symbol(name) if name == requested)
-                        .then(|| entry.cdr().ok())?
+                        .then(|| entry.cdr_if_list())?
                 })
             })
     {
@@ -1635,7 +1635,7 @@ fn tty_face_color_index(interp: &mut Interpreter, env: &mut Env, value: &Value) 
             env,
         )
         .ok()
-        .and_then(|index| index.as_integer().ok())
+        .and_then(|index| index.integer_value())
         .and_then(|index| u8::try_from(index).ok())
 }
 
@@ -1776,12 +1776,12 @@ pub(crate) fn window_face_spans(
             .unwrap_or_default()
             .into_iter()
             .filter_map(|entry| {
-                let key = entry.car().ok()?;
+                let key = entry.car_if_list()?;
                 matches!(key.kind(), Kind::Symbol(name) if name == "face")
-                    .then(|| entry.cdr().ok()?.to_vec().ok())?
+                    .then(|| entry.cdr_if_list()?.to_vec().ok())?
             })
             .flatten()
-            .filter_map(|alias| alias.as_symbol().ok().map(str::to_string))
+            .filter_map(|alias| alias.symbol_str().map(str::to_string))
             .collect();
         // The common frame — a plain buffer, no overlays, no active
         // region — must not pay a per-character property walk on every
@@ -1847,7 +1847,7 @@ pub(crate) fn window_face_spans(
             let priority = crate::lisp::primitives::strings::overlay_property_with_category(
                 interp, &overlay, "priority",
             )
-            .and_then(|priority| priority.as_integer().ok())
+            .and_then(|priority| priority.integer_value())
             .unwrap_or(0);
             overlay_spans.push((
                 priority,
@@ -2631,7 +2631,7 @@ pub(crate) fn window_line_number_layout(
     let tick = |name: &str| {
         interp
             .lookup_var(name, &crate::lisp::types::Env::new())
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or(0)
     };
     Some(LineNumberLayout {
@@ -3930,7 +3930,7 @@ define_dispatch!(
                     interp.buffer.borrow_mut().goto_char(pos);
                     let x = super::call(interp, "current-column", &[], env)
                         .ok()
-                        .and_then(|value| value.as_integer().ok())
+                        .and_then(|value| value.integer_value())
                         .unwrap_or(0);
                     interp.buffer.borrow_mut().goto_char(saved);
                     return Ok(Value::list([
@@ -4245,7 +4245,7 @@ define_dispatch!(
                     .map(|line| line.chars().count())
                     .max()
                     .unwrap_or(0) as i64;
-                if let Some(limit) = args.get(3).and_then(|limit| limit.as_integer().ok()) {
+                if let Some(limit) = args.get(3).and_then(|limit| limit.integer_value()) {
                     width = width.min(limit);
                 }
                 let mut height = text.lines().count().max(1) as i64;
@@ -4256,7 +4256,7 @@ define_dispatch!(
                         height += window_line_height(interp, buffer_id, format_variable, env);
                     }
                 }
-                if let Some(limit) = args.get(4).and_then(|limit| limit.as_integer().ok()) {
+                if let Some(limit) = args.get(4).and_then(|limit| limit.integer_value()) {
                     height = height.min(limit);
                 }
                 Ok(Value::cons(Value::Integer(width), Value::Integer(height)))
@@ -4576,7 +4576,7 @@ define_dispatch!(
                 if let Some(metric) = args.get(3).filter(|metric| !metric.is_nil()) {
                     return interp.call_function_value(
                         *metric,
-                        metric.as_symbol().ok(),
+                        metric.symbol_str(),
                         &[as_list(left), as_list(right)],
                         env,
                     );
@@ -4968,7 +4968,7 @@ define_dispatch!(
                     let margin_width = |name: &str| {
                         interp
                             .buffer_local_value(buffer_id, name)
-                            .and_then(|value| value.as_integer().ok())
+                            .and_then(|value| value.integer_value())
                             .filter(|width| *width > 0)
                     };
                     interp.set_window_margins(
@@ -5906,7 +5906,7 @@ fn render_mode_line_string_display_properties(
                     env,
                 )
                 .ok()
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .and_then(|target| usize::try_from(target).ok()),
             }
         });

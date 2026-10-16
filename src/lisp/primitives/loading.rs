@@ -127,7 +127,7 @@ pub(crate) fn call_interactively_impl(
         return Err(LispError::WrongNumberOfArgs("call-interactively".into(), 0));
     }
     let mut func = resolve_callable(interp, &args[0], env)?;
-    if let (Some(symbol), Some((file, _, _))) = (args[0].as_symbol().ok(), autoload_parts(&func)) {
+    if let (Some(symbol), Some((file, _, _))) = (args[0].symbol_str(), autoload_parts(&func)) {
         interp.load_autoload_target(&file, env)?;
         func = interp.lookup_function(symbol, env)?;
     }

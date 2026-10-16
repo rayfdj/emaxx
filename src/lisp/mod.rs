@@ -1462,7 +1462,7 @@ fn read_lisp_file_bytes(
                     let head = form
                         .car()
                         .ok()
-                        .and_then(|value| value.as_symbol().ok().map(str::to_owned))
+                        .and_then(|value| value.symbol_str().map(str::to_owned))
                         .unwrap_or_else(|| form.type_name());
                     eprintln!(
                         "load error in {} at form {} ({head}): {error:?}",

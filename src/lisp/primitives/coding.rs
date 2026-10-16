@@ -136,8 +136,8 @@ fn charset_map(interp: &Interpreter, charset: &str) -> Option<Vec<(u32, u32)>> {
                 .iter()
                 .filter_map(|pair| {
                     Some((
-                        u32::try_from(pair[0].as_integer().ok()?).ok()?,
-                        u32::try_from(pair[1].as_integer().ok()?).ok()?,
+                        u32::try_from(pair[0].integer_value()?).ok()?,
+                        u32::try_from(pair[1].integer_value()?).ok()?,
                     ))
                 })
                 .collect(),
@@ -176,10 +176,10 @@ fn charset_subset(interp: &Interpreter, charset: &str) -> Option<(String, i64, i
         return None;
     }
     Some((
-        items[0].as_symbol().ok()?.to_string(),
-        items[1].as_integer().ok()?,
-        items[2].as_integer().ok()?,
-        items[3].as_integer().ok()?,
+        items[0].symbol_str()?.to_string(),
+        items[1].integer_value()?,
+        items[2].integer_value()?,
+        items[3].integer_value()?,
     ))
 }
 
@@ -196,7 +196,7 @@ fn charset_superset(interp: &Interpreter, charset: &str) -> Option<Vec<(String, 
             Kind::Symbol(name) => Some((name.to_string(), 0)),
             other => {
                 let (car, cdr) = other.value().cons_values()?;
-                Some((car.as_symbol().ok()?.to_string(), cdr.as_integer().ok()?))
+                Some((car.symbol_str()?.to_string(), cdr.integer_value()?))
             }
         })
         .collect();
@@ -346,8 +346,8 @@ fn charset_code_space(interp: &Interpreter, charset: &str) -> Option<Vec<(u32, u
         .iter()
         .filter_map(|pair| {
             Some((
-                u32::try_from(pair[0].as_integer().ok()?).ok()?,
-                u32::try_from(pair[1].as_integer().ok()?).ok()?,
+                u32::try_from(pair[0].integer_value()?).ok()?,
+                u32::try_from(pair[1].integer_value()?).ok()?,
             ))
         })
         .collect();
@@ -466,7 +466,7 @@ fn coding_system_default_char_byte(interp: &Interpreter, coding: &str) -> u8 {
 /// space when `:default-char' is nil.
 fn coding_system_default_char(interp: &Interpreter, coding: &str) -> u32 {
     coding_system_property(interp, coding, ":default-char")
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(u32::from(b' '))
 }
@@ -528,7 +528,7 @@ pub(crate) fn coding_system_charset_names(interp: &Interpreter, coding: &str) ->
         .to_vec()
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|value| value.as_symbol().ok().map(str::to_string))
+        .filter_map(|value| value.symbol_str().map(str::to_string))
         .collect()
 }
 
@@ -2501,7 +2501,7 @@ fn emacs_mule_layout(interp: &Interpreter) -> EmacsMuleLayout {
                 continue;
             };
             let Some(dimension) = charset_plist_property(interp, charset, ":dimension")
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .and_then(|value| usize::try_from(value).ok())
             else {
                 continue;
@@ -2522,7 +2522,7 @@ pub(crate) fn emacs_mule_charset_list(interp: &Interpreter) -> Vec<String> {
         .into_iter()
         .filter(|charset| {
             charset_plist_property(interp, charset, ":emacs-mule-id")
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .is_some()
         })
         .collect()
@@ -2563,7 +2563,7 @@ fn encode_emacs_mule_bytes(interp: &Interpreter, text: &str, coding: &str) -> Ve
             continue;
         };
         let Some(id) = charset_plist_property(interp, &charset, ":emacs-mule-id")
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .and_then(|value| u8::try_from(value).ok())
         else {
             continue;
@@ -3589,11 +3589,11 @@ fn charset_code_bounds(interp: &Interpreter, charset: &str) -> Option<(u32, u32)
     let attribute = |name: &str| -> Option<u32> {
         let value = charset_plist_property(interp, charset, name)?;
         if let Some((high, low)) = value.cons_values() {
-            let high = u32::try_from(high.as_integer().ok()?).ok()?;
-            let low = u32::try_from(low.as_integer().ok()?).ok()?;
+            let high = u32::try_from(high.integer_value()?).ok()?;
+            let low = u32::try_from(low.integer_value()?).ok()?;
             return Some((high << 16) | low);
         }
-        u32::try_from(value.as_integer().ok()?).ok()
+        u32::try_from(value.integer_value()?).ok()
     };
     Some((
         attribute(":min-code").unwrap_or(min_code),
@@ -3667,7 +3667,7 @@ pub(crate) fn map_charset_char_ranges(
     }
 
     let offset = charset_plist_property(interp, &canonical, ":code-offset")
-        .and_then(|value| value.as_integer().ok());
+        .and_then(|value| value.integer_value());
     let has_direct_map = charset_plist_property(interp, &canonical, ":map").is_some();
     let unified = interp.charset_is_unified(&canonical) && offset.is_some();
     if (has_direct_map || unified)

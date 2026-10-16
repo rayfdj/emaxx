@@ -10,7 +10,7 @@ fn plist_property_is_truthy(plist: &Value, property: &str) -> bool {
         .as_chunks::<2>()
         .0
         .iter()
-        .find(|pair| pair[0].as_symbol().ok() == Some(property))
+        .find(|pair| pair[0].symbol_str() == Some(property))
         .is_some_and(|pair| pair[1].is_truthy())
 }
 
@@ -1366,7 +1366,7 @@ define_dispatch!(
                     .and_then(|items| {
                         items.windows(2).find_map(|pair| {
                             matches!(pair[0].kind(), Kind::Symbol(key) if key == ":code-offset")
-                                .then(|| pair[1].as_integer().ok())
+                                .then(|| pair[1].integer_value())
                                 .flatten()
                         })
                     });
@@ -1993,7 +1993,7 @@ fn iso_final_chars_in_use(
                 .as_symbol()
                 .is_ok_and(|key| key == ":iso-final-char")
             {
-                final_char = items[index + 1].as_integer().ok();
+                final_char = items[index + 1].integer_value();
                 break;
             }
             index += 2;
@@ -2013,7 +2013,7 @@ fn iso_final_chars_in_use(
                     env,
                 )
                 .ok()
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
         };
         // charset.c:1395 reduces CHARS to a BOOLEAN -- `chars_flag' is
         // `chars == 96' -- and ISO_CHARSET_TABLE is indexed by that flag, not

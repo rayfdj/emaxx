@@ -157,7 +157,7 @@ pub(crate) fn invisible_class_at(buffer: &Buffer, spec: &InvisibilitySpec, pos: 
         }
         let priority = overlay
             .get_prop(&Value::Symbol("priority".into()))
-            .and_then(|priority| priority.as_integer().ok())
+            .and_then(|priority| priority.integer_value())
             .unwrap_or(0);
         if best.is_none_or(|(existing, _)| priority >= existing) {
             best = Some((priority, class));

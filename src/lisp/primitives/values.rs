@@ -1330,7 +1330,7 @@ pub(crate) fn circular_list_signal_p(value: &Value) -> bool {
         .to_vec()
         .ok()
         .and_then(|items| items.first().cloned())
-        .and_then(|head| head.as_symbol().ok().map(str::to_string))
+        .and_then(|head| head.symbol_str().map(str::to_string))
         .is_some_and(|symbol| symbol == "circular-list")
 }
 
@@ -2267,7 +2267,7 @@ pub(crate) fn function_value_p(interp: &Interpreter, value: &Value, env: &Env) -
     } else {
         *value
     };
-    let symbol = symbol_value.as_symbol().ok();
+    let symbol = symbol_value.symbol_str();
     if symbol
         .is_some_and(|symbol| name_facts(symbol).special_form || interp.has_macro_binding(symbol))
     {
@@ -2370,10 +2370,10 @@ pub(crate) fn is_keymap_value(_interp: &Interpreter, value: &Value) -> bool {
 /// The first character table in this map's own list, before its parent.
 pub(crate) fn keymap_char_table_value(_interp: &Interpreter, keymap: &Value) -> Option<Value> {
     let view = *keymap;
-    if !matches!(view.car().ok()?.kind(), Kind::Symbol(name) if name == "keymap") {
+    if !matches!(view.car_if_list()?.kind(), Kind::Symbol(name) if name == "keymap") {
         return None;
     }
-    let mut tail = view.cdr().ok()?;
+    let mut tail = view.cdr_if_list()?;
     let mut cycle = crate::lisp::types::CycleGuard::new();
     while let Kind::Cons(cell) = tail.kind() {
         if cycle.step(crate::lisp::types::ConsCell::identity(&cell)) {
@@ -4015,7 +4015,7 @@ fn text_property_keymap_at_active_position(
         Some(value) => {
             let items = value.to_vec().ok()?;
             let area = items.get(1)?;
-            let string = items.get(4).and_then(|value| value.car().ok());
+            let string = items.get(4).and_then(|value| value.car_if_list());
             if let Some(string) = string.as_ref().and_then(string_keymap) {
                 return Some(string);
             }

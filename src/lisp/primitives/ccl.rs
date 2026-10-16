@@ -64,7 +64,7 @@ fn ccl_program_p(interp: &Interpreter, object: &Value) -> bool {
     };
     interp
         .get_symbol_property(name, "ccl-program-idx")
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .and_then(|index| usize::try_from(index).ok())
         .is_some_and(|index| index < interp.ccl_programs.len())
 }
@@ -90,7 +90,7 @@ fn resolve_ccl_program(
     for item in items {
         let value = match item.kind() {
             Kind::Integer(number) => Some(number),
-            Kind::BigInteger(_) => item.as_integer().ok(),
+            Kind::BigInteger(_) => item.integer_value(),
             Kind::Cons(cons_cell) => {
                 let car = &cons_cell.car;
                 let cdr = &cons_cell.cdr;
@@ -98,7 +98,7 @@ fn resolve_ccl_program(
                 let property = cdr.get().as_symbol()?.to_string();
                 interp
                     .get_symbol_property(&symbol, &property)
-                    .and_then(|value| value.as_integer().ok())
+                    .and_then(|value| value.integer_value())
             }
             Kind::Nil | Kind::T | Kind::Symbol(_) => {
                 let symbol = item.as_symbol()?.to_string();
@@ -111,7 +111,7 @@ fn resolve_ccl_program(
                 .find_map(|property| {
                     interp
                         .get_symbol_property(&symbol, property)
-                        .and_then(|value| value.as_integer().ok())
+                        .and_then(|value| value.integer_value())
                 })
             }
             _ => return Err(LispError::Signal("Invalid CCL program".into())),
@@ -143,7 +143,7 @@ fn registered_program(interp: &Interpreter, program: &Value) -> Result<Value, Li
         .map_err(|_| LispError::Signal("Invalid CCL program".into()))?;
     let index = interp
         .get_symbol_property(name, "ccl-program-idx")
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .and_then(|value| usize::try_from(value).ok())
         .ok_or_else(|| LispError::Signal("Invalid CCL program".into()))?;
     interp
@@ -211,7 +211,7 @@ fn register_code_conversion_map(
     let mut index = None;
     for (candidate, slot) in slots.iter().enumerate() {
         match slot.kind() {
-            Kind::Cons(cell) if cell.car.get().as_symbol().ok() == Some(symbol.as_str()) => {
+            Kind::Cons(cell) if cell.car.get().symbol_str() == Some(symbol.as_str()) => {
                 index = Some(candidate);
                 break;
             }
@@ -296,7 +296,7 @@ fn ccl_execute_on_string(
     let status_items = vector_items(status)?;
     let start_pc = status_items
         .get(8)
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .and_then(|value| usize::try_from(value).ok())
         .filter(|pc| CCL_HEADER_MAIN < *pc && *pc < code.len())
         .unwrap_or(CCL_HEADER_MAIN);

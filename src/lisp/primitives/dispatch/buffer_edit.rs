@@ -1067,7 +1067,7 @@ define_dispatch!(
 
                 let tab_width = interp
                     .lookup_var("tab-width", env)
-                    .and_then(|value| value.as_integer().ok())
+                    .and_then(|value| value.integer_value())
                     .unwrap_or(8)
                     .max(1);
                 let use_tabs = interp
@@ -2326,7 +2326,7 @@ fn motion_line_number_columns(interp: &mut Interpreter, env: &mut Env) -> usize 
     }
     let text_rows = super::call(interp, "window-body-height", &[], env)
         .ok()
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .unwrap_or(0)
         .max(1) as usize;
     let start = interp.selected_window_start().clamp(
@@ -2555,7 +2555,7 @@ fn display_motion_width(
     if character == '\t' {
         let tab_width = interp
             .lookup_var("tab-width", env)
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or(8)
             .max(1);
         let origin = hpos + tab_offset + hscroll - i64::from(hscroll > 0);
@@ -2857,7 +2857,7 @@ fn line_number_display_width_value(
         let computed_width = displayed_maximum.max(1).to_string().len().max(2) as i64;
         let requested_width = interp
             .lookup_var("display-line-numbers-width", env)
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or(0)
             .max(0);
         let columns = computed_width.max(requested_width);
@@ -3072,7 +3072,7 @@ pub(super) fn direct_beginning_of_line(
     let old_pos = interp.buffer.borrow().point();
     let n = args
         .first()
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .unwrap_or(1);
     if n != 1 {
         interp.buffer.borrow_mut().forward_line((n - 1) as isize);
@@ -3119,7 +3119,7 @@ pub(super) fn direct_end_of_line(
     // current one (0 = previous line's end).
     let n = args
         .first()
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .unwrap_or(1);
     if n != 1 {
         interp.buffer.borrow_mut().forward_line((n - 1) as isize);

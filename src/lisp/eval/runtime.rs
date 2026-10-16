@@ -311,8 +311,8 @@ impl Interpreter {
             // "Required feature ... was not provided" when there is none.
             let loaded_file = self
                 .lookup_var("load-history", env)
-                .and_then(|history| history.car().ok())
-                .and_then(|entry| entry.car().ok())
+                .and_then(|history| history.car_if_list())
+                .and_then(|entry| entry.car_if_list())
                 .and_then(|file| crate::lisp::primitives::string_like(&file).map(|s| s.text));
             return Err(LispError::Signal(match loaded_file {
                 Some(file) => {
@@ -437,7 +437,7 @@ impl Interpreter {
         let selected_window_already_displays_target = self
             .find_record(self.selected_window_id)
             .and_then(|window| window.slots.first())
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             == Some(id as i64);
         if id == current_id && selected_window_already_displays_target {
             return Ok(());
@@ -453,7 +453,7 @@ impl Interpreter {
             let previous = window
                 .slots
                 .first()
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .unwrap_or(current_id as i64);
             window.slots[0] = Value::Integer(id as i64);
             if window.slots.len() < 2 {
@@ -541,7 +541,7 @@ impl Interpreter {
     pub(crate) fn window_use_time(&self, id: u64) -> i64 {
         self.find_record(id)
             .and_then(|record| record.slots.get(primitives::WINDOW_USE_TIME_SLOT))
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or_default()
     }
 
@@ -574,7 +574,7 @@ impl Interpreter {
     pub fn selected_window_buffer_id(&self) -> u64 {
         self.find_record(self.selected_window_id)
             .and_then(|record| record.slots.first())
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .map(|value| value.max(0) as u64)
             .unwrap_or(self.current_buffer_id)
     }
@@ -593,7 +593,7 @@ impl Interpreter {
             ));
         self.find_record(self.selected_window_id)
             .and_then(|record| record.slots.get(1))
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .map(|value| value.clamp(point_min as i64, point_max as i64) as usize)
             .unwrap_or(point_min)
     }
@@ -624,7 +624,7 @@ impl Interpreter {
             let previous = window
                 .slots
                 .first()
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .unwrap_or(current_buffer_id);
             if window.slots.len() < 2 {
                 window.slots.resize(2, Value::Nil);
@@ -743,7 +743,7 @@ impl Interpreter {
         // force menu_bar_lines to 0 or 1 regardless of the parameter).
         let menu_bar_lines = self
             .frame_parameter_override("menu-bar-lines")
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or(1)
             .clamp(0, 1)
             .min(height - 2);
@@ -767,7 +767,7 @@ impl Interpreter {
         let integer_slot = |slot: usize, fallback: i64| {
             self.find_record(id)
                 .and_then(|record| record.slots.get(slot))
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .unwrap_or(fallback)
         };
         (
@@ -1037,7 +1037,7 @@ impl Interpreter {
         let slots = &record.slots;
         let selected_window_id = slots
             .get(1)
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or_default() as u64;
         let selected_window_slots = slots
             .get(2)
@@ -1051,7 +1051,7 @@ impl Interpreter {
                     .into_iter()
                     .filter_map(|record| {
                         let (id, slots) = record.cons_values()?;
-                        Some((id.as_integer().ok()?.max(0) as u64, slots.to_vec().ok()?))
+                        Some((id.integer_value()?.max(0) as u64, slots.to_vec().ok()?))
                     })
                     .collect()
             })
@@ -1073,7 +1073,7 @@ impl Interpreter {
             })?,
             current_buffer_id: slots
                 .first()
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .unwrap_or_default() as u64,
             selected_window_id,
             selected_window_slots,
@@ -1087,11 +1087,11 @@ impl Interpreter {
                 .unwrap_or(selected_window_id),
             frame_width: slots
                 .get(3)
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .unwrap_or(80),
             frame_height: slots
                 .get(4)
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .unwrap_or(24),
         })
     }
@@ -1263,7 +1263,7 @@ impl Interpreter {
             let showed_killed_buffer = self
                 .find_record(window_id)
                 .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT))
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .is_some_and(|buffer_id| buffer_id.max(0) as u64 == id);
             if !showed_killed_buffer {
                 continue;
@@ -1811,7 +1811,7 @@ impl Interpreter {
             crate::lisp::native_comp::note_lisp_allocation(vector_slots.saturating_mul(8));
         }
         let id = self.alloc_record_id();
-        let indexed_type = type_tag.as_symbol().ok().map(str::to_owned);
+        let indexed_type = type_tag.symbol_str().map(str::to_owned);
         let index = self.record_index_for(id);
         // alloc.c's allocate_record: the object in a vector block; the
         // registry names it by id for the side tables.
@@ -2236,7 +2236,7 @@ impl Interpreter {
                         .parameter_overrides
                         .iter()
                         .find(|(key, _)| key == name)
-                        .and_then(|(_, value)| value.as_integer().ok())
+                        .and_then(|(_, value)| value.integer_value())
                         .unwrap_or(0)
                         .clamp(0, 1)
                 })

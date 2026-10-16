@@ -37,14 +37,14 @@ impl Interpreter {
         let body = record.get(3).unwrap_or(Value::Nil);
         let expected_result = record
             .get(5)
-            .and_then(|value| value.as_symbol().ok().map(str::to_string))
+            .and_then(|value| value.symbol_str().map(str::to_string))
             .unwrap_or_else(|| ":passed".to_string());
         let tags = record
             .get(6)
             .and_then(|value| value.to_vec().ok())
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|tag| tag.as_symbol().ok().map(str::to_string))
+            .filter_map(|tag| tag.symbol_str().map(str::to_string))
             .collect::<Vec<_>>();
         let source_file = record
             .get(7)

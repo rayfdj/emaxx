@@ -54,7 +54,7 @@ pub(crate) fn charset_iso_chars_96(interp: &Interpreter, charset: &str) -> bool 
 
 pub(crate) fn charset_dimension(interp: &Interpreter, charset: &str) -> u32 {
     charset_plist_property(interp, charset, ":dimension")
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .and_then(|value| u32::try_from(value).ok())
         .or_else(|| charset_code_space(interp, charset).map(|bounds| bounds.len() as u32))
         .unwrap_or(1)
@@ -64,7 +64,7 @@ pub(crate) fn charset_dimension(interp: &Interpreter, charset: &str) -> u32 {
 /// `ascii') from the ISO charset table.
 pub(super) fn charset_iso_final(interp: &Interpreter, charset: &str) -> Option<u8> {
     charset_plist_property(interp, charset, ":iso-final-char")
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .and_then(|value| u8::try_from(value).ok())
         .or_else(|| {
             interp
@@ -75,7 +75,7 @@ pub(super) fn charset_iso_final(interp: &Interpreter, charset: &str) -> Option<u
 
 fn charset_iso_revision(interp: &Interpreter, charset: &str) -> Option<u8> {
     charset_plist_property(interp, charset, ":iso-revision-number")
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .and_then(|value| u8::try_from(value).ok())
 }
 
@@ -109,8 +109,8 @@ pub(crate) fn iso_attributes(interp: &Interpreter, coding: &str) -> Option<IsoAt
         .filter_map(|pair| {
             let (charset, reg) = pair.cons_values()?;
             Some((
-                interp.charset_canonical_name(charset.as_symbol().ok()?)?,
-                u8::try_from(reg.as_integer().ok()?).ok()?,
+                interp.charset_canonical_name(charset.symbol_str()?)?,
+                u8::try_from(reg.integer_value()?).ok()?,
             ))
         })
         .collect();
@@ -118,7 +118,7 @@ pub(crate) fn iso_attributes(interp: &Interpreter, coding: &str) -> Option<IsoAt
         matches!(state.charset_list.kind(), Kind::Symbol(name) if name == "iso-2022");
     let flags = args
         .get(3)
-        .and_then(|flags| flags.as_integer().ok())
+        .and_then(|flags| flags.integer_value())
         .unwrap_or(0) as u32
         | if full_support {
             ISO_FLAG_FULL_SUPPORT
@@ -133,7 +133,7 @@ pub(crate) fn iso_attributes(interp: &Interpreter, coding: &str) -> Option<IsoAt
             .to_vec()
             .unwrap_or_default()
             .iter()
-            .filter_map(|value| interp.charset_canonical_name(value.as_symbol().ok()?))
+            .filter_map(|value| interp.charset_canonical_name(value.symbol_str()?))
             .collect()
     };
     let mut safe = HashMap::new();

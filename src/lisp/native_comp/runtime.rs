@@ -648,7 +648,7 @@ pub(crate) fn garbage_collection_maybe_due(interpreter: &mut Interpreter, factor
 pub(crate) fn gc_tuning(interpreter: &Interpreter, environment: &Env) -> (i64, Option<f64>) {
     let threshold = interpreter
         .lookup_var("gc-cons-threshold", environment)
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .unwrap_or(NATIVE_GC_DEFAULT_THRESHOLD);
     let percentage = match interpreter
         .lookup_var("gc-cons-percentage", environment)
@@ -3629,7 +3629,7 @@ extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
         let threshold = interpreter
             .symbol_value_cell("gc-cons-threshold")
             .ok()
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or(NATIVE_GC_DEFAULT_THRESHOLD);
         let percentage = match interpreter
             .symbol_value_cell("gc-cons-percentage")
@@ -12520,7 +12520,7 @@ mod tests {
             .to_vec()
             .expect("alist")
             .into_iter()
-            .find(|entry| entry.car().expect("pair").as_symbol().ok() == Some("name"))
+            .find(|entry| entry.car().expect("pair").symbol_str() == Some("name"))
             .expect("name parameter");
         assert_eq!(pair.cdr().expect("parameter value").word(), name.word());
     }

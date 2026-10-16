@@ -470,7 +470,7 @@ fn comp_unit_relocations_match(
         let Ok(actual) = runtime.decode_relocation(word) else {
             return false;
         };
-        if actual.as_symbol().ok() == Some("lambda-fixup") {
+        if actual.symbol_str() == Some("lambda-fixup") {
             return false;
         }
         let native_function = matches!(actual.kind(), Kind::NativeFunction(_));
@@ -906,7 +906,7 @@ pub(super) fn register_with_state(
             crate::lisp::primitives::symbols_with_pos_enabled(interpreter, environment)
                 .then(|| crate::lisp::primitives::symbol_with_pos_parts(interpreter, &arguments[0]))
                 .flatten()
-                .and_then(|(symbol, _)| symbol.as_symbol().ok().map(str::to_owned))
+                .and_then(|(symbol, _)| symbol.symbol_str().map(str::to_owned))
                 .ok_or_else(|| {
                     crate::lisp::primitives::wrong_type_argument("symbolp", arguments[0])
                 })
@@ -1535,7 +1535,7 @@ pub(super) fn resolve_dumped_function(
         }
         let current = runtime
             .decode_relocation(unsafe { std::ptr::read(unit.impure_relocations().add(index)) })?;
-        if current.as_symbol().ok() != Some("lambda-fixup") {
+        if current.symbol_str() != Some("lambda-fixup") {
             return Err(super::lisp::native_ice(
                 "dumped lambda relocation is not a lambda-fixup placeholder",
             ));

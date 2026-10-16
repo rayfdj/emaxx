@@ -80,7 +80,7 @@ pub(crate) union SymbolPayload {
 /// data.c:store_symval_forwarding's Lisp_Fwd_Int case: the store has passed
 /// CHECK_INTEGER and the intmax_t range check before reaching the cell.
 fn forwarded_integer(value: Value) -> Option<i64> {
-    value.as_integer().ok()
+    value.integer_value()
 }
 
 impl SymbolPayload {

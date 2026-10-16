@@ -1040,8 +1040,7 @@ define_dispatch!(
                 );
                 #[cfg(not(unix))]
                 let (links, uid, gid, inode, device) = (1, 0, 0, 0, 0);
-                let string_ids =
-                    args.get(1).and_then(|value| value.as_symbol().ok()) == Some("string");
+                let string_ids = args.get(1).and_then(|value| value.symbol_str()) == Some("string");
                 let user = if string_ids {
                     #[cfg(unix)]
                     {
@@ -1469,7 +1468,7 @@ define_dispatch!(
                 let flags = args[1]
                     .to_vec()?
                     .into_iter()
-                    .filter_map(|flag| flag.as_symbol().ok().map(str::to_string))
+                    .filter_map(|flag| flag.symbol_str().map(str::to_string))
                     .collect::<Vec<_>>();
                 if !function_value_p(interp, &args[2], env) {
                     return Err(wrong_type_argument("invalid-function", args[2]));
@@ -1701,7 +1700,7 @@ define_dispatch!(
                             .to_vec()
                             .ok()
                             .and_then(|items| items.first().cloned())
-                            .and_then(|head| head.as_symbol().ok().map(str::to_string))
+                            .and_then(|head| head.symbol_str().map(str::to_string))
                             .as_deref()
                             == Some("file-missing") =>
                     {

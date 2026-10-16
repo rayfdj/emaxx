@@ -50,7 +50,7 @@ pub(crate) fn sort_sequence_kind_and_items(
         let items = value.to_vec()?;
         let tag = items
             .first()
-            .and_then(|value| value.as_symbol().ok())
+            .and_then(|value| value.symbol_str())
             .unwrap_or("vector")
             .to_string();
         return Ok((

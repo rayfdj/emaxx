@@ -646,7 +646,7 @@ pub(crate) fn hash_table_entries(
         return None;
     };
     Some((
-        table.test_name().as_symbol().ok()?.to_owned(),
+        table.test_name().symbol_str()?.to_owned(),
         table
             .entries()
             .map(|(_, key, value)| (key, value))

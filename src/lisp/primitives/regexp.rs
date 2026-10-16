@@ -205,7 +205,7 @@ fn syntax_property_authorities(
             if let Some(category) = props
                 .iter()
                 .find(|(name, _)| name == "category")
-                .and_then(|(_, value)| value.as_symbol().ok())
+                .and_then(|(_, value)| value.symbol_str())
             {
                 let value = interp
                     .get_symbol_property(category, "syntax-table")

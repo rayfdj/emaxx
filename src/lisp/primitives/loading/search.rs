@@ -148,7 +148,7 @@ pub(super) fn openp_search(
                 } else {
                     let answer = interp.call_function_value(
                         *predicate,
-                        predicate.as_symbol().ok(),
+                        predicate.symbol_str(),
                         std::slice::from_ref(&name),
                         env,
                     )?;
