@@ -554,6 +554,7 @@ impl Drop for ActiveCallGuard {
     }
 }
 
+#[inline(always)]
 pub(crate) fn with_active_call<R>(
     interpreter: &mut Interpreter,
     environment: &mut Env,
@@ -642,6 +643,20 @@ pub(crate) fn with_current_runtime<R>(body: impl FnOnce(&mut NativeRuntime) -> R
             Some(body(unsafe { &mut *(*active).runtime }))
         }
     })
+}
+
+/// The runtime `with_current_runtime' lends, or null when it lends none.
+/// The caller may use it for a synchronous call, as that function's body
+/// does.
+#[inline(always)]
+pub(crate) fn current_runtime() -> *mut NativeRuntime {
+    let active = ACTIVE_CALL.with(Cell::get);
+    if active.is_null() {
+        super::loader::active_registered_runtime()
+    } else {
+        // SAFETY: as `with_current_runtime's read of the active call.
+        unsafe { (*active).runtime }
+    }
 }
 
 /// eval.c:lisp.h:maybe_gc's active native boundary. The assembly trampoline
@@ -1209,10 +1224,13 @@ impl NativeRuntime {
                 "attempted to call a null native function",
             ));
         }
-        if matches!(convention, NativeCallingConvention::Fixed) && arguments.len() > 8 {
-            return Err(super::lisp::native_ice(
-                "fixed native function exceeds the eight-register ABI",
-            ));
+        if matches!(convention, NativeCallingConvention::Fixed) {
+            if arguments.len() > 8 {
+                return Err(super::lisp::native_ice(
+                    "fixed native function exceeds the eight-register ABI",
+                ));
+            }
+            return self.invoke_fixed(interpreter, environment, target, arguments);
         }
 
         // GNU has one authoritative `thread_state.handlerlist`.  A generated
@@ -1222,37 +1240,57 @@ impl NativeRuntime {
         self.sync_handlers(interpreter)?;
 
         let mut slot = MaybeUninit::uninit();
-        let fixed = matches!(convention, NativeCallingConvention::Fixed);
-        let invocation =
-            NativeInvocation::init(&mut slot, target, if fixed { arguments } else { &[] });
+        let invocation = NativeInvocation::init(&mut slot, target, &[]);
         self.begin_call(invocation.jump_buffer(), interpreter);
 
-        // eval.c:funcall_subr passes the authoritative Lisp_Object words
-        // directly to a fixed-arity entry. Fill the trampoline's register
-        // slots once, without first staging the same words in a SmallVec.
         // MANY retains owned, writable argument storage for its pointer ABI;
         // no native pointer aliases the caller's shared Rust Value slice.
         let mut encoded = smallvec::SmallVec::<[NativeWord; 8]>::new();
-        match convention {
-            // `init' filled the register slots.
-            NativeCallingConvention::Fixed => {}
-            NativeCallingConvention::Many => {
-                for argument in arguments {
-                    let word = match self.heap.encode(argument) {
-                        Ok(word) => word,
-                        Err(error) => {
-                            let finish = self.finish_call(interpreter);
-                            finish?;
-                            return Err(super::lisp::native_ice(&error));
-                        }
-                    };
-                    encoded.push(word);
+        for argument in arguments {
+            let word = match self.heap.encode(argument) {
+                Ok(word) => word,
+                Err(error) => {
+                    let finish = self.finish_call(interpreter);
+                    finish?;
+                    return Err(super::lisp::native_ice(&error));
                 }
-                invocation.arguments[0] = encoded.len();
-                invocation.arguments[1] = encoded.as_ptr() as NativeWord;
-            }
+            };
+            encoded.push(word);
         }
+        invocation.arguments[0] = encoded.len();
+        invocation.arguments[1] = encoded.as_ptr() as NativeWord;
+        self.run_invocation(interpreter, environment, invocation)
+    }
 
+    /// `invoke' of a fixed-arity TARGET, not null, with at most eight
+    /// ARGUMENTS.  eval.c:funcall_subr passes the authoritative
+    /// Lisp_Object words directly to a fixed-arity entry: `init' fills
+    /// the trampoline's register slots with them.
+    #[inline(never)]
+    pub(crate) fn invoke_fixed(
+        &mut self,
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        target: *const c_void,
+        arguments: &[Value],
+    ) -> Result<Value, LispError> {
+        // As in `invoke'.
+        self.sync_handlers(interpreter)?;
+        let mut slot = MaybeUninit::uninit();
+        let invocation = NativeInvocation::init(&mut slot, target, arguments);
+        self.begin_call(invocation.jump_buffer(), interpreter);
+        self.run_invocation(interpreter, environment, invocation)
+    }
+
+    /// The rest of `invoke' once the call frame is pushed: the
+    /// trampoline's call through INVOCATION and the frame's pop.
+    #[inline(always)]
+    fn run_invocation(
+        &mut self,
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        invocation: &mut NativeInvocation,
+    ) -> Result<Value, LispError> {
         let escaped = with_active_call(interpreter, environment, self, || unsafe {
             invoke_platform(invocation)
         });
@@ -1264,30 +1302,40 @@ impl NativeRuntime {
                 return Err(super::lisp::native_ice(&error));
             }
         };
-        let result = if escaped {
-            None
-        } else {
-            Some(
-                self.heap
-                    .decode_result(invocation.result)
-                    .map_err(|error| super::lisp::native_ice(&error)),
-            )
-        };
-        let finish = self.finish_call(interpreter);
         if escaped {
-            return match finish {
-                Err(error) => Err(error),
-                Ok(()) => Err(super::lisp::native_ice(
-                    "native function escaped without a pending Lisp error",
-                )),
-            };
+            return self.finish_escaped_call(interpreter);
         }
-        let result = result.expect("ordinary native return has a result")?;
+        let result = self
+            .heap
+            .decode_result(invocation.result)
+            .map_err(|error| super::lisp::native_ice(&error));
+        let finish = self.finish_call_inline(interpreter);
+        let result = result?;
         finish?;
         Ok(result)
     }
 
+    /// `finish_call' after a jump to the trampoline's escape record, which
+    /// leaves the signal in the frame's pending error.
+    #[cold]
+    #[inline(never)]
+    fn finish_escaped_call(&mut self, interpreter: &mut Interpreter) -> Result<Value, LispError> {
+        match self.finish_call(interpreter) {
+            Err(error) => Err(error),
+            Ok(()) => Err(super::lisp::native_ice(
+                "native function escaped without a pending Lisp error",
+            )),
+        }
+    }
+
+    #[inline(never)]
     pub(crate) fn finish_call(&mut self, interpreter: &mut Interpreter) -> Result<(), LispError> {
+        self.finish_call_inline(interpreter)
+    }
+
+    /// `finish_call', inline in an ordinary return.
+    #[inline(always)]
+    fn finish_call_inline(&mut self, interpreter: &mut Interpreter) -> Result<(), LispError> {
         let sync_result = self.sync_handlers(interpreter);
         let Some(frame) = self.calls.pop() else {
             return Err(super::lisp::native_ice(

@@ -229,6 +229,12 @@ pub(super) fn with_active_registered_runtime<R>(
     })
 }
 
+/// The runtime `with_active_registered_runtime' lends, or null.
+#[inline(always)]
+pub(super) fn active_registered_runtime() -> *mut NativeRuntime {
+    ACTIVE_REGISTERED_RUNTIME.with(Cell::get)
+}
+
 pub(super) fn with_active_compiler<R>(body: impl FnOnce(&SharedCompiler) -> R) -> Option<R> {
     ACTIVE_COMPILER.with(|compiler| {
         let compiler = compiler.get();
@@ -1055,6 +1061,38 @@ pub(crate) fn register_active(
             ))
         }),
     )
+}
+
+/// `call_active_function' for the usual callee, a lexical function of
+/// fixed arity (eval.c:funcall_subr's a0 to a8) given a count it
+/// accepts: the runtime found once and the call made by `invoke_fixed'.
+/// None for any other callee or count, or with no runtime to lend, which
+/// the general path handles (and signals for).
+#[inline(always)]
+pub(crate) fn call_fixed_function(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    native: NativeFunctionRef,
+    arguments: &[Value],
+) -> Option<Result<Value, LispError>> {
+    // `descriptor' and `check_arity' for this case.
+    let maximum = native.max_args_word();
+    let count = arguments.len();
+    if native.is_dynamic()
+        || !(0..=8).contains(&maximum)
+        || count > maximum as usize
+        || i64::try_from(count).ok()? < i64::from(native.min_args())
+    {
+        return None;
+    }
+    let target = native.target();
+    let runtime = super::runtime::current_runtime();
+    if target.is_null() || runtime.is_null() {
+        return None;
+    }
+    // SAFETY: as `with_current_runtime's loan of the runtime, for this
+    // synchronous call.
+    Some(unsafe { &mut *runtime }.invoke_fixed(interpreter, environment, target, arguments))
 }
 
 pub(crate) fn call_active_function(

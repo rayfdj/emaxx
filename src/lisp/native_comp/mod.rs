@@ -140,7 +140,22 @@ pub(crate) fn load(
     result
 }
 
+#[inline]
 pub(crate) fn call_function(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    function: crate::lisp::types::NativeFunctionRef,
+    arguments: &[Value],
+) -> Result<Value, LispError> {
+    if let Some(result) = loader::call_fixed_function(interpreter, environment, function, arguments)
+    {
+        return result;
+    }
+    call_function_general(interpreter, environment, function, arguments)
+}
+
+#[inline(never)]
+fn call_function_general(
     interpreter: &mut Interpreter,
     environment: &mut Env,
     function: crate::lisp::types::NativeFunctionRef,

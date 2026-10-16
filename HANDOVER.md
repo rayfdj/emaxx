@@ -758,6 +758,21 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   with the reason). Bytecode calls 1.864 → 1.812, bytecode-to-native
   2.109 → 2.056; undo's verified loop about 22,800 instructions a unit
   lower (its ratio moved with the allocator's state).
+- A call of a lexical native function of fixed arity, with a count it
+  accepts, goes from `native_comp::call_function` to the trampoline
+  through one function, `invoke_fixed`: the runtime found once
+  (`current_runtime`, the pointer `with_current_runtime` lends), the
+  arity read from the function object (`descriptor` and `check_arity`
+  for this case), the activation's install inline, and the call frame's
+  pop inline on an ordinary return (`finish_call` stays out of line for
+  the escape and error paths). Any other callee or count, or no runtime,
+  takes the general path, which signals as before. Bytecode-to-native
+  2.056 → 1.862 (797 → 723 instructions an iteration), interpreted-to-
+  native 1.468 → 1.427. Lending a nested call the installed activation
+  when its interpreter, environment and runtime are the same was
+  measured and not kept: on the byte-code path the environments differ,
+  and the comparisons cost 9 instructions a call (interpreted-to-native
+  gained 10).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -816,7 +831,10 @@ buffer texts, 1,272 of 1,272 buffer, insertion, deletion, region,
 search, regexp, syntax, line, marker, undo, text-property, narrowing,
 coding, case, message and sexp tests, and 250 of 250 editing tests on
 the final build with the new one. For the jump table, 653 of 653 VM,
-byte-code, native, funcall, catch, condition, unwind and handler tests.
+byte-code, native, funcall, catch, condition, unwind and handler tests;
+for the fixed-arity native calls, 540 of 541 native, funcall, thread,
+handler, condition, signal, escape, catch, throw, unwind and suspension
+tests (the other is the image round trip below).
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
@@ -830,8 +848,8 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | interpreted-dynamic | 2.14 | 1.31 |
 | mapcar | 2.95 | 1.35 |
 | bytecode-calls | 3.30 | 1.81 |
-| bytecode-to-native | — | 2.06 |
-| interpreted-to-native | — | 1.46 |
+| bytecode-to-native | — | 1.86 |
+| interpreted-to-native | — | 1.43 |
 | native-to-interpreted / -bytecode | — | 1.42 / 1.60 |
 | cons-allocation / list-traversal | 2.24 / — | 1.36 / 1.31 |
 | native-execution | — | 1.17 |
@@ -839,9 +857,9 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | explicit-gc | — | 0.89 |
 
 The table is one full run of all sixteen on `9eb7217`, with undo
-measured again after the small buffer texts, the byte-code calls and
-bytecode-to-native after the jump table, and sort at four and eight
-units.
+measured again after the small buffer texts, the byte-code calls after
+the jump table, bytecode-to-native and interpreted-to-native after the
+fixed-arity native calls, and sort at four and eight units.
 Sort at one and two units read 1.84 before the port and 1.12 after it,
 but after it Emaxx's two collections fell at both sizes, out of the
 difference, while one of GNU's fell in it; at four and eight units it
@@ -1005,19 +1023,19 @@ this container's GNU build itself disagrees with the expected text (under
   behavior instead of a panic, so it stays.
 
 **Where the remaining gap is** (instruction counts per unit on `41be443`):
-- **Native calls** (bytecode-to-native 2.10): 815 instructions an
-  iteration against GNU's 388, the byte-code loop itself about GNU's. A
-  Bcall into native code costs about 280 in the native layer (`invoke`
-  134 with the invocation record's setup, `call_function` 70 for the
-  active-runtime lookup, the arity check and its own frame,
-  `finish_call` 46, the trampoline with its escape record 33) and 174 in
-  `call_plain` (the callee's resolution and entry tests 32, the frame
-  record and its pop 20, the result's stack update), where GNU's
-  `funcall_subr` spends about 40. What is left is the layering (five
-  nested calls between the byte-code loop and the trampoline, each
-  saving registers) and the bookkeeping that Rust frames between native
-  code and its caller require: the thread-local swaps, the call-frame
-  record and the escape record.
+- **Native calls** (bytecode-to-native 1.86): 723 instructions an
+  iteration against GNU's 388, the byte-code loop itself GNU's (331
+  against `exec_byte_code`'s 339 with its call setup). A Bcall into
+  native code costs 185 in the native layer (`invoke_fixed` 152: the
+  invocation record's setup, the call frame's push and pop, the
+  activation's thread-local swaps and the execution counter; the
+  trampoline with its escape record 33) and 198 in `call_plain` (the
+  callee's resolution and entry tests, the collection test, the arity
+  and runtime tests, the frame record and its pop, the result's stack
+  update), where GNU's `funcall_subr` spends about 40. What is left is
+  the bookkeeping that Rust frames between native code and its caller
+  require: the call-frame record, the thread-local swaps and the escape
+  record.
 - **Byte-code calls** (bytecode calls 1.87): 863 instructions an
   iteration against GNU's 468: the verified loop 440 (its ops about as
   GNU's, plus about 30 a switch to re-read the code string and check its
@@ -1096,8 +1114,8 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 2.06, bytecode calls 1.81, undo
-   1.72, native-to-bytecode 1.60, interpreted-to-native 1.46, native-to-
+   above; worst now bytecode-to-native 1.86, bytecode calls 1.81, undo
+   1.72, native-to-bytecode 1.60, interpreted-to-native 1.43, native-to-
    interpreted 1.42, sort 1.36). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code
