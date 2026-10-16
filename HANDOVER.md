@@ -709,6 +709,15 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   whose arguments are drained into a heap vector (`insert` and `concat`
   of N). Undo 1.88 → 1.86 (about 45,000 instructions a unit outside the
   allocator).
+- `sort`'s arguments follow `Fsort`: only the two-argument call
+  `(sort SEQ PREDICATE)` sorts in place unless `:in-place` asks; the
+  keyword form sorts a copy. Emaxx sorted in place either way, so
+  `(sort v :lessp #'<)` changed `v`. Two arguments are always the old
+  call (a lone keyword is the predicate), another even count signals
+  "Invalid argument list", and an unknown keyword "Invalid keyword
+  argument" with the keyword (spliced when it is a list, as
+  `signal_error` does); they were wrong-number-of-arguments. Found while
+  checking the sort port below against GNU.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,

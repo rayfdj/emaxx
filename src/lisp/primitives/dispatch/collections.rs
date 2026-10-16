@@ -609,47 +609,52 @@ define_dispatch!(
                 if args.is_empty() {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let (kind, items) = sort_sequence_kind_and_items(&args[0])?;
+                // fns.c:Fsort.  Only the old-style call (sort SEQ PREDICATE)
+                // sorts in place unless asked; the keyword form sorts a copy.
                 let mut lessp = None;
                 let mut key = None;
-                let mut in_place = true;
+                let mut in_place = false;
                 let mut reverse = false;
-                let mut index = 1usize;
-                if let Some(arg) = args.get(index)
-                    && !matches!(arg.kind(), Kind::Symbol(symbol) if symbol.starts_with(':'))
-                {
-                    lessp = Some(*arg);
-                    index += 1;
-                }
-                while index + 1 < args.len() {
-                    match args[index].kind() {
-                        Kind::Symbol(keyword) if keyword == ":key" => {
-                            key = if args[index + 1].is_nil() {
-                                None
-                            } else {
-                                Some(args[index + 1])
-                            };
+                if args.len() == 2 {
+                    lessp = Some(args[1]);
+                    in_place = true;
+                } else if args.len().is_multiple_of(2) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("error"),
+                        Value::string("Invalid argument list"),
+                    ])));
+                } else {
+                    for pair in args[1..].chunks_exact(2) {
+                        let (keyword, value) = (pair[0], pair[1]);
+                        match keyword.kind() {
+                            Kind::Symbol(keyword) if keyword == ":key" => key = Some(value),
+                            Kind::Symbol(keyword) if keyword == ":lessp" => lessp = Some(value),
+                            Kind::Symbol(keyword) if keyword == ":in-place" => {
+                                in_place = value.is_truthy();
+                            }
+                            Kind::Symbol(keyword) if keyword == ":reverse" => {
+                                reverse = value.is_truthy();
+                            }
+                            // eval.c:signal_error splices a proper list.
+                            _ => {
+                                let data = match keyword.kind() {
+                                    Kind::Nil | Kind::Cons(_) => keyword.to_vec().ok(),
+                                    _ => None,
+                                }
+                                .unwrap_or_else(|| vec![keyword]);
+                                return Err(LispError::SignalValue(Value::list(
+                                    [
+                                        Value::symbol("error"),
+                                        Value::string("Invalid keyword argument"),
+                                    ]
+                                    .into_iter()
+                                    .chain(data),
+                                )));
+                            }
                         }
-                        Kind::Symbol(keyword) if keyword == ":lessp" => {
-                            lessp = if args[index + 1].is_nil() {
-                                None
-                            } else {
-                                Some(args[index + 1])
-                            };
-                        }
-                        Kind::Symbol(keyword) if keyword == ":in-place" => {
-                            in_place = args[index + 1].is_truthy();
-                        }
-                        Kind::Symbol(keyword) if keyword == ":reverse" => {
-                            reverse = args[index + 1].is_truthy();
-                        }
-                        _ => return Err(LispError::WrongNumberOfArgs(name.into(), args.len())),
                     }
-                    index += 2;
                 }
-                if index != args.len() {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
+                let (kind, items) = sort_sequence_kind_and_items(&args[0])?;
                 let sorted =
                     sort_sequence_items(interp, items, key.as_ref(), lessp.as_ref(), reverse, env)?;
                 if in_place {

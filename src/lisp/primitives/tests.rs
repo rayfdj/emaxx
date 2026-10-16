@@ -1724,6 +1724,27 @@ fn sort_calls_the_numeric_lambda_with_its_arguments_bound() {
 }
 
 #[test]
+fn sort_sorts_in_place_only_when_asked_or_called_with_two_arguments() {
+    // fns.c:Fsort: (sort SEQ PREDICATE) sorts in place; the keyword form
+    // sorts a copy unless :in-place is non-nil.  Two arguments are always
+    // the old call, so a lone keyword is the predicate; another even count
+    // or an unknown keyword is an error (signal_error splices a list).
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((v (vector 3 1 2)) (l (list 3 1 2)) (w (vector 2 1)) (m (list 2 1)))
+             (list (sort v :lessp #'<) v (sort l :lessp #'<) l (sort w #'<) w
+                   (sort m :in-place t) m (sort (list 5 4) :reverse t)
+                   (condition-case err (sort l :lessp) (error err))
+                   (condition-case err (sort l :foo 1) (error err))
+                   (condition-case err (sort l (list 'a 'b) 1) (error err))
+                   (condition-case err (sort 5 :lessp #'<) (error err))))"#,
+        "([1 2 3] [3 1 2] (1 2 3) (3 1 2) [1 2] [1 2] (1 2) (1 2) (5 4) \
+         (void-function :lessp) (error \"Invalid keyword argument\" :foo) \
+         (error \"Invalid keyword argument\" a b) (wrong-type-argument list-or-vector-p 5))",
+        "sort argument forms",
+    );
+}
+
+#[test]
 fn native_kill_emacs_is_noncatchable_runs_hooks_and_preserves_c_exit_mapping() {
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let form = Reader::new(
