@@ -2028,17 +2028,19 @@ impl Buffer {
     }
 
     pub fn push_undo_entry(&mut self, entry: UndoEntry) {
-        let entry_value = undo_entry_lisp_value(&entry);
-        self.undo_list.push(entry);
+        // The entry's Lisp form (a deletion's is a new string) is made
+        // only for a view it extends; a stale view is rebuilt whole when
+        // it is next read.
         let mut view = self.undo_list_view.0.borrow_mut();
-        if let Some(view) = view.as_mut()
-            && view.undo_len + 1 == self.undo_list.len()
-        {
-            view.value = Value::cons(entry_value, view.value);
-            view.undo_len += 1;
-            return;
+        match view.as_mut() {
+            Some(view) if view.undo_len == self.undo_list.len() => {
+                view.value = Value::cons(undo_entry_lisp_value(&entry), view.value);
+                view.undo_len += 1;
+            }
+            _ => *view = None,
         }
-        *view = None;
+        drop(view);
+        self.undo_list.push(entry);
     }
 
     /// GNU `record_insert' extends the newest `(BEG . END)' record when the

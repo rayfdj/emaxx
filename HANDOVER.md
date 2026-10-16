@@ -687,6 +687,17 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   one of these names (a lexical function's parameter) reached `insert`,
   where GNU's C code reads the dynamic value; a test covers it. Sort
   1.92 → 1.86, undo about 1.5% lower.
+- Two more of undo's allocations: `push_undo_entry` made each entry's
+  Lisp form (a deletion's is a new string) before checking that the
+  cached `buffer-undo-list` view it would extend was current, and dropped
+  it when the view was stale; it is made only for a view it extends now.
+  `decode_bytes` and `encode_text`, between a Lisp string's bytes and
+  Rust text, went a character at a time for ASCII too (about 44,000
+  instructions a unit); ASCII is copied whole. Undo 1.92 → 1.88.
+  Measured and not kept, a second time: the byte-code activation's frame
+  and handler vectors lent from a pool in the interpreter state (no
+  thread-local, kept only once allocated) saved 0.36% of undo, inside the
+  noise, with bytecode calls even.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -730,8 +741,11 @@ and handlers through the native test functions answer as before on the
 release build; for the in-place invocation record, 446 of 447 native
 and thread tests (the other is the image round trip); for the C-style
 variable reads, 177 of 178 insertion, hook, read-only, undo and lexical
-tests with the new one (the other is the save-buffer test below). CI's
-full gate and frozen runs are the merge evidence.
+tests with the new one (the other is the save-buffer test below); for
+undo's lazy entries and the ASCII copies, 558 of 559 undo, string-coding,
+multibyte, unibyte, handler, message, insertion and dump tests (the other
+is the print-charset test below). CI's full gate and frozen runs are the
+merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
@@ -842,7 +856,15 @@ allocations): full Rust gate passed (run 38928340091; 3,125 tests, 2
 ignored, plus bins and integration), frozen 7,928 of 7,928 across 519
 files, no unsuccessful execution (run 38928344036). **On `8845616`** (the
 activation counter): full Rust gate passed (run 38932458858; same
-counts), frozen passed (run 38932463661). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+counts), frozen passed (run 38932463661). **On `9eb7217`** (with
+`abb9239`: the trampoline's escape record and the in-place invocation
+record): full Rust gate passed (run 38940592177; 3,125 tests in the
+counted groups, the two ignores, plus bins and integration), frozen
+7,928 of 7,928 across 519 files, no unsuccessful execution (run
+38940597467). **On `3f61e10`** (the C-style variable reads): full Rust
+gate passed (run 38941429841; 3,126 tests with the new one), frozen
+7,928 of 7,928 across 519 files, no unsuccessful execution (run
+38941434201). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -891,15 +913,19 @@ this container's GNU build itself disagrees with the expected text (under
   behavior instead of a panic, so it stays.
 
 **Where the remaining gap is** (instruction counts per unit on `41be443`):
-- **Native calls** (bytecode-to-native 2.10): a Bcall into native code
-  costs about 400 instructions in the native layer (`invoke` 142, the
-  active-runtime lookup and arity check about 60, `finish_call` 48,
-  the trampoline and its escape record about 40) where
-  GNU's `funcall_subr` spends about 50; a plain call now goes through
-  `call_plain` instead of the full Bcall arm (about 300 before), plus the
-  code string's re-check after it. What is left is the design: thread-local swaps,
-  the guard, the call-frame record and the per-call `setjmp` that Rust
-  frames between the native code and its caller require.
+- **Native calls** (bytecode-to-native 2.10): 815 instructions an
+  iteration against GNU's 388, the byte-code loop itself about GNU's. A
+  Bcall into native code costs about 280 in the native layer (`invoke`
+  134 with the invocation record's setup, `call_function` 70 for the
+  active-runtime lookup, the arity check and its own frame,
+  `finish_call` 46, the trampoline with its escape record 33) and 174 in
+  `call_plain` (the callee's resolution and entry tests 32, the frame
+  record and its pop 20, the result's stack update), where GNU's
+  `funcall_subr` spends about 40. What is left is the layering (five
+  nested calls between the byte-code loop and the trampoline, each
+  saving registers) and the bookkeeping that Rust frames between native
+  code and its caller require: the thread-local swaps, the call-frame
+  record and the escape record.
 - **Byte-code calls** (bytecode calls 1.87): 863 instructions an
   iteration against GNU's 468: the verified loop 440 (its ops about as
   GNU's, plus about 30 a switch to re-read the code string and check its

@@ -739,6 +739,10 @@ pub(crate) fn encode_text(
     multibyte: bool,
     extended: &[(usize, u32)],
 ) -> Result<Vec<u8>, LispError> {
+    if extended.is_empty() && text.is_ascii() {
+        // Each ASCII character is its own byte, unibyte or multibyte.
+        return Ok(text.as_bytes().to_vec());
+    }
     let mut bytes = Vec::with_capacity(text.len());
     for (index, ch) in text.chars().enumerate() {
         let code = extended
@@ -846,6 +850,12 @@ pub(crate) fn decode_bytes(
     bytes: &[u8],
     multibyte: bool,
 ) -> Result<(String, Vec<(usize, u32)>), LispError> {
+    if bytes.is_ascii() {
+        // Each byte is its own character, unibyte or multibyte.
+        // SAFETY: ASCII is UTF-8.
+        let text = unsafe { std::str::from_utf8_unchecked(bytes) };
+        return Ok((text.to_owned(), Vec::new()));
+    }
     let mut text = String::with_capacity(bytes.len());
     let mut extended = Vec::new();
     let mut offset = 0;
