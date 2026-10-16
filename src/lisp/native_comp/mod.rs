@@ -25,8 +25,8 @@ mod state;
 pub(crate) use loader::{DumpedNativeFunction, RegistrationKind, UnitLibrary, open_unit};
 pub(crate) use runtime::with_thread_suspended;
 pub(crate) use runtime::{
-    decode_active_backtrace_arguments, garbage_collection_maybe_due, gc_tuning, maybe_gc,
-    note_lisp_allocation,
+    collection_cannot_be_due, decode_active_backtrace_arguments, garbage_collection_maybe_due,
+    gc_tuning, maybe_gc, note_lisp_allocation,
 };
 pub(crate) use runtime::{
     hash_table_compare_eql, hash_table_compare_equal, hash_table_compare_user, hash_table_hash_eq,

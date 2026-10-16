@@ -445,13 +445,40 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   moving the per-cell serial to the sweep (four instructions a cons)
   needs a block generation in the serial so that a released and
   reallocated block cannot revive a weak reference; about 1% of mapcar.
+- Bcall and Breturn switch byte-code frames inside the verified loop, as
+  exec_byte_code's `goto setup_frame' and Breturn do, instead of leaving
+  it for the full dispatch and re-entering it twice per call. A call to a
+  byte-code closure takes the in-loop frame entry when nothing else
+  happens on the way in (`plain_bytecode_callee`: no quit, the depth
+  within `max-lisp-eval-depth`, no pending termination, edebug not
+  loaded, the callee not `backtrace-eval`, no profiling, maybe_gc would
+  not collect, no `&rest` list to build); every other callee (subrs,
+  native functions, interpreted closures, arity errors) runs the full
+  Bcall sequence as an out-of-line function (`bytecode_call`, shared
+  with the slow dispatch) without leaving the loop, which re-reads the
+  code string and its verification afterwards, since the callee ran
+  Lisp. A return whose frame left no unwind entries pops it in the loop.
+  The loop receives the stack's base and top and hands the top back, so
+  each frame switch and loop entry costs no extra parked-shell test.
+  Bcall's nesting limit now signals bytecode.c's plain `(error "Lisp
+  nesting exceeds `max-lisp-eval-depth'")`; Emaxx signalled Ffuncall's
+  `excessive-lisp-nesting`, which GNU's byte code does not. Bytecode
+  calls 2.19 → 1.87, bytecode-to-native 2.66 → 2.63; native-to-bytecode,
+  undo, sort and bindat moved within their allocator noise (the VM code
+  itself got a little cheaper in undo and bindat). Measured on the way
+  and not kept: the switch alone between runs of the loop (no gain, the
+  two re-entries stayed), and a version that re-tested the shell in each
+  switch arm (27 instructions a call).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
 25 sorting/case-folding/substring tests plus the comparison tests, and 95
 mapping and bytecode tests, 208 native-runtime/funcall/GC tests and 189
 bytecode/reclamation/finalizer/weak-table tests pass; clippy `-D warnings`, rustfmt and
-`git diff --check` pass. A broad local run over the GC, special-form, `eval_`
+`git diff --check` pass. For the in-loop frame switch: 681 of 683
+byte-code, backtrace, native, funcall, unwind, handler, condition, catch,
+throw, debug, nesting and compiled-code tests pass; the two others are
+the as-root and image round-trip failures below, which pass in CI. A broad local run over the GC, special-form, `eval_`
 and native filters was stopped after 89 CPU minutes, with one failure:
 `byte_compile_file_reports_an_unwritable_target_like_gnu`, which cannot
 pass as root (this container's user writes into a mode-555 directory) and
@@ -467,8 +494,8 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | interpreted-lexical | 2.04 | 1.35 |
 | interpreted-dynamic | 2.14 | 1.48 |
 | mapcar | 2.95 | 1.45 |
-| bytecode-calls | 3.30 | 2.19 |
-| bytecode-to-native | — | 2.66 |
+| bytecode-calls | 3.30 | 1.87 |
+| bytecode-to-native | — | 2.63 |
 | interpreted-to-native | — | 1.77 |
 | native-to-interpreted / -bytecode | — | 1.62 / 1.80 |
 | cons-allocation / list-traversal | 2.24 / — | 1.50 / 1.45 |
@@ -520,7 +547,13 @@ execution (run 38819259588). **CI on `41be443`** (covering `6761153`
 too: word tests, closures from funcall, the opcode match): full Rust gate
 passed (run 38828973274; 3,118 tests in the counted groups plus bins and
 integration), frozen 7,928 of 7,928 across 519 files, no unsuccessful
-execution (run 38828975757). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+execution (run 38828975757). **CI on `b31d6d9`** (in-place funcall
+frames): full Rust gate passed (run 38835660142; 3,119 tests in the
+counted groups, 2 ignored, plus bins and integration), frozen 7,928 of
+7,928 across 519 files, no unsuccessful execution (run 38835662192).
+**CI on `dee8061`** (frameless Fcons): full Rust gate passed (run
+38838677038; 3,119 tests, 2 ignored), frozen 7,928 of 7,928 across 519
+files, no unsuccessful execution (run 38838679538). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -553,18 +586,23 @@ this container's GNU build itself disagrees with the expected text (under
   behavior instead of a panic, so it stays.
 
 **Where the remaining gap is** (instruction counts per unit on `41be443`):
-- **Native calls** (bytecode-to-native 2.66): a Bcall into native code
+- **Native calls** (bytecode-to-native 2.63): a Bcall into native code
   costs about 400 instructions in the native layer (`invoke` 142, the
   active-runtime lookup and arity check about 60, `finish_call` 48,
   `setjmp` about 38, the execution guard 17, the trampoline 28) where
-  GNU's `funcall_subr` spends about 50, plus about 330 in the Call arm
-  and the loop re-entry. What is left is the design: thread-local swaps,
+  GNU's `funcall_subr` spends about 50, plus about 300 in `bytecode_call`
+  and the code string's re-check after it. What is left is the design: thread-local swaps,
   the guard, the call-frame record and the per-call `setjmp` that Rust
   frames between the native code and its caller require.
-- **Byte-code calls** (bytecode calls 2.19): a call and return cost 647
-  in the frame loop (re-entering the verified loop about 40 each time,
-  building the callee's `ByteCodeObject` 82, copying it into the frame
-  45, the verification cache 40) where GNU's whole iteration is 468.
+- **Byte-code calls** (bytecode calls 1.87): 863 instructions an
+  iteration against GNU's 468: the verified loop 440 (its ops about as
+  GNU's, plus about 30 a switch to re-read the code string and check its
+  verification), the in-loop frame entry 302 (the plain-entry tests,
+  `for_call`'s field checks, the verification cache, the 64-byte
+  backtrace record, the 88-byte `BcFrame` and the copies of the
+  48-byte `ByteCodeObject` in and out of it) and the return 122. GNU's
+  setup_frame and Breturn together are about 100: its frame lives in the
+  byte-code stack and its running state in registers.
 - **Source interpreter** (lexical 1.35, calls 1.38, sort 2.21): every
   list form pays a 167-instruction common path (GNU's whole `eval_sub`
   averages 178 a form), a subr call 112 more and a special form 157 more.
@@ -613,12 +651,13 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 2.66, undo about 2.4, sort 2.21,
-   bytecode calls 2.19). The remaining costs are listed under "Where the
+   above; worst now bytecode-to-native 2.63, undo about 2.4, sort 2.13,
+   bytecode calls 1.87). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
-   return need structural work (a lighter native boundary, frames that do
-   not copy the callee's decoded object, slow ops and calls without leaving
-   the verified loop); the interpreter and funcall paths are spread over
+   return need structural work (a lighter native boundary; byte-code
+   frames kept in the byte-code stack, as GNU's are, instead of a
+   `BcFrame` vector holding copies of the decoded object; slow ops without
+   leaving the verified loop); the interpreter and funcall paths are spread over
    many small steps, each worth about 1%. Micro-changes measure within
    about 1% of noise: keep only what moves the counts, record the rest.
    Iterate with instruction counts (callgrind) on the locked workloads for

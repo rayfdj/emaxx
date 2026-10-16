@@ -1042,12 +1042,20 @@ impl Interpreter {
         Ok(())
     }
 
+    /// bytecode.c's Bcall entry: maybe_quit, then the depth test, which
+    /// signals a plain `error' where Ffuncall's signals
+    /// `excessive-lisp-nesting'.
     #[inline(always)]
-    pub(crate) fn end_funcall(&mut self) {
-        self.lisp_eval_depth = self
-            .lisp_eval_depth
-            .checked_sub(1)
-            .expect("Ffuncall depth is balanced");
+    pub(crate) fn begin_bytecode_call(&mut self, env: &mut Env) -> Result<(), LispError> {
+        self.maybe_quit(env)?;
+        self.lisp_eval_depth += 1;
+        if self.lisp_eval_depth_exceeded() {
+            self.lisp_eval_depth -= 1;
+            return Err(LispError::Signal(
+                "Lisp nesting exceeds `max-lisp-eval-depth'".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// eval.c:maybe_quit/probably_quit/process_quit_flag for the Lisp-visible
@@ -1667,6 +1675,50 @@ impl Interpreter {
     }
 
     // ── Special forms ──
+}
+
+impl InterpreterState {
+    #[inline(always)]
+    pub(crate) fn end_funcall(&mut self) {
+        self.lisp_eval_depth = self
+            .lisp_eval_depth
+            .checked_sub(1)
+            .expect("Ffuncall depth is balanced");
+    }
+
+    /// Bcall's way to a byte-code callee when nothing else happens on the
+    /// way in: Ffuncall's maybe_quit finds no quit, the depth stays within
+    /// max-lisp-eval-depth, no termination is pending, no debugger context
+    /// is captured (edebug is not loaded and the callee is not
+    /// `backtrace-eval'), and calls are not being profiled.  FUNC is
+    /// Bcall's TOP; the answer is the closure in its live function cell
+    /// (or FUNC itself, when it is no symbol).  Reads only: the full Call
+    /// arm takes every other case from the same state.
+    #[inline(always)]
+    pub(crate) fn plain_bytecode_callee(
+        &self,
+        func: Value,
+    ) -> Option<(Value, crate::lisp::types::ClosureRef)> {
+        let name = func.symbol_cell();
+        let function = match &name {
+            Some(name) => self.globals.function(name)?,
+            None => func,
+        };
+        let Kind::Closure(closure) = function.kind() else {
+            return None;
+        };
+        if !self.quit_flag.is_nil()
+            || self.pending_termination.is_some()
+            || self.globals.edebug_is_special()
+            || i64::try_from(self.lisp_eval_depth + 1)
+                .map_or(true, |depth| depth > self.max_lisp_eval_depth)
+            || profile_path().is_some()
+            || name.is_some_and(|name| name.as_str() == "backtrace-eval")
+        {
+            return None;
+        }
+        Some((function, closure))
+    }
 }
 
 #[cfg(test)]

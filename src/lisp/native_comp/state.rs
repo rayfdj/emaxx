@@ -65,6 +65,10 @@ impl NativeCompilerState {
         self.runtime.garbage_collection_might_be_due()
     }
 
+    pub(crate) fn garbage_collection_cannot_be_due(&self) -> bool {
+        self.runtime.garbage_collection_cannot_be_due()
+    }
+
     /// The counters of a process that starts from a dump, once the image
     /// is loaded.
     pub(crate) fn garbage_collection_baseline_after_image_load(&mut self) {

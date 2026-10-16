@@ -100,9 +100,7 @@ pub(crate) fn verified_code(
     program: &ByteCodeObject,
     entry_depth: usize,
 ) -> Option<&'static VerifiedCode> {
-    let Kind::StringObject(string) = program.code.original().kind() else {
-        return None;
-    };
+    let string = program.code.string();
     let identity = string.identity();
     if string.code_state() == CodeState::Current {
         let (key, cached) = CACHE.with(|cache| cache[cache_slot(identity)].get());

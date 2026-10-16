@@ -608,6 +608,29 @@ pub(crate) fn maybe_gc_active() {
     }
 }
 
+/// maybe_gc's tests, reading only: true when maybe_gc would return
+/// without collecting or touching the counters.  A caller that finds a
+/// collection possible takes the path that runs maybe_gc itself.
+#[inline]
+pub(crate) fn collection_cannot_be_due(interpreter: &crate::lisp::eval::InterpreterState) -> bool {
+    let active = ACTIVE_CALL.with(Cell::get);
+    if !active.is_null() {
+        // SAFETY: as maybe_gc_active's read of the active runtime.
+        return unsafe { &*(*active).runtime }
+            .heap
+            .collection_cannot_be_due();
+    }
+    if crate::lisp::alloc::stress_collections() {
+        return false;
+    }
+    super::loader::with_active_registered_runtime(|runtime| runtime.heap.collection_cannot_be_due())
+        .unwrap_or_else(|| {
+            interpreter
+                .native_compiler
+                .garbage_collection_cannot_be_due()
+        })
+}
+
 /// alloc.c:Fgarbage_collect_maybe's threshold test: `since_gc >
 /// gc_threshold / factor' on the counters as the last collection left them,
 /// for the active native heap or the interpreter's ordinary state.
@@ -995,6 +1018,10 @@ impl NativeRuntime {
     /// lisp.h:maybe_gc's counter test for the ordinary interpreter.
     pub(crate) fn garbage_collection_might_be_due(&mut self) -> bool {
         self.heap.collection_might_be_due()
+    }
+
+    pub(crate) fn garbage_collection_cannot_be_due(&self) -> bool {
+        self.heap.collection_cannot_be_due()
     }
 
     /// The counters of a process that starts from a dump, once the image

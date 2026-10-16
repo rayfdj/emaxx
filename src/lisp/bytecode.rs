@@ -637,6 +637,17 @@ impl CodeBytes {
         self.original
     }
 
+    /// The code string itself: `new' and `for_call' make a CodeBytes only
+    /// from a string object.
+    #[inline(always)]
+    pub(crate) fn string(&self) -> crate::lisp::alloc::StringObjectRef {
+        match self.original.kind() {
+            Kind::StringObject(string) => string,
+            // SAFETY: every constructor checked the kind (see above).
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
+    }
+
     /// BODY must not invoke Lisp, collect, or mutate the code string.
     /// The borrow ends before callbacks and frame changes.
     #[inline]
@@ -647,15 +658,20 @@ impl CodeBytes {
         body(state.borrow().bytes())
     }
 
-    /// `with_bytes', also telling BODY whether the verifier's results for
-    /// the string are those of these bytes (see `verify').
-    #[inline]
-    pub(crate) fn with_bytes_and_state<R>(&self, body: impl FnOnce(&[u8], bool) -> R) -> R {
-        let Kind::StringObject(string) = self.original.kind() else {
-            unreachable!("validated code string")
-        };
+    /// The bytes and whether the verifier's results for the string are
+    /// those of these bytes (see `verify'), with no borrow held.
+    ///
+    /// # Safety
+    /// The slice is valid only until Lisp runs, a collection starts or a
+    /// string is stored into: the caller (the dispatch loops) does none
+    /// of these while it uses it.
+    #[inline(always)]
+    pub(crate) unsafe fn bytes_unguarded<'a>(&self) -> (&'a [u8], bool) {
+        let string = self.string();
         let current = string.code_state() == crate::lisp::alloc::CodeState::Current;
-        body(string.borrow().bytes(), current)
+        let bytes = string.borrow().bytes() as *const [u8];
+        // SAFETY: the caller's contract keeps the string's bytes in place.
+        (unsafe { &*bytes }, current)
     }
 }
 
@@ -758,7 +774,7 @@ impl ByteCodeObject {
     /// the constants vector and the depth. None for any closure that is
     /// not such a byte-code function (or whose fields `from_closure'
     /// rejects), which the caller then calls through funcall.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn for_call(closure: crate::lisp::types::ClosureRef) -> Option<Self> {
         if closure.public_len() < 4 {
             return None;

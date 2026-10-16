@@ -27869,6 +27869,54 @@ fn funcall_reaches_interpreted_closures_like_funcall_lambda() {
 }
 
 #[test]
+fn bytecode_calls_switch_frames_like_setup_frame() {
+    // Bcall into a byte-code function and Breturn to a byte-code caller
+    // switch frames in the dispatch loop (bytecode.c's setup_frame): the
+    // optionals' nils, the frames mapbacktrace sees, errors caught across
+    // frames, arity errors, unwind forms and deep recursion stay GNU's,
+    // and Bcall's nesting limit signals bytecode.c's plain `error'.
+    let program = r#"(progn
+  (require 'bytecomp)
+  (let ((byte-compile-warnings nil))
+    (defalias 'zz-bc-leaf (byte-compile (lambda (a &optional b) (list a b))))
+    (defalias 'zz-bc-frames
+      (byte-compile
+       (lambda (x)
+         (let ((seen nil) (n 0))
+           (mapbacktrace (lambda (evald fun fargs _flags)
+                           (when (and (< n 8) (memq fun '(zz-bc-frames zz-bc-mid zz-bc-top)))
+                             (push (list evald fun fargs) seen))
+                           (setq n (1+ n))))
+           (list x (nreverse seen))))))
+    (defalias 'zz-bc-mid (byte-compile (lambda (x) (zz-bc-frames (1+ x)))))
+    (defalias 'zz-bc-err (byte-compile (lambda (x) (car x))))
+    (defalias 'zz-bc-unwind
+      (byte-compile (lambda (cell) (unwind-protect (car cell) (setcar cell 'done)))))
+    (defalias 'zz-bc-deep
+      (byte-compile (lambda (n) (if (= n 0) 0 (1+ (zz-bc-deep (1- n)))))))
+    (defalias 'zz-bc-top
+      (byte-compile
+       (lambda ()
+         (let ((cell (list 1)))
+           (list (zz-bc-leaf 1)
+                 (zz-bc-leaf 1 2)
+                 (zz-bc-mid 3)
+                 (condition-case e (zz-bc-err 5) (wrong-type-argument (car e)))
+                 (condition-case e (zz-bc-leaf) (wrong-number-of-arguments (cdr e)))
+                 (condition-case e (zz-bc-leaf 1 2 3) (wrong-number-of-arguments (cdr e)))
+                 (list (zz-bc-unwind cell) cell)
+                 (zz-bc-deep 50)
+                 (let ((max-lisp-eval-depth 100))
+                   (condition-case e (zz-bc-deep 1000) (error e))))))))
+    (zz-bc-top)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((1 nil) (1 2) (4 ((t zz-bc-frames (4)) (t zz-bc-mid (3)) (t zz-bc-top nil))) wrong-type-argument ((1 . 2) 0) ((1 . 2) 3) (1 (done)) 50 (error \"Lisp nesting exceeds `max-lisp-eval-depth'\"))",
+        "byte-code calls and returns",
+    );
+}
+
+#[test]
 fn let_finds_local_special_declarations_by_symbol_like_flet() {
     // Flet's Fmemq of the variable in the lexical environment: a locally
     // special uninterned symbol leaves the interned one of that name

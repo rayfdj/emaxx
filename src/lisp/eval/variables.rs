@@ -2652,6 +2652,35 @@ impl Interpreter {
     pub fn backtrace_frames_len(&self) -> usize {
         self.backtrace_frames.len()
     }
+}
+
+/// The frame record's steps that touch nothing but the state: callers
+/// holding the shell reach them through its Deref, and a caller that
+/// already holds the state (the byte-code VM's call and return) pays
+/// the shell's parked test once.
+impl InterpreterState {
+    /// record_in_backtrace and Ffuncall's depth for a call that does
+    /// nothing else on its way in (see `plain_bytecode_callee'). Returns
+    /// the frame depth `leave_plain_funcall' restores.
+    #[inline(always)]
+    pub(crate) fn enter_plain_funcall(&mut self, function: Value, args: &[Value]) -> usize {
+        self.lisp_eval_depth += 1;
+        let depth = self.backtrace_frames.len();
+        Interpreter::write_backtrace_frame(
+            &mut self.backtrace_frames,
+            FrameFunction::Owned(function),
+            FrameArgs::borrowed(args),
+            true,
+        );
+        depth
+    }
+
+    /// The frame pop and depth restore of a call's normal return.
+    #[inline(always)]
+    pub(crate) fn leave_plain_funcall(&mut self, backtrace_depth: usize) {
+        self.truncate_backtrace_frames(backtrace_depth);
+        self.end_funcall();
+    }
 
     /// Pop frames down to LEN.  The bytecode VM records a signaling byte
     /// op as a frame (bytecode.c's record_in_backtrace) that outlives the
@@ -2688,7 +2717,9 @@ impl Interpreter {
             }
         }
     }
+}
 
+impl Interpreter {
     pub fn set_current_backtrace_debug(&mut self, enabled: bool) {
         if let Some(frame) = self.backtrace_frames.last_mut() {
             frame.debug_on_exit = enabled;
