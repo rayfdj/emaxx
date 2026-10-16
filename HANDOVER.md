@@ -545,6 +545,18 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   remaining slow ops are buffer primitives (`point`, `goto-char`,
   `point-min`, `point-max`) at about 200 instructions each where GNU's arms
   are 30 to 50.
+- The cons and float sweeps read a block's mark bitmap a word (64 cells)
+  at a time, as alloc.c's sweep_conses reads its mark words: the live
+  cells are counted by population count, the allocation and mark bits of
+  the dead ones cleared word by word (a cons and a float have nothing to
+  drop), and the free cells linked in address order as before, where each
+  cell's bits were extracted and tested one by one. A sort unit's
+  collection swept for 27.7 million instructions; sort 2.09 → 2.03,
+  explicit GC 1.01 → 0.89 (below GNU's), mapcar, cons allocation and
+  interpreted calls about 0.5% lower. Measured and not kept: a shortcut in
+  `lookup_var_symbol` for plain cells, for the change-hook variables
+  insertion reads (about 250 instructions a lookup, three an insertion):
+  those variables are not plain cells, so it never applied.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -575,8 +587,8 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | Case | Before | Now |
 | --- | --- | --- |
 | upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.11 |
-| upstream-sort | 3.26 | 2.09 |
-| interpreted-calls | 2.10 | 1.26 |
+| upstream-sort | 3.26 | 2.03 |
+| interpreted-calls | 2.10 | 1.24 |
 | interpreted-lexical | 2.04 | 1.27 |
 | interpreted-dynamic | 2.14 | 1.39 |
 | mapcar | 2.95 | 1.46 |
@@ -584,12 +596,14 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | bytecode-to-native | — | 2.37 |
 | interpreted-to-native | — | 1.63 |
 | native-to-interpreted / -bytecode | — | 1.55 / 1.73 |
-| cons-allocation / list-traversal | 2.24 / — | 1.42 / 1.37 |
+| cons-allocation / list-traversal | 2.24 / — | 1.41 / 1.37 |
 | native-execution | — | 1.21 |
 | bindat | — | 1.27 |
-| explicit-gc | — | 1.01 |
+| explicit-gc | — | 0.89 |
 
-The table is the full run of all sixteen on this round's last commit.
+The table is the full run of all sixteen on `d20ca14`, with sort,
+explicit GC, interpreted calls and cons allocation measured again after
+the bitmap sweep.
 Interpreted calls, lexical and dynamic, cons allocation and bindat read
 up to 1.5% above the previous run with no change on their paths
 (`eval_sub` layout and allocator noise; bindat measured 1.26 on the
@@ -700,7 +714,7 @@ this container's GNU build itself disagrees with the expected text (under
   48-byte `ByteCodeObject` in and out of it) and the return 122. GNU's
   setup_frame and Breturn together are about 100: its frame lives in the
   byte-code stack and its running state in registers.
-- **Source interpreter** (lexical 1.26, calls 1.25, sort 2.09): an
+- **Source interpreter** (lexical 1.27, calls 1.24, sort 2.03): an
   iteration of interpreted calls is 4,022 instructions against GNU's
   3,315. What is left is spread: parked-shell tests (about 300 an
   iteration; each step that takes the shell after a call tests it again),
@@ -708,8 +722,18 @@ this container's GNU build itself disagrees with the expected text (under
   `resolve_symbol_call` and the argument count (about 27 and 25 a form,
   close to their minimum), the subr dispatch through `call_with_facts`,
   and an interpreted call's `funcall_interpreted_lambda` (340) with the
-  frame detail that records its locals. Sort is mostly this path too
-  (`eval_sub` 3.2 times GNU's self cost), plus the buffer comparisons.
+  frame detail that records its locals. Sort is mostly this path too:
+  `eval_sub` spends about 400 instructions of its own on each of 473,000
+  list forms a unit, where GNU's spends 111 on each of 548,000 forms
+  (symbols included); per form the backtrace record costs about 65 (the
+  push 20, the argument update 27, the pop 12, the debugger-context test
+  6), the function cell's resolution 32, the argument count 16 and the
+  subr dispatch 19, and the rest is spread over the entry tests, the
+  parked-shell tests (about 9 a form) and moves. Sort's buffer side
+  (rope chunk lookups, `compare-buffer-substrings`, insertion and its
+  change hooks, whose variables are read through the general lookup at
+  about 250 instructions each) is about 40 million instructions a unit
+  against GNU's 10 million.
 - **Ffuncall into a subr** (mapcar 1.45): about 200 per call against
   GNU's 147 across Ffuncall, funcall_general and funcall_subr;
   `Value::cons` is 37 against `Fcons`' 27 (the per-cell serial, the
@@ -756,7 +780,7 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 2.37, undo 2.11, sort 2.09,
+   above; worst now bytecode-to-native 2.37, undo 2.11, sort 2.03,
    bytecode calls 1.87). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code

@@ -308,12 +308,6 @@ impl FloatMark<'_> {
         self.block.allocated[word].set(self.block.allocated[word].get() | mask);
         self.mark(epoch);
     }
-
-    fn release(&self) {
-        let (word, mask) = self.bit();
-        self.block.allocated[word].set(self.block.allocated[word].get() & !mask);
-        self.block.marked[word].set(self.block.marked[word].get() & !mask);
-    }
 }
 
 /// FLOAT_BLOCK/FLOAT_INDEX: derive the metadata by alignment and index,
@@ -478,24 +472,42 @@ pub(crate) fn sweep_floats(epoch: u32) -> usize {
         };
         let chain_before = free_list;
         let mut this_free = 0usize;
-        for index in 0..lim {
-            let cell = (start + index * FLOAT_CELL_SIZE) as *mut FloatCell;
-            // SAFETY: inside a registered float block.
-            let mark = unsafe { float_mark(cell) };
-            if mark.is_marked(epoch) {
-                num_used += usize::from(!image_block);
-                continue;
+        // SAFETY: a registered float block's marks stay initialized until
+        // the block is released.
+        let marks = unsafe { &*std::ptr::addr_of!((*(start as *const FloatBlock)).marks) };
+        let current = marks.epoch.get() == epoch;
+        // A bitmap word at a time: an unmarked cell holds no owned storage,
+        // so its bits are cleared (and, outside the image, it is linked
+        // through its one word, in address order).
+        for word in 0..lim.div_ceil(usize::BITS as usize) {
+            let first = word * usize::BITS as usize;
+            let valid = if lim - first >= usize::BITS as usize {
+                usize::MAX
+            } else {
+                (1usize << (lim - first)) - 1
+            };
+            let marked = marks.marked[word].get();
+            let live = if current { marked } else { 0 } & valid;
+            let mut free = !live & valid;
+            if free != 0 {
+                marks.allocated[word].set(marks.allocated[word].get() & !free);
+                marks.marked[word].set(marked & !free);
             }
-            // An unmarked cell holds no owned storage: clear its allocation
-            // bit (and, outside the image, link it through its one word).
-            mark.release();
-            this_free += 1;
+            if !image_block {
+                num_used += live.count_ones() as usize;
+            }
+            this_free += free.count_ones() as usize;
             if image_block {
                 continue;
             }
-            // SAFETY: the cell is free; its one word is the free-list link.
-            unsafe { (*cell.cast::<FreeFloat>()).next = free_list };
-            free_list = cell;
+            while free != 0 {
+                let index = first + free.trailing_zeros() as usize;
+                free &= free - 1;
+                let cell = (start + index * FLOAT_CELL_SIZE) as *mut FloatCell;
+                // SAFETY: the cell is free; its one word is the free-list link.
+                unsafe { (*cell.cast::<FreeFloat>()).next = free_list };
+                free_list = cell;
+            }
         }
         if image_block {
             if this_free == FLOATS_PER_BLOCK {
@@ -1149,6 +1161,8 @@ impl ConsMetadata {
 
 const _: () = {
     assert!(CELL_SIZE == 16);
+    // The sweep frees a cell by its bits alone.
+    assert!(!std::mem::needs_drop::<ConsCell>());
     assert!(std::mem::size_of::<ConsBlock>() == CONS_BLOCK_ALIGN);
     assert!(std::mem::offset_of!(ConsBlock, cells) == 0);
     assert!(std::mem::offset_of!(ConsCell, car) == 0);
@@ -1222,12 +1236,6 @@ impl ConsMark<'_> {
             word.set(0);
         }
         self.block.epoch.set(epoch);
-    }
-
-    fn release(&self) {
-        let (word, mask) = self.bit();
-        self.block.allocated[word].set(self.block.allocated[word].get() & !mask);
-        self.block.marked[word].set(self.block.marked[word].get() & !mask);
     }
 
     fn serial(&self) -> u64 {
@@ -1614,34 +1622,56 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
         };
         let chain_before = free_list;
         let mut this_free = 0usize;
-        for index in 0..lim {
-            let cell = (start + index * CELL_SIZE) as *mut ConsCell;
-            // SAFETY: inside a registered block; the mark word is
-            // readable in every state.
-            let mark = unsafe { cons_mark(cell) };
-            if mark.is_marked(epoch) {
-                num_used += usize::from(!image_block);
-                continue;
-            }
-            if mark.allocated() {
-                // SAFETY: an allocated, unmarked cell: nothing reaches
-                // it, so its fields are dropped and the slot becomes free
-                // (the free mark, the link in its first word).
-                unsafe {
-                    std::ptr::drop_in_place(cell);
-                    if cfg!(debug_assertions) {
-                        poison(cell);
+        // SAFETY: a registered block's metadata stays initialized until the
+        // block is released.
+        let metadata = unsafe { &*std::ptr::addr_of!((*(start as *const ConsBlock)).metadata) };
+        // A block no mark reached this collection holds stale marks only.
+        let current = metadata.epoch.get() == epoch;
+        // A bitmap word at a time, as alloc.c's sweep_conses reads its mark
+        // words: a cell is live when allocated and marked; an allocated
+        // cell that is not becomes free (its bits cleared; a cons has
+        // nothing to drop); every cell that is not live goes on the free
+        // list, in address order as before.
+        for word in 0..lim.div_ceil(usize::BITS as usize) {
+            let first = word * usize::BITS as usize;
+            let valid = if lim - first >= usize::BITS as usize {
+                usize::MAX
+            } else {
+                (1usize << (lim - first)) - 1
+            };
+            let allocated = metadata.allocated[word].get();
+            let marked = metadata.marked[word].get();
+            let live = allocated & if current { marked } else { 0 } & valid;
+            let dead = allocated & !live & valid;
+            if dead != 0 {
+                metadata.allocated[word].set(allocated & !dead);
+                metadata.marked[word].set(marked & !dead);
+                if cfg!(debug_assertions) {
+                    let mut bits = dead;
+                    while bits != 0 {
+                        let index = first + bits.trailing_zeros() as usize;
+                        bits &= bits - 1;
+                        // SAFETY: a cell of this block nothing reaches.
+                        unsafe { poison((start + index * CELL_SIZE) as *mut ConsCell) };
                     }
-                    mark.release();
                 }
             }
-            this_free += 1;
+            if !image_block {
+                num_used += live.count_ones() as usize;
+            }
+            let mut free = !live & valid;
+            this_free += free.count_ones() as usize;
             if image_block {
                 continue;
             }
-            // SAFETY: a free cell's first word is the free-list link.
-            unsafe { (*cell.cast::<FreeCell>()).next = free_list };
-            free_list = cell;
+            while free != 0 {
+                let index = first + free.trailing_zeros() as usize;
+                free &= free - 1;
+                let cell = (start + index * CELL_SIZE) as *mut ConsCell;
+                // SAFETY: a free cell's first word is the free-list link.
+                unsafe { (*cell.cast::<FreeCell>()).next = free_list };
+                free_list = cell;
+            }
         }
         if image_block {
             if this_free == CELLS_PER_BLOCK {
