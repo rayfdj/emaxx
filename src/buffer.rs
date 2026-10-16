@@ -252,69 +252,266 @@ struct UndoListView {
 #[derive(Default)]
 struct UndoListViewCache(RefCell<Option<UndoListView>>);
 
-/// The buffer's rope with its character and byte counts, GNU's Z and
-/// Z_BYTE kept beside the text.  A text of up to about a kilobyte is a
-/// single ropey leaf, whose counts ropey finds by scanning the leaf on
-/// every length query; the buffer's own queries read these instead.  All
-/// changes go through `insert' and `remove', which keep the counts.
+/// The buffer's text with its character and byte counts, GNU's Z and
+/// Z_BYTE kept beside it.  A text of up to `SMALL_TEXT' bytes is one
+/// string: ropey keeps such a text in a single leaf, whose counts it finds
+/// by scanning the whole leaf on every bounds check (twice or three times
+/// an edit, once a chunk lookup).  A longer text is a rope, and becomes a
+/// string again when deletions bring it under half that.  All changes go
+/// through `insert' and `remove', which keep the counts.
 #[derive(Clone, Default)]
 struct BufferText {
-    rope: Rope,
+    store: TextStore,
     chars: usize,
     bytes: usize,
+    /// A small text's rope for `text_rope', built when a scan asks for
+    /// one and dropped by the next change.
+    rope_view: RefCell<Option<Rope>>,
 }
+
+#[derive(Clone)]
+enum TextStore {
+    Small(String),
+    Rope(Rope),
+}
+
+impl Default for TextStore {
+    fn default() -> Self {
+        TextStore::Small(String::new())
+    }
+}
+
+/// The longest text kept as one string: about ropey's leaf size.
+const SMALL_TEXT: usize = 1024;
 
 impl BufferText {
     fn from_str(text: &str) -> Self {
         Self {
-            rope: Rope::from_str(text),
+            store: if text.len() <= SMALL_TEXT {
+                TextStore::Small(text.to_owned())
+            } else {
+                TextStore::Rope(Rope::from_str(text))
+            },
             chars: ropey::str_utils::byte_to_char_idx(text, text.len()),
             bytes: text.len(),
+            rope_view: RefCell::new(None),
         }
     }
 
+    #[inline]
     fn len_chars(&self) -> usize {
         self.chars
     }
 
+    #[inline]
     fn len_bytes(&self) -> usize {
         self.bytes
     }
 
+    /// The byte index of char index INDEX in a small TEXT.
+    #[inline]
+    fn small_byte(&self, text: &str, index: usize) -> usize {
+        if self.chars == self.bytes {
+            index
+        } else {
+            ropey::str_utils::char_to_byte_idx(text, index)
+        }
+    }
+
+    /// The chunk holding char index INDEX, with the byte, char and line
+    /// indices of its start (ropey's `chunk_at_char').
+    #[inline]
+    fn chunk_at_char(&self, index: usize) -> (&str, usize, usize, usize) {
+        match &self.store {
+            TextStore::Small(text) => (text, 0, 0, 0),
+            TextStore::Rope(rope) => rope.chunk_at_char(index),
+        }
+    }
+
+    /// The chunk holding byte index INDEX, as `chunk_at_char'.
+    #[inline]
+    fn chunk_at_byte(&self, index: usize) -> (&str, usize, usize, usize) {
+        match &self.store {
+            TextStore::Small(text) => (text, 0, 0, 0),
+            TextStore::Rope(rope) => rope.chunk_at_byte(index),
+        }
+    }
+
+    #[inline]
+    fn char(&self, index: usize) -> char {
+        match &self.store {
+            TextStore::Small(text) => text[self.small_byte(text, index)..]
+                .chars()
+                .next()
+                .expect("char index within the text"),
+            TextStore::Rope(rope) => rope.char(index),
+        }
+    }
+
+    #[inline]
+    fn char_to_byte(&self, index: usize) -> usize {
+        match &self.store {
+            TextStore::Small(text) => self.small_byte(text, index),
+            TextStore::Rope(rope) => rope.char_to_byte(index),
+        }
+    }
+
+    #[inline]
+    fn slice(&self, range: std::ops::Range<usize>) -> ropey::RopeSlice<'_> {
+        match &self.store {
+            TextStore::Small(text) => ropey::RopeSlice::from(
+                &text[self.small_byte(text, range.start)..self.small_byte(text, range.end)],
+            ),
+            TextStore::Rope(rope) => rope.slice(range),
+        }
+    }
+
+    fn chars(&self) -> ropey::iter::Chars<'_> {
+        match &self.store {
+            TextStore::Small(text) => ropey::RopeSlice::from(text.as_str()).chars(),
+            TextStore::Rope(rope) => rope.chars(),
+        }
+    }
+
+    fn len_lines(&self) -> usize {
+        match &self.store {
+            TextStore::Small(text) => ropey::str_utils::byte_to_line_idx(text, text.len()) + 1,
+            TextStore::Rope(rope) => rope.len_lines(),
+        }
+    }
+
+    fn line(&self, index: usize) -> ropey::RopeSlice<'_> {
+        match &self.store {
+            TextStore::Small(text) => ropey::RopeSlice::from(
+                &text[ropey::str_utils::line_to_byte_idx(text, index)
+                    ..ropey::str_utils::line_to_byte_idx(text, index + 1)],
+            ),
+            TextStore::Rope(rope) => rope.line(index),
+        }
+    }
+
+    fn line_to_char(&self, index: usize) -> usize {
+        match &self.store {
+            TextStore::Small(text) => ropey::str_utils::line_to_char_idx(text, index),
+            TextStore::Rope(rope) => rope.line_to_char(index),
+        }
+    }
+
+    fn char_to_line(&self, index: usize) -> usize {
+        match &self.store {
+            TextStore::Small(text) => ropey::str_utils::char_to_line_idx(text, index),
+            TextStore::Rope(rope) => rope.char_to_line(index),
+        }
+    }
+
+    /// The text as a rope that never changes (a small text's is built
+    /// once until the next change).
+    fn rope(&self) -> Rope {
+        match &self.store {
+            TextStore::Small(text) => self
+                .rope_view
+                .borrow_mut()
+                .get_or_insert_with(|| Rope::from_str(text))
+                .clone(),
+            TextStore::Rope(rope) => rope.clone(),
+        }
+    }
+
+    fn whole_string(&self) -> String {
+        match &self.store {
+            TextStore::Small(text) => text.clone(),
+            TextStore::Rope(rope) => String::from(rope),
+        }
+    }
+
     fn insert(&mut self, char_index: usize, text: &str) {
-        self.rope.insert(char_index, text);
-        self.chars += ropey::str_utils::byte_to_char_idx(text, text.len());
+        let added = ropey::str_utils::byte_to_char_idx(text, text.len());
+        let ascii = self.chars == self.bytes;
+        match &mut self.store {
+            TextStore::Small(small) => {
+                let byte = if ascii {
+                    char_index
+                } else {
+                    ropey::str_utils::char_to_byte_idx(small, char_index)
+                };
+                small.insert_str(byte, text);
+                if self.bytes + text.len() > SMALL_TEXT {
+                    self.store = TextStore::Rope(Rope::from_str(small));
+                }
+            }
+            TextStore::Rope(rope) => rope.insert(char_index, text),
+        }
+        self.chars += added;
         self.bytes += text.len();
-        debug_assert_eq!(
-            (self.chars, self.bytes),
-            (self.rope.len_chars(), self.rope.len_bytes())
-        );
+        *self.rope_view.get_mut() = None;
+        self.check_counts();
     }
 
     fn remove(&mut self, range: std::ops::Range<usize>) {
-        self.rope.remove(range.clone());
-        self.chars -= range.len();
-        self.bytes = self.rope.len_bytes();
-        debug_assert_eq!(self.chars, self.rope.len_chars());
+        let bytes = match &mut self.store {
+            TextStore::Small(_) if self.chars == self.bytes => range.len(),
+            TextStore::Small(text) => {
+                ropey::str_utils::char_to_byte_idx(text, range.end)
+                    - ropey::str_utils::char_to_byte_idx(text, range.start)
+            }
+            // The rope's own count, read after the removal (in a rope of
+            // more than one leaf, from the root's children).
+            TextStore::Rope(rope) => {
+                let before = self.bytes;
+                rope.remove(range.clone());
+                let bytes = before - rope.len_bytes();
+                self.removed(range, bytes);
+                return;
+            }
+        };
+        self.remove_bytes(range, bytes);
     }
 
     /// `remove' for a caller that already holds the removed text.
     fn remove_text(&mut self, range: std::ops::Range<usize>, removed: &str) {
-        self.rope.remove(range.clone());
-        self.chars -= range.len();
-        self.bytes -= removed.len();
-        debug_assert_eq!(
-            (self.chars, self.bytes),
-            (self.rope.len_chars(), self.rope.len_bytes())
-        );
+        self.remove_bytes(range, removed.len());
     }
-}
 
-impl std::ops::Deref for BufferText {
-    type Target = Rope;
+    fn remove_bytes(&mut self, range: std::ops::Range<usize>, bytes: usize) {
+        match &mut self.store {
+            TextStore::Small(text) => {
+                let start = if self.chars == self.bytes {
+                    range.start
+                } else {
+                    ropey::str_utils::char_to_byte_idx(text, range.start)
+                };
+                text.replace_range(start..start + bytes, "");
+            }
+            TextStore::Rope(rope) => rope.remove(range.clone()),
+        }
+        self.removed(range, bytes);
+    }
 
-    fn deref(&self) -> &Rope {
-        &self.rope
+    /// The counts after RANGE, BYTES long, was removed; a rope that fell
+    /// under half the small size becomes a string.
+    fn removed(&mut self, range: std::ops::Range<usize>, bytes: usize) {
+        self.chars -= range.len();
+        self.bytes -= bytes;
+        if let TextStore::Rope(rope) = &self.store
+            && self.bytes <= SMALL_TEXT / 2
+        {
+            self.store = TextStore::Small(String::from(rope));
+        }
+        *self.rope_view.get_mut() = None;
+        self.check_counts();
+    }
+
+    fn check_counts(&self) {
+        if cfg!(debug_assertions) {
+            let (chars, bytes) = match &self.store {
+                TextStore::Small(text) => (
+                    ropey::str_utils::byte_to_char_idx(text, text.len()),
+                    text.len(),
+                ),
+                TextStore::Rope(rope) => (rope.len_chars(), rope.len_bytes()),
+            };
+            assert_eq!((self.chars, self.bytes), (chars, bytes));
+        }
     }
 }
 
@@ -322,7 +519,7 @@ impl std::ops::Deref for BufferText {
 /// chunk in place: a ropey `Chars' iterator allocates its node stack. In
 /// an ASCII rope a char index is a byte index, found without counting.
 struct RopeChars<'a> {
-    rope: &'a Rope,
+    rope: &'a BufferText,
     ascii: bool,
     chars: std::str::Chars<'a>,
     next: usize,
@@ -1085,7 +1282,7 @@ impl Buffer {
         let mut extended = self.extended_chars.iter().peekable();
         1 + self
             .text
-            .slice(..position - 1)
+            .slice(0..position - 1)
             .chars()
             .enumerate()
             .map(|(index, ch)| {
@@ -1172,11 +1369,11 @@ impl Buffer {
     /// constant time and never changes once cloned, so a scan can read
     /// characters by index without holding the buffer borrowed.
     pub fn text_rope(&self) -> Rope {
-        self.text.rope.clone()
+        self.text.rope()
     }
 
     pub fn full_buffer_string(&self) -> String {
-        String::from(&self.text.rope)
+        self.text.whole_string()
     }
 
     /// Text of up to COUNT lines starting at 1-based LINE, one string per
@@ -2220,7 +2417,7 @@ impl Buffer {
     pub(crate) fn image_parts(&self) -> BufferImage {
         BufferImage {
             name: self.name.clone(),
-            text: String::from(&self.text.rope),
+            text: self.text.whole_string(),
             pt: self.pt,
             mark: self.mark(),
             mark_active: self.mark_active,
@@ -3297,6 +3494,60 @@ mod tests {
         buf.swap_text_state(&mut other);
         assert_eq!(buf.char_at(1), Some('q'));
         assert_eq!(other.char_at(1501), Some('Ω'));
+    }
+
+    #[test]
+    fn small_texts_are_strings_and_grow_into_ropes_and_back() {
+        // A text of up to SMALL_TEXT bytes is one string; past it a rope,
+        // and a string again under half.  Each step answers as the text
+        // it holds, multibyte characters and lines included.
+        fn check(buf: &Buffer, expected: &str) {
+            assert_eq!(buf.full_buffer_string(), expected);
+            assert_eq!(buf.size_total(), expected.chars().count());
+            assert_eq!(String::from(&buf.text_rope()), expected);
+            let lines: Vec<&str> = expected.split('\n').collect();
+            assert_eq!(buf.text.len_lines(), lines.len());
+            assert_eq!(buf.lines_from(2, 1), vec![lines[1].to_string()]);
+            let second_line = expected
+                .find('\n')
+                .map_or(0, |at| expected[..=at].chars().count());
+            assert_eq!(buf.text.line_to_char(1), second_line);
+            assert_eq!(buf.text.char_to_line(second_line), 1);
+            for (index, ch) in expected.chars().enumerate().step_by(97) {
+                assert_eq!(buf.char_at(index + 1), Some(ch));
+                let byte = expected.char_indices().nth(index).expect("char").0;
+                assert_eq!(buf.position_bytes(index + 1), Some(byte + 1));
+            }
+            let end = buf.size_total() + 1;
+            assert_eq!(
+                buf.buffer_substring(1, end).as_deref(),
+                Ok(expected),
+                "substring of the whole text"
+            );
+        }
+        let mut buf = Buffer::from_text("small", "λx\nab\n");
+        assert!(matches!(buf.text.store, TextStore::Small(_)));
+        check(&buf, "λx\nab\n");
+
+        let line = "abcλ\u{1F600}def\n";
+        let mut expected = String::from("λx\nab\n");
+        while expected.len() <= SMALL_TEXT {
+            buf.goto_char(3);
+            buf.insert(line);
+            expected.insert_str(expected.char_indices().nth(2).expect("char").0, line);
+            check(&buf, &expected);
+        }
+        assert!(matches!(buf.text.store, TextStore::Rope(_)));
+
+        while expected.len() > SMALL_TEXT / 4 {
+            let from = 3;
+            let to = from + line.chars().count();
+            assert_eq!(buf.delete_region(from, to).as_deref(), Ok(line));
+            let start = expected.char_indices().nth(from - 1).expect("char").0;
+            expected.replace_range(start..start + line.len(), "");
+            check(&buf, &expected);
+        }
+        assert!(matches!(buf.text.store, TextStore::Small(_)));
     }
 
     #[test]

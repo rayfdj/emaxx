@@ -737,6 +737,17 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   its order. Oracle tests pin a short sort's calls, checksums of longer
   ones and a vector after a signal. Sort 1.97 → 1.36 at four and eight
   units (below).
+- A buffer text of up to a kilobyte is one string with its counts
+  (`BufferText`'s small store), and a rope past that, a string again
+  under half a kilobyte. Ropey keeps such a text in a single leaf and
+  scans the whole leaf for its counts on every bounds check, two or three
+  times an insertion or deletion and once a chunk lookup: 133,000
+  instructions a unit of undo, whose temporary buffers and message log
+  are that small. `text_rope` builds a small text's rope for the regexp,
+  syntax and coding scans and keeps it until the next change. A test
+  takes a multibyte text through the string, the rope and back. Undo
+  1.85 → 1.72 (about 149,000 instructions a unit outside the allocator),
+  sort 1.36 → 1.355.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -790,14 +801,18 @@ build before the signal handling and argument changes) and 13 of 13 sort
 tests on the final build, with the five new ones. Under
 `EMAXX_GC_STRESS` (a collection at every `maybe_gc`) the 47 VM unit
 tests pass; the 49 byte-code tests that boot a full batch interpreter
-take hours each under it and were not run to the end. CI's full gate and
-frozen runs are the merge evidence.
+take hours each under it and were not run to the end. For the small
+buffer texts, 1,272 of 1,272 buffer, insertion, deletion, region,
+search, regexp, syntax, line, marker, undo, text-property, narrowing,
+coding, case, message and sexp tests, and 250 of 250 editing tests on
+the final build with the new one. CI's full gate and frozen runs are the
+merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.85 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.72 |
 | upstream-sort (4 units) | 3.26 (at 1 unit) | 1.36 |
 | interpreted-calls | 2.10 | 1.16 |
 | interpreted-lexical | 2.04 | 1.21 |
@@ -813,7 +828,8 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | explicit-gc | — | 0.89 |
 
 The table is one full run of all sixteen on `9eb7217`, with undo
-measured again after the sort port and sort at four and eight units.
+measured again after the small buffer texts and sort at four and eight
+units.
 Sort at one and two units read 1.84 before the port and 1.12 after it,
 but after it Emaxx's two collections fell at both sizes, out of the
 difference, while one of GNU's fell in it; at four and eight units it
@@ -922,7 +938,10 @@ Rust gate failed in its first group (run 38959692157):
 `eval_string_ops` expected `(sort '(3 1 2) #'< :in-place t)` to sort,
 which GNU rejects with "Invalid argument list" (a positional predicate
 only in the two-argument call); the next commit corrects the test.
-Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+Frozen on `2529c2e`: 7,928 of 7,928 across 519 files, no unsuccessful
+execution (run 38959695796). **On `3716780`** (the corrected test): full
+Rust gate passed (run 38964025272; 3,131 tests in the counted groups,
+the two ignores, plus bins and integration). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -1020,20 +1039,16 @@ this container's GNU build itself disagrees with the expected text (under
   GNU's 147 across Ffuncall, funcall_general and funcall_subr;
   `Value::cons` is 37 against `Fcons`' 27 (the per-cell serial, the
   allocated and mark bits, and a live count GNU does not keep).
-- Undo's remainder (1.85; about 2.32 million instructions a unit
+- Undo's remainder (1.72; about 2.15 million instructions a unit
   against GNU's 1.25 million) is broad: allocation (230,000 to 290,000
-  a unit in malloc and free as the allocator's state varies, plus the rope's `from_str` 93,000: a buffer of up
-  to about a kilobyte is one ropey leaf, whose counts ropey rescans on
-  each bounds check, two or three times an insertion or deletion and
-  once a chunk lookup; the window configuration snapshot copies its
-  lists on each restore, about 19,000; `ert-set-test` grows a vector
-  each run, about 15,000), the source interpreter (`eval_sub` 181,000
+  a unit in malloc and free as the allocator's state varies; the window
+  configuration snapshot copies its lists on each restore, about 19,000;
+  `ert-set-test` grows a vector each run, about 15,000), the source interpreter (`eval_sub` 181,000
   against 90,000), ops run in place (`op_in_place` and `exec_op` about
   105,000 for 770 ops), plain subr calls (`call_plain` about 196 a call,
-  340 a unit), byte-code frame entry (290 a call, 165 a unit), the
-  message log (about 17,000 a message against GNU's 9,000, mostly the
-  rope's rescans) and native code's subr calls (`invoke_subr`,
-  `invoke_native_funcall` 65,000).
+  340 a unit), byte-code frame entry (290 a call, 165 a unit) and
+  native code's subr calls (`invoke_subr`, `invoke_native_funcall`
+  65,000).
 
 ## How the work is split
 
@@ -1067,7 +1082,7 @@ and failures are still recorded.
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
    above; worst now bytecode-to-native 2.10, bytecode calls 1.85, undo
-   1.85, native-to-bytecode 1.60, interpreted-to-native 1.46, native-to-
+   1.72, native-to-bytecode 1.60, interpreted-to-native 1.46, native-to-
    interpreted 1.42, sort 1.36). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code
@@ -1085,12 +1100,7 @@ and failures are still recorded.
    (resolve, count, check and call with the descriptor read once and the
    frame written once) and a smaller frame record, not more 1% trims.
    Changes to `eval_sub`'s inlined body move its register allocation;
-   measure interpreted calls and lexical with each. Undo's rope rescans
-   (above) would go with a buffer text that keeps a small text in one
-   string with its counts and moves to a rope past a kilobyte or so;
-   `BufferText` keeps the rope private to `buffer.rs`, except the clone
-   `text_rope` lends the regexp, syntax and coding scans.
-   Micro-changes measure within
+   measure interpreted calls and lexical with each. Micro-changes measure within
    about 1% of noise: keep only what moves the counts, record the rest.
    Iterate with instruction counts (callgrind) on the locked workloads for
    both editors; timing pilots at merges. Remaining adapters that show up in
