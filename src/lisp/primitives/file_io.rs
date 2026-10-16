@@ -2109,7 +2109,7 @@ pub(crate) fn ensure_no_supersession_threat(
         return Ok(());
     };
     if interp
-        .lookup_var_key(cached_symbol!("buffer-file-name"), env)
+        .symbol_value_key(cached_symbol!("buffer-file-name"))
         .is_some_and(|value| value.is_nil())
     {
         return Ok(());

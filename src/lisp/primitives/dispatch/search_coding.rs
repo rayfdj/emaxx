@@ -209,7 +209,7 @@ fn apply_buffer_replacement_hunks(
     if hunks.is_empty() {
         return Ok(());
     }
-    ensure_region_modifiable(interp, target_start, target_end, env)?;
+    ensure_region_modifiable(interp, target_start, target_end)?;
     ensure_no_supersession_threat(interp, env)?;
 
     let old_len = target_end - target_start;
@@ -1036,7 +1036,7 @@ define_dispatch!(
                         let text = text_for_buffer(interp.buffer.borrow().is_multibyte())?;
                         let old_length = end - start;
                         let new_end = start + text.chars().count();
-                        ensure_region_modifiable(interp, start, end, env)?;
+                        ensure_region_modifiable(interp, start, end)?;
                         ensure_no_supersession_threat(interp, env)?;
                         let overlay_calls = overlay_change_hook_calls(
                             interp,

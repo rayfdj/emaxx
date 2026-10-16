@@ -2526,7 +2526,7 @@ define_dispatch!(
                     .buffer_substring(start, end)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 let input = encode_raw_text_bytes(&compressed)?;
-                ensure_region_modifiable(interp, start, end, env)?;
+                ensure_region_modifiable(interp, start, end)?;
                 ensure_no_supersession_threat(interp, env)?;
                 let overlay_calls =
                     overlay_change_hook_calls(interp, &interp.buffer.borrow(), start, end, start);

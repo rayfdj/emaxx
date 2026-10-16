@@ -713,7 +713,7 @@ pub(crate) fn insert_text_with_hooks(
     if text.is_empty() {
         return Ok(());
     }
-    ensure_insert_modifiable(interp, env)?;
+    ensure_insert_modifiable(interp)?;
     ensure_no_supersession_threat(interp, env)?;
     let start = interp.buffer.borrow().point();
     let overlay_calls =

@@ -914,7 +914,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let from = position_from_value(interp, &args[0])?;
                 let to = position_from_value(interp, &args[1])?;
-                ensure_region_modifiable(interp, from, to, env)?;
+                ensure_region_modifiable(interp, from, to)?;
                 let (start, end) = if from <= to { (from, to) } else { (to, from) };
                 let props = interp.buffer.borrow().substring_property_spans(start, end);
                 let multibyte = interp.buffer.borrow().is_multibyte();
@@ -3210,7 +3210,7 @@ pub(super) fn direct_delete_region(
     need_args(name, args, 2)?;
     let from = position_from_value(interp, &args[0])?;
     let to = position_from_value(interp, &args[1])?;
-    ensure_region_modifiable(interp, from, to, env)?;
+    ensure_region_modifiable(interp, from, to)?;
     delete_region_with_hooks(interp, from, to, env)?;
     Ok(Value::Nil)
 }

@@ -560,7 +560,7 @@ pub(crate) fn casify_buffer_region(
     let changed_start = lo + unchanged_prefix;
     let old_changed_end = hi - unchanged_suffix;
     let new_changed_end = new_end - unchanged_suffix;
-    ensure_region_modifiable(interp, lo, hi, env)?;
+    ensure_region_modifiable(interp, lo, hi)?;
     ensure_no_supersession_threat(interp, env)?;
     let overlay_calls = overlay_change_hook_calls(interp, &interp.buffer.borrow(), lo, hi, new_end);
     with_overlay_hook_roots(interp, &overlay_calls, |interp| {

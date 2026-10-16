@@ -677,6 +677,16 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   `invoke_function`'s dynamic-binding path is out of line, so the
   ordinary path inlines into its caller. Bytecode-to-native 2.17 → 2.10,
   interpreted-to-native 1.47 → 1.46.
+- The editing primitives read `inhibit-read-only`, `buffer-read-only`,
+  `buffer-file-name`, `combine-after-change-calls` and the change hooks
+  as C does, with find_symbol_value (`symbol_value_key`): the alias
+  chain, then the buffer-local, dynamic or global value. They went
+  through the evaluator's variable lookup, which first walks the
+  caller's lexical environment, about 3,400 instructions an insertion in
+  sort. That walk was also a difference from GNU: a lexical binding of
+  one of these names (a lexical function's parameter) reached `insert`,
+  where GNU's C code reads the dynamic value; a test covers it. Sort
+  1.92 → 1.86, undo about 1.5% lower.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -718,15 +728,17 @@ escape record, 672 of 673 native, thread, handler, condition and signal
 tests (the other is the image round trip), and errors, `catch`/`throw`
 and handlers through the native test functions answer as before on the
 release build; for the in-place invocation record, 446 of 447 native
-and thread tests (the other is the image round trip). CI's full gate
-and frozen runs are the merge evidence.
+and thread tests (the other is the image round trip); for the C-style
+variable reads, 177 of 178 insertion, hook, read-only, undo and lexical
+tests with the new one (the other is the save-buffer test below). CI's
+full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.97 |
-| upstream-sort | 3.26 | 1.92 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.93 |
+| upstream-sort | 3.26 | 1.86 |
 | interpreted-calls | 2.10 | 1.16 |
 | interpreted-lexical | 2.04 | 1.21 |
 | interpreted-dynamic | 2.14 | 1.31 |
@@ -740,7 +752,8 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | bindat | — | 1.18 |
 | explicit-gc | — | 0.89 |
 
-The table is one full run of all sixteen on this round's last commit.
+The table is one full run of all sixteen on `9eb7217`, with sort and
+undo measured again after the C-style variable reads.
 Interpreted calls and lexical read 1.24 to 1.27 across this round's
 builds before the unchecked shell with no change on their path
 (`eval_sub` layout); undo read 2.03 to 2.06 on the same code (the
@@ -829,7 +842,7 @@ allocations): full Rust gate passed (run 38928340091; 3,125 tests, 2
 ignored, plus bins and integration), frozen 7,928 of 7,928 across 519
 files, no unsuccessful execution (run 38928344036). **On `8845616`** (the
 activation counter): full Rust gate passed (run 38932458858; same
-counts). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+counts), frozen passed (run 38932463661). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -915,8 +928,7 @@ this container's GNU build itself disagrees with the expected text (under
   subr dispatch 19, and the rest is spread over the entry tests and
   moves. Sort's buffer side
   (rope chunk lookups, `compare-buffer-substrings`, insertion and its
-  change hooks, whose variables are read through the general lookup at
-  about 250 instructions each) is about 40 million instructions a unit
+  change hooks) is about 25 million instructions a unit
   against GNU's 10 million.
 - **Ffuncall into a subr** (mapcar 1.45): about 200 per call against
   GNU's 147 across Ffuncall, funcall_general and funcall_subr;
@@ -967,7 +979,7 @@ and failures are still recorded.
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
    above; worst now bytecode-to-native 2.10, undo 1.93 to 1.97, sort
-   1.92, bytecode calls 1.85). The remaining costs are listed under "Where the
+   1.86, bytecode calls 1.85). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code
    frames kept in the byte-code stack, as GNU's are, instead of a

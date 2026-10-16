@@ -100,6 +100,29 @@ impl Interpreter {
             .flatten()
     }
 
+    /// data.c:find_symbol_value as C code reads a variable (a DEFVAR's
+    /// variable, a hook run by name): the alias chain followed, then the
+    /// buffer-local, dynamic or global value. C never sees a lexical
+    /// binding, so the evaluator's environment is not searched.
+    pub(crate) fn symbol_value_symbol(&self, symbol: &SymbolName) -> Option<Value> {
+        let resolved_owned;
+        let resolved = if self.globals.alias(symbol).is_none() {
+            symbol
+        } else {
+            resolved_owned = self.resolve_variable_symbol(symbol).unwrap_or(*symbol);
+            &resolved_owned
+        };
+        self.find_symbol_value_resolved(resolved.as_str(), Some(resolved))
+    }
+
+    /// `symbol_value_symbol' for an interned key.
+    pub(crate) fn symbol_value_key(
+        &self,
+        key: crate::lisp::types::symbols::SymbolKey,
+    ) -> Option<Value> {
+        key.with(|symbol| self.symbol_value_symbol(symbol))
+    }
+
     /// eval_sub's `Fassq (form, Vinternal_interpreter_environment)': the
     /// current environment's binding of NAME, by symbol identity when the
     /// symbol in hand is the name's (an alias is looked up under its own
