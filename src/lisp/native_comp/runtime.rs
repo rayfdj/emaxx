@@ -182,12 +182,35 @@ struct NativeInvocation {
 }
 
 impl NativeInvocation {
+    #[cfg(test)]
     fn new(target: *const c_void) -> Self {
         Self {
             target,
             arguments: [0; 8],
             result: 0,
             jump_buffer: MaybeUninit::uninit(),
+        }
+    }
+
+    /// `new' written into SLOT where it stays, with ARGUMENTS' words in
+    /// its register slots (zero past them): eight conditional stores, where
+    /// the copy loop became a `memcpy' call after the slots were zeroed.
+    #[inline(always)]
+    fn init<'a>(
+        slot: &'a mut MaybeUninit<Self>,
+        target: *const c_void,
+        arguments: &[Value],
+    ) -> &'a mut Self {
+        let invocation = slot.as_mut_ptr();
+        // SAFETY: every field but the jump buffer, itself MaybeUninit, is
+        // written before the record is used.
+        unsafe {
+            std::ptr::addr_of_mut!((*invocation).target).write(target);
+            std::ptr::addr_of_mut!((*invocation).arguments).write(std::array::from_fn(|index| {
+                arguments.get(index).map_or(0, |argument| argument.word())
+            }));
+            std::ptr::addr_of_mut!((*invocation).result).write(0);
+            slot.assume_init_mut()
         }
     }
 
@@ -1198,7 +1221,10 @@ impl NativeRuntime {
         // registrations before snapshotting the nested call's handler depth.
         self.sync_handlers(interpreter)?;
 
-        let mut invocation = NativeInvocation::new(target);
+        let mut slot = MaybeUninit::uninit();
+        let fixed = matches!(convention, NativeCallingConvention::Fixed);
+        let invocation =
+            NativeInvocation::init(&mut slot, target, if fixed { arguments } else { &[] });
         self.begin_call(invocation.jump_buffer(), interpreter);
 
         // eval.c:funcall_subr passes the authoritative Lisp_Object words
@@ -1208,11 +1234,8 @@ impl NativeRuntime {
         // no native pointer aliases the caller's shared Rust Value slice.
         let mut encoded = smallvec::SmallVec::<[NativeWord; 8]>::new();
         match convention {
-            NativeCallingConvention::Fixed => {
-                for (slot, argument) in invocation.arguments.iter_mut().zip(arguments) {
-                    *slot = argument.word();
-                }
-            }
+            // `init' filled the register slots.
+            NativeCallingConvention::Fixed => {}
             NativeCallingConvention::Many => {
                 for argument in arguments {
                     let word = match self.heap.encode(argument) {
@@ -1231,7 +1254,7 @@ impl NativeRuntime {
         }
 
         let escaped = with_active_call(interpreter, environment, self, || unsafe {
-            invoke_platform(&mut invocation)
+            invoke_platform(invocation)
         });
         let escaped = match escaped {
             Ok(escaped) => escaped,

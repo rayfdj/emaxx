@@ -1099,6 +1099,7 @@ pub(crate) fn call_function(
     })
 }
 
+#[inline]
 fn invoke_function(
     function: NativeFunction,
     native: NativeFunctionRef,
@@ -1116,7 +1117,26 @@ fn invoke_function(
             arguments,
         );
     }
+    invoke_dynamic_function(
+        function,
+        native,
+        runtime,
+        interpreter,
+        environment,
+        arguments,
+    )
+}
 
+/// `invoke_function' for a function compiled with dynamic binding.
+#[inline(never)]
+fn invoke_dynamic_function(
+    function: NativeFunction,
+    native: NativeFunctionRef,
+    runtime: &mut NativeRuntime,
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    arguments: &[Value],
+) -> Result<Value, LispError> {
     // eval.c:funcall_lambda owns the calling convention for Lisp/d native
     // functions.  It binds the recorded lambda list dynamically and enters
     // the generated function through its zero-argument machine entry.

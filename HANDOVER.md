@@ -670,6 +670,13 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   code's `_setjmp`) to `longjmp`. macOS keeps `_setjmp`. The saved
   stack and frame pointers are not mangled as glibc's are.
   Bytecode-to-native 2.25 → 2.17, interpreted-to-native 1.49 → 1.47.
+- The native call's invocation record is written in place (it was built
+  by value and copied whole, its 200-byte jump buffer included) and its
+  eight register slots are filled by a fixed-count copy (the
+  per-argument loop after zeroing them had become a `memcpy` call);
+  `invoke_function`'s dynamic-binding path is out of line, so the
+  ordinary path inlines into its caller. Bytecode-to-native 2.17 → 2.10,
+  interpreted-to-native 1.47 → 1.46.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -710,35 +717,35 @@ thread tests (the other is the image round trip); for the trampoline's
 escape record, 672 of 673 native, thread, handler, condition and signal
 tests (the other is the image round trip), and errors, `catch`/`throw`
 and handlers through the native test functions answer as before on the
-release build. CI's full gate and frozen runs are the merge evidence.
+release build; for the in-place invocation record, 446 of 447 native
+and thread tests (the other is the image round trip). CI's full gate
+and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.93 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.97 |
 | upstream-sort | 3.26 | 1.92 |
 | interpreted-calls | 2.10 | 1.16 |
 | interpreted-lexical | 2.04 | 1.21 |
 | interpreted-dynamic | 2.14 | 1.31 |
 | mapcar | 2.95 | 1.35 |
-| bytecode-calls | 3.30 | 1.86 |
-| bytecode-to-native | — | 2.17 |
-| interpreted-to-native | — | 1.47 |
-| native-to-interpreted / -bytecode | — | 1.43 / 1.61 |
+| bytecode-calls | 3.30 | 1.85 |
+| bytecode-to-native | — | 2.10 |
+| interpreted-to-native | — | 1.46 |
+| native-to-interpreted / -bytecode | — | 1.42 / 1.60 |
 | cons-allocation / list-traversal | 2.24 / — | 1.36 / 1.31 |
 | native-execution | — | 1.17 |
-| bindat | — | 1.19 |
+| bindat | — | 1.18 |
 | explicit-gc | — | 0.89 |
 
-The table is one full run of all sixteen on `62986d1`'s build, with
-undo measured again after the allocation fixes and the native crossings
-after the execution guard's counter and the trampoline's escape record.
+The table is one full run of all sixteen on this round's last commit.
 Interpreted calls and lexical read 1.24 to 1.27 across this round's
 builds before the unchecked shell with no change on their path
 (`eval_sub` layout); undo read 2.03 to 2.06 on the same code (the
 allocator's state, below; it read 1.97 and 1.99 on two builds before
-the allocation fixes and 1.93 after them). Earlier, undo
+the allocation fixes and 1.93 to 1.97 after them). Earlier, undo
 moved between 2.37 and 2.42 from one build to the next with no code
 change on its path: the
 difference sits in glibc's `_int_malloc`, `malloc_consolidate` and
@@ -871,7 +878,7 @@ this container's GNU build itself disagrees with the expected text (under
   behavior instead of a panic, so it stays.
 
 **Where the remaining gap is** (instruction counts per unit on `41be443`):
-- **Native calls** (bytecode-to-native 2.17): a Bcall into native code
+- **Native calls** (bytecode-to-native 2.10): a Bcall into native code
   costs about 400 instructions in the native layer (`invoke` 142, the
   active-runtime lookup and arity check about 60, `finish_call` 48,
   the trampoline and its escape record about 40) where
@@ -959,8 +966,8 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 2.17, undo 1.93, sort 1.92,
-   bytecode calls 1.86). The remaining costs are listed under "Where the
+   above; worst now bytecode-to-native 2.10, undo 1.93 to 1.97, sort
+   1.92, bytecode calls 1.85). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code
    frames kept in the byte-code stack, as GNU's are, instead of a
