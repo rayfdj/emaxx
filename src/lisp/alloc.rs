@@ -1185,10 +1185,7 @@ impl ConsMark<'_> {
     pub(crate) fn mark(&self, epoch: u32) -> bool {
         debug_assert!(self.allocated(), "marking a free cons");
         if self.block.epoch.get() != epoch {
-            for word in &self.block.marked {
-                word.set(0);
-            }
-            self.block.epoch.set(epoch);
+            self.clear_marks(epoch);
         }
         let (word, mask) = self.bit();
         let old = self.block.marked[word].get();
@@ -1196,11 +1193,35 @@ impl ConsMark<'_> {
         old & mask == 0
     }
 
+    #[inline(always)]
     fn allocate(&self, epoch: u32, serial: u64) {
         let (word, mask) = self.bit();
-        self.block.serials[self.index].set(serial);
-        self.block.allocated[word].set(self.block.allocated[word].get() | mask);
-        self.mark(epoch);
+        debug_assert!(self.index < CELLS_PER_BLOCK);
+        // SAFETY: `cons_mark' made this mark for a payload slot: its index
+        // is below CELLS_PER_BLOCK, and its word below CONS_BITMAP_WORDS.
+        let (serial_slot, allocated, marked) = unsafe {
+            (
+                self.block.serials.get_unchecked(self.index),
+                self.block.allocated.get_unchecked(word),
+                self.block.marked.get_unchecked(word),
+            )
+        };
+        serial_slot.set(serial);
+        allocated.set(allocated.get() | mask);
+        if self.block.epoch.get() != epoch {
+            self.clear_marks(epoch);
+        }
+        marked.set(marked.get() | mask);
+    }
+
+    /// A block's first mark of a collection: the marks of the last one
+    /// are stale.
+    #[cold]
+    fn clear_marks(&self, epoch: u32) {
+        for word in &self.block.marked {
+            word.set(0);
+        }
+        self.block.epoch.set(epoch);
     }
 
     fn release(&self) {
@@ -1365,23 +1386,45 @@ pub(crate) fn allocate_cons(cell: ConsCell) -> ConsRef {
     // newest block.
     let head = FREE_LIST.load(Ordering::Relaxed);
     let slot = if head.is_null() {
-        bump_cell()
+        let next = BUMP_NEXT.load(Ordering::Relaxed);
+        if next >= BUMP_END.load(Ordering::Relaxed) {
+            return allocate_cons_in_new_block(cell);
+        }
+        BUMP_NEXT.store(next + CELL_SIZE, Ordering::Relaxed);
+        next as *mut ConsCell
     } else {
         // SAFETY: a free cell's first word is the free-list link.
         let next = unsafe { (*head.cast::<FreeCell>()).next };
         FREE_LIST.store(next, Ordering::Relaxed);
-        FREE_CONSES.store(
-            FREE_CONSES.load(Ordering::Relaxed).saturating_sub(1),
-            Ordering::Relaxed,
-        );
         head
     };
+    // SAFETY: SLOT is a free cell of a block.
+    unsafe { fill_cons(slot, cell) }
+}
+
+/// Fcons's `cons_block_index == CONS_BLOCK_SIZE' arm.  Out of line, and
+/// reached by a tail call, so the allocation path needs no frame.
+#[cold]
+#[inline(never)]
+fn allocate_cons_in_new_block(cell: ConsCell) -> ConsRef {
+    let block = new_block(BlockKind::Cons);
+    BUMP_NEXT.store(block + CELL_SIZE, Ordering::Relaxed);
+    BUMP_END.store(block + CELLS_PER_BLOCK * CELL_SIZE, Ordering::Relaxed);
+    // SAFETY: the new block's first cell is free.
+    unsafe { fill_cons(block as *mut ConsCell, cell) }
+}
+
+/// # Safety
+/// SLOT is an uninitialized (free) cell of a block, just taken from the
+/// free list or the bump region.
+#[inline(always)]
+unsafe fn fill_cons(slot: *mut ConsCell, cell: ConsCell) -> ConsRef {
     let serial = SERIAL.load(Ordering::Relaxed) + 1;
     SERIAL.store(serial, Ordering::Relaxed);
     LIVE_CONSES.store(LIVE_CONSES.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
     counters::tally(&counters::CONS_CELLS_CONSED, 1);
-    // SAFETY: SLOT is an uninitialized (free) cell of a block; every
-    // field is written before a handle is made.
+    // SAFETY: the caller's contract; every field is written before a
+    // handle is made.
     unsafe {
         std::ptr::write(slot, cell);
         // A cell born during a collection (the weak-table sweep conses
@@ -1391,19 +1434,6 @@ pub(crate) fn allocate_cons(cell: ConsCell) -> ConsRef {
         cons_mark(slot).allocate(super::types::current_mark_epoch(), serial);
         ConsRef(NonNull::new_unchecked(slot))
     }
-}
-
-fn bump_cell() -> *mut ConsCell {
-    let next = BUMP_NEXT.load(Ordering::Relaxed);
-    let end = BUMP_END.load(Ordering::Relaxed);
-    if next < end {
-        BUMP_NEXT.store(next + CELL_SIZE, Ordering::Relaxed);
-        return next as *mut ConsCell;
-    }
-    let block = new_block(BlockKind::Cons);
-    BUMP_NEXT.store(block + CELL_SIZE, Ordering::Relaxed);
-    BUMP_END.store(block + CELLS_PER_BLOCK * CELL_SIZE, Ordering::Relaxed);
-    block as *mut ConsCell
 }
 
 /// alloc.c's `lisp_align_free' of a block every cell of which is free
@@ -1802,7 +1832,8 @@ pub(crate) fn live_conses() -> usize {
     LIVE_CONSES.load(Ordering::Relaxed)
 }
 
-/// gcstat's `total_free_conses'.
+/// gcstat's `total_free_conses': the last sweep's count (Fcons does not
+/// decrement it).
 #[allow(dead_code)]
 pub(crate) fn free_conses() -> usize {
     FREE_CONSES.load(Ordering::Relaxed)

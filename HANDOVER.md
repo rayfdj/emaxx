@@ -434,6 +434,17 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   1.20, interpreted calls 1.38 → 1.36. Measured and dropped: leaving a
   generic byte op's operands on the byte-code stack for its subr instead
   of rooting a copy (undo moved 0.2%).
+- `Fcons`' storage takes a new block in an out-of-line function reached by
+  a tail call, so the allocation path keeps no frame (it saved four
+  registers and a 184-byte frame on every cons for the block refill's
+  sake), sets the cell's serial and bits without a bounds check, and no
+  longer decrements the free count (GNU's `total_free_conses` is the last
+  sweep's count; Fcons leaves it alone). `Value::cons` is 37 instructions
+  where it was 51 (GNU's Fcons 27). mapcar 1.54 → 1.45, list traversal
+  1.47 → 1.45, cons allocation 1.51 → 1.50, sort 2.14 → 2.13. Not done:
+  moving the per-cell serial to the sweep (four instructions a cons)
+  needs a block generation in the serial so that a released and
+  reallocated block cannot revive a weak reference; about 1% of mapcar.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -451,21 +462,22 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | Case | Before | Now |
 | --- | --- | --- |
 | upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.37–2.42 |
-| upstream-sort | 3.26 | 2.14 |
+| upstream-sort | 3.26 | 2.13 |
 | interpreted-calls | 2.10 | 1.36 |
 | interpreted-lexical | 2.04 | 1.35 |
 | interpreted-dynamic | 2.14 | 1.48 |
-| mapcar | 2.95 | 1.54 |
+| mapcar | 2.95 | 1.45 |
 | bytecode-calls | 3.30 | 2.19 |
 | bytecode-to-native | — | 2.66 |
 | interpreted-to-native | — | 1.77 |
 | native-to-interpreted / -bytecode | — | 1.62 / 1.80 |
-| cons-allocation / list-traversal | 2.24 / — | 1.51 / 1.47 |
+| cons-allocation / list-traversal | 2.24 / — | 1.50 / 1.45 |
 | native-execution | — | 1.20 |
 | bindat | — | 1.33 |
 | explicit-gc | — | 1.01 |
 
-The table is the full run on `41be443`. Undo moves between 2.37 and
+The table is the full run on `41be443`; the rows a later commit moved
+were measured again on that commit. Undo moves between 2.37 and
 2.42 from one build to the next with no code change on its path: the
 difference sits in glibc's `_int_malloc`, `malloc_consolidate` and
 `unlink_chunk` (the allocator's free-list state), not in Emaxx code.
@@ -561,11 +573,10 @@ this container's GNU build itself disagrees with the expected text (under
   thread-local pointer (9), the frame record (17) and kind dispatches. An
   interpreted call adds about 386 in `funcall_interpreted_lambda` and 90
   for the frame detail that records its locals.
-- **Ffuncall into a subr** (mapcar 1.54 after the in-place frame): about
-  200 per call against GNU's 147 across Ffuncall, funcall_general and
-  funcall_subr; `Value::cons` is
-  51 against `Fcons`' 27 (five counters, a per-cell serial and the mark
-  bit per cons).
+- **Ffuncall into a subr** (mapcar 1.45): about 200 per call against
+  GNU's 147 across Ffuncall, funcall_general and funcall_subr;
+  `Value::cons` is 37 against `Fcons`' 27 (the per-cell serial, the
+  allocated and mark bits, and a live count GNU does not keep).
 - Undo's remainder is broad: the byte-code slow path, `prim`'s name
   lookup and argument rooting (about 190 a call, 675 calls a unit), the
   string adapters (`string_like` decoding), error matching through
