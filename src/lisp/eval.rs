@@ -5002,16 +5002,29 @@ impl Drop for InterpreterState {
 impl std::ops::Deref for Interpreter {
     type Target = InterpreterState;
 
+    /// Every field access of the shell comes through here (and DerefMut);
+    /// the checked unwrap's test at each was about 4% of an interpreted
+    /// call. Builds with debug assertions (the gate profile) keep it.
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
-        self.state.as_deref().expect("interpreter shell is parked")
+        debug_assert!(self.state.is_some(), "interpreter shell is parked");
+        // SAFETY: a shell is parked only while its payload is away: the
+        // thread and continuation drivers and `suspend_payload' take the
+        // state, hand it to a continuation (or the driving stack) and put
+        // the returned state back before the shell is used again. Nothing
+        // reaches a parked shell in between: the payload runs under its
+        // own shell, and the collector and the resume scope hold the state,
+        // not the shell.
+        unsafe { self.state.as_deref().unwrap_unchecked() }
     }
 }
 
 impl std::ops::DerefMut for Interpreter {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.state
-            .as_deref_mut()
-            .expect("interpreter shell is parked")
+        debug_assert!(self.state.is_some(), "interpreter shell is parked");
+        // SAFETY: as Deref's.
+        unsafe { self.state.as_deref_mut().unwrap_unchecked() }
     }
 }
 

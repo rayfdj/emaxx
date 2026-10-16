@@ -3467,6 +3467,37 @@ mod tests {
     }
 
     #[test]
+    fn byte_code_calls_follow_the_callees_code_string_mutations() {
+        // G calls F from byte code (constant F; call 0; return), entering
+        // F's frame in the verified loop; F's code (constant 0 or 1;
+        // return) changes between the calls, and a direct funcall verifies
+        // the restored bytes before G calls it again: no frame may run on
+        // the verification of bytes the string no longer holds. GNU answers
+        // (1 1 2 1 1 1).
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let form = super::super::super::reader::Reader::new(
+            r#"(let* ((code (unibyte-string 192 135))
+                      (f (make-byte-code 0 code [1 2] 1))
+                      (g (make-byte-code 0 (unibyte-string 192 32 135) (vector f) 1)))
+                 (list (funcall g) (funcall g)
+                       (progn (aset code 0 193) (funcall g))
+                       (progn (aset code 0 192) (funcall f))
+                       (funcall g) (funcall g)))"#,
+        )
+        .read()
+        .expect("read form")
+        .expect("a form");
+        let values = interp
+            .eval(&form, &mut env)
+            .expect("calls")
+            .to_vec()
+            .expect("a list");
+        let values: Vec<_> = values.into_iter().map(Value::fixnum).collect();
+        assert_eq!(values, [1, 1, 2, 1, 1, 1].map(Some));
+    }
+
+    #[test]
     fn executes_arithmetic_fixture() {
         // (defun emaxx-fx-add (a b) (+ a b 1))
         let value = run("emaxx-fx-add", &[Value::Integer(2), Value::Integer(3)]).unwrap();

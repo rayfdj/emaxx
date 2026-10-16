@@ -602,6 +602,27 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   shared (`Rc<[String]>`, `Rc<[Value]>`) now, so the copy counts a
   reference each. Undo about 34,000 instructions a unit lower (2.06 →
   2.03 on one pair of builds).
+- `Interpreter`'s `Deref` to its state, which every field access of the
+  shell goes through, tested whether the shell was parked (its state
+  handed to a continuation) and panicked if so; the compiler cannot carry
+  the answer across a call, so the test ran at nearly every access, about
+  4% of an interpreted call. The state is read unchecked now, the test
+  kept as a debug assertion (the gate profile runs with it): a shell is
+  parked only while the thread and continuation drivers and
+  `suspend_payload` have its payload away, and nothing reaches the shell
+  before the payload is back. Interpreted calls 1.26 → 1.20, lexical
+  1.27 → 1.21, dynamic 1.38 → 1.32, mapcar 1.43 → 1.37, sort 2.01 →
+  1.95, undo 2.03 → 1.97, cons allocation 1.42 → 1.36, list traversal
+  1.38 → 1.32, interpreted-to-native 1.56 → 1.51, native-to-interpreted
+  1.51 → 1.44, native-to-bytecode 1.69 → 1.63, bindat 1.26 → 1.20,
+  native execution 1.21 → 1.18. The native runtime's shell has the same
+  check; its default shells are empty by design, so it stays checked.
+  Measured and not kept: a per-closure cache of the decoded byte-code
+  object and its verification for the in-loop frame entry (keyed by the
+  closure's address, the collection epoch and its first four slots)
+  saved 3 of the entry's 303 instructions, the verifier's direct-mapped
+  cache being about as cheap; a test now covers a byte-code caller whose
+  callee's code string changes between calls.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -628,31 +649,35 @@ other is the image round trip below. For the compiled callees under
 eval's frame and the probes: 2,148 of the 2,150 evaluator tests pass, the
 two others being the as-root and image round-trip failures; for the
 shared handler lists, 267 of 267 handler, condition and signal tests
-pass. CI's full gate and frozen runs are the merge evidence.
+pass; for the unchecked shell, 154 of 154 thread, continuation,
+funcall, binding, unwind and backtrace tests and 179 of 180 byte-code,
+closure and verifier tests with the new one (the other is the as-root
+failure). CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.06 |
-| upstream-sort | 3.26 | 2.01 |
-| interpreted-calls | 2.10 | 1.27 |
-| interpreted-lexical | 2.04 | 1.27 |
-| interpreted-dynamic | 2.14 | 1.38 |
-| mapcar | 2.95 | 1.43 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.97 |
+| upstream-sort | 3.26 | 1.95 |
+| interpreted-calls | 2.10 | 1.20 |
+| interpreted-lexical | 2.04 | 1.21 |
+| interpreted-dynamic | 2.14 | 1.32 |
+| mapcar | 2.95 | 1.37 |
 | bytecode-calls | 3.30 | 1.86 |
-| bytecode-to-native | — | 2.37 |
-| interpreted-to-native | — | 1.56 |
-| native-to-interpreted / -bytecode | — | 1.51 / 1.69 |
-| cons-allocation / list-traversal | 2.24 / — | 1.42 / 1.38 |
-| native-execution | — | 1.21 |
-| bindat | — | 1.26 |
+| bytecode-to-native | — | 2.35 |
+| interpreted-to-native | — | 1.51 |
+| native-to-interpreted / -bytecode | — | 1.44 / 1.63 |
+| cons-allocation / list-traversal | 2.24 / — | 1.36 / 1.32 |
+| native-execution | — | 1.18 |
+| bindat | — | 1.20 |
 | explicit-gc | — | 0.89 |
 
 The table is one full run of all sixteen on this round's last commit.
 Interpreted calls and lexical read 1.24 to 1.27 across this round's
-builds with no change on their path (`eval_sub` layout); undo read 2.03
-to 2.06 on the same code (the allocator's state, below). Earlier, undo
+builds before the unchecked shell with no change on their path
+(`eval_sub` layout); undo read 2.03 to 2.06 on the same code (the
+allocator's state, below). Earlier, undo
 moved between 2.37 and 2.42 from one build to the next with no code
 change on its path: the
 difference sits in glibc's `_int_malloc`, `malloc_consolidate` and
@@ -718,7 +743,13 @@ plus bins and integration), frozen 7,928 of 7,928 across 519 files, no
 unsuccessful execution (run 38881676646). **CI on `b22d7ba`**
 (identity-hashed local bindings): full Rust gate passed (run 38888654939;
 3,123 tests, 2 ignored, plus bins and integration), frozen 7,928 of 7,928
-across 519 files, no unsuccessful execution (run 38888657799). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+across 519 files, no unsuccessful execution (run 38888657799). **CI on
+`e8740a5`** (compiled callees under eval's frame, the tag-tested
+funcall, the error-free probes) and **on `6118781`** (shared handler
+lists): full Rust gate passed on each (runs 38904376618 and
+38906537195; 3,124 tests, 2 ignored, plus bins and integration), frozen
+7,928 of 7,928 across 519 files, no unsuccessful execution (runs
+38904379904 and 38906541122). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -772,11 +803,11 @@ this container's GNU build itself disagrees with the expected text (under
   48-byte `ByteCodeObject` in and out of it) and the return 122. GNU's
   setup_frame and Breturn together are about 100: its frame lives in the
   byte-code stack and its running state in registers.
-- **Source interpreter** (lexical 1.27, calls 1.24, sort 2.01): an
-  iteration of interpreted calls is 4,022 instructions against GNU's
-  3,315. What is left is spread: parked-shell tests (about 300 an
-  iteration; each step that takes the shell after a call tests it again),
-  the frame record and its argument update (about 23 and 15 a call),
+- **Source interpreter** (lexical 1.21, calls 1.20, sort 1.95): an
+  iteration of interpreted calls is 3,912 instructions against GNU's
+  3,315 (4,022 before the shell's parked test became an assertion). What
+  is left is spread: the frame record and its argument update (about 23
+  and 15 a call),
   `resolve_symbol_call` and the argument count (about 27 and 25 a form,
   close to their minimum), the subr dispatch through `call_with_facts`,
   and an interpreted call's `funcall_interpreted_lambda` (340) with the
@@ -786,8 +817,8 @@ this container's GNU build itself disagrees with the expected text (under
   (symbols included); per form the backtrace record costs about 65 (the
   push 20, the argument update 27, the pop 12, the debugger-context test
   6), the function cell's resolution 32, the argument count 16 and the
-  subr dispatch 19, and the rest is spread over the entry tests, the
-  parked-shell tests (about 9 a form) and moves. Sort's buffer side
+  subr dispatch 19, and the rest is spread over the entry tests and
+  moves. Sort's buffer side
   (rope chunk lookups, `compare-buffer-substrings`, insertion and its
   change hooks, whose variables are read through the general lookup at
   about 250 instructions each) is about 40 million instructions a unit
@@ -839,14 +870,13 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 2.37, undo 2.06, sort 2.01,
-   bytecode calls 1.87). The remaining costs are listed under "Where the
+   above; worst now bytecode-to-native 2.35, undo 1.97, sort 1.95,
+   bytecode calls 1.86). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code
    frames kept in the byte-code stack, as GNU's are, instead of a
-   `BcFrame` vector holding copies of the decoded object, or a decoded
-   closure cached per closure with a collection epoch so a freed and
-   reused address cannot match); the interpreter and funcall paths are spread over
+   `BcFrame` vector holding copies of the decoded object; a cache of the
+   decoded closure was measured and saves nothing); the interpreter and funcall paths are spread over
    many small steps, each worth about 1%. The source interpreter is now
    the largest shared cost: `eval_sub` is 64 to 71% of interpreted
    dynamic, cons allocation and the native-to-* loops and 37% of sort, at
