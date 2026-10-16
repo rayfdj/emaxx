@@ -623,6 +623,16 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   saved 3 of the entry's 303 instructions, the verifier's direct-mapped
   cache being about as cheap; a test now covers a byte-code caller whose
   callee's code string changes between calls.
+- An interpreted call's parameters (funcall_lambda's bindings, which
+  `backtrace--locals` and the debugger's frame context report) were kept
+  in a detail box on its frame, taken from a pool and handed back when
+  the frame was popped, so every such frame took the slow pop: about 130
+  instructions a call. They are kept on a stack beside the frames now
+  (`frame_locals`, each entry naming its frame), and the call removes its
+  entries when it returns, its error settled; its frame owns nothing and
+  leaves as an ordinary call's does. Interpreted calls 1.20 → 1.17, sort
+  1.95 → 1.93. Measured on the way: trimming the entries in every frame
+  pop instead gave each pop a test and gained nothing.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -652,7 +662,10 @@ shared handler lists, 267 of 267 handler, condition and signal tests
 pass; for the unchecked shell, 154 of 154 thread, continuation,
 funcall, binding, unwind and backtrace tests and 179 of 180 byte-code,
 closure and verifier tests with the new one (the other is the as-root
-failure). CI's full gate and frozen runs are the merge evidence.
+failure); for the parameters beside the frames, 335 of 335 backtrace,
+debugger, Edebug, ert, lambda, funcall, thread, root, copy, collection,
+handler and signal tests. CI's full gate and frozen runs are the merge
+evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
@@ -763,6 +776,13 @@ this container's GNU build itself disagrees with the expected text (under
 `unicode`).
 
 **Findings recorded, not fixed:**
+- `backtrace--locals` on the frame of a `let` inside an interpreted
+  lexical function: GNU reports the lexical environment there (the
+  function's parameters and the `let`'s variables, `((a . 1) (b . 2) (z .
+  5))`), Emaxx reports nil; and frame 0 without BASE signals
+  `(wrong-type-argument wholenump -1)` in GNU where Emaxx answers. Emaxx
+  reports a call's parameters on the call's own frame, as before the
+  parameters moved beside the frames.
 - GNU's `Fapply` with a one-element spread list stores that element into
   its own argument array (`args[nargs - 1] = XCAR (spread_arg)`), which is
   the `apply` frame's argument vector: a backtrace taken inside shows

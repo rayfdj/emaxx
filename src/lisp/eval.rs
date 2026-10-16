@@ -1653,7 +1653,6 @@ struct FrameDetail {
     /// and every argument on each interpreted call.  Debugger-facing APIs
     /// materialize the two projections only when somebody inspects a frame.
     source_form: Option<Value>,
-    locals: Vec<(SymbolName, Value)>,
     /// Snapshot of the evaluator environment at this activation while a
     /// debugger is active.  Frames retain their identity stamps so
     /// `backtrace-eval' assignments can update the suspended lexical cells.
@@ -1677,10 +1676,6 @@ impl BacktraceFrame {
         self.detail.as_ref()?.source_form
     }
 
-    fn locals(&self) -> &[(SymbolName, Value)] {
-        self.detail.as_ref().map_or(&[], |detail| &detail.locals)
-    }
-
     fn lexical_context(&self) -> Option<&Env> {
         self.detail.as_ref()?.lexical_context.as_ref()
     }
@@ -1696,11 +1691,8 @@ impl BacktraceFrame {
     }
 }
 
-/// Most frames that carry a detail are interpreted calls recording their
-/// parameters, and a box per call made every call allocate and free twice
-/// (the box and its locals). Released details keep their capacity here.
-/// Cleared entries leave stale words only in heap capacity, which the
-/// conservative stack scan never reads.
+/// Released details are kept here for the next frame that needs one (a
+/// debugger's context capture, a frame built with its form).
 const FRAME_DETAIL_POOL_LIMIT: usize = 64;
 
 thread_local! {
@@ -1715,7 +1707,6 @@ impl Drop for BacktraceFrame {
             return;
         };
         detail.source_form = None;
-        detail.locals.clear();
         detail.lexical_context = None;
         let _ = FRAME_DETAIL_POOL.try_with(|pool| {
             if let Ok(mut pool) = pool.try_borrow_mut()
@@ -1725,6 +1716,20 @@ impl Drop for BacktraceFrame {
             }
         });
     }
+}
+
+/// A parameter an interpreted call bound (funcall_lambda's bindings, which
+/// `backtrace--locals' and the debugger's frame context report), kept on
+/// a stack beside the frames instead of in each frame: FRAME is the index
+/// of the call's frame in `backtrace_frames', and a frame's parameters are
+/// the contiguous run of entries carrying its index. The call removes its
+/// entries when it returns (normally or with its error settled), so its
+/// frame owns nothing and leaves as an ordinary call's does.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FrameLocal {
+    frame: usize,
+    symbol: SymbolName,
+    value: Value,
 }
 
 #[derive(Clone, Debug)]
@@ -4314,15 +4319,15 @@ impl Interpreter {
             if let Some(form) = frame.source_form() {
                 mark(&form);
             }
-            for (symbol, value) in frame.locals() {
-                mark(&Value::Symbol(*symbol));
-                mark(value);
-            }
             if let Some(context) = frame.lexical_context() {
                 for lexical_frame in context {
                     mark(lexical_frame.environment());
                 }
             }
+        }
+        for local in &self.frame_locals {
+            mark(&Value::Symbol(local.symbol));
+            mark(&local.value);
         }
         if let Some(backtrace) = &self.batch_error_backtrace {
             for (_, function, arguments, _) in &backtrace.frames {
@@ -4762,15 +4767,15 @@ impl Interpreter {
                     }
                 }
                 frame.args = args;
-                if let Some(detail) = &mut frame.detail {
-                    if let Some(form) = &detail.source_form {
-                        detail.source_form = Some(c.copy(form));
-                    }
-                    for (symbol, value) in &mut detail.locals {
-                        *symbol = c.copy_symbol(*symbol);
-                        *value = c.copy(value);
-                    }
+                if let Some(detail) = &mut frame.detail
+                    && let Some(form) = &detail.source_form
+                {
+                    detail.source_form = Some(c.copy(form));
                 }
+            }
+            for local in &mut clone.frame_locals {
+                local.symbol = c.copy_symbol(local.symbol);
+                local.value = c.copy(&local.value);
             }
             if let Some(backtrace) = &mut clone.batch_error_backtrace {
                 for (_, function, args, _) in &mut backtrace.frames {
@@ -5424,6 +5429,8 @@ pub struct InterpreterState {
     active_thread_id: u64,
     last_thread_error: Option<Value>,
     backtrace_frames: Vec<BacktraceFrame>,
+    /// The interpreted calls' parameters, by frame (see `FrameLocal').
+    frame_locals: Vec<FrameLocal>,
     batch_error_backtrace: Option<BatchErrorBacktrace>,
     active_handlers: Vec<ActiveHandler>,
     /// Dynamically active `catch' tags.  GNU's `throw' signals `no-catch'
@@ -6121,6 +6128,7 @@ impl Interpreter {
             active_thread_id: main_thread_id,
             last_thread_error: None,
             backtrace_frames: Vec::new(),
+            frame_locals: Vec::new(),
             batch_error_backtrace: None,
             active_handlers: Vec::new(),
             active_catch_tags: Vec::new(),

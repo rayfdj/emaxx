@@ -2830,11 +2830,25 @@ impl Interpreter {
                     .position(|frame| frame.function_snapshot() == *base)
             })
             .unwrap_or(0);
-        frames
-            .into_iter()
-            .skip(start)
-            .nth(index)
-            .map(|frame| frame.locals().to_vec())
+        let frame = frames.len().checked_sub(start + index + 1)?;
+        Some(
+            self.frame_locals_of(frame)
+                .iter()
+                .map(|local| (local.symbol, local.value))
+                .collect(),
+        )
+    }
+
+    /// The parameters FRAME's interpreted call bound (see `FrameLocal'):
+    /// the stack is ordered by frame, each frame's run in binding order.
+    fn frame_locals_of(&self, frame: usize) -> &[FrameLocal] {
+        let begin = self
+            .frame_locals
+            .partition_point(|local| local.frame < frame);
+        let end = self
+            .frame_locals
+            .partition_point(|local| local.frame <= frame);
+        &self.frame_locals[begin..end]
     }
 
     // The lexical context visible at an activation frame.  While Edebug is
@@ -2857,10 +2871,11 @@ impl Interpreter {
             return context;
         }
         let mut merged: Vec<(SymbolName, Value)> = Vec::new();
-        for frame in frames.into_iter().skip(start + index) {
-            for (name, value) in frame.locals() {
-                if !merged.iter().any(|(existing, _)| existing == name) {
-                    merged.push((*name, *value));
+        let innermost = frames.len().checked_sub(start + index + 1);
+        for frame in (0..innermost.map_or(0, |frame| frame + 1)).rev() {
+            for local in self.frame_locals_of(frame) {
+                if !merged.iter().any(|(existing, _)| *existing == local.symbol) {
+                    merged.push((local.symbol, local.value));
                 }
             }
         }

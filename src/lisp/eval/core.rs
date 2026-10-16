@@ -1660,6 +1660,7 @@ impl Interpreter {
         }
         let depth = env.len();
         let count = self.specpdl_index();
+        let locals = self.frame_locals.len();
         let result = (|| {
             let mut index = 0;
             let mut optional = false;
@@ -1709,12 +1710,16 @@ impl Interpreter {
                     // Dynamic specbind can run variable watchers. Bind
                     // immediately, retaining GNU's order and the live
                     // parameter cell until its cdr is read below.
-                    self.backtrace_frames
-                        .last_mut()
-                        .expect("active call frame")
-                        .detail_mut()
-                        .locals
-                        .push((parameter, argument));
+                    let frame = self
+                        .backtrace_frames
+                        .len()
+                        .checked_sub(1)
+                        .expect("active call frame");
+                    self.frame_locals.push(FrameLocal {
+                        frame,
+                        symbol: parameter,
+                        value: argument,
+                    });
                     if lexical {
                         lexical_environment =
                             Self::cons_binding(parameter, argument, lexical_environment);
@@ -1750,6 +1755,9 @@ impl Interpreter {
         // GNU signals before unbinding: handlers can inspect partial
         // dynamic argument bindings and the signaling call's frame.
         let result = self.settle_frame_result(result, env);
+        // The parameters leave with the call; its frame, which the caller
+        // pops, reports none after this.
+        self.frame_locals.truncate(locals);
         env.truncate(depth);
         let unbind = self.unbind_to(count, env);
         if override_capture {

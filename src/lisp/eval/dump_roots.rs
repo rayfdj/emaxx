@@ -98,6 +98,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "the specpdl's backtrace entries, not dumped",
     ),
     (
+        "frame_locals",
+        "the interpreted calls' bindings recorded beside the specpdl's backtrace entries, not dumped",
+    ),
+    (
         "batch_error_backtrace",
         "a rendering of the specpdl kept for the batch error report, not dumped",
     ),
