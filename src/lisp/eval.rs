@@ -4337,7 +4337,7 @@ impl Interpreter {
                 ActiveHandler::Module => {}
                 ActiveHandler::Bind(_, function) => mark(function),
                 ActiveHandler::Case(heads) => {
-                    for head in heads {
+                    for head in heads.iter() {
                         mark(head);
                     }
                 }
@@ -4785,9 +4785,7 @@ impl Interpreter {
                     ActiveHandler::Module => {}
                     ActiveHandler::Bind(_, function) => *function = c.copy(&function.clone()),
                     ActiveHandler::Case(heads) => {
-                        for head in heads {
-                            *head = c.copy(head);
-                        }
+                        *heads = heads.iter().map(|head| c.copy(head)).collect();
                     }
                 }
             }
@@ -5448,9 +5446,11 @@ pub(crate) enum ActiveHandler {
     /// One CONDITIONS/HANDLER pair from `handler-bind'.  Keep the condition
     /// list grouped so a handler whose list contains both a child condition
     /// and one of its parents still runs exactly once for a signal.
-    Bind(Vec<String>, Value),
+    /// The lists are shared: `signal' walks a copy of the stack, which
+    /// handlers may change, and a copy costs a count each.
+    Bind(std::rc::Rc<[String]>, Value),
     /// The clause heads of an active `condition-case' (minus :success).
-    Case(Vec<Value>),
+    Case(std::rc::Rc<[Value]>),
 }
 
 fn make_visual_line_mode_map(interp: &mut Interpreter) -> Value {

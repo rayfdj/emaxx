@@ -595,6 +595,13 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   active handler list and builds the condition names as `Vec<String>` per
   signal, and conditions match by name where GNU compares symbols (an
   uninterned condition symbol with a registered name would match).
+- `signal`'s walk of the handler stack worked on a deep copy of it, made
+  on every signal while a `handler-bind` was active (ert's runner keeps
+  one): each `handler-bind` entry's condition names (`Vec<String>`) and
+  each `condition-case` entry's clause heads were copied. The lists are
+  shared (`Rc<[String]>`, `Rc<[Value]>`) now, so the copy counts a
+  reference each. Undo about 34,000 instructions a unit lower (2.06 →
+  2.03 on one pair of builds).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -617,39 +624,37 @@ forwarded-variable count: 625 of 626 native, byte-code, funcall,
 backtrace, arity, buffer-local, forwarded-variable, `memq`, undo,
 symbol-with-position, unwind, handler, catch, quit and nesting tests pass
 with the new one (predicates and `memq` in the loop against GNU); the
-other is the image round trip below. CI's full gate and frozen runs are
-the merge evidence.
+other is the image round trip below. For the compiled callees under
+eval's frame and the probes: 2,148 of the 2,150 evaluator tests pass, the
+two others being the as-root and image round-trip failures; for the
+shared handler lists, 267 of 267 handler, condition and signal tests
+pass. CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.11 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.06 |
 | upstream-sort | 3.26 | 2.01 |
-| interpreted-calls | 2.10 | 1.24 |
+| interpreted-calls | 2.10 | 1.27 |
 | interpreted-lexical | 2.04 | 1.27 |
-| interpreted-dynamic | 2.14 | 1.39 |
+| interpreted-dynamic | 2.14 | 1.38 |
 | mapcar | 2.95 | 1.43 |
-| bytecode-calls | 3.30 | 1.87 |
+| bytecode-calls | 3.30 | 1.86 |
 | bytecode-to-native | — | 2.37 |
-| interpreted-to-native | — | 1.57 |
-| native-to-interpreted / -bytecode | — | 1.50 / 1.69 |
-| cons-allocation / list-traversal | 2.24 / — | 1.41 / 1.37 |
+| interpreted-to-native | — | 1.56 |
+| native-to-interpreted / -bytecode | — | 1.51 / 1.69 |
+| cons-allocation / list-traversal | 2.24 / — | 1.42 / 1.38 |
 | native-execution | — | 1.21 |
-| bindat | — | 1.27 |
+| bindat | — | 1.26 |
 | explicit-gc | — | 0.89 |
 
-The table is the full run of all sixteen on `d20ca14`, with sort,
-explicit GC, interpreted calls and cons allocation measured again after
-the bitmap sweep, sort after the identity-hashed local bindings, and
-the interpreted-to-native, native-to-bytecode and native-to-interpreted
-cases after the compiled callees under eval's frame, and mapcar after
-the tag-tested funcall.
-Interpreted calls, lexical and dynamic, cons allocation and bindat read
-up to 1.5% above the previous run with no change on their paths
-(`eval_sub` layout and allocator noise; bindat measured 1.26 on the
-same code one build earlier). Undo moved between 2.37 and
-2.42 from one build to the next with no code change on its path: the
+The table is one full run of all sixteen on this round's last commit.
+Interpreted calls and lexical read 1.24 to 1.27 across this round's
+builds with no change on their path (`eval_sub` layout); undo read 2.03
+to 2.06 on the same code (the allocator's state, below). Earlier, undo
+moved between 2.37 and 2.42 from one build to the next with no code
+change on its path: the
 difference sits in glibc's `_int_malloc`, `malloc_consolidate` and
 `unlink_chunk` (the allocator's free-list state), not in Emaxx code.
 Undo's earlier 2.34 at ten units was an artifact: in that pair of runs the
@@ -710,7 +715,10 @@ plus bins and integration), frozen 7,928 of 7,928 across 519 files, no
 unsuccessful execution (run 38874712632). **CI on `40de0bc`** (bitmap
 sweep): full Rust gate passed (run 38881670816; 3,123 tests, 2 ignored,
 plus bins and integration), frozen 7,928 of 7,928 across 519 files, no
-unsuccessful execution (run 38881676646). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+unsuccessful execution (run 38881676646). **CI on `b22d7ba`**
+(identity-hashed local bindings): full Rust gate passed (run 38888654939;
+3,123 tests, 2 ignored, plus bins and integration), frozen 7,928 of 7,928
+across 519 files, no unsuccessful execution (run 38888657799). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -718,7 +726,10 @@ as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
 read-only file instead of being asked), and
 `print_prunes_charset_properties_like_print_prune_string_charset`, where
 this container's GNU build itself disagrees with the expected text (under
-`default` it prints the Latin-1 string without its `charset` property).
+`default` it prints the Latin-1 string without its `charset` property);
+`char_charset_family_follows_charset_c` fails the same way on its GNU side
+(this build answers `iso-8859-1` where the expected text, CI's, has
+`unicode`).
 
 **Findings recorded, not fixed:**
 - GNU's `Fapply` with a one-element spread list stores that element into
@@ -785,9 +796,10 @@ this container's GNU build itself disagrees with the expected text (under
   GNU's 147 across Ffuncall, funcall_general and funcall_subr;
   `Value::cons` is 37 against `Fcons`' 27 (the per-cell serial, the
   allocated and mark bits, and a live count GNU does not keep).
-- Undo's remainder (2.11; 2.63 million instructions a unit against
-  GNU's 1.25 million) is broad: allocation (about 330,000 a unit in
-  malloc and free, plus the rope's `from_str` 98,000), the source
+- Undo's remainder (2.03 to 2.06; about 2.55 million instructions a
+  unit against GNU's 1.25 million) is broad: allocation (about 300,000 a
+  unit in malloc and free, plus the rope's `from_str` 98,000; the error
+  path still builds condition names as `Vec<String>` per signal), the source
   interpreter (`eval_sub` 181,000 against 90,000), ops run in place
   (`op_in_place` and `exec_op` about 105,000 for 770 ops, `prim` about
   110 a call with its argument rooting), plain subr calls (`call_plain`
@@ -827,7 +839,7 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 2.37, undo 2.11, sort 2.01,
+   above; worst now bytecode-to-native 2.37, undo 2.06, sort 2.01,
    bytecode calls 1.87). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code

@@ -2893,17 +2893,16 @@ impl Interpreter {
 
     pub fn push_handler_bindings(&mut self, bindings: &[(Vec<String>, Value)]) -> usize {
         let start = self.active_handlers.len();
-        self.active_handlers.extend(
-            bindings
-                .iter()
-                .map(|(conditions, handler)| ActiveHandler::Bind(conditions.clone(), *handler)),
-        );
+        self.active_handlers
+            .extend(bindings.iter().map(|(conditions, handler)| {
+                ActiveHandler::Bind(conditions.as_slice().into(), *handler)
+            }));
         start
     }
 
     pub(crate) fn push_condition_case_handler(&mut self, heads: Vec<Value>) -> usize {
         let start = self.active_handlers.len();
-        self.active_handlers.push(ActiveHandler::Case(heads));
+        self.active_handlers.push(ActiveHandler::Case(heads.into()));
         start
     }
 
