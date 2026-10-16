@@ -748,6 +748,16 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   takes a multibyte text through the string, the rope and back. Undo
   1.85 → 1.72 (about 149,000 instructions a unit outside the allocator),
   sort 1.36 → 1.355.
+- Every byte-code op dispatches through one jump table. The verified
+  loop's match covered all 256 opcodes, but some of its arms were range
+  patterns (the constants, the calls, the short variable references),
+  and rustc tests a range with comparisons ahead of the switch: LLVM's
+  table stopped at 0o266, every op paid a range check first, and
+  constants and calls went through further branches. Each byte is its
+  own case now (clippy's range-pattern lint is allowed on the function,
+  with the reason). Bytecode calls 1.864 → 1.812, bytecode-to-native
+  2.109 → 2.056; undo's verified loop about 22,800 instructions a unit
+  lower (its ratio moved with the allocator's state).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -805,8 +815,9 @@ take hours each under it and were not run to the end. For the small
 buffer texts, 1,272 of 1,272 buffer, insertion, deletion, region,
 search, regexp, syntax, line, marker, undo, text-property, narrowing,
 coding, case, message and sexp tests, and 250 of 250 editing tests on
-the final build with the new one. CI's full gate and frozen runs are the
-merge evidence.
+the final build with the new one. For the jump table, 653 of 653 VM,
+byte-code, native, funcall, catch, condition, unwind and handler tests.
+CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
@@ -818,8 +829,8 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | interpreted-lexical | 2.04 | 1.21 |
 | interpreted-dynamic | 2.14 | 1.31 |
 | mapcar | 2.95 | 1.35 |
-| bytecode-calls | 3.30 | 1.85 |
-| bytecode-to-native | — | 2.10 |
+| bytecode-calls | 3.30 | 1.81 |
+| bytecode-to-native | — | 2.06 |
 | interpreted-to-native | — | 1.46 |
 | native-to-interpreted / -bytecode | — | 1.42 / 1.60 |
 | cons-allocation / list-traversal | 2.24 / — | 1.36 / 1.31 |
@@ -828,7 +839,8 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | explicit-gc | — | 0.89 |
 
 The table is one full run of all sixteen on `9eb7217`, with undo
-measured again after the small buffer texts and sort at four and eight
+measured again after the small buffer texts, the byte-code calls and
+bytecode-to-native after the jump table, and sort at four and eight
 units.
 Sort at one and two units read 1.84 before the port and 1.12 after it,
 but after it Emaxx's two collections fell at both sizes, out of the
@@ -941,7 +953,10 @@ only in the two-argument call); the next commit corrects the test.
 Frozen on `2529c2e`: 7,928 of 7,928 across 519 files, no unsuccessful
 execution (run 38959695796). **On `3716780`** (the corrected test): full
 Rust gate passed (run 38964025272; 3,131 tests in the counted groups,
-the two ignores, plus bins and integration). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+the two ignores, plus bins and integration). **On `0c6564e`** (the small
+buffer texts): full Rust gate passed (run 38970736660; 3,132 tests, the
+two ignores, plus bins and integration), frozen 7,928 of 7,928 across 519
+files, no unsuccessful execution (run 38970739812). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -1081,7 +1096,7 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 2.10, bytecode calls 1.85, undo
+   above; worst now bytecode-to-native 2.06, bytecode calls 1.81, undo
    1.72, native-to-bytecode 1.60, interpreted-to-native 1.46, native-to-
    interpreted 1.42, sort 1.36). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and

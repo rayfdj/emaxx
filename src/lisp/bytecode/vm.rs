@@ -1396,6 +1396,9 @@ fn run_fast(
 /// collect nothing; a call, or an op whose full arm runs in place
 /// (`op_in_place'), may do both, and the loop then re-reads the frame's
 /// code and its verification, as after a frame switch.
+// The opcode match names its bytes one by one where a range would read
+// better: see the comment on its catch-all arm.
+#[allow(clippy::manual_range_patterns)]
 #[inline(never)]
 fn run_verified(
     vm: &mut VmFrames<'_>,
@@ -1669,7 +1672,9 @@ fn run_verified(
                 0o005 => stack_ref!(5),
                 0o006 => stack_ref!(usize::from(fetch!())),
                 0o007 => stack_ref!(usize::from(fetch2!())),
-                0o040..=0o045 => call!(u16::from(byte - super::B_CALL)),
+                0o040 | 0o041 | 0o042 | 0o043 | 0o044 | 0o045 => {
+                    call!(u16::from(byte - super::B_CALL))
+                }
                 0o046 => call!(fetch!()),
                 0o047 => call!(fetch2!()),
                 super::B_STACK_SET => stack_set!(fetch!()),
@@ -1692,7 +1697,13 @@ fn run_verified(
                         drop_values!(count);
                     }
                 }
-                super::B_CONSTANT.. => constant!(byte - super::B_CONSTANT),
+                0o300 | 0o301 | 0o302 | 0o303 | 0o304 | 0o305 | 0o306 | 0o307 | 0o310 | 0o311
+                | 0o312 | 0o313 | 0o314 | 0o315 | 0o316 | 0o317 | 0o320 | 0o321 | 0o322 | 0o323
+                | 0o324 | 0o325 | 0o326 | 0o327 | 0o330 | 0o331 | 0o332 | 0o333 | 0o334 | 0o335
+                | 0o336 | 0o337 | 0o340 | 0o341 | 0o342 | 0o343 | 0o344 | 0o345 | 0o346 | 0o347
+                | 0o350 | 0o351 | 0o352 | 0o353 | 0o354 | 0o355 | 0o356 | 0o357 | 0o360 | 0o361
+                | 0o362 | 0o363 | 0o364 | 0o365 | 0o366 | 0o367 | 0o370 | 0o371 | 0o372 | 0o373
+                | 0o374 | 0o375 | 0o376 | 0o377 => constant!(byte - super::B_CONSTANT),
                 super::B_CONSTANT2 => constant!(fetch2!()),
                 // Bgoto.
                 0o202 => {
@@ -1889,26 +1900,30 @@ fn run_verified(
                     *slot!(1) = value;
                     drop_values!(1);
                 }
-                0o010..=0o015 => varref!(u16::from(byte - 0o010)),
+                0o010 | 0o011 | 0o012 | 0o013 | 0o014 | 0o015 => varref!(u16::from(byte - 0o010)),
                 0o016 => varref!(fetch!()),
                 0o017 => varref!(fetch2!()),
-                0o020..=0o025 => varset!(u16::from(byte - 0o020)),
+                0o020 | 0o021 | 0o022 | 0o023 | 0o024 | 0o025 => varset!(u16::from(byte - 0o020)),
                 0o026 => varset!(fetch!()),
                 0o027 => varset!(fetch2!()),
                 // Every other opcode, named so that the match covers all 256
-                // bytes and its jump table needs no range check.
-                0o000
-                | 0o030..=0o037
-                | 0o050..=0o070
-                | 0o103..=0o107
-                | 0o112..=0o122
-                | 0o135..=0o136
-                | 0o140..=0o200
-                | 0o212..=0o237
-                | 0o244
-                | 0o251..=0o261
-                | 0o264..=0o265
-                | 0o267..=0o277 => slow!(),
+                // bytes and its jump table needs no range check.  Each byte
+                // in this match is its own case: rustc tests a range
+                // pattern with comparisons ahead of the switch, which
+                // brought back the range check and sent constants and
+                // calls through branches before the table.
+                0o000 | 0o030 | 0o031 | 0o032 | 0o033 | 0o034 | 0o035 | 0o036 | 0o037 | 0o050
+                | 0o051 | 0o052 | 0o053 | 0o054 | 0o055 | 0o056 | 0o057 | 0o060 | 0o061 | 0o062
+                | 0o063 | 0o064 | 0o065 | 0o066 | 0o067 | 0o070 | 0o103 | 0o104 | 0o105 | 0o106
+                | 0o107 | 0o112 | 0o113 | 0o114 | 0o115 | 0o116 | 0o117 | 0o120 | 0o121 | 0o122
+                | 0o135 | 0o136 | 0o140 | 0o141 | 0o142 | 0o143 | 0o144 | 0o145 | 0o146 | 0o147
+                | 0o150 | 0o151 | 0o152 | 0o153 | 0o154 | 0o155 | 0o156 | 0o157 | 0o160 | 0o161
+                | 0o162 | 0o163 | 0o164 | 0o165 | 0o166 | 0o167 | 0o170 | 0o171 | 0o172 | 0o173
+                | 0o174 | 0o175 | 0o176 | 0o177 | 0o200 | 0o212 | 0o213 | 0o214 | 0o215 | 0o216
+                | 0o217 | 0o220 | 0o221 | 0o222 | 0o223 | 0o224 | 0o225 | 0o226 | 0o227 | 0o230
+                | 0o231 | 0o232 | 0o233 | 0o234 | 0o235 | 0o236 | 0o237 | 0o244 | 0o251 | 0o252
+                | 0o253 | 0o254 | 0o255 | 0o256 | 0o257 | 0o260 | 0o261 | 0o264 | 0o265 | 0o267
+                | 0o270 | 0o271 | 0o272 | 0o273 | 0o274 | 0o275 | 0o276 | 0o277 => slow!(),
             }
         };
         if let FastExit::Raised(..) = exit {
