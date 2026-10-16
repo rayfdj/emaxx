@@ -2345,6 +2345,49 @@ impl Value {
         }
     }
 
+    /// VECTORLIKEP, by the tag alone.
+    #[inline(always)]
+    pub(crate) fn is_vectorlike(self) -> bool {
+        self.0 & TAG_MASK == TAG_VECTORLIKE
+    }
+
+    /// FLOATP, by the tag alone.
+    #[inline(always)]
+    pub(crate) fn is_float(self) -> bool {
+        self.0 & TAG_MASK == TAG_FLOAT
+    }
+
+    /// CLOSUREP, by the tag and the header alone.
+    #[inline(always)]
+    pub(crate) fn closure_ref(self) -> Option<ClosureRef> {
+        if self.0 & TAG_MASK != TAG_VECTORLIKE {
+            return None;
+        }
+        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        // SAFETY: as `kind's vectorlike arm.
+        unsafe {
+            (crate::lisp::alloc::vectors::header_tag(header)
+                == crate::lisp::alloc::VectorTag::Closure)
+                .then(|| ClosureRef::from_raw(header))
+        }
+    }
+
+    /// NATIVE_COMP_FUNCTIONP: a subr allocated for native code, by the tag
+    /// and the header alone.
+    #[inline(always)]
+    pub(crate) fn native_function_ref(self) -> Option<NativeFunctionRef> {
+        if self.0 & TAG_MASK != TAG_VECTORLIKE {
+            return None;
+        }
+        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        // SAFETY: as `kind's vectorlike arm.
+        unsafe {
+            (crate::lisp::alloc::vectors::header_tag(header) == crate::lisp::alloc::VectorTag::Subr
+                && crate::lisp::alloc::vectors::subr_is_allocated(header))
+            .then(|| NativeFunctionRef::from_raw(header))
+        }
+    }
+
     /// `LISTP': nil or a cons, by the word alone.
     #[inline(always)]
     pub fn is_list(&self) -> bool {

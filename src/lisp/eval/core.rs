@@ -1419,22 +1419,24 @@ impl Interpreter {
         if self.pending_termination().is_some() || profile_path().is_some() {
             return BcallCallee::Funcall;
         }
-        let function = match func.kind() {
-            Kind::Symbol(name) => match self.globals.function(&name) {
+        let function = match func.symbol_cell() {
+            Some(name) => match self.globals.function(&name) {
                 Some(function) => function,
                 None => return BcallCallee::Funcall,
             },
-            _ => *func,
+            None => *func,
         };
-        match function.kind() {
-            Kind::Closure(closure) => {
-                match crate::lisp::bytecode::ByteCodeObject::for_call(closure) {
-                    Some(program) => BcallCallee::ByteCode(program, function),
-                    None => BcallCallee::Funcall,
-                }
-            }
-            Kind::NativeFunction(native) => BcallCallee::Native(native),
-            Kind::BuiltinFunc(subr)
+        if let Some(closure) = function.closure_ref() {
+            return match crate::lisp::bytecode::ByteCodeObject::for_call(closure) {
+                Some(program) => BcallCallee::ByteCode(program, function),
+                None => BcallCallee::Funcall,
+            };
+        }
+        if let Some(native) = function.native_function_ref() {
+            return BcallCallee::Native(native);
+        }
+        match function.builtin_ref() {
+            Some(subr)
                 if subr.descriptor().max_args()
                     != crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled =>
             {
@@ -1744,20 +1746,45 @@ impl InterpreterState {
             Some(name) => self.globals.function(name)?,
             None => func,
         };
-        let Kind::Closure(closure) = function.kind() else {
-            return None;
+        let closure = function.closure_ref()?;
+        self.plain_bcall_entry(name).then_some((function, closure))
+    }
+
+    /// `plain_bytecode_callee' for a native-compiled function or a subr
+    /// that evaluates its arguments: the function in FUNC's live cell (or
+    /// FUNC itself), when the entry is plain.
+    #[inline(always)]
+    pub(crate) fn plain_bcall_callee(&self, func: Value) -> Option<super::PlainCallee> {
+        let name = func.symbol_cell();
+        let function = match &name {
+            Some(name) => self.globals.function(name)?,
+            None => func,
         };
-        if !self.quit_flag.is_nil()
-            || self.pending_termination.is_some()
-            || self.globals.edebug_is_special()
-            || i64::try_from(self.lisp_eval_depth + 1)
-                .map_or(true, |depth| depth > self.max_lisp_eval_depth)
-            || profile_path().is_some()
-            || name.is_some_and(|name| name.as_str() == "backtrace-eval")
-        {
-            return None;
-        }
-        Some((function, closure))
+        let callee = if let Some(native) = function.native_function_ref() {
+            super::PlainCallee::Native(native)
+        } else {
+            let subr = function.builtin_ref()?;
+            if subr.descriptor().max_args()
+                == crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled
+            {
+                return None;
+            }
+            super::PlainCallee::Subr(subr)
+        };
+        self.plain_bcall_entry(name).then_some(callee)
+    }
+
+    /// The entry tests of a plain Bcall (see `plain_bytecode_callee'); NAME
+    /// is the callee's symbol, if it is one.
+    #[inline(always)]
+    fn plain_bcall_entry(&self, name: Option<SymbolName>) -> bool {
+        self.quit_flag.is_nil()
+            && self.pending_termination.is_none()
+            && !self.globals.edebug_is_special()
+            && i64::try_from(self.lisp_eval_depth + 1)
+                .is_ok_and(|depth| depth <= self.max_lisp_eval_depth)
+            && profile_path().is_none()
+            && name.is_none_or(|name| name.as_str() != "backtrace-eval")
     }
 }
 

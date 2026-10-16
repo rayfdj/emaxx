@@ -27950,6 +27950,46 @@ fn evaluator_tag_tests_keep_gnus_list_and_symbol_errors() {
 }
 
 #[test]
+fn byte_code_predicates_memq_and_full_arms_run_in_the_loop_like_gnu() {
+    // The verified byte-code loop runs Bsymbolp, Bstringp, Blistp,
+    // Bnumberp, Bintegerp, Bmemq, Bsetcar and Bsetcdr itself; an operand it
+    // does not take (a string or float to memq, a long, improper or
+    // circular list, a symbol with position, a non-cons) and ops without
+    // an arm there (Bnth, Bget, Blength) run their full arms in place.
+    let program = r#"(let* ((f (byte-compile
+           (lambda (x l)
+             (list (symbolp x) (stringp x) (listp x) (numberp x) (integerp x)
+                   (memq x l)))))
+       (g (byte-compile (lambda (c) (setcar c 'x) (setcdr c 'y) c)))
+       (h (byte-compile (lambda (l) (list (nth 1 l) (get 'zz-ip-sym 'p) (length l)))))
+       (long (number-sequence 1 100))
+       (circ (list 'a 'b 'c))
+       (p (position-symbol 'b 5)))
+  (setcdr (cddr circ) circ)
+  (list (funcall f 'b '(a b c))
+        (funcall f "s" '(a "s"))
+        (funcall f nil '(1 nil 2))
+        (funcall f 1.5 '(2.5))
+        (funcall f (expt 2 70) nil)
+        (funcall f 99 long)
+        (funcall f 7 '(1 2 3))
+        (condition-case e (funcall f 'z '(a b . c)) (error e))
+        (condition-case e (funcall f 'z circ) (error (car e)))
+        (list (funcall g (cons 1 2)) (condition-case e (funcall g 5) (error e)))
+        (funcall h '(4 5 6))
+        (butlast (funcall f p nil))
+        (let ((symbols-with-pos-enabled t))
+          (list (butlast (funcall f p nil))
+                (length (nth 5 (funcall f p '(a b c))))
+                (length (nth 5 (funcall f 'b (list 'a p))))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((t nil nil nil nil (b c)) (nil t nil nil nil nil) (t nil t nil nil (nil 2)) (nil nil nil t nil nil) (nil nil nil t t nil) (nil nil nil t t (99 100)) (nil nil nil t t nil) (wrong-type-argument listp (a b . c)) circular-list ((x . y) (wrong-type-argument consp 5)) (5 nil 3) (nil nil nil nil nil) ((t nil nil nil nil) 2 1))",
+        "byte-code predicates and memq",
+    );
+}
+
+#[test]
 fn let_finds_local_special_declarations_by_symbol_like_flet() {
     // Flet's Fmemq of the variable in the lexical environment: a locally
     // special uninterned symbol leaves the interned one of that name

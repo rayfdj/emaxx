@@ -503,6 +503,48 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   1.78 → 1.73, cons allocation 1.50 → 1.41, list traversal 1.45 → 1.37,
   bindat 1.32 → 1.26, undo 2.37 → 2.35, bytecode calls 1.88 → 1.87; the
   others within 0.4%.
+- Bcall into a native-compiled function, or into a subr that evaluates
+  its arguments, runs from the verified loop when nothing else happens on
+  the way in (`plain_bcall_callee`: a byte-code callee's entry tests;
+  maybe_gc would not collect; no error trace is asked for): Ffuncall's
+  depth step and frame record, the call, the frame's settling and pop,
+  and the value replacing the function and its arguments (`call_plain`).
+  The full Bcall arm (`bytecode_call`) is left for every other callee.
+- Every op the verified loop has no arm for (variables in their full
+  forms, bindings and unwinding, handlers, buffer and primitive ops), and
+  each fast op whose operands its arm does not take, runs its full arm in
+  place (`exec_op`, shared with the dispatch loop) where it left the loop
+  for the dispatch and entered it again: exec_byte_code runs every op in
+  one loop. The loop then re-reads the frame's code and verification, as
+  after a call. An op that is a whole byte comes from a table built once
+  from the decoder. Bsymbolp, Bstringp, Blistp, Bnumberp, Bintegerp,
+  Bsetcar, Bsetcdr and Bmemq have arms in the loop: Bmemq walks up to 64
+  elements for a fixnum or a symbol, whose words are eq exactly when they
+  are equal unless an element might be a symbol with position, and takes
+  FOR_EACH_TAIL's first quit check (nothing in the walk can set
+  `quit-flag`, so one test stands for all); any other operand runs Fmemq.
+  In undo these ops left the loop about 1,160 times a unit, at about 190
+  instructions each before the op's own work. `prim` (an op's named
+  primitive) finds its dispatch facts in a process-wide open-addressed
+  table by the name literal's address; a thread-local hash map of vectors
+  cost about 50 instructions a call.
+- A buffer switch looked each of the eight forwarded evaluator variables
+  (`quit-flag`, `load-path`, `max-lisp-eval-depth`...) up in both buffers'
+  local bindings, sixteen hash probes a switch; each buffer's bindings now
+  count those variables as they are bound and removed
+  (`LocalCells::has_forwarded_eval_binding`). In undo this cost 71,000
+  instructions a unit and now costs about 9,000.
+  Ratios against `0b0b6dc`: undo 2.35 → 2.11, bytecode-to-native 2.64 →
+  2.37, native-to-bytecode 1.73, interpreted-to-native 1.64 → 1.63; the
+  others within about 1% (interpreted dynamic 1.37 → 1.39 is `eval_sub`
+  layout, 12 instructions an iteration, and allocator noise). Measured and
+  left: `prim` still registers its arguments as precise roots (about 45
+  instructions a call) though they lie in the caller's frame, which the
+  conservative scan reads; a plain subr call still costs about 196
+  instructions in `call_plain` over a dozen steps of 3 to 9 each; undo's
+  remaining slow ops are buffer primitives (`point`, `goto-char`,
+  `point-min`, `point-max`) at about 200 instructions each where GNU's arms
+  are 30 to 50.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -520,30 +562,38 @@ pass, with the three new tests. A broad local run over the GC, special-form, `ev
 and native filters was stopped after 89 CPU minutes, with one failure:
 `byte_compile_file_reports_an_unwritable_target_like_gnu`, which cannot
 pass as root (this container's user writes into a mode-555 directory) and
-passes in CI. CI's full gate and frozen runs are the merge evidence.
+passes in CI. For the in-place ops, plain native and subr calls and the
+forwarded-variable count: 625 of 626 native, byte-code, funcall,
+backtrace, arity, buffer-local, forwarded-variable, `memq`, undo,
+symbol-with-position, unwind, handler, catch, quit and nesting tests pass
+with the new one (predicates and `memq` in the loop against GNU); the
+other is the image round trip below. CI's full gate and frozen runs are
+the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.35 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.11 |
 | upstream-sort | 3.26 | 2.09 |
-| interpreted-calls | 2.10 | 1.25 |
-| interpreted-lexical | 2.04 | 1.26 |
-| interpreted-dynamic | 2.14 | 1.37 |
+| interpreted-calls | 2.10 | 1.26 |
+| interpreted-lexical | 2.04 | 1.27 |
+| interpreted-dynamic | 2.14 | 1.39 |
 | mapcar | 2.95 | 1.46 |
 | bytecode-calls | 3.30 | 1.87 |
-| bytecode-to-native | — | 2.64 |
-| interpreted-to-native | — | 1.64 |
+| bytecode-to-native | — | 2.37 |
+| interpreted-to-native | — | 1.63 |
 | native-to-interpreted / -bytecode | — | 1.55 / 1.73 |
-| cons-allocation / list-traversal | 2.24 / — | 1.41 / 1.37 |
-| native-execution | — | 1.20 |
-| bindat | — | 1.26 |
+| cons-allocation / list-traversal | 2.24 / — | 1.42 / 1.37 |
+| native-execution | — | 1.21 |
+| bindat | — | 1.27 |
 | explicit-gc | — | 1.01 |
 
-The table is the full run of all sixteen on this round's last commit
-(undo, bindat and interpreted calls measured again after its last
-change). Undo moves between 2.37 and
+The table is the full run of all sixteen on this round's last commit.
+Interpreted calls, lexical and dynamic, cons allocation and bindat read
+up to 1.5% above the previous run with no change on their paths
+(`eval_sub` layout and allocator noise; bindat measured 1.26 on the
+same code one build earlier). Undo moved between 2.37 and
 2.42 from one build to the next with no code change on its path: the
 difference sits in glibc's `_int_malloc`, `malloc_consolidate` and
 `unlink_chunk` (the allocator's free-list state), not in Emaxx code.
@@ -595,7 +645,11 @@ counted groups, 2 ignored, plus bins and integration), frozen 7,928 of
 files, no unsuccessful execution (run 38838679538). **CI on `29e7780`**
 (in-loop byte-code frames): full Rust gate passed (run 38852469382; 3,120
 tests, 2 ignored), frozen 7,928 of 7,928 across 519 files, no
-unsuccessful execution (run 38852471256). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+unsuccessful execution (run 38852471256). **CI on `0b0b6dc`** (evaluator
+tag tests, jump-table verification): full Rust gate passed (run
+38864048354; 3,122 tests, 2 ignored, plus bins and integration), frozen
+7,928 of 7,928 across 519 files, no unsuccessful execution (run
+38864051065). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -628,12 +682,13 @@ this container's GNU build itself disagrees with the expected text (under
   behavior instead of a panic, so it stays.
 
 **Where the remaining gap is** (instruction counts per unit on `41be443`):
-- **Native calls** (bytecode-to-native 2.63): a Bcall into native code
+- **Native calls** (bytecode-to-native 2.37): a Bcall into native code
   costs about 400 instructions in the native layer (`invoke` 142, the
   active-runtime lookup and arity check about 60, `finish_call` 48,
   `setjmp` about 38, the execution guard 17, the trampoline 28) where
-  GNU's `funcall_subr` spends about 50, plus about 300 in `bytecode_call`
-  and the code string's re-check after it. What is left is the design: thread-local swaps,
+  GNU's `funcall_subr` spends about 50; a plain call now goes through
+  `call_plain` instead of the full Bcall arm (about 300 before), plus the
+  code string's re-check after it. What is left is the design: thread-local swaps,
   the guard, the call-frame record and the per-call `setjmp` that Rust
   frames between the native code and its caller require.
 - **Byte-code calls** (bytecode calls 1.87): 863 instructions an
@@ -659,13 +714,16 @@ this container's GNU build itself disagrees with the expected text (under
   GNU's 147 across Ffuncall, funcall_general and funcall_subr;
   `Value::cons` is 37 against `Fcons`' 27 (the per-cell serial, the
   allocated and mark bits, and a live count GNU does not keep).
-- Undo's remainder is broad: the byte-code slow path (ops the verified
-  loop leaves for, Bswitch's `gethash` by name among them), `prim`'s name
-  lookup and argument rooting (about 190 a call, 675 calls a unit), the
-  string adapters (`string_like` decoding), error matching through
-  `Vec<String>` condition names, and allocation (about 400,000
-  instructions a unit in malloc and free, the rope's `from_str`
-  included).
+- Undo's remainder (2.11; 2.63 million instructions a unit against
+  GNU's 1.25 million) is broad: allocation (about 330,000 a unit in
+  malloc and free, plus the rope's `from_str` 98,000), the source
+  interpreter (`eval_sub` 181,000 against 90,000), ops run in place
+  (`op_in_place` and `exec_op` about 105,000 for 770 ops, `prim` about
+  110 a call with its argument rooting), plain subr calls (`call_plain`
+  about 196 a call, 340 a unit), byte-code frame entry (290 a call, 165
+  a unit), the string adapters (`decode_bytes`/`encode_text` 57,000) and
+  native code's subr calls (`invoke_subr`, `invoke_native_funcall`
+  65,000).
 
 ## How the work is split
 
@@ -698,7 +756,7 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 2.64, undo 2.35, sort 2.09,
+   above; worst now bytecode-to-native 2.37, undo 2.11, sort 2.09,
    bytecode calls 1.87). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code

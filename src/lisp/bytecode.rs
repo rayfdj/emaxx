@@ -688,6 +688,33 @@ pub struct ByteCodeObject {
     pub(crate) verified: Option<&'static verify::VerifiedCode>,
 }
 
+/// The op of an opcode byte that is a whole instruction (no operand
+/// bytes, no constant index to check), or None: `decode_instr's answer
+/// for that byte alone, found once for all 256.
+#[inline]
+fn operandless_op(byte: u8) -> Option<Op> {
+    static OPS: std::sync::OnceLock<[Option<Op>; 256]> = std::sync::OnceLock::new();
+    OPS.get_or_init(|| {
+        std::array::from_fn(|byte| {
+            let code = [byte as u8];
+            decode_instr(&code, 0)
+                .ok()
+                .filter(|instr| {
+                    instr.len == 1
+                        && !matches!(
+                            instr.op,
+                            Op::VarRef(_)
+                                | Op::VarSet(_)
+                                | Op::VarBind(_)
+                                | Op::Constant(_)
+                                | Op::Constant2(_)
+                        )
+                })
+                .map(|instr| instr.op)
+        })
+    })[usize::from(byte)]
+}
+
 /// Decode only the instruction about to execute. Bounds checks protect Rust
 /// indexing; no instruction inventory or offset table survives a callback.
 #[inline]

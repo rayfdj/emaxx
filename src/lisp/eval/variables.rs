@@ -18,6 +18,14 @@ const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 8] = [
     cached_symbol!("symbols-with-pos-enabled"),
 ];
 
+/// Whether SYMBOL is one of the variables whose evaluator cells hold the
+/// current buffer's value.
+pub(super) fn is_forwarded_eval_cell(symbol: &SymbolName) -> bool {
+    FORWARDED_EVAL_CELLS
+        .iter()
+        .any(|key| key.with(|cell| cell == symbol))
+}
+
 #[derive(Default)]
 struct ReadSymbolContainers {
     cons: HashSet<usize>,
@@ -1375,11 +1383,9 @@ impl Interpreter {
     /// Whether BUFFER_ID has a local binding of a variable whose evaluator
     /// cell holds the current buffer's value.
     pub(super) fn has_forwarded_eval_local(&self, buffer_id: u64) -> bool {
-        self.buffer_locals.get(&buffer_id).is_some_and(|locals| {
-            FORWARDED_EVAL_CELLS
-                .iter()
-                .any(|key| key.with(|symbol| locals.binding(symbol).is_some()))
-        })
+        self.buffer_locals
+            .get(&buffer_id)
+            .is_some_and(super::local_cells::LocalCells::has_forwarded_eval_binding)
     }
 
     /// The cells after the current buffer changed from PREVIOUS. Without a

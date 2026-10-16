@@ -1838,6 +1838,13 @@ enum SavedRestrictionBounds {
     },
 }
 
+/// A Bcall callee the byte-code loop calls itself when the call is plain
+/// (see `InterpreterState::plain_bcall_callee').
+pub(crate) enum PlainCallee {
+    Native(crate::lisp::types::NativeFunctionRef),
+    Subr(crate::lisp::types::BuiltinRef),
+}
+
 /// What Bcall does with its callee (see `Interpreter::bcall_callee').
 pub(crate) enum BcallCallee {
     ByteCode(crate::lisp::bytecode::ByteCodeObject, Value),
