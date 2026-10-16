@@ -161,11 +161,23 @@ define_dispatch!(
                     |error: crate::buffer::BufferError| LispError::Signal(error.to_string());
                 let (left_buffer, left_start, left_end) =
                     comparison_range(interp, &args[0], &args[1], &args[2])?;
+                let (right_buffer, right_start, right_end) =
+                    comparison_range(interp, &args[3], &args[4], &args[5])?;
+                // Two ASCII ranges, each within one chunk of its rope, are
+                // compared as bytes; a byte is its character there.
+                if canonical_table.is_none()
+                    && let Some(left) = left_buffer.ascii_chunk_range(left_start, left_end)
+                    && let Some(right) = right_buffer.ascii_chunk_range(right_start, right_end)
+                {
+                    return Ok(Value::Integer(compare_buffer_substrings(
+                        left.bytes().map(char::from),
+                        right.bytes().map(char::from),
+                        |character| character as u32,
+                    )));
+                }
                 let left = left_buffer
                     .substring_chars(left_start, left_end)
                     .map_err(substring_error)?;
-                let (right_buffer, right_start, right_end) =
-                    comparison_range(interp, &args[3], &args[4], &args[5])?;
                 let right = right_buffer
                     .substring_chars(right_start, right_end)
                     .map_err(substring_error)?;

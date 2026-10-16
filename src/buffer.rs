@@ -1249,6 +1249,24 @@ impl Buffer {
         })
     }
 
+    /// [FROM, TO) (1-based) of an ASCII text as a slice of the one rope
+    /// chunk holding it, so nothing is decoded; None when the text has a
+    /// multibyte character or the range crosses a chunk.
+    pub(crate) fn ascii_chunk_range(&self, from: usize, to: usize) -> Option<&str> {
+        if self.text.len_bytes() != self.text.len_chars() || from == 0 || from > to {
+            return None;
+        }
+        let (start, end) = (from - 1, to - 1);
+        if end > self.text.len_bytes() {
+            return None;
+        }
+        if start == end {
+            return Some("");
+        }
+        let (chunk, chunk_start, _, _) = self.text.chunk_at_byte(start);
+        chunk.get(start - chunk_start..end - chunk_start)
+    }
+
     /// Get a substring. Positions are 1-based, range is [from, to).
     pub fn buffer_substring(&self, from: usize, to: usize) -> Result<String, BufferError> {
         let (from, to) = if from <= to { (from, to) } else { (to, from) };

@@ -412,6 +412,13 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   nil/t/unbound compares, and `SYMBOLP` as a tag test (lexical +1.3%,
   cons allocation +1.2%, no case better); patch
   `docs/handover/2026-10-15-performance-round/rejected-symbol-tag-tests.patch`.
+- `compare-buffer-substrings` compares two ranges of ASCII buffers that
+  each lie in one rope chunk as bytes, with no case folding active; a
+  character iterator over the rope cost about 67 instructions a
+  character there. Sort 2.21 → 2.18. GNU-compared test of short ASCII
+  ranges: equal, differing, prefix either way, empty, reversed, another
+  buffer, case kept. Measured and dropped: one borrow of the state in
+  `begin_funcall` (no case moved).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -428,21 +435,25 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.37 |
-| upstream-sort | 3.26 | 2.21 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 2.37–2.42 |
+| upstream-sort | 3.26 | 2.18 |
 | interpreted-calls | 2.10 | 1.38 |
 | interpreted-lexical | 2.04 | 1.35 |
-| interpreted-dynamic | 2.14 | 1.58 |
-| mapcar | 2.95 | 1.82 |
+| interpreted-dynamic | 2.14 | 1.48 |
+| mapcar | 2.95 | 1.85 |
 | bytecode-calls | 3.30 | 2.19 |
-| bytecode-to-native | — | 2.64 |
-| interpreted-to-native | — | 1.85 |
-| native-to-interpreted / -bytecode | — | 1.66 / 1.90 |
-| cons-allocation / list-traversal | 2.24 / — | 1.52 / 1.55 |
-| native-execution | — | 1.23 |
-| bindat | — | 1.46 |
+| bytecode-to-native | — | 2.66 |
+| interpreted-to-native | — | 1.77 |
+| native-to-interpreted / -bytecode | — | 1.64 / 1.82 |
+| cons-allocation / list-traversal | 2.24 / — | 1.51 / 1.47 |
+| native-execution | — | 1.21 |
+| bindat | — | 1.35 |
 | explicit-gc | — | 1.01 |
 
+The table is the full run on `41be443`. Undo moves between 2.37 and
+2.42 from one build to the next with no code change on its path: the
+difference sits in glibc's `_int_malloc`, `malloc_consolidate` and
+`unlink_chunk` (the allocator's free-list state), not in Emaxx code.
 Undo's earlier 2.34 at ten units was an artifact: in that pair of runs the
 collector worked more at ten units than at twenty (`mem_find` and the
 stack scan came out negative in the difference), hiding about 0.57 million
@@ -510,22 +521,35 @@ this container's GNU build itself disagrees with the expected text (under
   form). Removing the check would make a parked shell's use undefined
   behavior instead of a panic, so it stays.
 
-**Where the remaining gap is:** the native call path: a Bcall into
-native code still spends about 550 instructions (the Call arm's funcall
-bookkeeping, `native_comp::call_function`, `NativeRuntime::invoke`,
-`begin_call`/`finish_call`, the execution guard and `setjmp`) where GNU's
-`funcall_subr` spends about 50, and interpreted and native callers still
-reach it through the general funcall dispatch. The
-bytecode VM: verified ops cost 17–20 instructions (GNU about 8), a
-byte-code call and return about 600 (GNU about 300), and each exit from
-and entry to the verified loop about 80, which code dominated by slow ops
-(undo's `simple.elc`) pays every few ops; running slow ops and calls
-without leaving the loop is the structural fix. Then the source
-interpreter's per-form cost (about 420 instructions per evaluated list form
-against GNU's 170, spread over frame recording, function lookup, subr
-dispatch and the state checks), the funcall path used by `mapcar` and
-native transitions (about 400 per call against GNU's 170), and a
-per-native-call `setjmp` that Rust's frames require.
+**Where the remaining gap is** (instruction counts per unit on `41be443`):
+- **Native calls** (bytecode-to-native 2.66): a Bcall into native code
+  costs about 400 instructions in the native layer (`invoke` 142, the
+  active-runtime lookup and arity check about 60, `finish_call` 48,
+  `setjmp` about 38, the execution guard 17, the trampoline 28) where
+  GNU's `funcall_subr` spends about 50, plus about 330 in the Call arm
+  and the loop re-entry. What is left is the design: thread-local swaps,
+  the guard, the call-frame record and the per-call `setjmp` that Rust
+  frames between the native code and its caller require.
+- **Byte-code calls** (bytecode calls 2.19): a call and return cost 647
+  in the frame loop (re-entering the verified loop about 40 each time,
+  building the callee's `ByteCodeObject` 82, copying it into the frame
+  45, the verification cache 40) where GNU's whole iteration is 468.
+- **Source interpreter** (lexical 1.35, calls 1.38, sort 2.21): every
+  list form pays a 167-instruction common path (GNU's whole `eval_sub`
+  averages 178 a form), a subr call 112 more and a special form 157 more.
+  The common path is spread over small steps: parked-shell tests (about
+  18 a form, kept deliberately), `maybe_gc` through the active runtime's
+  thread-local pointer (9), the frame record (17) and kind dispatches. An
+  interpreted call adds about 386 in `funcall_interpreted_lambda` and 90
+  for the frame detail that records its locals.
+- **Ffuncall into a subr** (mapcar 1.85): about 270 per call against GNU's
+  147 across Ffuncall, funcall_general and funcall_subr; `Value::cons` is
+  51 against `Fcons`' 27 (five counters, a per-cell serial and the mark
+  bit per cons).
+- Undo's remainder is broad: the byte-code slow path, `prim`'s name
+  lookup and argument rooting (about 190 a call, 675 calls a unit), the
+  string adapters (`string_like` decoding), error matching through
+  `Vec<String>` condition names, and allocation.
 
 ## How the work is split
 
@@ -558,10 +582,14 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above). Byte-code is verified once and runs without per-op checks; next
-   the native call path (bytecode-to-native is the worst ratio), then
-   running slow ops, calls and returns without leaving the verified loop,
-   then the source interpreter's per-form cost and the funcall path.
+   above; worst now bytecode-to-native 2.66, undo about 2.4, sort 2.21,
+   bytecode calls 2.19). The remaining costs are listed under "Where the
+   remaining gap is": the native call layer and the byte-code call and
+   return need structural work (a lighter native boundary, frames that do
+   not copy the callee's decoded object, slow ops and calls without leaving
+   the verified loop); the interpreter and funcall paths are spread over
+   many small steps, each worth about 1%. Micro-changes measure within
+   about 1% of noise: keep only what moves the counts, record the rest.
    Iterate with instruction counts (callgrind) on the locked workloads for
    both editors; timing pilots at merges. Remaining adapters that show up in
    profiles are fixed as performance work.

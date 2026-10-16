@@ -936,6 +936,34 @@ fn compare_buffer_substrings_reads_both_ranges_in_place_like_editfns() {
 }
 
 #[test]
+fn compare_buffer_substrings_compares_short_ascii_ranges_like_editfns() {
+    // Short ranges of ASCII buffers lie in one rope chunk and are compared
+    // as bytes: equal, differing, prefix either way, empty and reversed
+    // ranges, another buffer, and case kept with case-fold-search nil.
+    let program = r#"(with-temp-buffer
+  (insert "abcdef abcxyz abc ab ABC")
+  (let ((case-fold-search nil) (other (generate-new-buffer " cmp")))
+    (unwind-protect
+        (progn
+          (with-current-buffer other (insert "abd"))
+          (list (compare-buffer-substrings nil 1 4 nil 8 11)
+                (compare-buffer-substrings nil 1 7 nil 8 14)
+                (compare-buffer-substrings nil 8 14 nil 1 7)
+                (compare-buffer-substrings nil 1 4 nil 19 21)
+                (compare-buffer-substrings nil 19 21 nil 1 4)
+                (compare-buffer-substrings nil 3 3 nil 5 5)
+                (compare-buffer-substrings nil 4 1 nil 11 8)
+                (compare-buffer-substrings nil 1 4 other nil nil)
+                (compare-buffer-substrings nil 22 25 nil 1 4)))
+      (kill-buffer other))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(0 -4 4 3 -3 0 0 -3 -1)",
+        "compare-buffer-substrings of short ASCII ranges",
+    );
+}
+
+#[test]
 fn compare_buffer_substrings_accepts_current_buffer_and_bounds_as_nil() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
