@@ -29,6 +29,11 @@ use std::rc::Rc;
 pub(crate) struct CharTableChainSignature {
     root: Option<usize>,
     nodes: Rc<[Node]>,
+    /// The indices of the NODES that are not tables, in capture order: all
+    /// that a match with no char-table store since the last one reads (a
+    /// case table's chain is hundreds of table nodes, more than the data
+    /// cache holds).
+    others: Rc<[u32]>,
     /// A hash of ROOT and NODES, taken once at capture.
     digest: u64,
     /// The char-table store count when the nodes last matched in full.
@@ -165,9 +170,14 @@ impl CharTableChainSignature {
         let mut hasher = crate::lisp::primitives::FnvBuildHasher::default().build_hasher();
         root.hash(&mut hasher);
         nodes.hash(&mut hasher);
+        let others = (0..nodes.len())
+            .filter(|&index| !nodes[index].is_table())
+            .map(|index| u32::try_from(index).expect("a char-table graph of fewer than 2^32 nodes"))
+            .collect();
         Self {
             root: Some(root),
             nodes: nodes.into(),
+            others,
             digest: hasher.finish(),
             verified_at: Cell::new(verified_at),
         }
@@ -182,9 +192,9 @@ impl CharTableChainSignature {
             // No table slot changed, so every edge out of a table node is the
             // captured one and each other node is still reached through it.
             let matched = self
-                .nodes
+                .others
                 .iter()
-                .all(|node| node.is_table() || node.matches_current());
+                .all(|&index| self.nodes[index as usize].matches_current());
             debug_assert_eq!(
                 matched,
                 self.nodes.iter().all(Node::matches_current),

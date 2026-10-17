@@ -991,6 +991,29 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   layout. The options are LLVM's own (`cl::opt`), not rustc's; a
   toolchain update that drops them fails the build at once, and an
   explicit `RUSTFLAGS` replaces them.
+- **A case table's signature checked by its few non-table nodes.** A
+  regexp search validates its cached case classes with
+  `CaseTableSignature::matches_current`, and when no char-table store
+  happened since the last full match, `CharTableChainSignature::matches`
+  still walked the whole captured node array to skip the table nodes: a
+  case table's chain is hundreds of sub-char-table nodes of about 50
+  bytes each, twice (down and up), more than the L1 data cache holds,
+  so each check missed on most of it (undo: 3,400 L1 misses a unit for
+  2,500 instructions, 15% of the unit's misses). The capture now keeps
+  the indices of the nodes that are not tables, in capture order, and the
+  fast path reads only those (the debug assertion still compares it with
+  the full match). Undo wall time 0.179 → 0.174 s (GNU 0.107);
+  instruction counts unchanged. Undo also takes 74,000 L1 instruction-cache misses a unit
+  against GNU's 21,000: the byte-code VM's functions alone (`run_verified`
+  7,900 a unit, `exec_op`, `run`, `run_frames`, `call_plain`,
+  `closure_program`) take about 16,000 against `exec_byte_code`'s 1,700,
+  and the rest is spread over `eval_sub` and dozens of large primitive
+  dispatchers. At about a dozen cycles each that is a large share of
+  undo's time; code layout (hot and cold blocks apart, or
+  profile-guided optimization, which would also order the functions and
+  place the blocks by their counts) is the lever, and PGO is a build
+  change (instrumented build, `llvm-profdata` from `llvm-tools`, a
+  profile kept with the source and renewed as the code changes).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1088,7 +1111,14 @@ save-buffer tests and
 the build before too, and
 `process_tls_state_survives_collection_before_and_after_async_handshake`,
 whose GNU run disagreed under that load and which passes alone, 3 of 3.
-For the exchange and the compaction: 3,133 of the 3,138 pass with 2
+For the case-table signature: the 137 char-table, case-table, case-fold,
+regexp, search and signature tests pass (run one at a time; at two
+threads four of them fail the same way on the build before, the tests
+sharing one process heap), and the full 3,138 as below with the as-root
+three and the load-sensitive TLS test. For the dispatch copy: the same,
+with `subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`
+failing in that load and passing alone. For the exchange and the
+compaction: 3,133 of the 3,138 pass with 2
 ignored, the three failing being the as-root ones above, and the four
 allocator tests; the compaction's held-block path is pinned by
 `string_sblocks_compact_unborrowed_data_and_hold_borrowed_blocks` (the
