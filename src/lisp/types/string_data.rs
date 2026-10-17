@@ -377,6 +377,17 @@ impl SharedStringState {
         // A zero-length header points at EMPTY_DATA; neither case is null.
         unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.storage_bytes()) }
     }
+
+    /// `bytes', for a caller whose guard on the state is its own contract
+    /// (`StringObjectRef::bytes_unguarded').
+    ///
+    /// # Safety
+    /// The bytes stay in place and unchanged while the slice is used.
+    #[inline(always)]
+    pub(crate) unsafe fn bytes_unbounded<'a>(&self) -> &'a [u8] {
+        // SAFETY: as `bytes', for the caller's lifetime.
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.storage_bytes()) }
+    }
     pub(crate) fn len(&self) -> usize {
         self.size
     }

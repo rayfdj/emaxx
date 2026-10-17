@@ -19,12 +19,14 @@
 //! stack effect is modeled wrongly here costs only the fast loop, never
 //! safety.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::HashMap;
+use std::mem::MaybeUninit;
+use std::ptr::NonNull;
 
-use super::{ByteCodeObject, Op, decode_instr};
+use super::{ArgSpec, ByteCodeObject, Op, decode_instr};
 use crate::lisp::alloc::CodeState;
-use crate::lisp::types::{IdentityBuildHasher, Kind, VectorRef};
+use crate::lisp::types::{ClosureRef, IdentityBuildHasher, Kind, VectorRef};
 
 /// No verified path reaches an instruction starting at this offset.
 const UNREACHED: u16 = u16::MAX;
@@ -58,6 +60,12 @@ impl VerifiedCode {
             && self.constants_len == program.constants.len()
             && self.stack_depth == program.stack_depth
             && self.entry_depth == entry_depth
+    }
+
+    /// Whether this is still the result for its code string's bytes.
+    #[inline]
+    pub(crate) fn is_current(&self) -> bool {
+        self.current.get()
     }
 
     /// Whether the fast loop may run this code entering at PC with DEPTH
@@ -165,12 +173,124 @@ fn verified_code_slow(
     (!version.depths.is_empty()).then_some(version)
 }
 
+/// A closure's program as its last entry read it (see `entry_program').
+struct ClosureEntry {
+    /// The closure's identity; zero for an entry that holds nothing.
+    identity: usize,
+    /// The words of the closure's argument template, code, constants and
+    /// depth slots, which the program was read from.
+    slots: [usize; 4],
+    /// `ByteCodeObject::for_call's program, with the verified code for
+    /// its entry.
+    program: MaybeUninit<ByteCodeObject>,
+}
+
+const CLOSURE_SLOTS: usize = 64;
+
+thread_local! {
+    /// The programs of the closures last entered, direct-mapped by
+    /// closure identity.
+    static CLOSURES: UnsafeCell<[ClosureEntry; CLOSURE_SLOTS]> = const {
+        UnsafeCell::new(
+            [const {
+                ClosureEntry {
+                    identity: 0,
+                    slots: [0; 4],
+                    program: MaybeUninit::uninit(),
+                }
+            }; CLOSURE_SLOTS],
+        )
+    };
+}
+
+#[inline(always)]
+fn closure_slot(identity: usize) -> usize {
+    identity.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> (usize::BITS - CLOSURE_SLOTS.trailing_zeros())
+}
+
+/// The program a plain entry of CLOSURE runs, with the verified code for
+/// that entry: what `ByteCodeObject::for_call' reads and `verified_code'
+/// finds, or None when either finds nothing.  A closure's slots never
+/// change once it is published (Lisp cannot aset one), so what the last
+/// entry found stands while the closure's four slots hold the same words
+/// -- another closure allocated where a collected one was matches only if
+/// every word is the same, and so reads the same program -- and the code
+/// string still holds the bytes that were verified.
+///
+/// The program stays where the answer points until the next call here or
+/// to `forget' on this thread.
+#[inline(always)]
+pub(crate) fn entry_program(closure: ClosureRef) -> Option<NonNull<ByteCodeObject>> {
+    if closure.public_len() < 4 {
+        return None;
+    }
+    // SAFETY: the closure has at least four slots.
+    let slots = [0, 1, 2, 3].map(|index| unsafe { closure.get_unchecked(index) }.word());
+    let identity = closure.identity();
+    // SAFETY: the thread's entries stay in place for its life; nothing
+    // else refers to this one while this runs, and nothing here reenters.
+    let entry = unsafe {
+        &mut *CLOSURES.with(|entries| {
+            entries
+                .get()
+                .cast::<ClosureEntry>()
+                .add(closure_slot(identity))
+        })
+    };
+    if entry.identity == identity && entry.slots == slots {
+        // SAFETY: an entry with an identity holds its program.
+        let program = unsafe { entry.program.assume_init_ref() };
+        if program.code.string().code_state() == CodeState::Current
+            && program.verified.is_some_and(VerifiedCode::is_current)
+        {
+            return Some(NonNull::from(program));
+        }
+    }
+    entry_program_slow(closure, entry, identity, slots)
+}
+
+#[inline(never)]
+fn entry_program_slow(
+    closure: ClosureRef,
+    entry: &mut ClosureEntry,
+    identity: usize,
+    slots: [usize; 4],
+) -> Option<NonNull<ByteCodeObject>> {
+    let mut program = ByteCodeObject::for_call(closure)?;
+    let ArgSpec::Packed { nonrest, rest, .. } = program.argspec else {
+        unreachable!("for_call reads packed argument lists")
+    };
+    program.verified = Some(verified_code(
+        &program,
+        usize::from(nonrest) + usize::from(rest),
+    )?);
+    entry.identity = identity;
+    entry.slots = slots;
+    Some(NonNull::from(entry.program.write(program)))
+}
+
 /// The string at IDENTITY was collected: no frame can run its code.
 pub(crate) fn forget(identity: usize) {
     let _ = CACHE.try_with(|cache| {
         let slot = &cache[cache_slot(identity)];
         if slot.get().0 == identity {
             slot.set((0, std::ptr::null()));
+        }
+    });
+    // The entries whose verified code goes with the string's results.
+    let _ = CLOSURES.try_with(|entries| {
+        // SAFETY: as in `entry_program'.
+        for entry in unsafe { &mut *entries.get() } {
+            // SAFETY: an entry with an identity holds its program.
+            if entry.identity != 0
+                && unsafe { entry.program.assume_init_ref() }
+                    .code
+                    .string()
+                    .identity()
+                    == identity
+            {
+                entry.identity = 0;
+            }
         }
     });
     let _ = VERIFIED.try_with(|verified| {

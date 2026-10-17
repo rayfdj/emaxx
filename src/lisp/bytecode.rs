@@ -669,9 +669,9 @@ impl CodeBytes {
     pub(crate) unsafe fn bytes_unguarded<'a>(&self) -> (&'a [u8], bool) {
         let string = self.string();
         let current = string.code_state() == crate::lisp::alloc::CodeState::Current;
-        let bytes = string.borrow().bytes() as *const [u8];
-        // SAFETY: the caller's contract keeps the string's bytes in place.
-        (unsafe { &*bytes }, current)
+        // SAFETY: the caller's contract keeps the string's bytes in place
+        // and unchanged, and no guard on them is live in the loops.
+        (unsafe { string.bytes_unguarded() }, current)
     }
 }
 

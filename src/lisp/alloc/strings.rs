@@ -120,6 +120,21 @@ impl StringObjectRef {
         }
     }
 
+    /// The string's bytes with no guard counted, for a reader that holds
+    /// them only while nothing runs that could store into the string.
+    ///
+    /// # Safety
+    /// Neither a store into the string nor a collection happens while the
+    /// slice is in use (a mutable guard alive now panics, as `borrow').
+    #[inline(always)]
+    pub(crate) unsafe fn bytes_unguarded<'a>(&self) -> &'a [u8] {
+        let cell = self.cell();
+        assert!(cell.borrows.get() >= 0, "string already mutably borrowed");
+        // SAFETY: as the caller's contract: no mutable guard aliases the
+        // state, and its bytes stay in place while the slice is used.
+        unsafe { (*cell.state.get()).bytes_unbounded() }
+    }
+
     pub fn borrow(&self) -> StringBorrow<'_> {
         let cell = self.cell();
         let count = cell.borrows.get();

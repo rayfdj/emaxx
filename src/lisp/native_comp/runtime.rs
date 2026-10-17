@@ -193,8 +193,10 @@ impl NativeInvocation {
     }
 
     /// `new' written into SLOT where it stays, with ARGUMENTS' words in
-    /// its register slots (zero past them): eight conditional stores, where
-    /// the copy loop became a `memcpy' call after the slots were zeroed.
+    /// its register slots and zero past them, the nil of a missing
+    /// optional argument as funcall_subr pads it: the slots cleared at
+    /// once and a store for each argument, chosen by the count (a copy
+    /// loop becomes a `memcpy' call).  At most eight.
     #[inline(always)]
     fn init<'a>(
         slot: &'a mut MaybeUninit<Self>,
@@ -203,12 +205,38 @@ impl NativeInvocation {
     ) -> &'a mut Self {
         let invocation = slot.as_mut_ptr();
         // SAFETY: every field but the jump buffer, itself MaybeUninit, is
-        // written before the record is used.
+        // written before the record is used; the argument slots written are
+        // within the eight.
         unsafe {
             std::ptr::addr_of_mut!((*invocation).target).write(target);
-            std::ptr::addr_of_mut!((*invocation).arguments).write(std::array::from_fn(|index| {
-                arguments.get(index).map_or(0, |argument| argument.word())
-            }));
+            let slots = std::ptr::addr_of_mut!((*invocation).arguments).cast::<NativeWord>();
+            slots.write_bytes(0, 8);
+            let store = |index: usize, argument: &Value| slots.add(index).write(argument.word());
+            match arguments {
+                [] => {}
+                [a] => store(0, a),
+                [a, b] => {
+                    store(0, a);
+                    store(1, b);
+                }
+                [a, b, c] => {
+                    store(0, a);
+                    store(1, b);
+                    store(2, c);
+                }
+                [a, b, c, d] => {
+                    store(0, a);
+                    store(1, b);
+                    store(2, c);
+                    store(3, d);
+                }
+                arguments => {
+                    assert!(arguments.len() <= 8, "at most eight native arguments");
+                    for (index, argument) in arguments.iter().enumerate() {
+                        store(index, argument);
+                    }
+                }
+            }
             std::ptr::addr_of_mut!((*invocation).result).write(0);
             slot.assume_init_mut()
         }
@@ -5013,6 +5041,21 @@ mod tests {
         value.wrapping_add(1 << FIXNUM_BITS)
     }
 
+    /// t when every argument past the first is nil (the zero word).
+    #[allow(clippy::too_many_arguments)]
+    extern "C" fn rest_arguments_are_nil(
+        _first: NativeWord,
+        second: NativeWord,
+        third: NativeWord,
+        fourth: NativeWord,
+        fifth: NativeWord,
+        sixth: NativeWord,
+        seventh: NativeWord,
+        eighth: NativeWord,
+    ) -> NativeWord {
+        native_boolean(second | third | fourth | fifth | sixth | seventh | eighth == 0)
+    }
+
     extern "C" fn call_maybe_quit() -> NativeWord {
         runtime_maybe_quit();
         0
@@ -6205,6 +6248,36 @@ mod tests {
             )
         };
         assert_eq!(stored, 0x1234);
+    }
+
+    #[test]
+    fn a_fixed_call_passes_nil_for_the_arguments_it_omits() {
+        // funcall_subr pads a call to a fixed-arity entry with nil up to
+        // its maximum: an optional argument the caller omits reads as nil,
+        // whatever the slots held before.
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let mut call = |arguments: &[Value]| {
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    rest_arguments_are_nil as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    arguments,
+                )
+                .expect("ordinary native return")
+        };
+        // Each call with all eight non-nil leaves its words where the next
+        // call's record goes.
+        let eight = [Value::Integer(1); 8];
+        let mut shorter = [Value::Nil; 8];
+        shorter[0] = Value::Integer(1);
+        for count in 1..=8 {
+            assert_eq!(call(&eight), Value::Nil);
+            assert_eq!(call(&shorter[..count]), Value::T, "{count} arguments");
+        }
     }
 
     #[test]

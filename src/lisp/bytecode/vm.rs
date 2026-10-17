@@ -81,10 +81,12 @@ impl BcStack {
 
     fn enter_frame(&mut self, depth: usize, function: Value, pc: usize) -> Result<(), LispError> {
         let base = self.frame + BC_HEADER_WORDS;
-        let frame = base
-            .checked_add(depth)
-            .filter(|end| *end <= BC_STACK_WORDS - BC_HEADER_WORDS)
-            .ok_or_else(stack_overflow)?;
+        // The room above BASE bounds DEPTH, with no addition to overflow.
+        const LIMIT: usize = BC_STACK_WORDS - BC_HEADER_WORDS;
+        if base > LIMIT || depth > LIMIT - base {
+            return Err(stack_overflow());
+        }
+        let frame = base + depth;
         // SAFETY: the checked footer lies after the caller's entire declared
         // frame. Its slots are disjoint from all caller/backtrace slices.
         unsafe {
@@ -166,7 +168,22 @@ impl BcStack {
         // lie in the caller's frame, disjoint from them.
         unsafe {
             let slots = self.words.as_mut_ptr().add(self.top).cast::<Value>();
-            std::ptr::copy_nonoverlapping(args.as_ptr(), slots, args.len());
+            // A store for each of a few arguments, as setup_frame's PUSH
+            // loop: cheaper than a `memcpy' call, which a copy loop becomes.
+            match args {
+                [] => {}
+                [a] => slots.write(*a),
+                [a, b] => {
+                    slots.write(*a);
+                    slots.add(1).write(*b);
+                }
+                [a, b, c] => {
+                    slots.write(*a);
+                    slots.add(1).write(*b);
+                    slots.add(2).write(*c);
+                }
+                args => std::ptr::copy_nonoverlapping(args.as_ptr(), slots, args.len()),
+            }
             for index in args.len()..entry_depth {
                 slots.add(index).write(Value::Nil);
             }
@@ -187,6 +204,23 @@ impl BcStack {
     #[inline(always)]
     pub(crate) fn truncate(&mut self, len: usize) {
         self.top = self.base + len.min(self.top - self.base);
+    }
+
+    /// A call's end: VALUE takes the function's slot, LEN operands up the
+    /// frame, and the arguments above it go (`truncate' and a push).
+    #[inline(always)]
+    fn replace_call(&mut self, len: usize, value: Value) {
+        let slot = self.base + len;
+        assert!(slot < self.top, "a call's function lies below the top");
+        // SAFETY: the slot is an initialized operand of the current frame.
+        unsafe {
+            self.words
+                .as_mut_ptr()
+                .add(slot)
+                .cast::<Value>()
+                .write(value)
+        };
+        self.top = slot + 1;
     }
 
     #[inline(always)]
@@ -211,6 +245,18 @@ impl BcStack {
     /// returned slice is no longer used. Callee frames occupy disjoint storage.
     unsafe fn slice_from(&self, start: usize, len: usize) -> &'static [Value] {
         assert!(start <= self.len() && len <= self.len() - start);
+        // SAFETY: just checked, and as the caller's contract.
+        unsafe { self.slice_from_unchecked(start, len) }
+    }
+
+    /// `slice_from' where the caller knows the slots are there: a verified
+    /// Bcall's, or ones it has just indexed.
+    ///
+    /// # Safety
+    /// As `slice_from's, and the frame holds at least START + LEN operands.
+    #[inline(always)]
+    unsafe fn slice_from_unchecked(&self, start: usize, len: usize) -> &'static [Value] {
+        debug_assert!(start <= self.len() && len <= self.len() - start);
         unsafe {
             std::slice::from_raw_parts(
                 self.words.as_ptr().add(self.base + start).cast::<Value>(),
@@ -535,10 +581,11 @@ fn bytecode_call(
 /// Bcall's `goto setup_frame' when the call does nothing else: the
 /// evaluator finds Ffuncall's entry plain (`plain_bcall_entry'),
 /// maybe_gc would not collect, and the callee is a byte-code function
-/// that takes these ARGC arguments without a &rest list and whose frame
-/// fits.  The callee's frame starts at pc 0 and the caller resumes at
-/// RETURN_PC.  Otherwise nothing changes and the full Call arm runs the
-/// instruction, signals and collections included.
+/// whose code verifies (`verify::entry_program'), that takes these ARGC
+/// arguments without a &rest list and whose frame fits.  The callee's
+/// frame starts at pc 0 and the caller resumes at RETURN_PC.  Otherwise
+/// nothing changes and the full Call arm runs the instruction, signals
+/// and collections included.
 #[inline(always)]
 fn enter_bytecode_frame(vm: &mut VmFrames<'_>, return_pc: usize, argc: usize) -> bool {
     let top = vm.interp.bc_stack.top;
@@ -584,8 +631,8 @@ fn call_plain(
     }
     let args_start = state.bc_stack.len() - argc;
     // SAFETY: as the Call arm's: the arguments stay on the caller's stack
-    // until the call returns.
-    let call_args = unsafe { state.bc_stack.slice_from(args_start, argc) };
+    // until the call returns, and verification found them there.
+    let call_args = unsafe { state.bc_stack.slice_from_unchecked(args_start, argc) };
     let backtrace_depth = state.enter_plain_funcall(func, call_args);
     let result = match callee {
         crate::lisp::eval::PlainCallee::Native(native) => {
@@ -599,13 +646,18 @@ fn call_plain(
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.leave_plain_funcall(backtrace_depth);
     Some(result.map(|value| {
-        state.bc_stack.truncate(args_start - 1);
-        state.bc_stack.push_within_frame(value);
+        state.bc_stack.replace_call(args_start - 1, value);
         (state.bc_stack.top, state.bc_stack.len())
     }))
 }
 
-#[inline(never)]
+/// Bcall's `goto setup_frame' into CLOSURE, FUNC's function, when the call
+/// does nothing else (see `enter_bytecode_frame'): the callee's frame and
+/// backtrace record pushed, its arguments and optionals' nils in place.
+/// The answer is the stack's top and the frame's depth; None, with nothing
+/// changed but the stack's TOP, for the full Call arm.  Inline in the
+/// verified loop, as setup_frame is in exec_byte_code.
+#[inline(always)]
 fn enter_closure_frame(
     vm: &mut VmFrames<'_>,
     top: usize,
@@ -623,7 +675,9 @@ fn enter_closure_frame(
         return None;
     }
     let function = Value::Closure(closure);
-    let mut callee = ByteCodeObject::for_call(closure)?;
+    // SAFETY: nothing below enters a closure or collects a string before
+    // the program is copied into the frame.
+    let callee = unsafe { super::verify::entry_program(closure)?.as_ref() };
     let ArgSpec::Packed {
         mandatory,
         nonrest,
@@ -642,8 +696,10 @@ fn enter_closure_frame(
         return None;
     }
     // SAFETY: as the Call arm's: the caller's argument slots stay as they
-    // are below the callee's frame until it returns or unwinds.
-    let call_args = unsafe { state.bc_stack.slice_from(args_start, argc) };
+    // are below the callee's frame until it returns or unwinds. Both
+    // callers found the function and the arguments on the stack: verified
+    // code, or `enter_bytecode_frame's index of the function.
+    let call_args = unsafe { state.bc_stack.slice_from_unchecked(args_start, argc) };
     if state
         .bc_stack
         .enter_frame(callee.stack_depth, function, return_pc)
@@ -652,9 +708,8 @@ fn enter_closure_frame(
         return None;
     }
     let backtrace_depth = state.enter_plain_funcall(func, call_args);
-    callee.verified = super::verify::verified_code(&callee, entry_depth);
     vm.frames.push(BcFrame {
-        program: std::mem::replace(vm.program, callee),
+        program: std::mem::replace(vm.program, callee.clone()),
         base: args_start - 1,
         handlers_len: vm.handlers.len(),
         unwinds_len: state.bc_unwinds.len(),
@@ -671,7 +726,7 @@ fn enter_closure_frame(
 /// popped and the caller gets VALUE; the answer is the pc it resumes at,
 /// the stack's top and the frame's depth.  Otherwise the full return path runs the
 /// unwinding; nothing changes but the stack's TOP, which is stored.
-#[inline(never)]
+#[inline(always)]
 fn return_to_bytecode_frame(
     vm: &mut VmFrames<'_>,
     top: usize,
@@ -683,8 +738,7 @@ fn return_to_bytecode_frame(
     let frame = vm.frames.pop_if(|frame| unwinds <= frame.unwinds_len)?;
     state.leave_plain_funcall(frame.backtrace_depth);
     let resume = state.bc_stack.leave_frame();
-    state.bc_stack.truncate(frame.base);
-    state.bc_stack.push_within_frame(value);
+    state.bc_stack.replace_call(frame.base, value);
     *vm.program = frame.program;
     *vm.op_error_frames = frame.op_error_frames;
     vm.handlers.truncate(frame.handlers_len);
@@ -980,10 +1034,6 @@ enum FastExit {
     /// or a call ran Lisp, which may have changed the frame's code; the
     /// stack's top and the frame's depth.
     Switched(usize, usize),
-    /// Inside the verified loop only: a call entered a byte-code frame at
-    /// pc 0, its verification just found (`enter_closure_frame'); the
-    /// stack's top.
-    Entered(usize),
     /// The instruction's signal, raised after its own work (a Bcall's).
     Raised(super::Instr, LispError),
 }
@@ -1424,45 +1474,47 @@ fn run_verified(
     // One pass of the inner loop runs one frame; a call or return that
     // switches frames starts the next pass on the new frame's program.
     loop {
-        let constants = vm.program.constants;
-        // SAFETY: top lies within the active frame.
-        let mut sp = unsafe { words.add(top) };
+        let mut constants = vm.program.constants;
+        // SP addresses the top operand, as bytecode.c's `top' does, so the
+        // top is `*sp' and no op needs SP's neighbor first. With no operand
+        // it addresses the word below the frame's first slot: the last word
+        // of the header beneath the frame, which no op reads.
+        // SAFETY: top lies within the active frame, above that header.
+        let mut sp = unsafe { words.add(top - 1) };
         let mut at = *pc;
         let exit = 'run: loop {
+            // AT stays at the op until its arm moves past it (by the op's
+            // length) or jumps, so the head reads the byte and dispatches,
+            // and the op's offset is AT itself.
             let offset = at;
             // SAFETY (all code reads below): verified instructions, operands
             // included, lie within the code.
             let byte = unsafe { *code.get_unchecked(at) };
-            at += 1;
             macro_rules! fetch {
-                () => {{
-                    let value = u16::from(unsafe { *code.get_unchecked(at) });
-                    at += 1;
-                    value
-                }};
+                () => {
+                    u16::from(unsafe { *code.get_unchecked(at + 1) })
+                };
             }
             macro_rules! fetch2 {
-                () => {{
-                    let value = u16::from_le_bytes(unsafe {
-                        [*code.get_unchecked(at), *code.get_unchecked(at + 1)]
-                    });
-                    at += 2;
-                    value
-                }};
+                () => {
+                    u16::from_le_bytes(unsafe {
+                        [*code.get_unchecked(at + 1), *code.get_unchecked(at + 2)]
+                    })
+                };
             }
             // SAFETY (stack accesses below): verification found at least the
             // op's operands on the stack and room for its pushes.
             macro_rules! slot {
                 ($n:expr) => {
-                    unsafe { &mut *sp.sub($n + 1) }
+                    unsafe { &mut *sp.sub($n) }
                 };
             }
             macro_rules! push {
                 ($value:expr) => {{
                     let value = $value;
                     unsafe {
-                        sp.write(value);
                         sp = sp.add(1);
+                        sp.write(value);
                     }
                 }};
             }
@@ -1476,14 +1528,15 @@ fn run_verified(
             macro_rules! slow {
                 () => {{
                     // SAFETY: sp lies within the active frame.
-                    let top = unsafe { sp.offset_from(words) as usize };
+                    let top = unsafe { sp.offset_from(words) as usize } + 1;
                     break 'run op_in_place(vm, code, offset, constants.len(), top, pc);
                 }};
             }
+            // A jump op is three bytes; one to before its end is backward.
             macro_rules! jump {
                 ($target:expr) => {{
                     let destination = usize::from($target);
-                    if destination < at {
+                    if destination < at + 3 {
                         *quitcounter = quitcounter.wrapping_add(1);
                         if *quitcounter == 0 {
                             *quitcounter = 1;
@@ -1515,34 +1568,62 @@ fn run_verified(
             // a plain call into native code or a subr runs from here; any
             // other runs the full sequence and resumes after it.
             macro_rules! call {
-                ($count:expr) => {{
+                ($count:expr, $len:expr) => {{
                     let count = $count;
+                    let next = at + $len;
                     let argc = usize::from(count);
                     let func = *slot!(argc);
                     // SAFETY: sp lies within the active frame.
-                    let top = unsafe { sp.offset_from(words) as usize };
+                    let top = unsafe { sp.offset_from(words) as usize } + 1;
                     let function = callee_function(func);
                     if let Some(closure) = function.closure_ref() {
                         if let Some((top, _)) =
-                            enter_closure_frame(vm, top, at, argc, func, closure)
+                            enter_closure_frame(vm, top, next, argc, func, closure)
                         {
-                            *pc = 0;
-                            break 'run FastExit::Entered(top);
+                            // The callee's frame runs on from pc 0, for which
+                            // `entry_program' found its code current and
+                            // verified with these operands.
+                            // SAFETY: as the outer loop's slice.
+                            code = unsafe { vm.program.code.bytes_unguarded() }.0;
+                            constants = vm.program.constants;
+                            // SAFETY: TOP lies within the new frame.
+                            sp = unsafe { words.add(top - 1) };
+                            at = 0;
+                            continue 'run;
                         }
                     } else if function.is_vectorlike()
                         && let Some(result) = call_plain(vm, top, argc, func)
                     {
                         match result {
                             Ok((top, depth)) => {
-                                *pc = at;
+                                // The call ran in this frame, which goes on
+                                // after it: its code is still the bytes
+                                // verified unless the call stored into the
+                                // string, and verification found the call's
+                                // successor with the operands it left.
+                                // SAFETY: as the outer loop's slice.
+                                let (bytes, current) = unsafe { vm.program.code.bytes_unguarded() };
+                                if current
+                                    && vm
+                                        .program
+                                        .verified
+                                        .is_some_and(super::verify::VerifiedCode::is_current)
+                                {
+                                    code = bytes;
+                                    // SAFETY: TOP lies within the frame.
+                                    sp = unsafe { words.add(top - 1) };
+                                    at = next;
+                                    continue 'run;
+                                }
+                                *pc = next;
                                 break 'run FastExit::Switched(top, depth);
                             }
                             Err(error) => {
-                                *pc = at;
+                                *pc = next;
                                 break 'run FastExit::Raised(
                                     super::Instr {
                                         offset,
-                                        len: at - offset,
+                                        len: $len,
                                         op: Op::Call(count),
                                     },
                                     error,
@@ -1550,21 +1631,21 @@ fn run_verified(
                             }
                         }
                     }
-                    match bytecode_call(vm, top, argc, at, offset) {
+                    match bytecode_call(vm, top, argc, next, offset) {
                         Ok(CallOutcome::Entered(top, depth)) => {
                             *pc = 0;
                             break 'run FastExit::Switched(top, depth);
                         }
                         Ok(CallOutcome::Returned(top, depth)) => {
-                            *pc = at;
+                            *pc = next;
                             break 'run FastExit::Switched(top, depth);
                         }
                         Err(error) => {
-                            *pc = at;
+                            *pc = next;
                             break 'run FastExit::Raised(
                                 super::Instr {
                                     offset,
-                                    len: at - offset,
+                                    len: $len,
                                     op: Op::Call(count),
                                 },
                                 error,
@@ -1611,6 +1692,33 @@ fn run_verified(
                     push!(unsafe { constants.get_unchecked(index) });
                 }};
             }
+            // Bconstant: the index is in the opcode.  Each such op has its
+            // own arm, and so do the calls and variable ops below with a
+            // count or an index in their opcode, so that no arm reads the
+            // opcode again: the dispatch's register then holds it alone.
+            macro_rules! constant1 {
+                ($index:expr) => {{
+                    constant!($index);
+                    at += 1;
+                }};
+            }
+            // Bsetcar (CAR) or Bsetcdr.
+            macro_rules! set_car_cdr {
+                ($car:expr) => {{
+                    let Some(cell) = slot!(1).cons_ref() else {
+                        slow!()
+                    };
+                    let value = *slot!(0);
+                    if $car {
+                        cell.car.set(value);
+                    } else {
+                        cell.cdr.set(value);
+                    }
+                    *slot!(1) = value;
+                    drop_values!(1);
+                    at += 1;
+                }};
+            }
             macro_rules! goto_if {
                 ($jump_when_nil:expr) => {{
                     let target = fetch2!();
@@ -1618,6 +1726,8 @@ fn run_verified(
                     drop_values!(1);
                     if is_nil == $jump_when_nil {
                         jump!(target);
+                    } else {
+                        at += 3;
                     }
                 }};
             }
@@ -1628,6 +1738,7 @@ fn run_verified(
                         jump!(target);
                     } else {
                         drop_values!(1);
+                        at += 3;
                     }
                 }};
             }
@@ -1641,6 +1752,7 @@ fn run_verified(
                     let Some(n) = x.$op(y) else { slow!() };
                     *slot!(1) = Value::Integer(n);
                     drop_values!(1);
+                    at += 1;
                 }};
             }
             macro_rules! comparison {
@@ -1650,6 +1762,7 @@ fn run_verified(
                 };
                 *slot!(1) = if x $op y { Value::T } else { Value::Nil };
                 drop_values!(1);
+                at += 1;
             }};
         }
             macro_rules! unary {
@@ -1657,6 +1770,7 @@ fn run_verified(
                     let Some(x) = slot!(0).fixnum() else { slow!() };
                     let Some(n) = $op(x) else { slow!() };
                     *slot!(0) = Value::Integer(n);
+                    at += 1;
                 }};
             }
             macro_rules! car_cdr {
@@ -1669,36 +1783,74 @@ fn run_verified(
                                 cell.cdr.get()
                             }
                         }
-                        Kind::Nil => continue,
+                        Kind::Nil => {
+                            at += 1;
+                            continue;
+                        }
                         _ if $safe => Value::Nil,
                         // The full arm signals wrong-type-argument.
                         _ => slow!(),
                     };
                     *slot!(0) = replacement;
+                    at += 1;
                 }};
             }
             match byte {
-                0o001 => stack_ref!(1),
-                0o002 => stack_ref!(2),
-                0o003 => stack_ref!(3),
-                0o004 => stack_ref!(4),
-                0o005 => stack_ref!(5),
-                0o006 => stack_ref!(usize::from(fetch!())),
-                0o007 => stack_ref!(usize::from(fetch2!())),
-                0o040 | 0o041 | 0o042 | 0o043 | 0o044 | 0o045 => {
-                    call!(u16::from(byte - super::B_CALL))
+                0o001 => {
+                    stack_ref!(1);
+                    at += 1;
                 }
-                0o046 => call!(fetch!()),
-                0o047 => call!(fetch2!()),
-                super::B_STACK_SET => stack_set!(fetch!()),
-                super::B_STACK_SET2 => stack_set!(fetch2!()),
+                0o002 => {
+                    stack_ref!(2);
+                    at += 1;
+                }
+                0o003 => {
+                    stack_ref!(3);
+                    at += 1;
+                }
+                0o004 => {
+                    stack_ref!(4);
+                    at += 1;
+                }
+                0o005 => {
+                    stack_ref!(5);
+                    at += 1;
+                }
+                0o006 => {
+                    stack_ref!(usize::from(fetch!()));
+                    at += 2;
+                }
+                0o007 => {
+                    stack_ref!(usize::from(fetch2!()));
+                    at += 3;
+                }
+                0o040 => call!(0u16, 1),
+                0o041 => call!(1u16, 1),
+                0o042 => call!(2u16, 1),
+                0o043 => call!(3u16, 1),
+                0o044 => call!(4u16, 1),
+                0o045 => call!(5u16, 1),
+                0o046 => call!(fetch!(), 2),
+                0o047 => call!(fetch2!(), 3),
+                super::B_STACK_SET => {
+                    stack_set!(fetch!());
+                    at += 2;
+                }
+                super::B_STACK_SET2 => {
+                    stack_set!(fetch2!());
+                    at += 3;
+                }
                 // Bdup.
                 0o211 => {
                     let top = *slot!(0);
                     push!(top);
+                    at += 1;
                 }
                 // Bdiscard.
-                0o210 => drop_values!(1),
+                0o210 => {
+                    drop_values!(1);
+                    at += 1;
+                }
                 super::B_DISCARDN => {
                     let raw = fetch!();
                     let count = usize::from(raw & 0x7f);
@@ -1709,15 +1861,76 @@ fn run_verified(
                     } else {
                         drop_values!(count);
                     }
+                    at += 2;
                 }
-                0o300 | 0o301 | 0o302 | 0o303 | 0o304 | 0o305 | 0o306 | 0o307 | 0o310 | 0o311
-                | 0o312 | 0o313 | 0o314 | 0o315 | 0o316 | 0o317 | 0o320 | 0o321 | 0o322 | 0o323
-                | 0o324 | 0o325 | 0o326 | 0o327 | 0o330 | 0o331 | 0o332 | 0o333 | 0o334 | 0o335
-                | 0o336 | 0o337 | 0o340 | 0o341 | 0o342 | 0o343 | 0o344 | 0o345 | 0o346 | 0o347
-                | 0o350 | 0o351 | 0o352 | 0o353 | 0o354 | 0o355 | 0o356 | 0o357 | 0o360 | 0o361
-                | 0o362 | 0o363 | 0o364 | 0o365 | 0o366 | 0o367 | 0o370 | 0o371 | 0o372 | 0o373
-                | 0o374 | 0o375 | 0o376 | 0o377 => constant!(byte - super::B_CONSTANT),
-                super::B_CONSTANT2 => constant!(fetch2!()),
+                0o300 => constant1!(0u16),
+                0o301 => constant1!(1u16),
+                0o302 => constant1!(2u16),
+                0o303 => constant1!(3u16),
+                0o304 => constant1!(4u16),
+                0o305 => constant1!(5u16),
+                0o306 => constant1!(6u16),
+                0o307 => constant1!(7u16),
+                0o310 => constant1!(8u16),
+                0o311 => constant1!(9u16),
+                0o312 => constant1!(10u16),
+                0o313 => constant1!(11u16),
+                0o314 => constant1!(12u16),
+                0o315 => constant1!(13u16),
+                0o316 => constant1!(14u16),
+                0o317 => constant1!(15u16),
+                0o320 => constant1!(16u16),
+                0o321 => constant1!(17u16),
+                0o322 => constant1!(18u16),
+                0o323 => constant1!(19u16),
+                0o324 => constant1!(20u16),
+                0o325 => constant1!(21u16),
+                0o326 => constant1!(22u16),
+                0o327 => constant1!(23u16),
+                0o330 => constant1!(24u16),
+                0o331 => constant1!(25u16),
+                0o332 => constant1!(26u16),
+                0o333 => constant1!(27u16),
+                0o334 => constant1!(28u16),
+                0o335 => constant1!(29u16),
+                0o336 => constant1!(30u16),
+                0o337 => constant1!(31u16),
+                0o340 => constant1!(32u16),
+                0o341 => constant1!(33u16),
+                0o342 => constant1!(34u16),
+                0o343 => constant1!(35u16),
+                0o344 => constant1!(36u16),
+                0o345 => constant1!(37u16),
+                0o346 => constant1!(38u16),
+                0o347 => constant1!(39u16),
+                0o350 => constant1!(40u16),
+                0o351 => constant1!(41u16),
+                0o352 => constant1!(42u16),
+                0o353 => constant1!(43u16),
+                0o354 => constant1!(44u16),
+                0o355 => constant1!(45u16),
+                0o356 => constant1!(46u16),
+                0o357 => constant1!(47u16),
+                0o360 => constant1!(48u16),
+                0o361 => constant1!(49u16),
+                0o362 => constant1!(50u16),
+                0o363 => constant1!(51u16),
+                0o364 => constant1!(52u16),
+                0o365 => constant1!(53u16),
+                0o366 => constant1!(54u16),
+                0o367 => constant1!(55u16),
+                0o370 => constant1!(56u16),
+                0o371 => constant1!(57u16),
+                0o372 => constant1!(58u16),
+                0o373 => constant1!(59u16),
+                0o374 => constant1!(60u16),
+                0o375 => constant1!(61u16),
+                0o376 => constant1!(62u16),
+                0o377 => constant1!(63u16),
+                super::B_CONSTANT2 => {
+                    constant!(fetch2!());
+                    at += 3;
+                }
                 // Bgoto.
                 0o202 => {
                     let target = fetch2!();
@@ -1733,9 +1946,27 @@ fn run_verified(
                     drop_values!(1);
                     if !vm.frames.is_empty() {
                         // SAFETY: sp lies within the active frame.
-                        let top = unsafe { sp.offset_from(words) as usize };
+                        let top = unsafe { sp.offset_from(words) as usize } + 1;
                         if let Some((resume, top, depth)) = return_to_bytecode_frame(vm, top, value)
                         {
+                            // The caller's frame runs on here if its code is
+                            // still the bytes verified and verification found
+                            // the call's successor with these operands.
+                            // SAFETY: as the outer loop's slice.
+                            let (bytes, current) = unsafe { vm.program.code.bytes_unguarded() };
+                            if current
+                                && vm
+                                    .program
+                                    .verified
+                                    .is_some_and(|verified| verified.admits(resume, depth))
+                            {
+                                code = bytes;
+                                constants = vm.program.constants;
+                                // SAFETY: TOP lies within the caller's frame.
+                                sp = unsafe { words.add(top - 1) };
+                                at = resume;
+                                continue 'run;
+                            }
                             *pc = resume;
                             break 'run FastExit::Switched(top, depth);
                         }
@@ -1746,6 +1977,7 @@ fn run_verified(
                 0o077 => {
                     let top = slot!(0);
                     *top = if top.is_nil() { Value::T } else { Value::Nil };
+                    at += 1;
                 }
                 // Bcons.
                 0o102 => {
@@ -1753,6 +1985,7 @@ fn run_verified(
                     let car = *slot!(1);
                     *slot!(1) = Value::cons(car, cdr);
                     drop_values!(1);
+                    at += 1;
                 }
                 // Beq.
                 0o075 => {
@@ -1765,6 +1998,7 @@ fn run_verified(
                     let equal = crate::lisp::primitives::values_eq_plain(&left, &right);
                     *slot!(1) = if equal { Value::T } else { Value::Nil };
                     drop_values!(1);
+                    at += 1;
                 }
                 // Bconsp.
                 0o072 => {
@@ -1775,6 +2009,7 @@ fn run_verified(
                         _ => false,
                     };
                     *slot!(0) = if is_cons { Value::T } else { Value::Nil };
+                    at += 1;
                 }
                 0o134 => arithmetic!(checked_add),
                 0o132 => arithmetic!(checked_sub),
@@ -1801,6 +2036,7 @@ fn run_verified(
                     };
                     *slot!(1) = value;
                     drop_values!(1);
+                    at += 1;
                 }
                 // Baset: [.. vector index value]; aset returns the value.
                 0o111 => {
@@ -1815,6 +2051,7 @@ fn run_verified(
                     }
                     *slot!(2) = value;
                     drop_values!(2);
+                    at += 1;
                 }
                 0o100 => car_cdr!(true, false),
                 0o101 => car_cdr!(false, false),
@@ -1834,17 +2071,20 @@ fn run_verified(
                         false
                     };
                     *slot!(0) = if symbolp { Value::T } else { Value::Nil };
+                    at += 1;
                 }
                 // Bstringp.
                 0o073 => {
                     let stringp = slot!(0).is_string();
                     *slot!(0) = if stringp { Value::T } else { Value::Nil };
+                    at += 1;
                 }
                 // Blistp.
                 0o074 => {
                     let value = *slot!(0);
                     let listp = value.is_nil() || value.is_cons();
                     *slot!(0) = if listp { Value::T } else { Value::Nil };
+                    at += 1;
                 }
                 // Bnumberp.
                 0o247 => {
@@ -1853,6 +2093,7 @@ fn run_verified(
                         || value.is_float()
                         || (value.is_vectorlike() && value.is_integer());
                     *slot!(0) = if numberp { Value::T } else { Value::Nil };
+                    at += 1;
                 }
                 // Bintegerp.
                 0o250 => {
@@ -1860,6 +2101,7 @@ fn run_verified(
                     let integerp =
                         value.fixnum().is_some() || (value.is_vectorlike() && value.is_integer());
                     *slot!(0) = if integerp { Value::T } else { Value::Nil };
+                    at += 1;
                 }
                 // Bmemq on a fixnum or a symbol, whose words are eq exactly
                 // when they are the same word, unless an element might be a
@@ -1897,28 +2139,76 @@ fn run_verified(
                     };
                     *slot!(1) = found;
                     drop_values!(1);
+                    at += 1;
                 }
                 // Bsetcar and Bsetcdr on a cons; anything else signals in the
                 // full arm.
-                0o240 | 0o241 => {
-                    let Some(cell) = slot!(1).cons_ref() else {
-                        slow!()
-                    };
-                    let value = *slot!(0);
-                    if byte == 0o240 {
-                        cell.car.set(value);
-                    } else {
-                        cell.cdr.set(value);
-                    }
-                    *slot!(1) = value;
-                    drop_values!(1);
+                0o240 => set_car_cdr!(true),
+                0o241 => set_car_cdr!(false),
+                0o010 => {
+                    varref!(0u16);
+                    at += 1;
                 }
-                0o010 | 0o011 | 0o012 | 0o013 | 0o014 | 0o015 => varref!(u16::from(byte - 0o010)),
-                0o016 => varref!(fetch!()),
-                0o017 => varref!(fetch2!()),
-                0o020 | 0o021 | 0o022 | 0o023 | 0o024 | 0o025 => varset!(u16::from(byte - 0o020)),
-                0o026 => varset!(fetch!()),
-                0o027 => varset!(fetch2!()),
+                0o011 => {
+                    varref!(1u16);
+                    at += 1;
+                }
+                0o012 => {
+                    varref!(2u16);
+                    at += 1;
+                }
+                0o013 => {
+                    varref!(3u16);
+                    at += 1;
+                }
+                0o014 => {
+                    varref!(4u16);
+                    at += 1;
+                }
+                0o015 => {
+                    varref!(5u16);
+                    at += 1;
+                }
+                0o016 => {
+                    varref!(fetch!());
+                    at += 2;
+                }
+                0o017 => {
+                    varref!(fetch2!());
+                    at += 3;
+                }
+                0o020 => {
+                    varset!(0u16);
+                    at += 1;
+                }
+                0o021 => {
+                    varset!(1u16);
+                    at += 1;
+                }
+                0o022 => {
+                    varset!(2u16);
+                    at += 1;
+                }
+                0o023 => {
+                    varset!(3u16);
+                    at += 1;
+                }
+                0o024 => {
+                    varset!(4u16);
+                    at += 1;
+                }
+                0o025 => {
+                    varset!(5u16);
+                    at += 1;
+                }
+                0o026 => {
+                    varset!(fetch!());
+                    at += 2;
+                }
+                0o027 => {
+                    varset!(fetch2!());
+                    at += 3;
+                }
                 // Every other opcode, named so that the match covers all 256
                 // bytes and its jump table needs no range check.  Each byte
                 // in this match is its own case: rustc tests a range
@@ -1943,18 +2233,6 @@ fn run_verified(
             // The call left the stack as its signal found it.
             return (exit, None);
         }
-        if let FastExit::Entered(new_top) = exit {
-            // `verified_code' has just found the entered frame's code
-            // current and verified for its entry at pc 0 with its depth,
-            // which is what `admits' would test.
-            if vm.program.verified.is_some() {
-                // SAFETY: as below.
-                code = unsafe { vm.program.code.bytes_unguarded() }.0;
-                top = new_top;
-                continue;
-            }
-            return (FastExit::Resume, None);
-        }
         if let FastExit::Switched(new_top, depth) = exit {
             // The new frame's program, stack (DEPTH operands) and pc are in
             // place.
@@ -1974,7 +2252,7 @@ fn run_verified(
             return (FastExit::Resume, None);
         }
         // SAFETY: sp stayed within the active frame.
-        return (exit, Some(unsafe { sp.offset_from(words) as usize }));
+        return (exit, Some(unsafe { sp.offset_from(words) as usize } + 1));
     }
 }
 
@@ -3177,7 +3455,7 @@ fn run_frames(
                     last_instruction = Some(instr);
                     return Err(error);
                 }
-                FastExit::Resume | FastExit::Switched(..) | FastExit::Entered(..) => {
+                FastExit::Resume | FastExit::Switched(..) => {
                     unreachable!("a frame switch resumes above")
                 }
             };
