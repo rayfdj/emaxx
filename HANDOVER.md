@@ -918,6 +918,30 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   bindat 1.126 → 1.050, native-to-bytecode 1.425 → 1.362, interpreted
   calls 1.136 → 1.073, native-to-interpreted 1.254 → 1.201, undo 1.646 →
   1.622; the rest within 0.005.
+- **Small blocks from per-thread lists.** On Linux the host allocator
+  takes a block of at most 256 bytes (aligned to at most 16) from libc in
+  a class of 16 bytes and keeps a freed one on its thread's list for the
+  class, up to 64 blocks, for the thread's next request in the class; a
+  reallocation that stays in its class keeps the block, and the lists go
+  back to libc when their thread exits (a destructor arranged before the
+  thread's first block is kept; a block freed while it registers, or
+  after it ran, goes to libc). Taking a block is 17 instructions and
+  keeping one 16, where glibc's `malloc` and `free` took about 160 a pair
+  in undo (its per-thread cache holds seven blocks a size, and its `free`
+  goes to the arena past that): undo's 1,340 allocations a unit cost
+  about 217,000 instructions in the allocator and 85,000 now, nine in ten
+  served from the lists. Each entry point is a function of its own, as
+  `malloc` is: inlined, the allocator went into every cold allocating
+  path of a hot function, and the fixnum `1+` kept two more registers for
+  its bignum case (mapcar 1.293 → 1.316). With it, `RootedVec` skips the
+  registry test on a push within its capacity and takes a first buffer
+  zeroed from the allocator instead of clearing it, and the list walks of
+  `visit_list_elements` and of `mapcar`, `mapc` and `mapcan` test the cons
+  by its word. Undo 1.622
+  → 1.470, mapcar 1.319 → 1.287, bindat 1.050 → 1.022, sort 1.169 →
+  1.155, interpreted dynamic 1.161 → 1.150, interpreted-to-native 1.325 →
+  1.314; native-to-interpreted 1.201 → 1.211 (`eval_sub`, with no change
+  on its path); the rest within 0.005.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1015,29 +1039,40 @@ save-buffer tests and
 the build before too, and
 `process_tls_state_survives_collection_before_and_after_async_handshake`,
 whose GNU run disagreed under that load and which passes alone, 3 of 3.
+For the small-block lists: the same 3,134 of 3,138 with the same four
+failures, less
+`subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`,
+which failed in that load on this round's builds (its child had exited
+and been reaped before the first `process-live-p`): under twelve
+concurrent runs it fails 12 of 60 times on the eval_sub round's build
+and 5 of 60 on this one, and passes alone, 3 of 3; and the four
+allocator tests, three of them new (reuse, alignment and zeroing past
+the lists' depth, reallocation within and across classes, and blocks
+freed by another thread that then exits).
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.62 |
-| upstream-sort (4 units) | 3.26 (at 1 unit) | 1.17 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.47 |
+| upstream-sort (4 units) | 3.26 (at 1 unit) | 1.16 |
 | interpreted-calls | 2.10 | 1.07 |
 | interpreted-lexical | 2.04 | 1.07 |
-| interpreted-dynamic | 2.14 | 1.16 |
-| mapcar | 2.95 | 1.32 |
+| interpreted-dynamic | 2.14 | 1.15 |
+| mapcar | 2.95 | 1.29 |
 | bytecode-calls | 3.30 | 1.25 |
 | bytecode-to-native | — | 1.64 |
-| interpreted-to-native | — | 1.32 |
-| native-to-interpreted / -bytecode | — | 1.20 / 1.36 |
+| interpreted-to-native | — | 1.31 |
+| native-to-interpreted / -bytecode | — | 1.21 / 1.37 |
 | cons-allocation / list-traversal | 2.24 / — | 1.11 / 1.12 |
-| native-execution | — | 1.14 |
-| bindat | — | 1.05 |
-| explicit-gc | — | 0.88 |
+| native-execution | — | 1.15 |
+| bindat | — | 1.02 |
+| explicit-gc | — | 0.87 |
 
-The table is one full run of all sixteen on the eval_sub round's final
-build, compiled by Rust 1.99.1 as the round before it was (the rounds
+The table is one full run of all sixteen on the small-block round's build
+before the free path's room counter (which moved undo 1.476 → 1.470),
+compiled by Rust 1.99.1 as the two rounds before it were (the rounds
 above those were measured on 1.97.0). Undo read 1.67 to 1.70 across the
 allocation sweep's builds (the allocator's state), and a collection's
 stack scan or a hash table's growth falling in the difference moves the
@@ -1186,7 +1221,10 @@ rust-analyzer's cargo watcher failed to start. **On `d4f6b94`** (the
 first CI on Rust 1.99.1): full Rust gate passed (run 39003317809; 3,136
 tests in the counted groups, the two ignores, plus bins and
 integration), frozen 7,928 of 7,928 across 519 files, no unsuccessful
-execution, on its first attempt (run 39003319679). Locally,
+execution, on its first attempt (run 39003319679). **On `200e450`**
+(eval_sub's direct path): full Rust gate passed (run 39007442705; 3,136
+tests), frozen 7,928 of 7,928, no unsuccessful execution, on its first
+attempt (run 39007444124). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1289,20 +1327,31 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   GNU's 147 across Ffuncall, funcall_general and funcall_subr;
   `Value::cons` is 37 against `Fcons`' 27 (the per-cell serial, the
   allocated and mark bits, and a live count GNU does not keep).
-- Undo's remainder (1.67; about 2.09 million instructions a unit
-  against GNU's 1.25 million) is broad: allocation (about 3,000 calls
-  into the allocator, `memset` and `memcpy` a unit, 230,000 to 290,000
-  instructions in malloc and free as its state varies: vectors' growth
-  530 calls, string coding 390, special bindings' records copied by
-  `memcpy` 240 (a record is 136 bytes, past the inline copy), errors'
-  condition types 106; the window
-  configuration snapshot copies its lists on each restore, about 19,000;
-  `ert-set-test` grows a vector each run, about 15,000), the source interpreter (`eval_sub` 181,000
-  against 90,000), ops run in place (`op_in_place` and `exec_op` about
-  105,000 for 770 ops), plain subr calls (`call_plain` about 196 a call,
-  340 a unit), byte-code frame entry (290 a call, 165 a unit) and
-  native code's subr calls (`invoke_subr`, `invoke_native_funcall`
-  65,000).
+- Undo's remainder (1.47; about 1.84 million instructions a unit
+  against GNU's 1.25 million, on the small-block round's build) is
+  broad. Ops run in place: 622 a unit leave the verified loop through
+  `op_in_place` and `exec_op` (Bvarref of a symbol that is not plain 92,
+  Bvarbind 97 with its 144-byte record pushed by `memcpy`, Bunbind 91,
+  and buffer primitives: `goto-char`, `point-min`, `point-max`,
+  `gethash`, `get`, `set`, `memq`), each about 190 instructions before
+  its own work (the op decoded again, `exec_op`'s frame and match, and
+  the loop's re-entry); GNU runs them in `exec_byte_code`'s loop.
+  Allocation is about 1,330 blocks a unit, 85,000 instructions in the
+  allocator (217,000 before the lists), from copies GNU does not make:
+  `string_like` decoding a string to read a flag or compare a name (124
+  a unit: `format` five times a call, `get-buffer`, `insert`), `apply`
+  copying its arguments twice, `condition-case` copying each clause to
+  read its head, a change hook's list copied to test it for nil. At 1.67
+  it was about 3,000 calls into the allocator, `memset` and `memcpy` a
+  unit, 230,000 to 290,000 instructions in malloc and free as their state
+  varied (vectors' growth 530 calls, string coding 390, special bindings'
+  records 240, errors' condition types 106). `eval_sub` is 140,000 a
+  unit against GNU's 90,000 (181,000 at 1.67). Measured at 1.67: the
+  window configuration snapshot copies its lists on each restore (about
+  19,000), `ert-set-test` grows a vector each run (about 15,000), plain
+  subr calls (`call_plain` about 196 a call, 340 a unit), byte-code frame
+  entry (290 a call, 165 a unit) and native code's subr calls
+  (`invoke_subr`, `invoke_native_funcall` 65,000).
 
 ## How the work is split
 
@@ -1335,9 +1384,9 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 1.64, undo 1.62, native-to-bytecode
-   1.36, interpreted-to-native 1.32, mapcar 1.32, bytecode calls 1.25,
-   native-to-interpreted 1.20, sort 1.17). The remaining costs are listed
+   above; worst now bytecode-to-native 1.64, undo 1.47, native-to-bytecode
+   1.37, interpreted-to-native 1.31, mapcar 1.29, bytecode calls 1.25,
+   native-to-interpreted 1.21, sort 1.16, interpreted dynamic 1.15). The remaining costs are listed
    under "Where the remaining gap is": the native call layer needs
    structural work (a lighter native boundary: inlining `invoke_fixed` into
    `call_plain` measured 20 instructions a call worse), and the byte-code

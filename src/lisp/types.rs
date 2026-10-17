@@ -2601,20 +2601,18 @@ impl Value {
     ) -> Result<(), LispError> {
         let mut current = *self;
         let mut seen = CycleGuard::new();
-        loop {
-            match current.kind() {
-                Kind::Nil => return Ok(()),
-                Kind::Cons(cell) => {
-                    if seen.step(ConsCell::identity(&cell)) {
-                        return Err(circular_list_error());
-                    }
-                    visit(cell.car.get())?;
-                    current = cell.cdr.get();
-                }
-                _ => {
-                    return Err(LispError::WrongTypeArgument("listp".into(), current));
-                }
+        // CONSP and NILP by the word, as FOR_EACH_TAIL tests them.
+        while let Some(cell) = current.cons_ref() {
+            if seen.step(ConsCell::identity(&cell)) {
+                return Err(circular_list_error());
             }
+            visit(cell.car.get())?;
+            current = cell.cdr.get();
+        }
+        if current.is_nil() {
+            Ok(())
+        } else {
+            Err(LispError::WrongTypeArgument("listp".into(), current))
         }
     }
 

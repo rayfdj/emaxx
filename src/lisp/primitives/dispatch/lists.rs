@@ -2140,7 +2140,7 @@ fn map_sequence(
         Kind::Cons(_) => {
             let mut tail = *sequence;
             for _ in 0..length {
-                let Kind::Cons(cell) = tail.kind() else {
+                let Some(cell) = tail.cons_ref() else {
                     break;
                 };
                 call(interp, cell.car.get(), env)?;

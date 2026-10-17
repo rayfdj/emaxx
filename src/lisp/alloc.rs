@@ -651,8 +651,13 @@ impl<T> RootedVec<T> {
 
     #[inline(never)]
     fn register(&mut self, region: (usize, usize)) {
-        self.region = region;
         self.clear_spare();
+        self.record(region);
+    }
+
+    /// Enter REGION, the buffer whose spare room is zero, in the registry.
+    fn record(&mut self, region: (usize, usize)) {
+        self.region = region;
         let mut roots = heap_roots();
         if self.slot == UNREGISTERED {
             self.slot = match roots.free_slots.pop() {
@@ -676,12 +681,39 @@ impl<T> RootedVec<T> {
     }
 
     pub fn push(&mut self, value: T) {
+        // Within the capacity the buffer stays where it was registered.
+        if self.inner.len() < self.inner.capacity() {
+            self.inner.push(value);
+            return;
+        }
         self.inner.push(value);
         self.refresh();
     }
 
-    /// Room for ADDITIONAL more elements, registered once.
+    /// Room for ADDITIONAL more elements, registered once. A first buffer
+    /// is taken zeroed from the allocator, as SAFE_ALLOCA_LISP's xzalloc
+    /// takes it: a large one comes as fresh zero pages instead of being
+    /// cleared by a pass over it.
     pub fn reserve(&mut self, additional: usize) {
+        if self.inner.capacity() == 0
+            && additional != 0
+            && std::mem::size_of::<T>() != 0
+            && let Ok(layout) = std::alloc::Layout::array::<T>(additional)
+        {
+            // SAFETY: LAYOUT is nonzero. The buffer is the global
+            // allocator's, with the layout a vector of ADDITIONAL elements
+            // of T has, and holds no element yet (length 0).
+            unsafe {
+                let buffer = std::alloc::alloc_zeroed(layout);
+                if buffer.is_null() {
+                    std::alloc::handle_alloc_error(layout);
+                }
+                self.inner = Vec::from_raw_parts(buffer.cast::<T>(), 0, additional);
+            }
+            let region = (self.inner.as_ptr() as usize, layout.size());
+            self.record(region);
+            return;
+        }
         self.inner.reserve(additional);
         self.refresh();
     }
