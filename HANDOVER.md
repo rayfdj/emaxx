@@ -1030,6 +1030,17 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   1.13 million more on that build, the conservative scan finding another
   graph, as `mem_find` did in undo above); explicit-gc wall time 0.119 →
   0.110 s (GNU 0.103), 1.15 → 1.06 of GNU's.
+- **The vector sweep's buffers from `all_buffers`.** Before reclaiming
+  vector storage the sweep walks each buffer's marker chain (alloc.c's
+  `sweep_buffers`), and it found the buffers by reading every vector
+  header in every block, the image's included. A buffer's header is now
+  listed when it is allocated (`BufferRef::new` and `for_restore`, image
+  restoration included, both through `VectorlikeRef::allocate`) and
+  unlisted when `cleanup_vector` reclaims it, as GNU's `all_buffers`, and
+  the pass follows the list; checked builds still walk every header and
+  assert that the list matches it. An explicit collection 55.7 → 54.7
+  million instructions, L1 misses 529,000 → 502,000; wall time within
+  noise (0.115 and 0.117 s).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1127,7 +1138,9 @@ save-buffer tests and
 the build before too, and
 `process_tls_state_survives_collection_before_and_after_async_handshake`,
 whose GNU run disagreed under that load and which passes alone, 3 of 3.
-For the guard count: 3,134 of the 3,138 with 2 ignored, the as-root three
+For the buffer list: the same 3,134 of 3,138 and four failures, the
+checked build's comparison of the list with every buffer header holding
+at every collection. For the guard count: 3,134 of the 3,138 with 2 ignored, the as-root three
 and the load-sensitive TLS test failing; the checked build's assertion
 that no cell is borrowed when the count is zero held at every collection
 of the suite. For the case-table signature: the 137 char-table, case-table, case-fold,
@@ -1341,7 +1354,9 @@ and Emaxx's passed, as on `ef33383`; its second attempt matched 7,928 of
 7,928 with no unsuccessful execution. **On `34b7f48`** (the dispatch
 copy): full Rust gate passed (run 39018268679; 3,139 tests), frozen
 7,928 of 7,928, no unsuccessful execution, on its first attempt (run
-39018270078). Locally,
+39018270078). **On `2d491d2`** (the case-table signature): full Rust gate
+passed (run 39020019119; 3,139 tests), frozen 7,928 of 7,928, no
+unsuccessful execution, on its first attempt (run 39020021023). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1413,10 +1428,10 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   read every string, vector and symbol cell, the image's included,
   where GNU's sweeps never touch its dump region and its cons sweep reads
   mark bitmaps; what is left after the compaction and guard-count changes
-  is the string sweep's mark reads (58,000), vectors (37,000, about half
-  of it a first pass that reads every header to find the buffers, where
-  GNU's `sweep_buffers` follows `all_buffers`) and symbols (19,000), and
-  marking (301,000 against GNU's 281,000). Cons allocation's samples collect once each in
+  is the string sweep's mark reads (58,000), vectors (about 19,000 since
+  the buffers are listed) and symbols (19,000), each reading the image's
+  cells as well, which GNU's sweeps never do, and marking (301,000 against
+  GNU's 281,000). Cons allocation's samples collect once each in
   Emaxx (0.021 s of 0.11) and never in GNU: the harness's
   `(garbage-collect)` before each sample still finds the previous
   sample's 500,000-cell list through GNU's conservative stack scan, so

@@ -336,6 +336,18 @@ static LIVE_RECORD_SLOTS: AtomicUsize = AtomicUsize::new(0);
 /// an object of the process, an id a name in one interpreter's tables.
 static FREED_RECORDS: std::sync::Mutex<Vec<FreedRecord>> = std::sync::Mutex::new(Vec::new());
 
+/// alloc.c's `all_buffers': the header of every buffer object, live or
+/// dead, from its allocation until its storage is reclaimed, for the
+/// sweep's marker chains (which would otherwise read every vector header
+/// to find the buffers).
+static ALL_BUFFERS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+fn all_buffers() -> std::sync::MutexGuard<'static, Vec<usize>> {
+    ALL_BUFFERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// A record the sweep freed: whose id space, which id, and the symbol
 /// its type tag named (the type index's key), read before the drop.
 pub(crate) struct FreedRecord {
@@ -897,6 +909,9 @@ impl<T: Vectorlike> VectorlikeRef<T> {
                 .mark(super::super::types::current_mark_epoch());
             payload(header).cast::<T>().write(value);
             census_on_allocate(header);
+            if T::TAG == VectorTag::Buffer {
+                all_buffers().push(header as usize);
+            }
             Self(NonNull::new_unchecked(header), PhantomData)
         }
     }
@@ -1041,7 +1056,15 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
             }
             VectorTag::Free => {}
             VectorTag::Bignum => std::ptr::drop_in_place(body.cast::<LispBignum>()),
-            VectorTag::Buffer => std::ptr::drop_in_place(body.cast::<BufferValue>()),
+            VectorTag::Buffer => {
+                std::ptr::drop_in_place(body.cast::<BufferValue>());
+                let mut buffers = all_buffers();
+                let index = buffers
+                    .iter()
+                    .position(|&address| address == header as usize)
+                    .expect("a reclaimed buffer is in all_buffers");
+                buffers.swap_remove(index);
+            }
             VectorTag::Overlay => {
                 std::ptr::drop_in_place(body.cast::<crate::lisp::types::OverlayValue>())
             }
@@ -1199,28 +1222,43 @@ pub(crate) fn close_native_units_for_runtime(thread_cell: *mut std::ffi::c_void)
 pub(crate) fn sweep_vectors(epoch: u32) {
     // alloc.c:sweep_buffers runs before vector storage can be reclaimed.
     // The chains are weak and can include markers whose buffer is also dead.
-    for kind in [BlockKind::VectorBlock, BlockKind::LargeVector] {
-        for block in blocks_of(kind) {
-            let mut header = block as *mut VectorHeader;
-            loop {
-                // SAFETY: registered blocks are tiled by initialized headers;
-                // this pass neither frees storage nor changes those headers.
-                unsafe {
-                    if (*header).tag() == VectorTag::Buffer {
-                        let buffer = crate::lisp::types::BufferRef::from_raw(header);
-                        buffer.sweep_markers(epoch);
-                        if !buffer.mark_bit().is_marked(epoch) {
-                            buffer.borrow_mut().overlays.clear();
+    // Checked builds find the buffers by every header as well.
+    if cfg!(debug_assertions) {
+        let mut found = Vec::new();
+        for kind in [BlockKind::VectorBlock, BlockKind::LargeVector] {
+            for block in blocks_of(kind) {
+                let mut header = block as *mut VectorHeader;
+                loop {
+                    // SAFETY: registered blocks are tiled by initialized
+                    // headers; this walk only reads them.
+                    unsafe {
+                        if (*header).tag() == VectorTag::Buffer {
+                            found.push(header as usize);
+                        }
+                        if matches!(kind, BlockKind::LargeVector) {
+                            break;
+                        }
+                        header = advance(header, (*header).nbytes());
+                        if !vector_in_block(header, block) {
+                            break;
                         }
                     }
-                    if matches!(kind, BlockKind::LargeVector) {
-                        break;
-                    }
-                    header = advance(header, (*header).nbytes());
-                    if !vector_in_block(header, block) {
-                        break;
-                    }
                 }
+            }
+        }
+        let mut listed = all_buffers().clone();
+        found.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(found, listed, "all_buffers names every buffer header");
+    }
+    for &address in all_buffers().iter() {
+        // SAFETY: a listed header is a buffer whose storage is not yet
+        // reclaimed; this pass neither frees storage nor changes headers.
+        unsafe {
+            let buffer = crate::lisp::types::BufferRef::from_raw(address as *mut VectorHeader);
+            buffer.sweep_markers(epoch);
+            if !buffer.mark_bit().is_marked(epoch) {
+                buffer.borrow_mut().overlays.clear();
             }
         }
     }
