@@ -237,7 +237,15 @@ pub(crate) fn entry_program(closure: ClosureRef) -> Option<NonNull<ByteCodeObjec
                 .add(closure_slot(identity))
         })
     };
-    if entry.identity == identity && entry.slots == slots {
+    // The words compared one by one: an array's `==' can become a call
+    // to bcmp.
+    let same_slots = entry
+        .slots
+        .iter()
+        .zip(slots)
+        .fold(0, |differ, (cached, word)| differ | (cached ^ word))
+        == 0;
+    if entry.identity == identity && same_slots {
         // SAFETY: an entry with an identity holds its program.
         let program = unsafe { entry.program.assume_init_ref() };
         if program.code.string().code_state() == CodeState::Current

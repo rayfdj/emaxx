@@ -48,7 +48,7 @@ fn take_pending_user_signal() -> Option<&'static str> {
     // order, one occurrence at a time.
     for (pending, name) in [(&PENDING_SIGUSR2, "sigusr2"), (&PENDING_SIGUSR1, "sigusr1")] {
         if pending
-            .fetch_update(
+            .try_update(
                 UserSignalOrdering::Relaxed,
                 UserSignalOrdering::Relaxed,
                 |count| count.checked_sub(1),

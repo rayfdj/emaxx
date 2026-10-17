@@ -2642,7 +2642,9 @@ impl Interpreter {
         env: &Env,
         activation_frame: Option<&EnvFrame>,
     ) {
-        if !self.edebug_entered_active(env) && function_name != Some("backtrace-eval") {
+        if !self.edebug_entered_active(env)
+            && !function_name.is_some_and(super::core::is_backtrace_eval_name)
+        {
             return;
         }
         self.capture_backtrace_context(env, activation_frame);

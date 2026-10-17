@@ -828,6 +828,63 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   list traversal 1.310 → 1.282, interpreted-to-native 1.437 → 1.398,
   bytecode calls 1.809 → 1.761; bytecode-to-native 1.863 → 1.872 (the
   loop's code around the call arm: 3 instructions an iteration more).
+- The verified loop's dispatch and its frame switches. The head read
+  the opcode, kept the op's offset in a second register, advanced the
+  pc and computed the address of the stack's top before its jump, and
+  arms that read the opcode again (a constant's index, a call's count)
+  kept it in a third: about ten instructions an op, 14 for a stack-ref,
+  where GNU's NEXT is three or four. The pc now stays at the op until
+  its arm moves it by the op's length (or jumps), the stack pointer
+  addresses the top operand as bytecode.c's `top` does, and each op with
+  its operand in the opcode (Bconstant, Bcall0 to 5, Bvarref and Bvarset
+  0 to 5, Bsetcar and Bsetcdr) has its own arm: the head is the byte's
+  load, the table entry and the jump, and a stack-ref is 8. A call into
+  byte code re-read and checked the callee's four slots (`for_call`) and
+  looked up its verified code each time; `verify::entry_program` keeps
+  a closure's program and verified code (64 entries by identity), valid
+  while the closure's four slots hold the words they were read from and
+  its code string the bytes verified. A call into byte code, a return
+  into a byte-code caller and a plain native or subr call now go on in
+  the loop instead of leaving it to enter again; the frame entry and
+  Breturn's fast path are inline, as setup_frame and Breturn are in
+  exec_byte_code, and the code string's bytes are taken again without
+  counting a borrow. A call's few arguments are stored one by one, into
+  the frame and into a native call's register slots, which are cleared
+  first (an omitted optional argument reads nil, as funcall_subr pads
+  it; a version that left them unwritten crashed building the image).
+  Inlining the fixed-arity native call into the loop's plain call made
+  bytecode-to-native worse (634.7 → 654.2 an iteration) and was
+  reverted. Bytecode calls 1.761 → 1.236 (579 instructions an
+  iteration, all in the loop), bytecode-to-native 1.872 → 1.633, sort
+  1.314 → 1.289, bindat 1.150 → 1.113, native-to-bytecode 1.433 → 1.416,
+  undo 1.67 to 1.70 → 1.649; the rest within 0.02 (interpreted dynamic
+  1.29, calls 1.124, lexical 1.183).
+- **Rust 1.99.1.** CI and the local builds moved to Rust 1.99.1, the
+  current stable release (CI pinned 1.97.1; the rounds above were
+  measured on 1.97.0). Its Clippy asked for `try_update` for the
+  deprecated `fetch_update`, `as_chunks` for a constant chunk size, and
+  an error closure passed to `map_err` by value; the generated
+  native-subr table is byte for byte the same under its rustc and
+  rustfmt. With the same source, 1.99.1 compiled three compares into
+  calls to `bcmp` that 1.97 made inline: `invoke_subr` chose a direct
+  path by comparing the subr's name with up to 36 names on each call
+  from native code; the Bcall entry tested for `backtrace-eval` by name
+  (a call for any 14-character callee name); and the entry cache
+  compared a closure's four words as an array (17 instructions an
+  iteration of bytecode calls in `bcmp`). Native-execution read 1.171 →
+  1.255, native-to-bytecode 1.416 → 1.443 and bytecode calls 1.236 →
+  1.293. The direct paths go by a kind read from a table by the subr's
+  index in the ABI now (`DirectSubr`, built once from the same names,
+  which stay inside the source the native fast-path audit reads; a test
+  pins its 36 kinds to the table), `backtrace-eval` is compared as an
+  array of 14 bytes, and the four words one by one; no `bcmp` or
+  `memcmp` call is left in the byte-code loop or `invoke_subr`. Against
+  1.97.0 the 1.99.1 build then reads native-execution 1.144,
+  native-to-bytecode 1.425 and bytecode calls 1.251 (the loop's code: 7
+  instructions an iteration more), bindat 1.113 → 1.126, interpreted
+  calls 1.124 → 1.136, bytecode-to-native 1.633 → 1.640, lexical 1.183 →
+  1.174, explicit-gc 0.887 → 0.876, native-to-interpreted 1.267 → 1.254;
+  the rest within 0.005.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -904,36 +961,47 @@ still running, and the other is the as-root byte-compile test below),
 and 653 of 653 VM, byte-code, native, funcall, catch, condition, unwind
 and handler tests on the build before the entry took the closure from
 the arm, and 131 of 132 byte-code and compile tests on the final build
-(the other is the as-root byte-compile test).
+(the other is the as-root byte-compile test). The call trims' evaluator
+run was stopped at its time limit: 1,479 of the 1,480 tests it finished
+passed (the other is the as-root byte-compile test), and the 252 it had
+not reached pass on the next round's build. For the dispatch round, the
+continuation test and Rust 1.99.1: 654 of 654 VM, byte-code, native,
+funcall, catch, condition, unwind and handler tests with the new one,
+the 190 native-runtime tests and the new kind test, and the lightweight
+group's 590 tests in each of 10 runs pass on the final build, and 26 of
+26 backtrace and debugger tests on the build before the entry cache's
+word compare; the 654 and the lightweight group passed on the dispatch
+round's own build (Rust 1.97.0) too. On 1.97.1 the changed continuation
+test passed 40 of 40 runs of the lightweight group, where the old one
+failed about one run in six. Clippy `-D warnings` and rustfmt pass under
+1.99.1.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.67 |
-| upstream-sort (4 units) | 3.26 (at 1 unit) | 1.31 |
-| interpreted-calls | 2.10 | 1.13 |
-| interpreted-lexical | 2.04 | 1.19 |
-| interpreted-dynamic | 2.14 | 1.31 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.65 |
+| upstream-sort (4 units) | 3.26 (at 1 unit) | 1.29 |
+| interpreted-calls | 2.10 | 1.14 |
+| interpreted-lexical | 2.04 | 1.17 |
+| interpreted-dynamic | 2.14 | 1.29 |
 | mapcar | 2.95 | 1.32 |
-| bytecode-calls | 3.30 | 1.76 |
-| bytecode-to-native | — | 1.87 |
+| bytecode-calls | 3.30 | 1.25 |
+| bytecode-to-native | — | 1.64 |
 | interpreted-to-native | — | 1.40 |
-| native-to-interpreted / -bytecode | — | 1.27 / 1.43 |
+| native-to-interpreted / -bytecode | — | 1.25 / 1.43 |
 | cons-allocation / list-traversal | 2.24 / — | 1.32 / 1.28 |
-| native-execution | — | 1.17 |
-| bindat | — | 1.15 |
-| explicit-gc | — | 0.89 |
+| native-execution | — | 1.14 |
+| bindat | — | 1.13 |
+| explicit-gc | — | 0.88 |
 
-The table is one full run of all sixteen after the allocation sweep,
-before its bitwise fixnum paths (bindat measured again after them).
-Interpreted dynamic read 1.32 and interpreted-to-native 1.44 in that
-run, a collection's stack scan (17 instructions an iteration) and a hash
-table's growth (19) falling in the difference; undo read 1.67 to 1.70
-across the sweep's builds (the allocator's state). The interpreted,
-cons, list, byte-code and native-call rows were measured again after the
-call trims.
+The table is one full run of all sixteen on the final build of the Rust
+1.99.1 round, compiled by 1.99.1 (the rounds above it were measured on
+1.97.0). Undo read 1.67 to 1.70 across the allocation sweep's builds
+(the allocator's state), and a collection's stack scan or a hash table's
+growth falling in the difference moves the interpreted rows by about
+0.01.
 Sort at one and two units read 1.84 before the port and 1.12 after it,
 but after it Emaxx's two collections fell at both sizes, out of the
 difference, while one of GNU's fell in it; at four and eight units it
@@ -1059,7 +1127,22 @@ ignores, plus bins and integration), frozen 7,928 of 7,928 across 519
 files, no unsuccessful execution, on its second attempt (run
 38986012909); the first attempt matched 7,927, the other,
 `eglot-test-rust-completion-exit-function`, ending in GNU's run with a
-`jsonrpc-error` from the language server while Emaxx's passed. Locally,
+`jsonrpc-error` from the language server while Emaxx's passed. **On
+`ef33383`** (the call trims): the full Rust gate stopped in its
+lightweight group (run 38995229528):
+`native_continuations_can_return_in_non_lifo_order` found the first
+probe's key still in its weak table after the first continuation had
+returned. The test fails so here about one run in six on Rust 1.97.1, on
+`961b207` too (which passed CI): the two probes shared one table, so the
+second probe's `puthash` read the first key, and a copy of it that a
+returned callee left in the second stack, below a frame still live when
+that stack parked, kept it through the conservative scan of the parked
+stack. `89dc6a3` gives each probe its own table (40 of 40 runs of the
+lightweight group pass on 1.97.1). Frozen on `ef33383`: 7,928 of 7,928
+across 519 files, no unsuccessful execution, on its second attempt (run
+38995231316); the first matched 7,927, GNU's run of
+`eglot-test-rust-completion-exit-function` failing again after
+rust-analyzer's cargo watcher failed to start. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1108,30 +1191,31 @@ this container's GNU build itself disagrees with the expected text (under
   form). Removing the check would make a parked shell's use undefined
   behavior instead of a panic, so it stays.
 
-**Where the remaining gap is** (instruction counts per unit on `41be443`):
-- **Native calls** (bytecode-to-native 1.86): 723 instructions an
-  iteration against GNU's 388, the byte-code loop itself GNU's (331
+**Where the remaining gap is** (instruction counts per unit; the native
+and byte-code calls on the Rust 1.99.1 round's final build, the rest on
+`41be443`):
+- **Native calls** (bytecode-to-native 1.64): 636 instructions an
+  iteration against GNU's 388, the byte-code loop below GNU's (258
   against `exec_byte_code`'s 339 with its call setup). A Bcall into
-  native code costs 185 in the native layer (`invoke_fixed` 152: the
+  native code costs 178 in the native layer (`invoke_fixed` 145: the
   invocation record's setup, the call frame's push and pop, the
   activation's thread-local swaps and the execution counter; the
-  trampoline with its escape record 33) and 198 in `call_plain` (the
+  trampoline with its escape record 33) and 189 in `call_plain` (the
   callee's resolution and entry tests, the collection test, the arity
   and runtime tests, the frame record and its pop, the result's stack
   update), where GNU's `funcall_subr` spends about 40. What is left is
   the bookkeeping that Rust frames between native code and its caller
   require: the call-frame record, the thread-local swaps and the escape
   record.
-- **Byte-code calls** (bytecode calls 1.76): 824 instructions an
-  iteration against GNU's 468: the verified loop about 400 (its ops
-  about as GNU's, plus about 22 on a return's switch to re-read the code
-  string, a borrow of it and its decoding, and check its verification),
-  the in-loop frame entry about 300 (the plain-entry tests,
-  `for_call`'s field checks, the verification cache, the 64-byte
-  backtrace record, the 88-byte `BcFrame` and the copies of the
-  48-byte `ByteCodeObject` in and out of it) and the return 122. GNU's
-  setup_frame and Breturn together are about 100: its frame lives in the
-  byte-code stack and its running state in registers.
+- **Byte-code calls** (bytecode calls 1.25): 586 instructions an
+  iteration against GNU's 468 (579 on 1.97.0), all in the verified loop
+  now that the frame entry and the return are inline: its ops at GNU's
+  cost or below, and a call and return about 210 against GNU's 100 or so
+  (the plain-entry tests, the entry cache's check of the closure's four
+  words, the 64-byte backtrace record and its pop, the 88-byte `BcFrame`
+  and the 48-byte `ByteCodeObject` copied into and out of it, the code
+  string read again on each switch). GNU's frame lives in the byte-code
+  stack and its running state in registers.
 - **Source interpreter** (lexical 1.21, calls 1.16, sort 1.36): an
   iteration of interpreted calls is 3,854 instructions against GNU's
   3,315 (4,022 before the shell's parked test became an assertion and the
@@ -1204,15 +1288,22 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 1.87, bytecode calls 1.76, undo
-   1.67, native-to-bytecode 1.43, interpreted-to-native 1.40, mapcar
-   1.32, cons allocation 1.32, sort 1.31). The remaining costs are listed under "Where the
-   remaining gap is": the native call layer and the byte-code call and
-   return need structural work (a lighter native boundary; byte-code
-   frames kept in the byte-code stack, as GNU's are, instead of a
-   `BcFrame` vector holding copies of the decoded object; a cache of the
-   decoded closure was measured and saves nothing); the interpreter and funcall paths are spread over
-   many small steps, each worth about 1%. The source interpreter is now
+   above; worst now undo 1.65, bytecode-to-native 1.64, native-to-bytecode
+   1.43, interpreted-to-native 1.40, cons allocation 1.32, mapcar 1.32,
+   sort 1.29, interpreted dynamic 1.29). The remaining costs are listed
+   under "Where the remaining gap is": the native call layer needs
+   structural work (a lighter native boundary: inlining `invoke_fixed` into
+   `call_plain` measured 20 instructions a call worse), and the byte-code
+   call less now (frames kept in the byte-code stack, as GNU's are, instead
+   of a `BcFrame` vector holding copies of the decoded object; a cache of
+   the decoded closure saves only when it hands the program out by
+   reference, as `entry_program` does); in the byte-code loop, an arm that
+   reads its opcode again or keeps a second copy of the pc costs every op
+   (see the dispatch bullet above). A compiler update can turn a compare
+   into a library call (see the Rust 1.99.1 bullet): look for `memcmp` and
+   `bcmp` in the profiles after one. The interpreter and funcall paths are
+   spread over many small steps, each worth about 1%. The source
+   interpreter is now
    the largest shared cost: `eval_sub` is 64 to 71% of interpreted
    dynamic, cons allocation and the native-to-* loops and 44% of sort, at
    330 to 400 instructions a list form against GNU's 110. Each step costs

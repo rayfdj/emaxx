@@ -1827,8 +1827,15 @@ impl InterpreterState {
             && i64::try_from(self.lisp_eval_depth + 1)
                 .is_ok_and(|depth| depth <= self.max_lisp_eval_depth)
             && profile_path().is_none()
-            && name.is_none_or(|name| name.as_str() != "backtrace-eval")
+            && name.is_none_or(|name| !is_backtrace_eval_name(name.as_str()))
     }
+}
+
+/// Whether NAME is `backtrace-eval': its fourteen bytes compared as an
+/// array of known size, two loads rather than a call to memcmp.
+#[inline(always)]
+pub(crate) fn is_backtrace_eval_name(name: &str) -> bool {
+    <&[u8; 14]>::try_from(name.as_bytes()).is_ok_and(|bytes| bytes == b"backtrace-eval")
 }
 
 #[cfg(test)]

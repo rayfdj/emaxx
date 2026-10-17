@@ -502,7 +502,7 @@ pub(crate) fn read_insert_file_bytes(
     validate_file_name(path)?;
     let input_error =
         |error: std::io::Error| LispError::SignalValue(file_input_error_value(&error, path));
-    let metadata = fs::metadata(path).map_err(&input_error)?;
+    let metadata = fs::metadata(path).map_err(input_error)?;
     if metadata.is_dir() {
         return Err(LispError::SignalValue(file_error_with_detail_value(
             "Read error",
@@ -511,7 +511,7 @@ pub(crate) fn read_insert_file_bytes(
         )));
     }
     if metadata.file_type().is_file() {
-        let mut bytes = fs::read(path).map_err(&input_error)?;
+        let mut bytes = fs::read(path).map_err(input_error)?;
         let start = start.unwrap_or(0).min(bytes.len());
         let end = end.unwrap_or(bytes.len()).clamp(start, bytes.len());
         bytes.truncate(end);
@@ -526,9 +526,9 @@ pub(crate) fn read_insert_file_bytes(
         )));
     }
     let limit = end.unwrap_or(8192);
-    let mut file = fs::File::open(path).map_err(&input_error)?;
+    let mut file = fs::File::open(path).map_err(input_error)?;
     let mut buffer = vec![0; limit];
-    let read = file.read(&mut buffer).map_err(&input_error)?;
+    let read = file.read(&mut buffer).map_err(input_error)?;
     buffer.truncate(read);
     Ok(buffer)
 }

@@ -624,8 +624,7 @@ define_dispatch!(
                         Value::string("Invalid argument list"),
                     ])));
                 } else {
-                    for pair in args[1..].chunks_exact(2) {
-                        let (keyword, value) = (pair[0], pair[1]);
+                    for &[keyword, value] in args[1..].as_chunks::<2>().0 {
                         match keyword.kind() {
                             Kind::Symbol(keyword) if keyword == ":key" => key = Some(value),
                             Kind::Symbol(keyword) if keyword == ":lessp" => lessp = Some(value),

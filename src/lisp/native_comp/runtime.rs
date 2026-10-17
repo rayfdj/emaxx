@@ -1662,44 +1662,157 @@ impl NativeRuntime {
     }
 }
 
-#[inline(always)]
+#[cfg(test)]
 fn invoke_context_free_subr(index: usize, arguments: &[NativeWord]) -> Option<NativeWord> {
-    let subroutine = super::abi::native_subrs().get(index)?;
-    match (subroutine.name, arguments) {
-        ("null", [value]) => Some(native_boolean(*value == 0)),
-        ("consp", [value]) => Some(native_boolean(native_consp(*value))),
-        ("atom", [value]) => Some(native_boolean(!native_consp(*value))),
-        ("bare-symbol-p", [value]) => Some(native_boolean(*value & TAG_MASK == TAG_SYMBOL)),
-        ("stringp", [value]) => Some(direct_native_stringp(*value)),
-        ("car", [value]) if *value == 0 || native_consp(*value) => Some(if native_consp(*value) {
+    invoke_context_free_kind(DirectSubr::of_index(index), arguments)
+}
+
+/// The subrs `invoke_subr' answers on its own paths, by name. A subr's
+/// kind is read by its index into the ABI's table, one byte, where the
+/// names were compared one after another on every call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DirectSubr {
+    Other,
+    Funcall,
+    Less,
+    Greater,
+    LessOrEqual,
+    GreaterOrEqual,
+    NumberEqual,
+    Plus,
+    Minus,
+    Cons,
+    Eq,
+    Null,
+    Consp,
+    Atom,
+    BareSymbolp,
+    Symbolp,
+    Stringp,
+    Car,
+    CarSafe,
+    Cdr,
+    CdrSafe,
+    Listp,
+    Nlistp,
+    Identity,
+    List,
+    TypeOf,
+    SymbolValue,
+    Assq,
+    Memq,
+    Get,
+    Apply,
+    Mapcar,
+    Maphash,
+    Nreverse,
+    Length,
+    PlistMember,
+    MakeClosure,
+}
+
+impl DirectSubr {
+    fn of_name(name: &str) -> Self {
+        match name {
+            "funcall" => Self::Funcall,
+            "<" => Self::Less,
+            ">" => Self::Greater,
+            "<=" => Self::LessOrEqual,
+            ">=" => Self::GreaterOrEqual,
+            "=" => Self::NumberEqual,
+            "+" => Self::Plus,
+            "-" => Self::Minus,
+            "cons" => Self::Cons,
+            "eq" => Self::Eq,
+            "null" => Self::Null,
+            "consp" => Self::Consp,
+            "atom" => Self::Atom,
+            "bare-symbol-p" => Self::BareSymbolp,
+            "symbolp" => Self::Symbolp,
+            "stringp" => Self::Stringp,
+            "car" => Self::Car,
+            "car-safe" => Self::CarSafe,
+            "cdr" => Self::Cdr,
+            "cdr-safe" => Self::CdrSafe,
+            "listp" => Self::Listp,
+            "nlistp" => Self::Nlistp,
+            "identity" => Self::Identity,
+            "list" => Self::List,
+            "type-of" => Self::TypeOf,
+            "symbol-value" => Self::SymbolValue,
+            "assq" => Self::Assq,
+            "memq" => Self::Memq,
+            "get" => Self::Get,
+            "apply" => Self::Apply,
+            "mapcar" => Self::Mapcar,
+            "maphash" => Self::Maphash,
+            "nreverse" => Self::Nreverse,
+            "length" => Self::Length,
+            "plist-member" => Self::PlistMember,
+            "make-closure" => Self::MakeClosure,
+            _ => Self::Other,
+        }
+    }
+
+    /// The kind of the subr at INDEX in the ABI's table; `Other' past it.
+    #[inline(always)]
+    fn of_index(index: usize) -> Self {
+        static KINDS: OnceLock<Box<[DirectSubr]>> = OnceLock::new();
+        KINDS
+            .get_or_init(|| {
+                super::abi::native_subrs()
+                    .iter()
+                    .map(|subroutine| Self::of_name(subroutine.name))
+                    .collect()
+            })
+            .get(index)
+            .copied()
+            .unwrap_or(Self::Other)
+    }
+}
+
+#[inline(always)]
+fn invoke_context_free_kind(kind: DirectSubr, arguments: &[NativeWord]) -> Option<NativeWord> {
+    match (kind, arguments) {
+        (DirectSubr::Null, [value]) => Some(native_boolean(*value == 0)),
+        (DirectSubr::Consp, [value]) => Some(native_boolean(native_consp(*value))),
+        (DirectSubr::Atom, [value]) => Some(native_boolean(!native_consp(*value))),
+        (DirectSubr::BareSymbolp, [value]) => Some(native_boolean(*value & TAG_MASK == TAG_SYMBOL)),
+        (DirectSubr::Stringp, [value]) => Some(direct_native_stringp(*value)),
+        (DirectSubr::Car, [value]) if *value == 0 || native_consp(*value) => {
+            Some(if native_consp(*value) {
+                unsafe { native_car(*value) }
+            } else {
+                0
+            })
+        }
+        (DirectSubr::CarSafe, [value]) => Some(if native_consp(*value) {
             unsafe { native_car(*value) }
         } else {
             0
         }),
-        ("car-safe", [value]) => Some(if native_consp(*value) {
-            unsafe { native_car(*value) }
-        } else {
-            0
-        }),
-        ("cdr", [value]) if *value == 0 || native_consp(*value) => Some(if native_consp(*value) {
+        (DirectSubr::Cdr, [value]) if *value == 0 || native_consp(*value) => {
+            Some(if native_consp(*value) {
+                unsafe { native_cdr(*value) }
+            } else {
+                0
+            })
+        }
+        (DirectSubr::CdrSafe, [value]) => Some(if native_consp(*value) {
             unsafe { native_cdr(*value) }
         } else {
             0
         }),
-        ("cdr-safe", [value]) => Some(if native_consp(*value) {
-            unsafe { native_cdr(*value) }
-        } else {
-            0
-        }),
-        ("listp", [value]) => Some(native_boolean(*value == 0 || native_consp(*value))),
-        ("nlistp", [value]) => Some(native_boolean(*value != 0 && !native_consp(*value))),
-        ("identity", [value]) => Some(*value),
+        (DirectSubr::Listp, [value]) => Some(native_boolean(*value == 0 || native_consp(*value))),
+        (DirectSubr::Nlistp, [value]) => Some(native_boolean(*value != 0 && !native_consp(*value))),
+        (DirectSubr::Identity, [value]) => Some(*value),
         _ => None,
     }
 }
 
 pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord {
-    if let Some(result) = invoke_context_free_subr(index, arguments) {
+    let kind = DirectSubr::of_index(index);
+    if let Some(result) = invoke_context_free_kind(kind, arguments) {
         return result;
     }
     with_active(|active| {
@@ -1723,7 +1836,7 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
         }
         // GNU native code enters Ffuncall directly. After synchronizing
         // handlers, use the same call path before unrelated primitive checks.
-        if subroutine.name == "funcall"
+        if kind == DirectSubr::Funcall
             && let Some(result) = invoke_native_funcall(active, arguments)
         {
             return result;
@@ -1732,12 +1845,12 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             && let (Some(left), Some(right)) =
                 (decode_fixnum(arguments[0]), decode_fixnum(arguments[1]))
         {
-            let result = match subroutine.name {
-                "<" => Some(left < right),
-                ">" => Some(left > right),
-                "<=" => Some(left <= right),
-                ">=" => Some(left >= right),
-                "=" => Some(left == right),
+            let result = match kind {
+                DirectSubr::Less => Some(left < right),
+                DirectSubr::Greater => Some(left > right),
+                DirectSubr::LessOrEqual => Some(left <= right),
+                DirectSubr::GreaterOrEqual => Some(left >= right),
+                DirectSubr::NumberEqual => Some(left == right),
                 _ => None,
             };
             if let Some(result) = result {
@@ -1747,9 +1860,9 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             // machine accumulator. Two fixnums cannot overflow i64; return
             // their immediate result without staging or decoding Values.
             // Bignum results and every other operand use the general path.
-            let integer = match subroutine.name {
-                "+" => Some(left + right),
-                "-" => Some(left - right),
+            let integer = match kind {
+                DirectSubr::Plus => Some(left + right),
+                DirectSubr::Minus => Some(left - right),
                 _ => None,
             };
             if let Some(integer) = integer
@@ -1758,61 +1871,65 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
                 return ((integer as NativeWord) << FIXNUM_BITS) | TAG_FIXNUM_LOW;
             }
         }
-        if subroutine.name == "cons" && arguments.len() == 2 {
+        if kind == DirectSubr::Cons && arguments.len() == 2 {
             return unsafe { &mut *active.runtime }
                 .heap
                 .cons(arguments[0], arguments[1]);
         }
-        match (subroutine.name, arguments) {
-            ("eq", [left, right])
+        match (kind, arguments) {
+            (DirectSubr::Eq, [left, right])
                 if left == right
                     || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
             {
                 return native_boolean(left == right);
             }
-            ("null", [value]) => return native_boolean(*value == 0),
-            ("consp", [value]) => return native_boolean(native_consp(*value)),
-            ("atom", [value]) => return native_boolean(!native_consp(*value)),
-            ("bare-symbol-p", [value]) => {
+            (DirectSubr::Null, [value]) => return native_boolean(*value == 0),
+            (DirectSubr::Consp, [value]) => return native_boolean(native_consp(*value)),
+            (DirectSubr::Atom, [value]) => return native_boolean(!native_consp(*value)),
+            (DirectSubr::BareSymbolp, [value]) => {
                 return native_boolean(*value & TAG_MASK == TAG_SYMBOL);
             }
-            ("symbolp", [value])
+            (DirectSubr::Symbolp, [value])
                 if *value & TAG_MASK == TAG_SYMBOL
                     || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
             {
                 return native_boolean(*value & TAG_MASK == TAG_SYMBOL);
             }
-            ("car", [value]) if *value == 0 || native_consp(*value) => {
+            (DirectSubr::Car, [value]) if *value == 0 || native_consp(*value) => {
                 return if native_consp(*value) {
                     unsafe { native_car(*value) }
                 } else {
                     0
                 };
             }
-            ("car-safe", [value]) => {
+            (DirectSubr::CarSafe, [value]) => {
                 return if native_consp(*value) {
                     unsafe { native_car(*value) }
                 } else {
                     0
                 };
             }
-            ("cdr", [value]) if *value == 0 || native_consp(*value) => {
+            (DirectSubr::Cdr, [value]) if *value == 0 || native_consp(*value) => {
                 return if native_consp(*value) {
                     unsafe { native_cdr(*value) }
                 } else {
                     0
                 };
             }
-            ("cdr-safe", [value]) => {
+            (DirectSubr::CdrSafe, [value]) => {
                 return if native_consp(*value) {
                     unsafe { native_cdr(*value) }
                 } else {
                     0
                 };
             }
-            ("listp", [value]) => return native_boolean(*value == 0 || native_consp(*value)),
-            ("nlistp", [value]) => return native_boolean(*value != 0 && !native_consp(*value)),
-            ("list", values) => {
+            (DirectSubr::Listp, [value]) => {
+                return native_boolean(*value == 0 || native_consp(*value));
+            }
+            (DirectSubr::Nlistp, [value]) => {
+                return native_boolean(*value != 0 && !native_consp(*value));
+            }
+            (DirectSubr::List, values) => {
                 let heap = &mut unsafe { &mut *active.runtime }.heap;
                 return values
                     .iter()
@@ -1824,70 +1941,70 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
         // These are direct translations of the corresponding C-owned word
         // operations in data.c and alloc.c.  Keep them at the GNU ABI instead
         // of decoding into Emaxx's richer interpreter representation.
-        match (subroutine.name, arguments) {
-            ("eq", [left, right]) => match native_eq(active, *left, *right) {
+        match (kind, arguments) {
+            (DirectSubr::Eq, [left, right]) => match native_eq(active, *left, *right) {
                 Ok(equal) => return native_boolean(equal),
                 Err(error) => {
                     remember_helper_error(active, error);
                     return 0;
                 }
             },
-            ("symbolp", [value]) => match native_symbolp(active, *value) {
+            (DirectSubr::Symbolp, [value]) => match native_symbolp(active, *value) {
                 Ok(is_symbol) => return native_boolean(is_symbol),
                 Err(error) => {
                     remember_helper_error(active, error);
                     return 0;
                 }
             },
-            ("type-of", [value]) => {
+            (DirectSubr::TypeOf, [value]) => {
                 if let Some(result) = native_scalar_type_word(*value) {
                     return result;
                 }
             }
-            ("symbol-value", [symbol]) => {
+            (DirectSubr::SymbolValue, [symbol]) => {
                 if let Some(result) = invoke_native_symbol_value(active, *symbol) {
                     return result;
                 }
             }
             _ => {}
         }
-        if subroutine.name == "assq" && arguments.len() == 2 {
+        if kind == DirectSubr::Assq && arguments.len() == 2 {
             return native_assq(active, arguments[0], arguments[1]);
         }
-        if subroutine.name == "memq" && arguments.len() == 2 {
+        if kind == DirectSubr::Memq && arguments.len() == 2 {
             return native_memq(active, arguments[0], arguments[1]);
         }
-        if subroutine.name == "get" && arguments.len() == 2 {
+        if kind == DirectSubr::Get && arguments.len() == 2 {
             return invoke_native_get(active, arguments[0], arguments[1]);
         }
-        if subroutine.name == "apply"
+        if kind == DirectSubr::Apply
             && let Some(result) = invoke_native_apply(active, arguments)
         {
             return result;
         }
-        if subroutine.name == "mapcar"
+        if kind == DirectSubr::Mapcar
             && let Some(result) = invoke_native_mapcar(active, arguments)
         {
             return result;
         }
-        if subroutine.name == "maphash"
+        if kind == DirectSubr::Maphash
             && let Some(result) = invoke_native_maphash(active, arguments)
         {
             return result;
         }
-        if subroutine.name == "nreverse"
+        if kind == DirectSubr::Nreverse
             && let [sequence] = arguments
             && let Some(result) = invoke_native_nreverse(active, *sequence)
         {
             return result;
         }
-        if subroutine.name == "length"
+        if kind == DirectSubr::Length
             && let [sequence] = arguments
             && let Some(result) = invoke_native_length(active, *sequence)
         {
             return result;
         }
-        if subroutine.name == "plist-member" {
+        if kind == DirectSubr::PlistMember {
             match arguments {
                 [plist, property] => return native_plist_member(active, *plist, *property, 0),
                 [plist, property, predicate] => {
@@ -1896,7 +2013,7 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
                 _ => {}
             }
         }
-        if subroutine.name == "make-closure" {
+        if kind == DirectSubr::MakeClosure {
             return invoke_native_make_closure(active, arguments);
         }
         let mut decoded = smallvec::SmallVec::<[Value; 8]>::new();
@@ -5170,6 +5287,32 @@ mod tests {
                 &[value],
             )
         }
+    }
+
+    #[test]
+    fn direct_subr_kinds_follow_the_abi_table_names() {
+        let subrs = super::super::abi::native_subrs();
+        for (index, subroutine) in subrs.iter().enumerate() {
+            assert_eq!(
+                DirectSubr::of_index(index),
+                DirectSubr::of_name(subroutine.name),
+                "{}",
+                subroutine.name
+            );
+        }
+        assert_eq!(DirectSubr::of_index(subrs.len()), DirectSubr::Other);
+        // Each of the 36 kinds names exactly one subr of the ABI, so no
+        // direct path is left unreachable by a name the table lacks.
+        let mut kinds: Vec<u8> = subrs
+            .iter()
+            .map(|subroutine| DirectSubr::of_name(subroutine.name))
+            .filter(|kind| *kind != DirectSubr::Other)
+            .map(|kind| kind as u8)
+            .collect();
+        let named = kinds.len();
+        kinds.sort_unstable();
+        kinds.dedup();
+        assert_eq!((named, kinds.len()), (36, 36));
     }
 
     #[test]
