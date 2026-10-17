@@ -248,7 +248,8 @@ pub(super) fn sweep() {
         block = SMALL.oldest.load(Ordering::Relaxed);
         while !block.is_null() {
             let next = (*block).next;
-            if pinned(block) {
+            // A block is pinned only by a live guard on one of its owners.
+            if super::string_guards_live() && pinned(block) {
                 held.append(block);
                 block = next;
                 continue;

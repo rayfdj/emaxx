@@ -143,6 +143,7 @@ impl StringObjectRef {
             "string already mutably borrowed"
         );
         cell.borrows.set(count + 1);
+        guard_taken();
         StringBorrow(cell)
     }
 
@@ -154,6 +155,7 @@ impl StringObjectRef {
         assert!(!cell.pure, "pure string cannot be mutably borrowed");
         assert_eq!(cell.borrows.get(), 0, "string already borrowed");
         cell.borrows.set(-1);
+        guard_taken();
         if cell.code.get() == CodeState::Current as u8 {
             cell.code.set(CodeState::Stale as u8);
         }
@@ -191,6 +193,7 @@ impl Deref for StringBorrow<'_> {
 impl Drop for StringBorrow<'_> {
     fn drop(&mut self) {
         self.0.borrows.set(self.0.borrows.get() - 1);
+        guard_released();
     }
 }
 
@@ -215,7 +218,33 @@ impl DerefMut for StringBorrowMut<'_> {
 impl Drop for StringBorrowMut<'_> {
     fn drop(&mut self) {
         self.0.borrows.set(0);
+        guard_released();
     }
+}
+
+thread_local! {
+    /// The string guards alive on this thread: `borrow`'s, `borrow_mut`'s
+    /// and a construction's, counted as they are made and dropped. The
+    /// collector scans this thread's stack alone, as it runs with the Lisp
+    /// heap to itself, and Lisp threads switch stacks on this thread, a
+    /// parked one's guards included, so at a collection the count is every
+    /// guard a cell can have; at zero no cell's borrow count is read.
+    static LIVE_GUARDS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[inline(always)]
+fn guard_taken() {
+    LIVE_GUARDS.set(LIVE_GUARDS.get() + 1);
+}
+
+#[inline(always)]
+fn guard_released() {
+    LIVE_GUARDS.set(LIVE_GUARDS.get() - 1);
+}
+
+/// Whether any string guard is alive (see `LIVE_GUARDS`).
+pub(crate) fn string_guards_live() -> bool {
+    LIVE_GUARDS.get() != 0
 }
 
 pub(crate) struct StringMark<'a>(&'a StringCell);
@@ -342,6 +371,7 @@ pub(crate) fn allocate_string<E>(
     let construction = StringConstruction(cell);
     let handle = unsafe {
         (*cell).borrows.set(-1);
+        guard_taken();
         let mut guard = StringBorrowMut(&*cell);
         initialize(&mut guard)?;
         drop(guard);
@@ -414,6 +444,12 @@ pub(super) unsafe fn live_string_holding(start: usize, address: usize) -> Option
 /// collection before its mark epoch begins instead of reading through that
 /// reference or discovering the conflict after other objects were swept.
 pub(crate) fn borrowed_string_roots() -> Vec<Value> {
+    // With no guard alive no cell is borrowed: the walk below, a read of
+    // every string cell, is left to checked builds, which confirm it.
+    let guards_live = string_guards_live();
+    if !guards_live && !cfg!(debug_assertions) {
+        return Vec::new();
+    }
     let mut roots = Vec::new();
     let mut inspect = |cell: *mut StringCell| {
         // SAFETY: block mark words are initialized even in free cells. The
@@ -443,6 +479,10 @@ pub(crate) fn borrowed_string_roots() -> Vec<Value> {
     {
         inspect(address as *mut StringCell);
     }
+    debug_assert!(
+        guards_live || roots.is_empty(),
+        "a borrowed string with no live guard counted"
+    );
     roots
 }
 

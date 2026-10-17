@@ -1014,6 +1014,22 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   place the blocks by their counts) is the lever, and PGO is a build
   change (instrumented build, `llvm-profdata` from `llvm-tools`, a
   profile kept with the source and renewed as the code changes).
+- **A count of live string guards spares the collector two walks.**
+  Each collection read every string cell's borrow count before marking
+  (`borrowed_string_roots`, to root a borrowed string and reject a
+  mutable borrow) and, before compacting, every data entry's owner for a
+  borrow (`pinned`). The string guards (`borrow`, `borrow_mut` and a
+  construction's) now count themselves on their thread as they are made
+  and dropped; the collector scans only its own thread's stack and Lisp
+  threads switch stacks on it (a parked one's guards counted too), so at
+  zero no cell is borrowed and both walks are skipped. Checked builds
+  still walk every cell and assert that the count was right. Two
+  instructions a guard (sort, the heaviest borrower, takes 30,000 to
+  60,000 guards a unit, out of 243 million instructions). An explicit collection: L1 misses 588,000 →
+  529,000 and the sweep's 603,000 instructions fewer (marking read
+  1.13 million more on that build, the conservative scan finding another
+  graph, as `mem_find` did in undo above); explicit-gc wall time 0.119 →
+  0.110 s (GNU 0.103), 1.15 → 1.06 of GNU's.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1111,7 +1127,10 @@ save-buffer tests and
 the build before too, and
 `process_tls_state_survives_collection_before_and_after_async_handshake`,
 whose GNU run disagreed under that load and which passes alone, 3 of 3.
-For the case-table signature: the 137 char-table, case-table, case-fold,
+For the guard count: 3,134 of the 3,138 with 2 ignored, the as-root three
+and the load-sensitive TLS test failing; the checked build's assertion
+that no cell is borrowed when the count is zero held at every collection
+of the suite. For the case-table signature: the 137 char-table, case-table, case-fold,
 regexp, search and signature tests pass (run one at a time; at two
 threads four of them fail the same way on the build before, the tests
 sharing one process heap), and the full 3,138 as below with the as-root
@@ -1318,8 +1337,11 @@ unsuccessful execution, on its first attempt (run 39011049487). **On
 39015057290; 3,139 tests); frozen's first attempt matched 7,927 of 7,928
 (run 39015058719), the one mismatch GNU's again: the oracle's
 `eglot-test-rust-completion-exit-function` failed with a `jsonrpc-error`
-and Emaxx's passed, as on `ef33383`; its second attempt is the record
-for the next round. Locally,
+and Emaxx's passed, as on `ef33383`; its second attempt matched 7,928 of
+7,928 with no unsuccessful execution. **On `34b7f48`** (the dispatch
+copy): full Rust gate passed (run 39018268679; 3,139 tests), frozen
+7,928 of 7,928, no unsuccessful execution, on its first attempt (run
+39018270078). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1390,21 +1412,38 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   297,000 (callgrind `--cache-sim=yes`), nearly half in the sweeps, which
   read every string, vector and symbol cell, the image's included,
   where GNU's sweeps never touch its dump region and its cons sweep reads
-  mark bitmaps; what is left after the compaction change is
-  `borrowed_string_roots`' walk of every string cell before marking
-  (58,000 misses; skipping it needs a count of live string guards that is
-  exact across the parallel test threads), the string sweep's mark reads
-  (58,000), vectors (37,000) and symbols (19,000), and marking (301,000
-  against GNU's 281,000). Cons allocation's samples collect once each in
+  mark bitmaps; what is left after the compaction and guard-count changes
+  is the string sweep's mark reads (58,000), vectors (37,000, about half
+  of it a first pass that reads every header to find the buffers, where
+  GNU's `sweep_buffers` follows `all_buffers`) and symbols (19,000), and
+  marking (301,000 against GNU's 281,000). Cons allocation's samples collect once each in
   Emaxx (0.021 s of 0.11) and never in GNU: the harness's
   `(garbage-collect)` before each sample still finds the previous
   sample's 500,000-cell list through GNU's conservative stack scan, so
   with `gc-cons-percentage` 1.0 GNU's next threshold is about 8 MB;
   Emaxx frees the list and its threshold stays at 800,000 bytes. Emaxx
   collects less often than GNU in lexical, calls, sort, bindat and the
-  native-to-* cases (its census of live bytes is larger). Measure wall
-  time with the counts for any change to collection, allocation or the
-  native call path.
+  native-to-* cases (its census of live bytes is larger). Mapcar
+  (collection about half of each sample in both editors) misses the
+  last-level cache where GNU does not: at sixteen units a sample
+  (callgrind's 34 MB last-level cache) Emaxx takes about 66,000
+  last-level misses a unit against GNU's 800, in marking (16,700 reads a
+  unit), the sweep (7,700 reads, 16,100 writes) and the mutator's own
+  conses (17,800 writes, about half of a result list's lines). Each unit
+  allocates about 71 new 32 KB cons blocks (no collection between most
+  units; the dead results' blocks go back to `free` at the next one),
+  and an Emaxx cons costs 24 bytes (16 of payload and an 8-byte
+  weak-reference serial in the block's metadata) against GNU's 16 and a
+  mark bit, so a cycle's churn is about half again GNU's; page faults
+  are not it (past startup, 8,300 against GNU's 6,800 a run). Those
+  misses are mostly sequential streams, which the hardware prefetches:
+  an experiment build without the serial (2,000 cells a block instead of
+  1,350, weak upgrades not checked) ran mapcar 0.0827 → 0.0814 s, cons
+  allocation 0.0963 → 0.0961 and list traversal 0.145 → 0.154 (layout),
+  so the serial's cost is not worth a redesign of weak host references,
+  and callgrind's last-level figures over-predict sequential traffic.
+  Measure wall time with the counts for any change to collection,
+  allocation or the native call path.
 - **Native calls** (bytecode-to-native 1.64): 636 instructions an
   iteration against GNU's 388, the byte-code loop below GNU's (258
   against `exec_byte_code`'s 339 with its call setup). A Bcall into
