@@ -1123,6 +1123,44 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   it, native-to-bytecode 0.958, undo 0.980, the rest 0.93 to 1.03, the
   host's noise (bytecode-to-native and interpreted-to-native read 0.93
   and 0.94 with no change on their paths or in their counts).
+- **Profile-guided builds for timing (`tools/pgo-build.sh`).** Undo takes
+  three and a half times GNU's L1 instruction-cache misses (see the
+  case-table bullet), and code laid out by its execution counts is the
+  lever named there. The script builds an instrumented release binary and
+  its image, runs GNU's own tests under ERT in batch (`test/src`'s files
+  and 26 of `test/lisp`'s, about 2,500 tests in two minutes), merges the
+  counts with the toolchain's `llvm-profdata` (component `llvm-tools`),
+  and builds again with them. None of the files the locked workloads load
+  is in the training (`undo-tests.el`, `sort-tests.el`, `bindat-tests.el`,
+  nor `comp-tests.el` and its native resources), nor are the workloads
+  themselves; the profile is made from the source being built, for every
+  build, and none is kept in the tree. Its flags go through `--config`,
+  joining `.cargo/config.toml`'s (the dispatch copy's tail-duplication
+  limits are kept: `run_verified` has its indirect jumps as without the
+  profile). The mismatch warning is off: only the build scripts' and the
+  fingerprint helper's `main` met the editor's `main` in the profile.
+  Against the same source without it (five rounds of five samples in the
+  same rounds, the minimum), the geometric mean of the sixteen is 0.90 of
+  its time: native execution 0.73 (its native code is GNU's, the runtime
+  helpers Emaxx's), native-to-interpreted 0.79, native-to-bytecode 0.83,
+  bindat 0.84, lexical 0.86, sort 0.87, undo 0.90, dynamic 0.90,
+  interpreted-to-native 0.92; the byte-code loop and the collector barely
+  move (bytecode calls 0.99, bytecode-to-native 1.02, mapcar 1.03,
+  explicit-gc 0.96). Trained on the sixteen workloads instead (an upper
+  bound, not a fair build) the mean was 0.88. With the profile, against
+  GNU (built as the oracle records, `-O2`, no profile): lexical 0.69,
+  calls 0.72, native execution 0.75, bindat 0.81, list traversal 0.94,
+  sort 1.01, dynamic 1.02, native-to-interpreted 1.03; above the bound
+  bytecode-to-native 1.54, undo 1.35 (1.46), mapcar 1.29, cons allocation
+  1.22 (the in-sample collection), interpreted-to-native 1.19, bytecode
+  calls 1.10, explicit-gc 1.09, native-to-bytecode 1.06; the geometric
+  mean of all sixteen 1.03. Timing pilots and the final run use this
+  build from here (the gates keep the gate profile); instruction counts
+  stay on the plain release build, whose code the profile does not
+  change in kind. The script ran end to end with no warning (about
+  fifteen minutes from nothing); seven of GNU's test files run with the
+  final binary (777 tests) gave the outcomes of the instrumented run, and
+  the sixteen workloads' result checks pass with it.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1464,7 +1502,10 @@ full Rust gate passed (run 39024108508; 3,139 tests), frozen 7,928 of
 (run 39024110358). **On `d9a3c9a`** (the byte-code entry and the two
 stores): full Rust gate passed (run 39032410374; 3,139 tests), frozen
 7,928 of 7,928 across 519 files, no unsuccessful execution, on its first
-attempt (run 39032411872). Locally,
+attempt (run 39032411872). **On `d80e451`** (the four smaller cuts): full
+Rust gate passed (run 39038064118; 3,139 tests), frozen 7,928 of 7,928
+across 519 files, no unsuccessful execution, on its first attempt (run
+39038065785). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1690,12 +1731,15 @@ and failures are still recorded.
    above; worst now bytecode-to-native 1.60, undo 1.43, interpreted-to-native
    1.31, mapcar 1.29, native-to-bytecode 1.28, bytecode calls 1.20,
    native-to-interpreted 1.18, sort 1.14, interpreted dynamic 1.13; by
-   wall time, see "Wall time" above, on the byte-code entry round's build:
-   bytecode-to-native 1.59, undo 1.57, interpreted-to-native 1.35,
-   native-to-bytecode 1.33, cons allocation 1.30 (an in-sample collection,
-   see above), native-to-interpreted 1.29, mapcar 1.19, bytecode calls and
-   sort 1.16, dynamic 1.09, native execution 1.07, list traversal 1.06,
-   explicit-gc 1.05; bindat, calls and lexical below 1.0. A wall ratio
+   wall time, with the profile-guided build (`tools/pgo-build.sh`, the
+   PGO bullet above): bytecode-to-native 1.54, undo 1.35, mapcar 1.29,
+   cons allocation 1.22 (an in-sample collection, see above),
+   interpreted-to-native 1.19, bytecode calls 1.10, explicit-gc 1.09,
+   native-to-bytecode 1.06; native-to-interpreted 1.03, dynamic 1.02,
+   sort 1.01 and the rest below. The profile helps the interpreter and
+   the native callbacks most and the byte-code loop and the collector
+   least, so those (and undo's in-place ops) are where code changes now
+   count most. A wall ratio
    well above its instruction ratio points at stalls callgrind does not
    count, such as the store-forwarding failures of the last round. Per
    iteration bytecode calls runs 65 conditional branches against GNU's 28
