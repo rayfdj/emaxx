@@ -197,6 +197,7 @@ pub(crate) fn begin_mark_epoch() -> u32 {
     );
     let epoch = current_mark_epoch().wrapping_add(1).max(1);
     GC_MARK_EPOCH.store(epoch, std::sync::atomic::Ordering::Relaxed);
+    crate::lisp::alloc::begin_image_mark_epoch();
     epoch
 }
 
@@ -444,6 +445,7 @@ impl SymbolName {
                     plist: Cell::new(Value::Nil),
                     payload: Cell::new(Default::default()),
                     flags: Cell::new(0),
+                    image: false,
                     state: Cell::new(0),
                     mark: MarkBit::default(),
                 },
@@ -467,6 +469,12 @@ impl SymbolName {
     /// alloc.c's mark bit on the symbol object.
     pub(crate) fn mark_bit(&self) -> &MarkBit {
         self.0.mark_bit()
+    }
+
+    /// Mark the symbol for EPOCH; true when it was not yet marked in it.
+    #[inline]
+    pub(crate) fn mark(&self, epoch: u32) -> bool {
+        self.0.mark(epoch)
     }
 
     /// Room for ADDITIONAL interned names (the image loader knows how many
@@ -542,6 +550,7 @@ impl SymbolName {
                 plist: Cell::new(Value::Nil),
                 payload: Cell::new(Default::default()),
                 flags: Cell::new(0),
+                image: false,
                 state: Cell::new(0),
                 mark: MarkBit::default(),
             },

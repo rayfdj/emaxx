@@ -35,7 +35,7 @@ pub use symbols_with_pos::SymbolWithPosRef;
 mod tests;
 
 use super::super::types::{BufferValue, LispBignum, MarkBit, ReaderForm, Value};
-use super::{BlockKind, blocks_of, register_block, unregister_block};
+use super::{BlockKind, blocks_of, register_block, sweep_blocks_of, unregister_block};
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
@@ -152,13 +152,16 @@ const _: () = {
 
 struct VectorBlockMarks {
     epoch: Cell<u32>,
+    /// Registered while an image loaded (see `ImageCells').
+    image: bool,
     words: [Cell<usize>; VECTOR_MARK_WORDS],
 }
 
 impl VectorBlockMarks {
-    const fn new() -> Self {
+    const fn new(image: bool) -> Self {
         Self {
             epoch: Cell::new(0),
+            image,
             words: [const { Cell::new(0) }; VECTOR_MARK_WORDS],
         }
     }
@@ -197,7 +200,11 @@ impl VectorMark<'_> {
                 let mask = 1 << (index % usize::BITS as usize);
                 let old = word.get();
                 word.set(old | mask);
-                old & mask == 0
+                let marked = old & mask == 0;
+                if marked && block.image {
+                    super::IMAGE_VECTORS.note_marked();
+                }
+                marked
             }
             VectorMarkStorage::Separate(mark) => mark.mark(epoch),
         }
@@ -324,6 +331,9 @@ static LIVE_CLOSURES: AtomicUsize = AtomicUsize::new(0);
 static LIVE_CLOSURE_SLOTS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_BIGNUMS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_BUFFERS: AtomicUsize = AtomicUsize::new(0);
+/// The live buffers in the image's small-vector blocks at the last sweep
+/// that read them, counted again by a sweep that leaves them unread.
+static IMAGE_BLOCK_BUFFERS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_OVERLAYS: AtomicUsize = AtomicUsize::new(0);
 /// The records' share of `total_vectors' and `total_vector_slots'
 /// (alloc.c counts a record as a vector of its slots).
@@ -448,7 +458,7 @@ fn allocate_vector_block() -> usize {
         block
             .add(VECTOR_BLOCK_BYTES)
             .cast::<VectorBlockMarks>()
-            .write(VectorBlockMarks::new())
+            .write(VectorBlockMarks::new(super::image_region_open()))
     };
     register_block(start, BlockKind::VectorBlock);
     start
@@ -1267,9 +1277,28 @@ pub(crate) fn sweep_vectors(epoch: u32) {
     }
     LAST_INSERTED_FREE_INDEX.store(FREE_LIST_ARRAY_SIZE, Ordering::Relaxed);
     let mut stats = SweepStats::default();
-    let image = super::image_blocks();
-    for block in blocks_of(BlockKind::VectorBlock) {
-        let image_block = image.contains(&block);
+    // When no vector in the image's blocks died, they are left unread
+    // (checked builds read them and assert so).
+    let image_unchanged = super::IMAGE_VECTORS.unchanged();
+    let (mut image_live, mut image_buffers) = (0, 0);
+    for (block, image_block) in sweep_blocks_of(BlockKind::VectorBlock) {
+        if image_block && image_unchanged {
+            if cfg!(debug_assertions) {
+                let mut vector = block as *mut VectorHeader;
+                while vector_in_block(vector, block) {
+                    // SAFETY: as the walk below; this one only reads.
+                    unsafe {
+                        assert!(
+                            (*vector).tag() == VectorTag::Free || (*vector).is_marked(epoch),
+                            "an unread image block holds a dead vector at {:#x}",
+                            vector as usize
+                        );
+                        vector = advance(vector, (*vector).nbytes());
+                    }
+                }
+            }
+            continue;
+        }
         let mut free_this_block = false;
         let mut vector = block as *mut VectorHeader;
         while vector_in_block(vector, block) {
@@ -1278,7 +1307,9 @@ pub(crate) fn sweep_vectors(epoch: u32) {
             unsafe {
                 if (*vector).is_marked(epoch) {
                     if image_block {
-                        stats.count_image(vector);
+                        // `SweepStats::count_image': only a buffer counts.
+                        image_live += 1;
+                        image_buffers += usize::from((*vector).tag() == VectorTag::Buffer);
                     } else {
                         stats.count(vector);
                     }
@@ -1325,12 +1356,19 @@ pub(crate) fn sweep_vectors(epoch: u32) {
             release_vector_block(block);
         }
     }
-    for start in blocks_of(BlockKind::LargeVector) {
+    if image_unchanged {
+        image_buffers = IMAGE_BLOCK_BUFFERS.load(Ordering::Relaxed);
+    } else {
+        super::IMAGE_VECTORS.set_live(image_live);
+        IMAGE_BLOCK_BUFFERS.store(image_buffers, Ordering::Relaxed);
+    }
+    stats.buffers += image_buffers;
+    for (start, image_block) in sweep_blocks_of(BlockKind::LargeVector) {
         let vector = start as *mut VectorHeader;
         // SAFETY: a registered large vector.
         unsafe {
             if (*vector).is_marked(epoch) {
-                if image.contains(&start) {
+                if image_block {
                     stats.count_image(vector);
                 } else {
                     stats.count(vector);

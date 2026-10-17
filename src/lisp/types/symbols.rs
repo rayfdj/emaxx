@@ -367,7 +367,7 @@ fn mark_names(symbols: &Symbols, mark: &mut dyn FnMut(&Value)) {
         let value = Value::Symbol(name);
         if matches!(value.kind(), super::Kind::Nil | super::Kind::T) {
             // Fixed nil/t ABI words still use their allocated name cells.
-            name.mark_bit().mark(super::current_mark_epoch());
+            name.mark(super::current_mark_epoch());
             mark(&name.lisp_name());
             if let Some(root) = name.cell().value_or_alias_root() {
                 mark(&root);

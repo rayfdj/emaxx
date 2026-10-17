@@ -14,7 +14,7 @@ pub(crate) fn string_data_census() -> (usize, usize, usize) {
 }
 
 use super::super::types::{LispError, MarkBit, SharedStringState, Value};
-use super::{BlockKind, FREE_MARK, blocks_of, new_block, release_block};
+use super::{BlockKind, FREE_MARK, blocks_of, new_block, release_block, sweep_blocks_of};
 use std::cell::{Cell, UnsafeCell};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
@@ -31,6 +31,8 @@ pub(crate) struct StringCell {
     /// A `CodeState': whether the bytecode verifier holds a result for
     /// this string as a function's code.
     code: Cell<u8>,
+    /// Allocated while an image loaded (see `ImageCells').
+    image: bool,
 }
 
 /// The bytecode verifier's view of a string (see `bytecode::verify'): no
@@ -63,6 +65,7 @@ impl StringCell {
             pure,
             permanent_empty: false,
             code: Cell::new(CodeState::Unverified as u8),
+            image: super::image_region_open(),
         }
     }
 }
@@ -256,7 +259,11 @@ impl StringMark<'_> {
 
     pub(crate) fn mark(&self, epoch: u32) -> bool {
         // Pure strings have no properties and no collectable children.
-        !self.0.pure && self.0.mark.mark(epoch)
+        let marked = !self.0.pure && self.0.mark.mark(epoch);
+        if marked && self.0.image {
+            super::IMAGE_STRINGS.note_marked();
+        }
+        marked
     }
 }
 
@@ -492,9 +499,17 @@ pub(crate) fn sweep_strings(epoch: u32) {
     let mut free_count = 0;
     let (mut strings, mut bytes, mut spans) = (0, 0, 0);
     let mut released = Vec::new();
-    let image = super::image_blocks();
-    for start in blocks_of(BlockKind::String) {
-        let image_block = image.contains(&start);
+    // When no image string died, the image's blocks are left unread
+    // (checked builds read them and assert so).
+    let image_unchanged = super::IMAGE_STRINGS.unchanged();
+    let mut image_live = 0;
+    for (start, image_block) in sweep_blocks_of(BlockKind::String) {
+        if image_block && image_unchanged {
+            if cfg!(debug_assertions) {
+                assert_image_strings_marked(start, epoch);
+            }
+            continue;
+        }
         let limit =
             if BUMP_END.load(Ordering::Relaxed) == start + STRINGS_PER_BLOCK * STRING_CELL_SIZE {
                 (BUMP_NEXT.load(Ordering::Relaxed) - start) / STRING_CELL_SIZE
@@ -514,6 +529,7 @@ pub(crate) fn sweep_strings(epoch: u32) {
                         continue;
                     }
                     if mark == epoch {
+                        image_live += usize::from((*cell).image);
                         if image_block {
                             continue;
                         }
@@ -551,6 +567,9 @@ pub(crate) fn sweep_strings(epoch: u32) {
         }
     }
     FREE_LIST.store(free_list, Ordering::Relaxed);
+    if !image_unchanged {
+        super::IMAGE_STRINGS.set_live(image_live);
+    }
     for start in released {
         release_block(start, BlockKind::String);
     }
@@ -558,6 +577,24 @@ pub(crate) fn sweep_strings(epoch: u32) {
     LIVE_STRINGS.store(strings, Ordering::Relaxed);
     LIVE_BYTES.store(bytes, Ordering::Relaxed);
     LIVE_SPANS.store(spans, Ordering::Relaxed);
+}
+
+/// A checked build's test of an image block a sweep leaves unread: every
+/// allocated string in it is marked (or pure, which is never marked).
+fn assert_image_strings_marked(start: usize, epoch: u32) {
+    for index in 0..STRINGS_PER_BLOCK {
+        let cell = (start + index * STRING_CELL_SIZE) as *mut StringCell;
+        // SAFETY: every mark is initialized; `pure' is read only for an
+        // allocated cell.
+        unsafe {
+            let mark = (*cell).mark.raw();
+            assert!(
+                mark == FREE_MARK || mark == epoch || (*cell).pure,
+                "an unread image block holds a dead string at {:#x}",
+                cell as usize
+            );
+        }
+    }
 }
 
 pub(crate) fn live_string_object_census() -> (usize, usize, usize) {

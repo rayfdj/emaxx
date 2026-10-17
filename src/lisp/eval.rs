@@ -3464,7 +3464,7 @@ impl LispReachability {
             Kind::BigInteger(value) => value.mark_bit().mark(self.epoch),
             Kind::Float(value) => value.mark_bit().mark(self.epoch),
             Kind::StringObject(value) => value.mark_bit().mark(self.epoch),
-            Kind::Symbol(symbol) => symbol.mark_bit().mark(self.epoch),
+            Kind::Symbol(symbol) => symbol.mark(self.epoch),
             Kind::Cons(value) => value.mark_bit().mark(self.epoch),
             Kind::Vector(value) => value.mark_bit().mark(self.epoch),
             Kind::Closure(value) => value.mark_bit().mark(self.epoch),
@@ -4513,23 +4513,47 @@ impl Interpreter {
 
     fn gnu_hash_storage_bytes(&self, symbol_count: usize) -> usize {
         let mut bytes = crate::lisp::alloc::vectors::hash_tables::live_array_bytes();
-        for record in self.records.iter().flatten() {
-            if record.kind == RecordKind::Obarray {
-                let capacity = if record.id == self.standard_obarray_id {
-                    let mut capacity = 1_usize << 15;
-                    while symbol_count > capacity {
-                        capacity = capacity.saturating_mul(2);
-                    }
-                    capacity
-                } else {
-                    // lread.c:obarray_default_bits is 3.  Nonstandard
-                    // obarray growth is accounted when its symbol arena is
-                    // moved out of the encoded namespace representation.
-                    1_usize << 3
-                };
-                bytes = bytes.saturating_add(capacity.saturating_mul(8));
-            }
+        // The obarray-kind records are the obarrays and the abbrev tables:
+        // the census, which runs after every collection, finds them by type
+        // in the index rather than by a walk of the whole registry.
+        let obarray_ids = [
+            crate::lisp::primitives::OBARRAY_RECORD_TYPE,
+            crate::lisp::primitives::ABBREV_TABLE_RECORD_TYPE,
+        ]
+        .into_iter()
+        .filter_map(|type_name| self.record_ids_by_type_index.get(type_name))
+        .flatten()
+        .copied()
+        .filter(|&id| {
+            self.record_ref(id)
+                .is_some_and(|record| record.kind == RecordKind::Obarray)
+        });
+        let mut obarrays = 0_usize;
+        for id in obarray_ids {
+            obarrays += 1;
+            let capacity = if id == self.standard_obarray_id {
+                let mut capacity = 1_usize << 15;
+                while symbol_count > capacity {
+                    capacity = capacity.saturating_mul(2);
+                }
+                capacity
+            } else {
+                // lread.c:obarray_default_bits is 3.  Nonstandard
+                // obarray growth is accounted when its symbol arena is
+                // moved out of the encoded namespace representation.
+                1_usize << 3
+            };
+            bytes = bytes.saturating_add(capacity.saturating_mul(8));
         }
+        debug_assert_eq!(
+            obarrays,
+            self.records
+                .iter()
+                .flatten()
+                .filter(|record| record.kind == RecordKind::Obarray)
+                .count(),
+            "an obarray-kind record is outside the obarray and abbrev-table types"
+        );
         bytes
     }
 

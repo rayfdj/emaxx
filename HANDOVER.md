@@ -1337,6 +1337,47 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   4,789 → 4,767 (1.16 → 1.15), native-to-bytecode 4,751 → 4,741, mapcar
   28.58 → 28.47 million (1.229 → 1.225); bytecode calls, bytecode-to-native,
   native execution and undo unchanged.
+- **Collections that leave the image's cells unread, and a census without
+  the registry walk.** A collection's census found the obarrays by
+  walking the whole record registry (`gnu_hash_storage_bytes`: about
+  584,000 instructions and 24,000 L1 misses a collection); it reads the
+  obarray and abbrev-table types from the type index instead (checked
+  builds compare it with the walk). The block registry carries each
+  block's image flag, so the five sweeps no longer clone the set of image
+  blocks. And the string, symbol and small-vector sweeps leave the
+  image's blocks unread when nothing in them died: a string or symbol
+  allocated while an image loads carries an image flag (a padding byte;
+  the cells stay 48 and 64 bytes), as does a vector block registered
+  then, and a mark that first reaches such a cell raises its kind's
+  count (`ImageCells`, reset as each mark epoch begins). Only a sweep
+  frees an image cell and none is allocated outside a load, so when the
+  count equals the image cells the last sweep that read them left, every
+  one of them is marked again: the sweep passes the image's blocks by,
+  carrying over their live buffers for gcstat; otherwise it reads them all
+  and records the new count. Checked builds re-read every block passed by
+  and assert that each allocated cell in it is marked. GNU's sweeps never
+  read its dump. An explicit collection (100,000 live conses): 54.53 →
+  49.31 million instructions (0.82 → 0.74 of GNU's), L1 data misses
+  502,000 → 381,000 (GNU 297,000), and misses of a 1 MB cache modelled as
+  this host's L2 (`--LL=1048576,16,64`) 408,000 → 318,000 (GNU 236,000),
+  the sweeps' 100,000 → 16,500 (GNU's about 9,500). Timed with per-phase
+  clocks in an experiment build (best of five rounds of 32 collections
+  with a 100,000-cons list live), the vector sweep 994 → 39 µs, strings
+  714 → 108, symbols 198 → 29, and a whole collection 11.5–12.0 → 10.3–10.8
+  ms against GNU's 10.7–11.0. Wall time on the line-table release builds
+  (five rounds of five samples, the minimum, GNU's in parentheses):
+  explicit-gc 0.1040 → 0.0917 s (0.0973; 1.07 → 0.94), cons allocation
+  0.0917 → 0.0893 (0.0733), mapcar 0.0764 → 0.0710 (0.0629; 1.21 → 1.13),
+  undo 0.1673 → 0.1651 (0.1111). Instruction counts of the other fourteen
+  are within their noise: undo 1,739,519 → 1,745,355 a unit (the byte-code
+  verifier's address-keyed caches collide more on this layout,
+  `entry_program_slow` 40 → 65 calls a unit) and mapcar 28.47 → 28.62
+  million (`direct_add1`, whose source did not change, gained one
+  instruction from an inlining change, 100,000 calls a unit). In mapcar
+  and undo the string phase still takes 1.3 to 2.0 ms a collection: heap
+  strings die every cycle, and the compaction that follows
+  (`data::sweep`) reads the image's string data and its owners as well
+  (next).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1515,7 +1556,14 @@ clippy `-D warnings` and rustfmt are clean. For the nested evaluator
 call: 925 of the 928 native, byte-code, funcall, catch, throw,
 condition, handler, signal, escape, suspension, thread, unwind and
 nested-call tests pass, the as-root three failing; clippy and rustfmt
-clean.
+clean. For the census by type: 135 of the 136 obarray, abbrev, GC and
+collection tests pass with the checked comparison, the other being the
+load-sensitive TLS test, which passes alone (2 of 2). For the image cells
+left unread: 1,110 of the 1,112 GC, image, dump, weak, finalizer, obarray,
+interning, symbol, string, vector, record, buffer, allocation and mark
+tests pass in three parallel parts with the checked assertions, the
+others being the as-root save-buffer test and the TLS test, which passes
+alone; clippy `-D warnings` and rustfmt clean.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
@@ -1535,7 +1583,7 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | cons-allocation / list-traversal | 2.24 / — | 1.09 / 1.10 |
 | native-execution | — | 1.13 |
 | bindat | — | 1.02 |
-| explicit-gc | — | 0.82 |
+| explicit-gc | — | 0.74 |
 
 The table is one full run of all sixteen on the native calls' build
 (mapcar's on the round before, 1.24 there; undo's on the signals'
@@ -1742,8 +1790,11 @@ re-run once (attempt 2) and matched 7,928 of 7,928, with no unsuccessful
 execution. **On `4e49cce`** (signals' conditions by symbol): full Rust
 gate passed (run 39061192531; 3,140 tests), frozen passed on its first
 attempt (run 39061194462). **On `a56f990`** (change hooks, slow-op
-trials recorded): full Rust gate passed (run 39066922265; 3,140 tests);
-frozen pending (run 39066924074). Locally,
+trials recorded): full Rust gate passed (run 39066922265; 3,140 tests),
+frozen passed on its first attempt (run 39066924074). **On `5147b2e`**
+(the evaluator's nested native call): full Rust gate passed (run
+39069860003; 3,140 tests), frozen passed on its first attempt (run
+39069862192). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1838,7 +1889,12 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   is the string sweep's mark reads (58,000), vectors (about 19,000 since
   the buffers are listed) and symbols (19,000), each reading the image's
   cells as well, which GNU's sweeps never do, and marking (301,000 against
-  GNU's 281,000). Cons allocation's samples collect once each in
+  GNU's 281,000). Since the sweeps leave the image's unchanged blocks
+  unread (above), a collection's L1 misses are 381,000 and an explicit
+  collection is GNU's time or less; marking (302,000 L1 misses, 297,000 of
+  a modelled 1 MB L2 against GNU's 225,000) and, where heap strings die,
+  the string data compaction over the image's data are what remain.
+  Cons allocation's samples collect once each in
   Emaxx (0.021 s of 0.11) and never in GNU: the harness's
   `(garbage-collect)` before each sample still finds the previous
   sample's 500,000-cell list through GNU's conservative stack scan, so

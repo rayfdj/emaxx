@@ -16,7 +16,7 @@
 //! must be removed before this migration is complete.
 
 use super::super::types::{MarkBit, SymbolName, Value};
-use super::{BlockKind, FREE_MARK, SYMBOLS_PER_BLOCK, blocks_of, new_block, release_block};
+use super::{BlockKind, FREE_MARK, SYMBOLS_PER_BLOCK, new_block, release_block, sweep_blocks_of};
 use std::cell::Cell;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
@@ -34,6 +34,9 @@ pub struct SymbolCell {
     /// Lisp_Symbol.val: a value word or an alias object, selected by state.
     pub(crate) payload: Cell<SymbolPayload>,
     pub(crate) flags: Cell<u8>,
+    /// Allocated while an image loaded (see `ImageCells'); set by
+    /// `allocate_symbol'.
+    pub(crate) image: bool,
     pub(crate) state: Cell<u16>,
     pub(crate) mark: MarkBit,
 }
@@ -382,6 +385,17 @@ impl SymbolRef {
     pub(crate) fn mark_bit(&self) -> &MarkBit {
         &self.cell().mark
     }
+
+    /// Mark the symbol for EPOCH; true when it was not yet marked in it.
+    #[inline]
+    pub(crate) fn mark(&self, epoch: u32) -> bool {
+        let cell = self.cell();
+        let marked = cell.mark.mark(epoch);
+        if marked && cell.image {
+            super::IMAGE_SYMBOLS.note_marked();
+        }
+        marked
+    }
 }
 
 impl std::ops::Deref for SymbolRef {
@@ -415,6 +429,7 @@ pub(crate) fn allocate_symbol(cell: SymbolCell) -> SymbolRef {
     // written before a handle is made.
     unsafe {
         std::ptr::write(slot, cell);
+        (*slot).image = super::image_region_open();
         (*slot)
             .mark
             .set_raw(super::super::types::current_mark_epoch());
@@ -489,9 +504,26 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
     let mut num_free = 0usize;
     let mut num_used = 0usize;
     let mut released = Vec::new();
-    let image = super::image_blocks();
-    for start in blocks_of(BlockKind::Symbol) {
-        let image_block = image.contains(&start);
+    // When no image symbol died, the image's blocks are left unread
+    // (checked builds read them and assert so).
+    let image_unchanged = super::IMAGE_SYMBOLS.unchanged();
+    let mut image_live = 0;
+    for (start, image_block) in sweep_blocks_of(BlockKind::Symbol) {
+        if image_block && image_unchanged {
+            if cfg!(debug_assertions) {
+                for index in 0..SYMBOLS_PER_BLOCK {
+                    let cell = (start + index * SYMBOL_CELL_SIZE) as *mut SymbolCell;
+                    // SAFETY: inside a registered symbol block.
+                    let mark = unsafe { (*cell).mark.raw() };
+                    assert!(
+                        mark == epoch || mark == FREE_MARK,
+                        "an unread image block holds a dead symbol at {:#x}",
+                        cell as usize
+                    );
+                }
+            }
+            continue;
+        }
         let lim = if bump_end == start + SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE {
             (bump_next - start) / SYMBOL_CELL_SIZE
         } else {
@@ -505,6 +537,8 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
             let mark = unsafe { (*cell).mark.raw() };
             if mark == epoch {
                 num_used += usize::from(!image_block);
+                // SAFETY: an allocated cell.
+                image_live += usize::from(unsafe { (*cell).image });
                 continue;
             }
             if mark != FREE_MARK {
@@ -543,6 +577,9 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
         }
     }
     SYMBOL_FREE_LIST.store(free_list, Ordering::Relaxed);
+    if !image_unchanged {
+        super::IMAGE_SYMBOLS.set_live(image_live);
+    }
     for start in released {
         release_block(start, BlockKind::Symbol);
     }

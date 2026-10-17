@@ -20,7 +20,7 @@
 
 use super::types::{ConsCell, Kind, Value};
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
@@ -112,23 +112,26 @@ pub(crate) enum BlockKind {
     String,
 }
 
+/// A registered block: what its cells are, and whether an image load
+/// registered it (see `IMAGE_REGION_OPEN').
+#[derive(Clone, Copy)]
+struct Block {
+    kind: BlockKind,
+    image: bool,
+}
+
 /// The blocks, by start address, with their kinds, for `mem_find'
 /// (alloc.c's mem tree, a red-black tree there; the map's lookup is the
 /// same order).
-static BLOCKS: Mutex<BTreeMap<usize, BlockKind>> = Mutex::new(BTreeMap::new());
+static BLOCKS: Mutex<BTreeMap<usize, Block>> = Mutex::new(BTreeMap::new());
 
 /// alloc.c's `mem_insert' of a block of KIND at START.
 fn register_block(start: usize, kind: BlockKind) {
+    let image = IMAGE_REGION_OPEN.load(Ordering::Relaxed);
     BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(start, kind);
-    if IMAGE_REGION_OPEN.load(Ordering::Relaxed) {
-        IMAGE_BLOCKS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(start);
-    }
+        .insert(start, Block { kind, image });
 }
 
 /// alloc.c's `mem_delete'.
@@ -138,10 +141,6 @@ fn unregister_block(start: usize) {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .remove(&start);
     debug_assert!(removed.is_some());
-    IMAGE_BLOCKS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&start);
 }
 
 /// pdumper's mapped region, as this loader has it. GNU's sweeps never visit
@@ -153,14 +152,71 @@ fn unregister_block(start: usize) {
 /// cells off the free lists. Dead objects there are still cleaned, because
 /// they own host storage, and a block with nothing live is still released.
 static IMAGE_REGION_OPEN: AtomicBool = AtomicBool::new(false);
-static IMAGE_BLOCKS: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
 
-/// The image blocks, read once by each sweep.
-fn image_blocks() -> BTreeSet<usize> {
-    IMAGE_BLOCKS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone()
+/// The image's cells of one kind (strings and symbols allocated while an
+/// image loads, vectors in its blocks), for a sweep that need not read
+/// them: how many the current mark epoch has marked, raised as a mark
+/// first reaches one, and how many the last sweep that read them left
+/// (`UNKNOWN' until one has since an image load).  Only a sweep frees an
+/// image cell and none is allocated outside a load, so when the two agree
+/// every image cell that sweep left is marked again: nothing in the image
+/// died, and the sweep passes its blocks by unread, as GNU's sweeps never
+/// read its dump.
+pub(crate) struct ImageCells {
+    marked: AtomicUsize,
+    live: AtomicUsize,
+}
+
+impl ImageCells {
+    const UNKNOWN: usize = usize::MAX;
+
+    const fn new() -> Self {
+        Self {
+            marked: AtomicUsize::new(0),
+            live: AtomicUsize::new(Self::UNKNOWN),
+        }
+    }
+
+    /// A mark reached an image cell not yet marked in this epoch.
+    #[inline(always)]
+    pub(crate) fn note_marked(&self) {
+        self.marked
+            .store(self.marked.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+    }
+
+    /// True when every image cell the last reading sweep left is marked.
+    fn unchanged(&self) -> bool {
+        let live = self.live.load(Ordering::Relaxed);
+        live != Self::UNKNOWN && self.marked.load(Ordering::Relaxed) == live
+    }
+
+    /// A sweep read every image cell and left LIVE of them (unknown while
+    /// an image loads, as more are still to come).
+    fn set_live(&self, live: usize) {
+        let live = if IMAGE_REGION_OPEN.load(Ordering::Relaxed) {
+            Self::UNKNOWN
+        } else {
+            live
+        };
+        self.live.store(live, Ordering::Relaxed);
+    }
+}
+
+pub(crate) static IMAGE_STRINGS: ImageCells = ImageCells::new();
+pub(crate) static IMAGE_SYMBOLS: ImageCells = ImageCells::new();
+pub(crate) static IMAGE_VECTORS: ImageCells = ImageCells::new();
+
+/// A mark epoch begins: no image cell is marked in it yet.
+pub(crate) fn begin_image_mark_epoch() {
+    for cells in [&IMAGE_STRINGS, &IMAGE_SYMBOLS, &IMAGE_VECTORS] {
+        cells.marked.store(0, Ordering::Relaxed);
+    }
+}
+
+/// True while an image loads: what is allocated now is the image's.
+#[inline]
+fn image_region_open() -> bool {
+    IMAGE_REGION_OPEN.load(Ordering::Relaxed)
 }
 
 /// An image load in progress: blocks registered until this is dropped are
@@ -173,6 +229,7 @@ impl ImageRegion {
         let was_open = IMAGE_REGION_OPEN.swap(true, Ordering::Relaxed);
         assert!(!was_open, "an image region is already open");
         abandon_allocation_frontiers();
+        forget_image_live();
         Self(())
     }
 }
@@ -181,6 +238,14 @@ impl Drop for ImageRegion {
     fn drop(&mut self) {
         abandon_allocation_frontiers();
         IMAGE_REGION_OPEN.store(false, Ordering::Relaxed);
+        forget_image_live();
+    }
+}
+
+/// The image's cells change: the next sweep reads them all.
+fn forget_image_live() {
+    for cells in [&IMAGE_STRINGS, &IMAGE_SYMBOLS, &IMAGE_VECTORS] {
+        cells.live.store(ImageCells::UNKNOWN, Ordering::Relaxed);
     }
 }
 
@@ -462,9 +527,7 @@ pub(crate) fn sweep_floats(epoch: u32) -> usize {
     let mut num_free = 0usize;
     let mut num_used = 0usize;
     let mut released = Vec::new();
-    let image = image_blocks();
-    for start in blocks_of(BlockKind::Float) {
-        let image_block = image.contains(&start);
+    for (start, image_block) in sweep_blocks_of(BlockKind::Float) {
         let lim = if bump_end == start + FLOATS_PER_BLOCK * FLOAT_CELL_SIZE {
             (bump_next - start) / FLOAT_CELL_SIZE
         } else {
@@ -1561,7 +1624,7 @@ pub(crate) unsafe fn mem_find(address: usize) -> Option<Found> {
     let blocks = BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (&start, &kind) = blocks.range(..=address).next_back()?;
+    let (&start, &Block { kind, .. }) = blocks.range(..=address).next_back()?;
     drop(blocks);
     let offset = address.checked_sub(start)?;
     match kind {
@@ -1628,14 +1691,25 @@ pub(crate) fn allocated_serial(address: usize) -> Option<u64> {
     }
 }
 
-/// The blocks of KIND, for a sweep.
+/// The blocks of KIND.
 fn blocks_of(kind: BlockKind) -> Vec<usize> {
     BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .iter()
-        .filter(|entry| *entry.1 == kind)
-        .map(|entry| *entry.0)
+        .filter(|(_, block)| block.kind == kind)
+        .map(|(&start, _)| start)
+        .collect()
+}
+
+/// The blocks of KIND for a sweep, each with whether it is an image block.
+fn sweep_blocks_of(kind: BlockKind) -> Vec<(usize, bool)> {
+    BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .filter(|(_, block)| block.kind == kind)
+        .map(|(&start, block)| (start, block.image))
         .collect()
 }
 
@@ -1662,9 +1736,7 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
     let mut num_free = 0usize;
     let mut num_used = 0usize;
     let mut released = Vec::new();
-    let image = image_blocks();
-    for start in all_blocks() {
-        let image_block = image.contains(&start);
+    for (start, image_block) in sweep_blocks_of(BlockKind::Cons) {
         let lim = if bump_end == start + CELLS_PER_BLOCK * CELL_SIZE {
             (bump_next - start) / CELL_SIZE
         } else {
