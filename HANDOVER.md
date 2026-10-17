@@ -809,6 +809,25 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   1.42 → 1.27, mapcar 1.353 → 1.324, sort 1.353 → 1.314, bindat 1.190
   → 1.150, undo about 1.73 → 1.67 to 1.70 (the allocator's state),
   interpreted calls 1.164 → 1.150, lexical 1.204 → 1.197.
+- An evaluator call and a byte-code call each repeated work. For a
+  subr or a function `eval_sub` resolved: `set_backtrace_args` replaced
+  the frame's arguments by assignment, which calls the `FrameArgs`
+  enum's drop glue out of line, though the frame `eval_sub` recorded
+  holds borrowed words (it now writes over words that own nothing); the
+  frame's function went through `Value::Symbol`'s test for the built-in
+  nil and t, which a symbol with a function never is
+  (`Value::symbol_of_cell`); and `call_with_facts` checked the arity
+  `eval_call` had just checked against the same descriptor, the facts'
+  arity authority (`call_with_facts_arity_checked`). The byte-code Call
+  arm read its callee's function cell and `enter_closure_frame` resolved
+  it again (`plain_bytecode_callee`, removed: the arm passes the closure
+  and the entry runs `plain_bcall_entry`'s tests), and the loop tested
+  the entered frame's verification at pc 0, which `verified_code` had
+  just established (`FastExit::Entered` skips it). Interpreted calls
+  1.150 → 1.131, lexical 1.197 → 1.186, cons allocation 1.354 → 1.322,
+  list traversal 1.310 → 1.282, interpreted-to-native 1.437 → 1.398,
+  bytecode calls 1.809 → 1.761; bytecode-to-native 1.863 → 1.872 (the
+  loop's code around the call arm: 3 instructions an iteration more).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -879,7 +898,13 @@ and environment tests, 759 of 759 `cond`, line, function, alias, closure, docume
 arguments, alias chains with a cycle, `function` forms with
 documentation and interactive specs, every `ash` shift of fixnum and
 bignum values and the bitwise operations' argument errors, identical to
-GNU's output.
+GNU's output. For the call trims: 1,301 of the 1,302 evaluator,
+backtrace and frame tests run by the commit (of 1,732; the rest were
+still running, and the other is the as-root byte-compile test below),
+and 653 of 653 VM, byte-code, native, funcall, catch, condition, unwind
+and handler tests on the build before the entry took the closure from
+the arm, and 131 of 132 byte-code and compile tests on the final build
+(the other is the as-root byte-compile test).
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
@@ -888,15 +913,15 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | --- | --- | --- |
 | upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.67 |
 | upstream-sort (4 units) | 3.26 (at 1 unit) | 1.31 |
-| interpreted-calls | 2.10 | 1.15 |
-| interpreted-lexical | 2.04 | 1.20 |
+| interpreted-calls | 2.10 | 1.13 |
+| interpreted-lexical | 2.04 | 1.19 |
 | interpreted-dynamic | 2.14 | 1.31 |
 | mapcar | 2.95 | 1.32 |
-| bytecode-calls | 3.30 | 1.81 |
-| bytecode-to-native | — | 1.86 |
-| interpreted-to-native | — | 1.43 |
+| bytecode-calls | 3.30 | 1.76 |
+| bytecode-to-native | — | 1.87 |
+| interpreted-to-native | — | 1.40 |
 | native-to-interpreted / -bytecode | — | 1.27 / 1.43 |
-| cons-allocation / list-traversal | 2.24 / — | 1.35 / 1.31 |
+| cons-allocation / list-traversal | 2.24 / — | 1.32 / 1.28 |
 | native-execution | — | 1.17 |
 | bindat | — | 1.15 |
 | explicit-gc | — | 0.89 |
@@ -906,7 +931,9 @@ before its bitwise fixnum paths (bindat measured again after them).
 Interpreted dynamic read 1.32 and interpreted-to-native 1.44 in that
 run, a collection's stack scan (17 instructions an iteration) and a hash
 table's growth (19) falling in the difference; undo read 1.67 to 1.70
-across the sweep's builds (the allocator's state).
+across the sweep's builds (the allocator's state). The interpreted,
+cons, list, byte-code and native-call rows were measured again after the
+call trims.
 Sort at one and two units read 1.84 before the port and 1.12 after it,
 but after it Emaxx's two collections fell at both sizes, out of the
 difference, while one of GNU's fell in it; at four and eight units it
@@ -1026,7 +1053,14 @@ jump table) and **on `5dc69d1`** (the fixed-arity native calls): full
 Rust gate passed on each (runs 38975258598 and 38977491857; 3,132 tests,
 the two ignores, plus bins and integration), frozen 7,928 of 7,928 across
 519 files, no unsuccessful execution (runs 38975261428 and
-38977494311). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+38977494311). **On `961b207`** (the allocation sweep): full Rust gate
+passed (run 38986010893; 3,134 tests with the two new ones, the two
+ignores, plus bins and integration), frozen 7,928 of 7,928 across 519
+files, no unsuccessful execution, on its second attempt (run
+38986012909); the first attempt matched 7,927, the other,
+`eglot-test-rust-completion-exit-function`, ending in GNU's run with a
+`jsonrpc-error` from the language server while Emaxx's passed. Locally,
+`batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -1088,10 +1122,11 @@ this container's GNU build itself disagrees with the expected text (under
   the bookkeeping that Rust frames between native code and its caller
   require: the call-frame record, the thread-local swaps and the escape
   record.
-- **Byte-code calls** (bytecode calls 1.87): 863 instructions an
-  iteration against GNU's 468: the verified loop 440 (its ops about as
-  GNU's, plus about 30 a switch to re-read the code string and check its
-  verification), the in-loop frame entry 302 (the plain-entry tests,
+- **Byte-code calls** (bytecode calls 1.76): 824 instructions an
+  iteration against GNU's 468: the verified loop about 400 (its ops
+  about as GNU's, plus about 22 on a return's switch to re-read the code
+  string, a borrow of it and its decoding, and check its verification),
+  the in-loop frame entry about 300 (the plain-entry tests,
   `for_call`'s field checks, the verification cache, the 64-byte
   backtrace record, the 88-byte `BcFrame` and the copies of the
   48-byte `ByteCodeObject` in and out of it) and the return 122. GNU's
@@ -1100,9 +1135,8 @@ this container's GNU build itself disagrees with the expected text (under
 - **Source interpreter** (lexical 1.21, calls 1.16, sort 1.36): an
   iteration of interpreted calls is 3,854 instructions against GNU's
   3,315 (4,022 before the shell's parked test became an assertion and the
-  parameters moved beside the frames). What is left is spread: the frame
-  record and its argument update (about 23 and 15 a call, the update
-  calling `FrameArgs`' drop glue out of line),
+  parameters moved beside the frames; 3,748 after the call trims). What
+  is left is spread: the frame record (about 22 a form),
   `resolve_symbol_call` and the argument count (about 27 and 25 a form,
   close to their minimum), the subr dispatch through `call_with_facts`,
   and an interpreted call's `funcall_interpreted_lambda` (300), and
@@ -1170,9 +1204,9 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 1.86, bytecode calls 1.81, undo
-   1.67, native-to-bytecode 1.43, interpreted-to-native 1.43, cons
-   allocation 1.35, mapcar 1.32, sort 1.31). The remaining costs are listed under "Where the
+   above; worst now bytecode-to-native 1.87, bytecode calls 1.76, undo
+   1.67, native-to-bytecode 1.43, interpreted-to-native 1.40, mapcar
+   1.32, cons allocation 1.32, sort 1.31). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code
    frames kept in the byte-code stack, as GNU's are, instead of a

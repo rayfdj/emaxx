@@ -419,6 +419,26 @@ pub(crate) fn call_with_facts(
     call_with_facts_general(interp, name, facts, args, env)
 }
 
+/// `call_with_facts' for a subr whose arity the caller checked against
+/// its descriptor, the facts' arity authority (eval_sub's test before it
+/// evaluates the arguments).
+#[inline(always)]
+pub(crate) fn call_with_facts_arity_checked(
+    interp: &mut Interpreter,
+    name: &str,
+    facts: &NameFacts,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    if facts.builtin
+        && !facts.special_form
+        && let Some(direct) = facts.direct
+    {
+        return direct(interp, args, env);
+    }
+    call_with_facts_general(interp, name, facts, args, env)
+}
+
 #[inline(never)]
 fn call_with_facts_general(
     interp: &mut Interpreter,

@@ -1525,6 +1525,12 @@ pub(crate) enum FrameArgs {
 }
 
 impl FrameArgs {
+    /// Whether these are borrowed words, which own no storage.
+    #[inline(always)]
+    fn is_borrowed(&self) -> bool {
+        matches!(self, Self::Borrowed { .. } | Self::NativeWords { .. })
+    }
+
     #[inline(always)]
     fn borrowed(args: &[Value]) -> Self {
         Self::Borrowed {
@@ -1638,11 +1644,7 @@ impl BacktraceFrame {
     /// argument vector of its own (the frame of an ordinary call).
     #[inline(always)]
     fn owns_nothing(&self) -> bool {
-        self.detail.is_none()
-            && matches!(
-                self.args,
-                FrameArgs::Borrowed { .. } | FrameArgs::NativeWords { .. }
-            )
+        self.detail.is_none() && self.args.is_borrowed()
     }
 }
 

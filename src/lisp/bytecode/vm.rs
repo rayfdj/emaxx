@@ -533,7 +533,7 @@ fn bytecode_call(
 }
 
 /// Bcall's `goto setup_frame' when the call does nothing else: the
-/// evaluator finds Ffuncall's entry plain (`plain_bytecode_callee'),
+/// evaluator finds Ffuncall's entry plain (`plain_bcall_entry'),
 /// maybe_gc would not collect, and the callee is a byte-code function
 /// that takes these ARGC arguments without a &rest list and whose frame
 /// fits.  The callee's frame starts at pc 0 and the caller resumes at
@@ -543,8 +543,9 @@ fn bytecode_call(
 fn enter_bytecode_frame(vm: &mut VmFrames<'_>, return_pc: usize, argc: usize) -> bool {
     let top = vm.interp.bc_stack.top;
     let func = vm.interp.bc_stack[vm.interp.bc_stack.len() - argc - 1];
-    callee_function(func).closure_ref().is_some()
-        && enter_closure_frame(vm, top, return_pc, argc, func).is_some()
+    callee_function(func).closure_ref().is_some_and(|closure| {
+        enter_closure_frame(vm, top, return_pc, argc, func, closure).is_some()
+    })
 }
 
 /// Bcall's FUNC as its live function cell, for a symbol: what the call
@@ -611,11 +612,17 @@ fn enter_closure_frame(
     return_pc: usize,
     argc: usize,
     func: Value,
+    closure: crate::lisp::types::ClosureRef,
 ) -> Option<(usize, usize)> {
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.bc_stack.top = top;
     let args_start = state.bc_stack.len() - argc;
-    let (function, closure) = state.plain_bytecode_callee(func)?;
+    // The entry tests (`plain_bcall_entry') for CLOSURE, which the caller
+    // found in FUNC's cell (or as FUNC itself).
+    if !state.plain_bcall_entry(func.symbol_cell()) {
+        return None;
+    }
+    let function = Value::Closure(closure);
     let mut callee = ByteCodeObject::for_call(closure)?;
     let ArgSpec::Packed {
         mandatory,
@@ -973,6 +980,10 @@ enum FastExit {
     /// or a call ran Lisp, which may have changed the frame's code; the
     /// stack's top and the frame's depth.
     Switched(usize, usize),
+    /// Inside the verified loop only: a call entered a byte-code frame at
+    /// pc 0, its verification just found (`enter_closure_frame'); the
+    /// stack's top.
+    Entered(usize),
     /// The instruction's signal, raised after its own work (a Bcall's).
     Raised(super::Instr, LispError),
 }
@@ -1511,10 +1522,12 @@ fn run_verified(
                     // SAFETY: sp lies within the active frame.
                     let top = unsafe { sp.offset_from(words) as usize };
                     let function = callee_function(func);
-                    if function.closure_ref().is_some() {
-                        if let Some((top, depth)) = enter_closure_frame(vm, top, at, argc, func) {
+                    if let Some(closure) = function.closure_ref() {
+                        if let Some((top, _)) =
+                            enter_closure_frame(vm, top, at, argc, func, closure)
+                        {
                             *pc = 0;
-                            break 'run FastExit::Switched(top, depth);
+                            break 'run FastExit::Entered(top);
                         }
                     } else if function.is_vectorlike()
                         && let Some(result) = call_plain(vm, top, argc, func)
@@ -1929,6 +1942,18 @@ fn run_verified(
         if let FastExit::Raised(..) = exit {
             // The call left the stack as its signal found it.
             return (exit, None);
+        }
+        if let FastExit::Entered(new_top) = exit {
+            // `verified_code' has just found the entered frame's code
+            // current and verified for its entry at pc 0 with its depth,
+            // which is what `admits' would test.
+            if vm.program.verified.is_some() {
+                // SAFETY: as below.
+                code = unsafe { vm.program.code.bytes_unguarded() }.0;
+                top = new_top;
+                continue;
+            }
+            return (FastExit::Resume, None);
         }
         if let FastExit::Switched(new_top, depth) = exit {
             // The new frame's program, stack (DEPTH operands) and pc are in
@@ -3152,7 +3177,7 @@ fn run_frames(
                     last_instruction = Some(instr);
                     return Err(error);
                 }
-                FastExit::Resume | FastExit::Switched(..) => {
+                FastExit::Resume | FastExit::Switched(..) | FastExit::Entered(..) => {
                     unreachable!("a frame switch resumes above")
                 }
             };

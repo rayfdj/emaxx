@@ -817,7 +817,7 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        self.set_backtrace_args(Value::Symbol(*name), args);
+        self.set_backtrace_args(Value::symbol_of_cell(*name), args);
         self.capture_current_backtrace_context(Some(name.as_str()), env, None);
         let result = match (func.native_function_ref(), func.closure_ref()) {
             (Some(native), _) => crate::lisp::native_comp::call_function(self, env, native, args),
@@ -931,19 +931,23 @@ impl Interpreter {
         backtrace_argc: usize,
         env: &mut Env,
     ) -> Result<Value, LispError> {
+        // A subr eval_call resolved has had its arity checked (see
+        // `eval_call').
         let builtin = match &prepared {
-            FunctionResolution::DirectBuiltin(subr) => Some((*subr, subr.facts())),
+            FunctionResolution::DirectBuiltin(subr) => Some((*subr, subr.facts(), true)),
             FunctionResolution::Resolved(func) => match func.kind() {
-                Kind::BuiltinFunc(subr) => Some((subr, subr.facts())),
+                Kind::BuiltinFunc(subr) => Some((subr, subr.facts(), false)),
                 _ => None,
             },
         };
-        if let Some((subr, facts)) = builtin {
+        if let Some((subr, facts, arity_checked)) = builtin {
             let original_name = callable_name
                 .as_ref()
                 .map_or(subr.as_str(), SymbolName::as_str);
             if let Some(symbol) = callable_name {
-                self.set_backtrace_args(Value::Symbol(symbol), &args[..backtrace_argc]);
+                // The callee's symbol has a function, so it is no
+                // built-in nil or t (both constant).
+                self.set_backtrace_args(Value::symbol_of_cell(symbol), &args[..backtrace_argc]);
             } else {
                 self.push_backtrace_frame_borrowed(
                     Value::BuiltinFunc(subr),
@@ -951,10 +955,12 @@ impl Interpreter {
                 );
             }
             self.capture_current_backtrace_context(Some(original_name), env, None);
-            let result = primitives::call_with_facts(self, subr.as_str(), facts, args, env)
-                .map_err(|error| {
-                    Self::builtin_call_error(original_name, backtrace_argc, false, error)
-                });
+            let result = if arity_checked {
+                primitives::call_with_facts_arity_checked(self, subr.as_str(), facts, args, env)
+            } else {
+                primitives::call_with_facts(self, subr.as_str(), facts, args, env)
+            }
+            .map_err(|error| Self::builtin_call_error(original_name, backtrace_argc, false, error));
             let result = self.settle_frame_result(result, env);
             self.truncate_backtrace_frames(depth);
             return result;
@@ -968,7 +974,7 @@ impl Interpreter {
                     && self.pending_termination().is_none()
                     && profile_path().is_none() =>
             {
-                self.set_backtrace_args(Value::Symbol(*name), args);
+                self.set_backtrace_args(Value::symbol_of_cell(*name), args);
                 self.capture_current_backtrace_context(Some(name.as_str()), env, None);
                 let result =
                     self.funcall_interpreted_lambda(func, Some(CallName::Symbol(name)), args, env);
@@ -1781,31 +1787,10 @@ impl InterpreterState {
             .expect("Ffuncall depth is balanced");
     }
 
-    /// Bcall's way to a byte-code callee when nothing else happens on the
-    /// way in: Ffuncall's maybe_quit finds no quit, the depth stays within
-    /// max-lisp-eval-depth, no termination is pending, no debugger context
-    /// is captured (edebug is not loaded and the callee is not
-    /// `backtrace-eval'), and calls are not being profiled.  FUNC is
-    /// Bcall's TOP; the answer is the closure in its live function cell
-    /// (or FUNC itself, when it is no symbol).  Reads only: the full Call
-    /// arm takes every other case from the same state.
-    #[inline(always)]
-    pub(crate) fn plain_bytecode_callee(
-        &self,
-        func: Value,
-    ) -> Option<(Value, crate::lisp::types::ClosureRef)> {
-        let name = func.symbol_cell();
-        let function = match &name {
-            Some(name) => self.globals.function(name)?,
-            None => func,
-        };
-        let closure = function.closure_ref()?;
-        self.plain_bcall_entry(name).then_some((function, closure))
-    }
-
-    /// `plain_bytecode_callee' for a native-compiled function or a subr
-    /// that evaluates its arguments: the function in FUNC's live cell (or
-    /// FUNC itself), when the entry is plain.
+    /// Bcall's way to a native-compiled function or a subr that evaluates
+    /// its arguments when nothing else happens on the way in
+    /// (`plain_bcall_entry'): the function in FUNC's live cell (or FUNC
+    /// itself).
     #[inline(always)]
     pub(crate) fn plain_bcall_callee(&self, func: Value) -> Option<super::PlainCallee> {
         let name = func.symbol_cell();
@@ -1827,10 +1812,15 @@ impl InterpreterState {
         self.plain_bcall_entry(name).then_some(callee)
     }
 
-    /// The entry tests of a plain Bcall (see `plain_bytecode_callee'); NAME
-    /// is the callee's symbol, if it is one.
+    /// The entry tests of a Bcall when nothing else happens on the way
+    /// in: Ffuncall's maybe_quit finds no quit, the depth stays within
+    /// max-lisp-eval-depth, no termination is pending, no debugger context
+    /// is captured (edebug is not loaded and the callee is not
+    /// `backtrace-eval'), and calls are not being profiled. NAME is the
+    /// callee's symbol, if it is one. Reads only: the full Call arm takes
+    /// every other case from the same state.
     #[inline(always)]
-    fn plain_bcall_entry(&self, name: Option<SymbolName>) -> bool {
+    pub(crate) fn plain_bcall_entry(&self, name: Option<SymbolName>) -> bool {
         self.quit_flag.is_nil()
             && self.pending_termination.is_none()
             && !self.globals.edebug_is_special()

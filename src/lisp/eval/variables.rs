@@ -2578,7 +2578,15 @@ impl Interpreter {
     pub(super) fn set_backtrace_args(&mut self, function: Value, args: &[Value]) {
         if let Some(frame) = self.backtrace_frames.last_mut() {
             frame.function = FrameFunction::Owned(function);
-            frame.args = FrameArgs::borrowed(args);
+            let args = FrameArgs::borrowed(args);
+            if frame.args.is_borrowed() {
+                // SAFETY: borrowed words own nothing, so overwriting them
+                // without their drop leaks nothing; an assignment calls
+                // the enum's drop glue out of line first.
+                unsafe { std::ptr::write(&mut frame.args, args) };
+            } else {
+                frame.args = args;
+            }
             frame.evald = true;
         }
     }
@@ -2669,7 +2677,7 @@ impl Interpreter {
 /// the shell's parked test once.
 impl InterpreterState {
     /// record_in_backtrace and Ffuncall's depth for a call that does
-    /// nothing else on its way in (see `plain_bytecode_callee'). Returns
+    /// nothing else on its way in (see `plain_bcall_entry'). Returns
     /// the frame depth `leave_plain_funcall' restores.
     #[inline(always)]
     pub(crate) fn enter_plain_funcall(&mut self, function: Value, args: &[Value]) -> usize {

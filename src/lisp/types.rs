@@ -1548,6 +1548,14 @@ impl Value {
             .builtin_boolean()
             .unwrap_or_else(|| Value::from_bits(name.identity_ptr() | TAG_SYMBOL))
     }
+    /// `Symbol' for a name `symbol_cell' answered, or any symbol other
+    /// than the built-in nil and t, whose words are not their cells':
+    /// the cell's address with the symbol tag, without the test.
+    #[inline(always)]
+    pub(crate) fn symbol_of_cell(name: SymbolName) -> Value {
+        debug_assert!(name.cell().builtin_boolean().is_none());
+        Value::from_bits(name.identity_ptr() | TAG_SYMBOL)
+    }
     #[inline]
     pub fn Cons(cell: SharedCons) -> Value {
         Value::from_bits(cell.as_ptr() as usize | TAG_CONS)
