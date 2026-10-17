@@ -99,6 +99,7 @@ pub(crate) const FREE_MARK: u32 = u32::MAX;
 
 /// alloc.c's `mem_type' of a block: what its cells are.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
 pub(crate) enum BlockKind {
     Cons,
     Float,
@@ -112,35 +113,56 @@ pub(crate) enum BlockKind {
     String,
 }
 
-/// A registered block: what its cells are, and whether an image load
-/// registered it (see `IMAGE_REGION_OPEN').
-#[derive(Clone, Copy)]
-struct Block {
-    kind: BlockKind,
-    image: bool,
+const BLOCK_KINDS: usize = 6;
+const _: () = assert!(BlockKind::String as usize == BLOCK_KINDS - 1);
+
+/// The registered blocks.
+struct BlockRegistry {
+    /// Every block by start address, with its kind, for `mem_find'
+    /// (alloc.c's mem tree, a red-black tree there; the map's lookup is
+    /// the same order).
+    all: BTreeMap<usize, BlockKind>,
+    /// Each kind's blocks by start address, each with whether an image
+    /// load registered it (see `IMAGE_REGION_OPEN'), for its sweep.
+    by_kind: [BTreeMap<usize, bool>; BLOCK_KINDS],
 }
 
-/// The blocks, by start address, with their kinds, for `mem_find'
-/// (alloc.c's mem tree, a red-black tree there; the map's lookup is the
-/// same order).
-static BLOCKS: Mutex<BTreeMap<usize, Block>> = Mutex::new(BTreeMap::new());
+static BLOCKS: Mutex<BlockRegistry> = Mutex::new(BlockRegistry {
+    all: BTreeMap::new(),
+    by_kind: [const { BTreeMap::new() }; BLOCK_KINDS],
+});
 
-/// alloc.c's `mem_insert' of a block of KIND at START.
-fn register_block(start: usize, kind: BlockKind) {
+/// alloc.c's `min_heap_address' and `max_heap_address': the lowest block
+/// start and the highest block end registered, which `mem_find' tests
+/// before it takes the registry's lock (most words a stack scan reads are
+/// return addresses, stack addresses and small numbers). A block's
+/// release leaves them as they are.
+static HEAP_LOW: AtomicUsize = AtomicUsize::new(usize::MAX);
+static HEAP_HIGH: AtomicUsize = AtomicUsize::new(0);
+
+/// alloc.c's `mem_insert' of a block of KIND and BYTES at START.
+fn register_block(start: usize, bytes: usize, kind: BlockKind) {
     let image = IMAGE_REGION_OPEN.load(Ordering::Relaxed);
-    BLOCKS
+    let mut blocks = BLOCKS
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(start, Block { kind, image });
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    blocks.all.insert(start, kind);
+    blocks.by_kind[kind as usize].insert(start, image);
+    drop(blocks);
+    HEAP_LOW.fetch_min(start, Ordering::Relaxed);
+    HEAP_HIGH.fetch_max(start + bytes, Ordering::Relaxed);
 }
 
 /// alloc.c's `mem_delete'.
 fn unregister_block(start: usize) {
-    let removed = BLOCKS
+    let mut blocks = BLOCKS
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&start);
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let removed = blocks.all.remove(&start);
     debug_assert!(removed.is_some());
+    if let Some(kind) = removed {
+        blocks.by_kind[kind as usize].remove(&start);
+    }
 }
 
 /// pdumper's mapped region, as this loader has it. GNU's sweeps never visit
@@ -1604,7 +1626,7 @@ fn new_block(kind: BlockKind) -> usize {
             unreachable!("vectors have their own blocks (alloc/vectors.rs)")
         }
     }
-    register_block(start, kind);
+    register_block(start, block_bytes(kind), kind);
     start
 }
 
@@ -1615,17 +1637,41 @@ fn new_block(kind: BlockKind) -> usize {
 /// The blocks registry is read under its lock; the cell's mark word is
 /// readable in every state.
 pub(crate) unsafe fn mem_find(address: usize) -> Option<Found> {
+    // SAFETY: the caller's contract; the registry is locked for the
+    // lookup alone.
+    unsafe {
+        mem_find_with(address, |address| {
+            BLOCKS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .all
+                .range(..=address)
+                .next_back()
+                .map(|(&start, &kind)| (start, kind))
+        })
+    }
+}
+
+/// `mem_find', with LOOKUP naming the registered block at or below an
+/// address inside the heap's bounds.
+///
+/// # Safety
+/// As `mem_find'.
+#[inline(always)]
+unsafe fn mem_find_with(
+    address: usize,
+    lookup: impl FnOnce(usize) -> Option<(usize, BlockKind)>,
+) -> Option<Found> {
     if let Some(vector) = vectors::zero_vector_at(address) {
         return Some(Found::Vectorlike(vector));
     }
     if let Some(string) = strings::empty_string_at(address) {
         return Some(Found::String(string));
     }
-    let blocks = BLOCKS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (&start, &Block { kind, .. }) = blocks.range(..=address).next_back()?;
-    drop(blocks);
+    if address < HEAP_LOW.load(Ordering::Relaxed) || address >= HEAP_HIGH.load(Ordering::Relaxed) {
+        return None;
+    }
+    let (start, kind) = lookup(address)?;
     let offset = address.checked_sub(start)?;
     match kind {
         BlockKind::Cons => {
@@ -1696,9 +1742,9 @@ fn blocks_of(kind: BlockKind) -> Vec<usize> {
     BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .iter()
-        .filter(|(_, block)| block.kind == kind)
-        .map(|(&start, _)| start)
+        .by_kind[kind as usize]
+        .keys()
+        .copied()
         .collect()
 }
 
@@ -1707,9 +1753,9 @@ fn sweep_blocks_of(kind: BlockKind) -> Vec<(usize, bool)> {
     BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .by_kind[kind as usize]
         .iter()
-        .filter(|(_, block)| block.kind == kind)
-        .map(|(&start, block)| (start, block.image))
+        .map(|(&start, &image)| (start, image))
         .collect()
 }
 
@@ -2096,7 +2142,36 @@ const TAG_BITS: usize = 7;
 /// roots and conservative stack scans enter the same ordinary graph walk.
 pub(crate) fn conservative_value(word: usize) -> Option<Value> {
     // SAFETY: mem_find validates the allocation before any payload is read.
-    Some(match unsafe { mem_find(word & !TAG_BITS) }? {
+    value_of_found(word, unsafe { mem_find(word & !TAG_BITS) }?)
+}
+
+/// `conservative_value' of each of WORDS, the registry locked once for
+/// them all (a stack scan's thousands of words).
+pub(crate) fn conservative_values(words: impl IntoIterator<Item = usize>) -> Vec<Value> {
+    let blocks = BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let lookup = |address: usize| {
+        blocks
+            .all
+            .range(..=address)
+            .next_back()
+            .map(|(&start, &kind)| (start, kind))
+    };
+    words
+        .into_iter()
+        .filter_map(|word| {
+            // SAFETY: as in `conservative_value'; nothing below takes the
+            // registry's lock.
+            let found = unsafe { mem_find_with(word & !TAG_BITS, lookup) }?;
+            value_of_found(word, found)
+        })
+        .collect()
+}
+
+/// The value WORD names, given the allocation `mem_find' found for it.
+fn value_of_found(word: usize, found: Found) -> Option<Value> {
+    Some(match found {
         Found::Cons(cell) => {
             // alloc.c:live_cons_holding accepts the cell, its Lisp tag,
             // or the actual cdr field address. Clearing arbitrary tag bits

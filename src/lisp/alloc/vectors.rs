@@ -460,7 +460,7 @@ fn allocate_vector_block() -> usize {
             .cast::<VectorBlockMarks>()
             .write(VectorBlockMarks::new(super::image_region_open()))
     };
-    register_block(start, BlockKind::VectorBlock);
+    register_block(start, VECTOR_BLOCK_SIZE, BlockKind::VectorBlock);
     start
 }
 
@@ -550,7 +550,11 @@ fn allocate_vectorlike(nbytes: usize) -> *mut VectorHeader {
                 .cast::<MarkBit>()
                 .write(MarkBit::default())
         };
-        register_block(vector as usize, BlockKind::LargeVector);
+        register_block(
+            vector as usize,
+            nbytes + LARGE_MARK_BYTES,
+            BlockKind::LargeVector,
+        );
         vector.cast()
     }
 }

@@ -1397,6 +1397,20 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   counts: undo 1,742,444 a unit, mapcar 28.59 million, sort, cons
   allocation and explicit-gc unchanged (their callgrind sizes hold
   almost no compaction).
+- **The conservative scan's lookups, and the sweeps' block lists by
+  kind.** `mem_find` tests the heap's bounds before the registry
+  (`HEAP_LOW` and `HEAP_HIGH`, alloc.c's `min_heap_address` and
+  `max_heap_address`, raised as blocks register): most words a stack
+  scan reads are return addresses, stack addresses and small numbers. The
+  collection's scan of the native stack (about 4,400 words) looks all of
+  them up under one lock (`conservative_values`), where each took the
+  registry's mutex, its poison test and a B-tree descent, about 228
+  instructions a word. The registry keeps each kind's blocks in a map of
+  their own beside the one `mem_find` reads, so a sweep's block list is
+  its kind's alone, not a filter of every block, six times a collection.
+  An explicit collection 49.32 → 48.89 million instructions with the
+  bounds and the one lock, 48.55 million with the per-kind lists (0.744 →
+  0.733 of GNU's).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1586,7 +1600,11 @@ alone; clippy `-D warnings` and rustfmt clean. For the image's string
 data: 676 of 676 string, data, compaction, relocation, borrow, multibyte,
 unibyte, coding, substring, concatenation, format, collection, image,
 dump, `aset` and text-property tests pass in three parallel parts; clippy
-and rustfmt clean.
+and rustfmt clean. For the scan's bounds and the per-kind lists: 592 of
+the 593 conservative-scan, stack, native, collection, weak, finalizer,
+sweep, block, heap, root, allocation and vector tests pass in four
+parallel parts, the other being the load-sensitive TLS test, which passes
+alone (2 of 2); clippy and rustfmt clean.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
@@ -1818,7 +1836,10 @@ frozen passed on its first attempt (run 39066924074). **On `5147b2e`**
 (the evaluator's nested native call): full Rust gate passed (run
 39069860003; 3,140 tests), frozen passed on its first attempt (run
 39069862192). **On `85f3e00`** (the image's cells left unread): full
-Rust gate (run 39074166122) and frozen (run 39074167800) pending. Locally,
+Rust gate passed (run 39074166122; 3,140 tests), frozen passed on its
+first attempt (run 39074167800). **On `3e1cced`** (the image's string
+data): full Rust gate (run 39075363648) and frozen (run 39075365786)
+pending. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1901,7 +1922,19 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   allocation 1.24 (1.19), bytecode-to-native 1.24, native-to-bytecode
   1.22, native-to-interpreted 1.18, mapcar 1.16, sort 1.16 (1.21),
   bytecode calls 1.10, dynamic 1.06, native execution 1.03, list
-  traversal 1.01, bindat 0.95, calls 0.79, lexical 0.78. Collections cost Emaxx more time than GNU at fewer
+  traversal 1.01, bindat 0.95, calls 0.79, lexical 0.78. On `3e1cced`
+  (the image's cells and string data left out of the sweeps), the same
+  way: on its plain release build undo 1.46, interpreted-to-native 1.31,
+  cons allocation 1.22, bytecode-to-native 1.19, native-to-bytecode 1.19,
+  native-to-interpreted 1.17, bytecode calls 1.13, dynamic 1.11, mapcar
+  1.09, sort 1.08, native execution 1.05, list traversal 1.01, bindat
+  0.93, explicit-gc 0.91, lexical 0.79, calls 0.73; with the profile
+  (`tools/pgo-build.sh`, the timing build) undo 1.26, bytecode-to-native
+  1.23, cons allocation 1.22, interpreted-to-native 1.14, bytecode calls
+  1.07, mapcar 1.06, native-to-bytecode 1.02, dynamic 1.00,
+  native-to-interpreted 0.97, sort 0.96, list traversal 0.95, explicit-gc
+  0.93, bindat 0.76, native execution 0.74, calls 0.70, lexical 0.66: six
+  of the sixteen above the bound. Collections cost Emaxx more time than GNU at fewer
   instructions: 19 to 22 ms each in the workloads against GNU's 12 to 16,
   an otherwise empty one 15.0 ms against 9.8 (11.5 after the compaction
   change), though marking a long list costs less a cell (6.6 ns against
@@ -1923,7 +1956,15 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   `(garbage-collect)` before each sample still finds the previous
   sample's 500,000-cell list through GNU's conservative stack scan, so
   with `gc-cons-percentage` 1.0 GNU's next threshold is about 8 MB;
-  Emaxx frees the list and its threshold stays at 800,000 bytes. Emaxx
+  Emaxx frees the list and its threshold stays at 800,000 bytes. At the
+  contract's size (2,000,000 cells a sample, the profile build, two
+  rounds of three samples) GNU's samples after the warmup collect never
+  (the warmup three times, about 19.5 ms each) and Emaxx's twice each
+  (about 17 ms each): 0.3363 s against 0.3021, 1.11, all of it the two
+  collections. Emaxx's collections are the cheaper; the count is GNU's
+  conservative stack scan finding the previous sample's list, so this
+  case's gap is the retention, which a precise collector does not
+  reproduce. Emaxx
   collects less often than GNU in lexical, calls, sort, bindat and the
   native-to-* cases (its census of live bytes is larger). Mapcar
   (collection about half of each sample in both editors) misses the

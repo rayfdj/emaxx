@@ -4551,10 +4551,7 @@ impl NativeHeap {
             }
         }
 
-        let lisp_roots = pending
-            .into_iter()
-            .filter_map(crate::lisp::alloc::conservative_value)
-            .collect::<Vec<_>>();
+        let lisp_roots = crate::lisp::alloc::conservative_values(pending);
         let reachability = interpreter.weak_hash_reachability(environment, &lisp_roots);
         // From here to the sweep, no other mark phase may begin (a checked
         // build's guard; see `begin_mark_epoch').
