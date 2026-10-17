@@ -978,7 +978,9 @@ define_dispatch!(
                 // array the collector reaches while the calls go on.
                 let mut results = crate::lisp::alloc::RootedVec::new();
                 map_sequence(interp, &args[0], &args[1], env, Some(&mut results))?;
-                Ok(Value::list(results))
+                // mapcar's Flist (leni, args): the results stay rooted in
+                // their array while the list is consed.
+                Ok(Value::list_of(&results))
             }
             "mapcan" => {
                 need_args(name, args, 2)?;

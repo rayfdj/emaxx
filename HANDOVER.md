@@ -1161,6 +1161,26 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   fifteen minutes from nothing); seven of GNU's test files run with the
   final binary (777 tests) gave the outcomes of the instrumented run, and
   the sixteen workloads' result checks pass with it.
+- **mapcar's list from its results in place (`Value::list_of`).** mapcar
+  built its value with `Value::list`, which collected the rooted results
+  into a new vector (a copy loop, 13 instructions an element) and then
+  read a `vector-literal` head as a vector: `(mapcar #'identity
+  '(vector-literal 1 2))` returned `[1 2]` where GNU returns the list.
+  `Value::list_of` conses the results from the last, as Flist does over
+  mapcar1's array, which stays rooted meanwhile. Mapcar 30.09 → 28.76
+  million instructions a unit (1.29 → 1.24 of GNU's); the mapping test
+  takes the `vector-literal` case. The same reading remains in `list`,
+  `copy-sequence`, `reverse`, `butlast`, `take` and `seq-map` (each
+  returns a vector for a list whose first element is the symbol
+  `vector-literal`, and `(delq nil (list 'vector-literal nil 1))`
+  signals): Emaxx carries vectors through lists headed by that interned
+  symbol (`Value::to_vec` of a vector puts it first, `Value::list` turns
+  such a list back into a vector, the reader and about sixty producers
+  build vectors that way, and some sixteen consumers test for the head
+  by name). The fix is a head Lisp cannot make, tested by identity: an
+  uninterned symbol kept as a static root, or an internal immediate such
+  as the unbound marker, at every producer and consumer (about 120 sites
+  with the tests); see the next steps.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1299,6 +1319,16 @@ three failing and the two load-sensitive tests
 (`subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`
 and `process_tls_state_survives_collection_before_and_after_async_handshake`)
 failing in that load and passing alone, 3 of 3.
+For mapcar's list: 3,134 of the 3,141 with 2 ignored and the same
+five failures (the as-root three, both load-sensitive tests), with the
+mapping test's new `vector-literal` case. A first run of that suite
+failed about 960 tests at startup because of how it was run, not the
+change: a test run from the cargo target directory had dumped the
+shared fixture image (`EMAXX_FIXTURE_IMAGE_DIR`), whose native units are
+recorded relative to the dumping executable's directory, and the copy of
+the same binary run from another directory (same fingerprint, so the
+same image name) resolved them to a missing path. Run the suite's
+binary from one place per fixture directory, or give each place its own.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
@@ -1310,7 +1340,7 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | interpreted-calls | 2.10 | 1.06 |
 | interpreted-lexical | 2.04 | 1.05 |
 | interpreted-dynamic | 2.14 | 1.13 |
-| mapcar | 2.95 | 1.29 |
+| mapcar | 2.95 | 1.24 |
 | bytecode-calls | 3.30 | 1.20 |
 | bytecode-to-native | — | 1.60 |
 | interpreted-to-native | — | 1.31 |
@@ -1729,7 +1759,7 @@ and failures are still recorded.
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
    above; worst now bytecode-to-native 1.60, undo 1.43, interpreted-to-native
-   1.31, mapcar 1.29, native-to-bytecode 1.28, bytecode calls 1.20,
+   1.31, mapcar 1.24, native-to-bytecode 1.28, bytecode calls 1.20,
    native-to-interpreted 1.18, sort 1.14, interpreted dynamic 1.13; by
    wall time, with the profile-guided build (`tools/pgo-build.sh`, the
    PGO bullet above): bytecode-to-native 1.54, undo 1.35, mapcar 1.29,
@@ -1770,7 +1800,10 @@ and failures are still recorded.
    Iterate with instruction counts (callgrind) on the locked workloads for
    both editors; timing pilots at merges. Remaining adapters that show up in
    profiles are fixed as performance work.
-3. **Remaining architecture and ownership:** symbol host-name, buffer-local and
+3. **Remaining architecture and ownership:** the `vector-literal` head that
+   carries vectors through lists, which Lisp data can forge (the mapcar
+   bullet: `list`, `copy-sequence`, `reverse`, `butlast` and `take` turn a
+   list headed by that symbol into a vector); symbol host-name, buffer-local and
    function adapters; text-property intervals (also needed for
    `intervals-consed`); pure storage (check what the pinned GNU revision
    actually does first); public Rust ownership, multiple editors, descriptor

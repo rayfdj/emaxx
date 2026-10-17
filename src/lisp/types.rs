@@ -2255,6 +2255,18 @@ impl Value {
         Value::Buffer(BufferRef::new(id, crate::buffer::Buffer::new(&name.into())))
     }
 
+    /// fns.c's Flist over VALUES: a proper list of them, consed from the
+    /// last, with no copy of them first and none of `list's reading of a
+    /// `vector-literal' head (a list of Lisp data that starts with that
+    /// symbol is a list).
+    pub(crate) fn list_of(values: &[Value]) -> Self {
+        let mut result = Value::Nil;
+        for value in values.iter().rev() {
+            result = Value::cons(*value, result);
+        }
+        result
+    }
+
     /// Build a proper list from an iterator of values.
     pub fn list(items: impl IntoIterator<Item = Value>) -> Self {
         let items: Vec<Value> = items.into_iter().collect();

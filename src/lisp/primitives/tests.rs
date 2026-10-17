@@ -3297,10 +3297,13 @@ fn mapping_reads_each_element_when_its_call_comes_like_mapcar1() {
          (condition-case e (mapc #'identity (make-char-table nil)) (error (list (car e) (cadr e))))
          (condition-case e (mapcan #'list '(1 2 . 3)) (error e))
          (condition-case e (mapcar #'identity (let ((l (list 1 2))) (nconc l l))) (error (car e)))
-         (condition-case e (mapcar #'identity 5) (error e)))"#;
+         (condition-case e (mapcar #'identity 5) (error e))
+         (mapcar #'identity '(vector-literal 1 2)))"#;
+    // The last: a result list headed by the symbol `vector-literal' is a
+    // list (Emaxx's internal vector form once made it a vector).
     assert_oracle_contract_matches_interpreter(
         program,
-        r#"((1 2 30) (1 2) (1 2 30) (t (1 2)) (1 2 30) (97 98 122) (97 98 8364) (4 0 [7] 1) (192 97) (97 233 8364) (t nil t) "1,2,3" nil (void-function nil) (wrong-type-argument listp) (wrong-type-argument listp 3) circular-list (wrong-type-argument sequencep 5))"#,
+        r#"((1 2 30) (1 2) (1 2 30) (t (1 2)) (1 2 30) (97 98 122) (97 98 8364) (4 0 [7] 1) (192 97) (97 233 8364) (t nil t) "1,2,3" nil (void-function nil) (wrong-type-argument listp) (wrong-type-argument listp 3) circular-list (wrong-type-argument sequencep 5) (vector-literal 1 2))"#,
         "mapping functions",
     );
 }
