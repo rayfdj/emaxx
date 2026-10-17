@@ -120,6 +120,13 @@ impl Interpreter {
             .map(|remote| remote.prefix)
     }
 
+    /// Whether `buffer_local_hook' has one, without its copy.
+    pub(crate) fn has_buffer_local_hook(&self, buffer_id: u64, hook_name: &str) -> bool {
+        self.buffer_local_hooks
+            .get(&buffer_id)
+            .is_some_and(|hooks| hooks.contains_key(hook_name))
+    }
+
     pub fn buffer_local_hook(&self, buffer_id: u64, hook_name: &str) -> Option<Vec<Value>> {
         self.buffer_local_hooks
             .get(&buffer_id)

@@ -1270,6 +1270,58 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   `dispatch_handler_bindings` from 1,150 to 390. The remaining signal
   cost is mostly Lisp: `error`'s `format-message` through `apply` (about
   24,000 a call, two a unit, against GNU's 19,000).
+- **Undo: change hooks without the local hook's copy; the slow ops' fast
+  paths measured and left out.**
+  - `hook_values` asked `buffer_local_hook` only whether the buffer has
+    a Rust-side local hook, which cloned the hook's vector each time;
+    `has_buffer_local_hook` tests it in place. A local hook's default is
+    read by the hook's symbol (`default_value_symbol`) rather than
+    interned again by name. Together that is about 2,300 instructions a
+    unit in undo (`buffer_local_hook` 1,520, `hook_values` 800; 1,741,232
+    → 1,740,124 at twenty and forty units, with the allocator's noise
+    around it). The byte-code workloads are unchanged (bytecode calls
+    549.5, bytecode-to-native 489.0).
+  - The ops that leave the verified loop for `op_in_place` and
+    `exec_op` were tried in eight arrangements. Relative to `4e49cce`
+    rebuilt (bytecode calls 550.0, bytecode-to-native 491.5,
+    native-to-bytecode 4,751, undo 1,741,232):
+
+    | Variant | Undo | Bytecode calls | b2n | n2b |
+    | --- | --- | --- | --- | --- |
+    | Q: Bvarbind and Bunbind arms in `run_verified`, calling an out-of-line function and continuing the loop | −8,600 | +0.9 | +2.0 | +6 |
+    | R: Q plus arms for Bpoint, Bpoint_max, Bpoint_min and Bgoto_char of a fixnum | −25,100 | +3.3 | 0 | +7 |
+    | S1: Bvarbind and Bunbind dispatched by their byte at the head of `op_in_place` | −11,100 | +4.6 | −2.1 | −2.8 |
+    | S2: S1 plus Bvarref (not plain) and the point ops | −17,300 | +4.3 | +2.0 | −8.4 |
+    | S3: S2 with the bind and unbind shared, not inlined, plus the hooks | −21,200 | +5.3 | 0 | 0 |
+    | S5: S3 with the callee's entry depth read again after its frame record | — | +10.7 | +0.5 | — |
+    | S6: `op_in_place` as before, a small `exec_op` running those ops | −1,500 | −0.2 | +0.3 | −4.5 |
+    | S7: S3's dispatch with `op_in_place`'s general body out of line | — | +5.7 | — | — |
+
+    The n2b column is `run_verified`'s own change for Q and R, whose
+    totals include a one-time rehash of the address-keyed symbol cache
+    (38.9 an iteration) that fell inside the measured range; for the
+    others it is the whole iteration, with no rehash in range.
+
+    In every variant that touches `run_verified` or `op_in_place`, the
+    extra cost in bytecode calls and native-to-bytecode sits in
+    `run_verified` alone, a function whose source did not change in S1
+    to S7. Per-instruction profiles of bytecode calls (P against S2, 452
+    against 456 instructions an iteration, each run once) trace it to
+    `enter_closure_frame`, inlined into the Call arm. There the callee's
+    arity bytes and entry depth stay live across the thread-local read
+    and the 88-byte frame record's push; P keeps them in registers, and
+    S2 stores three of them on the stack and reloads them for
+    `push_arguments`. Re-reading the depth after the push (S5) moved the
+    spills and cost more. S6 leaves the loop alone, but the small
+    `exec_op` costs about 35 instructions a call (other ops then pay it
+    and `exec_op_general`'s frame too), so it gains nothing. Wall time
+    agreed: S2 against P on bytecode calls, minimum of 25 and 40
+    samples, 0.1257 against 0.1242 s and 0.1272 against 0.1245 s. Undo's
+    wall time on this machine varied more than the difference (0.663 to
+    0.697 s for P). None of these is kept. Moving those ops (about 360 a
+    unit in undo at 60 to 136 instructions each) needs the closure-entry
+    path made insensitive to the allocator first: fewer values live
+    across the frame record, or that record's push out of line.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1441,7 +1493,10 @@ and `process_tls_state_survives_collection_before_and_after_async_handshake`,
 both passing alone), with clippy `-D warnings` and rustfmt clean. Its
 release build leaves bytecode calls (551.0 instructions an iteration),
 bytecode-to-native (491.5) and native-to-bytecode (4,751) where they
-were.
+were. For the change hooks: 256 of the 257 hook, change, local, undo,
+insert, deletion and overlay tests pass, with the as-root
+`save_buffer_skips_unmodified_and_unchanged_files` the one failure;
+clippy `-D warnings` and rustfmt are clean.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
@@ -1661,8 +1716,11 @@ no unsuccessful execution, on its first attempt (run 39044970894). **On
 (run 39055982318; 3,140 tests). Frozen matched 7,927 of 7,928 across 519
 files (run 39055984062). The one mismatch is GNU's
 `eglot-test-rust-completion-exit-function` failing in the oracle while
-Emaxx passed, the rust-analyzer timing recorded above; its failed job is
-being re-run once. Locally,
+Emaxx passed, the rust-analyzer timing recorded above. Its failed job was
+re-run once (attempt 2) and matched 7,928 of 7,928, with no unsuccessful
+execution. **On `4e49cce`** (signals' conditions by symbol): full Rust
+gate passed (run 39061192531; 3,140 tests); frozen pending (run
+39061194462). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1833,7 +1891,12 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
 - Undo's remainder (1.39 on the signals' round, 1.74 million
   instructions a unit; the figures below are from 1.47, 1.84 million
   against GNU's 1.25 million, on the small-block round's build) is
-  broad. Native code's calls cost about twice GNU's for the same Lisp:
+  broad. Buffer edits from byte code cost about twice GNU's:
+  `delete-region` about 5,900 instructions a call against
+  `Fdelete_region`'s 2,844 (18 a unit), `insert` about 6,080 against
+  `Finsert`'s 4,730 (21 a unit), and `run_change_hooks` 125,000 a unit,
+  mostly the hook functions' Lisp. Native code's calls also cost about
+  twice GNU's for the same Lisp:
   `cconv-make-interpreted-closure`, run for each interpreted closure,
   takes 146,000 a unit against GNU's 67,000, made up of its `funcall`s
   (101,000 against 48,000), `mapcar` (26,000 against 12,500), `delq`

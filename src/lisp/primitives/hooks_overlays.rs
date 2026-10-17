@@ -201,7 +201,7 @@ pub(crate) fn hook_values(
                 .is_some_and(|binding| binding.is_some()),
             None => interp.buffer_local_value(id, hook_name).is_some(),
         };
-        has_local_value || interp.buffer_local_hook(id, hook_name).is_some()
+        has_local_value || interp.has_buffer_local_hook(id, hook_name)
     });
     let mut hooks = value_hooks(current);
     if !local {
@@ -214,7 +214,10 @@ pub(crate) fn hook_values(
     // through the native bootstrap helper, so the Rust depth mirror may be
     // absent.  A local `t' sentinel splices the default at that exact point;
     // local nil deliberately suppresses the default.
-    let mut default = value_hooks(interp.default_value(hook_name));
+    let mut default = value_hooks(match &symbol {
+        Some(symbol) => interp.default_value_symbol(symbol).ok().flatten(),
+        None => interp.default_value(hook_name),
+    });
     default.retain(|hook| !matches!(hook.kind(), Kind::T));
     let mut result = Vec::new();
     for hook in hooks {
