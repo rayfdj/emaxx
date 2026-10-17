@@ -1171,24 +1171,24 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.49 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.45 |
 | upstream-sort (4 units) | 3.26 (at 1 unit) | 1.15 |
-| interpreted-calls | 2.10 | 1.07 |
-| interpreted-lexical | 2.04 | 1.07 |
+| interpreted-calls | 2.10 | 1.08 |
+| interpreted-lexical | 2.04 | 1.08 |
 | interpreted-dynamic | 2.14 | 1.15 |
 | mapcar | 2.95 | 1.29 |
-| bytecode-calls | 3.30 | 1.25 |
+| bytecode-calls | 3.30 | 1.24 |
 | bytecode-to-native | — | 1.64 |
-| interpreted-to-native | — | 1.32 |
-| native-to-interpreted / -bytecode | — | 1.20 / 1.36 |
+| interpreted-to-native | — | 1.31 |
+| native-to-interpreted / -bytecode | — | 1.20 / 1.37 |
 | cons-allocation / list-traversal | 2.24 / — | 1.11 / 1.12 |
 | native-execution | — | 1.15 |
-| bindat | — | 1.05 |
+| bindat | — | 1.03 |
 | explicit-gc | — | 0.83 |
 
-The table is one full run of all sixteen on the compaction round's
-build, compiled by Rust 1.99.1 as the three rounds before it were (the
-rounds above those were measured on 1.97.0). Undo read 1.47 to 1.49 and
+The table is one full run of all sixteen on the buffer-list round's
+build (`0c448c6`), compiled by Rust 1.99.1 as the rounds since the Rust
+1.99.1 bullet were (the rounds above those were measured on 1.97.0). Undo read 1.47 to 1.49 and
 bindat 1.02 to 1.05 on the last three builds (the conservative scan's
 `mem_find` calls in a collection in the difference),
 native-to-interpreted 1.20 to 1.21 on one build. Undo read 1.67 to 1.70 across the
@@ -1356,7 +1356,10 @@ copy): full Rust gate passed (run 39018268679; 3,139 tests), frozen
 7,928 of 7,928, no unsuccessful execution, on its first attempt (run
 39018270078). **On `2d491d2`** (the case-table signature): full Rust gate
 passed (run 39020019119; 3,139 tests), frozen 7,928 of 7,928, no
-unsuccessful execution, on its first attempt (run 39020021023). Locally,
+unsuccessful execution, on its first attempt (run 39020021023). **On
+`e655fb2`** (the guard count): full Rust gate passed (run 39022801774;
+3,139 tests), frozen 7,928 of 7,928, no unsuccessful execution, on its
+first attempt (run 39022803610). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1419,7 +1422,14 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   explicit-gc 1.34, interpreted-to-native 1.41, bytecode calls 1.43,
   cons allocation 1.43, undo 1.49, native-to-bytecode 1.50,
   bytecode-to-native 1.76. The calls through native code read about 0.1
-  above their counts. Collections cost Emaxx more time than GNU at fewer
+  above their counts. On the buffer-list round's build (`0c448c6`), five
+  rounds of five samples, the minimum (the median in parentheses where
+  it differs by more than 0.05): bytecode-to-native 1.61 (1.78), undo
+  1.52 (1.65), native-to-bytecode 1.45, bytecode calls 1.39,
+  interpreted-to-native 1.36, cons allocation 1.32 (1.19),
+  native-to-interpreted 1.29, mapcar 1.28, interpreted dynamic 1.19,
+  sort 1.16 (1.09), explicit-gc 1.10 (1.17), list traversal 1.09 (1.00),
+  native-execution 1.03, bindat 1.01, lexical 0.84, calls 0.79. Collections cost Emaxx more time than GNU at fewer
   instructions: 19 to 22 ms each in the workloads against GNU's 12 to 16,
   an otherwise empty one 15.0 ms against 9.8 (11.5 after the compaction
   change), though marking a long list costs less a cell (6.6 ns against
@@ -1566,18 +1576,17 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 1.64, undo 1.47 to 1.49,
-   native-to-bytecode 1.36, interpreted-to-native 1.32, mapcar 1.29,
-   bytecode calls 1.25, native-to-interpreted 1.20, sort and interpreted
-   dynamic 1.15; by wall time, see "Wall time" above, five rounds of
-   five on the dispatch round's build: bytecode-to-native 1.68, undo
-   1.54, native-to-bytecode 1.47, bytecode calls 1.43, cons allocation
-   1.37, interpreted-to-native 1.35, mapcar 1.34, native-to-interpreted
-   1.28, explicit-gc 1.12 to 1.24, sort 1.19, dynamic 1.16; bindat,
-   lexical and calls below 1.0. Per iteration bytecode calls runs 65
-   conditional branches against GNU's 28 and bytecode-to-native 70
-   against 28 (callgrind `--branch-sim=yes`; indirect ones 17 against 17
-   since the dispatch copy): the call path's tests). The remaining costs are listed
+   above; worst now bytecode-to-native 1.64, undo 1.45, native-to-bytecode
+   1.37, interpreted-to-native 1.31, mapcar 1.29, bytecode calls 1.24,
+   native-to-interpreted 1.20, sort and interpreted dynamic 1.15; by wall
+   time, see "Wall time" above, on `0c448c6`: bytecode-to-native 1.61,
+   undo 1.52, native-to-bytecode 1.45, bytecode calls 1.39,
+   interpreted-to-native 1.36, cons allocation 1.32, native-to-interpreted
+   1.29, mapcar 1.28, dynamic 1.19, sort 1.16, explicit-gc 1.10; bindat,
+   native execution, lexical and calls at or below 1.03. Per iteration
+   bytecode calls runs 65 conditional branches against GNU's 28 and
+   bytecode-to-native 70 against 28 (callgrind `--branch-sim=yes`;
+   indirect ones 17 against 17 since the dispatch copy): the call path's tests). The remaining costs are listed
    under "Where the remaining gap is": the native call layer needs
    structural work (a lighter native boundary: inlining `invoke_fixed` into
    `call_plain` measured 20 instructions a call worse), and the byte-code
