@@ -735,15 +735,26 @@ fn return_to_bytecode_frame(
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.bc_stack.top = top;
     let unwinds = state.bc_unwinds.len();
-    let frame = vm.frames.pop_if(|frame| unwinds <= frame.unwinds_len)?;
+    // The frame is read in place and its slot released by the length. A
+    // frame moved out whole (`pop', an Option) was copied in pieces offset
+    // by its argument list's tag byte, and the loop's next read of the
+    // caller's constants spanned two of those stores.
+    let frame = vm
+        .frames
+        .last()
+        .filter(|frame| unwinds <= frame.unwinds_len)?;
     state.leave_plain_funcall(frame.backtrace_depth);
     let resume = state.bc_stack.leave_frame();
     state.bc_stack.replace_call(frame.base, value);
-    *vm.program = frame.program;
+    *vm.program = frame.program.clone();
     *vm.op_error_frames = frame.op_error_frames;
     vm.handlers.truncate(frame.handlers_len);
+    vm.frames.truncate(vm.frames.len() - 1);
     Some((resume, state.bc_stack.top, state.bc_stack.len()))
 }
+
+// A frame's slot is released by the length alone.
+const _: () = assert!(!std::mem::needs_drop::<BcFrame>());
 
 /// Breturn's and the error path's leave of a frame: its specpdl entries
 /// above the watermark undone, its backtrace frame popped, Ffuncall's
@@ -3087,6 +3098,22 @@ pub fn execute_closure(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    // The fields as Bcall's frame entry decoded and verified them (see
+    // `entry_program'), when its packed list takes the arguments.
+    if let Some(program) = super::verify::entry_program(closure) {
+        // SAFETY: nothing runs Lisp or collects before the copy below.
+        let program = unsafe { program.as_ref() };
+        if let ArgSpec::Packed {
+            mandatory,
+            nonrest,
+            rest,
+        } = program.argspec
+            && (usize::from(mandatory)..=usize::from(nonrest)).contains(&args.len())
+            && usize::from(nonrest) + usize::from(rest) <= program.stack_depth
+        {
+            return run_entered(interp, program.clone(), Value::Closure(closure), args, env);
+        }
+    }
     let program = closure_program(closure)?;
     run(interp, program, Value::Closure(closure), args, env)
 }
@@ -3133,6 +3160,135 @@ fn run(
     } else {
         run_frames(interp, program, function, args, env)
     };
+    finish_activation(
+        interp,
+        env,
+        result,
+        stack_at_entry,
+        unwinds_at_entry,
+        frames_at_entry,
+    )
+}
+
+/// `run' for a closure whose fields and verification the frame entry
+/// cache holds (`entry_program'), with arguments its packed list takes:
+/// setup_frame's pushes and then the verified loop at once, as
+/// exec_byte_code goes from its prologue to the first op. A return from
+/// the entry frame finishes here; any other exit goes on in `run_loop'.
+#[inline(never)]
+fn run_entered(
+    interp: &mut Interpreter,
+    program: ByteCodeObject,
+    function: Value,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let ArgSpec::Packed { nonrest, rest, .. } = program.argspec else {
+        unreachable!("the entry cache holds packed argument lists")
+    };
+    let entry_depth = usize::from(nonrest) + usize::from(rest);
+    interp.bc_stack.ensure_allocated();
+    let stack_at_entry = (
+        interp.bc_stack.frame,
+        interp.bc_stack.base,
+        interp.bc_stack.top,
+    );
+    let unwinds_at_entry = interp.bc_unwinds.len();
+    let frames_at_entry = interp.backtrace_frames_len();
+    let result = 'entry: {
+        if let Err(error) = interp
+            .bc_stack
+            .enter_frame(program.stack_depth, function, 0)
+        {
+            break 'entry Err(error);
+        }
+        // The caller checked the count against the list and the list's
+        // slots against the frame's depth.
+        interp.bc_stack.push_arguments(args, entry_depth);
+        let mut program = program;
+        let mut frames = Vec::new();
+        let mut handlers = Vec::new();
+        let mut op_error_frames = 0;
+        let mut pc = 0;
+        let mut quitcounter = 1;
+        // SAFETY: as in `run_loop': the verified loop runs no Lisp, collects
+        // nothing and stores into no string while it reads the bytes.
+        let (code, current) = unsafe { program.code.bytes_unguarded() };
+        let exit = if current
+            && program
+                .verified
+                .is_some_and(|verified| verified.admits(0, entry_depth))
+        {
+            let words = interp.bc_stack.words.as_mut_ptr().cast::<Value>();
+            let top = interp.bc_stack.top;
+            let (verified_exit, top) = run_verified(
+                &mut VmFrames {
+                    interp,
+                    env,
+                    program: &mut program,
+                    frames: &mut frames,
+                    handlers: &mut handlers,
+                    op_error_frames: &mut op_error_frames,
+                    trace_errors: trace_load_errors(),
+                },
+                code,
+                words,
+                top,
+                &mut pc,
+                &mut quitcounter,
+            );
+            if let Some(top) = top {
+                interp.bc_stack.top = top;
+            }
+            match verified_exit {
+                FastExit::Return(value) if frames.is_empty() && handlers.is_empty() => {
+                    // The return owns nothing to drop.
+                    std::mem::forget(verified_exit);
+                    break 'entry Ok(value);
+                }
+                FastExit::Resume => None,
+                verified_exit => Some(verified_exit),
+            }
+        } else {
+            None
+        };
+        run_loop(
+            interp,
+            env,
+            Activation {
+                program,
+                pc,
+                frames,
+                handlers,
+                op_error_frames,
+                quitcounter,
+            },
+            exit,
+        )
+    };
+    finish_activation(
+        interp,
+        env,
+        result,
+        stack_at_entry,
+        unwinds_at_entry,
+        frames_at_entry,
+    )
+}
+
+/// The end of an activation entered from Rust: the frames its signaling
+/// byte ops recorded and the specpdl-style entries an abnormal exit left
+/// above UNWINDS_AT_ENTRY undone, and the stack cut back to its entry
+/// mark.
+#[inline(always)]
+fn finish_activation(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    result: Result<Value, LispError>,
+    stack_at_entry: (usize, usize, usize),
+    unwinds_at_entry: usize,
+    frames_at_entry: usize,
+) -> Result<Value, LispError> {
     // A signaling byte op recorded itself as a backtrace frame
     // (bytecode.c's record_in_backtrace) so handler-bind handlers saw it;
     // the handlers have run by now, so unwind it like GNU's specpdl does.
@@ -3140,25 +3296,8 @@ fn run(
     // Balance any entries left by an abnormal exit (GNU unbind_to on the
     // frame's specpdl watermark), running unwind-protect handlers and
     // restoring saved buffer state on the way out.
-    // A signal from an unwind form replaces the one in flight, as in
-    // leave_frame; the remaining forms still run.
     let result = if interp.bc_unwinds.len() > unwinds_at_entry {
-        let balance = interp.with_lisp_stack_roots(&result, |interp| {
-            let mut last_error = None;
-            while interp.bc_unwinds.len() > unwinds_at_entry {
-                let Some(entry) = interp.bc_unwinds.pop() else {
-                    break;
-                };
-                if let Err(error) = unwind_one(interp, entry, env) {
-                    last_error = Some(error);
-                }
-            }
-            last_error.map_or(Ok::<_, LispError>(()), Err)
-        });
-        match (result, balance) {
-            (_, Err(error)) => Err(error),
-            (result, Ok(())) => result,
-        }
+        unwind_activation(interp, env, result, unwinds_at_entry)
     } else {
         result
     };
@@ -3168,6 +3307,33 @@ fn run(
         interp.bc_stack.top,
     ) = stack_at_entry;
     result
+}
+
+/// `finish_activation's unbind_to. A signal from an unwind form replaces
+/// the one in flight, as in leave_frame; the remaining forms still run.
+#[inline(never)]
+fn unwind_activation(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    result: Result<Value, LispError>,
+    unwinds_at_entry: usize,
+) -> Result<Value, LispError> {
+    let balance = interp.with_lisp_stack_roots(&result, |interp| {
+        let mut last_error = None;
+        while interp.bc_unwinds.len() > unwinds_at_entry {
+            let Some(entry) = interp.bc_unwinds.pop() else {
+                break;
+            };
+            if let Err(error) = unwind_one(interp, entry, env) {
+                last_error = Some(error);
+            }
+        }
+        last_error.map_or(Ok::<_, LispError>(()), Err)
+    });
+    match (result, balance) {
+        (_, Err(error)) => Err(error),
+        (result, Ok(())) => result,
+    }
 }
 
 /// bytecode.c:exec_byte_code.  The operand stack and the specpdl-style
@@ -3281,19 +3447,58 @@ fn run_frames(
         ArgSpec::Legacy(_) => 0,
     };
     program.verified = super::verify::verified_code(&program, entry_depth);
-    let mut handlers: Vec<Handler> = Vec::new();
-    let mut frames: Vec<BcFrame> = Vec::new();
-    let mut pc = 0usize;
+    run_loop(interp, env, Activation::new(program), None)
+}
+
+/// An activation's loop state, handed from its entry to `run_loop'.
+struct Activation {
+    program: ByteCodeObject,
+    pc: usize,
+    frames: Vec<BcFrame>,
+    handlers: Vec<Handler>,
+    /// Frames pushed by signaling byte ops (record_in_backtrace); an
+    /// in-frame condition-case that catches must unwind them, and the
+    /// caller (`run') balances whatever is left after handler dispatch.
+    op_error_frames: usize,
+    /// bytecode.c's `quitcounter': backward branches increment the byte
+    /// counter; wrapping it to zero calls maybe_gc and maybe_quit before
+    /// resetting it to one, so a loop without a call can be interrupted.
+    quitcounter: u8,
+}
+
+impl Activation {
+    fn new(program: ByteCodeObject) -> Self {
+        Self {
+            program,
+            pc: 0,
+            frames: Vec::new(),
+            handlers: Vec::new(),
+            op_error_frames: 0,
+            quitcounter: 1,
+        }
+    }
+}
+
+/// exec_byte_code's loop for an activation whose frame and arguments are
+/// in place, from ACTIVATION's state; ENTRY_EXIT is an exit the verified
+/// loop took before this began, which the loop takes up first.
+#[inline(never)]
+fn run_loop(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    activation: Activation,
+    mut entry_exit: Option<FastExit>,
+) -> Result<Value, LispError> {
+    let Activation {
+        mut program,
+        mut pc,
+        mut frames,
+        mut handlers,
+        mut op_error_frames,
+        mut quitcounter,
+    } = activation;
     let mut last_instruction = None;
     let trace_errors = trace_load_errors();
-    // Frames pushed by signaling byte ops (record_in_backtrace); an
-    // in-frame condition-case that catches must unwind them, and the
-    // caller (`run') balances whatever is left after handler dispatch.
-    let mut op_error_frames = 0usize;
-    // bytecode.c's `quitcounter': backward branches increment the byte
-    // counter; wrapping it to zero calls maybe_gc and maybe_quit before
-    // resetting it to one, so a loop without a call can be interrupted.
-    let mut quitcounter: u8 = 1;
 
     macro_rules! pop {
         () => {
@@ -3361,6 +3566,9 @@ fn run_frames(
             // No Lisp callback, collection, or string store occurs in the
             // fast loop. Release its byte borrow before the full dispatch.
             let exit = loop {
+                if let Some(exit) = entry_exit.take() {
+                    break exit;
+                }
                 // SAFETY: run_verified and run_fast run no Lisp, collect
                 // nothing and store into no string; the bytes stay as they
                 // are until they return.

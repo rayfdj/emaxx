@@ -19,7 +19,7 @@
 //! stack effect is modeled wrongly here costs only the fast loop, never
 //! safety.
 
-use std::cell::{Cell, RefCell, UnsafeCell};
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
@@ -187,20 +187,67 @@ struct ClosureEntry {
 
 const CLOSURE_SLOTS: usize = 64;
 
+const EMPTY_ENTRY: ClosureEntry = ClosureEntry {
+    identity: 0,
+    slots: [0; 4],
+    program: MaybeUninit::uninit(),
+};
+
+/// The table a thread reads until its first miss: every entry empty, and
+/// never written.
+struct EmptyClosures([ClosureEntry; CLOSURE_SLOTS]);
+
+// SAFETY: the table is never written, and its entries hold no words.
+unsafe impl Sync for EmptyClosures {}
+
+static EMPTY_CLOSURES: EmptyClosures = EmptyClosures([EMPTY_ENTRY; CLOSURE_SLOTS]);
+
+const fn empty_closures() -> *mut ClosureEntry {
+    EMPTY_CLOSURES.0.as_ptr().cast_mut()
+}
+
 thread_local! {
     /// The programs of the closures last entered, direct-mapped by
-    /// closure identity.
-    static CLOSURES: UnsafeCell<[ClosureEntry; CLOSURE_SLOTS]> = const {
-        UnsafeCell::new(
-            [const {
-                ClosureEntry {
-                    identity: 0,
-                    slots: [0; 4],
-                    program: MaybeUninit::uninit(),
-                }
-            }; CLOSURE_SLOTS],
-        )
-    };
+    /// closure identity: a table on the heap, where the collector's
+    /// conservative scan does not look. A thread's static TLS can lie
+    /// inside the stack range the scan reads (glibc places it at the top
+    /// of a spawned thread's stack), and the entries' words there kept
+    /// their closures' code and constants alive.
+    static CLOSURES: Cell<*mut ClosureEntry> = const { Cell::new(empty_closures()) };
+    /// The owner of this thread's table, which frees it at the thread's
+    /// exit.
+    static CLOSURE_TABLE: ClosureTable = const { ClosureTable(Cell::new(std::ptr::null_mut())) };
+}
+
+struct ClosureTable(Cell<*mut [ClosureEntry; CLOSURE_SLOTS]>);
+
+impl Drop for ClosureTable {
+    fn drop(&mut self) {
+        let table = self.0.replace(std::ptr::null_mut());
+        if !table.is_null() {
+            let _ = CLOSURES.try_with(|closures| closures.set(empty_closures()));
+            // SAFETY: the table came from `Box::into_raw' in `closure_table'
+            // and nothing points into it now.
+            drop(unsafe { Box::from_raw(table) });
+        }
+    }
+}
+
+/// This thread's own table, made at its first miss, which `CLOSURES'
+/// then points to in place of the empty one; None once the thread is
+/// exiting.
+#[cold]
+fn closure_table() -> Option<*mut ClosureEntry> {
+    CLOSURE_TABLE
+        .try_with(|owner| {
+            if owner.0.get().is_null() {
+                let table = Box::into_raw(Box::new([EMPTY_ENTRY; CLOSURE_SLOTS]));
+                owner.0.set(table);
+                CLOSURES.set(table.cast());
+            }
+            owner.0.get().cast::<ClosureEntry>()
+        })
+        .ok()
 }
 
 #[inline(always)]
@@ -227,16 +274,10 @@ pub(crate) fn entry_program(closure: ClosureRef) -> Option<NonNull<ByteCodeObjec
     // SAFETY: the closure has at least four slots.
     let slots = [0, 1, 2, 3].map(|index| unsafe { closure.get_unchecked(index) }.word());
     let identity = closure.identity();
-    // SAFETY: the thread's entries stay in place for its life; nothing
-    // else refers to this one while this runs, and nothing here reenters.
-    let entry = unsafe {
-        &mut *CLOSURES.with(|entries| {
-            entries
-                .get()
-                .cast::<ClosureEntry>()
-                .add(closure_slot(identity))
-        })
-    };
+    // SAFETY: the thread's table stays in place until its exit; nothing
+    // else refers to this entry while this runs, and nothing here reenters.
+    // The empty table is only read here.
+    let entry = unsafe { &*CLOSURES.get().add(closure_slot(identity)) };
     // The words compared one by one: an array's `==' can become a call
     // to bcmp.
     let same_slots = entry
@@ -254,13 +295,12 @@ pub(crate) fn entry_program(closure: ClosureRef) -> Option<NonNull<ByteCodeObjec
             return Some(NonNull::from(program));
         }
     }
-    entry_program_slow(closure, entry, identity, slots)
+    entry_program_slow(closure, identity, slots)
 }
 
 #[inline(never)]
 fn entry_program_slow(
     closure: ClosureRef,
-    entry: &mut ClosureEntry,
     identity: usize,
     slots: [usize; 4],
 ) -> Option<NonNull<ByteCodeObject>> {
@@ -272,6 +312,8 @@ fn entry_program_slow(
         &program,
         usize::from(nonrest) + usize::from(rest),
     )?);
+    // SAFETY: as in `entry_program', in the thread's own table.
+    let entry = unsafe { &mut *closure_table()?.add(closure_slot(identity)) };
     entry.identity = identity;
     entry.slots = slots;
     Some(NonNull::from(entry.program.write(program)))
@@ -287,8 +329,12 @@ pub(crate) fn forget(identity: usize) {
     });
     // The entries whose verified code goes with the string's results.
     let _ = CLOSURES.try_with(|entries| {
-        // SAFETY: as in `entry_program'.
-        for entry in unsafe { &mut *entries.get() } {
+        let table = entries.get();
+        if table == empty_closures() {
+            return;
+        }
+        // SAFETY: as in `entry_program', in the thread's own table.
+        for entry in unsafe { std::slice::from_raw_parts_mut(table, CLOSURE_SLOTS) } {
             // SAFETY: an entry with an identity holds its program.
             if entry.identity != 0
                 && unsafe { entry.program.assume_init_ref() }

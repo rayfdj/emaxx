@@ -1041,6 +1041,59 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   assert that the list matches it. An explicit collection 55.7 → 54.7
   million instructions, L1 misses 529,000 → 502,000; wall time within
   noise (0.115 and 0.117 s).
+- **Byte code entered from Rust as Bcall enters it.** A byte-code
+  function called through funcall from native code, `apply` or a hook
+  (`execute_closure`) had its closure's four slots decoded afresh
+  (`closure_program`), its verification looked up again, and then went
+  through the general activation (`run` and `run_frames`: their setup,
+  a dispatch closure whose entry stored some forty loop constants, and
+  the verified loop): about 550 instructions before its first op, where
+  Bcall's frame entry reads the cache `entry_program` keeps. A closure
+  that cache holds, called with arguments its packed list takes, is now
+  entered the same way (`run_entered`): the frame and the arguments
+  pushed, the verified loop run at once, and a return from the entry
+  frame finishes there; any other exit (a signal, a quit check, a frame
+  or handler still pushed) goes, with the loop's state, to the general
+  loop (`run_loop`, the former body of `run_frames`), which takes that
+  exit up first. The callback's entry in native-to-bytecode costs about
+  290 instructions instead of about 550. Filling the cache from funcall
+  showed that its entries, held in static TLS, were read by the
+  conservative stack scan on a thread whose stack range covers its TLS:
+  glibc places a spawned thread's static TLS at the top of its stack
+  mapping, and `os_stack_base` reports the mapping's end (the runtime's
+  own entry records a local as the base instead, so the editor's main
+  thread was not affected). Two `suspended_bytecode_*` retention tests
+  and two census tests failed, the entries keeping a finished thread's
+  code and constants alive. The table is now on the heap behind a
+  thread-local pointer (an empty static table until the thread's first
+  miss), where the scan does not look.
+- **Two stores the next load spans.** callgrind does not see a load that
+  needs bytes from two stores still in the store buffer: store
+  forwarding fails and the load waits for both to reach the cache, about
+  a dozen cycles. Each backtrace record's argument field (`FrameArgs`)
+  was built in a stack temporary, held across the reservation's growth
+  call, and copied in with 16-byte loads that each spanned two of its
+  8-byte stores, on every interpreted form, Bcall and native funcall;
+  `write_backtrace_frame` now takes the field as a closure it calls once
+  the slot is reserved, and the field is stored in place. A byte-code
+  return moved the caller's frame out whole (`pop_if`, an Option whose
+  None is the argument list's tag byte), so the 48-byte program was
+  copied as that byte and three misaligned 16-byte pieces, and the
+  loop's next read of the caller's constants spanned two of them; the
+  frame is now read in place and released by the length (`BcFrame` has
+  no drop glue, which a compile-time assertion keeps so). The
+  temporaries' stores and loads went too: bytecode calls 579 → 558
+  instructions an iteration, bytecode-to-native 634 → 617, the
+  interpreted workloads about 2% fewer, native-to-bytecode 5,160 → 4,818
+  with the entry above. Wall time, five rounds of five samples with the
+  build before in the same rounds, the minimum: bytecode calls 0.158 →
+  0.130 s (1.41 → 1.16 of GNU's), interpreted dynamic 0.106 → 0.097
+  (1.19 → 1.09), lexical 0.094 → 0.087 (0.85 → 0.78), native-to-bytecode
+  0.147 → 0.134 (1.45 → 1.33); the others within their noise (native
+  execution, which runs neither path, read 1.03 and 1.07). Bytecode
+  calls lost 18% of its time for 4% of its instructions: look for such
+  copies (an aggregate built on the stack, then moved with wider or
+  offset loads) on the other hot paths.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1165,30 +1218,40 @@ and 5 of 60 on this one, and passes alone, 3 of 3; and the four
 allocator tests, three of them new (reuse, alignment and zeroing past
 the lists' depth, reallocation within and across classes, and blocks
 freed by another thread that then exits).
+For the byte-code entry and the two stores: 3,135 of the 3,141 pass
+with 2 ignored (the allocator's three tests are in the parts now), the
+as-root three and the load-sensitive TLS test failing (it passes alone,
+3 of 3); the round's first build also failed
+`suspended_bytecode_retains_operand_and_unwind_roots`,
+`suspended_bytecode_observes_live_constant_vector_mutation`,
+`native_vector_and_closure_census_matches_gnu_word_layout` and
+`native_pseudovector_census_matches_gnu_word_layout` (the cache in TLS,
+above), which pass on the final build and passed on the one before.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.45 |
-| upstream-sort (4 units) | 3.26 (at 1 unit) | 1.15 |
-| interpreted-calls | 2.10 | 1.08 |
-| interpreted-lexical | 2.04 | 1.08 |
-| interpreted-dynamic | 2.14 | 1.15 |
-| mapcar | 2.95 | 1.29 |
-| bytecode-calls | 3.30 | 1.24 |
-| bytecode-to-native | — | 1.64 |
-| interpreted-to-native | — | 1.31 |
-| native-to-interpreted / -bytecode | — | 1.20 / 1.37 |
-| cons-allocation / list-traversal | 2.24 / — | 1.11 / 1.12 |
-| native-execution | — | 1.15 |
-| bindat | — | 1.03 |
-| explicit-gc | — | 0.83 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.44 |
+| upstream-sort (4 units) | 3.26 (at 1 unit) | 1.14 |
+| interpreted-calls | 2.10 | 1.06 |
+| interpreted-lexical | 2.04 | 1.05 |
+| interpreted-dynamic | 2.14 | 1.13 |
+| mapcar | 2.95 | 1.30 |
+| bytecode-calls | 3.30 | 1.19 |
+| bytecode-to-native | — | 1.59 |
+| interpreted-to-native | — | 1.30 |
+| native-to-interpreted / -bytecode | — | 1.19 / 1.28 |
+| cons-allocation / list-traversal | 2.24 / — | 1.09 / 1.10 |
+| native-execution | — | 1.14 |
+| bindat | — | 1.02 |
+| explicit-gc | — | 0.82 |
 
-The table is one full run of all sixteen on the buffer-list round's
-build (`0c448c6`), compiled by Rust 1.99.1 as the rounds since the Rust
-1.99.1 bullet were (the rounds above those were measured on 1.97.0). Undo read 1.47 to 1.49 and
+The table is one full run of all sixteen on the byte-code entry round's
+build, compiled by Rust 1.99.1 as the rounds since the Rust 1.99.1
+bullet were (the rounds above those were measured on 1.97.0); mapcar
+read 1.29 on the round before. Undo read 1.47 to 1.49 and
 bindat 1.02 to 1.05 on the last three builds (the conservative scan's
 `mem_find` calls in a collection in the difference),
 native-to-interpreted 1.20 to 1.21 on one build. Undo read 1.67 to 1.70 across the
@@ -1359,7 +1422,10 @@ passed (run 39020019119; 3,139 tests), frozen 7,928 of 7,928, no
 unsuccessful execution, on its first attempt (run 39020021023). **On
 `e655fb2`** (the guard count): full Rust gate passed (run 39022801774;
 3,139 tests), frozen 7,928 of 7,928, no unsuccessful execution, on its
-first attempt (run 39022803610). Locally,
+first attempt (run 39022803610). **On `0c448c6`** (the buffer list):
+full Rust gate passed (run 39024108508; 3,139 tests), frozen 7,928 of
+7,928 across 519 files, no unsuccessful execution, on its first attempt
+(run 39024110358). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1429,7 +1495,13 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   interpreted-to-native 1.36, cons allocation 1.32 (1.19),
   native-to-interpreted 1.29, mapcar 1.28, interpreted dynamic 1.19,
   sort 1.16 (1.09), explicit-gc 1.10 (1.17), list traversal 1.09 (1.00),
-  native-execution 1.03, bindat 1.01, lexical 0.84, calls 0.79. Collections cost Emaxx more time than GNU at fewer
+  native-execution 1.03, bindat 1.01, lexical 0.84, calls 0.79. On the
+  byte-code entry round's build, the same way: bytecode-to-native 1.59,
+  undo 1.57 (1.65), interpreted-to-native 1.35, native-to-bytecode 1.33
+  (1.47), cons allocation 1.30, native-to-interpreted 1.29, mapcar 1.19
+  (1.26), bytecode calls 1.16, sort 1.16 (1.13), dynamic 1.09,
+  native-execution 1.07 (1.19), list traversal 1.06, explicit-gc 1.05
+  (1.13), bindat 0.97, calls 0.79, lexical 0.78. Collections cost Emaxx more time than GNU at fewer
   instructions: 19 to 22 ms each in the workloads against GNU's 12 to 16,
   an otherwise empty one 15.0 ms against 9.8 (11.5 after the compaction
   change), though marking a long list costs less a cell (6.6 ns against
@@ -1469,7 +1541,7 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   and callgrind's last-level figures over-predict sequential traffic.
   Measure wall time with the counts for any change to collection,
   allocation or the native call path.
-- **Native calls** (bytecode-to-native 1.64): 636 instructions an
+- **Native calls** (bytecode-to-native 1.59): 617 instructions an
   iteration against GNU's 388, the byte-code loop below GNU's (258
   against `exec_byte_code`'s 339 with its call setup). A Bcall into
   native code costs 178 in the native layer (`invoke_fixed` 145: the
@@ -1482,8 +1554,8 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   the bookkeeping that Rust frames between native code and its caller
   require: the call-frame record, the thread-local swaps and the escape
   record.
-- **Byte-code calls** (bytecode calls 1.25): 586 instructions an
-  iteration against GNU's 468 (579 on 1.97.0), all in the verified loop
+- **Byte-code calls** (bytecode calls 1.19): 558 instructions an
+  iteration against GNU's 468 (586 on the dispatch copy's build), all in the verified loop
   now that the frame entry and the return are inline: its ops at GNU's
   cost or below, and a call and return about 210 against GNU's 100 or so
   (the plain-entry tests, the entry cache's check of the closure's four
@@ -1576,17 +1648,21 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 1.64, undo 1.45, native-to-bytecode
-   1.37, interpreted-to-native 1.31, mapcar 1.29, bytecode calls 1.24,
-   native-to-interpreted 1.20, sort and interpreted dynamic 1.15; by wall
-   time, see "Wall time" above, on `0c448c6`: bytecode-to-native 1.61,
-   undo 1.52, native-to-bytecode 1.45, bytecode calls 1.39,
-   interpreted-to-native 1.36, cons allocation 1.32, native-to-interpreted
-   1.29, mapcar 1.28, dynamic 1.19, sort 1.16, explicit-gc 1.10; bindat,
-   native execution, lexical and calls at or below 1.03. Per iteration
-   bytecode calls runs 65 conditional branches against GNU's 28 and
-   bytecode-to-native 70 against 28 (callgrind `--branch-sim=yes`;
-   indirect ones 17 against 17 since the dispatch copy): the call path's tests). The remaining costs are listed
+   above; worst now bytecode-to-native 1.59, undo 1.44, interpreted-to-native
+   1.30, mapcar 1.30, native-to-bytecode 1.28, bytecode calls 1.19,
+   native-to-interpreted 1.19, sort 1.14, interpreted dynamic 1.13; by
+   wall time, see "Wall time" above, on the byte-code entry round's build:
+   bytecode-to-native 1.59, undo 1.57, interpreted-to-native 1.35,
+   native-to-bytecode 1.33, cons allocation 1.30 (an in-sample collection,
+   see above), native-to-interpreted 1.29, mapcar 1.19, bytecode calls and
+   sort 1.16, dynamic 1.09, native execution 1.07, list traversal 1.06,
+   explicit-gc 1.05; bindat, calls and lexical below 1.0. A wall ratio
+   well above its instruction ratio points at stalls callgrind does not
+   count, such as the store-forwarding failures of the last round. Per
+   iteration bytecode calls runs 65 conditional branches against GNU's 28
+   and bytecode-to-native 70 against 28 (callgrind `--branch-sim=yes`;
+   indirect ones 17 against 17 since the dispatch copy), the excess in
+   the call path's tests. The remaining costs are listed
    under "Where the remaining gap is": the native call layer needs
    structural work (a lighter native boundary: inlining `invoke_fixed` into
    `call_plain` measured 20 instructions a call worse), and the byte-code
