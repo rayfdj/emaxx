@@ -47,6 +47,11 @@ static LARGE: AtomicPtr<Block> = AtomicPtr::new(ptr::null_mut());
 // other object kinds or claim complete physical allocation accounting.
 static PURE_SMALL: SmallBlocks = SmallBlocks::new();
 static PURE_LARGE: AtomicPtr<Block> = AtomicPtr::new(ptr::null_mut());
+/// The small data of strings allocated while an image loads, packed apart
+/// and never compacted, as GNU's dumped strings keep their data in the
+/// dump, which compact_small_strings never reads. A dead image string's
+/// entry is retired in place; its block stays.
+static IMAGE_SMALL: SmallBlocks = SmallBlocks::new();
 /// An entry has been retired since the small blocks were last compacted,
 /// or a compaction held a block back: the next one has entries to squeeze
 /// out. Without a dead entry compact_small_strings moves nothing (it
@@ -101,7 +106,13 @@ impl PendingStringData {
                 chain.store(block, Ordering::Relaxed);
                 block
             } else {
-                let chain = if pure { &PURE_SMALL } else { &SMALL };
+                let chain = if pure {
+                    &PURE_SMALL
+                } else if super::super::image_region_open() {
+                    &IMAGE_SMALL
+                } else {
+                    &SMALL
+                };
                 let mut block = chain.current.load(Ordering::Relaxed);
                 if block.is_null()
                     || (*block).next_free.offset_from(block.cast()) as usize + needed > BLOCK_BYTES
@@ -326,6 +337,7 @@ pub(super) fn census() -> (usize, usize, usize) {
         (LARGE.load(Ordering::Relaxed), false),
         (PURE_SMALL.oldest.load(Ordering::Relaxed), true),
         (PURE_LARGE.load(Ordering::Relaxed), false),
+        (IMAGE_SMALL.oldest.load(Ordering::Relaxed), true),
     ] {
         let mut block = first;
         // SAFETY: tests hold the existing process runtime lock; this reads

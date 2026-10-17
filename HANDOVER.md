@@ -1378,6 +1378,25 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   strings die every cycle, and the compaction that follows
   (`data::sweep`) reads the image's string data and its owners as well
   (next).
+- **The image's string data out of the compaction.** The small data of
+  strings allocated while an image loads goes to a chain of its own
+  (`IMAGE_SMALL`), packed apart and never compacted, as pure data already
+  was and as GNU's dumped strings keep their data in the dump, which
+  `compact_small_strings` never reads. A dead image string's entry is
+  retired in place and its block kept. Before, any heap string that died
+  made the next compaction walk every small block from the oldest, the
+  image's 52,600 strings' entries and their owners' sizes included. The
+  string phase of a collection (per-phase clocks, as above): mapcar's
+  compaction 1,300–1,465 → 161–179 µs, undo's 1,460–2,005 → 284–379 µs.
+  Wall time against `85f3e00` (five rounds of five samples, the minimum,
+  GNU's in parentheses): mapcar 0.0700 → 0.0673 s (0.0639; 1.10 → 1.05),
+  sort 0.2036 → 0.1977 (0.1807; 1.13 → 1.09), cons allocation 0.0886 →
+  0.0874 (0.0727), explicit-gc 0.0859 → 0.0827 (0.0999), undo 0.1630 →
+  0.1638 (0.1107; one collection a sample, its gap is the mutator's:
+  about 0.145 s outside collection against GNU's 0.093). Instruction
+  counts: undo 1,742,444 a unit, mapcar 28.59 million, sort, cons
+  allocation and explicit-gc unchanged (their callgrind sizes hold
+  almost no compaction).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1563,7 +1582,11 @@ left unread: 1,110 of the 1,112 GC, image, dump, weak, finalizer, obarray,
 interning, symbol, string, vector, record, buffer, allocation and mark
 tests pass in three parallel parts with the checked assertions, the
 others being the as-root save-buffer test and the TLS test, which passes
-alone; clippy `-D warnings` and rustfmt clean.
+alone; clippy `-D warnings` and rustfmt clean. For the image's string
+data: 676 of 676 string, data, compaction, relocation, borrow, multibyte,
+unibyte, coding, substring, concatenation, format, collection, image,
+dump, `aset` and text-property tests pass in three parallel parts; clippy
+and rustfmt clean.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
@@ -1794,7 +1817,8 @@ trials recorded): full Rust gate passed (run 39066922265; 3,140 tests),
 frozen passed on its first attempt (run 39066924074). **On `5147b2e`**
 (the evaluator's nested native call): full Rust gate passed (run
 39069860003; 3,140 tests), frozen passed on its first attempt (run
-39069862192). Locally,
+39069862192). **On `85f3e00`** (the image's cells left unread): full
+Rust gate (run 39074166122) and frozen (run 39074167800) pending. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
