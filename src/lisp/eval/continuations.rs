@@ -367,19 +367,28 @@ mod tests {
     #[test]
     fn native_continuations_can_return_in_non_lifo_order() {
         let mut interpreter = Interpreter::new();
-        let table = crate::lisp::json::make_hash_table(&mut interpreter, "eq", Vec::new());
-        let Kind::HashTable(table_id) = table.kind() else {
-            panic!("weak table record")
-        };
-        table_id.set_weakness(1);
-        interpreter.set_global_binding("native-suspension-weak-table", Value::HashTable(table_id));
+        // A weak table for each probe's key. With one table, the second
+        // probe's `puthash' reads the first key, and a copy of it that a
+        // returned callee left in its stack, under a frame still live when
+        // the second stack parks, keeps it through the conservative scan of
+        // that parked stack after the first stack has returned.
+        let tables = [(); 2].map(|()| {
+            let table = crate::lisp::json::make_hash_table(&mut interpreter, "eq", Vec::new());
+            let Kind::HashTable(table_id) = table.kind() else {
+                panic!("weak table record")
+            };
+            table_id.set_weakness(1);
+            table_id
+        });
         let mut first =
             ThreadContinuation::with_body(crate::lisp::native_comp::invoke_suspension_probe)
                 .expect("first native stack");
         let mut second =
             ThreadContinuation::with_body(crate::lisp::native_comp::invoke_suspension_probe)
                 .expect("second native stack");
-        for continuation in [&mut first, &mut second] {
+        for (continuation, table_id) in [(&mut first, tables[0]), (&mut second, tables[1])] {
+            interpreter
+                .set_global_binding("native-suspension-weak-table", Value::HashTable(table_id));
             let CoroutineResult::Yield(state) =
                 continuation.resume(interpreter.state.take().expect("state"))
             else {
@@ -387,9 +396,10 @@ mod tests {
             };
             interpreter.state = Some(state);
         }
-        for (continuation, roots, enabled) in
-            [(&mut first, 2, Value::T), (&mut second, 1, Value::Nil)]
-        {
+        for (continuation, roots, enabled) in [
+            (&mut first, [1, 1], Value::T),
+            (&mut second, [0, 1], Value::Nil),
+        ] {
             // Earlier collections can leave pointer words in returned
             // driver frames. Clear only dead stack space: both suspended
             // native stacks and every live caller remain GC roots.
@@ -401,7 +411,7 @@ mod tests {
                 &mut Env::new(),
             )
             .expect("collect all suspended machine stacks");
-            assert_eq!(table_id.count(), roots);
+            assert_eq!(tables.map(|table_id| table_id.count()), roots);
             interpreter.set_global_binding("symbols-with-pos-enabled", enabled);
             let CoroutineResult::Return(completion) =
                 continuation.resume(interpreter.state.take().expect("state"))
@@ -418,7 +428,7 @@ mod tests {
         crate::lisp::alloc::clobber_stack();
         crate::lisp::primitives::call(&mut interpreter, "garbage-collect", &[], &mut Env::new())
             .expect("collect after both native stacks return");
-        assert!((table_id.count() == 0));
+        assert_eq!(tables.map(|table_id| table_id.count()), [0, 0]);
     }
 
     #[test]
