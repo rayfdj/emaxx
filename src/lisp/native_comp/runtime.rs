@@ -597,8 +597,11 @@ pub(crate) fn with_active_call<R>(
         runtime,
     };
     let previous = ACTIVE_CALL.replace(&mut active);
-    let previous_heap =
-        ACTIVE_NATIVE_HEAP.swap(std::ptr::from_mut(&mut runtime.heap), Ordering::Relaxed);
+    // Every store to the heap pointer is made under the execution lock,
+    // held from the guard above, so a load and a store exchange it: a
+    // swap is a locked `xchg' on x86, about 20 cycles on each native call.
+    let previous_heap = ACTIVE_NATIVE_HEAP.load(Ordering::Relaxed);
+    ACTIVE_NATIVE_HEAP.store(std::ptr::from_mut(&mut runtime.heap), Ordering::Relaxed);
     let previous_stack_bottom = runtime.heap.native_stack_bottom;
     if outermost {
         runtime.heap.set_stack_bottom(current_native_stack_bottom());

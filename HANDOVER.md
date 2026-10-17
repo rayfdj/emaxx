@@ -942,6 +942,33 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   1.155, interpreted dynamic 1.161 → 1.150, interpreted-to-native 1.325 →
   1.314; native-to-interpreted 1.201 → 1.211 (`eval_sub`, with no change
   on its path); the rest within 0.005.
+- **No locked exchange on a native call; string data compacted only
+  when an entry died.** `with_active_call` swapped the process-wide
+  native heap pointer, a locked `xchg` on x86 (one instruction, about 20
+  cycles) on every native call; every store to that pointer is made
+  under the native execution lock, which the call holds from its guard,
+  so a load and a store exchange it. An instruction-level scan of all
+  sixteen workloads for locked instructions found it once a native call
+  (bytecode-to-native, interpreted-to-native, native-to-interpreted,
+  native-to-bytecode) and otherwise only `mem_find`'s registry mutex
+  (about 5,000 a collection) and ropey's `Arc` counts in sort, both
+  under 1% of their time. Bytecode-to-native wall time at 4,000,000
+  iterations 0.222 → 0.200 s (GNU 0.109). Each collection walked every
+  small string data block twice, the image's strings' data included:
+  `pinned` read each entry's owner for a borrow, then the compaction read
+  each owner again for its size. Without a dead entry the compaction
+  moves nothing (each live entry is copied to where it is), so it runs
+  only when an entry was retired since the last one or a borrow held a
+  block back, and it tests each block for borrows as its walk reaches
+  it, so the owners are in cache when their sizes are read; the held and
+  moving chains come out as before. An explicit collection 57.9 → 55.4
+  million instructions, L1 data misses 736,000 → 588,000, last-level
+  8,600 → 2,100 (GNU's: 66.2 million, 297,000 and none); an otherwise
+  empty collection 15.1 → 11.5 ms (GNU 9.8); explicit-gc wall time
+  0.145 → 0.133 s (GNU 0.107). Explicit-gc 0.874 → 0.834, the rest within
+  their noise (undo read 1.486, `mem_find` 340,000 instructions more in
+  the conservative scan's collection, and bindat 1.045: it reads 1.022 to
+  1.048 on one build).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1039,7 +1066,12 @@ save-buffer tests and
 the build before too, and
 `process_tls_state_survives_collection_before_and_after_async_handshake`,
 whose GNU run disagreed under that load and which passes alone, 3 of 3.
-For the small-block lists: the same 3,134 of 3,138 with the same four
+For the exchange and the compaction: 3,133 of the 3,138 pass with 2
+ignored, the three failing being the as-root ones above, and the four
+allocator tests; the compaction's held-block path is pinned by
+`string_sblocks_compact_unborrowed_data_and_hold_borrowed_blocks` (the
+borrow released, the next collection moves the held string). For the
+small-block lists: the same 3,134 of 3,138 with the same four
 failures, less
 `subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`,
 which failed in that load on this round's builds (its child had exited
@@ -1055,25 +1087,27 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.47 |
-| upstream-sort (4 units) | 3.26 (at 1 unit) | 1.16 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.49 |
+| upstream-sort (4 units) | 3.26 (at 1 unit) | 1.15 |
 | interpreted-calls | 2.10 | 1.07 |
 | interpreted-lexical | 2.04 | 1.07 |
 | interpreted-dynamic | 2.14 | 1.15 |
 | mapcar | 2.95 | 1.29 |
 | bytecode-calls | 3.30 | 1.25 |
 | bytecode-to-native | — | 1.64 |
-| interpreted-to-native | — | 1.31 |
-| native-to-interpreted / -bytecode | — | 1.21 / 1.37 |
+| interpreted-to-native | — | 1.32 |
+| native-to-interpreted / -bytecode | — | 1.20 / 1.36 |
 | cons-allocation / list-traversal | 2.24 / — | 1.11 / 1.12 |
 | native-execution | — | 1.15 |
-| bindat | — | 1.02 |
-| explicit-gc | — | 0.87 |
+| bindat | — | 1.05 |
+| explicit-gc | — | 0.83 |
 
-The table is one full run of all sixteen on the small-block round's build
-before the free path's room counter (which moved undo 1.476 → 1.470),
-compiled by Rust 1.99.1 as the two rounds before it were (the rounds
-above those were measured on 1.97.0). Undo read 1.67 to 1.70 across the
+The table is one full run of all sixteen on the compaction round's
+build, compiled by Rust 1.99.1 as the three rounds before it were (the
+rounds above those were measured on 1.97.0). Undo read 1.47 to 1.49 and
+bindat 1.02 to 1.05 on the last three builds (the conservative scan's
+`mem_find` calls in a collection in the difference),
+native-to-interpreted 1.20 to 1.21 on one build. Undo read 1.67 to 1.70 across the
 allocation sweep's builds (the allocator's state), and a collection's
 stack scan or a hash table's growth falling in the difference moves the
 interpreted rows by about 0.01.
@@ -1224,7 +1258,10 @@ integration), frozen 7,928 of 7,928 across 519 files, no unsuccessful
 execution, on its first attempt (run 39003319679). **On `200e450`**
 (eval_sub's direct path): full Rust gate passed (run 39007442705; 3,136
 tests), frozen 7,928 of 7,928, no unsuccessful execution, on its first
-attempt (run 39007444124). Locally,
+attempt (run 39007444124). **On `c722291`** (the small-block lists): full
+Rust gate passed (run 39011047978; 3,139 tests in the counted groups,
+the two ignores, plus bins and integration), frozen 7,928 of 7,928, no
+unsuccessful execution, on its first attempt (run 39011049487). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1277,6 +1314,39 @@ this container's GNU build itself disagrees with the expected text (under
 **Where the remaining gap is** (instruction counts per unit; the native
 and byte-code calls on the Rust 1.99.1 round's final build, the rest on
 `41be443`):
+- **Wall time** parts from the counts, and the criterion is wall time. A
+  native pilot of all sixteen on the small-block build with the exchange
+  removed (a quarter of each contract n, two rounds of three samples
+  after a warmup, the minimum; `core-perf-run` in each editor without
+  valgrind) read, Emaxx/GNU: lexical 0.84,
+  calls 0.86, bindat 0.98, native-execution 1.08, list traversal 1.13,
+  sort 1.16, dynamic 1.18, native-to-interpreted 1.31, mapcar 1.33,
+  explicit-gc 1.34, interpreted-to-native 1.41, bytecode calls 1.43,
+  cons allocation 1.43, undo 1.49, native-to-bytecode 1.50,
+  bytecode-to-native 1.76. The calls through native code read about 0.1
+  above their counts. Collections cost Emaxx more time than GNU at fewer
+  instructions: 19 to 22 ms each in the workloads against GNU's 12 to 16,
+  an otherwise empty one 15.0 ms against 9.8 (11.5 after the compaction
+  change), though marking a long list costs less a cell (6.6 ns against
+  9.6). The difference is memory traffic: L1 data misses 736,000 against
+  297,000 (callgrind `--cache-sim=yes`), nearly half in the sweeps, which
+  read every string, vector and symbol cell, the image's included,
+  where GNU's sweeps never touch its dump region and its cons sweep reads
+  mark bitmaps; what is left after the compaction change is
+  `borrowed_string_roots`' walk of every string cell before marking
+  (58,000 misses; skipping it needs a count of live string guards that is
+  exact across the parallel test threads), the string sweep's mark reads
+  (58,000), vectors (37,000) and symbols (19,000), and marking (301,000
+  against GNU's 281,000). Cons allocation's samples collect once each in
+  Emaxx (0.021 s of 0.11) and never in GNU: the harness's
+  `(garbage-collect)` before each sample still finds the previous
+  sample's 500,000-cell list through GNU's conservative stack scan, so
+  with `gc-cons-percentage` 1.0 GNU's next threshold is about 8 MB;
+  Emaxx frees the list and its threshold stays at 800,000 bytes. Emaxx
+  collects less often than GNU in lexical, calls, sort, bindat and the
+  native-to-* cases (its census of live bytes is larger). Measure wall
+  time with the counts for any change to collection, allocation or the
+  native call path.
 - **Native calls** (bytecode-to-native 1.64): 636 instructions an
   iteration against GNU's 388, the byte-code loop below GNU's (258
   against `exec_byte_code`'s 339 with its call setup). A Bcall into
@@ -1384,9 +1454,13 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 1.64, undo 1.47, native-to-bytecode
-   1.37, interpreted-to-native 1.31, mapcar 1.29, bytecode calls 1.25,
-   native-to-interpreted 1.21, sort 1.16, interpreted dynamic 1.15). The remaining costs are listed
+   above; worst now bytecode-to-native 1.64, undo 1.47 to 1.49,
+   native-to-bytecode 1.36, interpreted-to-native 1.32, mapcar 1.29,
+   bytecode calls 1.25, native-to-interpreted 1.20, sort and interpreted
+   dynamic 1.15; by wall time, see "Wall time" above: bytecode-to-native
+   1.76, native-to-bytecode 1.50, undo 1.49, cons allocation and
+   bytecode calls 1.43, explicit-gc about 1.25 after the compaction
+   change). The remaining costs are listed
    under "Where the remaining gap is": the native call layer needs
    structural work (a lighter native boundary: inlining `invoke_fixed` into
    `call_plain` measured 20 instructions a call worse), and the byte-code
