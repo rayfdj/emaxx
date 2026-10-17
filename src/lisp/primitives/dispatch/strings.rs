@@ -149,7 +149,7 @@ define_dispatch!(
                 }
                 let tab_width = interp
                     .lookup_var("tab-width", &crate::lisp::types::Env::new())
-                    .and_then(|value| value.as_integer().ok())
+                    .and_then(|value| value.integer_value())
                     .unwrap_or(8)
                     .max(1) as usize;
                 let mut width = 0usize;
@@ -170,7 +170,7 @@ define_dispatch!(
                 let width = if ch == '\t' {
                     interp
                         .lookup_var("tab-width", &crate::lisp::types::Env::new())
-                        .and_then(|value| value.as_integer().ok())
+                        .and_then(|value| value.integer_value())
                         .unwrap_or(8)
                         .max(1) as usize
                 } else {
@@ -960,7 +960,7 @@ fn find_registered_unicode_property(interp: &Interpreter, property: &str) -> Opt
             return None;
         };
         if let Kind::Cons(entry) = cell.car.get().kind()
-            && entry.car.get().as_symbol().ok() == Some(property)
+            && entry.car.get().symbol_str() == Some(property)
         {
             return Some(entry.cdr.get());
         }

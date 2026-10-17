@@ -516,6 +516,21 @@ pub(crate) fn safe_list_length(list: &Value) -> i64 {
 }
 
 pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispError> {
+    // fns.c:Fnthcdr: a small fixnum count walks without circularity checks
+    // (SMALL_LIST_LEN_MAX).
+    if let Kind::Integer(n) = count.kind()
+        && n <= 127
+    {
+        let mut tail = *list;
+        for _ in 0..n.max(0) {
+            match tail.kind() {
+                Kind::Cons(cell) => tail = cell.cdr.get(),
+                Kind::Nil => return Ok(Value::Nil),
+                _ => return Err(wrong_type_argument("listp", *list)),
+            }
+        }
+        return Ok(tail);
+    }
     let mut remaining = match count.kind() {
         Kind::Integer(n) => BigInt::from(n),
         Kind::BigInteger(n) => (n).into(),
@@ -586,7 +601,16 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
         }
         Kind::Closure(lambda) => Ok(lambda.public_len() as i64),
         Kind::LispRecord(record) => Ok(record.len() as i64),
-        Kind::Cons(_) => Ok(value.to_vec()?.len() as i64),
+        // fns.c:list_length counts the tails in place (FOR_EACH_TAIL and
+        // CHECK_LIST_END), without a copy of the elements.
+        Kind::Cons(_) => {
+            let mut length = 0_i64;
+            value.visit_list_elements(|_| {
+                length += 1;
+                Ok(())
+            })?;
+            Ok(length)
+        }
         _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
     }
 }
@@ -1306,7 +1330,7 @@ pub(crate) fn circular_list_signal_p(value: &Value) -> bool {
         .to_vec()
         .ok()
         .and_then(|items| items.first().cloned())
-        .and_then(|head| head.as_symbol().ok().map(str::to_string))
+        .and_then(|head| head.symbol_str().map(str::to_string))
         .is_some_and(|symbol| symbol == "circular-list")
 }
 
@@ -2243,7 +2267,7 @@ pub(crate) fn function_value_p(interp: &Interpreter, value: &Value, env: &Env) -
     } else {
         *value
     };
-    let symbol = symbol_value.as_symbol().ok();
+    let symbol = symbol_value.symbol_str();
     if symbol
         .is_some_and(|symbol| name_facts(symbol).special_form || interp.has_macro_binding(symbol))
     {
@@ -2314,7 +2338,7 @@ pub(crate) fn make_runtime_keymap(_interp: &mut Interpreter, prompt: Value) -> V
     } else {
         Value::list([prompt])
     };
-    Value::cons(Value::symbol("keymap"), tail)
+    Value::cons(keymap_symbol(), tail)
 }
 
 pub(crate) fn make_runtime_full_keymap(interp: &mut Interpreter, prompt: Value) -> Value {
@@ -2324,13 +2348,19 @@ pub(crate) fn make_runtime_full_keymap(interp: &mut Interpreter, prompt: Value) 
     } else {
         Value::list([prompt])
     };
-    Value::cons(Value::symbol("keymap"), Value::cons(table, tail))
+    Value::cons(keymap_symbol(), Value::cons(table, tail))
+}
+
+/// Qkeymap: the cached symbol, not an intern of its name.
+#[inline]
+fn keymap_symbol() -> Value {
+    cached_symbol!("keymap").with(|symbol| Value::Symbol(*symbol))
 }
 
 pub(crate) fn is_keymap_placeholder(value: &Value) -> bool {
     value
         .cons_values()
-        .is_some_and(|(head, _)| head.eq_value(Value::symbol("keymap")))
+        .is_some_and(|(head, _)| head.eq_value(keymap_symbol()))
 }
 
 pub(crate) fn is_keymap_value(_interp: &Interpreter, value: &Value) -> bool {
@@ -2340,10 +2370,10 @@ pub(crate) fn is_keymap_value(_interp: &Interpreter, value: &Value) -> bool {
 /// The first character table in this map's own list, before its parent.
 pub(crate) fn keymap_char_table_value(_interp: &Interpreter, keymap: &Value) -> Option<Value> {
     let view = *keymap;
-    if !matches!(view.car().ok()?.kind(), Kind::Symbol(name) if name == "keymap") {
+    if !matches!(view.car_if_list()?.kind(), Kind::Symbol(name) if name == "keymap") {
         return None;
     }
-    let mut tail = view.cdr().ok()?;
+    let mut tail = view.cdr_if_list()?;
     let mut cycle = crate::lisp::types::CycleGuard::new();
     while let Kind::Cons(cell) = tail.kind() {
         if cycle.step(crate::lisp::types::ConsCell::identity(&cell)) {
@@ -2512,10 +2542,7 @@ pub(crate) fn map_keymap_own_entries(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let map = keymap;
-    let mut tail = if map
-        .car()
-        .is_ok_and(|head| head.eq_value(Value::symbol("keymap")))
-    {
+    let mut tail = if map.car().is_ok_and(|head| head.eq_value(keymap_symbol())) {
         map.cdr()?
     } else {
         map
@@ -2523,7 +2550,7 @@ pub(crate) fn map_keymap_own_entries(
     let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![map, tail, Value::Nil]);
     let mut seen = HashSet::new();
     while let Some((entry, _)) = tail.cons_values() {
-        if entry.eq_value(Value::symbol("keymap")) || is_keymap_value(interp, &entry) {
+        if entry.eq_value(keymap_symbol()) || is_keymap_value(interp, &entry) {
             break;
         }
         if !seen.insert(tail.word()) {
@@ -2629,7 +2656,7 @@ fn store_in_keymap(
         if !seen.insert(tail.word()) {
             break;
         }
-        if entry.eq_value(Value::symbol("keymap")) {
+        if entry.eq_value(keymap_symbol()) {
             break;
         }
         match entry.kind() {
@@ -2907,7 +2934,7 @@ fn keymap_own_sparse_binding(
     if !is_keymap_value(interp, keymap) {
         return Ok(None);
     }
-    let keymap_tag = Value::symbol("keymap");
+    let keymap_tag = keymap_symbol();
     let mut tail = keymap.cdr()?;
     let mut cycle = crate::lisp::types::CycleGuard::new();
     while let Kind::Cons(cell) = tail.kind() {
@@ -2997,10 +3024,7 @@ pub(crate) fn keymap_access_event(
             return Ok(binding.filter(Value::is_nil));
         }
     }
-    let tail = if map
-        .car()
-        .is_ok_and(|head| head.eq_value(Value::symbol("keymap")))
-    {
+    let tail = if map.car().is_ok_and(|head| head.eq_value(keymap_symbol())) {
         map.cdr()?
     } else {
         map
@@ -3020,7 +3044,7 @@ pub(crate) fn keymap_access_event(
         let Some((binding, _)) = roots[1].cons_values() else {
             break;
         };
-        let value = if binding.eq_value(Value::symbol("keymap")) {
+        let value = if binding.eq_value(keymap_symbol()) {
             if found && roots[2].is_nil() {
                 break;
             }
@@ -3032,7 +3056,7 @@ pub(crate) fn keymap_access_event(
                         roots[3].set_cdr(parent)?;
                     } else {
                         roots[3] = Value::cons(roots[2], parent);
-                        roots[2] = Value::cons(Value::symbol("keymap"), roots[3]);
+                        roots[2] = Value::cons(keymap_symbol(), roots[3]);
                     }
                 }
                 break;
@@ -3089,7 +3113,7 @@ pub(crate) fn keymap_access_event(
                 if roots[3].cons_values().is_some() {
                     roots[3].set_cdr(tail)?;
                 } else {
-                    roots[2] = Value::cons(Value::symbol("keymap"), Value::cons(roots[2], tail));
+                    roots[2] = Value::cons(keymap_symbol(), Value::cons(roots[2], tail));
                 }
                 roots[3] = tail;
             }
@@ -3991,7 +4015,7 @@ fn text_property_keymap_at_active_position(
         Some(value) => {
             let items = value.to_vec().ok()?;
             let area = items.get(1)?;
-            let string = items.get(4).and_then(|value| value.car().ok());
+            let string = items.get(4).and_then(|value| value.car_if_list());
             if let Some(string) = string.as_ref().and_then(string_keymap) {
                 return Some(string);
             }

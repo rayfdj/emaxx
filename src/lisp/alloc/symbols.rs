@@ -16,10 +16,10 @@
 //! must be removed before this migration is complete.
 
 use super::super::types::{MarkBit, SymbolName, Value};
-use super::{BlockKind, FREE_MARK, SYMBOLS_PER_BLOCK, blocks_of, new_block, release_block};
+use super::{BlockKind, FREE_MARK, SYMBOLS_PER_BLOCK, new_block, release_block, sweep_blocks_of};
 use std::cell::Cell;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 
 /// alloc.c's `struct Lisp_Symbol', as this implementation keeps it.
 #[repr(C)]
@@ -34,30 +34,56 @@ pub struct SymbolCell {
     /// Lisp_Symbol.val: a value word or an alias object, selected by state.
     pub(crate) payload: Cell<SymbolPayload>,
     pub(crate) flags: Cell<u8>,
-    pub(crate) state: Cell<u8>,
+    /// Allocated while an image loaded (see `ImageCells'); set by
+    /// `allocate_symbol'.
+    pub(crate) image: bool,
+    pub(crate) state: Cell<u16>,
     pub(crate) mark: MarkBit,
 }
 
 // VALUE_PRESENT retains the existing distinction between an absent binding
 // and a localized, explicitly void default until localized storage is moved.
-const VALUE_PRESENT: u8 = 1;
-const ALIAS: u8 = 2;
-const PLAIN_STORE: u8 = 4;
-// Temporary until all dedicated C slots use the allocated redirect. Keep the
-// existing negative name classification with its object, not a global id set.
-const NO_C_SLOT: u8 = 8;
+const VALUE_PRESENT: u16 = 1;
+const ALIAS: u16 = 2;
+const PLAIN_STORE: u16 = 4;
+// The defining C initializer gives this object its dedicated slot. A later
+// symbol with the same name must not inherit that slot. The remaining slot
+// implementation is a migration adapter, not a negative name-lookup cache.
+const C_SLOT: u16 = 8;
 // Temporary startup adapter: consumers distinguish Lisp fset from defsubr.
 // Remove after those consumers use the actual function capability. No separate
 // payload, id index, enumeration position or per-symbol allocation is involved.
-const FUNCTION_DEFINITION: u8 = 16;
+const FUNCTION_DEFINITION: u16 = 16;
 // lisp.h: Lisp_Symbol.interned is object state, not an identity-number bit.
 // Standard-obarray removal still has its separate membership adapter.
-const UNINTERNED: u8 = 32;
+const UNINTERNED: u16 = 32;
+// The fixed ABI words designate these actual objects, not any later symbol
+// whose name happens to be nil or t after the original is uninterned.
+const BUILTIN_NIL: u16 = 64;
+const BUILTIN_T: u16 = 128;
+// lisp.h: trapped_write == SYMBOL_NOWRITE. This remains on the object
+// after uninterning and is copied/restored with its other header state.
+const CONSTANT: u16 = 256;
+// lisp.h: redirect == SYMBOL_FORWARDED to a Lisp_Intfwd. Set together with
+// VALUE_PRESENT; the payload is the forwarded counter word.
+const INT_FORWARD: u16 = 512;
+// lisp.h: redirect == SYMBOL_FORWARDED to a Lisp_Kboard_Objfwd. Set with
+// C_SLOT on the variables whose values live in each terminal's KBOARD, so
+// other forwarded variables are known not to be one without a name check.
+const KBOARD_FORWARD: u16 = 1024;
 
 #[derive(Clone, Copy)]
 pub(crate) union SymbolPayload {
     value: Value,
     alias: SymbolName,
+    /// `Lisp_Intfwd.intvar': one of alloc.c's process-wide counters.
+    counter: &'static AtomicI64,
+}
+
+/// data.c:store_symval_forwarding's Lisp_Fwd_Int case: the store has passed
+/// CHECK_INTEGER and the intmax_t range check before reaching the cell.
+fn forwarded_integer(value: Value) -> Option<i64> {
+    value.integer_value()
 }
 
 impl SymbolPayload {
@@ -75,6 +101,19 @@ impl Default for SymbolPayload {
 }
 
 impl SymbolCell {
+    pub(crate) fn mark_builtin_boolean(&self, truth: bool) {
+        self.state
+            .set(self.state.get() | if truth { BUILTIN_T } else { BUILTIN_NIL });
+    }
+
+    pub(crate) fn builtin_boolean(&self) -> Option<Value> {
+        match self.state.get() & (BUILTIN_NIL | BUILTIN_T) {
+            BUILTIN_NIL => Some(Value::Nil),
+            BUILTIN_T => Some(Value::T),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_uninterned(&self) -> bool {
         self.state.get() & UNINTERNED != 0
     }
@@ -83,31 +122,126 @@ impl SymbolCell {
         self.state.set(self.state.get() | UNINTERNED);
     }
 
+    #[inline]
     pub(crate) fn value(&self) -> Option<Value> {
-        (self.state.get() & VALUE_PRESENT != 0).then(|| {
-            // SAFETY: VALUE_PRESENT is set only with the value union member.
-            unsafe { self.payload.get().value }
-        })
+        let state = self.state.get();
+        if state & (VALUE_PRESENT | INT_FORWARD) == VALUE_PRESENT {
+            // SAFETY: VALUE_PRESENT without INT_FORWARD selects the value member.
+            return Some(unsafe { self.payload.get().value });
+        }
+        (state & INT_FORWARD != 0).then(|| self.forwarded_value())
+    }
+
+    /// data.c:find_symbol_value's SYMBOL_PLAINVAL case: the value of a
+    /// bound symbol that is no alias, no C variable and not localized in
+    /// any buffer.  Any other symbol, or a void one, answers None.
+    #[inline(always)]
+    pub(crate) fn plain_value(&self) -> Option<Value> {
+        use crate::lisp::eval::symbol_cell_flags::LOCALIZED;
+        if self.state.get() & (VALUE_PRESENT | ALIAS | C_SLOT | INT_FORWARD) == VALUE_PRESENT
+            && self.flags.get() & LOCALIZED == 0
+        {
+            // SAFETY: VALUE_PRESENT without INT_FORWARD selects the value member.
+            return Some(unsafe { self.payload.get().value });
+        }
+        None
+    }
+
+    /// data.c:do_symval_forwarding: `make_int (*intvar)'.
+    #[cold]
+    fn forwarded_value(&self) -> Value {
+        // SAFETY: INT_FORWARD is set only with the counter union member.
+        let counter = unsafe { self.payload.get().counter };
+        crate::lisp::primitives::normalize_integer_value(counter.load(Ordering::Relaxed))
+    }
+
+    /// lread.c:defvar_int: the symbol's value is the C counter itself.
+    pub(crate) fn forward_to_counter(&self, counter: &'static AtomicI64) {
+        assert!(self.alias().is_none(), "forwarding a symbol alias");
+        self.payload.set(SymbolPayload { counter });
+        self.state
+            .set((self.state.get() & !PLAIN_STORE) | VALUE_PRESENT | INT_FORWARD);
+    }
+
+    pub(crate) fn is_forwarded_counter(&self) -> bool {
+        self.state.get() & INT_FORWARD != 0
+    }
+
+    /// The counter this symbol forwards to, for the test image copier, which
+    /// copies the redirect itself.
+    #[cfg(test)]
+    pub(crate) fn forwarded_counter(&self) -> Option<&'static AtomicI64> {
+        // SAFETY: INT_FORWARD is set only with the counter union member.
+        self.is_forwarded_counter()
+            .then(|| unsafe { self.payload.get().counter })
+    }
+
+    /// data.c:store_symval_forwarding into the counter. Callers check
+    /// FWD_INT first; a value that cannot live there (only a store that
+    /// data.c:set_internal would make plain) detaches and stores plainly.
+    #[cold]
+    fn store_forwarded(&self, value: Value) {
+        match forwarded_integer(value) {
+            Some(integer) => {
+                // SAFETY: INT_FORWARD is set only with the counter union member.
+                unsafe { self.payload.get().counter }.store(integer, Ordering::Relaxed);
+            }
+            None => {
+                self.detach_counter();
+                self.payload.set(SymbolPayload { value });
+                self.state.set(self.state.get() | VALUE_PRESENT);
+            }
+        }
+    }
+
+    /// data.c:set_internal storing Qunbound into a forwarded symbol:
+    /// `sym->u.s.redirect = SYMBOL_PLAINVAL'. The counter keeps counting;
+    /// only this symbol stops forwarding to it, and it is left void.
+    fn detach_counter(&self) {
+        self.payload.set(SymbolPayload::unbound());
+        self.state
+            .set(self.state.get() & !(VALUE_PRESENT | INT_FORWARD));
     }
 
     pub(crate) fn set_value(&self, value: Value) {
         assert!(self.alias().is_none(), "plain store into a symbol alias");
+        if self.state.get() & INT_FORWARD != 0 {
+            return self.store_forwarded(value);
+        }
         self.payload.set(SymbolPayload { value });
         self.state.set(self.state.get() | VALUE_PRESENT);
     }
 
-    pub(crate) fn replace_bound_value(&self, value: Value) -> bool {
-        if self.state.get() & VALUE_PRESENT == 0 {
+    /// data.c:set_internal's SYMBOL_PLAINVAL, untrapped case: store VALUE
+    /// into a bound symbol whose assignments are learned to be plain stores.
+    /// Any other symbol, or a void one, is left alone and answers false.
+    #[inline(always)]
+    pub(crate) fn store_plain_value(&self, value: Value) -> bool {
+        if self.state.get() & (PLAIN_STORE | VALUE_PRESENT | INT_FORWARD)
+            != PLAIN_STORE | VALUE_PRESENT
+        {
             return false;
         }
         self.payload.set(SymbolPayload { value });
         true
     }
 
+    pub(crate) fn replace_bound_value(&self, value: Value) -> bool {
+        let state = self.state.get();
+        if state & VALUE_PRESENT == 0 {
+            return false;
+        }
+        if state & INT_FORWARD != 0 {
+            self.store_forwarded(value);
+        } else {
+            self.payload.set(SymbolPayload { value });
+        }
+        true
+    }
+
     pub(crate) fn take_value(&self) -> Option<Value> {
         let value = self.value()?;
-        self.payload.set(SymbolPayload::unbound());
-        self.state.set(self.state.get() & !VALUE_PRESENT);
+        self.detach_counter();
         Some(value)
     }
 
@@ -121,7 +255,7 @@ impl SymbolCell {
     pub(crate) fn set_alias(&self, target: SymbolName) {
         self.payload.set(SymbolPayload { alias: target });
         self.state
-            .set((self.state.get() & !(VALUE_PRESENT | PLAIN_STORE)) | ALIAS);
+            .set((self.state.get() & !(VALUE_PRESENT | PLAIN_STORE | INT_FORWARD)) | ALIAS);
     }
 
     pub(crate) fn clear_alias(&self) -> bool {
@@ -147,6 +281,11 @@ impl SymbolCell {
     }
 
     pub(crate) fn value_or_alias_root(&self) -> Option<Value> {
+        // A forwarded counter is an integer word, never an object to trace;
+        // reading it here could allocate a bignum during collection.
+        if self.is_forwarded_counter() {
+            return None;
+        }
         self.value().or_else(|| self.alias().map(Value::Symbol))
     }
 
@@ -162,16 +301,44 @@ impl SymbolCell {
         });
     }
 
-    pub(crate) fn has_no_c_slot(&self) -> bool {
-        self.state.get() & NO_C_SLOT != 0
+    pub(crate) fn has_c_slot(&self) -> bool {
+        self.state.get() & C_SLOT != 0
     }
 
-    pub(crate) fn note_no_c_slot(&self) {
-        self.state.set(self.state.get() | NO_C_SLOT);
+    pub(crate) fn set_c_slot(&self, present: bool) {
+        let kboard =
+            if crate::lisp::types::symbols::KEYBOARD_VARIABLES.contains(&self.internal.as_str()) {
+                KBOARD_FORWARD
+            } else {
+                0
+            };
+        self.state.set(if present {
+            (self.state.get() | C_SLOT | kboard) & !PLAIN_STORE
+        } else {
+            self.state.get() & !(C_SLOT | KBOARD_FORWARD)
+        });
+    }
+
+    /// Whether this C variable is one of a terminal's KBOARD variables.
+    pub(crate) fn is_kboard_forwarded(&self) -> bool {
+        self.state.get() & KBOARD_FORWARD != 0
+    }
+
+    pub(crate) fn is_constant(&self) -> bool {
+        self.state.get() & CONSTANT != 0
+    }
+
+    pub(crate) fn set_constant(&self, constant: bool) {
+        self.state.set(if constant {
+            (self.state.get() | CONSTANT) & !PLAIN_STORE
+        } else {
+            self.state.get() & !CONSTANT
+        });
     }
 }
 
 pub(super) const SYMBOL_CELL_SIZE: usize = std::mem::size_of::<SymbolCell>();
+const _: () = assert!(SYMBOL_CELL_SIZE == 64);
 
 /// alloc.c's `symbol_free_list', `symbol_block' with `symbol_block_index',
 /// and gcstat's `total_symbols' and `total_free_symbols'.
@@ -218,6 +385,17 @@ impl SymbolRef {
     pub(crate) fn mark_bit(&self) -> &MarkBit {
         &self.cell().mark
     }
+
+    /// Mark the symbol for EPOCH; true when it was not yet marked in it.
+    #[inline]
+    pub(crate) fn mark(&self, epoch: u32) -> bool {
+        let cell = self.cell();
+        let marked = cell.mark.mark(epoch);
+        if marked && cell.image {
+            super::IMAGE_SYMBOLS.note_marked();
+        }
+        marked
+    }
 }
 
 impl std::ops::Deref for SymbolRef {
@@ -246,15 +424,23 @@ pub(crate) fn allocate_symbol(cell: SymbolCell) -> SymbolRef {
         head
     };
     LIVE_SYMBOLS.store(LIVE_SYMBOLS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+    super::counters::tally(&super::counters::SYMBOLS_CONSED, 1);
     // SAFETY: SLOT is a free cell of a symbol block; every field is
     // written before a handle is made.
     unsafe {
         std::ptr::write(slot, cell);
+        (*slot).image = super::image_region_open();
         (*slot)
             .mark
             .set_raw(super::super::types::current_mark_epoch());
         SymbolRef(NonNull::new_unchecked(slot))
     }
+}
+
+/// The next symbol takes a new block (see `ImageRegion').
+pub(super) fn abandon_allocation_frontier() {
+    SYMBOL_FREE_LIST.store(std::ptr::null_mut(), Ordering::Relaxed);
+    SYMBOL_BUMP_NEXT.store(SYMBOL_BUMP_END.load(Ordering::Relaxed), Ordering::Relaxed);
 }
 
 fn bump_symbol() -> *mut SymbolCell {
@@ -318,7 +504,26 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
     let mut num_free = 0usize;
     let mut num_used = 0usize;
     let mut released = Vec::new();
-    for start in blocks_of(BlockKind::Symbol) {
+    // When no image symbol died, the image's blocks are left unread
+    // (checked builds read them and assert so).
+    let image_unchanged = super::IMAGE_SYMBOLS.unchanged();
+    let mut image_live = 0;
+    for (start, image_block) in sweep_blocks_of(BlockKind::Symbol) {
+        if image_block && image_unchanged {
+            if cfg!(debug_assertions) {
+                for index in 0..SYMBOLS_PER_BLOCK {
+                    let cell = (start + index * SYMBOL_CELL_SIZE) as *mut SymbolCell;
+                    // SAFETY: inside a registered symbol block.
+                    let mark = unsafe { (*cell).mark.raw() };
+                    assert!(
+                        mark == epoch || mark == FREE_MARK,
+                        "an unread image block holds a dead symbol at {:#x}",
+                        cell as usize
+                    );
+                }
+            }
+            continue;
+        }
         let lim = if bump_end == start + SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE {
             (bump_next - start) / SYMBOL_CELL_SIZE
         } else {
@@ -331,7 +536,9 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
             // SAFETY: inside a registered symbol block.
             let mark = unsafe { (*cell).mark.raw() };
             if mark == epoch {
-                num_used += 1;
+                num_used += usize::from(!image_block);
+                // SAFETY: an allocated cell.
+                image_live += usize::from(unsafe { (*cell).image });
                 continue;
             }
             if mark != FREE_MARK {
@@ -351,11 +558,18 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
                 }
             }
             this_free += 1;
+            if image_block {
+                continue;
+            }
             // SAFETY: a free cell's first word is the free-list link.
             unsafe { (*cell.cast::<FreeSymbol>()).next = free_list };
             free_list = cell;
         }
-        if this_free == SYMBOLS_PER_BLOCK && num_free > SYMBOLS_PER_BLOCK {
+        if image_block {
+            if this_free == SYMBOLS_PER_BLOCK {
+                released.push(start);
+            }
+        } else if this_free == SYMBOLS_PER_BLOCK && num_free > SYMBOLS_PER_BLOCK {
             free_list = chain_before;
             released.push(start);
         } else {
@@ -363,6 +577,9 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
         }
     }
     SYMBOL_FREE_LIST.store(free_list, Ordering::Relaxed);
+    if !image_unchanged {
+        super::IMAGE_SYMBOLS.set_live(image_live);
+    }
     for start in released {
         release_block(start, BlockKind::Symbol);
     }

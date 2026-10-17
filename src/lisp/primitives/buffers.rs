@@ -723,10 +723,7 @@ pub(crate) fn ensure_standard_abbrev_tables(interp: &mut Interpreter) {
         "global-abbrev-table",
         "text-mode-abbrev-table",
     ] {
-        if !items
-            .iter()
-            .any(|value| value.as_symbol().ok() == Some(symbol))
-        {
+        if !items.iter().any(|value| value.symbol_str() == Some(symbol)) {
             items.push(Value::Symbol(symbol.to_string().into()));
         }
     }
@@ -970,7 +967,7 @@ pub(crate) fn column_after(
     } else if ch == '\t' {
         let tab_width = interp
             .lookup_var("tab-width", env)
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or(8)
             .max(1) as usize;
         (current_col / tab_width + 1) * tab_width
@@ -1000,7 +997,7 @@ pub(crate) fn column_after(
                     Kind::CharTable(table) => interp.char_table_get(table, ch as u32),
                     _ => None,
                 })
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .unwrap_or(0);
             // buffer.h:sanitize_char_width caps invalid numeric widths.
             if (0..=1000).contains(&width) {
@@ -1063,12 +1060,10 @@ pub(crate) fn invisibility_spec_matches(spec: &Value, value: &Value) -> bool {
 }
 
 pub(crate) fn compare_buffer_substrings(
-    left: &str,
-    right: &str,
+    mut left_chars: impl Iterator<Item = char>,
+    mut right_chars: impl Iterator<Item = char>,
     mut canonicalize: impl FnMut(char) -> u32,
 ) -> i64 {
-    let mut left_chars = left.chars();
-    let mut right_chars = right.chars();
     let mut matched = 0i64;
 
     loop {

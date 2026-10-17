@@ -671,7 +671,7 @@ impl Loader<'_> {
                                 .map_err(|error| LoadError::Error(error.to_string()))
                         };
                         let minimum = integer(slots[1])? as i16;
-                        let maximum = if slots[2].as_symbol().ok() == Some("many") {
+                        let maximum = if slots[2].symbol_str() == Some("many") {
                             -2
                         } else {
                             integer(slots[2])? as i16
@@ -1040,7 +1040,7 @@ impl Loader<'_> {
         let name_text = name
             .as_string()
             .map_err(|_| LoadError::Error("symbol name is not a string".into()))?;
-        if interned == SYMBOL_UNINTERNED && flags & FLAG_UNINTERNED_FROM_OBARRAY == 0 {
+        if interned == SYMBOL_UNINTERNED {
             return Ok(SymbolName::make_uninterned(
                 name,
                 &name_text,

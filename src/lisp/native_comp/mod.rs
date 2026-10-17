@@ -23,10 +23,12 @@ mod runtime;
 mod state;
 
 pub(crate) use loader::{DumpedNativeFunction, RegistrationKind, UnitLibrary, open_unit};
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) use runtime::NestedCall;
 pub(crate) use runtime::with_thread_suspended;
 pub(crate) use runtime::{
-    decode_active_backtrace_arguments, garbage_collection_maybe_due, gc_tuning, maybe_gc,
-    note_lisp_allocation,
+    collection_cannot_be_due, decode_active_backtrace_arguments, garbage_collection_maybe_due,
+    gc_tuning, maybe_gc, note_lisp_allocation,
 };
 pub(crate) use runtime::{
     hash_table_compare_eql, hash_table_compare_equal, hash_table_compare_user, hash_table_hash_eq,
@@ -140,7 +142,22 @@ pub(crate) fn load(
     result
 }
 
+#[inline]
 pub(crate) fn call_function(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    function: crate::lisp::types::NativeFunctionRef,
+    arguments: &[Value],
+) -> Result<Value, LispError> {
+    if let Some(result) = loader::call_fixed_function(interpreter, environment, function, arguments)
+    {
+        return result;
+    }
+    call_function_general(interpreter, environment, function, arguments)
+}
+
+#[inline(never)]
+fn call_function_general(
     interpreter: &mut Interpreter,
     environment: &mut Env,
     function: crate::lisp::types::NativeFunctionRef,

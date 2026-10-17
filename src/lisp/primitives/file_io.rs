@@ -7,13 +7,18 @@ pub(crate) fn format_source_props(
     from: usize,
     to: usize,
 ) -> Option<Vec<(String, Value)>> {
-    let string = string_like(value)?;
-    let mut props = Vec::new();
-    for span in string.props {
+    // The format string's intervals, read in place: `format' asks once per
+    // conversion, and its text is never needed here.
+    let Kind::StringObject(state) = value.kind() else {
+        return None;
+    };
+    let state = state.borrow();
+    let mut props: Vec<(String, Value)> = Vec::new();
+    for span in state.props.iter() {
         if span.start < to && from < span.end {
-            for (name, value) in span.props {
-                if !props.iter().any(|(existing, _)| existing == &name) {
-                    props.push((name, value));
+            for (name, value) in &span.props {
+                if !props.iter().any(|(existing, _)| existing == name) {
+                    props.push((name.clone(), *value));
                 }
             }
         }
@@ -497,7 +502,7 @@ pub(crate) fn read_insert_file_bytes(
     validate_file_name(path)?;
     let input_error =
         |error: std::io::Error| LispError::SignalValue(file_input_error_value(&error, path));
-    let metadata = fs::metadata(path).map_err(&input_error)?;
+    let metadata = fs::metadata(path).map_err(input_error)?;
     if metadata.is_dir() {
         return Err(LispError::SignalValue(file_error_with_detail_value(
             "Read error",
@@ -506,7 +511,7 @@ pub(crate) fn read_insert_file_bytes(
         )));
     }
     if metadata.file_type().is_file() {
-        let mut bytes = fs::read(path).map_err(&input_error)?;
+        let mut bytes = fs::read(path).map_err(input_error)?;
         let start = start.unwrap_or(0).min(bytes.len());
         let end = end.unwrap_or(bytes.len()).clamp(start, bytes.len());
         bytes.truncate(end);
@@ -521,9 +526,9 @@ pub(crate) fn read_insert_file_bytes(
         )));
     }
     let limit = end.unwrap_or(8192);
-    let mut file = fs::File::open(path).map_err(&input_error)?;
+    let mut file = fs::File::open(path).map_err(input_error)?;
     let mut buffer = vec![0; limit];
-    let read = file.read(&mut buffer).map_err(&input_error)?;
+    let read = file.read(&mut buffer).map_err(input_error)?;
     buffer.truncate(read);
     Ok(buffer)
 }
@@ -690,7 +695,7 @@ fn choose_write_coding(
         }
     }
     if force_raw {
-        let raw = coding.as_symbol().ok().is_some_and(|name| {
+        let raw = coding.symbol_str().is_some_and(|name| {
             matches!(
                 interp.coding_system_kind_name(name).as_deref(),
                 Some("raw-text" | "no-conversion")
@@ -750,7 +755,7 @@ pub(crate) fn write_region_value_with_logical_path(
     validate_file_name(&path)?;
     let existed_before_write = fs::symlink_metadata(&path).is_ok();
     if normalized[6].is_truthy()
-        && normalized[6].as_symbol().ok() != Some("excl")
+        && normalized[6].symbol_str() != Some("excl")
         && existed_before_write
         && !call_named_function(
             interp,
@@ -852,14 +857,14 @@ fn write_region_with_coding(
         env,
     )?;
     let write_result = (|| {
-        let exclusive = args[6].as_symbol().ok() == Some("excl");
+        let exclusive = args[6].symbol_str() == Some("excl");
         if args[3].is_nil() && !exclusive {
             return fs::write(path, &bytes).map_err(|error| file_output_error(path, &error));
         }
         let offset = args
             .get(3)
             .filter(|value| value.is_truthy())
-            .and_then(|value| value.as_integer().ok());
+            .and_then(|value| value.integer_value());
         let append = args[3].is_truthy() && offset.is_none();
         let mut file = fs::OpenOptions::new()
             .create(true)
@@ -1813,7 +1818,7 @@ pub(crate) fn insert_file_contents(
     let recorded = interp
         .lookup_var("coding-system-for-read", env)
         .filter(|value| !value.is_nil())
-        .and_then(|value| value.as_symbol().ok().map(str::to_string))
+        .and_then(|value| value.symbol_str().map(str::to_string))
         .filter(|request| {
             let canonical = interp
                 .coding_system_canonical_name(request)
@@ -1885,7 +1890,7 @@ pub(crate) fn finish_insert_file_contents(
                     Kind::Symbol(symbol) => interp.lookup_function(&symbol, env)?,
                     function => function.value(),
                 };
-                let original_name = hook.as_symbol().ok();
+                let original_name = hook.symbol_str();
                 let result = interp.call_function_value(
                     function,
                     original_name,
@@ -2104,7 +2109,7 @@ pub(crate) fn ensure_no_supersession_threat(
         return Ok(());
     };
     if interp
-        .lookup_var_key(cached_symbol!("buffer-file-name"), env)
+        .symbol_value_key(cached_symbol!("buffer-file-name"))
         .is_some_and(|value| value.is_nil())
     {
         return Ok(());

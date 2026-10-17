@@ -341,7 +341,7 @@ fn extra_value(extra: &Value, key: &str) -> Option<Value> {
 }
 
 fn put_extra(extra: &mut Value, key: Value, value: Value) {
-    let key_name = key.as_symbol().ok().map(str::to_string);
+    let key_name = key.symbol_str().map(str::to_string);
     let mut entries = extra_entries(extra);
     if let Some((_, existing)) = entries.iter_mut().find(|(entry_key, _)| {
         key_name

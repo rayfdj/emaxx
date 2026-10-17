@@ -888,6 +888,82 @@ fn compiled_time_string_results_keep_text_property_mutation() {
 }
 
 #[test]
+fn compare_buffer_substrings_reads_both_ranges_in_place_like_editfns() {
+    // editfns.c compares the two ranges character by character in the
+    // buffers themselves. The ranges here cross the rope's chunks in a
+    // multibyte buffer and in an ASCII one, come reversed or whole, and
+    // fold case through the current buffer's `case-fold-search'. A range
+    // outside a buffer's accessible region signals `args-out-of-range'
+    // with the original bounds; Emaxx clamped it and compared what was
+    // left.
+    let program = r#"
+        (with-temp-buffer
+          (dotimes (i 400) (insert (format "line %03d é\n" i)))
+          (let ((other (generate-new-buffer " other")))
+            (unwind-protect
+                (progn
+                  (with-current-buffer other
+                    (dotimes (i 400) (insert (format "line %03d e\n" i))))
+                  (list (compare-buffer-substrings nil 1 2000 nil 1 2000)
+                        (compare-buffer-substrings nil 1 2000 other 1 2000)
+                        (compare-buffer-substrings nil 2000 1 other 1 2000)
+                        (compare-buffer-substrings nil 1500 3000 nil 1500 2999)
+                        (compare-buffer-substrings other 900 1300 other 13 413)
+                        (compare-buffer-substrings other 1 4401 other nil nil)
+                        (compare-buffer-substrings other 1000 4000 other 1012 4012)
+                        (progn (goto-char (point-max)) (insert "LINE")
+                               (let ((case-fold-search t))
+                                 (compare-buffer-substrings nil (- (point-max) 4) (point-max) nil 1 5)))
+                        (let ((case-fold-search nil))
+                          (compare-buffer-substrings nil (- (point-max) 4) (point-max) nil 1 5))
+                        (condition-case err (compare-buffer-substrings other 1 4402 nil 1 5)
+                          (error err))
+                        (condition-case err (compare-buffer-substrings nil 1 5 nil 0 5)
+                          (error err))
+                        (save-restriction
+                          (narrow-to-region 10 20)
+                          (list (compare-buffer-substrings nil nil nil nil 10 20)
+                                (condition-case err (compare-buffer-substrings nil 9 20 nil 10 20)
+                                  (error err))
+                                (condition-case err (compare-buffer-substrings nil 10 20 nil 21 10)
+                                  (error err))))))
+              (kill-buffer other))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(0 10 10 1500 -1 0 1 0 -1 (args-out-of-range 1 4402) (args-out-of-range 0 5) (0 (args-out-of-range 9 20) (args-out-of-range 21 10)))",
+        "compare-buffer-substrings ranges",
+    );
+}
+
+#[test]
+fn compare_buffer_substrings_compares_short_ascii_ranges_like_editfns() {
+    // Short ranges of ASCII buffers lie in one rope chunk and are compared
+    // as bytes: equal, differing, prefix either way, empty and reversed
+    // ranges, another buffer, and case kept with case-fold-search nil.
+    let program = r#"(with-temp-buffer
+  (insert "abcdef abcxyz abc ab ABC")
+  (let ((case-fold-search nil) (other (generate-new-buffer " cmp")))
+    (unwind-protect
+        (progn
+          (with-current-buffer other (insert "abd"))
+          (list (compare-buffer-substrings nil 1 4 nil 8 11)
+                (compare-buffer-substrings nil 1 7 nil 8 14)
+                (compare-buffer-substrings nil 8 14 nil 1 7)
+                (compare-buffer-substrings nil 1 4 nil 19 21)
+                (compare-buffer-substrings nil 19 21 nil 1 4)
+                (compare-buffer-substrings nil 3 3 nil 5 5)
+                (compare-buffer-substrings nil 4 1 nil 11 8)
+                (compare-buffer-substrings nil 1 4 other nil nil)
+                (compare-buffer-substrings nil 22 25 nil 1 4)))
+      (kill-buffer other))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(0 -4 4 3 -3 0 0 -3 -1)",
+        "compare-buffer-substrings of short ASCII ranges",
+    );
+}
+
+#[test]
 fn compare_buffer_substrings_accepts_current_buffer_and_bounds_as_nil() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
@@ -1644,6 +1720,115 @@ fn sort_calls_the_numeric_lambda_with_its_arguments_bound() {
         "(let ((seen nil)) (list (sort (list 3 1 2) (lambda (left right) (setq seen (+ left right)) (< left right))) (numberp seen)))",
         "((1 2 3) t)",
         "numeric sort comparator argument binding",
+    );
+}
+
+#[test]
+fn sort_sorts_in_place_only_when_asked_or_called_with_two_arguments() {
+    // fns.c:Fsort: (sort SEQ PREDICATE) sorts in place; the keyword form
+    // sorts a copy unless :in-place is non-nil.  Two arguments are always
+    // the old call, so a lone keyword is the predicate; another even count
+    // or an unknown keyword is an error (signal_error splices a list).
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((v (vector 3 1 2)) (l (list 3 1 2)) (w (vector 2 1)) (m (list 2 1)))
+             (list (sort v :lessp #'<) v (sort l :lessp #'<) l (sort w #'<) w
+                   (sort m :in-place t) m (sort (list 5 4) :reverse t)
+                   (condition-case err (sort l :lessp) (error err))
+                   (condition-case err (sort l :foo 1) (error err))
+                   (condition-case err (sort l (list 'a 'b) 1) (error err))
+                   (condition-case err (sort 5 :lessp #'<) (error err))))"#,
+        "([1 2 3] [3 1 2] (1 2 3) (3 1 2) [1 2] [1 2] (1 2) (1 2) (5 4) \
+         (void-function :lessp) (error \"Invalid keyword argument\" :foo) \
+         (error \"Invalid keyword argument\" a b) (wrong-type-argument list-or-vector-p 5))",
+        "sort argument forms",
+    );
+}
+
+#[test]
+fn sort_calls_the_predicate_in_timsorts_order() {
+    // sort.c's Timsort: every comparison of a short sort in order, then
+    // the count and a positional checksum of the comparisons and of the
+    // result for a long scrambled list with equal keys (runs, binary
+    // insertion and merges), a reversed sort, a vector, and runs that
+    // interleave in blocks (galloping).  A predicate sees these exact
+    // calls, so its side effects and its answers for an inconsistent
+    // order follow GNU's.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((state 7)
+                  (rand (lambda (m)
+                          (setq state (% (+ (* state 1103515245) 12345) 2147483648))
+                          (% (/ state 65536) m)))
+                  (keyed (lambda (n m)
+                           (let ((i -1) l)
+                             (dotimes (_ n) (push (cons (funcall rand m) (setq i (1+ i))) l))
+                             l)))
+                  (log nil)
+                  (pred (lambda (a b) (push (list (cdr a) (cdr b)) log) (< (car a) (car b))))
+                  (sum (lambda (items)
+                         (let ((sum 0))
+                           (dolist (item items sum)
+                             (setq sum (% (+ (* sum 31)
+                                             (if (consp item)
+                                                 (+ (* 1009 (car item)) (cadr item))
+                                               item))
+                                          1000000007))))))
+                  (traced (lambda (sorted)
+                            (prog1 (list (length log) (funcall sum (nreverse log))
+                                         (funcall sum (mapcar #'cdr sorted)))
+                              (setq log nil)))))
+             (list
+              (progn (sort (funcall keyed 12 4) pred) (prog1 (nreverse log) (setq log nil)))
+              (funcall traced (sort (funcall keyed 300 10) pred))
+              (funcall traced (sort (funcall keyed 100 3) :lessp pred :reverse t))
+              (funcall traced (append (sort (vconcat (funcall keyed 150 1000)) :lessp pred) nil))
+              (funcall traced
+                       (sort (mapcar (lambda (k) (cons k k))
+                                     (append (number-sequence 0 200 2)
+                                             (number-sequence 1 201 2)
+                                             (number-sequence 300 250 -1)))
+                             pred))))"#,
+        "(((10 11) (9 10) (9 11) (9 10) (8 9) (8 11) (7 8) (7 11) (6 8) (6 11) (6 7) (5 7) \
+         (5 9) (5 8) (4 5) (4 6) (4 11) (3 7) (3 11) (3 6) (2 7) (2 8) (2 9) (2 10) (1 7) \
+         (1 11) (1 3) (0 7) (0 9) (0 10) (0 2)) (1873 894399106 682825943) \
+         (488 235025414 924669266) (892 327427164 362282841) (476 832379101 213032295))",
+        "Timsort comparison schedule",
+    );
+}
+
+#[test]
+fn a_signal_from_the_predicate_leaves_a_vector_as_timsort_left_it() {
+    // sort.c works in a vector's own slots.  A signal while a merge's
+    // temporary run sits in the C stack array abandons the run, leaving
+    // stale copies (994 distinct values of 1,000 here); once a merge has
+    // outgrown that array, the cleanup puts the run back.  A list is sorted
+    // in a copy (fns.c:sort_list) and keeps its order.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((orig (mapcar (lambda (i) (% (* i 37) 1001)) (number-sequence 1 1000)))
+                  (sum (lambda (items)
+                         (let ((s 0))
+                           (dolist (x items s) (setq s (% (+ (* s 31) x) 1000000007))))))
+                  (run (lambda (stop)
+                         (let ((v (vconcat orig)) (l (copy-sequence orig)) (n 0))
+                           (list (condition-case nil
+                                     (progn (sort v (lambda (a b)
+                                                      (when (= (setq n (1+ n)) stop)
+                                                        (error "Stop"))
+                                                      (< a b)))
+                                            'done)
+                                   (error n))
+                                 (funcall sum (append v nil))
+                                 (length (delete-dups (append v nil)))
+                                 (progn (setq n 0)
+                                        (condition-case nil
+                                            (sort l (lambda (a b)
+                                                      (when (= (setq n (1+ n)) stop)
+                                                        (error "Stop"))
+                                                      (< a b)))
+                                          (error nil))
+                                        (equal l orig)))))))
+             (mapcar run '(50 1500 9000)))"#,
+        "((50 329895207 1000 t) (1500 402671903 994 t) (done 436778830 1000 nil))",
+        "vector after a sort predicate's signal",
     );
 }
 
@@ -3046,6 +3231,194 @@ fn message_log_disables_undo_in_the_messages_buffer() {
 }
 
 #[test]
+fn a_buffer_local_eval_depth_applies_only_in_its_buffer() {
+    // The evaluator's cell for `max-lisp-eval-depth' holds the current
+    // buffer's value: a local limit applies in its buffer, the global one
+    // in another buffer, and again after `kill-all-local-variables' or
+    // after killing the current buffer that held the local binding. A
+    // buffer switch refreshes the cells only when one of the two buffers
+    // has such a local binding, so the paths that drop the current
+    // buffer's locals refresh them themselves.
+    let program = r#"
+        (progn
+          (defalias 'forwarded-cell-deep
+            (lambda (n) (if (> n 0) (1+ (forwarded-cell-deep (1- n))) 0)))
+          (let ((probe (lambda ()
+                         (condition-case nil (forwarded-cell-deep 150)
+                           (excessive-lisp-nesting 'too-deep)))))
+            (with-temp-buffer
+              (setq-local max-lisp-eval-depth 200)
+              (list (funcall probe)
+                    (with-temp-buffer (funcall probe))
+                    (funcall probe)
+                    (progn (kill-all-local-variables) (funcall probe))
+                    (progn (setq-local max-lisp-eval-depth 200)
+                           (let ((buffer (current-buffer)))
+                             (with-temp-buffer
+                               (let ((inner (current-buffer)))
+                                 (set-buffer buffer)
+                                 (kill-buffer buffer)
+                                 (list (eq (current-buffer) inner) (funcall probe))))))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(too-deep 150 too-deep 150 (nil 150))",
+        "buffer-local eval depth",
+    );
+}
+
+#[test]
+fn mapping_reads_each_element_when_its_call_comes_like_mapcar1() {
+    // fns.c's mapcar, mapc and mapcan take Flength first (its errors,
+    // then listp for a char-table), and mapcar1 reads each element only
+    // when FUNCTION is called on it: a car, an AREF, a string character
+    // at its byte cursor, a bool-vector bit. A function that changes the
+    // sequence sees its changes, and a list it shortens ends the mapping.
+    // A closure maps over its slots. Emaxx copied the sequence first and
+    // signalled vectorp for a char-table.
+    let program = r#"
+        (list
+         (let ((l (list 1 2 3))) (mapcar (lambda (x) (setcar (cddr l) 30) x) l))
+         (let ((l (list 1 2 3 4))) (mapcar (lambda (x) (setcdr (cdr l) nil) x) l))
+         (let ((v (vector 1 2 3))) (mapcar (lambda (x) (aset v 2 30) x) v))
+         (let ((l (list 1 2 3 4)) seen)
+           (list (eq (mapc (lambda (x) (push x seen) (setcdr (cdr l) nil)) l) l)
+                 (nreverse seen)))
+         (let ((l (list 1 2 3))) (mapcan (lambda (x) (setcar (cddr l) 30) (list x)) l))
+         (let ((s (copy-sequence "abc"))) (mapcar (lambda (c) (aset s 2 122) c) s))
+         (let ((s (copy-sequence "abc"))) (mapcar (lambda (c) (aset s 2 8364) c) s))
+         (let ((m (mapcar #'identity (make-byte-code 0 "\300\207" [7] 1))))
+           (list (length m) (nth 0 m) (nth 2 m) (nth 3 m)))
+         (mapcar #'identity (string-to-unibyte "\300a"))
+         (mapcar #'identity (string 97 233 8364))
+         (mapcar #'identity (bool-vector t nil t))
+         (mapconcat #'number-to-string [1 2 3] ",")
+         (mapcar nil nil)
+         (condition-case e (mapcar nil (list 1)) (error e))
+         (condition-case e (mapc #'identity (make-char-table nil)) (error (list (car e) (cadr e))))
+         (condition-case e (mapcan #'list '(1 2 . 3)) (error e))
+         (condition-case e (mapcar #'identity (let ((l (list 1 2))) (nconc l l))) (error (car e)))
+         (condition-case e (mapcar #'identity 5) (error e))
+         (mapcar #'identity '(vector-literal 1 2)))"#;
+    // The last: a result list headed by the symbol `vector-literal' is a
+    // list (Emaxx's internal vector form once made it a vector).
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"((1 2 30) (1 2) (1 2 30) (t (1 2)) (1 2 30) (97 98 122) (97 98 8364) (4 0 [7] 1) (192 97) (97 233 8364) (t nil t) "1,2,3" nil (void-function nil) (wrong-type-argument listp) (wrong-type-argument listp 3) circular-list (wrong-type-argument sequencep 5) (vector-literal 1 2))"#,
+        "mapping functions",
+    );
+}
+
+#[test]
+fn message_log_folds_repeated_lines_like_message_dolog() {
+    // xdisp.c message_dolog: a line equal to the previous one replaces it
+    // with " [N times]" (counting on from an existing count), a line that
+    // matched the previous one through "..." replaces it, and the log keeps
+    // the last `message-log-max' lines when that is a natural number.
+    // `(message "")' does not log, but a format giving "" logs an empty
+    // line. Only a newline ends a line. Point and the restriction move as
+    // markers do, and point at the end stays there. Emaxx logged every repetition, so a repeated message
+    // filled the log and every later message trimmed its first line.
+    let program = r#"
+        (let ((log (lambda (thunk)
+                     (with-current-buffer "*Messages*"
+                       (let ((inhibit-read-only t)) (widen) (erase-buffer)))
+                     (funcall thunk)
+                     (with-current-buffer "*Messages*"
+                       (save-restriction (widen) (buffer-string)))))
+              (positions nil))
+          (list
+           (funcall log (lambda () (message "x") (message "x") (message "y")
+                          (message "x") (message "x") (message "x")))
+           (funcall log (lambda () (message "Loading foo...") (message "Loading foo...done")
+                          (message "Loading bar...") (message "Loading baz...done")
+                          (message "abc...") (message "abd")))
+           (funcall log (lambda () (message "") (message nil) (message "%s" "")
+                          (message "%s" "") (message "%s" "")))
+           (funcall log (lambda () (message "z\nx") (message "x") (message "x\n") (message "x\n")))
+           (funcall log (lambda () (message "c [5 times]") (message "c")
+                          (message "d [ 7 times]") (message "d")
+                          (message "e [-2 times]") (message "e")
+                          (message "f [0 times]") (message "f")
+                          (message "g [3 times]x") (message "g")
+                          (message "h [9223372036854775807 times]") (message "h")
+                          (message "i [+4 times]") (message "i")
+                          (message "j[4 times]") (message "j")))
+           (funcall log (lambda () (let ((message-log-max 3))
+                                     (message "a") (message "b") (message "c") (message "c")
+                                     (message "d"))))
+           (replace-regexp-in-string
+            "\r" "<CR>"
+            (funcall log (lambda () (let ((message-log-max 2))
+                                      (message "a") (message "p\rq") (message "p\rq")
+                                      (message "b\rc")))))
+           (funcall log (lambda () (let ((message-log-max 0)) (message "a") (message "b"))))
+           (funcall log (lambda () (let ((message-log-max nil)) (message "a") (message "b"))))
+           (funcall log (lambda () (let ((message-log-max 1.5))
+                                     (message "a") (message "b") (message "c"))))
+           (funcall log (lambda ()
+                          (message "one") (message "two") (message "three")
+                          (with-current-buffer "*Messages*" (goto-char 2) (narrow-to-region 2 7))
+                          (message "four")
+                          (with-current-buffer "*Messages*"
+                            (push (list (point) (point-min) (point-max)) positions))
+                          (let ((message-log-max 2)) (message "five"))
+                          (with-current-buffer "*Messages*"
+                            (push (list (point) (point-min) (point-max)) positions)
+                            (widen) (goto-char (point-max)))
+                          (message "five")
+                          (with-current-buffer "*Messages*"
+                            (push (list (point) (point-max)) positions)
+                            (goto-char (1- (point-max))))
+                          (message "five")
+                          (with-current-buffer "*Messages*"
+                            (push (list (point) (point-max)) positions))))
+           (nreverse positions)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"("x [2 times]
+y
+x [3 times]
+" "Loading foo...done
+Loading bar...
+Loading baz...done
+abc...
+abd
+" " [3 times]
+" "z
+x [2 times]
+x
+
+x
+
+" "c [6 times]
+d [8 times]
+e [-2 times]
+e
+f [0 times]
+f
+g [3 times]x
+g
+h [9223372036854775807 times]
+h
+i [5 times]
+j[4 times]
+j
+" "b
+c [2 times]
+d
+" "p<CR>q [2 times]
+b<CR>c
+" "" "" "a
+b
+c
+" "four
+five [3 times]
+" ((2 2 7) (1 1 1) (21 21) (6 21)))"#,
+        "message log duplicate folding",
+    );
+}
+
+#[test]
 fn copy_keymap_copies_a_list_keymap_like_keymap_c() {
     // keymap.c copy_keymap_1/copy_keymap_item: a fresh spine, copied
     // char-tables, vectors and nested keymaps, fresh `(EVENT . DEFN)'
@@ -4156,41 +4529,95 @@ fn compiled_regexp_introspection_preserves_the_real_backend_boundary() {
 
 #[test]
 fn memory_use_counts_exposes_the_allocation_telemetry_boundary_honestly() {
-    let contract_program = r#"
-        (let ((counts (memory-use-counts)))
-          (list
-           (subr-arity (symbol-function 'memory-use-counts))
-           (length counts)
-           (mapcar #'integerp counts)))"#;
-    let contract_expected = "((0 . 0) 7 (t t t t t t t))";
-    assert_upstream_primitive_contract(&format!("(prin1 {contract_program})"), contract_expected);
+    // alloc.c:Fmemory_use_counts: no arguments, seven natural numbers.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((counts (memory-use-counts)))
+            (list
+             (subr-arity (symbol-function 'memory-use-counts))
+             (length counts)
+             (mapcar #'natnump counts)))"#,
+        "((0 . 0) 7 (t t t t t t t))",
+        "memory-use-counts contract",
+    );
+}
 
-    let mut interp = Interpreter::new();
-    let mut env = crate::lisp::types::Env::new();
-    let form = Reader::new(
-        r#"
-        (list
-         (subr-arity (symbol-function 'memory-use-counts))
-         (condition-case error-data
-             (memory-use-counts)
-           (error error-data)))"#,
-    )
-    .read()
-    .expect("allocation-counter boundary program should parse")
-    .expect("allocation-counter boundary program should contain a form");
-    let actual = interp
-        .eval(&form, &mut env)
-        .expect("allocation-counter boundary should be catchable");
-    let expected = Reader::new(
-        "((0 . 0) \
-         (error \"GNU allocation counters are unavailable in the Rust ownership backend\"))",
-    )
-    .read()
-    .expect("allocation-counter boundary expectation should parse")
-    .expect("allocation-counter boundary expectation should contain a form");
-    assert!(
-        values_equal(&interp, &actual, &expected),
-        "allocation-counter boundary was not explicit:\nactual: {actual:?}\nexpected: {expected:?}"
+#[test]
+fn memory_use_counts_counts_actual_allocations_by_category() {
+    // Each delta is taken against the same measurement around an
+    // allocation-free (or empty) form, so the measurement's own consing
+    // cancels. The values are alloc.c's increments: one per cons, float,
+    // symbol and string, the words asked for by allocate_vectorlike, and the
+    // string's bytes (two per `é' in a multibyte string). Bool vectors are
+    // not compared: Emaxx keeps their bits as one host-side value per bit
+    // outside the Lisp heap (an open representation difference), so only
+    // their record object is counted, where GNU counts the packed words.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((delta (lambda (index thunk)
+                         (let ((before (nth index (memory-use-counts))))
+                           (funcall thunk)
+                           (- (nth index (memory-use-counts)) before)))))
+            (list
+             (- (funcall delta 0 (lambda () (make-list 100 nil)))
+                (funcall delta 0 (lambda () (make-list 0 nil))))
+             (- (funcall delta 1 (lambda () (float 3)))
+                (funcall delta 1 (lambda () (float 3.0))))
+             (- (funcall delta 2 (lambda () (make-vector 10 nil)))
+                (funcall delta 2 (lambda () (make-vector 0 nil))))
+             (- (funcall delta 3 (lambda () (make-symbol "x")))
+                (funcall delta 3 (lambda () "x")))
+             (- (funcall delta 4 (lambda () (make-string 5 ?a)))
+                (funcall delta 4 (lambda () (make-string 0 ?a))))
+             (- (funcall delta 4 (lambda () (make-string 3 ?é)))
+                (funcall delta 4 (lambda () (make-string 0 ?é))))
+             (- (funcall delta 6 (lambda () (make-string 5 ?a)))
+                (funcall delta 6 (lambda () (make-string 0 ?a))))))"#,
+        "(100 1 10 1 5 6 1)",
+        "allocation counter deltas",
+    );
+}
+
+#[test]
+fn float_returns_a_float_argument_itself() {
+    // floatfns.c:Ffloat returns a float argument unchanged (no new object);
+    // an integer argument makes a new float.
+    assert_oracle_contract_matches_interpreter(
+        "(let ((f 1.5)) (list (eq f (float f)) (eq 2.0 (float 2)) (float 2)))",
+        "(t nil 2.0)",
+        "float identity",
+    );
+}
+
+#[test]
+fn allocation_counter_variables_forward_to_the_counters() {
+    // lread.c:defvar_int: reads and stores reach the C counter, so a store
+    // restarts the count, `let' restores the outer word on exit (dropping
+    // what was counted inside), stores are integer-checked, collection never
+    // lowers a counter, and `makunbound' makes the symbol plain while the
+    // counter itself keeps counting for `memory-use-counts'.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list
+            (progn (setq vector-cells-consed 7) (make-vector 3 nil) vector-cells-consed)
+            (= vector-cells-consed (nth 2 (memory-use-counts)))
+            (progn (setq vector-cells-consed 100)
+                   (let ((vector-cells-consed 0)) (make-vector 5 nil))
+                   vector-cells-consed)
+            (condition-case err (setq vector-cells-consed 'x) (error err))
+            (condition-case err (setq vector-cells-consed 1.5) (error err))
+            (let* ((before (memory-use-counts))
+                   (after (progn (garbage-collect) (memory-use-counts)))
+                   (ok t))
+              (while before
+                (unless (<= (car before) (car after)) (setq ok nil))
+                (setq before (cdr before) after (cdr after)))
+              ok)
+            (progn (makunbound 'symbols-consed)
+                   (list (boundp 'symbols-consed)
+                         (progn (setq symbols-consed 'plain) symbols-consed)
+                         (let ((before (nth 3 (memory-use-counts))))
+                           (make-symbol "y")
+                           (> (nth 3 (memory-use-counts)) before)))))"#,
+        "(10 t 100 (wrong-type-argument integerp x) (wrong-type-argument integerp 1.5) t (nil plain t))",
+        "allocation counter forwarding",
     );
 }
 
@@ -15091,36 +15518,51 @@ fn garbage_collect_reports_the_live_census() {
         .expect("evaluate garbage-collect shape program");
     assert_eq!(result.to_string(), expected);
 
-    // The census itself: a booted image holds its preloaded Lisp, so the
-    // discriminating counts cannot be anywhere near the old zeros.
-    let counts_form = Reader::new(
-        r#"(mapcar (lambda (entry) (cons (car entry) (nth 2 entry)))
-                   (garbage-collect))"#,
-    )
-    .read_all()
-    .expect("read garbage-collect counts program")
-    .remove(0);
-    let counts = interp
-        .eval(&counts_form, &mut crate::lisp::types::Env::new())
-        .expect("evaluate garbage-collect counts program")
-        .to_string();
-    let count_of = |key: &str| -> i64 {
-        let marker = format!("({key} . ");
-        let start = counts.find(&marker).map(|at| at + marker.len());
-        start
-            .and_then(|at| counts[at..].split(')').next())
-            .and_then(|digits| digits.parse().ok())
-            .unwrap_or_else(|| panic!("no {key} count in {counts}"))
-    };
-    assert!(count_of("conses") > 10_000, "conses: {counts}");
-    assert!(count_of("symbols") > 1_000, "symbols: {counts}");
-    assert!(count_of("strings") > 100, "strings: {counts}");
-    assert!(count_of("string-bytes") > 10_000, "string-bytes: {counts}");
-    assert!(count_of("buffers") >= 1, "buffers: {counts}");
+    // The census itself counts the heap's own live objects: GNU never counts
+    // dumped objects (a bare session reports about 3,000 conses), and image
+    // objects stay out here likewise, so absolute floors cannot tell a real
+    // census from a fabricated one. Holding new live objects must raise each
+    // row by at least their number, in GNU and here; every live buffer
+    // counts, as alloc.c:sweep_buffers counts dumped buffers too.
+    let growth_program = r#"(let* ((count (lambda (census key) (nth 2 (assq key census))))
+                  (before (garbage-collect))
+                  (conses (make-list 20000 nil))
+                  (text (make-string 50000 ?x))
+                  (strings (mapcar #'number-to-string (number-sequence 1 500)))
+                  (symbols (mapcar (lambda (n) (make-symbol (number-to-string n)))
+                                   (number-sequence 1 2000)))
+                  (buffer (get-buffer-create " *census-probe*"))
+                  (after (garbage-collect))
+                  (grew (lambda (key at-least)
+                          (>= (- (funcall count after key) (funcall count before key))
+                              at-least))))
+             (prog1 (list (funcall grew 'conses 20000)
+                          (funcall grew 'string-bytes 50000)
+                          (funcall grew 'strings 500)
+                          (funcall grew 'symbols 2000)
+                          (funcall grew 'buffers 1)
+                          (> (funcall count after 'buffers) 1)
+                          (length conses) (length text) (length strings) (length symbols))
+               (kill-buffer buffer)))"#;
+    let growth_expected = "(t t t t t t 20000 50000 500 2000)";
+    assert_upstream_primitive_contract(&format!("(prin1 {growth_program})"), growth_expected);
+    // This test's interpreter: a second batch interpreter cannot load the
+    // preloaded native units while this one holds them.
+    let growth_form = Reader::new(growth_program)
+        .read_all()
+        .expect("read garbage-collect growth program")
+        .remove(0);
+    let growth = interp
+        .eval(&growth_form, &mut crate::lisp::types::Env::new())
+        .expect("evaluate garbage-collect growth program");
+    assert_eq!(growth.to_string(), growth_expected);
 
-    // alloc.c:Fgarbage_collect reports GNU C layout constants.  This catches
-    // accidental leakage of Rust host representation sizes into the public
-    // rows (notably symbol, string, vector-slot, interval, and buffer sizes).
+    // alloc.c:Fgarbage_collect reports each kind's object size. Conses,
+    // vectors, vector slots and floats are GNU's C layouts and this
+    // allocator's. Symbol and string headers report the actual 64- and
+    // 48-byte cells the collector charges (GNU's are 48 and 32): an explicit
+    // difference, not a matching answer. Interval and buffer rows still carry
+    // GNU's constants. Any other size change must fail here.
     let sizes_form = Reader::new(
         r#"(mapcar (lambda (entry) (list (car entry) (nth 1 entry)))
                    (garbage-collect))"#,
@@ -15134,7 +15576,7 @@ fn garbage_collect_reports_the_live_census() {
         .to_string();
     assert_eq!(
         sizes,
-        "((conses 16) (symbols 48) (strings 32) (string-bytes 1) \
+        "((conses 16) (symbols 64) (strings 48) (string-bytes 1) \
 (vectors 16) (vector-slots 8) (floats 8) (intervals 56) (buffers 992))"
     );
 
@@ -27332,6 +27774,433 @@ fn bytecode_live_fetch_preserves_changed_widths_operands_and_suspended_callers()
 }
 
 #[test]
+fn verified_bytecode_follows_changed_shared_and_collected_code_like_gnu() {
+    // The VM runs verified code without per-op checks; each case changes
+    // what the verifier saw. Bytes changed between calls; bytes changed
+    // during a call and the function run (and verified) again before the
+    // suspended caller resumes on the changed bytes; one code string run
+    // by functions of two shapes; code strings collected and reused.
+    let program = r#"(let* ((results nil)
+       (code (unibyte-string 192 135))
+       (f (make-byte-code 0 code [10 20] 1)))
+  (push (funcall f) results)
+  (aset code 0 193)
+  (push (funcall f) results)
+  (let* ((outer-code (unibyte-string 192 32 136 193 135))
+         (depth 0)
+         (constants (vector nil 30 40))
+         (outer (make-byte-code 0 outer-code constants 1)))
+    (aset constants 0
+          (lambda ()
+            (when (= depth 0)
+              (setq depth 1)
+              (aset outer-code 3 194)
+              (push (funcall outer) results))))
+    (push (funcall outer) results))
+  (let* ((shared (unibyte-string 192 135))
+         (small (make-byte-code 0 shared [50] 1))
+         (large (make-byte-code 0 shared [60 70] 2)))
+    (push (list (funcall small) (funcall large) (funcall small)) results))
+  (let ((sum 0))
+    (dotimes (round 2)
+      (dotimes (i 40)
+        (setq sum (+ sum (funcall (make-byte-code
+                                   0 (unibyte-string 192 135)
+                                   (vector (* (1+ round) i)) 1)))))
+      (garbage-collect))
+    (push sum results))
+  (nreverse results))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(10 20 40 40 (50 60 50) 2340)",
+        "verified bytecode invalidation",
+    );
+}
+
+#[test]
+fn bytecode_calls_native_functions_through_the_live_cell_like_funcall_subr() {
+    // Bcall calls a native-compiled callee directly (funcall_general's
+    // funcall_subr) instead of through the general funcall dispatch: the
+    // live function cell is read at each call, an arity error carries the
+    // same data, and an alias or a non-native definition takes funcall.
+    let program = r#"(progn
+   (require 'bytecomp)
+   (let* ((byte-compile-warnings nil)
+          (call (byte-compile (lambda (x) (assq-delete-all x (list (cons 1 2) (cons 3 4))))))
+          (short (byte-compile (lambda () (assq-delete-all 1))))
+          (name (byte-compile (lambda () (zz-native-callee 5)))))
+     (list (native-comp-function-p (symbol-function 'assq-delete-all))
+           (native-comp-function-p (symbol-function 'ensure-list))
+           (funcall call 1)
+           (condition-case e (funcall short) (error (list (car e) (cddr e))))
+           (progn (fset 'zz-native-callee (symbol-function 'ensure-list))
+                  (funcall name))
+           (progn (fset 'zz-native-callee (lambda (n) (* n 2)))
+                  (funcall name))
+           (progn (fset 'zz-native-callee 'zz-native-alias)
+                  (fset 'zz-native-alias (symbol-function 'ensure-list))
+                  (funcall name)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t t ((3 . 4)) (wrong-number-of-arguments (1)) (5) 10 (5))",
+        "bytecode calls into native functions",
+    );
+}
+
+#[test]
+fn bytecode_calls_native_functions_nested_in_native_calls_like_funcall_subr() {
+    // A byte-code function that native code calls (assoc-delete-all's
+    // TEST) runs inside that native call, and its own calls of native
+    // functions take the nested call's path: their values, a signal
+    // caught by the caller's condition-case and a throw out of a native
+    // callee to the caller's catch stay GNU's.
+    // The results go to a special variable: byte-compile gives a
+    // compiled closure its own copy of a captured lexical one.
+    let program = r#"(progn
+   (require 'bytecomp)
+   (defvar zz-nested-native-results nil)
+   (setq zz-nested-native-results nil)
+   (let* ((byte-compile-warnings nil)
+          (inner (byte-compile (lambda (_a _b) (throw 'done 'thrown))))
+          (outer (byte-compile
+                  (lambda (a b)
+                    (push (list (ensure-list a)
+                                (condition-case e (assq-delete-all a b)
+                                  (error (list 'caught e)))
+                                (catch 'done (assoc-delete-all a (list (cons a 1)) inner))
+                                (assq-delete-all a (list (cons a 1) (cons b 2))))
+                          zz-nested-native-results)
+                    nil))))
+     (list (native-comp-function-p (symbol-function 'assoc-delete-all))
+           (native-comp-function-p (symbol-function 'assq-delete-all))
+           (assoc-delete-all 7 (list (cons 7 1) (cons 8 2)) outer)
+           (nreverse zz-nested-native-results))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t t ((7 . 1) (8 . 2)) (((7) (caught (wrong-type-argument listp 7)) thrown nil) ((8) (caught (wrong-type-argument listp 7)) thrown ((7 . 2)))))",
+        "bytecode calls into native functions nested in native calls",
+    );
+}
+
+#[test]
+fn funcall_reaches_subrs_and_counts_lists_like_funcall_subr_and_list_length() {
+    // Ffuncall calls a symbol's subr directly (funcall_general's first
+    // test), mapcar gathers into an array of the list's length, and
+    // `length' counts tails in place: the values and errors stay GNU's.
+    let program = r#"(list (length '(1 2 3))
+      (condition-case e (length '(1 2 . 3)) (error e))
+      (condition-case e (let ((l (list 1 2 3))) (setcdr (cddr l) l) (length l)) (error (car e)))
+      (mapcar #'1+ '(1 2 3))
+      (condition-case e (mapcar #'1+ '(1 . 2)) (error e))
+      (mapcar #'car-safe '((1) 2 (3)))
+      (condition-case e (mapcar #'1+ '(1 a)) (error e))
+      (condition-case e (funcall #'car) (error e))
+      (funcall #'+ 1 2 3))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(3 (wrong-type-argument listp 3) circular-list (2 3 4) (wrong-type-argument listp 2) (1 nil 3) (wrong-type-argument number-or-marker-p a) (wrong-number-of-arguments #<subr car> 0) 6)",
+        "funcall into subrs and list lengths",
+    );
+}
+
+#[test]
+fn fixnum_arithmetic_fast_paths_keep_gnus_overflow_floats_markers_and_errors() {
+    // The arithmetic and comparison subrs answer two fixnums (or one, for
+    // 1+ and 1-) before their general paths, as data.c's FIXNUMP fast
+    // paths do: overflow still becomes a bignum, and floats, markers and
+    // non-numbers take the general path with GNU's results and errors.
+    let program = r#"(list (+ most-positive-fixnum 1) (- most-negative-fixnum 1) (* most-positive-fixnum 2)
+             (* 3 4) (- 7 9) (+ 1 2) (1+ most-positive-fixnum) (1- most-negative-fixnum) (1+ 5) (1- 5)
+             (< 1 2) (> 1 2) (<= 2 2) (>= 1 2) (= 3 3) (= 3 4) (+ 1 2.0) (< 1 2.5) (1+ 1.5)
+             (condition-case e (< 1 'a) (error e)) (condition-case e (+ 'b 1) (error e))
+             (condition-case e (1+ 'c) (error e))
+             (with-temp-buffer (insert "abc") (list (+ (point-marker) 1) (< (point-min-marker) 2) (1+ (point-marker))))
+             (* most-negative-fixnum -1) (- most-negative-fixnum) (* -1 most-negative-fixnum))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(2305843009213693952 -2305843009213693953 4611686018427387902 12 -2 3 2305843009213693952 -2305843009213693953 6 4 t nil t nil t nil 3.0 t 2.5 (wrong-type-argument number-or-marker-p a) (wrong-type-argument number-or-marker-p b) (wrong-type-argument number-or-marker-p c) (5 t 5) 2305843009213693952 2305843009213693952 2305843009213693952)",
+        "fixnum arithmetic fast paths",
+    );
+}
+
+#[test]
+fn interpreted_lambda_calls_keep_gnus_backtrace_frames_and_arity_errors() {
+    // A form calling an interpreted function enters funcall_lambda straight
+    // from eval_sub, as GNU does: the caller and callee frames, their
+    // evaluated arguments and the arity and argument-type errors stay GNU's.
+    let program = r#"(progn
+   (defun zz-bt-callee (a b)
+     (list (backtrace-frame 0 'zz-bt-callee)
+           (backtrace-frame 1 'zz-bt-callee)
+           (let ((n 0) (seen nil))
+             (mapbacktrace (lambda (evald fun args _flags)
+                             (when (and (< n 3) (memq fun '(zz-bt-callee zz-bt-caller)))
+                               (push (list evald fun args) seen))
+                             (setq n (1+ n))))
+             (nreverse seen))
+           (+ a b)))
+   (defun zz-bt-caller (x) (zz-bt-callee x (* x 2)))
+   (list (zz-bt-caller 3)
+         (condition-case err (zz-bt-callee 1) (error (car err)))
+         (let ((debug-on-error nil))
+           (condition-case err (zz-bt-callee 'a 1) (error err)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(((t zz-bt-callee 3 6) (t zz-bt-caller 3) nil 9) wrong-number-of-arguments (wrong-type-argument number-or-marker-p a))",
+        "interpreted lambda calls and backtrace frames",
+    );
+}
+
+#[test]
+fn kept_buffer_counts_keyboard_variables_and_symbol_binds_stay_gnus() {
+    // The buffer keeps its character and byte counts (GNU's Z and Z_BYTE)
+    // through inserts, deletions and erasure; KBOARD variables bind as
+    // before; Bvarbind binds the constant's own symbol, uninterned or not;
+    // an error a condition-case catches still reaches it unchanged.
+    let program = r#"(list
+ (with-temp-buffer
+   (insert "héllo\nwörld\n")
+   (let ((a (list (buffer-size) (position-bytes (point-max)) (line-beginning-position 0))))
+     (delete-region 2 4)
+     (insert "ß")
+     (list a (buffer-size) (position-bytes (point-max)) (buffer-string)
+           (progn (goto-char 3) (forward-line 1) (point))
+           (progn (goto-char (point-max)) (forward-line -1) (point))
+           (progn (erase-buffer) (list (buffer-size) (position-bytes 1) (line-beginning-position))))))
+ (let ((last-command 'zz-cmd)) (list last-command (symbol-value 'last-command)))
+ (let* ((s (make-symbol "zz-unint-var"))
+        (f (let ((lexical-binding nil))
+             (byte-compile `(lambda () (let ((,s 5)) (list (symbol-value ',s) (boundp 'zz-unint-var))))))))
+   (list (funcall f) (boundp s)))
+ (condition-case err (let ((debug-on-error nil)) (car 1)) (error err)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(((12 15 7) 11 14 \"hlo\nwörld\nß\" 5 5 (0 1 1)) (zz-cmd zz-cmd) ((5 nil) nil) (wrong-type-argument listp 1))",
+        "kept buffer counts, keyboard variables and symbol binds",
+    );
+}
+
+#[test]
+fn funcall_reaches_interpreted_closures_like_funcall_lambda() {
+    // Ffuncall, apply, sort and mapcar call an interpreted closure (a value
+    // or a symbol's live cell) through funcall_lambda: the values, optional
+    // and rest parameters, aliases, arity errors and recorded frames stay
+    // GNU's.
+    let program = r#"(progn
+  (defun zz-fc-add (a &optional b &rest more) (list a b more))
+  (defalias 'zz-fc-alias 'zz-fc-add)
+  (defun zz-fc-frames (&rest args)
+    (let ((seen nil) (n 0))
+      (mapbacktrace (lambda (evald fun fargs _flags)
+                      (when (and (< n 6) (memq fun '(funcall apply zz-fc-frames zz-fc-alias)))
+                        (push (list evald fun fargs) seen))
+                      (setq n (1+ n))))
+      (list args (nreverse seen))))
+  (let ((f (lambda (x y) (list y x))))
+    (list (funcall f 1 2)
+          (apply f '(3 4))
+          (funcall 'zz-fc-add 1)
+          (funcall #'zz-fc-add 1 2 3 4)
+          (funcall 'zz-fc-alias 5)
+          (sort (list 3 1 2) (lambda (a b) (< a b)))
+          (mapcar (lambda (x) (* x x)) '(1 2 3))
+          (condition-case err (funcall f 1) (error (car err)))
+          (condition-case err (funcall 'zz-fc-add) (error (car err)))
+          (funcall 'zz-fc-frames 1 2)
+          (apply #'zz-fc-frames '(3 4)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((2 1) (4 3) (1 nil nil) (1 2 (3 4)) (5 nil nil) (1 2 3) (1 4 9) wrong-number-of-arguments wrong-number-of-arguments ((1 2) ((t zz-fc-frames (1 2)) (t funcall (zz-fc-frames 1 2)))) ((3 4) ((t zz-fc-frames (3 4)) (t apply (zz-fc-frames (3 4))))))",
+        "funcall into interpreted closures",
+    );
+}
+
+#[test]
+fn bytecode_calls_switch_frames_like_setup_frame() {
+    // Bcall into a byte-code function and Breturn to a byte-code caller
+    // switch frames in the dispatch loop (bytecode.c's setup_frame): the
+    // optionals' nils, the frames mapbacktrace sees, errors caught across
+    // frames, arity errors, unwind forms and deep recursion stay GNU's,
+    // and Bcall's nesting limit signals bytecode.c's plain `error'.
+    let program = r#"(progn
+  (require 'bytecomp)
+  (let ((byte-compile-warnings nil))
+    (defalias 'zz-bc-leaf (byte-compile (lambda (a &optional b) (list a b))))
+    (defalias 'zz-bc-frames
+      (byte-compile
+       (lambda (x)
+         (let ((seen nil) (n 0))
+           (mapbacktrace (lambda (evald fun fargs _flags)
+                           (when (and (< n 8) (memq fun '(zz-bc-frames zz-bc-mid zz-bc-top)))
+                             (push (list evald fun fargs) seen))
+                           (setq n (1+ n))))
+           (list x (nreverse seen))))))
+    (defalias 'zz-bc-mid (byte-compile (lambda (x) (zz-bc-frames (1+ x)))))
+    (defalias 'zz-bc-err (byte-compile (lambda (x) (car x))))
+    (defalias 'zz-bc-unwind
+      (byte-compile (lambda (cell) (unwind-protect (car cell) (setcar cell 'done)))))
+    (defalias 'zz-bc-deep
+      (byte-compile (lambda (n) (if (= n 0) 0 (1+ (zz-bc-deep (1- n)))))))
+    (defalias 'zz-bc-top
+      (byte-compile
+       (lambda ()
+         (let ((cell (list 1)))
+           (list (zz-bc-leaf 1)
+                 (zz-bc-leaf 1 2)
+                 (zz-bc-mid 3)
+                 (condition-case e (zz-bc-err 5) (wrong-type-argument (car e)))
+                 (condition-case e (zz-bc-leaf) (wrong-number-of-arguments (cdr e)))
+                 (condition-case e (zz-bc-leaf 1 2 3) (wrong-number-of-arguments (cdr e)))
+                 (list (zz-bc-unwind cell) cell)
+                 (zz-bc-deep 50)
+                 (let ((max-lisp-eval-depth 100))
+                   (condition-case e (zz-bc-deep 1000) (error e))))))))
+    (zz-bc-top)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((1 nil) (1 2) (4 ((t zz-bc-frames (4)) (t zz-bc-mid (3)) (t zz-bc-top nil))) wrong-type-argument ((1 . 2) 0) ((1 . 2) 3) (1 (done)) 50 (error \"Lisp nesting exceeds `max-lisp-eval-depth'\"))",
+        "byte-code calls and returns",
+    );
+}
+
+#[test]
+fn evaluator_tag_tests_keep_gnus_list_and_symbol_errors() {
+    // eval_sub, Fsetq, Flet, funcall_lambda and Fcar/Fcdr test a form's
+    // conses, nil, t and symbols by the word's tag: improper argument
+    // lists, constants and non-symbols signal as GNU's do, and unbinding a
+    // dynamic variable that was void leaves it void.
+    let program = r#"(list
+  (condition-case e (eval '(+ 1 . 2) t) (error e))
+  (condition-case e (eval '(car . 1) t) (error e))
+  (condition-case e (eval '(list 1 2 . 3) t) (error e))
+  (condition-case e (eval '(setq nil 1) t) (error e))
+  (condition-case e (eval '(setq t 1) t) (error e))
+  (condition-case e (eval '(setq 5 1) t) (error e))
+  (condition-case e (eval '(setq zz-tag-a) t) (error e))
+  (condition-case e (eval '(let ((zz-tag-b 1 2)) zz-tag-b) t) (error e))
+  (condition-case e (eval '(let (5) 1) t) (error e))
+  (condition-case e (eval '(let ((zz-tag-c . 3)) zz-tag-c) t) (error e))
+  (condition-case e (funcall (lambda (&optional a b) (list a b)) 1) (error e))
+  (condition-case e (funcall '(lambda (nil) 1) 2) (error e))
+  (condition-case e (funcall '(lambda (t) 1) 2) (error e))
+  (progn (makunbound 'zz-tag-dyn)
+         (list (eval '(let ((zz-tag-dyn 1)) (boundp 'zz-tag-dyn)) nil)
+               (boundp 'zz-tag-dyn)))
+  (let ((x '(1 2 3))) (list (car x) (cdr x) (car nil) (cdr nil)
+                            (condition-case e (car 5) (error e))))
+  (mapcar #'symbolp (list nil t 'a 5 "s")))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((wrong-type-argument listp 2) (wrong-type-argument listp 1) (wrong-type-argument listp 3) (setting-constant nil) (setting-constant t) (wrong-type-argument symbolp 5) (wrong-number-of-arguments setq 1) (error \"`let' bindings can have only one value-form\" zz-tag-b 1 2) (wrong-type-argument listp 5) (wrong-type-argument listp 3) (1 nil) (setting-constant nil) (setting-constant t) (t nil) (1 (2 3) nil nil (wrong-type-argument listp 5)) (t t t nil nil))",
+        "evaluator tag tests",
+    );
+}
+
+#[test]
+fn byte_code_predicates_memq_and_full_arms_run_in_the_loop_like_gnu() {
+    // The verified byte-code loop runs Bsymbolp, Bstringp, Blistp,
+    // Bnumberp, Bintegerp, Bmemq, Bsetcar and Bsetcdr itself; an operand it
+    // does not take (a string or float to memq, a long, improper or
+    // circular list, a symbol with position, a non-cons) and ops without
+    // an arm there (Bnth, Bget, Blength) run their full arms in place.
+    let program = r#"(let* ((f (byte-compile
+           (lambda (x l)
+             (list (symbolp x) (stringp x) (listp x) (numberp x) (integerp x)
+                   (memq x l)))))
+       (g (byte-compile (lambda (c) (setcar c 'x) (setcdr c 'y) c)))
+       (h (byte-compile (lambda (l) (list (nth 1 l) (get 'zz-ip-sym 'p) (length l)))))
+       (long (number-sequence 1 100))
+       (circ (list 'a 'b 'c))
+       (p (position-symbol 'b 5)))
+  (setcdr (cddr circ) circ)
+  (list (funcall f 'b '(a b c))
+        (funcall f "s" '(a "s"))
+        (funcall f nil '(1 nil 2))
+        (funcall f 1.5 '(2.5))
+        (funcall f (expt 2 70) nil)
+        (funcall f 99 long)
+        (funcall f 7 '(1 2 3))
+        (condition-case e (funcall f 'z '(a b . c)) (error e))
+        (condition-case e (funcall f 'z circ) (error (car e)))
+        (list (funcall g (cons 1 2)) (condition-case e (funcall g 5) (error e)))
+        (funcall h '(4 5 6))
+        (butlast (funcall f p nil))
+        (let ((symbols-with-pos-enabled t))
+          (list (butlast (funcall f p nil))
+                (length (nth 5 (funcall f p '(a b c))))
+                (length (nth 5 (funcall f 'b (list 'a p))))))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((t nil nil nil nil (b c)) (nil t nil nil nil nil) (t nil t nil nil (nil 2)) (nil nil nil t nil nil) (nil nil nil t t nil) (nil nil nil t t (99 100)) (nil nil nil t t nil) (wrong-type-argument listp (a b . c)) circular-list ((x . y) (wrong-type-argument consp 5)) (5 nil 3) (nil nil nil nil nil) ((t nil nil nil nil) 2 1))",
+        "byte-code predicates and memq",
+    );
+}
+
+#[test]
+fn eval_calls_compiled_functions_under_its_own_frame_like_gnu() {
+    // eval_sub calls a native-compiled subr (funcall_subr) and, through
+    // apply_lambda, a byte-code function under the frame it recorded for
+    // the form: the frame shows the evaluated arguments while the callee
+    // runs and the unevaluated ones while they are evaluated, and arity
+    // errors, errors in the callee or an argument, and throws pass through
+    // it as GNU's do.
+    let program = r#"(progn
+  (defalias 'zz-ef-bc
+    (byte-compile
+     (lambda (x &optional y)
+       (let (seen)
+         (mapbacktrace
+          (lambda (evald fun args _flags)
+            (when (eq fun 'zz-ef-bc) (push (list evald fun args) seen))))
+         (list x y seen)))))
+  (defalias 'zz-ef-err (byte-compile (lambda (x) (car x))))
+  (defalias 'zz-ef-frames
+    (lambda ()
+      (let (seen)
+        (mapbacktrace
+         (lambda (evald fun args _flags)
+           (when (memq fun '(last butlast)) (push (list evald fun args) seen))))
+        (list seen))))
+  (list (eval '(zz-ef-bc (+ 1 2)) t)
+        (eval '(zz-ef-bc 'a "b") t)
+        (eval '(let ((v 5)) (zz-ef-bc v (* v 2))) t)
+        (condition-case e (eval '(zz-ef-bc) t) (error e))
+        (condition-case e (eval '(zz-ef-bc 1 2 3) t) (error e))
+        (condition-case e (eval '(zz-ef-err 7) t) (error e))
+        (condition-case e (eval '(zz-ef-err (car 5)) t) (error e))
+        (catch 'zz-ef-tag (eval '(zz-ef-bc (throw 'zz-ef-tag 'thrown)) t))
+        (native-comp-function-p (symbol-function 'last))
+        (eval '(last '(1 2 3)) t)
+        (eval '(let ((n 2)) (last '(1 2 3) n)) t)
+        (eval '(butlast '(1 2 3 4) 2) t)
+        (condition-case e (eval '(last) t) (error (car e)))
+        (condition-case e (eval '(last '(1) 1 2) t) (error (car e)))
+        (condition-case e (eval '(butlast 5) t) (error e))
+        (eval '(last (zz-ef-frames)) t)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((3 nil ((t zz-ef-bc (3)))) (a \"b\" ((t zz-ef-bc (a \"b\")))) (5 10 ((t zz-ef-bc (5 10)))) (wrong-number-of-arguments (1 . 2) 0) (wrong-number-of-arguments (1 . 2) 3) (wrong-type-argument listp 7) (wrong-type-argument listp 5) thrown t (3) (2 3) (1 2) wrong-number-of-arguments wrong-number-of-arguments (wrong-type-argument sequencep 5) (((nil last ((zz-ef-frames))))))",
+        "eval calling compiled functions",
+    );
+}
+
+#[test]
+fn let_finds_local_special_declarations_by_symbol_like_flet() {
+    // Flet's Fmemq of the variable in the lexical environment: a locally
+    // special uninterned symbol leaves the interned one of that name
+    // lexical, and the declared symbol itself binds dynamically.
+    let program = r#"(let ((u (make-symbol "zz-ls")))
+  (list (eval `(progn (defvar ,u) (let ((zz-ls 5)) (list (boundp 'zz-ls) zz-ls))) t)
+        (eval '(progn (defvar zz-ls2) (let ((zz-ls2 6)) (list (boundp 'zz-ls2) zz-ls2))) t)
+        (eval `(progn (defvar ,u) (let ((,u 7)) (list (boundp ',u) (symbol-value ',u)))) t)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((nil 5) (t 6) (t 7))",
+        "local special declarations by symbol",
+    );
+}
+
+#[test]
 fn unused_bytecode_destinations_follow_actual_control_flow() {
     let fixture = include_str!("../../../tests/fixtures/bytecode-unused-destinations.el");
     let program = fixture
@@ -27647,5 +28516,59 @@ fn buffer_display_columns_match_gnu_original_line_motion_probe() {
         include_str!("../../../tests/fixtures/buffer-lf-line-index.el"),
         include_str!("../../../tests/fixtures/buffer-lf-line-index.expected").trim_end(),
         "original 338-row line/column probe across controls, multibyte text, narrowing and edits",
+    );
+}
+
+#[test]
+fn standard_unintern_detaches_the_object_and_preserves_its_fields() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-identity.el"),
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-identity.expected").trim(),
+        "unintern, exact membership, fresh identity, name sharing and independent fields",
+    );
+}
+
+#[test]
+fn standard_unintern_prints_actual_membership() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-printing.el"),
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-printing.expected").trim(),
+        "print-gensym follows the actual symbol membership after its name is reused",
+    );
+}
+
+#[test]
+fn standard_unintern_preserves_builtin_boolean_identity() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-booleans.el"),
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-booleans.expected").trim(),
+        "nil and t keep their original ABI identities when new same-named symbols are interned",
+    );
+}
+
+#[test]
+fn standard_unintern_keeps_live_fields_and_reclaims_detached_objects() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-lifetime.el"),
+        include_str!("../../../tests/fixtures/symbol-standard-unintern-lifetime.expected").trim(),
+        "detached symbol fields survive GC and weak keys disappear after their last Lisp roots leave",
+    );
+}
+
+#[test]
+fn symbol_constant_state_belongs_to_the_actual_object() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-constant-object-state.el"),
+        include_str!("../../../tests/fixtures/symbol-constant-object-state.expected").trim(),
+        "same-spelled replacement symbols do not inherit constant, special, value or store state",
+    );
+}
+
+#[test]
+fn symbol_constant_entry_points_follow_actual_aliases() {
+    assert_oracle_contract_matches_interpreter(
+        include_str!("../../../tests/fixtures/symbol-constant-entry-points.el"),
+        include_str!("../../../tests/fixtures/symbol-constant-entry-points.expected").trim(),
+        "constant and default operations preserve actual objects through alias chains",
     );
 }

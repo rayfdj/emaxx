@@ -57,6 +57,7 @@ mod threads;
 mod treesit;
 mod variables;
 use bootstrap::*;
+pub(crate) use core::NativeForm;
 pub(crate) use core::is_special_form_name;
 mod ert;
 
@@ -1374,7 +1375,7 @@ impl RecordState {
     }
 
     pub(crate) fn symbol_type_name(&self) -> Option<&str> {
-        self.type_tag.as_symbol().ok()
+        self.type_tag.symbol_str()
     }
 
     /// `symbol_type_name' for the sweep, which must not read the type
@@ -1484,7 +1485,10 @@ pub(crate) struct SpecialBindingRestore {
     binding_buffer_id: Option<u64>,
     keyboard_terminal_id: Option<u64>,
     previous: Option<Value>,
-    previous_undo_state: Option<crate::buffer::UndoState>,
+    /// Boxed: a binding of buffer-undo-list holds the buffer's whole undo
+    /// state, and every other binding's record is moved by `memcpy' at
+    /// its size.
+    previous_undo_state: Option<Box<crate::buffer::UndoState>>,
     /// eval.c's SPECPDL_LET_DEFAULT: the symbol was localized (or a
     /// per-buffer one) without a cell in the binding buffer, so the
     /// binding wrote the default and the unbind writes it back through
@@ -1524,6 +1528,12 @@ pub(crate) enum FrameArgs {
 }
 
 impl FrameArgs {
+    /// Whether these are borrowed words, which own no storage.
+    #[inline(always)]
+    fn is_borrowed(&self) -> bool {
+        matches!(self, Self::Borrowed { .. } | Self::NativeWords { .. })
+    }
+
     #[inline(always)]
     fn borrowed(args: &[Value]) -> Self {
         Self::Borrowed {
@@ -1632,6 +1642,15 @@ struct BacktraceFrame {
     detail: Option<Box<FrameDetail>>,
 }
 
+impl BacktraceFrame {
+    /// Whether dropping the frame releases nothing: no detail and no
+    /// argument vector of its own (the frame of an ordinary call).
+    #[inline(always)]
+    fn owns_nothing(&self) -> bool {
+        self.detail.is_none() && self.args.is_borrowed()
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct FrameDetail {
     /// Original list form for an unevaluated frame.  GNU backtraces retain
@@ -1639,7 +1658,6 @@ struct FrameDetail {
     /// and every argument on each interpreted call.  Debugger-facing APIs
     /// materialize the two projections only when somebody inspects a frame.
     source_form: Option<Value>,
-    locals: Vec<(SymbolName, Value)>,
     /// Snapshot of the evaluator environment at this activation while a
     /// debugger is active.  Frames retain their identity stamps so
     /// `backtrace-eval' assignments can update the suspended lexical cells.
@@ -1663,17 +1681,63 @@ impl BacktraceFrame {
         self.detail.as_ref()?.source_form
     }
 
-    fn locals(&self) -> &[(SymbolName, Value)] {
-        self.detail.as_ref().map_or(&[], |detail| &detail.locals)
-    }
-
     fn lexical_context(&self) -> Option<&Env> {
         self.detail.as_ref()?.lexical_context.as_ref()
     }
 
     fn detail_mut(&mut self) -> &mut FrameDetail {
-        self.detail.get_or_insert_with(Box::default)
+        self.detail.get_or_insert_with(|| {
+            FRAME_DETAIL_POOL
+                .try_with(|pool| pool.try_borrow_mut().ok()?.pop())
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+        })
     }
+}
+
+/// Released details are kept here for the next frame that needs one (a
+/// debugger's context capture, a frame built with its form).
+const FRAME_DETAIL_POOL_LIMIT: usize = 64;
+
+thread_local! {
+    // The boxes themselves are what a frame's `detail' reuses.
+    #[allow(clippy::vec_box)]
+    static FRAME_DETAIL_POOL: RefCell<Vec<Box<FrameDetail>>> = const { RefCell::new(Vec::new()) };
+}
+
+impl Drop for BacktraceFrame {
+    fn drop(&mut self) {
+        let Some(mut detail) = self.detail.take() else {
+            return;
+        };
+        detail.source_form = None;
+        detail.lexical_context = None;
+        let _ = FRAME_DETAIL_POOL.try_with(|pool| {
+            if let Ok(mut pool) = pool.try_borrow_mut()
+                && pool.len() < FRAME_DETAIL_POOL_LIMIT
+            {
+                pool.push(detail);
+            }
+        });
+    }
+}
+
+/// A signaled condition's `error-conditions' (see `error_condition_names').
+pub(crate) type ConditionNames = smallvec::SmallVec<[SymbolName; 8]>;
+
+/// A parameter an interpreted call bound (funcall_lambda's bindings, which
+/// `backtrace--locals' and the debugger's frame context report), kept on
+/// a stack beside the frames instead of in each frame: FRAME is the index
+/// of the call's frame in `backtrace_frames', and a frame's parameters are
+/// the contiguous run of entries carrying its index. The call removes its
+/// entries when it returns (normally or with its error settled), so its
+/// frame owns nothing and leaves as an ordinary call's does.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FrameLocal {
+    frame: usize,
+    symbol: SymbolName,
+    value: Value,
 }
 
 #[derive(Clone, Debug)]
@@ -1785,6 +1849,21 @@ enum SavedRestrictionBounds {
         beginning_marker_id: crate::lisp::types::MarkerRef,
         end_marker_id: crate::lisp::types::MarkerRef,
     },
+}
+
+/// A Bcall callee the byte-code loop calls itself when the call is plain
+/// (see `InterpreterState::plain_bcall_callee').
+pub(crate) enum PlainCallee {
+    Native(crate::lisp::types::NativeFunctionRef),
+    Subr(crate::lisp::types::BuiltinRef),
+}
+
+/// What Bcall does with its callee (see `Interpreter::bcall_callee').
+pub(crate) enum BcallCallee {
+    ByteCode(crate::lisp::bytecode::ByteCodeObject, Value),
+    Native(crate::lisp::types::NativeFunctionRef),
+    Subr(crate::lisp::types::BuiltinRef),
+    Funcall,
 }
 
 /// How a symbol callee resolved: eval_sub's reading of the function cell.
@@ -2580,7 +2659,7 @@ fn ordered_hooks(entries: impl IntoIterator<Item = (String, Vec<Value>)>) -> Ord
     hooks
 }
 
-type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::primitives::FnvBuildHasher>;
+type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::types::IdentityBuildHasher>;
 type BufferLocalHooks = HashMap<u64, OrderedHooks, crate::lisp::primitives::FnvBuildHasher>;
 
 /// A snapshot for callbacks that may intern further symbols while enumerating.
@@ -2594,7 +2673,6 @@ pub(crate) struct KnownSymbolsCache {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct KnownSymbolsKey {
     symbols: usize,
-    uninterned_standard: usize,
     epoch: u64,
 }
 type RecordIdsByType = HashMap<String, BTreeSet<u64>, crate::lisp::primitives::FnvBuildHasher>;
@@ -2668,7 +2746,7 @@ impl ImageGraphCopier {
         if let Some(copied) = self.symbols.get(&symbol.identity_ptr()) {
             return *copied;
         }
-        let copied = if crate::lisp::types::is_uninterned_symbol(symbol.as_str()) {
+        let copied = if symbol.cell().is_uninterned() {
             SymbolName::make_uninterned(
                 Value::Nil,
                 crate::lisp::types::visible_symbol_name(symbol.as_str()),
@@ -2683,10 +2761,16 @@ impl ImageGraphCopier {
         copied.install_copied_name(self.copy(&symbol.lisp_name()));
         if let Some(alias) = symbol.cell().alias() {
             copied.cell().set_alias(self.copy_symbol(alias));
+        } else if let Some(counter) = symbol.cell().forwarded_counter() {
+            // The copy forwards to the same process-wide word; copying its
+            // current integer would freeze the counter in the new editor.
+            copied.cell().forward_to_counter(counter);
         } else if let Some(value) = symbol.cell().value() {
             copied.cell().set_value(self.copy(&value));
         }
         copied.cell().flags.set(symbol.cell().flags.get());
+        copied.cell().set_constant(symbol.cell().is_constant());
+        copied.cell().set_c_slot(symbol.cell().has_c_slot());
         copied.cell().set_plain_store(symbol.cell().plain_store());
         copied
             .cell()
@@ -3203,13 +3287,16 @@ pub(crate) struct LiveObjectCensus {
     pub(crate) overlay_node_bytes: usize,
 }
 
-// alloc.c:total_bytes_of_live_objects and Fgarbage_collect report GNU C
-// allocation layouts, not the host language's representation sizes. These
-// are the configured GNU Emacs layouts for the supported 64-bit targets;
-// `header_size + word_size' is the size of a one-slot vector row.
+// alloc.c:total_bytes_of_live_objects and Fgarbage_collect report the
+// allocation layouts. Conses, floats and vector words match the GNU C
+// layouts on the supported 64-bit targets; `header_size + word_size' is the
+// size of a one-slot vector row. Symbol and string headers are charged as
+// the cells this allocator actually holds (64 and 48 bytes, where GNU's
+// Lisp_Symbol and Lisp_String are 48 and 32): a smaller charge would
+// undercount live bytes and delay collection.
 pub(crate) const GNU_CONS_SIZE: usize = 16;
-pub(crate) const GNU_SYMBOL_SIZE: usize = 48;
-pub(crate) const GNU_STRING_SIZE: usize = 32;
+pub(crate) const SYMBOL_SIZE: usize = crate::lisp::alloc::SYMBOL_CELL_BYTES;
+pub(crate) const STRING_HEADER_SIZE: usize = crate::lisp::alloc::STRING_CELL_BYTES;
 pub(crate) const GNU_VECTOR_SIZE: usize = 16;
 pub(crate) const GNU_VECTOR_SLOT_SIZE: usize = 8;
 pub(crate) const GNU_FLOAT_SIZE: usize = 8;
@@ -3377,7 +3464,7 @@ impl LispReachability {
             Kind::BigInteger(value) => value.mark_bit().mark(self.epoch),
             Kind::Float(value) => value.mark_bit().mark(self.epoch),
             Kind::StringObject(value) => value.mark_bit().mark(self.epoch),
-            Kind::Symbol(symbol) => symbol.mark_bit().mark(self.epoch),
+            Kind::Symbol(symbol) => symbol.mark(self.epoch),
             Kind::Cons(value) => value.mark_bit().mark(self.epoch),
             Kind::Vector(value) => value.mark_bit().mark(self.epoch),
             Kind::Closure(value) => value.mark_bit().mark(self.epoch),
@@ -3572,18 +3659,18 @@ impl LispReachability {
 }
 
 impl LiveObjectCensus {
-    /// alloc.c:total_bytes_of_live_objects.  These are the GNU C layouts for
-    /// the supported 64-bit ABI: Lisp_Cons=16, Lisp_Symbol=48,
-    /// Lisp_String=32, Lisp_Float=8, interval=56, and one vector word=8.
+    /// alloc.c:total_bytes_of_live_objects: Lisp_Cons=16, Lisp_Float=8,
+    /// interval=56 and one vector word=8 as in the GNU C layouts; symbol and
+    /// string headers at this allocator's actual cell sizes.
     pub(crate) fn total_bytes_of_live_objects(&self) -> usize {
         self.conses
             .saturating_mul(GNU_CONS_SIZE)
-            .saturating_add(self.symbols.saturating_mul(GNU_SYMBOL_SIZE))
+            .saturating_add(self.symbols.saturating_mul(SYMBOL_SIZE))
             .saturating_add(self.string_bytes)
             .saturating_add(self.vector_slots.saturating_mul(GNU_VECTOR_SLOT_SIZE))
             .saturating_add(self.floats.saturating_mul(GNU_FLOAT_SIZE))
             .saturating_add(self.intervals.saturating_mul(GNU_INTERVAL_SIZE))
-            .saturating_add(self.strings.saturating_mul(GNU_STRING_SIZE))
+            .saturating_add(self.strings.saturating_mul(STRING_HEADER_SIZE))
             .saturating_add(self.hash_table_bytes)
             .saturating_add(self.overlay_node_bytes)
     }
@@ -3915,10 +4002,12 @@ impl Interpreter {
                 .set_flag_by_name(symbol.as_str(), symbol_cell_flags::LOCALIZED);
             locals.insert(&symbol, value);
         }
-        if locals.is_empty() {
-            self.buffer_locals.remove(&id);
-        } else {
+        self.remove_buffer_locals(id);
+        if !locals.is_empty() {
             self.buffer_locals.insert(id, locals);
+            if id == self.current_buffer_id() {
+                self.refresh_forwarded_eval_cells();
+            }
         }
     }
 
@@ -4154,6 +4243,7 @@ impl Interpreter {
             mark(&Value::Terminal(*terminal));
         }
         mark(&self.syntax_code_objects);
+        mark(&self.unicode_menu_case_table);
         mark(&Value::CharTable(self.standard_syntax_table_id));
         for table in self
             .standard_category_table_id
@@ -4237,15 +4327,15 @@ impl Interpreter {
             if let Some(form) = frame.source_form() {
                 mark(&form);
             }
-            for (symbol, value) in frame.locals() {
-                mark(&Value::Symbol(*symbol));
-                mark(value);
-            }
             if let Some(context) = frame.lexical_context() {
                 for lexical_frame in context {
                     mark(lexical_frame.environment());
                 }
             }
+        }
+        for local in &self.frame_locals {
+            mark(&Value::Symbol(local.symbol));
+            mark(&local.value);
         }
         if let Some(backtrace) = &self.batch_error_backtrace {
             for (_, function, arguments, _) in &backtrace.frames {
@@ -4260,7 +4350,7 @@ impl Interpreter {
                 ActiveHandler::Module => {}
                 ActiveHandler::Bind(_, function) => mark(function),
                 ActiveHandler::Case(heads) => {
-                    for head in heads {
+                    for head in heads.iter() {
                         mark(head);
                     }
                 }
@@ -4423,23 +4513,47 @@ impl Interpreter {
 
     fn gnu_hash_storage_bytes(&self, symbol_count: usize) -> usize {
         let mut bytes = crate::lisp::alloc::vectors::hash_tables::live_array_bytes();
-        for record in self.records.iter().flatten() {
-            if record.kind == RecordKind::Obarray {
-                let capacity = if record.id == self.standard_obarray_id {
-                    let mut capacity = 1_usize << 15;
-                    while symbol_count > capacity {
-                        capacity = capacity.saturating_mul(2);
-                    }
-                    capacity
-                } else {
-                    // lread.c:obarray_default_bits is 3.  Nonstandard
-                    // obarray growth is accounted when its symbol arena is
-                    // moved out of the encoded namespace representation.
-                    1_usize << 3
-                };
-                bytes = bytes.saturating_add(capacity.saturating_mul(8));
-            }
+        // The obarray-kind records are the obarrays and the abbrev tables:
+        // the census, which runs after every collection, finds them by type
+        // in the index rather than by a walk of the whole registry.
+        let obarray_ids = [
+            crate::lisp::primitives::OBARRAY_RECORD_TYPE,
+            crate::lisp::primitives::ABBREV_TABLE_RECORD_TYPE,
+        ]
+        .into_iter()
+        .filter_map(|type_name| self.record_ids_by_type_index.get(type_name))
+        .flatten()
+        .copied()
+        .filter(|&id| {
+            self.record_ref(id)
+                .is_some_and(|record| record.kind == RecordKind::Obarray)
+        });
+        let mut obarrays = 0_usize;
+        for id in obarray_ids {
+            obarrays += 1;
+            let capacity = if id == self.standard_obarray_id {
+                let mut capacity = 1_usize << 15;
+                while symbol_count > capacity {
+                    capacity = capacity.saturating_mul(2);
+                }
+                capacity
+            } else {
+                // lread.c:obarray_default_bits is 3.  Nonstandard
+                // obarray growth is accounted when its symbol arena is
+                // moved out of the encoded namespace representation.
+                1_usize << 3
+            };
+            bytes = bytes.saturating_add(capacity.saturating_mul(8));
         }
+        debug_assert_eq!(
+            obarrays,
+            self.records
+                .iter()
+                .flatten()
+                .filter(|record| record.kind == RecordKind::Obarray)
+                .count(),
+            "an obarray-kind record is outside the obarray and abbrev-table types"
+        );
         bytes
     }
 
@@ -4596,6 +4710,7 @@ impl Interpreter {
                 copy
             };
             clone.syntax_code_objects = c.copy(&clone.syntax_code_objects);
+            clone.unicode_menu_case_table = c.copy(&clone.unicode_menu_case_table);
             clone.standard_syntax_table_id = copy_table(c, clone.standard_syntax_table_id);
             clone.standard_category_table_id = clone
                 .standard_category_table_id
@@ -4684,15 +4799,15 @@ impl Interpreter {
                     }
                 }
                 frame.args = args;
-                if let Some(detail) = &mut frame.detail {
-                    if let Some(form) = &detail.source_form {
-                        detail.source_form = Some(c.copy(form));
-                    }
-                    for (symbol, value) in &mut detail.locals {
-                        *symbol = c.copy_symbol(*symbol);
-                        *value = c.copy(value);
-                    }
+                if let Some(detail) = &mut frame.detail
+                    && let Some(form) = &detail.source_form
+                {
+                    detail.source_form = Some(c.copy(form));
                 }
+            }
+            for local in &mut clone.frame_locals {
+                local.symbol = c.copy_symbol(local.symbol);
+                local.value = c.copy(&local.value);
             }
             if let Some(backtrace) = &mut clone.batch_error_backtrace {
                 for (_, function, args, _) in &mut backtrace.frames {
@@ -4707,9 +4822,7 @@ impl Interpreter {
                     ActiveHandler::Module => {}
                     ActiveHandler::Bind(_, function) => *function = c.copy(&function.clone()),
                     ActiveHandler::Case(heads) => {
-                        for head in heads {
-                            *head = c.copy(head);
-                        }
+                        *heads = heads.iter().map(|head| c.copy(head)).collect();
                     }
                 }
             }
@@ -4926,16 +5039,29 @@ impl Drop for InterpreterState {
 impl std::ops::Deref for Interpreter {
     type Target = InterpreterState;
 
+    /// Every field access of the shell comes through here (and DerefMut);
+    /// the checked unwrap's test at each was about 4% of an interpreted
+    /// call. Builds with debug assertions (the gate profile) keep it.
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
-        self.state.as_deref().expect("interpreter shell is parked")
+        debug_assert!(self.state.is_some(), "interpreter shell is parked");
+        // SAFETY: a shell is parked only while its payload is away: the
+        // thread and continuation drivers and `suspend_payload' take the
+        // state, hand it to a continuation (or the driving stack) and put
+        // the returned state back before the shell is used again. Nothing
+        // reaches a parked shell in between: the payload runs under its
+        // own shell, and the collector and the resume scope hold the state,
+        // not the shell.
+        unsafe { self.state.as_deref().unwrap_unchecked() }
     }
 }
 
 impl std::ops::DerefMut for Interpreter {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.state
-            .as_deref_mut()
-            .expect("interpreter shell is parked")
+        debug_assert!(self.state.is_some(), "interpreter shell is parked");
+        // SAFETY: as Deref's.
+        unsafe { self.state.as_deref_mut().unwrap_unchecked() }
     }
 }
 
@@ -5033,7 +5159,6 @@ pub struct InterpreterState {
     /// this tombstone prevents function/value indexes from accidentally
     /// making the name look interned again until a reader or `intern' creates
     /// the new canonical name.
-    uninterned_standard_symbol_names: HashSet<String, crate::lisp::primitives::FnvBuildHasher>,
     /// Runtime record representing GNU's preloaded standard `obarray'.  Its
     /// symbol view is synthesized from the interpreter's canonical namespace
     /// indexes rather than duplicated in the record's storage slot.
@@ -5297,6 +5422,9 @@ pub struct InterpreterState {
     pub(crate) builtin_doc_offsets: HashMap<String, i64>,
     syntax_word_chars: Vec<u32>,
     syntax_code_objects: Value,
+    /// keymap.c's staticpro'd unicode_case_table belongs to one editor.
+    /// Keeping it with that state also isolates successive embedded editors.
+    pub(crate) unicode_menu_case_table: Value,
     standard_syntax_table_id: CharTableRef,
     // lread.c:Vload_path is a rooted Lisp_Objfwd slot, not a host-side
     // directory vector from which reads reconstruct new Lisp objects.
@@ -5333,6 +5461,8 @@ pub struct InterpreterState {
     active_thread_id: u64,
     last_thread_error: Option<Value>,
     backtrace_frames: Vec<BacktraceFrame>,
+    /// The interpreted calls' parameters, by frame (see `FrameLocal').
+    frame_locals: Vec<FrameLocal>,
     batch_error_backtrace: Option<BatchErrorBacktrace>,
     active_handlers: Vec<ActiveHandler>,
     /// Dynamically active `catch' tags.  GNU's `throw' signals `no-catch'
@@ -5368,9 +5498,11 @@ pub(crate) enum ActiveHandler {
     /// One CONDITIONS/HANDLER pair from `handler-bind'.  Keep the condition
     /// list grouped so a handler whose list contains both a child condition
     /// and one of its parents still runs exactly once for a signal.
-    Bind(Vec<String>, Value),
+    /// The lists are shared: `signal' walks a copy of the stack, which
+    /// handlers may change, and a copy costs a count each.
+    Bind(std::rc::Rc<[String]>, Value),
     /// The clause heads of an active `condition-case' (minus :success).
-    Case(Vec<Value>),
+    Case(std::rc::Rc<[Value]>),
 }
 
 fn make_visual_line_mode_map(interp: &mut Interpreter) -> Value {
@@ -5774,7 +5906,6 @@ impl Interpreter {
             ],
             known_symbols_cache: RefCell::new(None),
             obarray_epoch: 0,
-            uninterned_standard_symbol_names: HashSet::default(),
             standard_obarray_id,
             variable_watchers: Vec::new(),
             buffer: crate::lisp::types::BufferRef::new(0, crate::buffer::Buffer::new("*scratch*")),
@@ -5990,6 +6121,7 @@ impl Interpreter {
             builtin_doc_offsets: HashMap::new(),
             syntax_word_chars: Vec::new(),
             syntax_code_objects,
+            unicode_menu_case_table: Value::Nil,
             standard_syntax_table_id,
             load_path: Value::Nil,
             loads_in_progress: Value::Nil,
@@ -6028,6 +6160,7 @@ impl Interpreter {
             active_thread_id: main_thread_id,
             last_thread_error: None,
             backtrace_frames: Vec::new(),
+            frame_locals: Vec::new(),
             batch_error_backtrace: None,
             active_handlers: Vec::new(),
             active_catch_tags: Vec::new(),
@@ -6183,11 +6316,8 @@ impl Interpreter {
                 "compose-chars-after-function",
                 Value::symbol("compose-chars-after"),
             ),
-            // The *-consed counters are live allocation telemetry; Emaxx does
-            // not count allocations, so they start at zero rather than at a
-            // frozen snapshot of the oracle's own counters (which the first
-            // draft of this tranche fabricated).
-            ("cons-cells-consed", Value::Integer(0)),
+            // The *-consed counters are alloc.c's own words, forwarded by
+            // `mark_forwarded_variables', not values stored here.
             ("current-key-remap-sequence", Value::Nil),
             ("current-time-list", Value::T),
             ("cursor-in-echo-area", Value::Nil),
@@ -6214,9 +6344,6 @@ impl Interpreter {
             ("enable-disabled-menus-and-buttons", Value::Nil),
             ("extra-keyboard-modifiers", Value::Integer(0)),
             ("float-output-format", Value::Nil),
-            // Zeroed like its *-consed siblings: live allocation telemetry
-            // (the frozen oracle snapshot here survived the first sweep).
-            ("floats-consed", Value::Integer(0)),
             // font.c:5965; init_font later applies EMACS_FONT_LOG policy.
             ("font-log", Value::Nil),
             ("fontification-functions", Value::Nil),
@@ -6249,7 +6376,6 @@ impl Interpreter {
             // compiled cconv and macroexp libraries.
             ("internal-make-interpreted-closure-function", Value::Nil),
             ("internal-when-entered-debugger", Value::Integer(-1)),
-            ("intervals-consed", Value::Integer(0)),
             ("large-hscroll-threshold", Value::Integer(10000)),
             ("last-command-event", Value::Nil),
             ("line-prefix", Value::Nil),
@@ -6318,10 +6444,7 @@ impl Interpreter {
             ("resume-tty-functions", Value::Nil),
             ("scroll-bar-adjust-thumb-portion", Value::T),
             ("shared-game-score-directory", Value::Nil),
-            ("string-chars-consed", Value::Integer(0)),
-            ("strings-consed", Value::Integer(0)),
             ("suspend-tty-functions", Value::Nil),
-            ("symbols-consed", Value::Integer(0)),
             ("system-key-alist", Value::Nil),
             ("tab-bar--dragging-in-progress", Value::Nil),
             ("tab-bar-separator-image-expression", Value::Nil),
@@ -6334,7 +6457,6 @@ impl Interpreter {
             ("unread-input-method-events", Value::Nil),
             ("unread-post-input-method-events", Value::Nil),
             ("use-default-font-for-symbols", Value::T),
-            ("vector-cells-consed", Value::Integer(0)),
             ("where-is-preferred-modifier", Value::Nil),
             ("wrap-prefix", Value::Nil),
             ("write-region-annotate-functions", Value::Nil),
@@ -7348,6 +7470,19 @@ impl Interpreter {
         // editfns.c:init_editfns: emacs.c:main computes the user names
         // once in every process.
         interp.init_editfns();
+        // data.c, buffer.c and font.c call make_symbol_constant on these
+        // actual C-created objects. Reusing their names does not recreate
+        // either the constant bit or the dedicated C slot.
+        for name in [
+            "most-positive-fixnum",
+            "most-negative-fixnum",
+            "enable-multibyte-characters",
+            "font-weight-table",
+            "font-slant-table",
+            "font-width-table",
+        ] {
+            SymbolName::intern_str(name).cell().set_constant(true);
+        }
         crate::lisp::native_comp::initialize_runtime(&mut interp);
         interp
     }

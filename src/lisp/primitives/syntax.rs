@@ -487,11 +487,11 @@ fn syntax_entry_from_value(value: &Value) -> Option<SyntaxEntry> {
             })
         }
         Kind::Cons(_) => {
-            let code = value.car().ok()?.as_integer().ok()?;
+            let code = value.car_if_list()?.integer_value()?;
             let matching = value
                 .cdr()
                 .ok()
-                .and_then(|cdr| cdr.as_integer().ok())
+                .and_then(|cdr| cdr.integer_value())
                 .and_then(|code| char::from_u32(code as u32));
             let mut entry = syntax_entry_from_value(&Value::Integer(code))?;
             entry.matching = matching;
@@ -1096,19 +1096,19 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
     };
     let public_depth = items
         .first()
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .unwrap_or(0);
     let mut state = ParseState {
         base_depth: public_depth,
         min_depth: items
             .get(6)
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or(0),
         ..Default::default()
     };
     let comment_style = items
         .get(7)
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .map(|style| style.clamp(0, u8::MAX as i64) as u8)
         .unwrap_or(0);
     if let Some(stack_value) = hidden_items.first()
@@ -1138,7 +1138,7 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
     // outer levels' values are not recoverable from an old state.
     if let Some(last_sexp) = items
         .get(2)
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .filter(|position| *position > 0)
     {
         state.set_last_sexp(last_sexp as usize);
@@ -1150,12 +1150,12 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
     {
         let start_pos = entries
             .get(1)
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or(1)
             .max(1) as usize;
         let depth = entries
             .get(2)
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or(1)
             .max(1) as usize;
         state.comment = match kind.as_str() {
@@ -1180,11 +1180,11 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
             "block" => {
                 let end_first = entries
                     .get(3)
-                    .and_then(|value| value.as_integer().ok())
+                    .and_then(|value| value.integer_value())
                     .and_then(|value| char::from_u32(value as u32));
                 let end_second = entries
                     .get(4)
-                    .and_then(|value| value.as_integer().ok())
+                    .and_then(|value| value.integer_value())
                     .and_then(|value| char::from_u32(value as u32));
                 match (end_first, end_second) {
                     (Some(end_first), Some(end_second)) => Some(CommentState {
@@ -1203,16 +1203,10 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
             _ => None,
         };
     }
-    if let Some(base_depth) = hidden_items
-        .get(2)
-        .and_then(|value| value.as_integer().ok())
-    {
+    if let Some(base_depth) = hidden_items.get(2).and_then(|value| value.integer_value()) {
         state.base_depth = base_depth;
     }
-    if let Some(min_depth) = hidden_items
-        .get(3)
-        .and_then(|value| value.as_integer().ok())
-    {
+    if let Some(min_depth) = hidden_items.get(3).and_then(|value| value.integer_value()) {
         state.min_depth = min_depth;
     }
     if let Some(string_value) = hidden_items.get(4)
@@ -1221,11 +1215,11 @@ fn decode_parse_state(value: Option<&Value>) -> ParseState {
     {
         let quote = entries
             .first()
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .and_then(|value| char::from_u32(value as u32));
         let start_pos = entries
             .get(1)
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or(1)
             .max(1) as usize;
         if let Some(quote) = quote {
@@ -1493,7 +1487,7 @@ fn find_defun_start_gnu(
         interp.buffer.borrow_mut().goto_char(saved_point);
         if let Ok(state) = result
             && let Ok(items) = state.to_vec()
-            && let Some(start) = items.get(8).and_then(|value| value.as_integer().ok())
+            && let Some(start) = items.get(8).and_then(|value| value.integer_value())
             && start >= begv as i64
         {
             return start as usize;
@@ -1717,7 +1711,7 @@ fn back_comment_gnu(
         };
         let comstr_start = items
             .get(8)
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .and_then(|value| usize::try_from(value).ok());
         if incomment_matches && ppss_style_code(items.get(7)) == comstyle {
             if let Some(start) = comstr_start {

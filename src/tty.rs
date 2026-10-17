@@ -877,7 +877,7 @@ fn command_loop(
         if event
             .car()
             .ok()
-            .and_then(|value| value.as_symbol().ok().map(str::to_owned))
+            .and_then(|value| value.symbol_str().map(str::to_owned))
             .as_deref()
             == Some("switch-frame")
         {
@@ -1441,7 +1441,7 @@ fn window_render_geometry(
         let w = body_width as i64;
         let margin = interpreter
             .lookup_var("hscroll-margin", env)
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or(5)
             .clamp(0, 1_000_000);
         let cursor_x = point_dcol - hscroll;
@@ -1574,7 +1574,7 @@ fn window_margin_display(value: &Value) -> Option<(String, Value)> {
     if !matches!(location.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "margin") {
         return None;
     }
-    let side = location.get(1)?.as_symbol().ok()?.to_string();
+    let side = location.get(1)?.symbol_str()?.to_string();
     let payload = *parts.get(1)?;
     crate::lisp::primitives::string_text(&payload).ok()?;
     Some((side, payload))
@@ -2050,7 +2050,7 @@ fn visual_line_at(
         {
             let priority = overlay
                 .get_prop(&Value::Symbol("priority".into()))
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .unwrap_or(0);
             overlay_displays.push((
                 overlay.beg(),

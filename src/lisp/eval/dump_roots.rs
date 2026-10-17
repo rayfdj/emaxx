@@ -98,6 +98,10 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "the specpdl's backtrace entries, not dumped",
     ),
     (
+        "frame_locals",
+        "the interpreted calls' bindings recorded beside the specpdl's backtrace entries, not dumped",
+    ),
+    (
         "batch_error_backtrace",
         "a rendering of the specpdl kept for the batch error report, not dumped",
     ),
@@ -548,10 +552,7 @@ impl Interpreter {
         groups.push((RootSlot::SyntaxCodeObjects, self.syntax_code_objects));
         // keymap.c's staticpro'd Unicode table, including a captured table
         // no longer named by char-code-property-alist.
-        groups.push((
-            RootSlot::UnicodeMenuCaseTable,
-            crate::lisp::primitives::unicode_menu_case_table(),
-        ));
+        groups.push((RootSlot::UnicodeMenuCaseTable, self.unicode_menu_case_table));
         groups.push((
             RootSlot::StandardSyntaxTable,
             Value::CharTable(self.standard_syntax_table_id),
@@ -1050,7 +1051,7 @@ mod install {
                         opt_of(value, |v| expect_char_table(v, "standard case table"))?;
                 }
                 RootSlot::UnicodeMenuCaseTable => {
-                    crate::lisp::primitives::restore_unicode_menu_case_table(*value)?;
+                    crate::lisp::primitives::restore_unicode_menu_case_table(self, *value)?;
                 }
                 RootSlot::SyntaxWordChars => {
                     let mut codes = Vec::new();

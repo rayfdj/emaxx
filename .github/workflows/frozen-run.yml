@@ -64,9 +64,9 @@ jobs:
             libjpeg-dev libgif-dev libtiff-dev libpng-dev libxft-dev libxrender-dev \
             libxt-dev liblcms2-dev libharfbuzz-dev libcairo2-dev librsvg2-dev \
             libwebp-dev libseccomp-dev libasound2-dev libacl1-dev libselinux1-dev clangd bubblewrap strace mercurial
-          rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
+          rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
           rustup toolchain install 1.75.0 --profile minimal --component rust-analyzer --component rust-src
-          rustup default 1.97.1
+          rustup default 1.99.1
       - name: Enable bubblewrap's required user namespaces
         run: |
           # Grant the installed sandbox executable its required namespace
@@ -121,9 +121,9 @@ jobs:
             emaxx/target/debug
             emaxx/target/gate
             emaxx/target/compat-subject
-          key: frozen-build-linux-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-${{ github.sha }}
+          key: frozen-build-linux-1.99.1-${{ hashFiles('emaxx/Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
-            frozen-build-linux-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-
+            frozen-build-linux-1.99.1-${{ hashFiles('emaxx/Cargo.lock') }}-
       - name: Build current runner and check Rust formatting and lint
         run: |
           cargo clean --package emaxx --profile gate
@@ -484,7 +484,7 @@ jobs:
             emaxx/target/debug
             emaxx/target/gate
             emaxx/target/compat-subject
-          key: frozen-build-linux-1.97.1-${{ hashFiles('emaxx/Cargo.lock') }}-${{ github.sha }}
+          key: frozen-build-linux-1.99.1-${{ hashFiles('emaxx/Cargo.lock') }}-${{ github.sha }}
       - name: Collect only this run's raw compatibility evidence
         if: always()
         run: |

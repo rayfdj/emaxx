@@ -969,10 +969,10 @@ impl Interpreter {
         // appends rather than replacing.  Emaxx encodes that identity in the
         // raw symbol name, so compare raw names here -- deliberately NOT the
         // visible name used for the option-table lookup.
-        let key_name = option.as_symbol().ok();
+        let key_name = option.symbol_str();
         let mut index = 0;
         while index + 1 < items.len() {
-            if items[index].as_symbol().ok() == key_name {
+            if items[index].symbol_str() == key_name {
                 items[index + 1] = value;
                 process.contact = Value::list(items);
                 return;
@@ -1848,7 +1848,7 @@ impl Interpreter {
     ) -> Option<String> {
         let process = self.find_process_state(record_id)?;
         let runtime = process.runtime.as_ref()?;
-        let stream_matches = match stream.and_then(|value| value.as_symbol().ok()) {
+        let stream_matches = match stream.and_then(|value| value.symbol_str()) {
             Some("stdin") => runtime.pty_input.is_some(),
             Some("stdout") => runtime.pty_output.is_some(),
             // A separate :stderr destination is always a pipe.  Only merged
@@ -2002,7 +2002,7 @@ impl Interpreter {
         delay_secs: f64,
         repeat_secs: Option<f64>,
     ) {
-        let original_name = function.as_symbol().ok().map(str::to_string);
+        let original_name = function.symbol_str().map(str::to_string);
         let due = (delay_secs > 0.0 && delay_secs.is_finite())
             .then(|| std::time::Instant::now() + std::time::Duration::from_secs_f64(delay_secs));
         self.pending_timers.push(ScheduledTimer {
@@ -2908,7 +2908,7 @@ impl Interpreter {
                 recipients.sort_by_key(|(descriptor, _, _)| {
                     descriptor
                         .cons_values()
-                        .and_then(|(_, id)| id.as_integer().ok())
+                        .and_then(|(_, id)| id.integer_value())
                         .unwrap_or(i64::MAX)
                 });
                 for (descriptor, callback, event_name) in recipients {

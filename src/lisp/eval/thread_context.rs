@@ -18,6 +18,7 @@ pub(super) struct ThreadExecutionContext {
     bc_stack: crate::lisp::bytecode::vm::BcStack,
     bc_unwinds: Vec<crate::lisp::bytecode::vm::UnwindEntry>,
     pub(super) backtrace_frames: Vec<BacktraceFrame>,
+    frame_locals: Vec<FrameLocal>,
     batch_error_backtrace: Option<BatchErrorBacktrace>,
     active_handlers: Vec<ActiveHandler>,
     active_catch_tags: Vec<Value>,
@@ -44,6 +45,7 @@ impl ThreadExecutionContext {
             bc_stack,
             bc_unwinds,
             backtrace_frames,
+            frame_locals,
             batch_error_backtrace,
             active_handlers,
             active_catch_tags,
@@ -71,12 +73,12 @@ impl TraceLispRoots for ThreadExecutionContext {
             if let Some(form) = frame.source_form() {
                 marker.value(&form);
             }
-            for (_, value) in frame.locals() {
-                marker.value(value);
-            }
             if let Some(environment) = frame.lexical_context() {
                 marker.environment(environment);
             }
+        }
+        for local in &self.frame_locals {
+            marker.value(&local.value);
         }
         if let Some(snapshot) = &self.batch_error_backtrace {
             for (_, function, arguments, _) in &snapshot.frames {

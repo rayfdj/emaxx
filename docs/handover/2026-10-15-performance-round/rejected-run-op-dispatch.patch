@@ -1,0 +1,2251 @@
+diff --git a/src/lisp/bytecode/vm.rs b/src/lisp/bytecode/vm.rs
+index 59b2320..af33aeb 100644
+--- a/src/lisp/bytecode/vm.rs
++++ b/src/lisp/bytecode/vm.rs
+@@ -79,6 +79,7 @@ impl BcStack {
+         unsafe { self.words.as_ptr().add(frame).cast::<BcHeader>().read() }
+     }
+ 
++    #[inline(always)]
+     fn enter_frame(&mut self, depth: usize, function: Value, pc: usize) -> Result<(), LispError> {
+         let base = self.frame + BC_HEADER_WORDS;
+         let frame = base
+@@ -190,6 +191,7 @@ impl BcStack {
+     /// # Safety
+     /// The caller must keep these initialized caller slots intact until the
+     /// returned slice is no longer used. Callee frames occupy disjoint storage.
++    #[inline(always)]
+     unsafe fn slice_from(&self, start: usize, len: usize) -> &'static [Value] {
+         assert!(start <= self.len() && len <= self.len() - start);
+         unsafe {
+@@ -1016,8 +1018,8 @@ fn run_fast(
+ /// constant within the vector. The stack top lives in a local pointer and
+ /// is stored back on the way out; nothing here runs Lisp or collects.
+ /// The ops and their exits are run_fast's.
+-#[inline(never)]
+-fn run_verified(
++#[inline(always)]
++fn run_verified_stretch(
+     object: &ByteCodeObject,
+     code: &[u8],
+     ops: &mut BcStack,
+@@ -1454,6 +1456,1072 @@ fn run(
+     result
+ }
+ 
++/// What an op did to the activation's control flow.
++enum Flow {
++    Next,
++    /// The entry frame returned this value.
++    Return(Value),
++}
++
++/// One `run_frames' activation: the running frame's program and pc, the
++/// suspended callers, the handlers, and the counters the dispatch keeps.
++struct Activation {
++    program: ByteCodeObject,
++    handlers: Vec<Handler>,
++    frames: Vec<BcFrame>,
++    pc: usize,
++    /// bytecode.c's `quitcounter': backward branches increment the byte
++    /// counter; wrapping it to zero calls maybe_gc and maybe_quit before
++    /// resetting it to one, so a loop without a call can be interrupted.
++    quitcounter: u8,
++    /// Frames pushed by signaling byte ops (record_in_backtrace); an
++    /// in-frame condition-case that catches must unwind them, and the
++    /// caller (`run') balances whatever is left after handler dispatch.
++    op_error_frames: usize,
++    last_instruction: Option<super::Instr>,
++    trace_errors: bool,
++}
++
++impl Activation {
++    #[inline]
++    fn return_from_frame(
++        &mut self,
++        interp: &mut Interpreter,
++        env: &mut Env,
++        value: Value,
++    ) -> Result<Flow, LispError> {
++        return_to_caller(
++            interp,
++            env,
++            &mut self.program,
++            &mut self.handlers,
++            &mut self.frames,
++            &mut self.pc,
++            &mut self.op_error_frames,
++            value,
++        )
++    }
++}
++
++/// Breturn: with a frame below, the value replaces the callee's slot and
++/// the caller's program and pc resume; at the entry frame it leaves the
++/// activation.
++#[allow(clippy::too_many_arguments)]
++#[inline(always)]
++fn return_to_caller(
++    interp: &mut Interpreter,
++    env: &mut Env,
++    program: &mut ByteCodeObject,
++    handlers: &mut Vec<Handler>,
++    frames: &mut Vec<BcFrame>,
++    pc: &mut usize,
++    op_error_frames: &mut usize,
++    value: Value,
++) -> Result<Flow, LispError> {
++    let Some(frame) = frames.pop() else {
++        return Ok(Flow::Return(value));
++    };
++    if let Err(error) = leave_frame(interp, env, &frame) {
++        frames.push(frame);
++        return Err(error);
++    }
++    *pc = interp.bc_stack.leave_frame();
++    interp.bc_stack.truncate(frame.base);
++    interp.bc_stack.push_within_frame(value);
++    *program = frame.program;
++    *op_error_frames = frame.op_error_frames;
++    handlers.truncate(frame.handlers_len);
++    Ok(Flow::Next)
++}
++
++/// Verified code's driver: runs the verified loop, and the full dispatch
++/// for each op it hands back, without leaving for the frame loop, while
++/// the code stays verified (calls and returns switch the frame in place).
++/// Next means the instruction at the pc is not admitted: the caller runs
++/// the checked loop.
++#[inline(never)]
++fn run_verified(
++    interp: &mut Interpreter,
++    env: &mut Env,
++    act: &mut Activation,
++) -> Result<Flow, LispError> {
++    loop {
++        let Some(verified) = act.program.verified else {
++            return Ok(Flow::Next);
++        };
++        let exit = act.program.code.with_bytes_and_state(|code, current| {
++            (current && verified.admits(act.pc, interp.bc_stack.len())).then(|| {
++                run_verified_stretch(
++                    &act.program,
++                    code,
++                    &mut interp.bc_stack,
++                    &mut act.pc,
++                    &mut act.quitcounter,
++                )
++            })
++        });
++        let Some(exit) = exit else {
++            return Ok(Flow::Next);
++        };
++        act.last_instruction = None;
++        let instr = match exit {
++            FastExit::Return(value) => match act.return_from_frame(interp, env, value)? {
++                Flow::Next => continue,
++                done => return Ok(done),
++            },
++            FastExit::QuitCheck => {
++                crate::lisp::native_comp::maybe_gc(interp, env);
++                interp.maybe_quit(env)?;
++                continue;
++            }
++            FastExit::Slow(instr) => instr,
++            FastExit::Error(error) => return Err(LispError::Signal(error.to_string())),
++        };
++        act.last_instruction = Some(instr);
++        act.pc += instr.len;
++        if let done @ Flow::Return(_) = run_op(interp, env, act, instr)? {
++            return Ok(done);
++        }
++    }
++}
++
++/// The full dispatch of one op the fast loops handed back, with the pc
++/// already past it. Every fallible operation funnels through the result,
++/// so handler unwinding (GNU's sys_setjmp arm) is applied uniformly.
++#[inline(never)]
++fn run_op(
++    interp: &mut Interpreter,
++    env: &mut Env,
++    act: &mut Activation,
++    instr: super::Instr,
++) -> Result<Flow, LispError> {
++    let op = instr.op;
++    let offset = instr.offset;
++    let Activation {
++        program,
++        handlers,
++        frames,
++        pc,
++        quitcounter,
++        op_error_frames,
++        trace_errors,
++        ..
++    } = act;
++    let trace_errors = *trace_errors;
++
++    macro_rules! pop {
++        () => {
++            interp
++                .bc_stack
++                .pop()
++                .expect("validated bytecode never underflows")
++        };
++    }
++    macro_rules! push {
++        ($value:expr) => {{
++            let value = $value;
++            interp.bc_stack.push_within_frame(value)
++        }};
++    }
++    macro_rules! branch {
++        ($target:expr) => {{
++            let destination = $target as usize;
++            if destination < *pc {
++                *quitcounter = quitcounter.wrapping_add(1);
++                if *quitcounter == 0 {
++                    *quitcounter = 1;
++                    crate::lisp::native_comp::maybe_gc(interp, env);
++                    interp.maybe_quit(env)?;
++                }
++            }
++            *pc = destination;
++        }};
++    }
++
++    // run_fast already handled the ordinary stack/value cases.
++    // A fallback goes directly to its complete operation; repeating
++    // the same fast predicates here only adds a third dispatch.
++    match op {
++        Op::StackRef(n) => {
++            let value = interp.bc_stack[interp.bc_stack.len() - 1 - n as usize];
++            push!(value);
++        }
++        Op::StackSet(n) => {
++            let value = pop!();
++            let slot = interp.bc_stack.len() - 1 - (n as usize - 1);
++            // stack-set N stores relative to the *pre-pop* top.
++            interp.bc_stack[slot] = value;
++        }
++        Op::DiscardN {
++            count,
++            preserve_tos,
++        } => {
++            if preserve_tos {
++                let top = pop!();
++                for _ in 0..count {
++                    pop!();
++                }
++                push!(top);
++            } else {
++                for _ in 0..count {
++                    pop!();
++                }
++            }
++        }
++        Op::Discard => {
++            pop!();
++        }
++        Op::Dup => {
++            let top = *interp.bc_stack.last().expect("validated bytecode");
++            push!(top);
++        }
++        Op::Constant(index) | Op::Constant2(index) => {
++            push!(program.constant(index));
++        }
++        Op::VarRef(index) => {
++            // bytecode.c:Bvarref is find_symbol_value on the constant,
++            // signalling void-variable with that very object; a bare
++            // symbol reaches the cell directly, anything else takes
++            // Fsymbol_value's CHECK_SYMBOL path.
++            let name = program.constant(index);
++            let value = match name.kind() {
++                Kind::Symbol(symbol) => match interp.symbol_value_cell_symbol(&symbol) {
++                    Ok(value) => value,
++                    Err(error) if matches!(error.kind(), LispErrorKind::Void(_)) => {
++                        return Err(LispError::SignalValue(Value::list([
++                            Value::symbol("void-variable"),
++                            name,
++                        ])));
++                    }
++                    Err(error) => return Err(error),
++                },
++                _ => prim(interp, "symbol-value", &[name], env)?,
++            };
++            push!(value);
++        }
++        Op::VarSet(index) => {
++            // bytecode.c:Bvarset is set_internal on the constant.
++            let name = program.constant(index);
++            let value = pop!();
++            match name.kind() {
++                Kind::Symbol(symbol) => {
++                    crate::lisp::primitives::set_internal_symbol(interp, &symbol, value, env)?;
++                }
++                _ => {
++                    prim(interp, "set", &[name, value], env)?;
++                }
++            }
++        }
++        Op::VarBind(index) => {
++            // bytecode.c:Bvarbind is specbind on the constant.
++            let name = program.constant(index);
++            let name = name
++                .as_symbol()
++                .map_err(|_| LispError::Signal("varbind constant must be a symbol".into()))?;
++            let value = pop!();
++            let restore = interp.bind_special_variable(name, value, env)?;
++            interp.bc_unwinds.push(UnwindEntry::Binding(restore));
++        }
++        Op::Unbind(count) => {
++            for _ in 0..count {
++                match interp.bc_unwinds.pop() {
++                    Some(entry) => unwind_one(interp, entry, env)?,
++                    None => {
++                        return Err(LispError::Signal("byte code unbind underflow".into()));
++                    }
++                }
++            }
++        }
++        Op::SaveExcursion => {
++            let buffer_id = interp.current_buffer_id();
++            let saved_pt = interp.buffer.borrow().point();
++            let Kind::Marker(marker_id) = interp.make_marker().kind() else {
++                unreachable!("make_marker returns a marker")
++            };
++            interp.set_marker(marker_id, Some(saved_pt), Some(buffer_id))?;
++            interp.bc_unwinds.push(UnwindEntry::Excursion {
++                buffer_id,
++                marker_id,
++                saved_pt,
++            });
++        }
++        Op::SaveCurrentBuffer | Op::SaveCurrentBufferObsolete => {
++            let buffer_id = interp.current_buffer_id();
++            interp
++                .bc_unwinds
++                .push(UnwindEntry::CurrentBuffer { buffer_id });
++        }
++        Op::SaveRestriction => {
++            let buffer_id = interp.current_buffer_id();
++            let saved_begv = interp.buffer.borrow().point_min();
++            let saved_zv = interp.buffer.borrow().point_max();
++            let labeled = interp.labeled_restrictions_snapshot(buffer_id);
++            // Mirrors sf_save_restriction: a wide buffer records "no
++            // restriction" (marker-tracking would spuriously
++            // re-narrow after edits at BEGV).
++            if saved_begv == 1 && saved_zv == interp.buffer.borrow().size_total() + 1 {
++                interp
++                    .bc_unwinds
++                    .push(UnwindEntry::RestrictionWide { buffer_id, labeled });
++            } else {
++                let Kind::Marker(beg_id) = interp.make_marker().kind() else {
++                    unreachable!("make_marker returns a marker")
++                };
++                let Kind::Marker(end_id) = interp.make_marker().kind() else {
++                    unreachable!("make_marker returns a marker")
++                };
++                let _ = interp.set_marker(beg_id, Some(saved_begv), Some(buffer_id));
++                let _ = interp.set_marker(end_id, Some(saved_zv), Some(buffer_id));
++                interp.set_marker_insertion_type(end_id, true);
++                interp.bc_unwinds.push(UnwindEntry::Restriction {
++                    buffer_id,
++                    beg_id,
++                    end_id,
++                    saved_begv,
++                    saved_zv,
++                    labeled,
++                });
++            }
++        }
++        Op::UnwindProtect => {
++            let handler = pop!();
++            interp.bc_unwinds.push(UnwindEntry::Protect(handler));
++        }
++        Op::SaveWindowExcursion => {
++            // Obsolete since 24.1: TOP is a list of body forms;
++            // evaluate them inside a window-configuration save.
++            let body = pop!();
++            let snapshot = interp.snapshot_window_configuration();
++            let mut value = Value::Nil;
++            let result: Result<(), LispError> =
++                interp.with_lisp_stack_roots(&(&body, &snapshot), |interp| {
++                    for form in &body.to_vec()? {
++                        value = interp.eval(form, env)?;
++                    }
++                    Ok(())
++                });
++            let _ = interp.restore_window_configuration(snapshot);
++            result?;
++            push!(value);
++        }
++        Op::Catch => {
++            // Obsolete since 25: TAG below an unevaluated body form.
++            let body = pop!();
++            let tag = pop!();
++            let value = interp.with_lisp_stack_roots(&(&body, &tag), |interp| {
++                match interp.eval(&body, env) {
++                    Err(error) => match error.kind() {
++                        LispErrorKind::Throw(thrown, thrown_value) => {
++                            let matched = interp.with_lisp_stack_roots(&error, |interp| {
++                                prim(interp, "eq", &[tag, *thrown], env)
++                            })?;
++                            if matched.is_truthy() {
++                                Ok(*thrown_value)
++                            } else {
++                                Err(error)
++                            }
++                        }
++                        _ => Err(error),
++                    },
++                    ok => ok,
++                }
++            })?;
++            push!(value);
++        }
++        Op::ConditionCase => {
++            // Obsolete since 25: VAR, BODY form, HANDLERS list —
++            // exactly `(condition-case VAR BODY . HANDLERS)`.
++            let handlers = pop!();
++            let body = pop!();
++            let var = pop!();
++            let mut form = vec![Value::symbol("condition-case"), var, body];
++            form.extend(handlers.to_vec()?);
++            let form = Value::list(form);
++            let value = interp.with_lisp_stack_roots(&form, |interp| interp.eval(&form, env))?;
++            push!(value);
++        }
++        Op::TempOutputBufferSetup => {
++            // Obsolete since 24.1: create/erase the temp buffer and
++            // bind standard-output to it (GNU temp_output_buffer_setup
++            // specbinds, so Bunbind pops it).
++            let name = pop!();
++            let buffer = prim(interp, "get-buffer-create", &[name], env)?;
++            let saved = interp.current_buffer_id();
++            let buffer_id = interp.resolve_buffer_id(&buffer)?;
++            let _ = interp.set_current_buffer_id(buffer_id);
++            prim(interp, "erase-buffer", &[], env)?;
++            let _ = interp.set_current_buffer_id(saved);
++            let restore = interp.bind_special_variable("standard-output", buffer, env)?;
++            interp.bc_unwinds.push(UnwindEntry::Binding(restore));
++            push!(buffer);
++        }
++        Op::TempOutputBufferShow => {
++            // Obsolete since 24.1: show the buffer at TOP, replace it
++            // with the saved value below, pop the standard-output bind.
++            let value = pop!();
++            let buffer = pop!();
++            let show = interp
++                .lookup_var("temp-buffer-show-function", env)
++                .unwrap_or(Value::Nil);
++            interp.with_lisp_stack_roots(&value, |interp| {
++                if show.is_truthy() {
++                    interp.call_function_value(show, None, std::slice::from_ref(&buffer), env)?;
++                } else {
++                    prim(interp, "display-buffer", &[buffer], env)?;
++                }
++                Ok::<_, LispError>(())
++            })?;
++            push!(value);
++            match interp.bc_unwinds.pop() {
++                Some(entry) => unwind_one(interp, entry, env)?,
++                None => {
++                    return Err(LispError::Signal("byte code unbind underflow".into()));
++                }
++            }
++        }
++        Op::InteractiveP => {
++            // Obsolete since 24.1: GNU call0s the Lisp function.
++            let value = interp.call_function_value(
++                Value::symbol("interactive-p"),
++                Some("interactive-p"),
++                &[],
++                env,
++            )?;
++            push!(value);
++        }
++        // Zero-argument push ops.
++        Op::Point
++        | Op::PointMax
++        | Op::PointMin
++        | Op::FollowingChar
++        | Op::PrecedingChar
++        | Op::CurrentColumn
++        | Op::Eolp
++        | Op::Eobp
++        | Op::Bolp
++        | Op::Bobp
++        | Op::CurrentBuffer
++        | Op::Widen => {
++            let name = match op {
++                Op::Point => "point",
++                Op::PointMax => "point-max",
++                Op::PointMin => "point-min",
++                Op::FollowingChar => "following-char",
++                Op::PrecedingChar => "preceding-char",
++                Op::CurrentColumn => "current-column",
++                Op::Eolp => "eolp",
++                Op::Eobp => "eobp",
++                Op::Bolp => "bolp",
++                Op::Bobp => "bobp",
++                Op::CurrentBuffer => "current-buffer",
++                _ => "widen",
++            };
++            let value = prim(interp, name, &[], env)?;
++            push!(value);
++        }
++        // One-argument buffer/navigation ops (TOP = F(TOP)).
++        Op::GotoChar
++        | Op::Insert
++        | Op::CharAfter
++        | Op::SetBuffer
++        | Op::ForwardChar
++        | Op::ForwardWord
++        | Op::ForwardLine
++        | Op::CharSyntax
++        | Op::EndOfLine
++        | Op::MatchBeginning
++        | Op::MatchEnd => {
++            let a = pop!();
++            let name = match op {
++                Op::GotoChar => "goto-char",
++                Op::Insert => "insert",
++                Op::CharAfter => "char-after",
++                Op::SetBuffer => "set-buffer",
++                Op::ForwardChar => "forward-char",
++                Op::ForwardWord => "forward-word",
++                Op::ForwardLine => "forward-line",
++                Op::CharSyntax => "char-syntax",
++                Op::EndOfLine => "end-of-line",
++                Op::MatchBeginning => "match-beginning",
++                _ => "match-end",
++            };
++            let value = prim(interp, name, &[a], env)?;
++            push!(value);
++        }
++        Op::IndentTo => {
++            // GNU passes an explicit nil MINIMUM.
++            let column = pop!();
++            let value = prim(interp, "indent-to", &[column, Value::Nil], env)?;
++            push!(value);
++        }
++        // Two-argument region/motion ops.
++        Op::SkipCharsForward
++        | Op::SkipCharsBackward
++        | Op::BufferSubstring
++        | Op::DeleteRegion
++        | Op::NarrowToRegion => {
++            let b = pop!();
++            let a = pop!();
++            let name = match op {
++                Op::SkipCharsForward => "skip-chars-forward",
++                Op::SkipCharsBackward => "skip-chars-backward",
++                Op::BufferSubstring => "buffer-substring",
++                Op::DeleteRegion => "delete-region",
++                _ => "narrow-to-region",
++            };
++            let value = prim(interp, name, &[a, b], env)?;
++            push!(value);
++        }
++        Op::SetMarker => {
++            let position_buffer = pop!();
++            let position = pop!();
++            let marker = pop!();
++            let value = prim(
++                interp,
++                "set-marker",
++                &[marker, position, position_buffer],
++                env,
++            )?;
++            push!(value);
++        }
++        Op::InsertN(n) => {
++            let start = interp.bc_stack.len() - n as usize;
++            let items: Vec<Value> = interp.bc_stack.drain_from(start).collect();
++            let value = prim(interp, "insert", &items, env)?;
++            push!(value);
++        }
++        Op::Call(argc) => {
++            let argc = argc as usize;
++            let args_start = interp.bc_stack.len() - argc;
++            // Bcall: the function is TOP below the arguments; both
++            // stay on the stack until the call returns (GNU keeps
++            // them rooted the same way).
++            let func = interp.bc_stack[args_start - 1];
++            interp.begin_funcall(env)?;
++            if let Some(termination) = interp.pending_termination().cloned() {
++                interp.end_funcall();
++                return Err(LispError::Terminate(termination));
++            }
++            let backtrace_depth = interp.backtrace_frames_len();
++            // Bcall records the unresolved function and rooted arguments
++            // before maybe_gc, which may redefine the function cell.
++            // SAFETY: the stack buffer never moves and these slots stay
++            // below the callee's disjoint storage until return/unwind.
++            let call_args = unsafe { interp.bc_stack.slice_from(args_start, argc) };
++            interp.push_backtrace_frame_borrowed(func, call_args);
++            let callee_name = match func.kind() {
++                Kind::Symbol(name) => Some(name),
++                _ => None,
++            };
++            interp.capture_current_backtrace_context(
++                callee_name.as_ref().map(|name| name.as_str()),
++                env,
++                None,
++            );
++            crate::lisp::native_comp::maybe_gc(interp, env);
++            // Only now inspect the live cell/code slots, just as GNU's
++            // packed-closure setup_frame branch does after maybe_gc.
++            let native = match interp.bcall_callee(&func) {
++                crate::lisp::eval::BcallCallee::Native(native) => Some(native),
++                crate::lisp::eval::BcallCallee::Funcall => None,
++                crate::lisp::eval::BcallCallee::ByteCode(callee, callee_function) => {
++                    if let Err(error) =
++                        interp
++                            .bc_stack
++                            .enter_frame(callee.stack_depth, callee_function, *pc)
++                    {
++                        let result = interp.settle_frame_result(Err(error), env);
++                        interp.truncate_backtrace_frames(backtrace_depth);
++                        interp.end_funcall();
++                        match result {
++                            Ok(value) => {
++                                interp.bc_stack.truncate(args_start - 1);
++                                push!(value);
++                                return Ok(Flow::Next);
++                            }
++                            Err(error) => return Err(error),
++                        }
++                    }
++                    frames.push(BcFrame {
++                        program: std::mem::replace(program, callee),
++                        base: args_start - 1,
++                        handlers_len: handlers.len(),
++                        unwinds_len: interp.bc_unwinds.len(),
++                        backtrace_depth,
++                        op_error_frames: *op_error_frames,
++                    });
++                    *pc = 0;
++                    *op_error_frames = 0;
++                    // setup_frame: the callee's frame starts above the
++                    // caller's top; the arguments are copied into it
++                    // (`PUSH (*args)'), the optionals padded, the rest
++                    // gathered.  The caller's own slots -- the function
++                    // and the arguments the backtrace frame borrows --
++                    // stay as they are until Breturn cuts back to them.
++                    let ArgSpec::Packed {
++                        mandatory,
++                        nonrest,
++                        rest,
++                    } = &program.argspec
++                    else {
++                        unreachable!("bytecode_callee selects packed argument lists")
++                    };
++                    let mandatory = *mandatory as usize;
++                    let nonrest = *nonrest as usize;
++                    let rest = *rest;
++                    if argc < mandatory || (!rest && argc > nonrest) {
++                        return Err(packed_arity_error(mandatory, nonrest, argc));
++                    }
++                    let pushed = argc.min(nonrest);
++                    for argument in &call_args[..pushed] {
++                        push!(*argument);
++                    }
++                    if argc > nonrest {
++                        let rest_list = Value::list(call_args[nonrest..].iter().cloned());
++                        push!(rest_list);
++                    } else {
++                        for _ in argc..nonrest {
++                            push!(Value::Nil);
++                        }
++                        if rest {
++                            push!(Value::Nil);
++                        }
++                    }
++                    program.verified =
++                        super::verify::verified_code(program, nonrest + usize::from(rest));
++                    return Ok(Flow::Next);
++                }
++            };
++            let trace_call = trace_errors.then(|| func.to_string());
++            let result = match native {
++                Some(native) => {
++                    crate::lisp::native_comp::call_function(interp, env, native, call_args)
++                }
++                None => interp.funcall_body(func, call_args, env),
++            };
++            let result = interp.settle_frame_result(result, env);
++            interp.truncate_backtrace_frames(backtrace_depth);
++            interp.end_funcall();
++            let value = match result {
++                Ok(value) => value,
++                Err(error) => {
++                    // Expected conditions such as `scan-error' are
++                    // routinely caught by compiled Lisp.  Logging
++                    // every one makes a real VM dispatch failure
++                    // disappear in megabytes of noise.
++                    if matches!(error.kind(), LispErrorKind::WrongNumberOfArgs(_, _))
++                        && let Some(func) = trace_call
++                    {
++                        eprintln!("bytecode call {func} failed at byte offset {offset}: {error:?}");
++                    }
++                    return Err(error);
++                }
++            };
++            interp.bc_stack.truncate(args_start - 1);
++            push!(value);
++        }
++        Op::Goto { target } => {
++            branch!(target);
++        }
++        Op::GotoIfNil { target } => {
++            if pop!().is_nil() {
++                branch!(target);
++            }
++        }
++        Op::GotoIfNonNil { target } => {
++            if !pop!().is_nil() {
++                branch!(target);
++            }
++        }
++        Op::GotoIfNilElsePop { target } => {
++            if interp.bc_stack.last().expect("validated bytecode").is_nil() {
++                branch!(target);
++            } else {
++                pop!();
++            }
++        }
++        Op::GotoIfNonNilElsePop { target } => {
++            if !interp.bc_stack.last().expect("validated bytecode").is_nil() {
++                branch!(target);
++            } else {
++                pop!();
++            }
++        }
++        Op::Return => {
++            let value = pop!();
++            return return_to_caller(
++                interp,
++                env,
++                program,
++                handlers,
++                frames,
++                pc,
++                op_error_frames,
++                value,
++            );
++        }
++        Op::PushCatch { target } => {
++            let tag = pop!();
++            // `throw' consults the interpreter's active-catch
++            // registry before unwinding; a VM catch frame must be
++            // visible there like any `sf_catch' frame.
++            interp.push_active_catch_tag(tag);
++            handlers.push(Handler {
++                kind: HandlerKind::Catch(tag),
++                dest: target as usize,
++                stack_len: interp.bc_stack.len(),
++                unwind_len: interp.bc_unwinds.len(),
++                registry_start: None,
++            });
++        }
++        Op::PushConditionCase { target } => {
++            let conditions = pop!();
++            // Register the clause head with the interpreter so
++            // signal-time `handler-bind' dispatch at native-call
++            // boundaries sees this frame before any outer handler,
++            // exactly like an interpreted `condition-case'.
++            let registry_start = interp.push_condition_case_handler(vec![conditions]);
++            handlers.push(Handler {
++                kind: HandlerKind::ConditionCase(conditions),
++                dest: target as usize,
++                stack_len: interp.bc_stack.len(),
++                unwind_len: interp.bc_unwinds.len(),
++                registry_start: Some(registry_start),
++            });
++        }
++        Op::PopHandler => {
++            if let Some(handler) = handlers.pop() {
++                if matches!(handler.kind, HandlerKind::Catch(_)) {
++                    interp.pop_active_catch_tag();
++                }
++                if let Some(start) = handler.registry_start {
++                    interp.pop_handler_bindings(start);
++                }
++            }
++        }
++        Op::Switch => {
++            let table = pop!();
++            let value = pop!();
++            let dest = prim(interp, "gethash", &[value, table, Value::Nil], env)?;
++            if let Kind::Integer(dest) = dest.kind() {
++                *pc = dest as usize;
++            }
++        }
++        Op::ListN(n) => {
++            let start = interp.bc_stack.len() - n as usize;
++            let items: Vec<Value> = interp.bc_stack.drain_from(start).collect();
++            push!(Value::list(items));
++        }
++        Op::ConcatN(n) => {
++            let start = interp.bc_stack.len() - n as usize;
++            let items: Vec<Value> = interp.bc_stack.drain_from(start).collect();
++            let value = prim(interp, "concat", &items, env)?;
++            push!(value);
++        }
++        Op::List1 | Op::List2 | Op::List3 | Op::List4 => {
++            let n = match op {
++                Op::List1 => 1,
++                Op::List2 => 2,
++                Op::List3 => 3,
++                _ => 4,
++            };
++            let start = interp.bc_stack.len() - n;
++            let items: Vec<Value> = interp.bc_stack.drain_from(start).collect();
++            push!(Value::list(items));
++        }
++        Op::Not => {
++            let value = pop!();
++            push!(if value.is_nil() { Value::T } else { Value::Nil });
++        }
++        // Two-argument ops with inline fast paths.
++        Op::Eq => {
++            let b = pop!();
++            let a = pop!();
++            let equal = crate::lisp::primitives::values_eq_in_env(interp, &a, &b, env);
++            push!(if equal { Value::T } else { Value::Nil });
++        }
++        Op::Cons => {
++            let b = pop!();
++            let a = pop!();
++            push!(Value::cons(a, b));
++        }
++        Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
++            let b = pop!();
++            let a = pop!();
++            if let (Kind::Integer(x), Kind::Integer(y)) = (a.kind(), b.kind()) {
++                let holds = match op {
++                    Op::Eqlsign => x == y,
++                    Op::Gtr => x > y,
++                    Op::Lss => x < y,
++                    Op::Leq => x <= y,
++                    _ => x >= y,
++                };
++                push!(if holds { Value::T } else { Value::Nil });
++                return Ok(Flow::Next);
++            }
++            let name = match op {
++                Op::Eqlsign => "=",
++                Op::Gtr => ">",
++                Op::Lss => "<",
++                Op::Leq => "<=",
++                _ => ">=",
++            };
++            let value = prim(interp, name, &[a, b], env)?;
++            push!(value);
++        }
++        Op::Plus | Op::Diff | Op::Mult => {
++            let b = pop!();
++            let a = pop!();
++            if let (Kind::Integer(x), Kind::Integer(y)) = (a.kind(), b.kind()) {
++                let fast = match op {
++                    Op::Plus => x.checked_add(y),
++                    Op::Diff => x.checked_sub(y),
++                    _ => x.checked_mul(y),
++                };
++                if let Some(n) = fast {
++                    push!(Value::Integer(n));
++                    return Ok(Flow::Next);
++                }
++            }
++            let name = match op {
++                Op::Plus => "+",
++                Op::Diff => "-",
++                _ => "*",
++            };
++            let value = prim(interp, name, &[a, b], env)?;
++            push!(value);
++        }
++        Op::Max | Op::Min => {
++            let b = pop!();
++            let a = pop!();
++            if let (Kind::Integer(x), Kind::Integer(y)) = (a.kind(), b.kind()) {
++                let n = if matches!(op, Op::Max) {
++                    (x).max(y)
++                } else {
++                    (x).min(y)
++                };
++                push!(Value::Integer(n));
++                return Ok(Flow::Next);
++            }
++            let name = if matches!(op, Op::Max) { "max" } else { "min" };
++            let value = prim(interp, name, &[a, b], env)?;
++            push!(value);
++        }
++        // Two-argument primitive ops.
++        Op::Memq
++        | Op::Nth
++        | Op::Aref
++        | Op::Setcar
++        | Op::Setcdr
++        | Op::Nthcdr
++        | Op::Elt
++        | Op::Member
++        | Op::Assq
++        | Op::Equal
++        | Op::Get
++        | Op::Quo
++        | Op::Rem
++        | Op::StringEqlsign
++        | Op::StringLss
++        | Op::Concat2
++        | Op::Set
++        | Op::Fset
++        | Op::Nconc => {
++            let b = pop!();
++            let a = pop!();
++            let name = match op {
++                Op::Memq => "memq",
++                Op::Nth => "nth",
++                Op::Aref => "aref",
++                Op::Setcar => "setcar",
++                Op::Setcdr => "setcdr",
++                Op::Nthcdr => "nthcdr",
++                Op::Elt => "elt",
++                Op::Member => "member",
++                Op::Assq => "assq",
++                Op::Equal => "equal",
++                Op::Get => "get",
++                Op::Quo => "/",
++                Op::Rem => "%",
++                Op::StringEqlsign => "string-equal",
++                Op::StringLss => "string-lessp",
++                Op::Concat2 => "concat",
++                Op::Set => "set",
++                Op::Fset => "fset",
++                _ => "nconc",
++            };
++            let call_args = [a, b];
++            let value = match prim(interp, name, &call_args, env) {
++                Ok(value) => value,
++                Err(error) => {
++                    // bytecode.c's record_in_backtrace covers
++                    // exactly nth/elt/aref/setcar/setcdr here.
++                    if matches!(op, Op::Nth | Op::Elt | Op::Aref | Op::Setcar | Op::Setcdr)
++                        && !matches!(
++                            error.kind(),
++                            LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
++                        )
++                    {
++                        interp.push_backtrace_frame_with_evald(
++                            Value::Symbol(name.into()),
++                            call_args.to_vec(),
++                            true,
++                        );
++                        *op_error_frames += 1;
++                    }
++                    return Err(error);
++                }
++            };
++            push!(value);
++        }
++        // One-argument ops with inline fast paths.
++        Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => {
++            let a = pop!();
++            match (a.kind(), op) {
++                (Kind::Cons(cell), Op::Car | Op::CarSafe) => {
++                    let value = cell.car.get();
++                    push!(value);
++                }
++                (Kind::Cons(cell), _) => {
++                    let value = cell.cdr.get();
++                    push!(value);
++                }
++                (Kind::Nil, _) | (_, Op::CarSafe | Op::CdrSafe) => {
++                    push!(Value::Nil)
++                }
++                _ => {
++                    let name = if matches!(op, Op::Car) { "car" } else { "cdr" };
++                    let call_args = [a];
++                    let value = match prim(interp, name, &call_args, env) {
++                        Ok(value) => value,
++                        Err(error) => {
++                            // bytecode.c records the signaling op
++                            // itself as a frame so handlers see
++                            // e.g. `(car a)' innermost.
++                            if !matches!(
++                                error.kind(),
++                                LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
++                            ) {
++                                interp.push_backtrace_frame_with_evald(
++                                    Value::Symbol(name.into()),
++                                    call_args.to_vec(),
++                                    true,
++                                );
++                                *op_error_frames += 1;
++                            }
++                            return Err(error);
++                        }
++                    };
++                    push!(value);
++                }
++            }
++        }
++        Op::Add1 | Op::Sub1 | Op::Negate => {
++            let a = pop!();
++            if let Kind::Integer(x) = a.kind() {
++                let fast = match op {
++                    Op::Add1 => x.checked_add(1),
++                    Op::Sub1 => x.checked_sub(1),
++                    _ => x.checked_neg(),
++                };
++                if let Some(n) = fast {
++                    push!(Value::Integer(n));
++                    return Ok(Flow::Next);
++                }
++            }
++            let name = match op {
++                Op::Add1 => "1+",
++                Op::Sub1 => "1-",
++                _ => "-",
++            };
++            let value = prim(interp, name, &[a], env)?;
++            push!(value);
++        }
++        Op::Consp => {
++            let a = pop!();
++            push!(if primitives::is_cons_value(interp, &a) {
++                Value::T
++            } else {
++                Value::Nil
++            });
++        }
++        Op::Length => {
++            let sequence = pop!();
++            push!(Value::Integer(primitives::sequence_length_value(
++                interp, &sequence,
++            )?));
++        }
++        // One-argument primitive ops.
++        Op::Symbolp
++        | Op::Stringp
++        | Op::Listp
++        | Op::SymbolValue
++        | Op::SymbolFunction
++        | Op::Nreverse
++        | Op::Numberp
++        | Op::Integerp
++        | Op::Upcase
++        | Op::Downcase => {
++            let a = pop!();
++            let name = match op {
++                Op::Symbolp => "symbolp",
++                Op::Stringp => "stringp",
++                Op::Listp => "listp",
++                Op::SymbolValue => "symbol-value",
++                Op::SymbolFunction => "symbol-function",
++                Op::Nreverse => "nreverse",
++                Op::Numberp => "numberp",
++                Op::Integerp => "integerp",
++                Op::Upcase => "upcase",
++                _ => "downcase",
++            };
++            let value = prim(interp, name, &[a], env)?;
++            push!(value);
++        }
++        // Three-argument primitive ops.
++        Op::Aset | Op::Substring | Op::Concat3 => {
++            let c = pop!();
++            let b = pop!();
++            let a = pop!();
++            let name = match op {
++                Op::Aset => "aset",
++                Op::Substring => "substring",
++                _ => "concat",
++            };
++            let call_args = [a, b, c];
++            let value = match prim(interp, name, &call_args, env) {
++                Ok(value) => value,
++                Err(error) => {
++                    if matches!(op, Op::Aset)
++                        && !matches!(
++                            error.kind(),
++                            LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
++                        )
++                    {
++                        interp.push_backtrace_frame_with_evald(
++                            Value::Symbol(name.into()),
++                            call_args.to_vec(),
++                            true,
++                        );
++                        *op_error_frames += 1;
++                    }
++                    return Err(error);
++                }
++            };
++            push!(value);
++        }
++        Op::Concat4 => {
++            let d = pop!();
++            let c = pop!();
++            let b = pop!();
++            let a = pop!();
++            let value = prim(interp, "concat", &[a, b, c, d], env)?;
++            push!(value);
++        }
++    }
++    Ok(Flow::Next)
++}
++
+ /// bytecode.c:exec_byte_code.  The operand stack and the specpdl-style
+ /// unwind list are the thread's (`interp.bc_stack', `interp.bc_unwinds');
+ /// a call to a byte-code function pushes a frame and continues in this
+@@ -1565,28 +2633,17 @@ fn run_frames(
+         ArgSpec::Legacy(_) => 0,
+     };
+     program.verified = super::verify::verified_code(&program, entry_depth);
+-    let mut handlers: Vec<Handler> = Vec::new();
+-    let mut frames: Vec<BcFrame> = Vec::new();
+-    let mut pc = 0usize;
+-    let mut last_instruction = None;
+-    let trace_errors = trace_load_errors();
+-    // Frames pushed by signaling byte ops (record_in_backtrace); an
+-    // in-frame condition-case that catches must unwind them, and the
+-    // caller (`run') balances whatever is left after handler dispatch.
+-    let mut op_error_frames = 0usize;
+-    // bytecode.c's `quitcounter': backward branches increment the byte
+-    // counter; wrapping it to zero calls maybe_gc and maybe_quit before
+-    // resetting it to one, so a loop without a call can be interrupted.
+-    let mut quitcounter: u8 = 1;
++    let mut act = Activation {
++        program,
++        handlers: Vec::new(),
++        frames: Vec::new(),
++        pc: 0,
++        quitcounter: 1,
++        op_error_frames: 0,
++        last_instruction: None,
++        trace_errors: trace_load_errors(),
++    };
+ 
+-    macro_rules! pop {
+-        () => {
+-            interp
+-                .bc_stack
+-                .pop()
+-                .expect("validated bytecode never underflows")
+-        };
+-    }
+     macro_rules! push {
+         ($value:expr) => {{
+             let value = $value;
+@@ -1598,78 +2655,35 @@ fn run_frames(
+     // failure (`?') leaves the loop for the handler search below, which
+     // resumes the loop at the handler's target; a normal return leaves
+     // it with the value.
+-    macro_rules! branch {
+-        ($target:expr) => {{
+-            let destination = $target as usize;
+-            if destination < pc {
+-                quitcounter = quitcounter.wrapping_add(1);
+-                if quitcounter == 0 {
+-                    quitcounter = 1;
+-                    crate::lisp::native_comp::maybe_gc(interp, env);
+-                    interp.maybe_quit(env)?;
+-                }
+-            }
+-            pc = destination;
+-        }};
+-    }
+-
+-    // Breturn: with a frame below, the value replaces the callee's slot
+-    // and the caller's program and pc resume; at the entry frame it
+-    // leaves the activation.
+-    macro_rules! breturn {
+-        ($value:expr) => {{
+-            let value = $value;
+-            match frames.pop() {
+-                Some(frame) => {
+-                    if let Err(error) = leave_frame(interp, env, &frame) {
+-                        frames.push(frame);
+-                        return Err(error);
+-                    }
+-                    pc = interp.bc_stack.leave_frame();
+-                    interp.bc_stack.truncate(frame.base);
+-                    push!(value);
+-                    program = frame.program;
+-                    op_error_frames = frame.op_error_frames;
+-                    handlers.truncate(frame.handlers_len);
+-                    continue;
+-                }
+-                None => return Ok(value),
+-            }
+-        }};
+-    }
+-
+     let result = 'run: loop {
+         let step: Result<Value, LispError> = (|| loop {
+-            // The hot loop first; it leaves PC at the instruction it could
+-            // not run, which the full dispatch below runs once.
++            if act.program.verified.is_some()
++                && let Flow::Return(value) = run_verified(interp, env, &mut act)?
++            {
++                return Ok(value);
++            }
++            // The checked loop first; it leaves PC at the instruction it
++            // could not run, which the full dispatch below runs once.
+             // No Lisp callback, collection, or string store occurs in the
+             // fast loop. Release its byte borrow before the full dispatch.
+-            let exit = program
+-                .code
+-                .with_bytes_and_state(|code, current| match program.verified {
+-                    Some(verified) if current && verified.admits(pc, interp.bc_stack.len()) => {
+-                        run_verified(
+-                            &program,
+-                            code,
+-                            &mut interp.bc_stack,
+-                            &mut pc,
+-                            &mut quitcounter,
+-                        )
+-                    }
+-                    _ => run_fast(
+-                        &program,
+-                        code,
+-                        &mut interp.bc_stack,
+-                        &mut pc,
+-                        &mut quitcounter,
+-                    ),
+-                });
+-            last_instruction = None;
++            let exit = act.program.code.with_bytes(|code| {
++                run_fast(
++                    &act.program,
++                    code,
++                    &mut interp.bc_stack,
++                    &mut act.pc,
++                    &mut act.quitcounter,
++                )
++            });
++            act.last_instruction = None;
+             // Carry the already fetched instruction into the slow dispatch.
+             // No callback runs between these loops, so fetching it again
+             // would add work without observing another Lisp mutation.
+             let instr = match exit {
+-                FastExit::Return(value) => breturn!(value),
++                FastExit::Return(value) => match act.return_from_frame(interp, env, value)? {
++                    Flow::Next => continue,
++                    Flow::Return(value) => return Ok(value),
++                },
+                 FastExit::QuitCheck => {
+                     crate::lisp::native_comp::maybe_gc(interp, env);
+                     interp.maybe_quit(env)?;
+@@ -1678,895 +2692,10 @@ fn run_frames(
+                 FastExit::Slow(instr) => instr,
+                 FastExit::Error(error) => return Err(LispError::Signal(error.to_string())),
+             };
+-            last_instruction = Some(instr);
+-            let op = instr.op;
+-            let offset = instr.offset;
+-            pc += instr.len;
+-
+-            // run_fast already handled the ordinary stack/value cases.
+-            // A fallback goes directly to its complete operation; repeating
+-            // the same fast predicates here only adds a third dispatch.
+-            // Every fallible operation funnels through the closure's result so
+-            // handler unwinding (GNU's sys_setjmp arm) is applied uniformly.
+-            match op {
+-                Op::StackRef(n) => {
+-                    let value = interp.bc_stack[interp.bc_stack.len() - 1 - n as usize];
+-                    push!(value);
+-                }
+-                Op::StackSet(n) => {
+-                    let value = pop!();
+-                    let slot = interp.bc_stack.len() - 1 - (n as usize - 1);
+-                    // stack-set N stores relative to the *pre-pop* top.
+-                    interp.bc_stack[slot] = value;
+-                }
+-                Op::DiscardN {
+-                    count,
+-                    preserve_tos,
+-                } => {
+-                    if preserve_tos {
+-                        let top = pop!();
+-                        for _ in 0..count {
+-                            pop!();
+-                        }
+-                        push!(top);
+-                    } else {
+-                        for _ in 0..count {
+-                            pop!();
+-                        }
+-                    }
+-                }
+-                Op::Discard => {
+-                    pop!();
+-                }
+-                Op::Dup => {
+-                    let top = *interp.bc_stack.last().expect("validated bytecode");
+-                    push!(top);
+-                }
+-                Op::Constant(index) | Op::Constant2(index) => {
+-                    push!(program.constant(index));
+-                }
+-                Op::VarRef(index) => {
+-                    // bytecode.c:Bvarref is find_symbol_value on the constant,
+-                    // signalling void-variable with that very object; a bare
+-                    // symbol reaches the cell directly, anything else takes
+-                    // Fsymbol_value's CHECK_SYMBOL path.
+-                    let name = program.constant(index);
+-                    let value = match name.kind() {
+-                        Kind::Symbol(symbol) => match interp.symbol_value_cell_symbol(&symbol) {
+-                            Ok(value) => value,
+-                            Err(error) if matches!(error.kind(), LispErrorKind::Void(_)) => {
+-                                return Err(LispError::SignalValue(Value::list([
+-                                    Value::symbol("void-variable"),
+-                                    name,
+-                                ])));
+-                            }
+-                            Err(error) => return Err(error),
+-                        },
+-                        _ => prim(interp, "symbol-value", &[name], env)?,
+-                    };
+-                    push!(value);
+-                }
+-                Op::VarSet(index) => {
+-                    // bytecode.c:Bvarset is set_internal on the constant.
+-                    let name = program.constant(index);
+-                    let value = pop!();
+-                    match name.kind() {
+-                        Kind::Symbol(symbol) => {
+-                            crate::lisp::primitives::set_internal_symbol(
+-                                interp, &symbol, value, env,
+-                            )?;
+-                        }
+-                        _ => {
+-                            prim(interp, "set", &[name, value], env)?;
+-                        }
+-                    }
+-                }
+-                Op::VarBind(index) => {
+-                    // bytecode.c:Bvarbind is specbind on the constant.
+-                    let name = program.constant(index);
+-                    let name = name.as_symbol().map_err(|_| {
+-                        LispError::Signal("varbind constant must be a symbol".into())
+-                    })?;
+-                    let value = pop!();
+-                    let restore = interp.bind_special_variable(name, value, env)?;
+-                    interp.bc_unwinds.push(UnwindEntry::Binding(restore));
+-                }
+-                Op::Unbind(count) => {
+-                    for _ in 0..count {
+-                        match interp.bc_unwinds.pop() {
+-                            Some(entry) => unwind_one(interp, entry, env)?,
+-                            None => {
+-                                return Err(LispError::Signal("byte code unbind underflow".into()));
+-                            }
+-                        }
+-                    }
+-                }
+-                Op::SaveExcursion => {
+-                    let buffer_id = interp.current_buffer_id();
+-                    let saved_pt = interp.buffer.borrow().point();
+-                    let Kind::Marker(marker_id) = interp.make_marker().kind() else {
+-                        unreachable!("make_marker returns a marker")
+-                    };
+-                    interp.set_marker(marker_id, Some(saved_pt), Some(buffer_id))?;
+-                    interp.bc_unwinds.push(UnwindEntry::Excursion {
+-                        buffer_id,
+-                        marker_id,
+-                        saved_pt,
+-                    });
+-                }
+-                Op::SaveCurrentBuffer | Op::SaveCurrentBufferObsolete => {
+-                    let buffer_id = interp.current_buffer_id();
+-                    interp
+-                        .bc_unwinds
+-                        .push(UnwindEntry::CurrentBuffer { buffer_id });
+-                }
+-                Op::SaveRestriction => {
+-                    let buffer_id = interp.current_buffer_id();
+-                    let saved_begv = interp.buffer.borrow().point_min();
+-                    let saved_zv = interp.buffer.borrow().point_max();
+-                    let labeled = interp.labeled_restrictions_snapshot(buffer_id);
+-                    // Mirrors sf_save_restriction: a wide buffer records "no
+-                    // restriction" (marker-tracking would spuriously
+-                    // re-narrow after edits at BEGV).
+-                    if saved_begv == 1 && saved_zv == interp.buffer.borrow().size_total() + 1 {
+-                        interp
+-                            .bc_unwinds
+-                            .push(UnwindEntry::RestrictionWide { buffer_id, labeled });
+-                    } else {
+-                        let Kind::Marker(beg_id) = interp.make_marker().kind() else {
+-                            unreachable!("make_marker returns a marker")
+-                        };
+-                        let Kind::Marker(end_id) = interp.make_marker().kind() else {
+-                            unreachable!("make_marker returns a marker")
+-                        };
+-                        let _ = interp.set_marker(beg_id, Some(saved_begv), Some(buffer_id));
+-                        let _ = interp.set_marker(end_id, Some(saved_zv), Some(buffer_id));
+-                        interp.set_marker_insertion_type(end_id, true);
+-                        interp.bc_unwinds.push(UnwindEntry::Restriction {
+-                            buffer_id,
+-                            beg_id,
+-                            end_id,
+-                            saved_begv,
+-                            saved_zv,
+-                            labeled,
+-                        });
+-                    }
+-                }
+-                Op::UnwindProtect => {
+-                    let handler = pop!();
+-                    interp.bc_unwinds.push(UnwindEntry::Protect(handler));
+-                }
+-                Op::SaveWindowExcursion => {
+-                    // Obsolete since 24.1: TOP is a list of body forms;
+-                    // evaluate them inside a window-configuration save.
+-                    let body = pop!();
+-                    let snapshot = interp.snapshot_window_configuration();
+-                    let mut value = Value::Nil;
+-                    let result: Result<(), LispError> =
+-                        interp.with_lisp_stack_roots(&(&body, &snapshot), |interp| {
+-                            for form in &body.to_vec()? {
+-                                value = interp.eval(form, env)?;
+-                            }
+-                            Ok(())
+-                        });
+-                    let _ = interp.restore_window_configuration(snapshot);
+-                    result?;
+-                    push!(value);
+-                }
+-                Op::Catch => {
+-                    // Obsolete since 25: TAG below an unevaluated body form.
+-                    let body = pop!();
+-                    let tag = pop!();
+-                    let value =
+-                        interp.with_lisp_stack_roots(&(&body, &tag), |interp| {
+-                            match interp.eval(&body, env) {
+-                                Err(error) => match error.kind() {
+-                                    LispErrorKind::Throw(thrown, thrown_value) => {
+-                                        let matched = interp
+-                                            .with_lisp_stack_roots(&error, |interp| {
+-                                                prim(interp, "eq", &[tag, *thrown], env)
+-                                            })?;
+-                                        if matched.is_truthy() {
+-                                            Ok(*thrown_value)
+-                                        } else {
+-                                            Err(error)
+-                                        }
+-                                    }
+-                                    _ => Err(error),
+-                                },
+-                                ok => ok,
+-                            }
+-                        })?;
+-                    push!(value);
+-                }
+-                Op::ConditionCase => {
+-                    // Obsolete since 25: VAR, BODY form, HANDLERS list —
+-                    // exactly `(condition-case VAR BODY . HANDLERS)`.
+-                    let handlers = pop!();
+-                    let body = pop!();
+-                    let var = pop!();
+-                    let mut form = vec![Value::symbol("condition-case"), var, body];
+-                    form.extend(handlers.to_vec()?);
+-                    let form = Value::list(form);
+-                    let value =
+-                        interp.with_lisp_stack_roots(&form, |interp| interp.eval(&form, env))?;
+-                    push!(value);
+-                }
+-                Op::TempOutputBufferSetup => {
+-                    // Obsolete since 24.1: create/erase the temp buffer and
+-                    // bind standard-output to it (GNU temp_output_buffer_setup
+-                    // specbinds, so Bunbind pops it).
+-                    let name = pop!();
+-                    let buffer = prim(interp, "get-buffer-create", &[name], env)?;
+-                    let saved = interp.current_buffer_id();
+-                    let buffer_id = interp.resolve_buffer_id(&buffer)?;
+-                    let _ = interp.set_current_buffer_id(buffer_id);
+-                    prim(interp, "erase-buffer", &[], env)?;
+-                    let _ = interp.set_current_buffer_id(saved);
+-                    let restore = interp.bind_special_variable("standard-output", buffer, env)?;
+-                    interp.bc_unwinds.push(UnwindEntry::Binding(restore));
+-                    push!(buffer);
+-                }
+-                Op::TempOutputBufferShow => {
+-                    // Obsolete since 24.1: show the buffer at TOP, replace it
+-                    // with the saved value below, pop the standard-output bind.
+-                    let value = pop!();
+-                    let buffer = pop!();
+-                    let show = interp
+-                        .lookup_var("temp-buffer-show-function", env)
+-                        .unwrap_or(Value::Nil);
+-                    interp.with_lisp_stack_roots(&value, |interp| {
+-                        if show.is_truthy() {
+-                            interp.call_function_value(
+-                                show,
+-                                None,
+-                                std::slice::from_ref(&buffer),
+-                                env,
+-                            )?;
+-                        } else {
+-                            prim(interp, "display-buffer", &[buffer], env)?;
+-                        }
+-                        Ok::<_, LispError>(())
+-                    })?;
+-                    push!(value);
+-                    match interp.bc_unwinds.pop() {
+-                        Some(entry) => unwind_one(interp, entry, env)?,
+-                        None => {
+-                            return Err(LispError::Signal("byte code unbind underflow".into()));
+-                        }
+-                    }
+-                }
+-                Op::InteractiveP => {
+-                    // Obsolete since 24.1: GNU call0s the Lisp function.
+-                    let value = interp.call_function_value(
+-                        Value::symbol("interactive-p"),
+-                        Some("interactive-p"),
+-                        &[],
+-                        env,
+-                    )?;
+-                    push!(value);
+-                }
+-                // Zero-argument push ops.
+-                Op::Point
+-                | Op::PointMax
+-                | Op::PointMin
+-                | Op::FollowingChar
+-                | Op::PrecedingChar
+-                | Op::CurrentColumn
+-                | Op::Eolp
+-                | Op::Eobp
+-                | Op::Bolp
+-                | Op::Bobp
+-                | Op::CurrentBuffer
+-                | Op::Widen => {
+-                    let name = match op {
+-                        Op::Point => "point",
+-                        Op::PointMax => "point-max",
+-                        Op::PointMin => "point-min",
+-                        Op::FollowingChar => "following-char",
+-                        Op::PrecedingChar => "preceding-char",
+-                        Op::CurrentColumn => "current-column",
+-                        Op::Eolp => "eolp",
+-                        Op::Eobp => "eobp",
+-                        Op::Bolp => "bolp",
+-                        Op::Bobp => "bobp",
+-                        Op::CurrentBuffer => "current-buffer",
+-                        _ => "widen",
+-                    };
+-                    let value = prim(interp, name, &[], env)?;
+-                    push!(value);
+-                }
+-                // One-argument buffer/navigation ops (TOP = F(TOP)).
+-                Op::GotoChar
+-                | Op::Insert
+-                | Op::CharAfter
+-                | Op::SetBuffer
+-                | Op::ForwardChar
+-                | Op::ForwardWord
+-                | Op::ForwardLine
+-                | Op::CharSyntax
+-                | Op::EndOfLine
+-                | Op::MatchBeginning
+-                | Op::MatchEnd => {
+-                    let a = pop!();
+-                    let name = match op {
+-                        Op::GotoChar => "goto-char",
+-                        Op::Insert => "insert",
+-                        Op::CharAfter => "char-after",
+-                        Op::SetBuffer => "set-buffer",
+-                        Op::ForwardChar => "forward-char",
+-                        Op::ForwardWord => "forward-word",
+-                        Op::ForwardLine => "forward-line",
+-                        Op::CharSyntax => "char-syntax",
+-                        Op::EndOfLine => "end-of-line",
+-                        Op::MatchBeginning => "match-beginning",
+-                        _ => "match-end",
+-                    };
+-                    let value = prim(interp, name, &[a], env)?;
+-                    push!(value);
+-                }
+-                Op::IndentTo => {
+-                    // GNU passes an explicit nil MINIMUM.
+-                    let column = pop!();
+-                    let value = prim(interp, "indent-to", &[column, Value::Nil], env)?;
+-                    push!(value);
+-                }
+-                // Two-argument region/motion ops.
+-                Op::SkipCharsForward
+-                | Op::SkipCharsBackward
+-                | Op::BufferSubstring
+-                | Op::DeleteRegion
+-                | Op::NarrowToRegion => {
+-                    let b = pop!();
+-                    let a = pop!();
+-                    let name = match op {
+-                        Op::SkipCharsForward => "skip-chars-forward",
+-                        Op::SkipCharsBackward => "skip-chars-backward",
+-                        Op::BufferSubstring => "buffer-substring",
+-                        Op::DeleteRegion => "delete-region",
+-                        _ => "narrow-to-region",
+-                    };
+-                    let value = prim(interp, name, &[a, b], env)?;
+-                    push!(value);
+-                }
+-                Op::SetMarker => {
+-                    let position_buffer = pop!();
+-                    let position = pop!();
+-                    let marker = pop!();
+-                    let value = prim(
+-                        interp,
+-                        "set-marker",
+-                        &[marker, position, position_buffer],
+-                        env,
+-                    )?;
+-                    push!(value);
+-                }
+-                Op::InsertN(n) => {
+-                    let start = interp.bc_stack.len() - n as usize;
+-                    let items: Vec<Value> = interp.bc_stack.drain_from(start).collect();
+-                    let value = prim(interp, "insert", &items, env)?;
+-                    push!(value);
+-                }
+-                Op::Call(argc) => {
+-                    let argc = argc as usize;
+-                    let args_start = interp.bc_stack.len() - argc;
+-                    // Bcall: the function is TOP below the arguments; both
+-                    // stay on the stack until the call returns (GNU keeps
+-                    // them rooted the same way).
+-                    let func = interp.bc_stack[args_start - 1];
+-                    interp.begin_funcall(env)?;
+-                    if let Some(termination) = interp.pending_termination().cloned() {
+-                        interp.end_funcall();
+-                        return Err(LispError::Terminate(termination));
+-                    }
+-                    let backtrace_depth = interp.backtrace_frames_len();
+-                    // Bcall records the unresolved function and rooted arguments
+-                    // before maybe_gc, which may redefine the function cell.
+-                    // SAFETY: the stack buffer never moves and these slots stay
+-                    // below the callee's disjoint storage until return/unwind.
+-                    let call_args = unsafe { interp.bc_stack.slice_from(args_start, argc) };
+-                    interp.push_backtrace_frame_borrowed(func, call_args);
+-                    let callee_name = match func.kind() {
+-                        Kind::Symbol(name) => Some(name),
+-                        _ => None,
+-                    };
+-                    interp.capture_current_backtrace_context(
+-                        callee_name.as_ref().map(|name| name.as_str()),
+-                        env,
+-                        None,
+-                    );
+-                    crate::lisp::native_comp::maybe_gc(interp, env);
+-                    // Only now inspect the live cell/code slots, just as GNU's
+-                    // packed-closure setup_frame branch does after maybe_gc.
+-                    let native = match interp.bcall_callee(&func) {
+-                        crate::lisp::eval::BcallCallee::Native(native) => Some(native),
+-                        crate::lisp::eval::BcallCallee::Funcall => None,
+-                        crate::lisp::eval::BcallCallee::ByteCode(callee, callee_function) => {
+-                            if let Err(error) =
+-                                interp
+-                                    .bc_stack
+-                                    .enter_frame(callee.stack_depth, callee_function, pc)
+-                            {
+-                                let result = interp.settle_frame_result(Err(error), env);
+-                                interp.truncate_backtrace_frames(backtrace_depth);
+-                                interp.end_funcall();
+-                                match result {
+-                                    Ok(value) => {
+-                                        interp.bc_stack.truncate(args_start - 1);
+-                                        push!(value);
+-                                        continue;
+-                                    }
+-                                    Err(error) => return Err(error),
+-                                }
+-                            }
+-                            frames.push(BcFrame {
+-                                program: std::mem::replace(&mut program, callee),
+-                                base: args_start - 1,
+-                                handlers_len: handlers.len(),
+-                                unwinds_len: interp.bc_unwinds.len(),
+-                                backtrace_depth,
+-                                op_error_frames,
+-                            });
+-                            pc = 0;
+-                            op_error_frames = 0;
+-                            // setup_frame: the callee's frame starts above the
+-                            // caller's top; the arguments are copied into it
+-                            // (`PUSH (*args)'), the optionals padded, the rest
+-                            // gathered.  The caller's own slots -- the function
+-                            // and the arguments the backtrace frame borrows --
+-                            // stay as they are until Breturn cuts back to them.
+-                            let ArgSpec::Packed {
+-                                mandatory,
+-                                nonrest,
+-                                rest,
+-                            } = &program.argspec
+-                            else {
+-                                unreachable!("bytecode_callee selects packed argument lists")
+-                            };
+-                            let mandatory = *mandatory as usize;
+-                            let nonrest = *nonrest as usize;
+-                            let rest = *rest;
+-                            if argc < mandatory || (!rest && argc > nonrest) {
+-                                return Err(packed_arity_error(mandatory, nonrest, argc));
+-                            }
+-                            let pushed = argc.min(nonrest);
+-                            for argument in &call_args[..pushed] {
+-                                push!(*argument);
+-                            }
+-                            if argc > nonrest {
+-                                let rest_list = Value::list(call_args[nonrest..].iter().cloned());
+-                                push!(rest_list);
+-                            } else {
+-                                for _ in argc..nonrest {
+-                                    push!(Value::Nil);
+-                                }
+-                                if rest {
+-                                    push!(Value::Nil);
+-                                }
+-                            }
+-                            program.verified =
+-                                super::verify::verified_code(&program, nonrest + usize::from(rest));
+-                            continue;
+-                        }
+-                    };
+-                    let trace_call = trace_errors.then(|| func.to_string());
+-                    let result = match native {
+-                        Some(native) => {
+-                            crate::lisp::native_comp::call_function(interp, env, native, call_args)
+-                        }
+-                        None => interp.funcall_body(func, call_args, env),
+-                    };
+-                    let result = interp.settle_frame_result(result, env);
+-                    interp.truncate_backtrace_frames(backtrace_depth);
+-                    interp.end_funcall();
+-                    let value = match result {
+-                        Ok(value) => value,
+-                        Err(error) => {
+-                            // Expected conditions such as `scan-error' are
+-                            // routinely caught by compiled Lisp.  Logging
+-                            // every one makes a real VM dispatch failure
+-                            // disappear in megabytes of noise.
+-                            if matches!(error.kind(), LispErrorKind::WrongNumberOfArgs(_, _))
+-                                && let Some(func) = trace_call
+-                            {
+-                                eprintln!(
+-                                    "bytecode call {func} failed at byte offset {offset}: {error:?}"
+-                                );
+-                            }
+-                            return Err(error);
+-                        }
+-                    };
+-                    interp.bc_stack.truncate(args_start - 1);
+-                    push!(value);
+-                }
+-                Op::Goto { target } => {
+-                    branch!(target);
+-                }
+-                Op::GotoIfNil { target } => {
+-                    if pop!().is_nil() {
+-                        branch!(target);
+-                    }
+-                }
+-                Op::GotoIfNonNil { target } => {
+-                    if !pop!().is_nil() {
+-                        branch!(target);
+-                    }
+-                }
+-                Op::GotoIfNilElsePop { target } => {
+-                    if interp.bc_stack.last().expect("validated bytecode").is_nil() {
+-                        branch!(target);
+-                    } else {
+-                        pop!();
+-                    }
+-                }
+-                Op::GotoIfNonNilElsePop { target } => {
+-                    if !interp.bc_stack.last().expect("validated bytecode").is_nil() {
+-                        branch!(target);
+-                    } else {
+-                        pop!();
+-                    }
+-                }
+-                Op::Return => {
+-                    breturn!(pop!());
+-                }
+-                Op::PushCatch { target } => {
+-                    let tag = pop!();
+-                    // `throw' consults the interpreter's active-catch
+-                    // registry before unwinding; a VM catch frame must be
+-                    // visible there like any `sf_catch' frame.
+-                    interp.push_active_catch_tag(tag);
+-                    handlers.push(Handler {
+-                        kind: HandlerKind::Catch(tag),
+-                        dest: target as usize,
+-                        stack_len: interp.bc_stack.len(),
+-                        unwind_len: interp.bc_unwinds.len(),
+-                        registry_start: None,
+-                    });
+-                }
+-                Op::PushConditionCase { target } => {
+-                    let conditions = pop!();
+-                    // Register the clause head with the interpreter so
+-                    // signal-time `handler-bind' dispatch at native-call
+-                    // boundaries sees this frame before any outer handler,
+-                    // exactly like an interpreted `condition-case'.
+-                    let registry_start = interp.push_condition_case_handler(vec![conditions]);
+-                    handlers.push(Handler {
+-                        kind: HandlerKind::ConditionCase(conditions),
+-                        dest: target as usize,
+-                        stack_len: interp.bc_stack.len(),
+-                        unwind_len: interp.bc_unwinds.len(),
+-                        registry_start: Some(registry_start),
+-                    });
+-                }
+-                Op::PopHandler => {
+-                    if let Some(handler) = handlers.pop() {
+-                        if matches!(handler.kind, HandlerKind::Catch(_)) {
+-                            interp.pop_active_catch_tag();
+-                        }
+-                        if let Some(start) = handler.registry_start {
+-                            interp.pop_handler_bindings(start);
+-                        }
+-                    }
+-                }
+-                Op::Switch => {
+-                    let table = pop!();
+-                    let value = pop!();
+-                    let dest = prim(interp, "gethash", &[value, table, Value::Nil], env)?;
+-                    if let Kind::Integer(dest) = dest.kind() {
+-                        pc = dest as usize;
+-                    }
+-                }
+-                Op::ListN(n) => {
+-                    let start = interp.bc_stack.len() - n as usize;
+-                    let items: Vec<Value> = interp.bc_stack.drain_from(start).collect();
+-                    push!(Value::list(items));
+-                }
+-                Op::ConcatN(n) => {
+-                    let start = interp.bc_stack.len() - n as usize;
+-                    let items: Vec<Value> = interp.bc_stack.drain_from(start).collect();
+-                    let value = prim(interp, "concat", &items, env)?;
+-                    push!(value);
+-                }
+-                Op::List1 | Op::List2 | Op::List3 | Op::List4 => {
+-                    let n = match op {
+-                        Op::List1 => 1,
+-                        Op::List2 => 2,
+-                        Op::List3 => 3,
+-                        _ => 4,
+-                    };
+-                    let start = interp.bc_stack.len() - n;
+-                    let items: Vec<Value> = interp.bc_stack.drain_from(start).collect();
+-                    push!(Value::list(items));
+-                }
+-                Op::Not => {
+-                    let value = pop!();
+-                    push!(if value.is_nil() { Value::T } else { Value::Nil });
+-                }
+-                // Two-argument ops with inline fast paths.
+-                Op::Eq => {
+-                    let b = pop!();
+-                    let a = pop!();
+-                    let equal = crate::lisp::primitives::values_eq_in_env(interp, &a, &b, env);
+-                    push!(if equal { Value::T } else { Value::Nil });
+-                }
+-                Op::Cons => {
+-                    let b = pop!();
+-                    let a = pop!();
+-                    push!(Value::cons(a, b));
+-                }
+-                Op::Eqlsign | Op::Gtr | Op::Lss | Op::Leq | Op::Geq => {
+-                    let b = pop!();
+-                    let a = pop!();
+-                    if let (Kind::Integer(x), Kind::Integer(y)) = (a.kind(), b.kind()) {
+-                        let holds = match op {
+-                            Op::Eqlsign => x == y,
+-                            Op::Gtr => x > y,
+-                            Op::Lss => x < y,
+-                            Op::Leq => x <= y,
+-                            _ => x >= y,
+-                        };
+-                        push!(if holds { Value::T } else { Value::Nil });
+-                        continue;
+-                    }
+-                    let name = match op {
+-                        Op::Eqlsign => "=",
+-                        Op::Gtr => ">",
+-                        Op::Lss => "<",
+-                        Op::Leq => "<=",
+-                        _ => ">=",
+-                    };
+-                    let value = prim(interp, name, &[a, b], env)?;
+-                    push!(value);
+-                }
+-                Op::Plus | Op::Diff | Op::Mult => {
+-                    let b = pop!();
+-                    let a = pop!();
+-                    if let (Kind::Integer(x), Kind::Integer(y)) = (a.kind(), b.kind()) {
+-                        let fast = match op {
+-                            Op::Plus => x.checked_add(y),
+-                            Op::Diff => x.checked_sub(y),
+-                            _ => x.checked_mul(y),
+-                        };
+-                        if let Some(n) = fast {
+-                            push!(Value::Integer(n));
+-                            continue;
+-                        }
+-                    }
+-                    let name = match op {
+-                        Op::Plus => "+",
+-                        Op::Diff => "-",
+-                        _ => "*",
+-                    };
+-                    let value = prim(interp, name, &[a, b], env)?;
+-                    push!(value);
+-                }
+-                Op::Max | Op::Min => {
+-                    let b = pop!();
+-                    let a = pop!();
+-                    if let (Kind::Integer(x), Kind::Integer(y)) = (a.kind(), b.kind()) {
+-                        let n = if matches!(op, Op::Max) {
+-                            (x).max(y)
+-                        } else {
+-                            (x).min(y)
+-                        };
+-                        push!(Value::Integer(n));
+-                        continue;
+-                    }
+-                    let name = if matches!(op, Op::Max) { "max" } else { "min" };
+-                    let value = prim(interp, name, &[a, b], env)?;
+-                    push!(value);
+-                }
+-                // Two-argument primitive ops.
+-                Op::Memq
+-                | Op::Nth
+-                | Op::Aref
+-                | Op::Setcar
+-                | Op::Setcdr
+-                | Op::Nthcdr
+-                | Op::Elt
+-                | Op::Member
+-                | Op::Assq
+-                | Op::Equal
+-                | Op::Get
+-                | Op::Quo
+-                | Op::Rem
+-                | Op::StringEqlsign
+-                | Op::StringLss
+-                | Op::Concat2
+-                | Op::Set
+-                | Op::Fset
+-                | Op::Nconc => {
+-                    let b = pop!();
+-                    let a = pop!();
+-                    let name = match op {
+-                        Op::Memq => "memq",
+-                        Op::Nth => "nth",
+-                        Op::Aref => "aref",
+-                        Op::Setcar => "setcar",
+-                        Op::Setcdr => "setcdr",
+-                        Op::Nthcdr => "nthcdr",
+-                        Op::Elt => "elt",
+-                        Op::Member => "member",
+-                        Op::Assq => "assq",
+-                        Op::Equal => "equal",
+-                        Op::Get => "get",
+-                        Op::Quo => "/",
+-                        Op::Rem => "%",
+-                        Op::StringEqlsign => "string-equal",
+-                        Op::StringLss => "string-lessp",
+-                        Op::Concat2 => "concat",
+-                        Op::Set => "set",
+-                        Op::Fset => "fset",
+-                        _ => "nconc",
+-                    };
+-                    let call_args = [a, b];
+-                    let value = match prim(interp, name, &call_args, env) {
+-                        Ok(value) => value,
+-                        Err(error) => {
+-                            // bytecode.c's record_in_backtrace covers
+-                            // exactly nth/elt/aref/setcar/setcdr here.
+-                            if matches!(op, Op::Nth | Op::Elt | Op::Aref | Op::Setcar | Op::Setcdr)
+-                                && !matches!(
+-                                    error.kind(),
+-                                    LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+-                                )
+-                            {
+-                                interp.push_backtrace_frame_with_evald(
+-                                    Value::Symbol(name.into()),
+-                                    call_args.to_vec(),
+-                                    true,
+-                                );
+-                                op_error_frames += 1;
+-                            }
+-                            return Err(error);
+-                        }
+-                    };
+-                    push!(value);
+-                }
+-                // One-argument ops with inline fast paths.
+-                Op::Car | Op::Cdr | Op::CarSafe | Op::CdrSafe => {
+-                    let a = pop!();
+-                    match (a.kind(), op) {
+-                        (Kind::Cons(cell), Op::Car | Op::CarSafe) => {
+-                            let value = cell.car.get();
+-                            push!(value);
+-                        }
+-                        (Kind::Cons(cell), _) => {
+-                            let value = cell.cdr.get();
+-                            push!(value);
+-                        }
+-                        (Kind::Nil, _) | (_, Op::CarSafe | Op::CdrSafe) => {
+-                            push!(Value::Nil)
+-                        }
+-                        _ => {
+-                            let name = if matches!(op, Op::Car) { "car" } else { "cdr" };
+-                            let call_args = [a];
+-                            let value = match prim(interp, name, &call_args, env) {
+-                                Ok(value) => value,
+-                                Err(error) => {
+-                                    // bytecode.c records the signaling op
+-                                    // itself as a frame so handlers see
+-                                    // e.g. `(car a)' innermost.
+-                                    if !matches!(
+-                                        error.kind(),
+-                                        LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+-                                    ) {
+-                                        interp.push_backtrace_frame_with_evald(
+-                                            Value::Symbol(name.into()),
+-                                            call_args.to_vec(),
+-                                            true,
+-                                        );
+-                                        op_error_frames += 1;
+-                                    }
+-                                    return Err(error);
+-                                }
+-                            };
+-                            push!(value);
+-                        }
+-                    }
+-                }
+-                Op::Add1 | Op::Sub1 | Op::Negate => {
+-                    let a = pop!();
+-                    if let Kind::Integer(x) = a.kind() {
+-                        let fast = match op {
+-                            Op::Add1 => x.checked_add(1),
+-                            Op::Sub1 => x.checked_sub(1),
+-                            _ => x.checked_neg(),
+-                        };
+-                        if let Some(n) = fast {
+-                            push!(Value::Integer(n));
+-                            continue;
+-                        }
+-                    }
+-                    let name = match op {
+-                        Op::Add1 => "1+",
+-                        Op::Sub1 => "1-",
+-                        _ => "-",
+-                    };
+-                    let value = prim(interp, name, &[a], env)?;
+-                    push!(value);
+-                }
+-                Op::Consp => {
+-                    let a = pop!();
+-                    push!(if primitives::is_cons_value(interp, &a) {
+-                        Value::T
+-                    } else {
+-                        Value::Nil
+-                    });
+-                }
+-                Op::Length => {
+-                    let sequence = pop!();
+-                    push!(Value::Integer(primitives::sequence_length_value(
+-                        interp, &sequence,
+-                    )?));
+-                }
+-                // One-argument primitive ops.
+-                Op::Symbolp
+-                | Op::Stringp
+-                | Op::Listp
+-                | Op::SymbolValue
+-                | Op::SymbolFunction
+-                | Op::Nreverse
+-                | Op::Numberp
+-                | Op::Integerp
+-                | Op::Upcase
+-                | Op::Downcase => {
+-                    let a = pop!();
+-                    let name = match op {
+-                        Op::Symbolp => "symbolp",
+-                        Op::Stringp => "stringp",
+-                        Op::Listp => "listp",
+-                        Op::SymbolValue => "symbol-value",
+-                        Op::SymbolFunction => "symbol-function",
+-                        Op::Nreverse => "nreverse",
+-                        Op::Numberp => "numberp",
+-                        Op::Integerp => "integerp",
+-                        Op::Upcase => "upcase",
+-                        _ => "downcase",
+-                    };
+-                    let value = prim(interp, name, &[a], env)?;
+-                    push!(value);
+-                }
+-                // Three-argument primitive ops.
+-                Op::Aset | Op::Substring | Op::Concat3 => {
+-                    let c = pop!();
+-                    let b = pop!();
+-                    let a = pop!();
+-                    let name = match op {
+-                        Op::Aset => "aset",
+-                        Op::Substring => "substring",
+-                        _ => "concat",
+-                    };
+-                    let call_args = [a, b, c];
+-                    let value = match prim(interp, name, &call_args, env) {
+-                        Ok(value) => value,
+-                        Err(error) => {
+-                            if matches!(op, Op::Aset)
+-                                && !matches!(
+-                                    error.kind(),
+-                                    LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_)
+-                                )
+-                            {
+-                                interp.push_backtrace_frame_with_evald(
+-                                    Value::Symbol(name.into()),
+-                                    call_args.to_vec(),
+-                                    true,
+-                                );
+-                                op_error_frames += 1;
+-                            }
+-                            return Err(error);
+-                        }
+-                    };
+-                    push!(value);
+-                }
+-                Op::Concat4 => {
+-                    let d = pop!();
+-                    let c = pop!();
+-                    let b = pop!();
+-                    let a = pop!();
+-                    let value = prim(interp, "concat", &[a, b, c, d], env)?;
+-                    push!(value);
+-                }
++            act.last_instruction = Some(instr);
++            act.pc += instr.len;
++            if let Flow::Return(value) = run_op(interp, env, &mut act, instr)? {
++                return Ok(value);
+             }
+         })();
+ 
+@@ -2581,12 +2710,12 @@ fn run_frames(
+                 // A frame without a matching handler is popped (its
+                 // unwinds run, its backtrace frame goes, the error settles
+                 // at the boundary as a Rust-level return would) and the
+-                // search continues in its caller's handlers.
++                // search continues in its caller's act.handlers.
+                 let mut handled = false;
+                 'frames: loop {
+-                    let floor = frames.last().map_or(0, |frame| frame.handlers_len);
+-                    while handlers.len() > floor {
+-                        let Some(handler) = handlers.pop() else {
++                    let floor = act.frames.last().map_or(0, |frame| frame.handlers_len);
++                    while act.handlers.len() > floor {
++                        let Some(handler) = act.handlers.pop() else {
+                             break;
+                         };
+                         if matches!(handler.kind, HandlerKind::Catch(_)) {
+@@ -2623,9 +2752,9 @@ fn run_frames(
+                             }
+                             // A caught signal unwinds the frame its byte op
+                             // recorded (GNU unbinds specpdl to the handler).
+-                            while op_error_frames > 0 {
++                            while act.op_error_frames > 0 {
+                                 interp.pop_backtrace_frame();
+-                                op_error_frames -= 1;
++                                act.op_error_frames -= 1;
+                             }
+                             while interp.bc_unwinds.len() > handler.unwind_len {
+                                 match interp.bc_unwinds.pop() {
+@@ -2638,33 +2767,33 @@ fn run_frames(
+                             }
+                             interp.bc_stack.truncate(handler.stack_len);
+                             push!(value);
+-                            pc = handler.dest;
++                            act.pc = handler.dest;
+                             handled = true;
+                             break 'frames;
+                         }
+                     }
+-                    let Some(frame) = frames.pop() else {
++                    let Some(frame) = act.frames.pop() else {
+                         break 'frames;
+                     };
+-                    // The error leaves this frame: the frames its
++                    // The error leaves this frame: the act.frames its
+                     // signaling ops pushed, then the settling every call
+                     // boundary does (handler-bind, the batch backtrace),
+                     // then the frame itself.
+-                    while op_error_frames > 0 {
++                    while act.op_error_frames > 0 {
+                         interp.pop_backtrace_frame();
+-                        op_error_frames -= 1;
++                        act.op_error_frames -= 1;
+                     }
+                     error = match interp.settle_frame_result(Err(error), env) {
+                         Ok(value) => {
+                             if let Err(error) = leave_frame(interp, env, &frame) {
+                                 break 'run Err(error);
+                             }
+-                            pc = interp.bc_stack.leave_frame();
++                            act.pc = interp.bc_stack.leave_frame();
+                             interp.bc_stack.truncate(frame.base);
+                             push!(value);
+-                            program = frame.program;
+-                            op_error_frames = frame.op_error_frames;
+-                            handlers.truncate(frame.handlers_len);
++                            act.program = frame.program;
++                            act.op_error_frames = frame.op_error_frames;
++                            act.handlers.truncate(frame.handlers_len);
+                             continue 'run;
+                         }
+                         Err(error) => error,
+@@ -2674,10 +2803,10 @@ fn run_frames(
+                     {
+                         error = unwind_error;
+                     }
+-                    pc = interp.bc_stack.leave_frame();
++                    act.pc = interp.bc_stack.leave_frame();
+                     interp.bc_stack.truncate(frame.base);
+-                    program = frame.program;
+-                    op_error_frames = frame.op_error_frames;
++                    act.program = frame.program;
++                    act.op_error_frames = frame.op_error_frames;
+                 }
+                 if !handled {
+                     // Trace only genuine errors, and render them bounded: a
+@@ -2693,10 +2822,10 @@ fn run_frames(
+                     // (cl-generic's bootstrap raises and handles one on
+                     // every boot; a child process spawned by a test must
+                     // not leak that into its measured stderr).
+-                    if trace_errors
++                    if act.trace_errors
+                         && !matches!(error.kind(), LispErrorKind::Throw(_, _))
+                         && !interp.some_active_handler_matches(&error)
+-                        && let Some(instr) = last_instruction
++                        && let Some(instr) = act.last_instruction
+                     {
+                         eprintln!(
+                             "bytecode operation {:?} failed at byte offset {}: {}",
+@@ -2715,7 +2844,7 @@ fn run_frames(
+     // the frame's specpdl watermark), running unwind-protect handlers
+     // and restoring saved buffer state on the way out; catch tags of
+     // still-pushed handlers leave the registry with their frame.
+-    for handler in handlers.into_iter().rev() {
++    for handler in act.handlers.into_iter().rev() {
+         if matches!(handler.kind, HandlerKind::Catch(_)) {
+             interp.pop_active_catch_tag();
+         }

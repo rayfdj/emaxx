@@ -6,6 +6,7 @@
 //! Whole-program decoding remains available for diagnostics. Execution
 //! fetches instructions from the original string at its current byte cursor.
 
+pub(crate) mod verify;
 pub mod vm;
 
 use super::types::{Kind, Value, VectorRef};
@@ -636,6 +637,17 @@ impl CodeBytes {
         self.original
     }
 
+    /// The code string itself: `new' and `for_call' make a CodeBytes only
+    /// from a string object.
+    #[inline(always)]
+    pub(crate) fn string(&self) -> crate::lisp::alloc::StringObjectRef {
+        match self.original.kind() {
+            Kind::StringObject(string) => string,
+            // SAFETY: every constructor checked the kind (see above).
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
+    }
+
     /// BODY must not invoke Lisp, collect, or mutate the code string.
     /// The borrow ends before callbacks and frame changes.
     #[inline]
@@ -644,6 +656,22 @@ impl CodeBytes {
             unreachable!("validated code string")
         };
         body(state.borrow().bytes())
+    }
+
+    /// The bytes and whether the verifier's results for the string are
+    /// those of these bytes (see `verify'), with no borrow held.
+    ///
+    /// # Safety
+    /// The slice is valid only until Lisp runs, a collection starts or a
+    /// string is stored into: the caller (the dispatch loops) does none
+    /// of these while it uses it.
+    #[inline(always)]
+    pub(crate) unsafe fn bytes_unguarded<'a>(&self) -> (&'a [u8], bool) {
+        let string = self.string();
+        let current = string.code_state() == crate::lisp::alloc::CodeState::Current;
+        // SAFETY: the caller's contract keeps the string's bytes in place
+        // and unchanged, and no guard on them is live in the loops.
+        (unsafe { string.bytes_unguarded() }, current)
     }
 }
 
@@ -656,6 +684,35 @@ pub struct ByteCodeObject {
     /// The original CLOSURE_CONSTANTS object, not a snapshot of its slots.
     pub constants: VectorRef,
     pub stack_depth: usize,
+    /// The verifier's result for this code, once a frame runs it.
+    pub(crate) verified: Option<&'static verify::VerifiedCode>,
+}
+
+/// The op of an opcode byte that is a whole instruction (no operand
+/// bytes, no constant index to check), or None: `decode_instr's answer
+/// for that byte alone, found once for all 256.
+#[inline]
+fn operandless_op(byte: u8) -> Option<Op> {
+    static OPS: std::sync::OnceLock<[Option<Op>; 256]> = std::sync::OnceLock::new();
+    OPS.get_or_init(|| {
+        std::array::from_fn(|byte| {
+            let code = [byte as u8];
+            decode_instr(&code, 0)
+                .ok()
+                .filter(|instr| {
+                    instr.len == 1
+                        && !matches!(
+                            instr.op,
+                            Op::VarRef(_)
+                                | Op::VarSet(_)
+                                | Op::VarBind(_)
+                                | Op::Constant(_)
+                                | Op::Constant2(_)
+                        )
+                })
+                .map(|instr| instr.op)
+        })
+    })[usize::from(byte)]
 }
 
 /// Decode only the instruction about to execute. Bounds checks protect Rust
@@ -739,6 +796,55 @@ impl ByteCodeObject {
         Self::from_fields(closure.public_len(), |index| closure.get(index))
     }
 
+    /// bytecode.c's Bcall test before `goto setup_frame', and setup_frame's
+    /// reads of the closure: a fixnum argument template, the code string,
+    /// the constants vector and the depth. None for any closure that is
+    /// not such a byte-code function (or whose fields `from_closure'
+    /// rejects), which the caller then calls through funcall.
+    #[inline(always)]
+    pub(crate) fn for_call(closure: crate::lisp::types::ClosureRef) -> Option<Self> {
+        if closure.public_len() < 4 {
+            return None;
+        }
+        // SAFETY: the closure has at least four slots.
+        let (arguments, code, constants, depth) = unsafe {
+            (
+                closure.get_unchecked(0),
+                closure.get_unchecked(1),
+                closure.get_unchecked(2),
+                closure.get_unchecked(3),
+            )
+        };
+        let template = arguments
+            .fixnum()
+            .filter(|template| (0..=0x7FFF).contains(template))?;
+        let Kind::StringObject(string) = code.kind() else {
+            return None;
+        };
+        let Kind::Vector(constants) = constants.kind() else {
+            return None;
+        };
+        let depth = depth.fixnum().filter(|depth| *depth >= 0)?;
+        // Verified code is unibyte: any change to the string retires its
+        // results.
+        if string.code_state() != crate::lisp::alloc::CodeState::Current
+            && string.borrow().is_multibyte()
+        {
+            return None;
+        }
+        Some(ByteCodeObject {
+            argspec: ArgSpec::Packed {
+                mandatory: (template & 0x7F) as u8,
+                nonrest: ((template >> 8) & 0x7F) as u8,
+                rest: template & 0x80 != 0,
+            },
+            code: CodeBytes { original: code },
+            constants,
+            stack_depth: depth as usize,
+            verified: None,
+        })
+    }
+
     fn from_fields(
         len: usize,
         field: impl Fn(usize) -> Option<Value>,
@@ -777,6 +883,7 @@ impl ByteCodeObject {
             code,
             constants,
             stack_depth: depth as usize,
+            verified: None,
         }))
     }
 }

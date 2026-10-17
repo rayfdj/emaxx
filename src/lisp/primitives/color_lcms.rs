@@ -226,7 +226,7 @@ pub(crate) fn parse_lcms_viewing_conditions(
         whitePoint: white_point,
         Yb: items[0].as_float().ok()?,
         La: items[1].as_float().ok()?,
-        surround: match items[2].as_integer().ok()? {
+        surround: match items[2].integer_value()? {
             1 => Surround::Avg,
             2 => Surround::Dim,
             3 => Surround::Dark,

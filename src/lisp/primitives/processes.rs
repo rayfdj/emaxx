@@ -1204,8 +1204,8 @@ fn decode_process_output_bytes(
     let decoding = interp
         .process_coding_system(process_id)
         .ok()
-        .and_then(|pair| pair.car().ok())
-        .and_then(|value| value.as_symbol().ok().map(|name| name.to_string()));
+        .and_then(|pair| pair.car_if_list())
+        .and_then(|value| value.symbol_str().map(|name| name.to_string()));
     let Some(decoding) = decoding.filter(|name| name != "undecided") else {
         return (String::from_utf8_lossy(bytes).into_owned(), true);
     };

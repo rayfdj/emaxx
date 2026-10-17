@@ -48,7 +48,7 @@ fn take_pending_user_signal() -> Option<&'static str> {
     // order, one occurrence at a time.
     for (pending, name) in [(&PENDING_SIGUSR2, "sigusr2"), (&PENDING_SIGUSR1, "sigusr1")] {
         if pending
-            .fetch_update(
+            .try_update(
                 UserSignalOrdering::Relaxed,
                 UserSignalOrdering::Relaxed,
                 |count| count.checked_sub(1),
@@ -197,7 +197,7 @@ pub(crate) fn function_documentation(
     // inside its (macro . FUNCTION) cons.
     let value = if matches!(value.car().map(|v| v.kind()), Ok(Kind::Symbol(ref name)) if name == "macro")
     {
-        value.cdr().ok()?
+        value.cdr_if_list()?
     } else {
         value
     };
@@ -299,19 +299,22 @@ pub(crate) fn checked_symbol_identity(
     value: &Value,
     env: &Env,
 ) -> Result<crate::lisp::types::SymbolName, LispError> {
-    match value.kind() {
-        Kind::Symbol(symbol) => return Ok(symbol),
-        Kind::Nil => return Ok("nil".into()),
-        Kind::T => return Ok("t".into()),
-        _ => {}
+    if let Some(symbol) = value.symbol_cell() {
+        return Ok(symbol);
+    }
+    if value.is_nil() {
+        return Ok(crate::lisp::types::symbols::builtin_boolean(false));
+    }
+    if value.word() == Value::T.word() {
+        return Ok(crate::lisp::types::symbols::builtin_boolean(true));
     }
     if symbols_with_pos_enabled(interp, env)
         && let Some((symbol, _)) = symbol_with_pos_parts(interp, value)
     {
         match symbol.kind() {
             Kind::Symbol(symbol) => return Ok(symbol),
-            Kind::Nil => return Ok("nil".into()),
-            Kind::T => return Ok("t".into()),
+            Kind::Nil => return Ok(crate::lisp::types::symbols::builtin_boolean(false)),
+            Kind::T => return Ok(crate::lisp::types::symbols::builtin_boolean(true)),
             _ => {}
         }
     }
@@ -704,7 +707,7 @@ pub(crate) fn parse_interactive_string(
                 let variable = call1(interp, env, "read-variable", &[message])?;
                 seen = interp
                     .lookup_var("minibuffer-history", env)
-                    .and_then(|history| history.car().ok())
+                    .and_then(|history| history.car_if_list())
                     .unwrap_or(Value::Nil);
                 values.push(variable);
             }
@@ -922,9 +925,9 @@ pub(crate) fn pending_keystroke_echo(
 /// event need not have "mouse" in its name, including after translation.
 fn mouse_event_head(interp: &Interpreter, event: &Value) -> Option<Value> {
     let (head, tail) = event.cons_values()?;
-    let symbol = head.as_symbol().ok()?;
+    let symbol = head.symbol_str()?;
     let kind = interp.get_symbol_property(symbol, "event-kind")?;
-    if tail.car().ok()?.is_cons()
+    if tail.car_if_list()?.is_cons()
         && (kind.eq_value(Value::symbol("mouse-click"))
             || kind.eq_value(Value::symbol("touchscreen")))
     {
@@ -1634,7 +1637,7 @@ pub(crate) fn is_mouse_down_event(value: &Value) -> bool {
         .to_vec()
         .ok()
         .and_then(|items| items.first().cloned())
-        .and_then(|item| item.as_symbol().ok().map(str::to_string))
+        .and_then(|item| item.symbol_str().map(str::to_string))
         .is_some_and(|name| name.contains("down-mouse"))
 }
 
@@ -1825,18 +1828,18 @@ pub(crate) fn menu_item_details_with_button(
         Kind::Cons(_) => interp.eval(form, env).unwrap_or(Value::Nil),
         other => other.value(),
     };
-    let car = item.car().ok()?;
+    let car = item.car_if_list()?;
     if let Ok(name) = crate::lisp::primitives::string_text(&car) {
         // Old format (NAME [HELP-STRING] [CACHE] . DEF).
-        let mut def = item.cdr().ok()?;
+        let mut def = item.cdr_if_list()?;
         if def.car().is_ok_and(|help| help.is_string()) {
-            def = def.cdr().ok()?;
+            def = def.cdr_if_list()?;
         }
         if def.car().is_ok_and(|cache| {
             matches!(cache.car().map(|v| v.kind()), Ok(Kind::Nil))
                 || matches!(cache.car().map(|v| v.kind()), Ok(Kind::Symbol(tag)) if tag == "vector-literal")
         }) {
-            def = def.cdr().ok()?;
+            def = def.cdr_if_list()?;
         }
         // Unselectable text (a separator) still draws in the enabled
         // face; only the menu bar drops definition-less items.
@@ -1846,7 +1849,7 @@ pub(crate) fn menu_item_details_with_button(
         return None;
     }
     // New format (menu-item NAME DEF [CACHE] . PROPS).
-    let rest = item.cdr().ok()?.to_vec().ok()?;
+    let rest = item.cdr_if_list()?.to_vec().ok()?;
     let name_form = *rest.first()?;
     let mut def = rest.get(1).cloned().unwrap_or(Value::Nil);
     let mut index = 2;
@@ -1924,7 +1927,9 @@ pub(crate) fn active_keymap_count(interp: &mut Interpreter, env: &mut Env) -> us
 pub(crate) fn take_unread_command_event(interp: &mut Interpreter, env: &mut Env) -> Option<Value> {
     let event = pop_unread_event_cell(interp, env)?;
     match event.kind() {
-        Kind::Cons(_) if matches!(event.car().map(|v| v.kind()), Ok(Kind::T)) => event.cdr().ok(),
+        Kind::Cons(_) if matches!(event.car().map(|v| v.kind()), Ok(Kind::T)) => {
+            event.cdr_if_list()
+        }
         _ => Some(event),
     }
 }

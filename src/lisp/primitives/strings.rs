@@ -1054,7 +1054,7 @@ pub(crate) fn property_from_category_symbol(
     let category = props
         .iter()
         .find(|(name, _)| name == "category")
-        .and_then(|(_, value)| value.as_symbol().ok())?;
+        .and_then(|(_, value)| value.symbol_str())?;
     interp.get_symbol_property(category, prop)
 }
 
@@ -1082,12 +1082,12 @@ pub(crate) fn property_from_props_with_category(
         .and_then(|value| value.to_vec().ok())
         .unwrap_or_default();
     let aliases = aliases.into_iter().find_map(|entry| {
-        let key = entry.car().ok()?;
+        let key = entry.car_if_list()?;
         matches!(key.kind(), Kind::Symbol(name) if name == prop)
-            .then(|| entry.cdr().ok()?.to_vec().ok())?
+            .then(|| entry.cdr_if_list()?.to_vec().ok())?
     })?;
     aliases.into_iter().find_map(|alias| {
-        let alias = alias.as_symbol().ok()?;
+        let alias = alias.symbol_str()?;
         props
             .iter()
             .find(|(name, _)| name == alias)
@@ -1144,7 +1144,7 @@ pub(crate) fn overlay_property_with_category(
         return direct;
     }
     let category = overlay.get_symbol_prop("category")?;
-    interp.get_symbol_property(category.as_symbol().ok()?, prop)
+    interp.get_symbol_property(category.symbol_str()?, prop)
 }
 
 pub(crate) fn string_property_at(value: &Value, pos: usize, prop: &str) -> Option<Value> {

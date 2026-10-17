@@ -1,2531 +1,2174 @@
 # Resume the full compact-runtime goal here
 
 The goal is **active and incomplete**. Read the [complete goal and all completion
-requirements](docs/runtime-representation-goal.md) before editing. A validated
-checkpoint, green gate or handover does not complete it. Current user instructions
-take precedence over historical notes.
-
-Read the [current cons continuation](docs/runtime-representation-cons-roots-draft.md),
-[allocator continuation](docs/runtime-representation-vector-allocation-draft.md),
-[shared-reader handover](docs/runtime-representation-shared-reader-draft.md),
-[bytecode draft](docs/runtime-representation-bytecode-draft.md) and
-[string-byte draft](docs/runtime-representation-string-bytes-draft.md), plus the
-[accounting continuation](docs/runtime-representation-accounting-draft.md).
-The latest architectural continuation is the separately packaged
-[common-string draft](docs/runtime-representation-common-strings-draft.md).
-Read the latest [correctness recovery and separate file-coding draft](docs/runtime-representation-correctness-recovery-draft.md) before continuing.
-The [requirement map](docs/runtime-representation-progress.md) tracks the full scope.
-
-## Source324 validation and separate membership continuation — 13 October 2026
-
-The full goal remains **active and incomplete**. Main contains merged
-[PR85](https://github.com/rayfdj/emaxx/pull/85) at
-`758d2138e9fe834abf6391a84946af32b30f5c6c`; its
-[merge receipt](docs/handover/2026-10-09-symbol-fields/source324-main-merge.json)
-is retained. The runtime is source324
-`999362622a68d6508c356541422f7a48ae6e2175`, with **572 runtime inputs**.
-This evidence update changes no runtime inputs. Existing approval covers
-validated task pushes, Linux CI and main merges; do not ask again.
-
-Allocated symbols now own their value/alias, function, plist and flags; numeric
-IDs, side metadata and field histories are removed. The integration includes
-GNU's nonallocating `intern-soft` behavior and preserves the actual input string
-passed to programmed completion. See the
-[architectural continuation](docs/runtime-representation-symbol-payload-authority-draft.md).
-
-The [clean platform evidence](docs/handover/2026-10-09-symbol-fields/source324-linux-and-macos-rust-results-manifest.json)
-verifies **3,190 Linux Rust passes** and **3,178 macOS Rust passes**, each with
-the two existing ignores. Strict checks have zero warnings, every prior test
-name remains, and original native artifact identity passes. Linux frozen matches
-**all 519 files / 7,928 outcomes / 1,038 successful processes**, including all
-177 native compiler tests. Rust run is `38337571854`; frozen run is `38337574123`.
-All 572 source inputs and the raw reports, process receipts and inventories are
-checked against source324.
-
-The [initial macOS frozen evidence](docs/handover/2026-10-09-symbol-fields/source324-macos-frozen-and-tramp-results-manifest.json)
-preserves the original failed attempt: **318 completed files / 4,479 matches /
-zero differences**, followed by both original 180-second Tramp timeouts and
-200 unstarted files. A separate unchanged Tramp comparison, bounded at 600 seconds,
-obtains **59 matching actual outcomes**; GNU finishes in **209.04 seconds** and
-Emaxx in **257.31 seconds**. Actual executable/image bytes are retained before
-the observations, with the rebuilt subject's hash identified separately.
-The original remains failed. The [completed 200-file tail](docs/handover/2026-10-09-symbol-fields/source324-macos-tail-and-coverage-results-manifest.json)
-adds **3,377 matches and six existing feature-diagnostic differences**, all six
-identical to source318. Every process exits successfully and all 177 native tests
-pass in both editors. An explicit file-to-run mapping covers **all 519 files /
-7,921 outcomes: 7,915 matches and six strict differences** across these separate
-attempts. This is not one passing frozen run.
-
-The [complete ordinary terminal run](docs/handover/2026-10-09-symbol-fields/source324-macos-terminal-results-manifest.json)
-passes **all 226 original scenarios / 686 comparisons**: 658 screens and 28
-filesystem comparisons. All 24 captured rows, cell attributes and cursor positions
-also match independently of the harness verdict. Original actions, inventory and
-deadlines remain unchanged. Source324 validation is closed with the macOS frozen
-qualifications above. PR85 is already merged; do not attempt a duplicate merge.
-
-The [three Linux timing pilots](docs/handover/2026-10-09-symbol-fields/source324-linux-symbol-performance-results-manifest.json)
-verify **192 actual answers and execution modes** across all 16 locked workloads.
-Against main `01189759`, the body aggregate is **0.593% faster**, but remains
-**2.725557× paired GNU**. Explicit GC regresses **10.54%**, mapcar **6.93%**, and
-native-to-bytecode transitions **5.70%**; all samples remain visible. This is
-diagnostic evidence, not the calibrated nine-round/every-workload upper 95%
-GNU-ratio ceiling of 1.03. Missing allocation counters and the old 48-byte charge
-for the actual 64-byte symbol header remain unresolved.
-
-The [Linux allocation profile](docs/handover/2026-10-09-symbol-fields/source324-linux-allocation-profile-results-manifest.json)
-runs unchanged upstream allocation tests with five matching outcomes, using
-gate-profile sampling that includes startup. It does not explain the release GC
-regression. A separate
-[macOS locked-GC profile](docs/handover/2026-10-09-symbol-fields/source324-macos-locked-gc-profile-results-manifest.json)
-verifies **24 actual results**, with all **32 requested collections** observed
-in each repetition of the unchanged 100,000-live-cons workload. Emaxx's selected
-self samples concentrate in tracing and collection. Whole-process sampling,
-concurrent validation and a retained release executable make this diagnostic;
-the samples do not establish the cause of the Linux regression or a speed gain.
-
-A **separate, unapplied GC experiment** is in
-`target/runtime-goal/recovered-2026-10-13/gc-cons-trace/emaxx`.
-The [draft1 patch and initial evidence](docs/handover/2026-10-09-symbol-fields/gc-cons-trace-draft1-unfinished-results-manifest.json)
-replay all 572 inputs from `99936262`, changing only `src/lisp/eval.rs`.
-GNU `alloc.c:process_mark_stack` motivates marking and tracing cons fields
-without two general tag matches; mark epochs and car-first traversal remain.
-Strict checks have zero warnings. The first selected run records **438 passes /
-96 failures** with the adjacent GNU fixture tree missing; this remains failed.
-With the required fixture layout, the [completed draft1 evidence](docs/handover/2026-10-09-symbol-fields/gc-cons-trace-draft1-rejected-results-manifest.json)
-passes **534 unchanged controls in each profile**, **28 ordinary comparisons /
-56 processes**, and **192 actual benchmark answers/modes**. Three alternating
-macOS pilots show **1.93% aggregate and 10.49% explicit-GC regressions** versus
-fresh main `758d2138`. **Draft1 is rejected and remains unapplied.** All samples,
-the original setup failure and audit-helper corrections remain preserved.
-
-The generated candidate code calls a 10,132-byte helper with a 224-byte stack
-frame for each queued object; the baseline drains the pending loop within one
-function. That extra call is a concrete cost, not a complete causal explanation
-for the observed slowdown. The isolated checkout now carries **draft2**, adding
-`#[inline(always)]` to keep the helper in the pending loop. Its
-[completed evidence](docs/handover/2026-10-09-symbol-fields/gc-cons-trace-draft2-unapplied-results-manifest.json)
-replays all 572 inputs, passes strict checks without warnings, all **534 controls
-in each profile**, **28 ordinary comparisons / 56 processes**, and **192 actual
-benchmark answers/modes**. Three alternating macOS pilots show **3.11% faster
-explicit GC but 1.15% slower aggregate** against fresh main `758d2138`.
-The compiled pending loop has one 272-byte frame and no per-object helper call;
-its code grows from 10,260 to 10,776 bytes. All samples remain diagnostic.
-**Keep draft2 unapplied: these pilots do not establish an overall benefit.**
-All GC experiment processes have ended. Return to the known constant/store
-identity repair below; do not repeat the completed GC checks or apply either
-experiment as a validated improvement. Source324's closed validation is unaffected,
-and its production GC regression remains open.
-
-The next implementation is the **separate, unapplied membership draft6** in
-`target/runtime-goal/recovered-2026-10-13/symbol-membership/emaxx`.
-Its [portable patch and evidence](docs/handover/2026-10-09-symbol-fields/symbol-membership-draft6-ownership-results-manifest.json)
-replay all **580 input bytes/modes** from source324. Strict checks have zero
-warnings and **403 selected controls pass in each of gate and release**.
-It removes standard-obarray membership tombstones, preserves actual detached
-symbol and builtin boolean identity, and moves the captured Unicode menu case
-table into its owning editor. Draft5 exposed that global table retaining a prior
-editor's symbol graph; startup/image order reproductions fail before the fix.
-The added control covers separate editors, image copying and mutation isolation;
-all original image assertions remain. One value word per editor replaces the
-global optional table; no net memory or speed gain is claimed.
-
-Preserve the [earlier unfinished attempts](docs/handover/2026-10-09-symbol-fields/symbol-membership-draft5-unfinished-results-manifest.json),
-the [draft5 selected failure](docs/handover/2026-10-09-symbol-fields/symbol-membership-draft5-selected-failure-results-manifest.json)
-(399 passes/three image failures), the order reproductions and draft6's initial
-formatting failure. **Fresh same-name constant/store semantics are still wrong**:
-an ordinary valid GNU probe returns 40 true predicates while production returns
-21 false predicates. Draft6 still has **20 false predicates** on that identical
-loadable program. The [separate ordinary continuation](docs/handover/2026-10-09-symbol-fields/symbol-membership-draft6-ordinary-results-manifest.json)
-passes **38 comparisons / 76 processes**, preserving all 28 earlier comparisons
-and adding ten membership cases with actual bytecode/native modes checked.
-The constant/store negative remains separate and unresolved. Complete library,
-platform and frozen validation remain required before applying this draft.
-
-For portable continuation, extract the membership archive and apply
-`evidence/symbol-membership-draft6-formatted-gate/tracked.patch` to a detached
-checkout of `99936262`. Its SHA-256 is
-`66fb9775bd28123acb190ee643f74fb2a939ebc84bcf8cea7e038f473a35140b`.
-Verify every entry in the adjacent `source.json`, including file modes;
-`evidence/replay_membership6.py` records both retained draft6 patches.
-Rebase only after preserving that exact replay. GNU `lread.c:intern_sym`,
-`eval.c:Fspecial_variable_p` and the actual constant initialization in `lread.c`,
-`data.c`, `buffer.c` and `font.c` guide the remaining identity/store repair.
-
-Local source324 coordinators and receipts live under
-`target/runtime-goal/symbol-obarray-2026-10-09`: inspect
-`source324-macos-observations/state.json`, `source324-terminal/state.json` and
-`active-continuation-2026-10-13-source324.json`. All source324 validation
-coordinators have ended. The root has fast-forwarded to the published merge;
-preserve the separate unfinished checkouts and their recorded input identities.
-Large executables/images excluded from portable archives are explicitly listed
-with sizes, hashes and retained local paths; not every artifact is portable.
-
-Host-name/private-name and forwarded/localized adapters, descriptor reclamation,
-public ownership, physical accounting and real counters, property intervals,
-pure storage, measured VM/call work, final adversarial review, complete final
-platform validation and the unchanged performance criterion remain open. The
-replacement macOS oracle and original `591acf7b` reconstruction limitation remain
-as documented. A checkpoint merge is not completion of the full goal.
-
-## Historical source323 validation closure — 13 October 2026
-
-The full goal remains **active and incomplete**. Source323 is `0550a70c` on
-the authorized `runtime-char-tables` branch. Main is still `55b109e8` until
-[PR84](https://github.com/rayfdj/emaxx/pull/84) is merged. The checkpoint's
-validation is closed with the qualifications below. Publish this evidence and
-merge PR84 under the existing approval; do not ask for renewed authorization.
-Its production inputs are unchanged from source321. The separate symbol-field
-implementation below is still unapplied to the published runtime.
-
-The [complete Linux and macOS Rust evidence](docs/handover/2026-10-09-symbol-fields/source323-linux-and-macos-rust-results-manifest.json)
-verifies **3,183 Linux Rust passes** and **3,171 macOS Rust passes**, each with
-the two existing ignores. Exact native artifact identity passes. Linux frozen
-run `38237375664` matches **all 519 files / 7,928 outcomes / 1,038 successful
-processes**; Rust run is `38237372980`. All 565 source inputs match the immutable
-commit and every original inventory name remains. The first macOS retention
-captured only libtest; a separate supplement retains nine post-run fixture
-images without inferring which test used them.
-
-The [macOS frozen evidence](docs/handover/2026-10-09-symbol-fields/source323-macos-frozen-observations-results-manifest.json)
-retains the original failed run: **318 completed files / 4,477 matches / two
-internal-wait differences**, then both original 180-second Tramp timeouts and
-200 unstarted files. Emaxx's ERC wait and GNU's Eshell wait fail in that attempt.
-Separate unchanged ERC and Eshell runs obtain **25 matching actual outcomes**;
-a bounded 600-second Tramp observation obtains **59 matches**, with GNU finishing
-in 204.48 seconds and Emaxx in 252.96 seconds. The exact 200-file tail, using its
-original deadlines, adds **3,377 matches and six existing diagnostic differences**.
-All six issue entries are identical to source318 and remain strict differences.
-All 177 native compiler tests in that tail pass in both editors.
-
-Explicit file-to-run mappings cover all **519 files / 7,921 macOS outcomes**.
-The original completed files plus missing coverage give 7,913 matches/eight
-differences; substituting the separately identified successful ERC/Eshell
-observations gives 7,915 matches/six existing differences. Neither is one passing
-frozen run. The original failures remain failed. Both original and rebuilt Emaxx
-executable bytes and the unchanged GNU/image inputs are retained locally; the
-portable manifests explicitly identify excluded large binary/image bytes.
-
-The [complete terminal run](docs/handover/2026-10-09-symbol-fields/source323-macos-terminal-results-manifest.json)
-passes **all 226 original scenarios / 686 comparisons**: 658 screens and 28
-filesystem comparisons. Every recorded row, cell attribute and cursor position
-also matches independently of the ordinary harness verdict. Original actions,
-inventory and deadlines are unchanged. All source323 coordinators have ended.
-
-The [source322 Eglot observation](docs/handover/2026-10-09-symbol-fields/source322-eglot-actual-answer-results-manifest.json)
-also closes: run `38236654817` obtains **52 matching outcomes**, including GNU's
-actual Rust-completion answer in 7.27 seconds. No source, selector, expectation
-or deadline changed and Emaxx was not slowed. The original source322 full run
-remains failed at GNU's internal JSON-RPC timeout.
-
-The [identity draft5 evidence](docs/handover/2026-10-09-symbol-fields/allocated-symbol-identity-draft5-results-manifest.json)
-replays **572 inputs** from `265d5ba3`, passes strict checks with zero warnings,
-**397 selected controls per profile**, the complete local macOS Rust gate
-(**3,178 passes / two existing ignores**) and **28 ordinary GNU comparisons**
-in actual execution modes. Fourteen invalid cross-owner fixture setups now
-preserve their original assertions within the correct editor, including the
-original escaped-frame reclamation requirement. The real Eshell regression is
-fixed by making `intern-soft` probe obarray membership without interning missing
-names, as GNU `lread.c` does. A separate generic completion fix passes the actual
-Lisp input string to callbacks, preserving identity, properties and mutation.
-That completion defect is reproduced in published source323 and is fixed only
-in this prototype. All prior failed attempts remain retained.
-
-The [integration delta](docs/handover/2026-10-09-symbol-fields/allocated-symbol-identity-integration-results-manifest.json)
-replays all 572 inputs from `0550a70c`. Its production bytes/modes match draft5;
-the only validation-input difference preserves source323's configured-GNU native
-fixture. Fresh strict checks and **all 39 original integration tests** pass,
-including exact native artifacts. The isolated checkout is
-`target/runtime-goal/recovered-2026-10-13/symbol-fields-integration/emaxx`.
-After the checkpoint merge, publish this integration on the authorized task
-branch and run clean-source platform/frozen/terminal validation. Do not edit
-runtime inputs while their checks are active. The original prototype is retained
-unchanged in `target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx`.
-
-Allocated symbol fields and actual pointer identity remove the side metadata,
-field histories and numeric IDs, but host-name/membership/forwarded adapters,
-descriptor reclamation, public ownership, physical allocation and public counters
-remain unfinished. The 64-byte symbol header is not a net memory or speed claim;
-the old allocation charge still undercounts it. Latest production timing remains
-**2.767150× GNU / 0.53% slower than main `55b109e8`**, from three source321 pilots.
-There is no new performance result. Measured profiles, remaining representations,
-the final adversarial audit, complete final platform checks and the calibrated
-nine-round/every-workload 3% criterion remain required.
-
-## Historical source323 native-oracle fixture correction and unfinished symbol IDs — 12 October 2026
-
-The full goal remains **active and incomplete**. Main is still `55b109e8`;
-[PR84](https://github.com/rayfdj/emaxx/pull/84) is unmerged. Existing approval
-covers validated task pushes, Linux CI and main merges. This checkpoint changes
-only `tests/native_comp_identity.rs` to select the configured GNU source root;
-production is identical to source321/source322. Do not ask for renewed approval.
-
-The [source322 Linux evidence](docs/handover/2026-10-09-symbol-fields/source322-linux-rust-and-frozen-failure-results-manifest.json)
-retains **3,183 Rust passes / two existing ignores** (run `38229273200`).
-Frozen run `38229275812` executes **all 519 files / 7,928 outcomes / 1,038
-normally exited processes**, with **7,927 matches and one GNU-only failure**.
-`eglot-test-rust-completion-exit-function` reaches GNU's internal ten-second
-JSON-RPC timeout; Emaxx passes. No outer process deadline expires. The full run
-remains failed. A separate unchanged Eglot-file observation was dispatched via
-`observe_source322_eglot.py`; inspect its saved receipt/status before dispatching
-again. Obtain GNU's actual answer without making Emaxx slower or substituting
-that observation into the original failed run. GNU input bytes are retained;
-this frozen artifact records Emaxx executable/image hashes without their bytes.
-
-The [source322 macOS failure and source323 repair](docs/handover/2026-10-09-symbol-fields/source322-macos-failure-and-native-root-repair-results-manifest.json)
-retain **3,161 passes, one native identity failure and two existing ignores**.
-All 3,074 library names and binary targets execute; three integration targets
-remain unstarted. Frozen performs no comparisons. The native fixture used the
-adjacent GNU build (`adba4e3f` native ABI), while Emaxx used the configured rebuilt
-tree (`d6eeb69b`). The original artifacts and both GNU inputs are retained.
-Source323 corrects that fixture's root selection/comment. It preserves exact
-artifact bytes, all nine unchanged sources, separate homes/tmp directories,
-subject-first execution and the no-artifact assertion. Strict checks pass with
-zero warnings and **all seven integration targets pass: 39 tests**. Other
-integration fixtures retain their original oracle choices; these results are
-not a complete source323 platform gate.
-
-Continue with `symbol-obarray-2026-10-09/validate_native_root.py source323-macos-full full`,
-then the source323 frozen/terminal helpers and Linux CI on the clean published
-commit. Inspect saved receipts and active processes before starting twice.
-Complete macOS Rust, frozen, native/module and terminal validation remains
-required before merging this checkpoint. Preserve actual executable/image bytes
-before any separate bounded timeout observation. Do not edit validated runtime
-inputs while their checks are active.
-
-The [allocated-field draft16](docs/handover/2026-10-09-symbol-fields/allocated-symbol-draft16-results-manifest.json)
-is separate and unapplied. GNU-backed fixture corrections retain same-editor
-symbol comparisons and every native function name/arity without assuming hash
-iteration order. All **568 inputs replay**, strict checks pass, **379 controls
-pass per profile**, and **21 ordinary GNU comparisons match** in real execution
-modes. Its original full gate stops after **689 passes / two failures**. The
-eight unexecuted library groups then run separately with unchanged inputs and
-selectors. Across both attempts, all **3,078 names** are observed: **3,061 pass,
-15 fail, two existing ignores**. No Cargo stage ran. Four failures visibly
-compare symbols across different owners; locale, undo, bytecode switch, native
-calls, Eshell completion and escaped-frame reclamation also require diagnosis.
-No failed result is waived or recast as a passing full gate.
-
-The latest separate [identity draft2](docs/handover/2026-10-09-symbol-fields/allocated-symbol-identity-unfinished-results-manifest.json)
-is in `target/runtime-goal/recovered-2026-10-12/symbol-identity/emaxx`.
-All **568 inputs replay from `265d5ba3`**. Allocated symbol IDs and their two
-atomic counters are removed; local bindings, aliases, watchers and dump keys use
-actual symbol identity. Keyboard Qsymbols belong to each editor. The new
-before-change ownership and 64-byte-layout controls both fail as expected;
-draft2 passes strict checks and **380 selected controls**. The allocated header
-is **64 bytes instead of 72**, but fourteen per-editor keyboard references and
-existing name/membership/forwarding adapters remain. No whole-process memory or
-speed improvement is claimed. The original Eshell assertion fails both before
-and after this change; all other draft16 failures remain open. Release, ordinary
-and full identity-draft validation have not run. See the
-[architectural continuation](docs/runtime-representation-symbol-payload-authority-draft.md).
-
-The latest production timing remains **2.767150× paired GNU**, **0.53% slower
-than main**, from three source321 pilots. There is no new timing result here.
-Authoritative remaining representations, sound ownership/reclamation, physical
-allocation and public counters, profiles, final adversarial review, complete
-platform validation and the calibrated nine-round/every-case 3% criterion all
-remain required. A checkpoint push or merge does not complete the goal.
-
-## Historical source322 startup fixture correction and source321 results — 12 October 2026
-
-The full goal remains **active and incomplete**. Main is `55b109e8`; PR84 remains
-unmerged. Existing approval covers validated task pushes, Linux CI and main
-merges. Source321 `6392d517` now has [complete Linux evidence](docs/handover/2026-10-09-symbol-fields/source321-linux-complete-results-manifest.json):
-**3,183 Rust passes / two existing ignores**, native artifact identity, and
-**519 frozen files / 7,928 matching outcomes / 1,038 successful processes**.
-Runs are Rust `38223356652`, frozen `38223359371`, timing `38223361524`.
-Every prior library name and every frozen inventory entry remains covered.
-
-The [timing pilots](docs/handover/2026-10-09-symbol-fields/source321-linux-symbol-performance-results-manifest.json)
-verify all 192 actual answers and modes. The body aggregate is **0.53% slower
-than main**, at **2.767150× paired GNU**. Explicit GC regresses 8.04% and
-interpreted calls 5.22%; retain all samples. These three pilots are not the
-calibrated nine-round/every-case performance criterion, which remains open.
-
-The [macOS failure and startup repair](docs/handover/2026-10-09-symbol-fields/source321-macos-failure-and-startup-repair-results-manifest.json)
-retain all **3,074 executed library names: 3,071 passes, one failure and two
-existing ignores**. The binary and integration Cargo stages were not started.
-The frozen coordinator stopped before any comparisons. The sole failing existing
-startup fixture assumed `../emacs/lisp` for its empty-entry defaults, while the
-runtime correctly uses the configured rebuilt GNU checkout. Source322 changes
-only those two fixture setup lines. All value, sharing, environment restoration
-and dump-phase assertions remain. Ordinary GNU and Emaxx both return `(t t t)`
-for the three-entry/sharing observation; `lread.c:load_path_default/init_lread`
-provides the source reference. Strict checks have zero warnings and **six startup
-controls pass per profile**, with every inventory name unchanged. The first
-repair's compile error remains in the package. Production source is identical
-to source321; this does not turn its failed full run into a pass.
-
-Continue with `symbol-obarray-2026-10-09/validate_startup_root.py source322-macos-full full`.
-Inspect saved receipts and active processes before launching twice. The updated
-frozen coordinator must follow that exact source and clean commit, with actual
-executable/image retention before any longer timeout observation. Full macOS
-Rust, frozen, affected native/module and terminal checks remain pending. Do not
-edit a runtime checkout during validation. The earlier source321 terminal helper
-was prepared but never launched; update its source/subject references first.
-
-The [separate allocated-symbol continuation](docs/runtime-representation-symbol-payload-authority-draft.md)
-is now **unapplied draft15**, replayable from main `265d5ba3`. It removes the
-dense/sparse metadata table, four field-history vectors and weak metadata sweep.
-The obarray owner now enumerates actual symbols independently of their fields.
-A GNU-confirmed negative shows the old field-based enumeration reorders after
-rebinding. Reader atoms now resolve in the selected obarray before allocation;
-eval-buffer/region read and evaluate one form at a time. All 568 inputs replay;
-strict checks pass and **377 of 379 selected controls pass**. The EIEIO fixture
-compares symbols from separate editors; the native dump fixture gets the same
-native count but a different first function. Both remain failures requiring
-resolution with GNU-backed coverage. There is no draft15 release/ordinary/full
-validation or performance claim. The earlier draft11 ordinary run separately
-matches fifteen comparisons, including actual native modes. All attempts and
-failed results are [packaged](docs/handover/2026-10-09-symbol-fields/allocated-symbol-obarray-unfinished-results-manifest.json).
-
-## Source321 owner retirement follow-up — 12 October 2026
-
-The full goal remains active and incomplete. Main is still `55b109e8`; the
-validated follow-up is on [PR #84](https://github.com/rayfdj/emaxx/pull/84), with
-complete validation pending before the authorized main merge. Existing approval
-covers validated updates to `runtime-char-tables`, Linux CI and main merges.
-
-Source320 `4905b3e7` now has [complete Linux evidence](docs/handover/2026-10-09-symbol-fields/source320-linux-complete-results-manifest.json):
-**3,182 Rust passes / two existing ignores**, native artifact identity, and
-**519 frozen files / 7,928 matching outcomes / 1,038 successful processes**.
-Runs are Rust `38208053943`, frozen `38208055794`, and timing `38208057264`.
-The [three timing pilots](docs/handover/2026-10-09-symbol-fields/source320-linux-symbol-performance-results-manifest.json)
-verify all 192 actual answers and modes but remain **2.09% slower than main**
-by body aggregate, at **2.877419×** paired GNU. Every unfavorable sample remains;
-this is not nine-round, calibrated or every-case performance acceptance.
-
-The [source320 macOS evidence](docs/handover/2026-10-09-symbol-fields/source320-macos-failed-rust-results-manifest.json)
-retains 2,498 Rust passes, one failed existing startup-path fixture, two existing
-ignores, 572 unexecuted library names and unstarted Cargo stages. The fixture
-assumed an adjacent GNU checkout instead of the configured rebuilt source root.
-Its twelve ordinary GNU comparisons passed separately. The queued macOS frozen
-run was superseded before execution when the owner-retirement negative below
-was reproduced; it performed zero comparisons. No failed run is counted as a pass.
-
-The [source321 repair and selected evidence](docs/handover/2026-10-09-symbol-fields/source321-owner-retirement-selected-results-manifest.json)
-make weak symbol survival follow the actual mark, as GNU `alloc.c:survives_gc_p`
-does. The negative retained a weak key after its editor and obarray owner died.
-The unchanged new control checks survival while the editor is parked and removal
-after retirement. The other change corrects the existing path fixture's build
-root; its exact load-path assertion and environment-independence check remain.
-Two actual GNU processes confirm that `EMACS_TEST_DIRECTORY` does not alter
-`load-path`. Strict checks have zero warnings, **235 controls pass per profile**,
-and **twelve ordinary GNU comparisons** match with actual bytecode/native modes.
-All 565 inputs replay from source320 and all earlier inventory names remain.
-The prior Linux and macOS results do not certify this follow-up.
-
-Continue with `symbol-obarray-2026-10-09/validate_final_owner.py image-draft10-full full`,
-`source321_macos_frozen.py`, and `source321_ci.py`, inspecting receipts before
-starting anything twice. Preserve exact frozen executable/image bytes before
-any longer timeout observation. The new frozen coordinator does this automatically.
-Complete Rust, frozen, affected native/module and terminal checks remain required.
-Do not edit a runtime checkout while its validation is active.
-
-The [separate allocated-field continuation](docs/runtime-representation-symbol-payload-authority-draft.md)
-is still unapplied. Its latest portable draft11 has **237 controls per profile**.
-It includes the ownership repair and replaces the process-lifetime C-slot ID memo
-with an existing symbol state-byte bit, eliminating a TLS/hash lookup for ordinary
-lexical bindings. The allocated header plus remaining metadata still totals 96
-bytes; no net memory or speed gain is claimed. The draft7 fifteen ordinary
-comparisons are historical, not validation of these newer inputs. Dense IDs,
-enumeration, localized/forwarded adapters, descriptor reclamation, host ownership,
-physical accounting, profiles and all other full-goal requirements remain open.
-
-## Source320 debugger repair and allocated fields — 12 October 2026
-
-The full goal is active and incomplete. Main `55b109e8` still contains source318.
-Source319 was pushed as `47a05b26876319b28e590a666f9277a2abf46d5a` on the authorized
-`runtime-char-tables` branch. **Do not merge that checkpoint alone**: the later
-owner/debugger regression below is reproduced and needs the current repair.
-Existing authorization covers validated task pushes, Linux CI and main merges.
-
-The [complete source319 Linux evidence](docs/handover/2026-10-09-symbol-fields/source319-linux-complete-results-manifest.json)
-verifies **3,181 Rust passes / two existing ignores**, native artifact identity,
-and **519 frozen files / 7,928 matching outcomes / 1,038 successful processes**.
-Runs: Rust `38149420204`, frozen `38149421635`, timing `38149423072`. The
-[paired timing evidence](docs/handover/2026-10-09-symbol-fields/source319-linux-symbol-performance-results-manifest.json)
-verifies all 192 actual answers and modes. Its three full16 pilots are **4.93%
-slower than main by body aggregate**, at **2.813528×** paired GNU. Lexical
-interpretation regresses 24.37%, bindat 22.13%, native-to-bytecode 14.68% and undo
-11.83%; all samples remain. This is not calibrated performance acceptance.
-
-The [macOS failed run and separate Tramp observation](docs/handover/2026-10-09-symbol-fields/source319-macos-failed-frozen-and-tramp-results-manifest.json)
-preserve the uncommitted-checkout rejection, then 318 completed comparisons,
-4,472 matching outcome labels and seven differences. Nine files retain strict
-failures, including local socket permission errors in both editors. Both Tramp
-processes timed out at the unchanged 180-second deadline; 200 files were not
-started. The separate 600-second observation obtains **59 matching Tramp
-outcomes**, GNU 216.08 seconds and Emaxx 227.50 seconds. The original failed-run
-Emaxx executable was rebuilt before its bytes were copied; its recorded hash
-remains, but those original bytes were not recovered. Current executable and
-unchanged GNU/images are retained separately. These runs are not a full pass.
-The next full macOS run needs the approved local socket/PTY execution boundary.
-
-The [source320 debugger repair](docs/handover/2026-10-09-symbol-fields/source320-symbol-owner-fix-selected-results-manifest.json)
-replaces the process-wide cached `edebug-entered` ID with the current editor's
-actual Qsymbol reference, relocated during image copying. The original negative
-loses a later editor's lexical context. Strict checks and **233 controls per
-profile** now pass, with every earlier inventory name retained and all 565
-runtime inputs replayed from `47a05b26`. The task branch contains this repair;
-its own full platform, ordinary and compatibility validation remains pending.
-Use `symbol-obarray-2026-10-09/ordinary_owner_fix.py` and
-`validate_owner_fix.py image-draft8-full full` for the prepared local continuation,
-checking saved state/receipts before starting anything twice. Do not edit the
-root runtime while those checks are running. Source319 results do not certify
-this follow-up. Preserve every failed attempt and evidence limitation.
-
-Read the [latest allocated-field continuation](docs/runtime-representation-symbol-payload-authority-draft.md)
-for the separate prototype. It moves all symbol payloads and flags to allocated
-objects and removes the old field-tracing fixed point. All **235 selected controls
-pass in both profiles**, with 566 inputs replayed. IDs, enumeration, ownership
-retirement, descriptor reclamation, honest accounting and all remaining full-goal
-requirements are still open. It is not applied to this task branch or main.
-
-## Source319 validation branch — 11 October 2026
-
-Main `55b109e893c16fdd41b963bf46bc40735c19bac4` contains source318 and the
-portable source319 draft through merged PR83. This task branch applies the exact
-source319 image6 runtime: all **565 inputs/modes** match the archived selected,
-ordinary and complete macOS Rust validation. Existing authorization covers
-validated task pushes, Linux CI and main merges. The full goal remains incomplete.
-
-The [complete source319 macOS Rust evidence](docs/handover/2026-10-09-symbol-fields/source319-macos-rust-results-manifest.json)
-verifies **3,169 passes / two existing ignores**, every raw library test name,
-all Cargo results and native artifact identity. The full gate coordinator has
-exited. Its 232 selected controls per profile and twelve ordinary GNU comparisons
-remain valid separate evidence. The first ordinary macOS frozen launcher was rejected before comparisons
-because the draft checkout was uncommitted. Its failed receipt and log remain
-at `symbol-obarray-2026-10-09/source319-macos-frozen`; the clean-tree requirement
-is unchanged. Commit-addressable macOS frozen, Linux validation and timing
-are pending for this applied checkpoint. No new performance
-improvement or full-goal completion is claimed.
-
-The isolated `recovered-2026-10-10/symbol-fields/emaxx` prototype has advanced
-beyond the saved constructor-only patch. It moves function/plist words to the
-allocated symbol and gives private constructors independent canonical owners.
-Its second attempt retained **229 passes / four failed controls**; the next
-attempt passes strict checks and **234 controls in each profile**. GNU confirms the added nine-predicate identity/field fixture. Changes
-to local fixtures preserve parked-editor GC checks, host lifetime checks and
-full image payload checks while removing assumptions that independent editors
-share identical symbol objects. The failed logs and exact source captures stay
-in `allocated-symbols-2026-10-10`; the prototype is not part of this applied
-runtime. Value/alias/flag payloads, dense IDs, enumeration, weak-field GC adapters,
-descriptor reclamation and honest physical accounting remain unfinished.
-
-## Image ownership continuation — 10 October 2026
-
-PR [#82](https://github.com/rayfdj/emaxx/pull/82) is merged; main is
-`265d5ba3405cebe7692560cc29722be65d62237b`, with source318 runtime. The full goal
-is active and incomplete. Existing authorization covers validated task updates,
-Linux CI and main merges; no new authorization is required.
-
-Read the [latest private image-copy continuation](docs/runtime-representation-symbol-image-draft.md).
-The separately packaged, unapplied source319 draft6 relocates canonical and
-private symbols, cyclic name properties, symbol-field keys, local bindings,
-watchers and dependent hash/property keys. Its original graph failure is
-preserved. Strict checks have zero warnings, and **232 controls pass in each
-profile**, preserving every prior control and complete inventory name. The
-[patch and evidence](docs/handover/2026-10-09-symbol-fields/source319-symbol-image-draft-results-manifest.json)
-replay all **565 inputs/modes** from both source318 and current main.
-
-The first ordinary wrapper's stale-manifest preflight failure is retained;
-it executed no runtime comparisons. The corrected coordinator is
-`target/runtime-goal/symbol-obarray-2026-10-09/continue_image2.py`, with state in
-`image-draft6-continuation2-state.json`. Its [ordinary evidence](docs/handover/2026-10-09-symbol-fields/source319-symbol-image-ordinary-results-manifest.json)
-verifies **24 successful processes / twelve matching GNU comparisons**, including
-actual bytecode/native modes and the new graph fixture. The complete macOS Rust
-gate is now running. Do not edit its
-`recovered-2026-10-09/symbol-obarray/emaxx` checkout while validation is active.
-These broader results remain separate from the completed selected evidence.
-
-Source318's ordinary full terminal attempt ended after **430 matching
-comparisons** (419 complete screens and eleven filesystem comparisons), with no
-observed divergence. GNU failed startup readiness in scenario 184,
-`eglot-xref-rename-edits`; **256 comparisons remain unexecuted in that attempt**.
-Its raw log and audit are at
-`target/runtime-goal/symbol-payload-api-2026-10-09/source318-terminal` and
-`source318-terminal-audit.json`. The [closed continuation](docs/handover/2026-10-09-symbol-fields/source318-terminal-continuation-results-manifest.json)
-observes each of the 43 unfinished scenarios once and matches all remaining
-256 comparisons, with unchanged executable/image bytes, actions and deadlines.
-Across attempts, all **226 scenarios / 686 distinct labels** have matching
-observations. Every complete screen, attribute and cursor agrees. Both terminal
-supervisors have exited. The original failed run remains failed; separate
-matching observations are not one complete ordinary pass or an explanation of
-the GNU startup failure.
-
-Private constructor ownership, direct allocated symbol fields, removal of
-ID/enumeration/GC adapters, descriptor reclamation, physical accounting and all
-other completion requirements remain open. No performance gain is claimed.
-The isolated next checkout is
-`target/runtime-goal/recovered-2026-10-10/symbol-fields/emaxx`. It starts from the
-exact draft6 inputs and contains a [separately saved constructor experiment](docs/handover/2026-10-09-symbol-fields/allocated-symbol-constructor-unfinished-manifest.json).
-That incremental patch replays its three files, but **has not been compiled or
-tested** and does not move the fields. Finish allocated authority and remove the
-growing dense-ID storage before treating this preparation as ownership or
-performance completion. It is separate from the still-validating draft6 checkout.
-
-## Source318 application after the main merge — 9 October 2026
-
-PR [#81](https://github.com/rayfdj/emaxx/pull/81) is merged into main as
-`30fa6e5b669c5cbd26e842e7675bfc18d306c2b4`. Main contains source316 and its
-complete saved evidence, including both failed macOS Tramp processes and the
-separate matching longer observation. The full goal remains incomplete.
-
-PR [#82](https://github.com/rayfdj/emaxx/pull/82) carries the
-[source318 continuation](docs/runtime-representation-symbol-payload-api-draft.md).
-It includes source317's registry removal and
-copied payload access; all 562 input bytes/modes match the archived patches,
-strict/selected validation and the complete macOS Rust gate (3,166 passes / two
-existing ignores). The earlier unapplied sections record historical states.
-The [completed source318 Linux evidence](docs/handover/2026-10-09-symbol-fields/source318-linux-complete-results-manifest.json)
-verifies **3,178 Rust passes / two existing ignores**, including native artifact
-identity, and **519 frozen files / 7,928 matching outcomes / 1,038 successful
-processes**. Every raw library name, frozen test inventory, verdict, process
-receipt and retained artifact hash is checked. Its macOS frozen comparison
-retains both original 180-second Tramp timeouts after 4,479 matching outcomes.
-A separate 600-second observation obtains all 59 matching Tramp answers;
-the ordinary 200-file tail adds 3,377 matches and six existing diagnostic
-differences. The [combined macOS evidence](docs/handover/2026-10-09-symbol-fields/source318-macos-frozen-continuation-results-manifest.json)
-observes all 519 files / 7,915 matching outcomes across separate attempts.
-The [six diagnostic issue entries are unchanged](docs/handover/2026-10-09-symbol-fields/source318-existing-macos-diagnostics-audit.json)
-from source316 and remain strict failures. This is not one complete passing
-frozen run. Full terminal validation is running separately. This change
-does not repair the known cross-instance symbol-name property leak. The separate
-source319 ownership experiment is still local and unvalidated as a whole.
-
-The [source318 Linux timing evidence](docs/handover/2026-10-09-symbol-fields/source318-linux-symbol-performance-results-manifest.json)
-verifies all **192 actual answers and modes**. Three alternating full16 pilots
-have a body aggregate **0.53% slower than source316 main**, and **2.857181×**
-paired GNU. Explicit GC regresses 6.33% and bindat 5.28%; all samples remain.
-This is an unfavorable diagnostic, not calibrated nine-round/every-case
-performance acceptance. The other source318 platform runs remain separate.
-
-The [source319 ownership draft](docs/runtime-representation-symbol-owner-draft.md)
-is separately packaged and unapplied. It gives public editor entries their own
-canonical symbols and hash-test descriptors. The original name-property leak
-now matches GNU. True pointer equality exposed a second-editor descriptor
-mismatch; the corrected owner-specific pool now matches the unchanged probe.
-All earlier failures remain preserved. Strict checks and **229 gate controls**
-pass in **both profiles**. The [selected continuation](docs/handover/2026-10-09-symbol-fields/source319-symbol-owner-selected-results-manifest.json)
-adds nine ordinary GNU comparisons. The [public/native continuation](docs/handover/2026-10-09-symbol-fields/source319-public-native-results-manifest.json)
-passes all three existing public integration tests and compares two native-compiling
-editor instances restored from valid images. Original image/link/worker launcher
-failures remain preserved. All local source319 processes have ended. Private image-clone
-isolation, direct allocated fields, descriptor reclamation and other process-wide
-Lisp roots remain unresolved. This is unfinished work, not ownership completion.
-
-The [latest source319 draft5](docs/handover/2026-10-09-symbol-fields/source319-symbol-key-contract-results-manifest.json)
-removes the inconsistent symbol/text borrowing trait and hashes symbol identity.
-Strict checks, **230 controls in each profile** and **nine ordinary GNU comparisons**
-pass. Every previous control remains, with a new nested-editor identity check.
-Both patches replay all 563 inputs. Draft4's public/image/native results remain
-separate historical evidence; the broader draft5 contracts have not run. All
-local draft5 validation processes have ended. Source318's full 226-scenario
-terminal comparison is running after its macOS frozen tail; the ordinary
-harness, actions, comparisons and deadlines are unchanged.
-
-## Main merge and source316 continuation — 9 October 2026
-
-PR [#80](https://github.com/rayfdj/emaxx/pull/80) is merged into main as
-`0610bf0c6aafbc45101d67efbd19cb058af4fc8f`. It carries source314's symbol
-lifetime/plist repairs and the evidence and separately packaged drafts below.
-The full goal remains active and incomplete. The existing Git credential works;
-no new login or user approval is required for the authorized branch/CI work.
-
-Source316 is now applied on the task branch as `ee0bddb9`, with all 562 inputs
-identical to its selected validation. It combines source315's compact fields
-and removed alias mirror with a shared value/alias word. The
-[complete macOS Rust evidence](docs/handover/2026-10-09-symbol-fields/source316-macos-rust-results-manifest.json)
-verifies **3,165 passes / two existing ignores**. The
-[complete Linux evidence](docs/handover/2026-10-09-symbol-fields/source316-linux-complete-results-manifest.json)
-verifies **3,177 Rust passes / two existing ignores** and **519 frozen files /
-7,928 matching outcomes / 1,038 successful processes**. Raw names, verdicts,
-source/artifact identities and native artifact identity are independently checked.
-The [macOS frozen continuation](docs/handover/2026-10-09-symbol-fields/source316-macos-frozen-continuation-results-manifest.json)
-observes all **519 files / 7,915 matching outcomes**, with **six existing platform
-diagnostic differences**. The original run retains both Tramp timeouts at 180
-seconds. A separate 600-second observation obtains all 59 matching Tramp answers;
-the ordinary 200-file tail retains the original deadline. This is not one complete
-passing frozen run. Source316 terminal validation remains pending. The [Linux timing evidence](docs/handover/2026-10-09-symbol-fields/source316-linux-symbol-performance-results-manifest.json)
-verifies all 192 answers/modes. The three alternating full16 pilots are 2.41%
-faster than current main by raw body aggregate, but still 2.659845× paired GNU.
-Mapcar regresses 2.41%; all samples remain. This is not final performance acceptance.
-The archived draft's earlier unapplied status is historical. Main's production
-runtime remains source314 until the next validated merge.
-
-The new [registry-removal draft](docs/runtime-representation-symbol-registry-draft.md)
-is separately packaged as **source317, unapplied**. It removes the redundant
-name-to-ID registry/mutex and two uninterned-name copies. Strict checks, all
-175 controls per profile and nine ordinary comparisons pass; the initial
-143-pass/32-failure source-layout attempt remains preserved. A source316
-public-API probe confirms that mutable symbol-name properties leak into the
-next editor instance. That negative remains open. Instance-owned interning,
-image copying and allocated fields must resolve it; the cleanup alone does not.
-
-The next [copied-payload API draft](docs/runtime-representation-symbol-payload-api-draft.md)
-is separately packaged as **source318, unapplied**. It includes source317 and
-replaces borrowed mutable payloads with copied words and explicit stores, keeping
-the existing lookup and assignment paths. Strict checks, **208 controls per
-profile** and **nine ordinary GNU comparisons** pass. Both patch replays verify
-562 inputs; old assertions and all test inventories remain. Its full macOS Rust
-gate [passes 3,166 tests / two existing ignores](docs/handover/2026-10-09-symbol-fields/source318-macos-rust-results-manifest.json),
-including native artifact identity. Linux/frozen/terminal/timing remain pending.
-Instance-owned interning and allocated
-fields are still unimplemented; the public-instance name-property negative stays
-open. This API preparation does not establish ownership or performance completion.
-
-## Symbol-field checkpoint evidence — 9 October 2026
-
-Read the [symbol-field continuation](docs/runtime-representation-symbol-fields-draft.md).
-Source314 removes the separate plist store/indexes, preserves live `put` sharing,
-and follows actual uninterned-symbol roots, including aliases and finalizers.
-Its portable selected evidence verifies 560 source inputs, warning-free strict
-checks, 24 focused passes in each profile and 12 matching ordinary GNU/Emaxx
-processes, including real bytecode/native execution. Earlier failed drafts remain
-preserved. The complete macOS Rust gate now verifies **3,161 passes / two existing
-ignores**, including every raw library name and native artifact identity. Linux
-Rust verifies **3,173 passes / two existing ignores**, and full Linux frozen
-matches **519 files / 7,928 outcomes / 1,038 successful processes**. Each editor
-has 7,670 passes, 47 expected failures and 211 skips.
-
-The [macOS frozen failure and bounded Tramp continuation](docs/handover/2026-10-09-symbol-fields/source314-macos-frozen-incomplete-results-manifest.json)
-retain **318 completed comparisons / 4,479 matching outcomes**, followed by both
-editors timing out in Tramp at the original 180-second limit. The separate
-600-second observation obtains all **59 matching Tramp outcomes**: each editor
-has 52 passes and seven skips. Its subject was rebuilt from the same runtime
-inputs; both executable identities are recorded and the image is unchanged.
-The original failed run remains failed. The [ordinary tail and Eglot replay](docs/handover/2026-10-09-symbol-fields/source314-macos-tail-results-manifest.json)
-now cover exactly the remaining **200 frozen files**, with the unchanged
-180-second limit. The tail has 3,376 matching outcomes, six existing platform
-diagnostic differences and one GNU Eglot reconnect expectation failure; Emaxx
-passes that test. One separate whole-file Eglot replay matches all 52 outcomes
-with identical executables/images and source inputs. The earlier GNU failure
-remains unexplained and failed. Across the attempts, all 519 files are observed,
-7,915 distinct outcome labels have matches, and six platform differences remain.
-This is not one complete passing frozen run. Source315 validation is separate.
-
-Three alternating Linux full16 pilots verify all **192 actual answers/modes**.
-The body aggregate is **2.52% slower than main**, and the paired GNU aggregate is
-**2.896247×**. Bytecode-to-native regresses 20.30%; all samples and regressions
-remain in the linked evidence. Per-instance allocated-symbol ownership, honest
-physical accounting/counters and every other full-goal requirement stay open.
-This diagnostic does not establish calibrated nine-round/every-case GNU parity.
-
-The next [compact-symbol draft](docs/runtime-representation-symbol-values-draft.md)
-is **packaged separately and unapplied**. Source315 removes duplicated alias
-names/targets and uses single-word value/function payloads. Its exact patch
-replays 560 inputs; strict checks, 126 selected tests per profile and 12 ordinary
-GNU/Emaxx processes pass. All old tests remain. Its complete macOS gate verifies
-**3,163 passes / two existing ignores**, including native artifact identity.
-Its own Linux/frozen/timing evidence has not run. PR80's runtime remains314.
-
-The cumulative [value/alias-union draft](docs/runtime-representation-symbol-redirect-draft.md)
-is now separately packaged as **source316, still unapplied**. Value and alias
-share one word, and the per-interpreter cell shrinks from 64 to 56 bytes.
-Its patch replays 562 inputs; strict checks and 128 controls per profile pass.
-Eighteen successful ordinary processes give nine matching comparisons, including
-actual native compilation of all three new helpers and their caller. Two earlier
-native-launcher failures and a conservative-stack fixture mismatch remain
-preserved. Its full macOS Rust gate is running at
-`target/runtime-goal/symbol-ownership-2026-10-09/redirect-draft1-full`.
-Complete source316 platform/frozen/timing validation is still required; the
-per-instance allocated-symbol ownership work is not complete. The requested
-main merge carries source314 runtime and these separately packaged drafts;
-it does not complete the full goal.
-
-## Main merge and terminal continuation — 8 October 2026
-
-PR [#79](https://github.com/rayfdj/emaxx/pull/79) is **merged into main** as
-`6ff4931467fa70acfe837d91245e5c76ddc6515f`. No new login was needed: the `gh` CLI's
-stored token failed, but normal Git fetch/push worked. The full goal remains active.
-
-The [post-merge terminal evidence](docs/handover/2026-09-30-shared-reader-draft/source313-postmerge-terminal-results-manifest.json)
-retains an unchanged ordinary package replay with all **11 comparisons matching**,
-followed by all **42 previously incomplete scenarios / 254 comparisons matching**.
-The latter cohort observes the original harness and retains all 238 complete screen
-snapshots: every row, cell attribute and cursor coordinate agrees; the other 16
-comparisons check filesystem state. Both editors visibly install and remove the
-package. Actions, deadlines, executable/image bytes and all 552 source inputs are
-unchanged. All continuation processes have exited.
-
-Across the separate attempts, all **226 scenarios / 686 distinct comparison labels**
-now have matching observations. This is not one complete passing ordinary run.
-The original full run and first tail remain failed; the intermittent package
-divergence and GNU readiness failures remain unexplained. No runtime repair is
-inferred from the later passes. Raw failed logs accompany the new results.
-
-The requirement map now reflects the merged source312/313 checkpoint, including
-the completed stack-capacity and native-GC repairs. Allocated-symbol authority,
-intervals/pure storage, real allocation accounting/counters, remaining adapters
-and internal ownership review still precede final validation and the unchanged
-calibrated performance criterion. No performance or full-goal completion is claimed.
-
-## Checkpoint for main — 8 October 2026
-
-**Source313 is validated; the full goal remains active and incomplete.** The
-current user instruction authorizes merging this checkpoint to main. PR79 carries
-the implemented runtime work and the portable continuation; the remaining full-goal
-requirements below continue after that merge. Earlier dated sections retain their
-historical branch states and failures.
-
-Production sources are unchanged from source312 (`7e894a66`). Source313 (`6ab33460`) only
-adds two unconditional collections before each of the two object-census fixtures
-starts measuring. The old whole-heap delta could include GNU reclaiming an
-unrelated nine-word closure/constants pair. Every original constructor, size,
-assertion and expected byte remains. No runtime special case, output adjustment,
-retry-until-pass or coverage reduction was introduced. The original312 Linux
-failure remains **2,297 passes / two GNU reference failures / 767 unstarted library
-tests**, with both Cargo stages unstarted.
-
-The [census correction evidence](docs/handover/2026-09-30-shared-reader-draft/source313-census-setup-results-manifest.json)
-reproduces all 552 source bytes and modes, verifies fresh zero-warning strict checks,
-both original controls in gate and release, **40 ordinary macOS GNU/Emaxx processes**,
-and **18 Linux GNU processes plus 693 bounded Rust passes**. The complete new Linux
-gate verifies **3,167 passes and two existing ignores**, including native artifact
-identity and every one of the 3,066 library names. Production-byte identity connects
-this fixture-only correction to source312's separately identified platform artifacts.
-
-The [closed source312 platform evidence](docs/handover/2026-09-30-shared-reader-draft/source312-closed-platform-results-manifest.json)
-independently verifies:
-
-- Linux frozen: **519 files / 7,928 matching outcomes / 1,038 successful processes**;
-  each editor has 7,670 passes, 47 expected failures and 211 skips.
-- macOS Rust: **3,155 passes / two existing ignores**, including native artifact identity.
-- macOS frozen: **519 files / 7,915 matching outcomes / six mismatches** across 1,038
-  successful processes. Each editor has 7,623 passes, 46 expected failures and 252 skips.
-  The six existing `system-configuration-features` skip diagnostics remain strict
-  failures. They are neither passes nor new capability claims. The previous ERC
-  crash is repaired; the complete ordinary run reaches every file.
-
-The [terminal evidence](docs/handover/2026-09-30-shared-reader-draft/source312-macos-terminal-incomplete-results-manifest.json)
-remains **incomplete: 173 scenarios / 374 comparisons match, 312 comparisons are
-unexecuted**. GNU failed to display its startup target within the existing
-120-second readiness deadline at scenario 174; no output divergence was reported.
-The executable/image and all 11 execution inputs are unchanged. The original
-relocated-image startup failure also remains preserved. Its retry changed only
-the retained copies' location to the image's required directory depth.
-
-The [separate tail attempt](docs/handover/2026-09-30-shared-reader-draft/source312-terminal-tail-incomplete-results-manifest.json)
-adds 62 matches, but **package installation confirmation differs**: GNU displays
-an installed package while Emaxx still displays the marked available entry. Its
-six later checkpoints do not execute. GNU then misses startup readiness at
-`org-fieldnotes-todo-cycle`. The cause of the package divergence remains open;
-no later passing result is substituted for it.
-
-Together the two attempts account for all 686 labels: **436 match, one differs,
-249 remain unexecuted**. 184 scenarios fully match; 42 do not have a complete passing
-result. Both processes have exited. Keep the original harness, artifacts, actions
-and 120-second readiness deadline when continuing the outstanding terminal work.
-This is an explicitly incomplete checkpoint for the requested main merge.
-
-All 192 actual answers and execution modes in the three alternating full 16 timing
-pilots match. The raw body geometric ratio312/311 is **1.034546** (3.45% slower);
-paired GNU ratios are **2.829352× for source312** and 2.812642× for source311. The largest raw
-regression is bindat (+13.57%); bytecode calls improve 4.60%. Every sample remains.
-The predecessor omitted native automatic-GC completion and its statistics; source312
-repairs it. These diagnostics preserve the correctness-repair cost and establish
-neither equivalent baseline GC accounting nor calibrated GNU parity.
-
-Allocated-symbol authority, real property intervals and unified pure storage,
-remaining adapters, physical allocation/GC accounting and real counters, the
-internal native borrow/ownership review, final adversarial review and final-source
-validation remain required. The locked 16 workloads, calibration, nine rounds and
-every-workload upper 95% GNU ratio at most 1.03 are unchanged. **Merging this checkpoint
-does not complete the runtime or performance goal.**
-
-## GC completion, call order and timer lifetime — 7 October 2026
-
-**Source312 is applied; the full goal remains incomplete.** Native automatic GC
-now runs finalizers, updates collection statistics and runs the inhibited
-post-GC hook through the same completion path as ordinary collection
-(GNU alloc.c:garbage_collect, lines 6698–6731). Interpreter, bytecode and native
-funcall entries root their unresolved function/arguments, collect, then resolve
-the current function cell (eval.c:Ffuncall, bytecode.c:Bcall). This also
-removes duplicate dispatch-specific call frames. A callback can replace a
-bytecode function with an interpreted function, primitive, alias or void cell;
-the actual next call now agrees with GNU.
-
-The source310 macOS ERC crash was a timer snapshot retaining unrooted Lisp
-words across callbacks. A callback could cancel later timers and collect their
-vectors; the later snapshot access read freed memory. The snapshot now uses
-the existing RootedVec, retaining remaining entries until iteration consumes
-them, corresponding to GNU's reachable copied timer lists in
-keyboard.c:timer_check. The original crash, its layout dependence, instrumented
-diagnosis and subsequent ordinary reproductions remain preserved.
-
-The [selected evidence](docs/handover/2026-09-30-shared-reader-draft/source312-gc-call-timer-selected-manifest.json)
-verifies **552 runtime inputs and modes**, **94 auxiliary inputs**, warning-free
-strict checks, **1,068 passes and eight focused passes per profile**, and
-**60 ordinary GNU comparisons**, including 198 generated rows. Three additional
-call probes match actual GNU output, including native compilation, and the
-unchanged upstream ERC case passes in GNU and312 across three environment
-layouts. Both portable replays reproduce every runtime byte and mode.
-All 1,065 predecessor selectors, 24 audit controls and original fixture/expected
-bytes remain. The compaction test now guarantees an actual retired data entry
-before the borrowed string; every original string and assertion remains.
-The old setup incorrectly required movement even when data could already be at
-its destination, which GNU's compact_small_strings does not require.
-Both earlier broad failures and the smaller unchanged passing replay remain.
-
-This is a [correctness publication](docs/handover/2026-09-30-shared-reader-draft/source312-application-decision.json)
-with [exact applied-source verification](docs/handover/2026-09-30-shared-reader-draft/source312-applied-source-verification.json).
-Full exact-source Linux/macOS validation and312 timing remain separate;
-inspect the saved launch/queue receipts before starting another run.
-
-Predecessor311's [Linux Rust run](docs/handover/2026-09-30-shared-reader-draft/source311-linux-rust-results-manifest.json)
-passes **3,164 tests with two existing ignores**. Its
-[full Linux frozen run](docs/handover/2026-09-30-shared-reader-draft/source311-linux-frozen-results-manifest.json)
-matches **519 files / 7,928 outcomes / 1,038 successful processes**:
-each editor reports 7,670 passes, 47 expected failures and 211 skips.
-Its [paired full16 diagnostic](docs/handover/2026-09-30-shared-reader-draft/source311-linux-stack-performance-results-manifest.json)
-verifies all 192 actual answers/modes. The raw body geometric ratio311/310
-is **1.006777**; paired GNU aggregates are 2.903372× and 2.841965× respectively.
-These were measured before the native GC completion repair: reported GC counts
-and elapsed GC time omitted native automatic collections. Keep the timings and
-regressions visible, but do not call them equivalent-work performance acceptance.
-
-Source310's [macOS frozen run](docs/handover/2026-09-30-shared-reader-draft/source310-macos-frozen-abort-manifest.json)
-remains failed: 182 complete comparisons / 2,951 matching outcomes, followed by
-the ERC crash; 336 files never started. Its
-[terminal raw audit](docs/handover/2026-09-30-shared-reader-draft/source310-macos-terminal-qualified-results-manifest.json)
-finds 226 scenarios / 686 matching comparisons, but a diagnostic rebuild changed
-the executable during the run, so unchanged-artifact acceptance is unestablished.
-The [original frozen executable/image](docs/handover/2026-09-30-shared-reader-draft/source310-original-frozen-retention-verified.json)
-are retained separately from the later crashing replay binary. The new full
-validation checkout is isolated and its terminal stage uses retained copies.
-
-Main remains 21d20f0e, PR79 remains draft. Allocated-symbol authority, real
-intervals and unified pure storage, remaining adapters, physical accounting and
-allocation counters, internal native borrow/ownership review, final adversarial
-review, complete final-source validation and the unchanged calibrated nine-round
-every-workload performance criterion remain open. No GNU performance parity or
-full-goal completion is claimed. Earlier sections preserve historical states.
-
-## Applied bytecode stack — 6 October 2026
-
-**Source311 is applied; the full goal remains incomplete.** The VM now has GNU's
-512K-word stack capacity, with each function's declared operand space followed
-by its actual four-word frame footer. The footer holds the caller frame/top,
-return PC and real function object. GC follows that chain; the separate function
-root vector and duplicate host return PC are removed. Caller argument slices
-remain stable while the callee uses disjoint storage.
-
-The [selected evidence](docs/handover/2026-09-30-shared-reader-draft/source311-bytecode-stack-selected-manifest.json)
-verifies all **548 runtime/build/fixture inputs**, **94 unchanged auxiliary inputs**,
-warning-free strict checks, **1,065 passes per profile**, five focused controls per
-profile, and **58 ordinary GNU comparisons**, including 198 generated rows.
-Both portable patches reproduce every runtime byte and mode. All 1,036 predecessor
-selectors and all 24 audit controls remain. GNU's maximum single declared depth
-of 524280, nested reservations, arguments and recovery after overflow match.
-The original capacity fixture is unchanged. Source310's actual stack-overflow
-failure and the earlier moved-image setup failure remain separately recorded.
-
-This is a [correctness publication](docs/handover/2026-09-30-shared-reader-draft/source311-application-decision.json),
-with [exact applied-source verification](docs/handover/2026-09-30-shared-reader-draft/source311-applied-source-verification.json).
-**Source311 timing and complete platform results are pending.** The added
-`tools/core_runtime_perf_pair.py` builds both exact revisions before three alternating
-full16 pilots on one Linux runner. It retains executable/image copies and every
-actual process answer, execution mode, startup/body/total time, GC delta and RSS.
-Its raw-evidence audit passed an existing real pilot and rejected seven deliberate
-corruptions. The new orchestration still needs its actual Linux execution; this
-is diagnostic preparation, not calibrated nine-round acceptance.
-
-Predecessor source310 now has [complete Linux frozen evidence](docs/handover/2026-09-30-shared-reader-draft/source310-linux-frozen-results-manifest.json):
-**519 files / 7,928 matching outcomes / 1,038 successful processes**. Each editor
-reports 7,670 passes, 47 expected failures and 211 skips. Its
-[complete macOS Rust evidence](docs/handover/2026-09-30-shared-reader-draft/source310-macos-rust-results-manifest.json)
-verifies **3,150 passes / two existing ignores**, including native artifact identity.
-Source310 macOS frozen and terminal remain separate; inspect the saved queue state.
-These results certify310 only. The source310 Linux Rust run stays failed with
-2,295 passes / one GNU reference failure and 765 library names unstarted.
-
-The [Linux GNU census trace](docs/handover/2026-09-30-shared-reader-draft/source310-linux-gnu-census-trace-results-manifest.json)
-now reproduces the original -9 vector difference in seven of ten ordinary GNU
-runs and under the read-only debugger. Between the first two collections, GNU's
-marked heap loses exactly one 40-byte closure and its 32-byte constants vector,
-with no other marked-object change. A tagged closure pointer is on the C stack
-in the first snapshot and absent in the second; it is a candidate retention root,
-not a proven marking path. The record fixture reproduces -7 in four ordinary runs
-but matches under GDB. The global-heap delta can therefore include unrelated
-reclamation. Original fixtures and expectations are still unchanged; correcting
-that invalid footprint assumption requires preserved equivalent coverage.
-
-Host unwind/backtrace/handler watermarks and transient bytecode views remain.
-Function resolution still precedes `maybe_gc`, unlike GNU. Separate same-input
-source310 probes return the old function before its GC hook has run, while GNU's
-hook replaces it and the new function runs. Identical compiled bytes/constants
-rule out a compiler-shape difference; the missing hook's cause remains open, so
-those outputs alone do not prove the resolution-order cause. The negative outputs
-are preserved in the selected archive and are not counted as passing comparisons.
-
-Main remains `21d20f0e`, PR79 is draft. Allocated-symbol authority, real intervals
-and unified pure storage, remaining adapters, physical accounting/counters,
-remaining GC/call semantics, final internal ownership/borrow and adversarial review,
-complete final-source validation, and the unchanged performance criterion remain
-required. Source310's last diagnostic remains **2.634352× GNU overall**; no source311
-speedup or GNU parity is claimed. Historical checkpoint sections follow.
-
-## Applied native compilation units — 6 October 2026
-
-**Source310 is applied; the full goal remains incomplete.** A native compilation
-unit is now one actual 88-byte GNU-layout object. Its seven Lisp fields own the
-data graph, and the unreachable unit closes its library. The host record, strong
-library registry and permanent relocation roots are removed. Repeated loads check
-the library's actual runtime relocation before accepting another Rust editor;
-ordinary calls acquire no new ownership lookup.
-
-The [closed selected evidence](docs/handover/2026-09-30-shared-reader-draft/source310-native-unit-selected-manifest.json)
-verifies all **546 runtime/build/fixture inputs** and **94 auxiliary tools/compat
-inputs**, fresh warning-free strict checks, **1,036 passes in each profile**, and
-**56 actual GNU comparisons**, including 198 generated printer rows. Both portable
-patches reproduce the runtime bytes and modes. All 1,035 predecessor selectors
-and all 24 audit controls remain. GNU and310 return identical actual values and
-agree on native metadata, active-call survival and eventual unit reclamation;
-308's differing retention results remain preserved.
-
-The new two-editor control first reproduced309's missing owner check, then passed
-in both profiles after repair. It also verifies that the first editor remains
-usable and that the second can load the library after the first shuts down.
-The earlier test-setup failure remains separate. The initial formal selection
-also stays failed: **1,032 passes/four audit failures** because the sparse checkout
-omitted unchanged generators. Restoring exact published tools/compat inputs made
-all four controls and the complete selection pass on the same gate executable.
-No runtime byte, assertion, selector or expected output changed for that recovery.
-
-This is a [correctness publication](docs/handover/2026-09-30-shared-reader-draft/source310-application-decision.json),
-with [exact applied-byte verification](docs/handover/2026-09-30-shared-reader-draft/source310-applied-source-verification.json).
-The [closed source310 diagnostic](docs/handover/2026-09-30-shared-reader-draft/source310-native-unit-performance-manifest.json)
-verifies all **192 actual answers and execution modes** in three alternating
-unchanged full 16 pilots. The raw body geometric ratio to source308 is **0.909231**;
-Source310's paired GNU aggregate is **2.634352×**. Native execution is **4.287% slower**,
-cons allocation **3.007% slower**, and list traversal **0.445% slower** in these
-raw medians; every sample remains. These small diagnostics establish neither
-statistical significance nor calibrated GNU parity. Separate profiles retain
-20 completed repetitions each for native execution, bytecode-to-native and
-upstream sorting. Total process cost remains recorded; the owner-shutdown allocator walk has
-no isolated cost measurement. The original correctness-publication decision remains unchanged,
-accurately recording that timing was still pending when source310 was published.
-
-The [exact source310 Linux Rust failure](docs/handover/2026-09-30-shared-reader-draft/source310-linux-rust-failure-manifest.json)
-(run 37428917287) retains **2,295 passes/one failure**: GNU's first
-empty-vector census reports **-9 instead of 0**, before Emaxx executes that
-control. All later rows in that reference output match. The remaining 765 library
-names and both Cargo stages never run. The actual native-unit metadata test
-passes; the layout/tracing/owner unit tests are among the unstarted names.
-The pinned GNU inputs were retained and verified unchanged. This recurring
-reference failure remains unexplained; no assertion, fixture or expected output
-was changed. Linux frozen and complete macOS source310 validation are running separately.
-Inspect `source310-linux-collection-state.json` and `source310-full-queue-state.json`
-before starting further validation jobs. Predecessor source308's
-[terminal evidence](docs/handover/2026-09-30-shared-reader-draft/source308-macos-terminal-results-manifest.json)
-now passes all 226 scenarios / 686 comparisons; it does not certify source310.
-
-Main remains `21d20f0e`, PR79 stays draft. Allocated-symbol authority, real intervals
-and unified pure storage, remaining adapters, physical accounting/counters,
-VM stack capacity/layout, final internal ownership/borrow review, final audit,
-complete final-source validation and the unchanged calibrated performance
-criterion remain required. The following sections preserve earlier checkpoints.
-
-## Native compilation-unit draft — 6 October 2026
-
-The separately packaged [source309 selected draft](docs/handover/2026-09-30-shared-reader-draft/source309-native-unit-selected-draft-manifest.json)
-is **unapplied**. It replaces the host unit record, strong library registry and
-permanent relocation roots with one actual 88-byte GNU-layout unit. Its seven
-Lisp fields own the data graph, and unreachable units close their library handle.
-Both portable replays match all 546 inputs and modes. Fresh strict checks are
-warning-free; all **1,035 selected tests per profile** and **56 ordinary GNU
-comparisons** pass, including 198 generated printer rows.
-
-Actual GNU, source308 and source309 run the same lifecycle programs. Source308
-keeps file-loaded units after their functions are unbound; GNU and309 reclaim
-them. Across interpreted, bytecode and native calls,309 also keeps a self-unbound
-native function's unit alive during collection, returns the identical real data,
-and permits reclamation after return. The separate anonymous-compilation probe
-matches GNU's remaining count of two;308 retained three. The differing308 outputs
-and every development failure remain preserved.
-
-Review found a remaining **host ownership check**: a second Rust editor must not
-reuse a library still relocated to the first editor. The removed registry rejected
-that case;309's repeat-load path currently checks only the actual unit and live
-handle. The isolated310 successor adds a regression control and will restore the
-check using the library's actual current-thread relocation, with no new registry
-or ordinary-call lookup.309's passing selection does not resolve that gap or
-establish complete internal soundness. No309 timing or full-platform claim exists.
-The applied runtime remains308; the full goal remains incomplete.
-
-## Applied native function objects — 6 October 2026
-
-**Source308 is applied; the full goal remains incomplete.** Native functions now
-use one actual 88-byte GNU-layout subr for calls, metadata, identity and GC. The
-old native-function record and three persistent descriptor/name maps are removed.
-Direct calls read the function pointer and arities from the object. Five Lisp
-fields are traced explicitly; unreachable subrs release their C names.
-
-The [closed selected evidence](docs/handover/2026-09-30-shared-reader-draft/source308-native-object-selected-manifest.json)
-verifies all 541 source inputs/modes, fresh warning-free strict checks,
-**1,031 passes per profile**, including all 24 audit tests, and **52 ordinary GNU
-comparisons**, including 198 generated printer rows. Original fixtures, assertions
-and expected bytes remain. The original dabbrev regression is repaired by making
-`commandp` recognize the native object's interactive field; native reader and
-property identity and exact GNU C-name printing are covered too.
-
-The [closed full16 diagnostic](docs/handover/2026-09-30-shared-reader-draft/source308-native-object-performance-manifest.json)
-verifies all **384 actual process answers and execution modes**. The raw body
-geometric ratio to304 is **0.951094**;
-individual changes range from **-25.891% to +5.656%**.
-308's paired GNU aggregate is **2.710317×**.
-Every sample remains, including the first cohort’s slower undo and interpreted
-cases. These six complementary pilots do not establish statistical
-significance or GNU parity. Real counters, calibration, nine rounds and every-case
-upper95% ratio at most1.03 remain required.
-
-Predecessor304 platform results are closed and preserved: Linux frozen passes
-519 files /7,928 equal outcomes; macOS Rust passes3,139 tests with two existing
-ignores; [macOS terminal](docs/handover/2026-09-30-shared-reader-draft/source304-macos-terminal-results-manifest.json)
-passes all226 scenarios /686 screen and filesystem comparisons. Linux Rust stays
-failed after2,291 passes at the GNU first-record census (-7 instead of2), leaving
-758 library names and both Cargo stages unstarted. macOS frozen stays failed with
-7,915 exact matches and six existing build-feature skip-diagnostic differences.
-These results certify304 only. The [closed exact308 platform evidence](docs/handover/2026-09-30-shared-reader-draft/source308-platform-validation-progress-manifest.json)
-now verifies **3,157 Linux Rust passes** and **3,145 macOS Rust passes**, with the
-two existing ignores on each platform. Every library name and Cargo result is
-checked against raw output; both native artifact identity tests pass. Linux's
-complete frozen comparison matches **519 files /7,928 outcomes** from **1,038
-successful processes**: each editor reports 7,670 passes, 47 expected failures and 211
-skips. No expected failure or skip is counted as a pass. The
-[closed308 macOS frozen comparison](docs/handover/2026-09-30-shared-reader-draft/source308-macos-frozen-results-manifest.json)
-retains **7,915 exact matches/six existing skip-diagnostic differences**, across
-all519 files and1,038 successful processes. It remains a failed strict comparison;
-terminal validation is still running separately. Earlier GNU census failures and source276's
-Emaxx negative remain preserved and unresolved; this later pass does not erase them.
-
-Main remains `21d20f0e`, PR79 stays draft. Symbol/unit authority, real intervals and
-pure storage, physical accounting, final ownership/borrow review, final adversarial
-review, complete final-source validation and the full performance criterion remain
-open. See the native continuation for failed drafts and exact-source launch receipts.
-
-## Applied column and native-audit repair — 6 October 2026
-
-**Source304 is applied; the full goal is incomplete.** Ordinary buffer columns
-now follow GNU `indent.c:scan_for_column` and `buffer.h:CHARACTER_WIDTH`: ASCII
-controls honor `ctl-arrow`, unibyte non-ASCII characters occupy four columns,
-and multibyte widths come from the live `char-width-table` with GNU sanitization.
-All **338 rows of the original probe match actual GNU**, closing its recorded
-60 column differences. No original fixture or expected byte changed. This does
-not establish complete overlay, display-table or composition semantics.
-
-Source302's full checks found an omission: its native `+`/`-` paths were absent
-from the exact-contract inventory.304 adds the GNU owners and a real installed-ABI
-boundary test; every audit assertion, negative control and the empty deviation
-list remain. Native arithmetic production code is unchanged. The
-[failed302 evidence](docs/handover/2026-09-30-shared-reader-draft/source302-full-validation-failures-manifest.json)
-retains macOS **3,037 passes/one failure/two existing ignores** and Linux
-**3,045 passes/one failure/two existing ignores**. All library names ran, but bins
-and integration did not. Both frozen attempts stopped before any case; TTY never
-started. The sole Rust failure was the inventory omission. Those runs stay failed.
-
-[Source304 selected evidence](docs/handover/2026-09-30-shared-reader-draft/source304-native-audit-and-columns-selected-manifest.json)
-verifies all **534 inputs and modes**, fresh builds, zero-warning strict checks,
-**506 passes per profile**, including all24 audit tests, and **49 ordinary GNU
-comparisons**. The prior [303 draft](docs/handover/2026-09-30-shared-reader-draft/source303-buffer-columns-selected-manifest.json)
-remains unapplied: it passed482 tests/profile but inherited the inventory omission;
-its timing queue stopped before measuring anything.
-
-The [302/304 full16 diagnostic](docs/handover/2026-09-30-shared-reader-draft/source304-native-audit-and-columns-performance-manifest.json)
-verifies all **192 actual process answers and execution modes**. The raw body
-geometric ratio is **1.022383**; per-case changes range from
-**-6.142% to +7.665%**.304's paired GNU aggregate is
-**2.880732×**. Every sample and unfavorable case remains. These three-pilot
-results establish neither statistical significance nor GNU parity; real counters,
-calibration, nine rounds and every-case upper95% ratio at most1.03 remain required.
-
-All selected/timing coordinators are closed. Exact304 Linux and full macOS checks
-are next: inspect `source304-full-validation-launch.json` and
-`source304-full-launch.json` under `target/runtime-goal/resume-2026-09-28`, then
-their raw audits. Do not restart write-once jobs. Earlier GNU census failures and
-source276's Emaxx negative remain unresolved. Main remains `21d20f0e`, PR79 is draft,
-and authoritative symbols/native objects, intervals/pure storage, physical
-accounting, public ownership, final validation and adversarial audit remain open.
-The following sections preserve historical states.
-
-## Applied native arithmetic checkpoint — 5 October 2026
-
-**Source302 is applied.** The existing native two-fixnum dispatch now returns
-in-range `+`/`-` results directly after the same handler synchronization, following
-GNU `data.c:arith_driver`. This removes argument staging, repeated primitive
-routing, coercion and normalization. Bignum results, other operand types and other
-arities retain the original general path. No cache, representation or unsafe
-access is added; the prior two-argument buffer was inline, so no removed heap
-allocation is claimed.
-
-The [closed selected evidence](docs/handover/2026-09-30-shared-reader-draft/source302-native-arithmetic-selected-manifest.json)
-verifies all **534 source inputs and modes**, portable replays from `4af440a9` and
-main, fresh builds and zero-warning strict checks. **328 selected tests pass in
-each profile**, with no failures or ignores, and **48 actual GNU comparisons**
-pass. Every original test/assertion/fixture remains. One new control forces native
-workers through 108 varied arithmetic cases, overflow/promotion, invalid operands,
-GC and marker coercion; it already matches GNU on the unchanged 297 baseline.
-
-The [closed full16 diagnostic](docs/handover/2026-09-30-shared-reader-draft/source302-native-arithmetic-performance-manifest.json)
-verifies all **192 process answers and execution modes**. Native execution's median
-body is **22.893% lower** than 297; the raw body geometric ratio is **0.981839**.
-Other cases range from 1.388% faster to 0.506% slower; every sample is retained.
-The paired GNU geometric means are 2.836585× for 297 and 2.785707× for 302. These small
-pilots establish no statistical significance or GNU-parity acceptance. Real
-counters, calibration, nine rounds and the unchanged every-case upper 95% ratio
-at most 1.03 remain required. Build/test/profile work is separate from timing.
-
-All source302 selected/timing coordinators are closed. Exact-source Linux and full
-macOS validation are next; predecessor297's complete Linux pass does not certify
-this new source. Inspect `source302-full-validation-launch.json` and
-`source302-full-launch.json` under `target/runtime-goal/resume-2026-09-28` for later
-launches, then their complete raw audits. The prepared macOS helpers require the
-applied commit and closed timing before starting. Do not restart write-once jobs.
-
-The same 60 column-width failures, earlier GNU census failures and source276 Emaxx
-negative remain open. Sources300/301 remain rejected and unapplied. Main stays
-`21d20f0e`, PR79 stays draft, and the full architecture, real intervals/pure storage,
-symbol authority, physical accounting/counters, public ownership, final validation
-and adversarial audit remain incomplete. The following sections are historical.
-
-## Native Bcall variants rejected; applied checkpoint passes Linux — 5 October 2026
-
-**Applied runtime remains source297 (`4af440a9`). Sources 300 and 301 are rejected
-and unapplied.** The [closed inline comparison](docs/handover/2026-09-30-shared-reader-draft/source301-native-bytecode-inline-performance-manifest.json)
-verifies all **288 actual process answers and modes** across rotated full 16 pilots.
-Source301 still improves bytecode-to-native by 9.624%, but native-to-bytecode is
-12.098% slower, native execution 5.648% slower, and raw body geometric mean 3.178%
-slower than 297. Default300 also retains slower native transitions. Forced inlining
-does not establish a satisfactory tradeoff; this experiment is closed. Both full
-cohorts and every unfavorable sample remain. These small diagnostics establish
-neither statistical significance nor a causal explanation for all timing changes.
-
-[Source301 selected evidence](docs/handover/2026-09-30-shared-reader-draft/source301-native-bytecode-inline-selected-manifest.json)
-verifies all 532 input bytes/modes, fresh builds, warning-free strict checks,
-**327 tests per profile / no failures or ignores**, and **47 actual GNU comparisons**.
-Only the helper inline attribute differs from 300. No test, fixture, workload,
-timeout, selector or tolerance was changed to obtain these results.
-
-[Complete source297 Linux evidence](docs/handover/2026-09-30-shared-reader-draft/source297-complete-linux-results-manifest.json)
-now verifies exact `4af440a9`: **3,148 Rust passes/two existing ignores** and
-**519 frozen files/7,928 equal outcomes/1,038 successful processes**, native
-artifact identity, 177 compiler controls and the retained pinned GNU inputs.
-Runs 37284983243 and 37284989055 both passed. Full macOS for 297 remains unstarted.
-The same 60 display-column failures, earlier GNU census failures and source276
-Emaxx negative remain open; the later Linux passes do not erase those failures.
-
-All source301 validation and timing coordinators are closed. Preserve frozen checkouts
-and write-once receipts. The next profile-led candidate is native two-fixnum
-addition/subtraction after existing handler synchronization, following
-`data.c:arith_driver`; it is not yet applied or validated. Main remains `21d20f0e`,
-PR79 remains draft, and the full architecture, ownership, honest accounting/counters,
-final validation/audit and unchanged every-case 3% GNU criterion remain incomplete.
-The sections below retain historical states.
-
-## Native Bcall candidate held; inline-only comparison running — 5 October 2026
-
-**Applied runtime remains source297 (`4af440a9`)**. Source300 shares the ordinary
-native call body with Bcall after its existing function resolution, removing a
-second symbol/alias lookup and general dispatch. All 532 inputs/modes replay;
-strict checks are warning-free, **327 tests pass per profile**, and **47 actual
-GNU comparisons** pass. Every original test, assertion and fixture remains.
-
-The [closed source300 comparison](docs/handover/2026-09-30-shared-reader-draft/source300-native-bytecode-performance-manifest.json)
-verifies all **192 process results/modes**. Bytecode-to-native median time falls
-**11.579%**, but native-to-interpreted and native-to-bytecode are **4.652% and
-6.609% slower**. The raw body geometric ratio is0.993933; GNU paired ratio is
-2.886033×. Source300 is **held and unapplied** while the extracted helper's inlining
-cost is checked. No causal explanation or final statistical acceptance is claimed.
-
-[Source301's portable draft](docs/handover/2026-09-30-shared-reader-draft/source301-native-bytecode-inline-draft-manifest.json)
-changes only that helper from `#[inline]` to `#[inline(always)]`. Its strict checks
-are warning-free; selected validation is running and a rotated297/300/301 full16
-comparison is queued. Inspect `native-bytecode-inlining-selection-closed-*` and
-`native-bytecode-inlining-performance-sequence-closed-*` receipts under
-`target/runtime-goal/resume-2026-09-28`. Preserve original300 timing and the frozen
-checkouts; do not restart completed write-once producers. Source299's formatting
-failure and source300's preparer assertion correction are retained separately.
-
-[Complete source296 Linux results](docs/handover/2026-09-30-shared-reader-draft/source296-complete-linux-results-manifest.json)
-now verify exact68ca5d88: **3,147 Rust passes/two existing ignores**, **519 frozen
-files/7,928 equal outcomes/1,038 successful processes**, native artifact identity,
-177 compiler controls and retained pinned GNU inputs. These results do not certify
-later source. Exact297 Linux runs37284983243/37284989055 are in progress; full macOS
-is unstarted. The60 original width failures, prior GNU census failures and source276
-Emaxx negative remain open. Main, draft PR and all full-goal criteria remain unchanged.
-
-## Applied native dispatch checkpoint — 5 October 2026
-
-**Source297 is applied**, including the null/empty MANY argument repair. Read the
-[native-call continuation](docs/runtime-representation-native-fixed-calls.md).
-The existing guarded `funcall` path now precedes irrelevant primitive-name checks,
-after the same handler synchronization. No call lifecycle or fallback is removed.
-Correctness-only source298 stays preserved separately with the original router.
-
-Both 532-input candidates pass warning-free strict checks, **327 selected tests
-per profile / no failures or ignores**, and **47 ordinary GNU comparisons**.
-All **288 process results and execution modes** verify in the closed three-way
-full16 diagnostic. Source297's native median is **1.836% lower** than corrected298;
-raw body geometric ratios are **0.989164 vs298 / 0.996135 vs original296**.
-Bytecode calls, bytecode-to-native, sort and undo remain 0.212%, 0.093%, 0.928%
-and 0.618% slower than298. These small diagnostics establish no statistical
-acceptance. Source297's paired GNU ratio geometric mean is **2.886985×**.
-All samples and the unchanged 3% every-case criterion remain.
-
-[Source292 complete Linux results](docs/handover/2026-09-30-shared-reader-draft/source292-complete-linux-results-manifest.json)
-are closed and raw-audited: **3,147 Rust passes / two existing ignores**, plus
-**519 files / 7,928 equal frozen outcomes / 1,038 successful processes** at exact
-`93ed451d`. Earlier GNU census failures and source276's Emaxx negative remain
-unexplained; later success does not erase them. Source296 Linux Rust37280524716
-also has a closed raw audit: 3,147 passes and two existing ignores. Its frozen
-run37280528176 remains in progress.
-Those predecessor results do not certify297. Exact297 Linux and complete macOS
-validation remain required. The unchanged 60 display-column failures remain open.
-
-All local297/298 validation and timing coordinators are closed; preserve their
-frozen checkouts and write-once evidence. Separate source297 native/call/sort
-profiles are closed: all 60 results/modes verify. Whole-process collector samples
-are pre-body work; every measured-body GC delta is zero. Main remains `21d20f0e`, PR79 remains draft, and the full
-architecture, honest counters, ownership, final validation/audit and GNU parity
-requirements remain incomplete. The sections below retain historical states.
-
-## Applied native fixed-call checkpoint — 5 October 2026
-
-**Source296 is applied**. Read the [native-call continuation](docs/runtime-representation-native-fixed-calls.md).
-Following GNU `funcall_subr`, fully supplied fixed native calls use their original
-arguments; only missing optional arguments require copying and nil padding. All
-arity/error/root/GC/handler/unwind paths and all tests/fixtures remain.
-
-All 532 inputs/modes replay exactly. Strict checks are warning-free; **326 selected
-tests pass per profile, no failures/ignores**, and **47 ordinary GNU comparisons**
-pass. The complete paired full16 diagnostic verifies all **192 process answers and
-modes**. Native execution's median body is **14.167% lower** than corrected292;
-raw median body geometric ratio is **0.950033**. Undo remains **2.916% slower** and
-Bindat **4.265% slower**. All results remain. The paired GNU ratio geometric mean
-is **2.880160×**, so the unchanged every-case 3% criterion is far from achieved.
-Real counters, calibration and prescribed final repetitions remain required.
-
-All local native296 validation/timing coordinators are closed. Preserve their
-frozen checkout and write-once receipts. The next measured lead is primitive-name
-routing before the existing native `funcall` handler. The recorded null/empty
-argument-slice boundary also needs a sound implementation; neither change is in296.
-
-[Source292 Linux validation](docs/handover/2026-09-30-shared-reader-draft/source292-full-validation-launch.json)
-selects `93ed451d`: Rust37278007515 and frozen37278010760 are running. They do not
-certify296. Exact296 Linux validation is next; full macOS remains unstarted. The
-60 original column-width failures and recurring GNU census failure stay open.
-Main, draft PR status and every full-goal requirement remain unchanged.
-
-## Applied LF correction; lookup experiments closed — 5 October 2026
-
-**Source292 is applied** with 532 verified source inputs and file modes. Read the
-[buffer-line checkpoint](docs/runtime-representation-buffer-lines.md). Rope metadata
-now counts LF, matching GNU; the original backward scan remains. Warning-free
-strict checks, 290 selected passes per profile/two existing TTY ignores, and
-47 ordinary actual GNU comparisons pass. The full broad probe improves from
-155 differing rows to 60 unchanged display-column failures; those remain failures.
-
-**Source294 and source295 are rejected and unapplied.** Indexed294 slows undo
-37.691% versus corrected292. The narrower295 shortcut shows no useful measured
-advantage; its undo and bytecode medians are also slower than292. Both complete
-three-way cohorts retain all 576 process answers/modes, all matching GNU. Across
-six samples for original290 and corrected292, the raw median body geometric
-ratio is 1.001869 and corrected292's paired GNU ratio geometric mean is 2.97884×.
-All slower cases remain. This correctness repair makes no performance-gain claim;
-calibrated every-case acceptance and real allocation counters remain required.
-
-All local line validation/timing coordinators are closed. Do not restart their
-write-once producers. The next measured lead is the redundant fixed-argument copy
-in native `DirectFuncallTarget::invoke`; GNU copies only when padding is needed.
-Its roots, error order, optional padding and nonlocal exits must remain intact.
-
-Predecessor source290 (`b870a848`) has a
-[closed Linux frozen audit](docs/handover/2026-09-30-shared-reader-draft/source290-complete-linux-frozen-manifest.json):
-519 files, 7,928 equal outcomes and 1,038 successful processes. Its Linux Rust run
-retains 2,288 passes/one GNU census reference failure before Emaxx. These results
-do not certify the new LF configuration. Exact-source Linux validation is next;
-complete macOS validation is unstarted. Main and all full-goal requirements remain
-unchanged. The sections below preserve earlier publication states.
-
-## Fresh-build correction — 5 October 2026
-
-The [stale-cache evidence and source294 launch](docs/handover/2026-09-30-shared-reader-draft/source293-stale-cache-and294-launch-manifest.json)
-supersede source293's validation status below. Cargo reused source292's exact
-binaries in gate and release (`fresh=true`); those runs do **not** validate the
-indexed lookup. Both v3 coordinators were terminated before any timing. Preserve
-their outputs and withdrawal receipts; do not resume them.
-
-**Source294 has exactly the same 532 source inputs as source293**, in
-`target/runtime-goal/recovered-2026-10-05/buffer-line-lookup-fresh/emaxx`. It explicitly
-cleans the package in gate and release and requires freshly compiled artifacts
-and different test binaries from source292. Its build/validation is running;
-no candidate speed or validation pass is claimed. Current coordinator receipts
-are `buffer-selection-fresh-state.json` and `buffer-performance-sequence-fresh-state.json`,
-followed by their final results, under `target/runtime-goal/resume-2026-09-28`.
-Source292's separately verified fresh build and 290 selected passes per profile
-remain valid. Applied source290 and all goal requirements are unchanged.
-
-## Current buffer-line drafts — 5 October 2026
-
-Read the [profile-led buffer continuation](docs/runtime-representation-buffer-lines.md)
-first. Source292 isolates the LF-only line-metadata correction; source293 also
-replaces repeated backward scanning with the rope's existing index. Both portable
-532-input drafts remain unapplied. Source292 has zero-warning strict checks,
-290 selected passes per profile, the two existing TTY ignores and its own fresh
-ordinary executable/image. Source293 validation is running; ordinary comparisons
-and the queued three-way full16 diagnostic remain pending. Inspect the v3
-coordinator receipts before continuing. The original broad probe's display-column
-failures and both wrapper/setup errors remain explicit; no speed or full pass is claimed.
-
-**Applied runtime remains source290 (`b870a848`)**. Its
-[closed Linux Rust failure](docs/handover/2026-09-30-shared-reader-draft/source290-complete-linux-rust-failure-manifest.json)
-records 2,288 passes and one recurring GNU reference assertion, before Emaxx:
-first empty-record census −7 versus 2. Remaining 756 library names and both Cargo
-stages never run. The cause stays unresolved. Frozen37269857506 is still running;
-full source290 macOS remains unstarted. Main and the full-goal requirements remain
-unchanged. The records below preserve earlier checkpoint publication states.
-
-## Applied integer/VM checkpoint — 5 October 2026
-
-Read the [integer/VM checkpoint and profile qualification](docs/runtime-representation-integer-vm-draft.md)
-first. **Source290 is applied and pushed as `b870a848`**, with 528 exact inputs,
-warning-free strict checks, **325 selected passes per profile** and **46 ordinary
-GNU comparisons**, including 588 numeric boundary rows. It removes redundant VM
-dispatch and stack updates and outlines unchanged bignum allocation.
-
-The [closed second comparison and application review](docs/handover/2026-09-30-shared-reader-draft/source290-inlining-review-and291-results-manifest.json)
-verifies all 288 new process answers/modes, alongside the preserved first192.
-Across both full16 diagnostic cohorts, bytecode-call median time falls **14.264%**
-versus source289; the raw median body geometric ratio is **0.97158**. Undo and
-Bindat remain 1.943% and 1.499% slower. All unfavorable samples remain. The paired
-GNU ratio geometric mean is **2.95454×**; this does not satisfy GNU parity or the
-unchanged calibrated every-case 3% criterion. **Source291 remains unapplied**:
-its 325 passes per profile and46 ordinary comparisons are closed, but compiler
-chosen inlining gives a worse overall measured tradeoff. The original source290
-hold and unfinished291 snapshot remain historical, superseded by this review.
-
-Source289's complete Linux results are closed: **3,145 Rust passes / two existing
-ignores**, and [519 files /7,928 matching frozen outcomes](docs/handover/2026-09-30-shared-reader-draft/source289-complete-linux-frozen-manifest.json).
-Earlier GNU census failures and source276's Emaxx negative remain unexplained.
-[Source290 Linux CI](docs/handover/2026-09-30-shared-reader-draft/source290-full-validation-launch.json)
-selects exact `b870a848`: Rust37269853253 and frozen37269857506 are in progress at
-publication; full290 macOS is unstarted. All local selected/profile/timing jobs
-are closed. Six separate profiles verify120 results/modes, but include pre-body
-GC; all body GC deltas are zero, so collector samples are not timed-body costs.
-Next follow the measured ordinary evaluator/native/buffer leads. Main remains
-`21d20f0e`, PR79 stays draft, and every remaining full-goal requirement stays open.
-
-## Applied native/bytecode call checkpoint — 5 October 2026
-
-Read the [source289 call-entry checkpoint](docs/runtime-representation-call-entry.md)
-first. **Source289 is applied and pushed as `ae1fcb0f`**, with 526 verified inputs,
-exact portable replays, warning-free strict checks, **274 selected passes in each
-profile** and **45 ordinary same-input GNU comparisons**. Fixed native arguments
-avoid an intermediate copy; closure entry reads slots once; duplicate transient
-activation storage and repeated Bcall decoding are removed. All earlier tests,
-fixtures and both required suspended-root contracts remain.
-
-The [closed performance archive](docs/handover/2026-09-30-shared-reader-draft/source289-native-vm-calls-performance-manifest.json)
-verifies all **288 process results and modes** across three unchanged full16 pilots
-for source286/288/289. Source289 bytecode-call median body time is **15.350% lower**
-than source286, bytecode-to-native **3.540% lower**. Unfavorable cases are retained;
-the small pilot establishes no broad statistical gain. The paired GNU ratio
-geometric mean is **2.97399×**, so parity is still far from achieved. Counters,
-calibration and the unchanged 3% every-case criterion remain open. New separate
-profiles identify ordinary VM stack/constant, frame and native-transition costs.
-
-[Closed source286 platform evidence](docs/handover/2026-09-30-shared-reader-draft/source286-complete-platform-results-manifest.json)
-verifies **3,131 macOS Rust passes / two existing ignores**, **226 terminal
-scenarios / 686 exact comparisons** and **7,928 Linux frozen matches**. macOS
-frozen retains six strict feature-diagnostic differences. Linux Rust retains
-2,285 passes / one GNU census reference failure, with 756 library names and both
-Cargo stages unexecuted. The failure occurs before Emaxx; its cause and the
-source276 Emaxx census negative remain unresolved. Supervisor 10785 has exited.
-These predecessor results do not certify source289.
-
-[Source289 Linux CI](docs/handover/2026-09-30-shared-reader-draft/source289-full-validation-launch.json)
-selects exact `ae1fcb0f`: Rust **37265044228**, frozen **37265047878**. Both are
-in progress at publication; inspect receipts before claiming completion. No
-complete source289 macOS run has started. All local selected/profile/timing
-pipelines are closed. Main remains `21d20f0e`, PR79 remains draft. Continue
-profile-driven work without unrelated correctness expansion. Sblocks are already
-applied in source279; remaining architecture, accounting, ownership, final validation and
-the complete goal remain unfinished. The older sections below retain history.
-
-## Preceding VM checkpoint — 5 October 2026
-
-Read the [direct VM dispatch checkpoint](docs/runtime-representation-vm-dispatch.md)
-before continuing. **Source286 is applied and pushed as `654aca96`**, with 522
-inputs replayed from source284 and main. Warning-free strict checks, **118 selected
-passes in each profile** and **43 ordinary exact GNU comparisons** pass. Both
-suspended-root contracts and all prior fixtures remain. Direct canonical opcode
-dispatch removes repeated decoding; GNU remainder operand coercion is repaired.
-Source287 preserves a separately validated correctness-only performance baseline.
-
-The [closed repeated full16 pilot](docs/handover/2026-09-30-shared-reader-draft/source286-vm-dispatch-performance-manifest.json)
-verifies **288 processes with actual equal GNU results/modes**. Bytecode-call
-median time falls **18.2%**, bytecode-to-native **4.4%** versus the corrected baseline.
-Other workloads include slower medians; the overall raw median geometric ratio
-is 0.9961, so no meaningful overall speedup is claimed. Optimized Emaxx remains
-**3.0421× GNU** by the paired-ratio geometric mean. Counters, calibrated repeated
-acceptance and the unchanged 3% criterion remain open. Post-change profiles still
-show VM/call/frame/native-transition costs. Continue measured ordinary-path work,
-without unrelated correctness expansion or weakening existing contracts.
-
-[Closed source284 platform evidence](docs/handover/2026-09-30-shared-reader-draft/source284-complete-platform-results-manifest.json)
-now verifies **3,130 macOS Rust passes / two existing ignores** and **7,928 Linux
-frozen matches**. macOS frozen remains 7,915 matches / six strict diagnostic
-differences. Its terminal run stops after eight matching comparisons at GNU
-`org-fold` startup; 678 comparisons never run. A separate bounded longer retry
-finishes in **13.195 seconds with the actual screen equal**. The original failure
-remains. Its Linux Rust failure is still 2,284 passes / one GNU census reference
-failure, with 756 library names and both Cargo stages unexecuted. No pass is
-inferred for the failed or unrun work; source276's Emaxx census failure stays open.
-
-[Source286 full validation](docs/handover/2026-09-30-shared-reader-draft/source286-full-validation-launch.json)
-selected exact `654aca96`: Linux Rust **37254821073**, frozen **37254829602**, and
-macOS supervisor **10785** in
-`target/runtime-goal/recovered-2026-10-03/vm-dispatch-full/emaxx`. All are closed;
-read the audited results above and the current call-entry checkpoint. Selected source286 and corrected source287
-checkouts remain frozen. Main stays `21d20f0e`, PR79 stays draft, and the complete
-goal remains incomplete. The linked checkpoint records original setup/fixture/lint
-failures, all unfavorable timings and the portable reproduction evidence.
-
-## Preceding printer checkpoint and performance baseline
-
-Read the [printer/reader checkpoint and performance baseline](docs/runtime-representation-printer-draft.md)
-before continuing. **Source284 is applied and pushed as `9c5b5356`**, with 520
-verified inputs and exact portable replays from source279 and main. Its
-[closed selected evidence](docs/handover/2026-09-30-shared-reader-draft/source284-reader-printer-selected-manifest.json)
-verifies warning-free strict checks, six targeted controls in each profile and
-42 ordinary byte-for-byte GNU comparisons. The native constant failure is repaired;
-all 198 generated rows / 4,088,269 bytes and 679 reader bounds cases match.
-Every prior fixture and test remains. This is a bounded checkpoint, not completion.
-
-Canonical bytes now pass through printing and actual string/native reader input.
-The loader follows GNU make_string/Fread rather than lossy UTF-8 conversion.
-Bounds reuse GNU-compatible validate_subarray with original error arguments.
-Remaining symbol, positioned-reader and formatting adapters, ownership/accounting,
-real intervals, unified pure storage and the complete architectural goal stay open.
-
-**Performance work has started.** The [closed unchanged 16-workload pilot and profiles](docs/handover/2026-09-30-shared-reader-draft/source284-core-performance-pilot-manifest.json)
-verify all 32 processes, matching actual results and execution modes. One paired
-sample per workload gives a 3.05× geometric mean Emaxx/GNU body-time ratio;
-bytecode-to-native is 9.58× and bytecode calls 6.78×. All ratios are unfavorable
-and retained. This is diagnostic, not parity certification; Emaxx allocation
-counters explicitly report unavailable. The locked workloads and 3% ceiling
-are unchanged. Profiles identify VM dispatch and call setup as the next targets.
-Current user direction is to pursue that measured work after this bounded repair,
-without continuously adding unrelated correctness probes. Preserve required semantics.
-
-The [full-validation launches](docs/handover/2026-09-30-shared-reader-draft/source284-full-validation-launch.json)
-select exact runtime `9c5b5356`. The [closed Linux Rust failure](docs/handover/2026-09-30-shared-reader-draft/source284-complete-linux-rust-failure-manifest.json)
-retains **2,284 passes / one GNU reference-assertion failure**: the first empty-vector
-census is -9 instead of zero, byte-identical to the earlier source272 GNU failure.
-That control does not reach Emaxx; all four new printer/reader controls pass.
-The remaining 756 library names and both Cargo stages never run. The cause stays
-unresolved; no expectation or verdict changes. Linux frozen37091394500 and macOS supervisor **48303** are now closed;
-read the platform results above and the linked current VM checkpoint. The original
-macOS selected checkout and complete checkout retain their exact source284 inputs. The selected checkout
-`target/runtime-goal/recovered-2026-10-03/reader-bounds-ascii/emaxx` stays frozen.
-Main remains `21d20f0e`, PR79 remains draft and the full goal remains active.
-
-Source282's 217 focused passes/two existing ignores and 1,073 affected passes per
-profile are predecessor evidence. It is never applied because a subsequent bounds
-negative is real. Source283 repairs that error but its new fixture fails at a GNU
-reference assertion due to locale-dependent literal argv decoding. Source284
-changes only that fixture to numeric character construction and matches the original
-helper's actual GNU output. The source282 missing-GNU-path and log-path setup
-failures, source283 failed reference, and earlier source280/281/native negatives
-remain recorded in the linked archives. Do not reclassify failed or incomplete runs.
-
-Source279's closed Rust validation remains 3,126 macOS / 3,138 Linux passes,
-two existing ignores each, and its Linux frozen run matches all 7,928 outcomes.
-The [closed macOS frozen/terminal audit and GNU retry](docs/handover/2026-09-30-shared-reader-draft/source279-macos-frozen-terminal-and-retry-manifest.json)
-supersede supervisor77583's prior running state: 7,915 frozen matches / six strict
-feature-diagnostic mismatches; terminal has 164 fully matching scenarios / 318
-exact comparisons before GNU readiness times out. There are 368 unexecuted
-comparisons and 61 unstarted scenarios. The unchanged failing scenario separately
-completes in 14.224 seconds under a bounded longer wait, all three screens equal.
-Never slow Emaxx to reproduce a GNU timeout; require actual equal answers.
-Source276's original Emaxx census failure remains unexplained. Source270's prior
-226-scenario / 686-comparison terminal pass does not certify the final runtime.
-
-The preceding runtime **source272**, pushed as **`eb286e23`**, has **510 verified inputs**. Its
-[closed borrow-root repair evidence](docs/handover/2026-09-30-shared-reader-draft/source272-string-borrow-selected-manifest.json)
-verifies zero-warning strict checks, **206 focused passes / two existing ignores**
-and **1,062 affected passes in each profile**. Every original selector, test,
-GNU fixture and expected byte is preserved. Both portable repair patches and
-the preceding test-only negative replay all 510 inputs and file modes exactly.
-
-Source271 exposed a Rust ownership defect outside the frozen Lisp fixtures:
-an off-stack shared string guard kept its header alive while its cons property
-was reclaimed. Its original **two passes / one failure** remains preserved.
-Source272 scans the existing borrow metadata before marking, traces shared
-guards through the ordinary property graph and weak-table fixed point, and
-rejects an exclusive guard before advancing the epoch or sweeping anything.
-Controls verify survival, weak-key retention, reclamation after release and
-exclusive-borrow rejection, including both permanent empty roots. No per-access
-lookup or retained registry is added. The extra GC scan and temporary vectors
-have not been timed; broader public ownership/serialization remains open.
-
-The selected checkout `target/runtime-goal/recovered-2026-09-30/string-borrow-roots/emaxx`
-is frozen. Receipts/helpers are under `target/runtime-goal/resume-2026-09-28`.
-The [full Linux Rust failure](docs/handover/2026-09-30-shared-reader-draft/source272-complete-linux-rust-failure-manifest.json)
-retains **2,279 passes / two GNU reference-assertion failures**. The first empty-record
-and empty-vector GC samples are nine slots below their unchanged expectations;
-all later samples match. Neither failed control reaches its Emaxx comparison.
-The remaining 751 library tests and both Cargo stages never run. Actual GNU inputs
-match the prior passing and failing runs; the cause remains unresolved.
-
-The [full Linux frozen failure](docs/handover/2026-09-30-shared-reader-draft/source272-complete-linux-frozen-failure-manifest.json)
-verifies **519 files / 7,927 matches / one mismatch / 1,038 successful processes**.
-GNU reports an unexpected Eglot Rust-completion JSON-RPC timeout; Emaxx passes
-that test and has no unexpected outcome across all 7,928 results. This is the
-same failure signature seen in source244, without an established cause.
-Both complete runs remain failed. No expectation, timeout or comparison rule changes.
-
-MacOS supervisor **27731 was withdrawn while waiting, before any validation stage**,
-to prioritize the newer draft below. `source272-full-withdrawal.json` supersedes
-its retained original waiting-state receipt. Do not restart it implicitly.
-The two source272 checkouts remain unchanged. Full validation is still required
-on the final selected runtime; selected checks do not establish a full or
-performance result. Main remains `21d20f0e`, PR79 remains draft, and the full goal
-is active and incomplete.
-
-## Separate GNU string-block draft: source276
-
-The [portable source276 draft and original preparation failures](docs/handover/2026-09-30-shared-reader-draft/source276-string-sblocks-draft-manifest.json)
-replay all **511 inputs and file modes** from `b5a1558c` and main. It is isolated in
-`target/runtime-goal/recovered-2026-09-30/string-data-pools/emaxx`; it was prepared
-against source272 and is superseded by source279. Strict formatting, all-target checking, Clippy and diff checks
-pass with zero warnings. **Seven gate controls pass**, including actual compaction,
-block reclamation, borrowed-pointer stability, aligned resizing, property roots,
-weak references, release and pure-string survival. These are bounded controls.
-
-Constructors now install a stable header before GNU-style sdata owner pointers.
-Small bytes share 8,184-byte blocks; large bytes have separate blocks. GC retires
-dead entries, compacts live unborrowed storage and frees unused blocks. Character
-construction, copies, concatenation and resizing fill final storage directly.
-A block containing a live Rust content borrow stays stationary until the guard
-ends. Pure string bytes occupy separate permanent, immovable blocks. This concrete
-Rust borrowing constraint and its unmeasured scan/retained-slack cost are recorded;
-there is no new per-read lookup or registry. Real intervals, unified pure storage,
-physical accounting, public ownership, symbol authority and VM work remain open.
-
-**Queue67370 has exited.** It records 208 focused passes / two existing ignores
-and 1,063 affected passes / one Emaxx first-vector census failure. Release never
-starts. The [source279 recovery](docs/runtime-representation-string-allocation-recovery.md)
-preserves that failure and repairs a separate allocation abort found by new
-controls. Keep source276 and its executed helpers unchanged. Source273's two test argument-type errors and
-source274/275's strict Clippy failures remain in their original checkouts and
-portable patches; no runtime tests ran on those failed predecessors.
-
-## Preceding storage checkpoint: source270
-
-The preceding storage runtime **source270** was pushed as **`0ecf6e11`**, with
-**510 verified inputs**. Its [closed selected evidence and full-validation launches](docs/handover/2026-09-30-shared-reader-draft/source270-string-storage-selected-manifest.json)
-verify zero-warning strict checks, **203 focused passes / two existing ignores**
-and **1,059 affected passes in each profile**, plus **33 ordinary exact GNU matches**.
-All original controls and expected bytes remain, including all 12,600 prefix rows.
-The archived ordering, version, range/casing, empty identity and pure-storage
-negatives now match unchanged GNU output. Counts overlap and are not summed;
-this does not establish universal correctness or a full-platform pass.
-
-Strings now use a direct 32-byte GNU-layout header plus 16 bytes of checked-borrow
-and allocator metadata, dedicated cells and packed property spans. Both normal
-empty forms are canonical; pure copies are distinct permanent objects with GNU
-write protection, copy/no-op/error order and dump/template identity behavior.
-Comparison and casing follow actual GNU C paths and live tables. Data still uses
-individual boxes; sblocks, real intervals, symbol authority, physical accounting,
-public ownership, VM stack/profiling and the locked performance criteria remain open.
-
-The [complete Rust audits on both platforms](docs/handover/2026-09-30-shared-reader-draft/source270-complete-rust-platforms-manifest.json)
-verify **3,118 macOS / 3,130 Linux passes**, with **two existing ignores each**,
-all 3,021/3,029 library names, native artifact identity and retained Rust/GNU inputs.
-Linux [Rust36930970705](https://github.com/rayfdj/emaxx/actions/runs/36930970705)
-is complete on exact `0ecf6e11`. The [complete frozen audits](docs/handover/2026-09-30-shared-reader-draft/source270-complete-frozen-platforms-manifest.json)
-verify all 519 files and 1,038 successful processes per platform. Linux has
-**7,928 matching outcomes**. Pinned macOS has **7,915 matches / six strict
-build-feature skip-diagnostic differences**, which remain failures. Raw inventories,
-paired outcomes, execution hashes and actual GNU inputs are checked; all 177
-compiler tests pass in both editors. Expected failures and skips are not passes.
-Supervisor **3079 has exited**. Its audited terminal result matches all 226
-scenarios and 686 original comparisons in the unchanged clean checkout
-`target/runtime-goal/recovered-2026-09-30/string-storage-full/emaxx`.
-Read the latest recovery archive for the closed audit. These results do not certify source272 or
-source276, memory or performance. The source271 borrow-root negative remains
-preserved and is repaired separately in source272.
-
-## Preceding source261 checkpoint and storage development
-
-The preceding runtime **source261** was pushed as **`eddfe782`**, with **488 verified
-inputs**. Its [closed selected evidence and full-validation launches](docs/handover/2026-09-30-shared-reader-draft/source261-common-string-selected-manifest.json)
-verify zero-warning strict checks, **189 focused passes / two existing ignores**
-and **962 affected passes in each profile**, plus **22 ordinary exact GNU matches**.
-The common-string and comparison/hash changes below are now applied. Every earlier
-failed draft, invalid fixture and evidence-check failure remains recorded.
-
-The [complete macOS Rust audit](docs/handover/2026-09-30-shared-reader-draft/source261-complete-macos-rust-manifest.json)
-verifies **3,107 passes / two existing ignores**, all 3,010 library names, native
-artifact identity and four retained executable/image files. The clean checkout
-`target/runtime-goal/recovered-2026-09-30/common-strings-full/emaxx` remains at
-`eddfe782`, with all 488 inputs unchanged. Supervisor **31023** has completed
-full terminal validation after the frozen comparison below. Linux
-[Rust36904097575](https://github.com/rayfdj/emaxx/actions/runs/36904097575) and
-[frozen36904105841](https://github.com/rayfdj/emaxx/actions/runs/36904105841) are
-complete on exact `eddfe782`. The [closed Linux audit](docs/handover/2026-09-30-shared-reader-draft/source261-complete-linux-manifest.json)
-verifies **3,119 Rust passes / two existing ignores**, all 3,018 library names,
-native artifact identity and retained inputs, plus **519 frozen files / 7,928
-matching outcomes / 1,038 successful processes**. Each editor reports 7,670 passes,
-47 expected failures and 211 skips; all 177 original compiler tests pass. Every raw
-execution hash and actual GNU input is checked. The
-[complete macOS frozen audit](docs/handover/2026-09-30-shared-reader-draft/source261-complete-macos-frozen-manifest.json)
-retains **7,915 matches / six strict mismatches**, all 519 files and 1,038 successful
-processes. Both editors have 7,623 passes, 46 expected failures and 252 skips; all
-177 compiler tests pass. The same six build-feature skip diagnostics differ as in
-source249. Every raw outcome, execution hash and retained GNU/Emaxx input is checked.
-No comparison rule or reported feature changes. The
-[complete terminal audit](docs/handover/2026-09-30-shared-reader-draft/source261-complete-macos-terminal-manifest.json)
-verifies **226 scenarios / 686 matching comparisons**: 658 screen and 28 filesystem
-comparisons, all original labels, 488 source inputs and ten execution inputs. It uses
-the exact executable/image from the frozen run. No source261 supervisor remains running.
-Main remains `21d20f0e`, PR79 is draft, and the architecture/performance goal is open.
-
-The [separate source262 ordering draft and negatives](docs/handover/2026-09-30-shared-reader-draft/source262-string-ordering-draft-manifest.json)
-retain **154 wrong results among 1,024 symbol/storage ordering rows**, plus **56
-wrong results among 400 version rows** on source261. Four ordering results regressed
-after source207 and by source249; the exact introducing commit is unestablished.
-Source261 and source249 agree throughout that ordering matrix. The version matrix
-is unchanged from main. These defects remain open, despite earlier frozen passes.
-Source262 follows actual `fns.c:string_cmp` and `lib/filevercmp.c`, uses canonical
-bytes and Lisp symbol names, and removes the host-text comparison adapter. Its
-**492 inputs** replay exactly and strict checks pass with zero warnings. Queue
-**38430 was withdrawn while waiting, before any runtime stage**, in favor of the
-successor below. Its source, helpers and original queued state remain unchanged.
-No source262 runtime test ran; it remains an unapplied precursor.
-
-The [source263 range/casing successor](docs/handover/2026-09-30-shared-reader-draft/source263-string-ranges-draft-manifest.json)
-retains all source262 changes and adds GNU-confirmed `compare-strings` and numeric
-casing repairs. New ordinary probes find **12 range/error differences**, **134
-character-comparison differences**, **seven live-case-table comparison differences**
-and **nine numeric casing differences**. Range, live-table and numeric outputs match
-main exactly; main's character matrix exits255 at its unsupported extended-character
-constructor, which is retained as a failure. The repair reads canonical bytes,
-promotes octets before casing, follows live tables with actual keys and preserves
-GNU's type/range validation order. All **500 inputs** replay exactly and strict
-checks pass with zero warnings. Queue **90568** has exited: **197 focused passes /
-two existing ignores**, then **1,053 affected passes / one failure**. The original
-Unicode comparison expected dumped GNU case tables in a bare interpreter. Actual
-GNU C initializes only ASCII there; loadup installs Unicode. The successor below
-preserves the original dumped assertions and adds bare/live-table coverage.
-Release and ordinary stages did not run. Keep failed source263 and its helpers unchanged.
-The [additional boundary control](docs/handover/2026-09-30-shared-reader-draft/source263-ordering-boundary-control-manifest.json)
-matches GNU/source261 on **12,600 comparisons**, covering 14 prefix lengths around
-machine-word boundaries and 30 character/storage cases. Queue **90569** stopped
-before any stage because90568 failed. No source263 prefix comparison or complete
-selected pass is inferred. Its raw failure and executable/image identities are in the
-[storage preparation archive](docs/handover/2026-09-30-shared-reader-draft/source268-string-storage-draft-manifest.json).
-
-The [queue correction](docs/handover/2026-09-30-shared-reader-draft/source263-fixture-queue-repair-manifest.json)
-preserves original waiting supervisors64601/87187, withdrawn before runtime execution.
-Their wrapper named a nonexistent fixture; the corrected queue uses the unchanged
-`string-ordering-symbol-storage` fixture. All 28 fixture paths are verified. Source,
-tests, expected bytes, selectors, timeouts and comparison rules are unchanged.
-The closed receipts are `source263-fixture-validation-*` and
-`source263-boundary-fixtures-*`. Original helpers and waiting states remain
-historical evidence; do not restart these failed or withdrawn queues.
-
-The [current empty/pure string baseline](docs/handover/2026-09-30-shared-reader-draft/source261-string-storage-baseline-manifest.json)
-finds **six wrong empty-identity rows among 12** and **57 wrong pure-storage rows
-among 96**, including 28 operation/poststate differences. Compared with source249,
-seven previously matching whole rows now differ and six now match. All seven new
-whole-row regressions involve `purecopy` reusing the ordinary empty unibyte string;
-the exact introducing source between249 and261 is not established. Nonempty pure
-writes already differ in earlier checkpoints. Source174/main and207 agree exactly.
-The original syntax/scope-invalid probes are preserved and excluded; the valid raw
-and explicit-value fixtures overlap and their counts must not be added together.
-Source263 does not repair these additional gaps. Subsequent string-storage work must
-restore distinct pure allocation and write protection, supply the empty multibyte
-singleton, and preserve GNU's empty `clear-string`, GC and dump behavior. A complete
-frozen pass alone cannot certify those contracts or make this branch main-ready.
-
-The storage successor **source270** was developed separately in
-`target/runtime-goal/recovered-2026-09-30/string-storage/emaxx`. The
-[source264–268 preparation and failures](docs/handover/2026-09-30-shared-reader-draft/source268-string-storage-draft-manifest.json)
-and [source269 caller correction](docs/handover/2026-09-30-shared-reader-draft/source269-string-storage-caller-repair-manifest.json)
-preserve the earlier drafts. The [current source270 patch and failures](docs/handover/2026-09-30-shared-reader-draft/source270-string-storage-empty-copy-manifest.json)
-retain exact incremental/main patches and all **510 inputs**. Strings now have a
-direct 32-byte GNU-layout header plus 16 bytes of checked-borrow/allocator metadata.
-The implementation supplies two normal empty singletons, distinct permanent pure allocations,
-write protection and GNU no-op/error order, and preserves dump/template identities.
-Property spans use one packed allocation. Data still uses individual boxes, and
-real sblocks, interval trees, physical accounting and public ownership remain open.
-
-Source264/265 compiler failures and source266 Clippy failure are retained. Source267
-passed strict checks but did not run. Source268 passed strict checks, then had
-**199 focused passes / four failures / two existing ignores**. All four failures
-were at the GNU precondition: the new expected-output callers retained one trailing
-newline. Source269 changes only those four callers to the existing `trim_end`
-convention; GNU fixtures and the shared comparator are unchanged. Source269 then
-had **201 focused passes / two failures / two existing ignores**. Empty identity
-and all 144 property rows pass; the 96-row pure fixture matches 94 rows. Copying an
-empty pure string incorrectly retained its read-only header. A separate assertion
-could not load its native image while the test still owned the first image.
-Source270 follows GNU `Fcopy_sequence` through ordinary constructors for every
-string and releases the first test interpreter before the independent image load.
-All assertions remain. Its strict checks pass with zero warnings.
-Queue **98240** has completed all selected stages: **203 focused passes / two
-existing ignores and 1,059 affected passes in each profile**, plus **33 ordinary
-GNU matches**. All source270 raw verdicts, complete inventories, retained artifacts
-and source bytes are audited. The source261 and failed draft checkouts remain
-unchanged. Source270 is now applied as described above; its earlier preparation
-archives retain their original pending state and do not substitute for the closed audit.
-
-## Preceding source249 validation
-
-The preceding **source249**, pushed as **`99e61fca`**, has **476 inputs** matching the isolated
-`coding-post-read/emaxx` candidate. Its [closed selected validation](docs/handover/2026-09-30-shared-reader-draft/source249-selected-and-setup-manifest.json)
-verifies zero-warning strict checks, **172 focused passes / two existing ignores**
-and **955 affected passes in each profile**, plus **fifteen ordinary GNU matches**.
-The post-read hook now receives decoded character counts. ASCII string decoding
-returns early, drops properties on a copied result and preserves NOCOPY identity,
-following GNU.
-The original negatives and the first checkout-setup failure remain retained.
-Complete source249 Linux/macOS Rust, Linux frozen and terminal results are now audited
-below. The preceding source248 results do not
-certify this newer source.
-
-The [closed Linux and Darwin frozen evidence](docs/handover/2026-09-30-shared-reader-draft/source249-linux-and-darwin-frozen-manifest.json)
-verifies exact pushed runtime `99e61fca`. Full Linux
-[Rust36879095484](https://github.com/rayfdj/emaxx/actions/runs/36879095484) and
-[frozen36879103495](https://github.com/rayfdj/emaxx/actions/runs/36879103495) are
-complete: **3,112 Rust passes / two existing ignores**, and **519 files / 7,928
-matching frozen outcomes / 1,038 successful processes**. Each editor has 7,670
-passes, 47 expected failures and 211 skips. Raw verdicts, complete inventories,
-execution hashes and actual GNU inputs are verified; historical failures remain.
-
-The [complete macOS Rust and oracle adoption record](docs/handover/2026-09-30-shared-reader-draft/source249-macos-and-oracle-adoption-manifest.json)
-closes **64326** with **3,100 passes / two existing ignores**, native artifact
-identity, all 3,003 raw library names and four retained inputs verified. The
-[complete terminal audit](docs/handover/2026-09-30-shared-reader-draft/source249-complete-rebuilt-terminal-manifest.json)
-closes **12347** with **226 scenarios / 686 matching comparisons**: 658 screen and
-28 filesystem comparisons, every original label, 476 source inputs and ten execution
-inputs verified. It uses the same gate executable/image as the rebuilt-oracle frozen
-comparison. No source249 validation supervisor remains running.
-Main remains `21d20f0e`, PR79 is draft and the full goal remains open.
-
-GNU has been [rebuilt from the recorded recipe](docs/handover/2026-09-30-shared-reader-draft/gnu-macos-rebuild-20261001-manifest.json)
-at pristine revision `636f166c`, with executable SHA-256 **`29cfb20d…`**.
-Capabilities and configure options match the retained source/ABI-matched build;
-fresh native ABI, C primitive and DEFSYM manifests are byte-identical to the
-committed files. The binary, dump, configuration and Makefile are retained.
-The task branch now explicitly adopts **`29cfb20d…`**, as already tested in
-candidate **`1c0898fc`**. Its old pin and local configuration are retained.
-Fresh GNU discovery from all 519 completed full-run reports renders the original
-canonical inventory byte for byte. Runtime inputs, Linux pin, selectors and
-timeouts are unchanged. Frozen retry **58661 has exited with a strict failure**:
-**7,915 matching / six mismatching outcomes**, all 519 files and 1,038 processes
-complete. Both editors have 7,623 passes, 46 expected failures and 252 skips.
-The six differences are existing `system-configuration-features` text in skipped
-seccomp diagnostics. Emaxx deliberately reports only actual capabilities; no
-feature string or comparison rule was changed. All 177 original compiler tests
-pass in both editors. This result is not relabeled a complete frozen pass.
-The first launch's missing target-ownership marker failure and cache are preserved.
-
-Separately, **source256** is an unapplied common-string draft in
-`target/runtime-goal/recovered-2026-09-30/common-strings/emaxx`, with **480 inputs**.
-Its [portable patches and evidence](docs/handover/2026-09-30-shared-reader-draft/source256-common-strings-draft-manifest.json)
-replay exactly from `b8e5ad20` and main. It removes the plain-string arena,
-binding/callback conversion copies and VM text adapter, and follows GNU's actual
-`fillarray` byte-length/property rules. Two ordinary source249 negatives and
-unchanged GNU expectations are retained. Source255's selected run has **181 passes,
-one invalid Unicode bytecode fixture failure and two existing ignores**. GNU
-confirms the fixture correction in source256; every original assertion remains,
-plus the rejected Unicode case. Source256 passes all strict checks with zero
-warnings. Queue **17749** has exited. Its [focused gate result](docs/handover/2026-09-30-shared-reader-draft/source256-focused-gate-manifest.json) is audited:
-**182 passes / two existing ignores**, all 184 selectors and retained executable/image
-verified. The [complete affected gate audit](docs/handover/2026-09-30-shared-reader-draft/source256-broad-failure-and259-focused-manifest.json)
-records **956 passes / one native-bytecode fixture failure**, all 957 names checked.
-GNU confirms that fixture's three intended opcodes were five bytes of Unicode;
-the actual unibyte form returns 42 and the Unicode form is rejected. Release and
-ordinary stages did not run. The failure and its executable/image remain retained.
-Compact string headers, symbol authority, physical
-accounting, ownership and measured performance remain unfinished.
-The [new comparison negative](docs/handover/2026-09-30-shared-reader-draft/source249-string-comparison-gaps-manifest.json)
-finds six wrong results in a 64-pair string matrix. The same fixture had twelve
-wrong results on source174/main and source207, with no newly wrong result in
-source249. The remaining `string-equal`/`equal-including-properties` projection
-errors are still present in source256.
-
-The [separate source259 comparison/hash draft](docs/handover/2026-09-30-shared-reader-draft/source259-string-comparison-draft-manifest.json)
-has **488 exactly replayed inputs** and zero-warning strict checks. It compares
-actual string bytes/counts, uses actual Lisp symbol names and GNU's positioned-symbol
-policy, and compares/hashes interval values with ordinary equality. String hashing
-also reads bytes directly. Four unchanged GNU fixtures retain the storage, symbol,
-property and hash-table negatives; an existing dump test gains byte-distinct keys.
-Source257's missing-test-import failure and source258's withdrawal before runtime
-execution are retained. Queue **22381** has exited: its [focused gate](docs/handover/2026-09-30-shared-reader-draft/source256-broad-failure-and259-focused-manifest.json)
-passes **188 tests / two existing ignores**; its complete broader gate records
-**961 passes / one failure** in the same invalid native fixture. Release and ordinary
-stages did not run. Every original selector and failed artifact remains retained.
-
-The subsequent source261 corrects only that native test, following ordinary GNU
-constructor evidence, with all original assertions and a Unicode rejection check.
-Source260's new-test unwrap lint failure is preserved; source261 uses an explanatory
-`expect_err`, with no lint allowance. Its **488 inputs** replay exactly and strict
-checks have zero warnings. Both focused profiles pass **189 tests / two existing
-ignores**; all **962 affected gate tests pass**. The first release auditor stopped
-because retention included the preceding gate image as well as the release image.
-The corrected auditor verifies all three retained inputs; no test or source changes.
-Continuation **30525** has exited: all **962 affected release tests** and **22 ordinary
-GNU comparisons** pass. The [complete selected audit](docs/handover/2026-09-30-shared-reader-draft/source261-common-string-selected-manifest.json)
-checks both inventories, every raw verdict, original fixtures and retained inputs.
-Source261 is applied and pushed as `eddfe782`; the full macOS/Linux runs above remain
-active. No full-runtime, memory or performance pass is inferred from selected checks.
-See the common-string continuation for exact evidence and remaining requirements.
-
-The preceding **source248**, pushed as **`fa7578ac`**, has **472 inputs** matching the frozen
-`target/runtime-goal/recovered-2026-09-30/coding-property-order/emaxx` checkout.
-The two property repairs below follow the actual GNU C lookup paths; their
-strict, selected and complete original compiler comparisons pass. Complete
-macOS/Linux Rust and pinned Linux frozen comparisons now pass as detailed below.
-Full terminal retry **14540** has exited and passes all **226 scenarios / 686 comparisons**.
-The original GNU startup failure and pre-existing conversion gaps remain documented.
-Further architecture work must start from this tested checkpoint and preserve its coverage.
-The [original source249 post-read draft](docs/handover/2026-09-30-shared-reader-draft/source249-post-read-draft-manifest.json)
-has **476 frozen inputs**, with both patches replayed exactly. Its two ordinary
-negative fixtures expose byte-count hook arguments and a missing ASCII early
-return; both also fail identically on retained source174/main and source207.
-The repair follows `coding.c:decode_coding_object/code_convert_string`, preserves
-the exact GNU outputs. Queue **15814** exited after strict
-checks passed and selected gate tests reported 162 passes, ten setup failures and
-two existing ignores. The new checkout lacked its required `../emacs` link.
-Restoring that link makes the same executable and all 174 unchanged selectors pass:
-172 passes / two existing ignores. The original failure and its executable/image
-remain retained. Continuation **17624** has exited; all selected results are now
-audited and the repair is applied to the root. Read `source249-*` receipts;
-the original draft's prepared auditors are historical, not passing results.
-The preceding **source246**, pushed as **`aaf31ce7`**, has **468 inputs** matching the frozen
-`target/runtime-goal/recovered-2026-09-30/coding-translation/emaxx` checkout.
-Its [portable repair and selected evidence](docs/handover/2026-09-30-shared-reader-draft/source246-coding-translation-selected-manifest.json)
-retain source244's same-input negative probes and source245's four compiler
-errors (no runtime tests executed). Source246 repairs live encoding-safety
-translation tables, dynamically bound registration-list order/duplicates and a
-source244 regression that interpreted U+E080–U+E0FF as internal raw-byte sentinels.
-Strict checks have zero warnings; **168 focused passes / two existing ignores**,
-**951 affected passes**, **eleven ordinary comparisons** and **177/177 original
-compiler tests in both editors** are audited. All preceding assertions remain.
-
-The [closed release and Linux Rust evidence](docs/handover/2026-09-30-shared-reader-draft/source246-release-and-linux-rust-failure-manifest.json)
-closes release **86468**: **168 focused passes / two existing ignores** and
-**951 affected passes**, matching gate. The [complete frozen/macOS/terminal audit](docs/handover/2026-09-30-shared-reader-draft/source246-complete-frozen-macos-terminal-manifest.json)
-closes macOS **86467** and terminal **86469**: **3,096 macOS passes / two existing
-ignores**, native artifact identity, all 2,999 raw library names, four retained
-artifacts, and **226 terminal scenarios / 686 comparisons** verified. Both
-supervisors have exited. Read `source246-*` receipts before acting.
-The [ordinary audit](docs/handover/2026-09-30-shared-reader-draft/source246-linux-launch-and-ordinary-manifest.json)
-closes all 57 preceding comparisons too: **68 distinct comparisons** match.
-Linux [Rust36840211567](https://github.com/rayfdj/emaxx/actions/runs/36840211567)
-fails on exact `aaf31ce7`: **2,260 passes / two failed GNU reference assertions**,
-leaving 745 library tests and both Cargo stages unexecuted. GNU's first empty
-record/vector samples are -7/-9 rather than 2/0; neither control reaches Emaxx.
-All four GNU inputs are now retained and verified unchanged. The
-[bounded diagnosis36842893035](https://github.com/rayfdj/emaxx/actions/runs/36842893035)
-passes 18 GNU probes and unchanged Rust single/group/single controls (1/654/1)
-with the **same Rust executable and GNU executable/dump/configuration/Makefile**.
-The [raw diagnostic audit](docs/handover/2026-09-30-shared-reader-draft/source247-selected-and246-gnu-diagnosis-manifest.json)
-does not establish the retaining root or environmental cause; the full run remains
-failed. Emaxx images differ, but both failed assertions precede Emaxx comparison.
-Linux [frozen36840217747](https://github.com/rayfdj/emaxx/actions/runs/36840217747)
-now **passes all 519 files / 7,928 matching outcomes / 1,038 successful processes**
-on exact `aaf31ce7`. Each editor has 7,670 passes, 47 expected failures and 211
-skips; the latter are not passes. Every raw execution hash and paired outcome is
-verified, together with the actual retained GNU executable/dump/configuration/
-Makefile. This pass does not explain the earlier Eglot timeout or Linux Rust failure.
-The [supplemental load markers](docs/handover/2026-09-30-shared-reader-draft/source246-frozen-load-markers-manifest.json)
-complete the archive's raw file coverage; only the hashed GNU executable/dump are
-excluded from the portable bundle and retained locally.
-The separately validated CI change retains GNU's executable, dump, configuration
-and Makefile before future Rust/frozen runs and verifies their bytes afterward.
-Six synthetic corruption/overwrite controls reject invalid evidence; runtime
-selectors, assertions, timeouts and outcome rules do not change.
-
-Two same-input ordinary probes expose further source246 property defects. The
-[separate portable property drafts](docs/handover/2026-09-30-shared-reader-draft/source248-property-drafts-manifest.json)
-preserve both negative results. Source247 shares the existing `get` implementation
-for translation-table symbols, including `nil`, `t` and overriding property lists.
-Its **470 inputs**, zero-warning strict checks, **169 focused passes / two existing
-ignores**, **952 affected passes**, twelve ordinary comparisons and original
-compiler-file load are audited. Supervisor **90626** has exited.
-Source248 adds GNU's first-match rule when an overriding property is nil before
-a duplicate; the old helper incorrectly continues to the later value.
-Its [closed selected validation](docs/handover/2026-09-30-shared-reader-draft/source248-selected-validation-manifest.json)
-verifies **472 inputs/modes**, zero-warning strict checks, **170 focused passes /
-two existing ignores**, **953 affected passes**, thirteen ordinary matches and
-successful compiler-file load in both editors. Both original negative property
-fixtures now match GNU without changed expectations. Queue **94807** has exited.
-The [compiler audit and complete launches](docs/handover/2026-09-30-shared-reader-draft/source248-compiler-and-complete-launch-manifest.json)
-close **1840**: all **177 original compiler tests pass in both editors**, with
-the unchanged full inventory, raw process hashes and 472 source inputs checked.
-Source248 is now applied to the root runtime. The [release audit and Linux launches](docs/handover/2026-09-30-shared-reader-draft/source248-release-and-linux-launch-manifest.json)
-close **4529** with **170 focused passes / two existing ignores**, **953 affected
-passes**, and all 57 preceding ordinary comparisons: **70 distinct ordinary
-matches** including the thirteen selected fixtures. Release matches gate, with
-the same existing debug-only file-descriptor test accounting for their inventory
-difference. The [complete Rust/frozen and terminal-failure archive](docs/handover/2026-09-30-shared-reader-draft/source248-complete-rust-frozen-and-terminal-failure-manifest.json)
-closes macOS **4528** with **3,098 passes / two existing ignores** and
-[Linux Rust36849791338](https://github.com/rayfdj/emaxx/actions/runs/36849791338)
-with **3,110 passes / two existing ignores**, on exact source248. Native artifact
-identity, all 3,001/3,009 raw library names and four retained inputs per platform
-are verified. The original GNU census assertions pass in this full Linux run;
-their earlier failures remain preserved and unexplained.
-[Linux frozen36849797068](https://github.com/rayfdj/emaxx/actions/runs/36849797068)
-passes **all 519 files / 7,928 matching outcomes / 1,038 successful processes** on
-exact `fa7578ac`. Each editor has 7,670 passes, 47 expected failures and 211 skips.
-Every raw execution hash and paired outcome is audited, together with the actual
-retained GNU executable/dump/configuration/Makefile. The archive includes all
-1,038 load markers; only hashed binaries/images are excluded and retained locally.
-Terminal **4530** has exited after GNU startup fails on scenario162:
-**161 fully matching scenarios / 295 matching comparisons**, zero observed
-divergences, **391 unexecuted comparisons**. The unchanged `recursive-minibuffer`
-replay passes all seven comparisons after the local Rust gate finishes.
-The [complete unchanged terminal retry](docs/handover/2026-09-30-shared-reader-draft/source248-complete-terminal-retry-manifest.json)
-closes **14540** with all **226 scenarios / 686 comparisons** matching: 658 screen
-and 28 filesystem comparisons, zero missing comparisons. All 472 source inputs,
-eight execution inputs and every raw verdict are verified. Commands, selectors,
-actions, timeouts and comparison strictness remain unchanged. The run followed
-the local Rust gate's exit; it does not establish the first startup failure's
-cause or erase that failure. GNU is source/native-ABI matched, not pinned Darwin.
-Keep the source248 and source249 validation checkouts frozen. Continuation17624
-has exited; rebuilt-Darwin frozen retry58661 remains active. The full goal and
-complete replacement-oracle validation remain open.
-The [C-source review and diagnostic failure](docs/handover/2026-09-30-shared-reader-draft/source248-c-reference-and246-trace-failure-manifest.json)
-map the fixes to unchanged GNU `coding.c:get_translation_table`, `lisp.h:SYMBOLP`,
-and `fns.c:plist_get/Fget`. Both original failing probes retain their exact bytes
-and GNU results. No new representation, property cache or weakened assertion is added.
-
-The same complete source246 archive preserves the new GNU GC trace preparation:
-20 ordinary macOS smoke processes match, fifteen synthetic header/block decoder
-controls pass, and all eight workflow shell blocks parse. `gnu-census-trace` runs
-the unchanged census fixtures, records explicit environment-padding variants and
-reads GNU's first eight GC inventories/possible stack references under GDB. It
-makes no inferior calls/stores or warm-up collections. Linux diagnosis
-[36848112001](https://github.com/rayfdj/emaxx/actions/runs/36848112001) fails on
-`2dd1dea8`: ten ordinary first-fixture processes match, then GDB's argument quoting
-with `startup-with-shell off` splits the Lisp argument. GNU stops with end-of-file
-before any explicit collection; the second fixture never starts. Raw evidence
-and the executed helper are preserved. No GC observation or root cause is claimed;
-post-run oracle verification was not reached. The full Linux Rust failure remains open.
-The separate observer correction restores GDB's default startup shell and checks
-the actual Linux inferior argument vector against the original GNU command.
-The [closed GNU trace and conversion-gap archive](docs/handover/2026-09-30-shared-reader-draft/source248-gnu-trace-and-conversion-gap-manifest.json)
-verifies diagnosis [36850342459](https://github.com/rayfdj/emaxx/actions/runs/36850342459)
-on `163064c9`: **twenty ordinary matches**, two successful GDB executions with
-exact original argument vectors, and **sixteen marked inventories** independently
-matching GNU's returned slot counts. No previously live object drops in those
-observations; the earlier -7/-9 variation is not reproduced or explained. All four
-GNU inputs match the prior failed full run and are verified unchanged afterward.
-The first failed observer and raw arguments remain preserved. Runtime source248 is unchanged.
-
-The same archive turns the documented general-translation limit into a concrete
-negative fixture: actual encoding/decoding ignores live translation tables,
-their mutation and composition with standard tables. GNU applies them. The
-recorded source174/main and source207 executable/image pairs, run from their
-original locations with hashes verified, produce source248's identical wrong
-output. This specific gap therefore predates the later migrations; it still needs
-repair. The initial relocated source174 launch failed before Lisp because of
-relative native-library paths and remains preserved, with no runtime verdict.
-Follow `coding.c:encode_coding/consume_chars` and `decode_coding/produce_chars`,
-including their use of `get_translation_table`; do not infer complete translation
-semantics from the current safety-only helper or the narrow negative fixture.
-
-The [closed source244 evidence](docs/handover/2026-09-30-shared-reader-draft/source244-closed-validation-manifest.json)
-records exact runtime **`578955b3`**, all 464 inputs, **3,094 complete macOS
-passes / two existing ignores**, native artifact identity, **166 focused / 949
-affected passes in each profile**, and the previously audited 66 ordinary matches.
-Linux [frozen36830884261](https://github.com/rayfdj/emaxx/actions/runs/36830884261)
-processes **all 519 files / 7,928 outcomes**, with **7,927 matches / one mismatch**.
-All original 177 compiler tests now pass in both editors. The sole mismatch is
-GNU's unexpected JSON-RPC timeout in `eglot-test-rust-completion-exit-function`;
-Emaxx passes. Emaxx has 7,670 passes, 47 expected failures and 211 skips; GNU has
-7,669 passes, 47 expected failures, one unexpected failure and 211 skips.
-This full frozen run remains failed.
-The retained GNU process-buffer dump contains the completion reply despite the
-request timeout. Two connections and duplicated dumps prevent establishing which
-connection/timing it belongs to. The same signature was documented before this
-runtime work in `docs/frozen-run-success.md`; its cause remains unresolved.
-
-Linux [Rust36830879269](https://github.com/rayfdj/emaxx/actions/runs/36830879269)
-retains **2,258 passes / two failed GNU reference assertions**: first record
-sample -7 rather than 2 slots, first vector sample -9 rather than 0. All later
-samples match; neither failed control reaches its Emaxx comparison. Another
-745 library tests and both Cargo stages never run. GNU's executable/dump were
-not retained by that job, so the cause remains unresolved. Source244 full
-terminal stops on scenario81 at GNU startup readiness: **80 complete matching
-scenarios / 80 comparisons**, zero observed divergences, **145 unstarted
-scenarios / 606 unexecuted comparisons**. The failed runs remain failed; earlier
-source243 full terminal/Rust passes do not certify source246.
-
-Known limits remain: source246 fixes the safety helper, while general encoding
-and decoding translation behavior, normal registration-list authority/order,
-legacy charset adapters and complete validation of the property repairs remain open.
-Main remains source174; complete correctness, shared representation, accounting,
-ownership, final audit, pinned Darwin and the locked 16-workload/3% performance
-requirement remain unfinished. No current performance-parity claim exists.
-
-The preceding **source243** was pushed as `8d4fcd39`, with its evidence below.
-The preceding **source238**, `a7e12de8`, recovered the complete pinned Linux
-frozen match: **519 files / 7,928 outcomes / 1,038 successful processes** in
-[run 36812124904](https://github.com/rayfdj/emaxx/actions/runs/36812124904).
-The [raw audit](docs/handover/2026-09-30-shared-reader-draft/source238-complete-frozen-and-terminal-failure-manifest.json)
-verifies every inventory, paired outcome and execution hash. Each editor has
-7,670 passes, 47 expected failures and 211 skips; the latter are not passes.
-
-[Complete macOS and selected validation](docs/handover/2026-09-30-shared-reader-draft/source238-complete-macos-and-selected-manifest.json)
-verify **3,085 Rust passes / two existing ignores**, native artifact identity,
-101 focused release passes / two existing ignores, 940 affected release passes
-and 57 ordinary comparisons. All source238 local supervisors have exited.
-Its full terminal run remains failed: **225 of 226 scenarios wholly match**,
-682 comparisons match, one coding-system indicator diverges after saving a new
-alternate file and three later comparisons in that scenario never run. The
-seven original quote-display divergences now match.
-
-The [Linux Rust failure and replay](docs/handover/2026-09-30-shared-reader-draft/source238-linux-census-failure-and-replay-manifest.json)
-retain **2,250 passes / one failed GNU reference assertion**; 745 later library
-tests and both Cargo stages never run. The first empty-vector GNU census is -9
-instead of 0, before the Emaxx comparison starts. An unchanged single-test replay
-passes with the same Rust executable hash. This does not identify the cause or
-erase the failed full run. The unchanged 643-test group diagnosis in
-[run 36816077037](https://github.com/rayfdj/emaxx/actions/runs/36816077037)
-now reproduces the same GNU failure: 642 passes / one failure, with the same
-Rust executable hash. Its [closed audit](docs/handover/2026-09-30-shared-reader-draft/source240-release-and-open-failures-manifest.json)
-retains every raw verdict. The retaining root or environment cause is unresolved.
-
-The separate [source240 coding/copy draft](docs/handover/2026-09-30-shared-reader-draft/source240-coding-recovery-draft-manifest.json)
-in `target/runtime-goal/recovered-2026-09-30/coding-repair/emaxx` has **454 inputs**.
-Strict checks have zero warnings; **160 focused tests / two existing ignores**
-and **944 affected tests pass in both gate and release profiles**. All **61
-ordinary GNU comparisons** pass. It also
-repairs source238's reproduced U+F8FF failure-report error while preserving the
-known pass, failure, expected-failure and skip outcomes. The failed source239
-draft remains preserved. The separately added save/revisit probe still fails:
-GNU records `utf-8-unix` after save, Emaxx `prefer-utf-8-unix`; file bytes match.
-The [complete macOS audit](docs/handover/2026-09-30-shared-reader-draft/source240-complete-macos-manifest.json)
-now verifies **3,089 passes / two existing ignores**, native artifact identity,
-all 2,992 raw library names/verdicts and four retained executable/image hashes.
-Both supervisors **43216** and **43217** have exited.
-
-The [source243 file-coding checkpoint](docs/handover/2026-09-30-shared-reader-draft/source243-file-coding-recovery-manifest.json)
-follows GNU's Lisp-owned selection policy, preserves
-narrowing across callbacks, uses the short overwrite prompt and checks exclusive
-creation when opening the file. Source241's strict failure is preserved.
-Source242 passes 163 focused tests with two existing ignores and one failed
-selection fixture: its two invalid-coding errors contain a string instead of
-GNU's offending symbol. The save/revisit, overwrite-order and prompt controls
-pass. Source243 also retains the actual error object and adds a GNU-confirmed
-uninterned-symbol identity control; its 462 inputs are frozen in
-`target/runtime-goal/recovered-2026-09-30/file-coding/emaxx`.
-Strict checks have zero warnings; **165 focused passes / two existing ignores**,
-all **948 affected-module tests**, and eight ordinary GNU comparisons pass.
-All **11 original file-lifecycle scenarios / 41 comparisons** match, including
-the original indicator failure and all three previously unexecuted comparisons.
-The actual interactive prompt probe also matches GNU. Every raw verdict and
-artifact identity is audited. The first broad-audit helper stopped on an incorrect
-562-input assertion; its separate corrected helper checks all 462 inputs without
-rerunning or changing tests. The failed audit remains preserved.
-
-Selected supervisors **53531** and **54143** have exited. The
-[complete release audit](docs/handover/2026-09-30-shared-reader-draft/source243-release-complete-manifest.json)
-also closes **55868**: **165 focused passes / two existing ignores** and all
-**948 affected passes** in each profile, with exact artifacts and every raw
-verdict verified. The [complete macOS audit](docs/handover/2026-09-30-shared-reader-draft/source243-complete-macos-manifest.json)
-now closes **55867**: **3,093 passes / two existing ignores**, native artifact
-identity, every one of 2,996 raw library names/verdicts and four retained input
-hashes verified. The frozen checkout matches all 462 published runtime inputs.
-The [complete terminal and frozen-failure audit](docs/handover/2026-09-30-shared-reader-draft/source243-complete-terminal-and-frozen-failure-manifest.json)
-now closes terminal **55869**: all **226 scenarios / 686 comparisons** match,
-with unchanged actions, inventories, timeouts and eight execution-input hashes.
-GNU is source/native-ABI matched, not the pinned Darwin executable. The
-[closed ordinary comparisons and Linux launches](docs/handover/2026-09-30-shared-reader-draft/source243-linux-launch-and-ordinary-manifest.json)
-verify all 57 preceding ordinary comparisons as well: **65 distinct comparisons**
-on source243. The [complete Linux Rust audit](docs/handover/2026-09-30-shared-reader-draft/source243-linux-complete-rust-manifest.json)
-closes [run 36822371375](https://github.com/rayfdj/emaxx/actions/runs/36822371375)
-on exact `8d4fcd39`: **3,105 passes / two existing ignores**, native identity,
-all 3,004 raw library names/verdicts and four retained input hashes verified.
-The original GNU census fixture, expectation and helper bodies are unchanged and
-pass in this full run; this does not explain the earlier source238 variation.
-[Full frozen 36822376061](https://github.com/rayfdj/emaxx/actions/runs/36822376061)
-**fails** on exact `8d4fcd39` after **482 matching files / 6,911 outcomes**
-(6,693 passes, 43 expected failures and 175 skips per editor). Emaxx exits 255
-while loading `test/src/comp-tests.el`: writing a native-compiler temporary file
-unexpectedly requests a coding system. All 177 selected outcomes are missing;
-GNU runs and passes them. Another 36 files never start. The unchanged ordinary
-compiler load reproduces the failure. Read the current `source243-*` receipts before acting. Do not edit executing
-candidates or helpers. The published source243 checkpoint matches its 462 candidate inputs.
-The same macOS archive preserves nine GNU-only workflow-environment probes and
-nine GNU-only smoke probes of `tools/diagnose_gnu_census.py`; all match locally.
-They do not resolve the Linux GNU reference failure. The new optional
-`gnu-census` workflow mode holds the Rust controls' selector environment constant
-and runs the original single test, complete primitives group and single test
-again, retaining failures and GNU executable/image identities. Linux
-[diagnosis 36825694384](https://github.com/rayfdj/emaxx/actions/runs/36825694384)
-completed on `3a35ad00`, which preserves all 462 runtime inputs. Its **18 GNU
-probes** and unchanged Rust **single/group/single controls (1/651/1 passes)**
-all pass. Every raw verdict, inventory and eight retained input hashes are
-audited in the same archive. This does not explain the earlier source238 GNU
-census variation; those failures remain failed. It is diagnostic coverage,
-not a full gate.
-**Main is unchanged; complete correctness and the full
-architecture/performance goal remain unfinished.**
-
-## Source234 checkpoint and preceding history
-
-The latest validated main checkpoint is **source174**, merge `21d20f0e` in
-[PR #78](https://github.com/rayfdj/emaxx/pull/78). Its
-[complete validation record](docs/runtime-representation-call-validation-complete.md)
-remains separate from the unfinished task branch.
-
-The task branch is **runtime-char-tables**, [draft PR #79](https://github.com/rayfdj/emaxx/pull/79).
-This checkpoint advances source231 (`7cb2cae3`) to **source234**, matching all
-442 runtime/test inputs in `target/runtime-goal/recovered-2026-09-30/display-tables/emaxx`.
-Despite that checkout's name, it contains the interactive-metadata repair, with
-no renderer change. The [portable draft](docs/handover/2026-09-30-shared-reader-draft/source234-interactive-metadata-draft-manifest.json)
-and [focused audit](docs/handover/2026-09-30-shared-reader-draft/source234-focused-validation-manifest.json)
-verify exact patch/mode replay, strict zero-warning checks and **37 gate passes**.
-Release supervisor **8207** and complete macOS supervisor **12104** are active.
-Linux validation of source234 has not yet been dispatched in this saved record.
-
-Source231's [closed Linux failures](docs/handover/2026-09-30-shared-reader-draft/source231-linux-interactive-failure-manifest.json)
-show **1,380 Rust passes followed by an Edebug abort**; 1,608 library tests and
-both Cargo stages never run. Frozen comparison matches **79 files / 1,911 outcomes**
-(1,901 passes, five expected failures and five skips per editor), then Emaxx
-aborts in `edebug-tests.el` with 46 missing outcomes; 439 files never start.
-Both traces reach the same malformed-environment assertion. An ordinary same-input
-probe returns `17` in GNU but a constants-vector `listp` error in source231.
-GNU `callint.c:Fcall_interactively` uses a closure environment only when its code
-slot is a cons. Source234 follows that rule and delegates to existing `Feval`,
-preserving captured mutations and isolating non-interpreted commands from caller
-lexical bindings. Its new GNU fixture and four unchanged Edebug controls pass
-locally; that does not yet establish Linux repair.
-
-The included [source232 library repair](docs/handover/2026-09-30-shared-reader-draft/source232-library-control-repair-manifest.json)
-corrects stale root metadata and the reader's closure-kind assertion. Its vector
-control retains all 660 original mixed allocations and every original assertion,
-then adds dense allocations to guarantee coverage of every bitmap word. The
-original lightweight group passes **545 gate / 544 release tests**, including all
-five previous failures; 31 focused controls also pass in each profile. Its first
-[full-run setup failure](docs/handover/2026-09-30-shared-reader-draft/source232-fixture-relocation-failure-manifest.json)
-retains 232 passes / 154 failures caused by a fixture image built under the relocated
-test executable. The image and failed run are preserved. Supervisor **5593** reruns
-the unchanged full gate with a fresh image from the normal executable; it remains
-active in the string-ops checkout. Source233's formatting-only failure is retained;
-it ran no runtime tests. Source234 corrects only that formatting from source233.
-
-The [closed source229 terminal failure](docs/handover/2026-09-30-shared-reader-draft/source229-terminal-failure-manifest.json)
-still contains **353 matching comparisons / seven quote-display divergences**, followed
-by a GNU startup-readiness failure. Another 54 scenarios never start. Source234
-has no renderer repair or complete terminal pass. Main remains source174.
-Earlier source207 certification remains historical evidence below.
-Runtime **source204** was published as `d186d40bf014ca53d0a2652b4e2f2d921c5cb009`.
-The preceding **source207**, published as `092fef676e7667332349b12fd9b63539dd39072b`,
-adds direct evaluator words and a separate cold error
-constructor after the exact Linux diagnosis below. Its **410 runtime and test
-inputs** match the isolated candidate; only `src/lisp/eval/core.rs` changes from
-runtime204. The candidate also includes the shared command reader, authoritative
-keyboard-macro array/state, word-aligned vector allocation and direct cons fields
-with GNU-compatible conservative cons-root validation.
-
-## Source204 evidence and live work
-
-- [Selected validation](docs/handover/2026-09-30-shared-reader-draft/source204-cons-selected-validation-manifest.json):
-  zero-warning strict checks, **596 gate / 596 release tests**, seven focused
-  controls per profile, **39 ordinary batch comparisons and one terminal fixture**.
-  The earlier purecopy batch attempt remains failed; the original fixture and
-  expectations pass in the required interactive mode. Prior audit failures remain
-  preserved.
-- [Complete macOS Rust](docs/handover/2026-09-30-shared-reader-draft/source204-macos-complete-rust-manifest.json):
-  **3,059 passes**, two existing ignores, native artifact identity and all input
-  hashes verified. Supervisor **43352 has exited**.
-- [Complete terminal comparison](docs/handover/2026-09-30-shared-reader-draft/source204-complete-terminal-manifest.json):
-  **226 scenarios / 686 comparisons** (658 screen, 28 filesystem), unchanged
-  inventories and all eight execution inputs verified. Supervisor **43354 has
-  exited**. GNU matches source/native ABI but is not the frozen Darwin executable.
-- [Complete Linux Rust failure](docs/handover/2026-09-30-shared-reader-draft/source204-linux-rust-failure-manifest.json),
-  run **36764911748**: **2,232 passes / two census failures**. Both original
-  reclamation assertions pass. Each first census delta is 47 slots below expected;
-  later deltas match. Four later groups and both Cargo stages did not run. The
-  exact executable `6ea03c1a…` and image `85ebb975…` are retained. The retaining
-  stack word is now traced below; repair remains unverified.
-- [Exact-artifact diagnosis](https://github.com/rayfdj/emaxx/actions/runs/36770142335)
-  completed: the selected pair and original 626-test primitives group reproduce
-  both failures. Its [audited incomplete trace](docs/handover/2026-09-30-shared-reader-draft/source204-exact-census-incomplete-manifest.json)
-  shows a 41-element vector and four-field host record reclaimed on the second
-  collection. The debugger then hits its startup-cleanup inventory limit, with no
-  complete test verdict. That incomplete attempt remains preserved.
-- [Revised exact diagnosis](https://github.com/rayfdj/emaxx/actions/runs/36772475709)
-  reproduces both failures, ordinarily and under the debugger, with complete
-  traces and unchanged artifacts. Its [audited retaining root](docs/handover/2026-09-30-shared-reader-draft/source204-exact-census-root-manifest.json)
-  is the closure's tagged pointer in unused evaluator stack space at offset 8.
-  The closure's actual constants slot names the 41-element vector. Both are
-  reclaimed on collection two, explaining the 47-slot drop. Disassembly assigns
-  that inactive stack space to error construction; no collection rule changes.
-- [Complete Linux frozen comparison](docs/handover/2026-09-30-shared-reader-draft/source204-linux-frozen-manifest.json),
-  run **36764918696**, passes **519 files / 7,928 matching outcomes / 1,038
-  successful processes** on exact runtime `d186d40b`. Per editor: 7,670 passes,
-  47 expected failures and 211 skips; the latter are not passes.
-
-Source207 now repairs both census failures on the complete Linux Rust run below.
-Its complete Rust, terminal and Linux frozen results are audited below. The
-preceding source201 passed full Rust, terminal and Linux
-frozen gates; those results do not certify source204. Preserve all failed results,
-unexecuted stages, expected failures, skips, and artifact/environment limits.
-
-## Current evaluator candidate
-
-**Source207** in `target/runtime-goal/recovered-2026-09-30/eval-frames/emaxx`
-uses actual car/cdr words during dispatch and puts CHECK_LIST error construction
-in a separate cold function. The [portable draft and launch](docs/handover/2026-09-30-shared-reader-draft/source207-eval-frame-draft-manifest.json)
-replay all 410 inputs from main, including file modes. Its
-[audited focused validation](docs/handover/2026-09-30-shared-reader-draft/source207-eval-focused-manifest.json)
-passes strict checks with zero warnings and all nine focused gate controls.
-The ARM64 gate evaluator uses 176 rather than 208 stack bytes; this is static
-evidence, not a timing or Linux repair result. Its
-[complete selected audit and full-gate launch](docs/handover/2026-09-30-shared-reader-draft/source207-eval-selected-validation-manifest.json)
-verify **596 gate / 596 release passes**, nine focused controls per profile,
-**40 exact ordinary comparisons**, and fresh executable/image identities.
-Supervisors **52334 and 54295 have exited**. The
-[complete macOS Rust audit](docs/handover/2026-09-30-shared-reader-draft/source207-macos-complete-rust-manifest.json)
-verifies **3,059 passes**, two existing ignores, all 2,962 library names/verdicts,
-410 source inputs and four retained executable/image files. The
-[complete Linux Rust audit](docs/handover/2026-09-30-shared-reader-draft/source207-linux-complete-rust-manifest.json),
-[run 36775563045](https://github.com/rayfdj/emaxx/actions/runs/36775563045), verifies
-**3,071 passes**, two existing ignores, all 2,970 library names/verdicts and four
-retained artifacts on exact `092fef67`. Native artifact identity passes on both.
-Both original census assertions and both original suspended-root survival and
-reclamation controls pass, unchanged. Only the evaluator source differs from
-runtime204; the old failed results remain failed historical evidence.
-
-The [complete terminal audit](docs/handover/2026-09-30-shared-reader-draft/source207-complete-terminal-manifest.json)
-verifies all **226 scenarios / 686 comparisons** (658 screen, 28 filesystem),
-the unchanged inventories and all eight execution inputs. Supervisor **54296
-has exited**. GNU matches source/native ABI but is not the pinned Darwin
-executable. The [complete Linux frozen audit](docs/handover/2026-09-30-shared-reader-draft/source207-linux-frozen-manifest.json),
-[run 36775569711](https://github.com/rayfdj/emaxx/actions/runs/36775569711), verifies
-**519 files / 7,928 matching outcomes / 1,038 successful processes** on exact
-`092fef67`. Each editor reports 7,670 passes, 47 expected failures and 211 skips;
-the latter categories are not passes. All source207 validation supervisors have
-exited. These results certify this checkpoint's tested scope; the separate
-bytecode draft, final pinned Darwin gate and performance goal remain unfinished.
-
-## Separate unfinished bytecode draft
-
-The current **source216** in
-`target/runtime-goal/recovered-2026-09-30/bytecode-closure/emaxx` replaces detached
-bytecode records with the same inline PVEC_CLOSURE used by interpreted functions.
-The [source214 patch and audited controls](docs/handover/2026-09-30-shared-reader-draft/source214-shared-closure-draft-and-controls-manifest.json)
-preserve **five passes / one failure** across the six original controls, with
-zero-warning strict checks. Both layout controls now finish all 4/5/6-slot
-checks, native stores and GC tracing; the four-slot allocation is **40 bytes**.
-Constructor validation, shared constants/cloning and mutation between calls pass.
-Active-call code mutation still returns `(41 194)` instead of `(67 194)`.
-
-The draft removes closure host records, IDs, the per-record program cache and
-slot-mutation notices. Interpreter/VM/native access, reading, copying, printing,
-predicates, GC and dumping use the actual inline fields. Active and suspended
-VM roots retain the actual function. A temporary decoded activation remains;
-direct execution from authoritative string bytes is still required.
-
-Review found source214's new vector-copy path omitted its live-vector census
-increment. [Source215's portable draft and strict checks](docs/handover/2026-09-30-shared-reader-draft/source215-shared-closure-draft-manifest.json)
-repair that increment and add twenty copy-census/identity cases. Supervisor
-**61972 has exited** after the [seven audited controls](docs/handover/2026-09-30-shared-reader-draft/source215-shared-closure-controls-manifest.json):
-**six pass / one fails**, including the passing new census/identity control.
-Its [broader failure and diagnosis](docs/handover/2026-09-30-shared-reader-draft/source215-broad-failure-and-diagnosis-manifest.json)
-preserve **839 passes / nine failures** across all 848 affected-module tests.
-Five GNU-output checks pass unchanged when the helper restores the ordinary
-gate's C locale. GNU rejects three old constructor fixtures; valid unibyte code
-and actual vectors preserve their original call/identity/mutation contracts.
-The probe wrapper's omitted text-property print notation also remains a failed
-expectation. Active-call code mutation is still a runtime defect.
-
-[Source216's portable draft](docs/handover/2026-09-30-shared-reader-draft/source216-bytecode-fixture-repair-draft-manifest.json)
-changes only those three unit fixtures from source215, preserving every original
-behavior assertion, and restores the helper locale. All 418 inputs and file modes
-replay exactly; strict checks pass with zero warnings. Supervisor **64424 has
-exited**. Its [audited results](docs/handover/2026-09-30-shared-reader-draft/source216-bytecode-results-manifest.json)
-verify **nine passes / one failure** in the ten focused controls and **847 passes /
-one failure** in the unchanged 848-test broader inventory, with zero ignores.
-Only active-call code mutation fails. The executable and post-run image are
-retained. These are gate-profile results, not complete or release validation.
-Earlier failures and every intermediate patch remain preserved.
-This source216 closure-only candidate remained isolated; source231 above now
-carries the later closure, canonical-string and direct-execution work.
-
-The [source229 string-byte and direct-VM history](docs/runtime-representation-string-bytes-draft.md)
-continues separately in `target/runtime-goal/recovered-2026-09-30/string-bytes/emaxx`.
-Shared strings hold actual GNU bytes. Source221 repairs full-range `string`,
-`make-string` and `char-to-string` construction without Rust-char conversion.
-Its [complete affected-module audit](docs/handover/2026-09-30-shared-reader-draft/source221-string-constructor-repair-manifest.json)
-verifies strict zero-warning checks, **14/15 focused passes** and **927/928 broader
-passes**, zero ignores; only active-call mutation fails. Supervisor **70849 has
-exited**. The preceding [source220 broader audit](docs/handover/2026-09-30-shared-reader-draft/source220-string-broad-results-manifest.json)
-retains **925/927 passes and two failures**; supervisor **68772 has exited**.
-
-The [source223 portable draft](docs/handover/2026-09-30-shared-reader-draft/source223-direct-bytecode-draft-manifest.json)
-fetches the actual code bytes, uses byte offsets for branches and suspended
-frames, and removes decoded-code caches/tables, per-call `Rc` activation and
-obsolete string serial bookkeeping. All **425 inputs and modes** replay exactly;
-strict checks pass with zero warnings. The
-[focused audit](docs/handover/2026-09-30-shared-reader-draft/source223-direct-bytecode-focused-manifest.json)
-verifies **17 gate passes**,
-including the original active-call mutation failure and new GNU-confirmed
-width/operand/branch/GC/suspended-caller cases. Its
-[completed gate/release audit](docs/handover/2026-09-30-shared-reader-draft/source223-direct-bytecode-results-manifest.json)
-verifies **17 focused passes and 929/930 broader passes per profile**. The same
-old raw-byte-code fixture fails in both; GNU proves its Unicode input does not
-contain the intended opcodes. Supervisors **73057 and 73532 have exited**.
-The [source224 repair](docs/handover/2026-09-30-shared-reader-draft/source224-raw-bytecode-fixture-repair-manifest.json)
-changes only that test's inputs/comment, preserving both assertions and every
-production byte. Strict checks and **18 focused tests per profile pass**;
-supervisor **77687 has exited**. Earlier broader failures remain preserved.
-Source222's strict obsolete-helper failure remains preserved, with no runtime
-tests. A temporary non-ASCII plain-string Rust API byte adapter remains.
-The [source225 control-flow draft](docs/handover/2026-09-30-shared-reader-draft/source225-control-flow-draft-manifest.json)
-repairs eager checking of unused branch/handler destinations, following a new
-ordinary GNU probe. It checks actual fetched byte offsets and carries each
-instruction across fast/slow dispatch without decoding it twice. All **427 inputs
-and modes** replay exactly; strict checks pass with zero warnings. Its
-[audited selected results](docs/handover/2026-09-30-shared-reader-draft/source225-bytecode-string-selected-validation-manifest.json)
-pass **20 focused and 932 affected-module tests per profile**, zero ignores,
-and 48 distinct ordinary comparisons. The first ordinary wrapper run retains
-44 passes/four failures from printing already self-printing fixtures twice;
-four separate unchanged-fixture replays pass without that redundant print.
-Supervisors **77913, 79760, 80241 and 81339 have exited**.
-
-The [complete source225 failures](docs/handover/2026-09-30-shared-reader-draft/source225-complete-validation-failure-manifest.json)
-retain **161 Rust passes followed by a native-call abort** in the original Tramp
-test. The remaining 224 tests in that first group, every later group and both
-Cargo stages did not run. The terminal comparison matches seven scenarios,
-then aborts opening Org; 218 scenarios never start. Supervisors **82034 and
-82035 have exited**. The Rust trace and a same-input ordinary probe diagnose
-`try-completion` forcing non-byte characters into an unibyte result. The
-terminal capture shows a related native `regexp-opt-group` panic but omits its
-initial message. These are real failed runs, not complete validation.
-
-The [source228 completion draft](docs/handover/2026-09-30-shared-reader-draft/source228-completion-storage-draft-manifest.json)
-follows GNU's selected candidate and substring rules for encoding, properties,
-extended characters and unchanged-input identity. All **429 inputs and modes**
-replay exactly; strict checks pass with zero warnings. Its
-[audited results](docs/handover/2026-09-30-shared-reader-draft/source228-completion-results-manifest.json)
-retain **24/25 focused passes and 932/933 broader passes**, zero ignores.
-The original Tramp test passes; the new completion fixture still fails because
-`concat` loses extended characters before completion sees them. Supervisor
-**82531 has exited**. The failed executable, image and original assertion remain.
-
-The [source229 concat draft](docs/handover/2026-09-30-shared-reader-draft/source229-canonical-concat-draft-manifest.json)
-follows `fns.c:concat_to_string`, copying actual encoded string bytes and
-validating list/vector character codes over GNU's full range. It removes the
-intermediate Rust-text concatenation. All **432 inputs and modes** replay exactly;
-strict checks pass. Its [closed selected and full-Rust evidence](docs/handover/2026-09-30-shared-reader-draft/source229-selected-and-rust-failure-manifest.json)
-verifies **26 focused / 934 affected tests per profile**, fifty ordinary controls,
-zero ignores and exact source/artifact identities. Full Rust records **680 passes /
-one failure**: an internal assertion still requires `Kind::Record` for quoted
-bytecode, while unchanged ordinary GNU/source229 both show a callable four-slot
-closure. The remaining 2,297 library tests and both Cargo stages never run.
-Supervisors **84949, 86489, 86490 and 87395 have exited**. Terminal supervisor
-**89147 has exited**. Its [audited partial failure](docs/handover/2026-09-30-shared-reader-draft/source229-terminal-failure-manifest.json)
-has 164 fully matching scenarios, 353 matching comparisons and seven quote-display
-divergences, including echo text and wrap/cursor consequences. Scenario 172 stops
-at GNU startup readiness; 54 scenarios never start and 326 scheduled comparisons
-never execute. Every observed verdict is checked against the unchanged inventory.
-No complete terminal pass or Emaxx startup crash is inferred from that traceback.
-
-The same archive retains three additional ordinary substring failures: extended
-character loss, incorrect array/index error contracts, and a host abort for
-reversed bounds. The [source230 draft](docs/handover/2026-09-30-shared-reader-draft/source230-substring-draft-manifest.json)
-uses actual substring bytes and vector fields, validates GNU's index types before
-their joint range, and shares the canonical slice with completion. The old quoted
-bytecode test now checks the actual closure and GNU-confirmed fields/execution;
-its original name and macro assertion remain. All **440 inputs and modes** replay
-exactly. Strict checks pass. The [focused result and proposed setup correction](docs/handover/2026-09-30-shared-reader-draft/source230-focused-failure-and-proposal-manifest.json)
-retain **30 passes / one failure**: the added normal-GNU fixture calls `cadr` in
-an intentionally bare interpreter. All three substring controls pass; the
-original quoted-reader and closure-kind assertions pass before that setup error.
-Source230's [closed validation](docs/handover/2026-09-30-shared-reader-draft/source230-closed-validation-manifest.json)
-verifies all **937 affected-module passes and 54 ordinary GNU comparisons**;
-supervisors **90596/93555 have exited**. Its focused failure remains failed.
-
-[Source231](docs/handover/2026-09-30-shared-reader-draft/source231-bytecode-fixture-startup-draft-manifest.json)
-changes only the added fixture's startup, preserving the original bare-reader
-assertions, every fixture/expected byte and all production source230 inputs.
-All **440 inputs and modes** replay exactly. Its
-[focused audit and complete launches](docs/handover/2026-09-30-shared-reader-draft/source231-focused-and-complete-launch-manifest.json)
-verify strict zero-warning checks and **31 focused gate passes**. The task
-checkpoint matches all 440 inputs. Supervisors **96184/96185 have exited**;
-their [audited results](docs/handover/2026-09-30-shared-reader-draft/source231-release-and-ordinary-validation-manifest.json)
-pass all 31 focused release controls, all 937 affected release tests and 54 fresh
-ordinary GNU comparisons. Exact executables/images and raw verdicts are retained.
-Supervisor **96183 has exited**. Its
-[audited full-Rust failure](docs/handover/2026-09-30-shared-reader-draft/source231-full-rust-failure-manifest.json)
-verifies every one of 2,981 library names: **2,974 pass, five fail, two retain their
-existing ignore**. The binary and integration Cargo stages never run. The failures
-are stale `bc_functions`/`bc_live_programs` root metadata (three controls), an old
-host-record assertion in the no-slot-evaluation reader test, and a vector
-allocation control that reaches only three of four bitmap words. Keep every
-original semantic assertion while repairing those causes. Source231's
-complete gate covers the full inventory instead of repeating the already passing
-source230 affected-module gate after a test-only setup change. Its exact failed
-executable/image and complete logs are retained before further changes. Sources226/227 are
-unexecuted intermediate drafts; their patch history remains preserved.
-The bundle also preserves an ordinary source207 capacity mismatch: GNU accepts
-262144/393216 declared slots, but Emaxx overflows. Rust still reserves 256K words
-with separate frames versus GNU's 512K words including frames. This remains open.
-Plain-string migration, compact headers, stack layout/accounting, complete
-validation and performance remain open. Source231 is a development checkpoint,
-not completion of those requirements.
-
-The preserved **source208** carries evaluator207
-and adds GNU constructor field validation. Its [418-input portable draft](docs/handover/2026-09-30-shared-reader-draft/source208-bytecode-constructor-draft-manifest.json)
-and [audited controls](docs/handover/2026-09-30-shared-reader-draft/source208-bytecode-constructor-results-manifest.json)
-retain twelve ordinary negative constructor cases. Strict checks pass; six gate
-controls yield **two passes / four failures**. Constructor validation and shared
-constants pass; both layout and both live-code mutation controls still fail.
-The result archive also preserves the wrapper's later log-print filename error.
-Supervisor **53789 has exited**. This is the historical source208 failure;
-the later source231 task checkpoint is described above.
-
-The preserved **source206** baseline adds only tests/fixtures to runtime204. Its
-[portable patch and negative controls](docs/handover/2026-09-30-shared-reader-draft/source206-bytecode-negative-controls-manifest.json)
-replay **416 inputs** from main `21d20f0e`. Fresh gate build succeeds: **one pass /
-four failures**. Both layout controls and both code-string mutation controls fail;
-constant sharing, cloning, GC and rejected closure `aset` pass. Supervisor
-**51384 has exited**. No bytecode repair is applied to the task branch.
-
-The source204 baseline has detached 88-byte record/slot storage versus GNU's
-40-byte four-slot closure. Mutating its code string is visible through Lisp but
-execution uses stale decoded instructions, even during an active call. An
-entry-only cache refresh cannot fix that case; source214 still fails it. The earlier
-[source205 baseline](docs/handover/2026-09-30-shared-reader-draft/source205-bytecode-negative-baseline-manifest.json)
-retains the original ordinary probes, including the invalid closure-aset attempt.
+requirements](docs/runtime-representation-goal.md) and the
+[locked performance contract](docs/core-runtime-performance-contract.md) before
+editing. A validated checkpoint, green gate or handover does not complete it.
+Current user instructions take precedence over historical notes.
+
+This file holds only the current state and the next steps. Every earlier
+checkpoint, failure, diagnosis, draft and evidence link is preserved verbatim in
+the [15 October archive](docs/runtime-representation-handover-history-2026-10-15.md)
+(and, before that, the [1 October archive](docs/runtime-representation-handover-history-2026-10-01.md)).
+The [requirement map](docs/runtime-representation-progress.md) tracks the full
+scope; the [accounting continuation](docs/runtime-representation-accounting-draft.md)
+records the GNU counter contract.
+
+## Where things stand — 15 October 2026
+
+| State | Contents |
+| --- | --- |
+| **Main** `94295d0a` | Source324: one-word values, 16-byte cons payloads, shared object work, and symbol value/function/plist/flags on the allocated symbols. |
+| **[PR87](https://github.com/rayfdj/emaxx/pull/87)** `35c6cd9b` (`runtime-char-tables`) | Object-state draft17: membership, constants, aliases, same-name replacement, image restoration and native `nil`/`t` identity. 584 runtime inputs. |
+| **Task branch** `claude/awesome-newton-yk6sae` | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
+
+**PR87 evidence in this repository:** strict checks with zero warnings, 407
+affected controls in each of gate and release, and 44 ordinary GNU comparisons /
+88 processes (see the archive's 13 October section). Its three Linux CI runs on
+the PR head are green.
+
+**PR87 results reported by the previous session, whose raw evidence is on the
+macOS host and not in this repository:** full Linux Rust 3,200 passes and macOS
+Rust 3,188 passes (two existing ignores each); Linux frozen all 519 files /
+7,928 outcomes; three Linux pilots at about 2.73× GNU (geometric mean) and
+1.33% slower than main; macOS frozen 318 files / 4,479 matches before both
+Tramp timeouts, with 200 files unrun; the 226 terminal scenarios not yet run.
+Record the raw evidence with the merge.
+
+**To merge PR87** (macOS host): the Tramp observation with the established
+600-second bound, the exact remaining 200 macOS frozen files, all 226 terminal
+scenarios, an audit of the results, and the published evidence. Existing
+approval covers task pushes, Linux CI and the main merge.
+
+The previous session also held an unpushed local draft correcting the symbol
+header charge (64 bytes charged as 48). The task branch implements that
+correction independently (below); the local draft need not be recovered.
+
+## Task branch: allocation counters and forwarded variables
+
+GNU `alloc.c` raises seven process-wide counters at its allocation points and
+exposes them as DEFVAR_INT variables. Previously Emaxx bound the seven names to
+zero and `memory-use-counts` signalled "unavailable", which also blocked the
+performance contract's allocation evidence.
+
+- [`alloc/counters.rs`](src/lisp/alloc/counters.rs) holds the seven words.
+  They are raised at the single allocation point of each kind: `allocate_cons`,
+  `allocate_float`, `allocate_symbol`, `allocate_vectorlike` (the words asked
+  for after the header, before block rounding) and ordinary non-empty
+  `allocate_string` (one string plus its bytes). Pure and image-restored
+  strings are not counted, as in GNU.
+- The symbols forward to the words: `SymbolCell` gains an `INT_FORWARD` state
+  whose payload is the counter (GNU's `Lisp_Intfwd`). Reads, stores, `let`
+  bindings and image snapshots act on the counter. Stores keep the existing
+  FWD_INT checks; `makunbound` makes the symbol plain while the counter keeps
+  counting. Ordinary value reads pay one combined state test.
+- After loading an image, the counters stand at the image's recorded values
+  (pdumper's `dump_fwd_int`), not at those values plus the loader's rebuilding.
+- Copying an editor's symbol graph copies the forwarding, not a frozen integer.
+- `memory-use-counts` returns the seven counters.
+- Symbol and string headers are charged at the actual 64- and 48-byte cells
+  (GNU: 48 and 32), in the GC tally, live bytes and the `garbage-collect`
+  report. The lower charges undercounted live bytes and delayed collection.
+
+- The counters exposed a real `float` deviation: GNU returns a float argument
+  itself, while Emaxx allocated a copy (`(eq f (float f))` was nil). Fixed.
+
+**Explicit differences that remain:** `intervals-consed` is never raised
+because text properties are not yet allocated intervals. Vector cells count
+Emaxx's actual vector-like sizes, so pseudovectors laid out differently from GNU
+(bignums, hash tables and others) differ, and objects Emaxx keeps outside the
+Lisp heap are not counted. In particular, **bool vectors** (and other
+interpreter records) keep their slots in a host vector, one Lisp value per
+bit, so only the record object is counted: `(make-bool-vector 1000 nil)` adds
+16 vector cells in GNU and a fixed record size in Emaxx. That representation
+(a word per bit where GNU packs bits) is open architecture work. The
+`garbage-collect` report shows 64/48 where GNU shows 48/32. String data is
+still charged by GNU's `sdata` formula, not measured.
+
+**Validation so far:** cargo check, rustfmt and `git diff --check` pass. In
+the gate profile, the five affected oracle-compared controls pass
+(`memory_use_counts_exposes_the_allocation_telemetry_boundary_honestly`,
+`memory_use_counts_counts_actual_allocations_by_category`,
+`allocation_counter_variables_forward_to_the_counters`,
+`float_returns_a_float_argument_itself` and
+`garbage_collect_reports_the_live_census`). The first run of the category test
+failed on `float` and bool vectors, as described above.
+
+**Linux CI on `23d230a`** (counters, float fix, header charges):
+- Full Rust gate (`frozen-run.yml`, run 38694907626): **3,203 passed, 0
+  failed**, the two existing ignores; strict formatting and lint in CI.
+- Frozen (run 38694910744): **7,927 of 7,928 outcomes match across 519
+  files**. The one mismatch is GNU's: `eglot-test-rust-completion-exit-function`
+  failed in the oracle with `jsonrpc-error` while waiting on the external
+  `rust-analyzer` server (the server was then killed); Emaxx passed. The run
+  is recorded as failed; a fresh frozen run is pending.
+- Three paired pilots against PR87's head (run 38694913972), all 192
+  answers/modes verified: body geometric ratio **1.0118** (diagnostic only).
+  Every case is within about ±1% except **mapcar, 16.5% slower with 32
+  collections instead of 22**. The heaps are identical; the cause is the
+  broken GC trigger below, which the larger honest header charges made
+  worse. The same pilots show the trigger bug across the suite (Emaxx/GNU
+  collections): sort 139/18, interpreted calls 80/27, bindat 54/9,
+  interpreted lexical 40/13, undo 23/6.
+
+## Task branch: image objects outside the GC census (`8aafca7`)
+
+The collection trigger was wrong. GNU's `total_bytes_of_live_objects` counts
+only objects in swept blocks; pdumper's mapped objects are never counted, and
+`gc-cons-percentage` scales the threshold from that live heap. Emaxx rebuilt
+the image in ordinary blocks and subtracted everything the loader allocated
+(16.67 MB, transient garbage included) from a census of 14–16 MB, so live
+bytes saturated to **zero at every collection** (measured with a throwaway
+diagnostic build) and Emaxx collected every `gc-cons-threshold` bytes
+regardless of heap size.
+
+Now blocks registered while an image loads are image blocks (`alloc::ImageRegion`,
+a guard held by `pdumper_load`). Sweeps still clean dead objects there (they
+own host storage) and release empty blocks, but leave image objects out of the
+census and their freed cells off the free lists, as GNU never reuses dumped
+storage. Opening and closing the region move every allocator to new blocks;
+the allocation fast path is unchanged. The `image_bytes` subtraction is gone.
+
+Measured locally: a bare `-Q` session's live bytes are 1.18 MB (GNU's
+non-dumped heap is about 0.58 MB; Emaxx makes more symbols and strings after
+load and charges larger headers), so Emaxx now collects every ~148k conses
+where GNU collects every ~73k. Upstream sorting now collects 0 and 1 times
+for one and two units, as GNU does (4 and 8 before). The `garbage-collect`
+census now has GNU's shape: the heap's own objects.
+
+**Validation:** 331 of the 333 locally selected GC, allocation and image
+tests passed on the first run. `escaped_frame_graph_survives_its_owner_and_is_then_reclaimed`
+failed from register allocation in the test itself: gdb showed the first
+iteration's unhidden terminal word left in the test function's `rbp`, spilled
+by `flush_stack_call_func` as a root after the second iteration reused the
+cell. `1b14ec4` decodes in an `#[inline(never)]` helper, as the survival check
+already did; the assertion is unchanged, gdb finds no hidden word on the stack
+or in spilled registers, and it passes normally and under `EMAXX_GC_STRESS`.
+`batch_startup_image_round_trip_or_explicit_native_image_limit` fails
+identically in this container at `23d230a`, which CI passed, so it is
+environmental here (an obarray enumeration order difference). Clippy with
+`-D warnings` passes.
+
+CI's full gate on `1b14ec4` (run 38703616708, image template on) then failed
+one test, `garbage_collect_reports_the_live_census`: its floors (more than
+10,000 conses, at least one buffer) only held while Emaxx counted its image;
+GNU's own bare census reports 3,173 conses. `8a75c7f` counts image buffers
+again (GNU's `sweep_buffers` counts every live buffer, dumped or not) and
+replaces the floors with a growth check GNU and Emaxx both answer
+`(t t t t t t 20000 50000 500 2000)`. **CI's full gate on `8a75c7f` passes**
+(run 38709432511).
+
+Three paired pilots of `8aafca7` against `23d230a` (run 38702850532), all 192
+answers/modes verified, diagnostic only: bodies **19.8% faster** (geometric
+mean); the geometric GNU ratio goes from **2.777 to 2.210**. Upstream sort
+5.54× → 3.53× GNU with 18 collections (GNU 18, was 139); interpreted calls
+2.85× → 1.48× (15 collections, GNU 27); bindat 3.27× → 1.70×; interpreted
+lexical 2.64× → 1.60×; mapcar 2.96× → 1.90×. Two cases are slower and need
+an explanation: **bytecode-to-native 26% slower** (samples 1.93–1.97 s before,
+2.45–2.46 s after; no collections in either) and **explicit-gc 8% slower**.
+Locally, callgrind gives the same work per iteration for bytecode-to-native
+before and after (1,719.9 vs 1,724.2 instructions) and cachegrind's simulated
+caches show essentially no misses in either build, so that slowdown is a
+placement effect the simulator does not model (branch aliasing, 4K aliasing
+or alignment), not added work; it stays unexplained and is to be rechecked in
+later pilots. Explicit GC does 1.6% more instructions per collection (65.5M
+vs 66.6M: the image-block checks in the sweeps).
+
+Both full frozen runs (on `23d230a` and `1b14ec4`) match 7,927 of 7,928
+outcomes; the mismatch is GNU's own `eglot-test-rust-completion-exit-function`
+failing (`jsonrpc-error` from `rust-analyzer`) while Emaxx passes. Runs of that
+file alone: PR87's branch passed twice (runs 38713593324, 38715907382); this
+branch failed once (38713596938) and passed once (38715910214). The harness
+runs the two editors concurrently (here 39 s and 45 s, started 3 s apart), each
+with its own `rust-analyzer`, and GNU's test calls itself "pretty brittle"
+about server timing. This branch makes Emaxx much faster, which moves its own
+rust-analyzer tests relative to GNU's. The evidence fits a concurrency timing
+interaction, not a behavior change; it is not proven, and the mismatch is
+recorded as such rather than counted as a match.
+
+## Task branch: char-table store count for regexp caches (`4057404`)
+
+The regexp backend compiles syntax, case and category table contents into its
+patterns, so every cache hit re-walked and compared the whole reachable table
+graph (case-folding search does this on every match). In a startup that loads
+one file this was **1.93 of 3.47 billion instructions**; GNU's whole startup is
+0.32 billion. Char-table and sub-char-table slots change only through
+`set_slot`/`set_extra`, which now count every store; GNU's native compiler
+emits calls for `aset` (it inlines only car/cdr/setcar/setcdr and a few
+predicates and arithmetic operations) and the module API has no raw access.
+While the count is unchanged since a signature last matched in full, a hit
+skips the table nodes and compares only conses, vectors, records and strings,
+which native code can still change directly. Debug-assertion builds (the gate)
+also compare the full graph and require the same answer; that cross-check
+caught the one test whose hand-written "native" function poked sub-char-table
+memory, a store no native code can make. Its store is now the `aset` subr call
+comp.c emits; every assertion is unchanged. **Startup falls from 3.47 to 1.55
+billion instructions** (GNU 0.32). 494 of 495 regexp/syntax/case/char-table
+tests passed before that test's rewrite; the last passes after it.
+
+`4c13fba` closes a hole in that commit: a new table could take a dead table's
+address with its slots written by its constructor, so table creation now
+counts as a store too (unit test added). `8352eb5` reuses a recent capture
+whose table still matches (an unchanged graph is traversed into the same
+nodes) and hashes captures by a digest taken once; debug builds compare every
+reuse with a fresh capture. **Startup: 3.47 → 1.55 → 1.25 billion
+instructions** (GNU 0.32). 106 char-table/case/syntax/regexp tests pass with
+the reuse cross-check.
+
+Pilots of `4057404` against `8a75c7f` (run 38713604238): undo 10% faster (the
+most regexp-heavy body); the other cases move within this runner's noise (GNU's
+own explicit-GC samples spread from 0.19 to 0.32 s), and body timing excludes
+the startup this change mostly speeds up. Diagnostic only.
+
+**Frozen on `4c13fba`** (run 38716001257): **all 7,928 outcomes match across
+519 files**, no unsuccessful execution; GNU's eglot rust-analyzer test passed
+this time. Median per-file setup in the frozen logs: Emaxx 970 ms, GNU 92 ms
+(at `23d230a`: 1,177 ms and 107 ms). **CI's full gate on `8352eb5`** (run
+38717322155): **3,204 passed, 0 failed**, the two existing ignores.
+
+## Task branch: performance round on undo, sorting and the call path
+
+Measured with `callgrind` instruction counts on the locked workloads: each
+editor runs a case at two sizes and the difference per unit is the body's
+cost, startup cancelled (`--divisor` large enough that startup noise of a
+few hundred thousand instructions stays below 1%). Diagnostic only; timing
+pilots come at the merge. Every change below is GNU-compared or keeps the
+recorded behavior, and most exposed a behavior difference that is now fixed.
+
+- `1ca6ab0` **`*Messages*` folds repeated lines** as `message_dolog` does
+  ("Undo [1200 times]"), replaces a line matched through "...", trims to
+  `message-log-max` through the rope's line index, and restores point and
+  the restriction as GNU's markers would. Emaxx logged every "Undo", filled
+  the log to 1,000 lines and re-copied the buffer on every message.
+  `(message "%s" "")` now logs an empty line, as Fmessage does.
+- `fe2bc37` the batch error backtrace was copied (every frame's arguments)
+  at every frame an error unwound through, then discarded; the depth is
+  compared first now.
+- `5714ffd` a buffer switch reloaded the eight forwarded evaluator cells by
+  name; it now does so only when either buffer has a local binding of one,
+  and the paths that drop a current buffer's locals refresh them
+  themselves (GNU-compared test with a buffer-local `max-lisp-eval-depth`).
+- `37cc968` `format` read its format string's properties through a full
+  decode per conversion; `nthcdr`/`nth` built a bignum and a SipHash table
+  per call (GNU walks counts up to 127 directly; so does Emaxx now).
+- `2c7c55f` `compare-buffer-substrings` copied both ranges through rope
+  slices; it reads them in place now, and signals `args-out-of-range` for
+  bounds outside the accessible region where Emaxx clamped them.
+- `45929f3` `eval` answers symbols and immediates inline below the top
+  level, and special forms are found through the subr's cached facts
+  instead of their names; `1fccdb1` the GC check tests the active runtime's
+  trigger before the register-spilling trampoline; `fd81bb1` argument lists
+  of up to two elements are counted inline (FOR_EACH_TAIL's quit check
+  kept) and a function cell that is no symbol is read inline; `b9f7d06`
+  backtrace frame details (an interpreted call's recorded parameters) are
+  pooled instead of allocated twice per call.
+- `63eb047` `mapcar`/`mapc`/`mapcan` read each element when its call comes
+  (GNU's `mapcar1`: a function that changes the sequence sees the change, a
+  shortened list ends the mapping, a char-table signals `listp`; Emaxx
+  copied the sequence first). GNU-compared test.
+- `c100767` the bytecode fast loop dispatches through a 256-entry class
+  table; `37a0c4f` inlines it into the frame loop, so a bytecode call and
+  return no longer leave and re-enter it through a prologue twice
+  (bytecode calls 3.18 → 2.87, bytecode-to-native 4.17 → 3.97, undo
+  by 7.7%); `898a088` reads a callee's name from its decoded symbol
+  (bytecode calls 2.83).
+- `77a5be0` native funcall tests the GC trigger before the trampoline too
+  (native execution 1.48 → 1.39). Rejected in the same commit: a per-subr
+  table of `invoke_subr`'s fast cases in place of its name comparisons made
+  native execution 4% slower; its patch is
+  `docs/handover/2026-10-15-performance-round/rejected-native-subr-kind-table.patch`.
+- Byte-code verification (`src/lisp/bytecode/verify.rs`): GNU trusts the
+  compiler (BYTE_CODE_SAFE is off); Emaxx checked stack bounds, constant
+  indices and code bounds at every op to stay memory-safe on any closure.
+  A function's code is now verified once: from the entry and every branch,
+  handler and switch target, each reachable instruction decodes within the
+  code, reads a constant within the vector, finds its operands, stays
+  within the declared depth and is reached with one operand count.
+  Verified code runs in `run_verified`, with the stack top in a local
+  pointer, one jump table on the opcode and no bounds checks; other code
+  runs the checked loop as before. A result belongs to the code string's
+  current bytes: any exclusive borrow of the string retires it (a byte in
+  the string cell's padding), its collection drops it, and the fast loop
+  is entered only where the verified operand count is the stack's, so a
+  mis-modeled slow op costs the fast loop, never safety. Bcall reads a
+  byte-code callee's fields directly (setup_frame's reads) instead of
+  revalidating them through `closure_program`. Bytecode calls 2.83 →
+  2.29, bytecode-to-native 3.97 → 3.39. Undo's byte-code spends about 1%
+  more of undo: its code leaves the fast loop every few ops, and each exit
+  and entry now crosses a call (inlining `run_verified` into the frame
+  loop was worse for both workloads; skipping the loop when its first op
+  is slow helped undo by 0.3% and cost bytecode calls 1.7%). GNU-compared
+  test of changed, shared and collected code; unit tests of the verifier
+  and of result retirement.
+- Bcall calls a native-compiled callee directly (funcall_general's
+  funcall_subr) instead of through `funcall_body` and
+  `call_function_value_inner`; the native trampoline's jump buffer is no
+  longer zeroed before `_setjmp` writes it, and the handler reconciliation
+  before and after each native call returns at once when the lists agree.
+  Bytecode-to-native 3.39 → 2.78, native execution 1.39 → 1.31, undo 2.80
+  → 2.79; bytecode calls 2.29 → 2.32 (the callee classification's enum).
+  GNU-compared test of Bcall into native functions through the live cell,
+  arity errors, aliases and redefinition. Rejected: moving the full
+  dispatch into `run_op` so the verified loop runs slow ops, calls and
+  returns without leaving it. The new functions' calls and LLVM's lost
+  inlining cost more than the exits they saved (bytecode calls 1,070 →
+  1,145 instructions per iteration, bytecode-to-native 1,080 → 1,126,
+  undo +1.5%, also with the callee helpers forced inline); its patch is
+  `docs/handover/2026-10-15-performance-round/rejected-run-op-dispatch.patch`.
+- Ffuncall calls a symbol whose live cell is a subr or a native function
+  directly (funcall_general's first test) instead of through
+  `call_function_body`, `call_function_value_inner` and
+  `resolve_symbol_call`; `mapcar` reserves its result array at the
+  sequence's length (mapcar1's SAFE_ALLOCA_LISP) instead of growing it;
+  `length` counts a list's tails in place instead of copying its elements
+  into a vector. mapcar 2.68 → 2.30; the other workloads moved within 1%
+  (explicit GC, which none of this touches, moved by as much). GNU-compared
+  test of the values and errors.
+- The arithmetic and comparison subrs (`+ - * = < > <= >= 1+ 1-`) answer
+  two fixnums (one for `1+`/`1-`) before their general paths, as data.c's
+  FIXNUMP fast paths do; a backtrace frame that owns nothing (no detail,
+  no argument vector of its own) is popped by moving the length back,
+  inline for a call's own frame, instead of through `Vec::truncate` and
+  the frame's drop glue; lexical lookup compares the binding's car with
+  the symbol's word (Fassq's EQ) instead of decoding each car. Instruction
+  ratios: interpreted lexical 1.77 → 1.57, dynamic 1.90 → 1.74, calls
+  1.82 → 1.63, cons allocation 1.98 → 1.78, list traversal 1.92 → 1.72,
+  mapcar 2.30 → 2.08, interpreted-to-native 2.27 → 2.00,
+  native-to-interpreted 1.99 → 1.81, native-to-bytecode 2.17 → 1.99,
+  native execution 1.31 → 1.23, sort 2.66 → 2.50, bindat 1.67 → 1.54,
+  undo 2.81 → 2.76, bytecode-to-native 2.80 → 2.73, bytecode calls 2.33
+  → 2.28. Rejected without a patch (no change in any count): replacing
+  `kind()` matches in the evaluator's hot paths with single tag tests; the
+  instructions attributed to `kind()` were already those tests. GNU-compared
+  test of the fast paths' overflow, float, marker and error cases.
+- `call_with_facts` is an inline arity check and the subr's function
+  pointer, with its general path (special forms, file name handlers,
+  unknown names) out of line; a subr's `NameFacts` are read by reference
+  from their cache instead of copied per call; `resolve_symbol_call` is
+  inlined; the fixnum fast paths build their result inline. Interpreted
+  lexical 1.57 → 1.48, dynamic 1.74 → 1.61, calls 1.63 → 1.54, cons
+  allocation 1.78 → 1.65, list traversal 1.72 → 1.59, mapcar 2.08 → 1.81.
+  On cons allocation the remaining gap is the evaluator itself: GNU's
+  whole `eval_sub` costs 2,770 instructions a unit, Emaxx's `eval_call`,
+  `eval_sub` and `finish_eval_call` 6,355; lexical lookup is already
+  cheaper than GNU's `Fassq`.
+- A form calling an interpreted function enters `funcall_interpreted_lambda`
+  straight from `finish_eval_call` with its frame already recorded, as
+  eval_sub calls funcall_lambda, instead of going through
+  `call_function_value_named`, `call_function_body` and the general
+  funcall dispatch; `eval_call` and `finish_eval_call` are inlined into
+  `eval_sub`. Interpreted calls 1.53 → 1.45, sort 2.50 → 2.37,
+  interpreted lexical 1.48 → 1.44. GNU-compared test of the caller and
+  callee backtrace frames, `mapbacktrace`, and the arity and argument
+  errors through interpreted calls.
+- Undo and the byte-code slow path. The buffer keeps its character and
+  byte counts beside the rope (GNU's Z and Z_BYTE): ropey stores a text of
+  up to about a kilobyte as a single leaf and recounted its characters,
+  line breaks and UTF-16 units on every length query and bounds check,
+  about 350 instructions each and 642 times per undo iteration; deletion
+  takes the byte count from the text it already copies for undo. The batch
+  error backtrace is not copied for an error an active `condition-case`
+  catches (keyboard.c's toplevel reports through an outermost
+  `handler-bind`, which a catching `condition-case` pre-empts). A C
+  variable read tests a KBOARD bit set with its C slot before comparing
+  the symbol with the 14 keyboard variables. Bvarbind and the native
+  specbind bind the constant's own symbol instead of interning its name
+  again; the message log stores `cache-long-scans` through the cached
+  symbol. Bcall calls a subr found in the live function cell directly
+  (funcall_subr), as Ffuncall already did, and the verified loop answers
+  Bvarref of a plain bound symbol and Bvarset of a learned plain store
+  (bytecode.c's SYMBOL_PLAINVAL cases) without leaving. Undo 2.69 → 2.45
+  (3.37 to 3.06 million instructions per unit). GNU-compared test of the
+  kept counts through inserts, deletions and erasure, a let-bound
+  keyboard variable, an uninterned Bvarbind and a caught error.
+- The verified loop's opcode match names every byte instead of ending in
+  a default arm, so rustc proves it covers all 256 and LLVM's jump table
+  needs one compare fewer per op (it still range-checks: it keeps the 64
+  constant opcodes as one range outside the table). Undo 2.45 → 2.37,
+  bytecode calls 2.25 → 2.19, bytecode-to-native 2.72 → 2.68.
+- `NILP`, `CONSP` and `LISTP` test the word (nil is the word zero) instead
+  of decoding the whole kind, which compiled to a jump table or two tests
+  at many sites; `eval_sub` and `eval` read their entry and depth tests
+  through one borrow of the interpreter state instead of one per field
+  (each a parked-shell test); `eval_call` takes the form's head from
+  `eval_sub` instead of decoding the form again; Ffuncall (and so `apply`,
+  `sort`, `mapcar`) calls an interpreted closure, given as a value or
+  found in a symbol's live cell, through `funcall_interpreted_lambda` at
+  once, as funcall_general calls funcall_lambda; `let` finds a local
+  special declaration by the symbol's word (Flet's Fmemq) instead of
+  comparing names; `eval`, `set_backtrace_args` and the vector header's
+  tag decoding are always inlined. Interpreted lexical 1.44 → 1.35, calls
+  1.45 → 1.38, cons allocation 1.61 → 1.52, sort 2.31 → 2.21,
+  native-to-interpreted 1.71 → 1.66, bytecode-to-native 2.68 → 2.64.
+  GNU-compared tests of closures called through funcall, apply, sort and
+  mapcar (values, optional and rest parameters, an alias, arity errors
+  and the recorded frames) and of local special declarations by symbol.
+  Rejected: moving the hot special forms out of line so that
+  `eval_native_form` is a thin dispatcher (its prologue and epilogue cost
+  about 20 instructions a form); each form's own frame cost more
+  (lexical +1.8%, cons allocation +2.5%); patch
+  `docs/handover/2026-10-15-performance-round/rejected-special-forms-out-of-line.patch`.
+  Also rejected: decoding a symbol word with one `< 128` test before the
+  nil/t/unbound compares, and `SYMBOLP` as a tag test (lexical +1.3%,
+  cons allocation +1.2%, no case better); patch
+  `docs/handover/2026-10-15-performance-round/rejected-symbol-tag-tests.patch`.
+- `compare-buffer-substrings` compares two ranges of ASCII buffers that
+  each lie in one rope chunk as bytes, with no case folding active; a
+  character iterator over the rope cost about 67 instructions a
+  character there. Sort 2.21 → 2.18. GNU-compared test of short ASCII
+  ranges: equal, differing, prefix either way, empty, reversed, another
+  buffer, case kept. Measured and dropped: one borrow of the state in
+  `begin_funcall` (no case moved).
+- Ffuncall's frame (unnamed and named calls, and native code's Ffuncall)
+  is written and popped in place, as eval_sub's is, instead of through a
+  scope helper with a closure and a drop guard, which cost about 70
+  instructions a call. The guard also popped the frame when a caught Rust
+  panic unwound through it; no production path continues after a panic
+  (the batch driver reports it and ends, the module ABI aborts), and
+  eval_sub never had the guard, so the scoped form is kept only for the
+  tests that unwind through a borrowed frame. A form's head and `eval`'s
+  argument fast path find a symbol by its tag and one bound
+  (`Value::symbol_cell`) instead of the whole kind dispatch. mapcar 1.85
+  → 1.54, sort 2.18 → 2.14, bindat 1.35 → 1.33, native-to-interpreted
+  1.64 → 1.62, native-to-bytecode 1.82 → 1.80, native execution 1.21 →
+  1.20, interpreted calls 1.38 → 1.36. Measured and dropped: leaving a
+  generic byte op's operands on the byte-code stack for its subr instead
+  of rooting a copy (undo moved 0.2%).
+- `Fcons`' storage takes a new block in an out-of-line function reached by
+  a tail call, so the allocation path keeps no frame (it saved four
+  registers and a 184-byte frame on every cons for the block refill's
+  sake), sets the cell's serial and bits without a bounds check, and no
+  longer decrements the free count (GNU's `total_free_conses` is the last
+  sweep's count; Fcons leaves it alone). `Value::cons` is 37 instructions
+  where it was 51 (GNU's Fcons 27). mapcar 1.54 → 1.45, list traversal
+  1.47 → 1.45, cons allocation 1.51 → 1.50, sort 2.14 → 2.13. Not done:
+  moving the per-cell serial to the sweep (four instructions a cons)
+  needs a block generation in the serial so that a released and
+  reallocated block cannot revive a weak reference; about 1% of mapcar.
+- Bcall and Breturn switch byte-code frames inside the verified loop, as
+  exec_byte_code's `goto setup_frame' and Breturn do, instead of leaving
+  it for the full dispatch and re-entering it twice per call. A call to a
+  byte-code closure takes the in-loop frame entry when nothing else
+  happens on the way in (`plain_bytecode_callee`: no quit, the depth
+  within `max-lisp-eval-depth`, no pending termination, edebug not
+  loaded, the callee not `backtrace-eval`, no profiling, maybe_gc would
+  not collect, no `&rest` list to build); every other callee (subrs,
+  native functions, interpreted closures, arity errors) runs the full
+  Bcall sequence as an out-of-line function (`bytecode_call`, shared
+  with the slow dispatch) without leaving the loop, which re-reads the
+  code string and its verification afterwards, since the callee ran
+  Lisp. A return whose frame left no unwind entries pops it in the loop.
+  The loop receives the stack's base and top and hands the top back, so
+  each frame switch and loop entry costs no extra parked-shell test.
+  Bcall's nesting limit now signals bytecode.c's plain `(error "Lisp
+  nesting exceeds `max-lisp-eval-depth'")`; Emaxx signalled Ffuncall's
+  `excessive-lisp-nesting`, which GNU's byte code does not. Bytecode
+  calls 2.19 → 1.87, bytecode-to-native 2.66 → 2.63; native-to-bytecode,
+  undo, sort and bindat moved within their allocator noise (the VM code
+  itself got a little cheaper in undo and bindat). Measured on the way
+  and not kept: the switch alone between runs of the loop (no gain, the
+  two re-entries stayed), and a version that re-tested the shell in each
+  switch arm (27 instructions a call).
+- The verifier gave Bswitch's targets one operand too many: Bswitch pops
+  both the jump table and the value, so its targets are reached two below
+  the table's push, not one. Every function with a jump table (`pcase`, a
+  `cond` on `eq`) failed verification on the disagreeing paths and ran
+  in the unverified loop; `primitive-undo` was one. The targets now get the
+  right depth (checked against GNU's disassembly of `primitive-undo`; a
+  test runs a jump-table function through the verified loop).
+- The evaluator tests conses, nil, t and symbols by the word's tag
+  (`Value::cons_ref`, `Value::builtin_ref`, `symbol_cell`, `is_symbol`,
+  `car`/`cdr`) where it built the whole kind classification: Fassq over
+  the lexical environment, the argument count and walk, the function
+  cell's subr test, the list iterators, `setq`, `let`'s binding parts and
+  the lambda list. The kind dispatches cost 685 instructions an iteration
+  of interpreted calls and now cost 62. `eval_sub` reads its entry tests
+  (depth, pending termination, quit) through one borrow of the state and
+  sends anything unusual to the general entry; a form then takes
+  maybe_gc, the depth step and its call path with the cell in hand. A
+  variable reference in `eval` reads a lexical binding or a plain value
+  cell from the state it already holds (`lookup_symbol_plain`) and goes
+  past the lexical environment once for any other symbol
+  (`lookup_symbol_global`). `capture_current_backtrace_context` is always
+  inlined (out of line it cost sort 12 million instructions a unit).
+  Unbinding a variable that was void no longer hashes its name into every
+  terminal's keyboard-variable table: only the KBOARD variables have
+  terminal values. `Value::symbol` looks a name up before copying it, and
+  the keymap code compares with the cached `keymap` symbol (GNU's
+  `EQ (head, Qkeymap)`) instead of interning the name on every test, which
+  had cost undo 29,000 instructions a unit in the interned-name table.
+  Ratios against `29e7780`: interpreted calls 1.32 → 1.25, lexical 1.35
+  → 1.26, dynamic 1.47 → 1.37, sort 2.13 → 2.09, interpreted-to-native
+  1.73 → 1.64, native-to-interpreted 1.60 → 1.55, native-to-bytecode
+  1.78 → 1.73, cons allocation 1.50 → 1.41, list traversal 1.45 → 1.37,
+  bindat 1.32 → 1.26, undo 2.37 → 2.35, bytecode calls 1.88 → 1.87; the
+  others within 0.4%.
+- Bcall into a native-compiled function, or into a subr that evaluates
+  its arguments, runs from the verified loop when nothing else happens on
+  the way in (`plain_bcall_callee`: a byte-code callee's entry tests;
+  maybe_gc would not collect; no error trace is asked for): Ffuncall's
+  depth step and frame record, the call, the frame's settling and pop,
+  and the value replacing the function and its arguments (`call_plain`).
+  The full Bcall arm (`bytecode_call`) is left for every other callee.
+- Every op the verified loop has no arm for (variables in their full
+  forms, bindings and unwinding, handlers, buffer and primitive ops), and
+  each fast op whose operands its arm does not take, runs its full arm in
+  place (`exec_op`, shared with the dispatch loop) where it left the loop
+  for the dispatch and entered it again: exec_byte_code runs every op in
+  one loop. The loop then re-reads the frame's code and verification, as
+  after a call. An op that is a whole byte comes from a table built once
+  from the decoder. Bsymbolp, Bstringp, Blistp, Bnumberp, Bintegerp,
+  Bsetcar, Bsetcdr and Bmemq have arms in the loop: Bmemq walks up to 64
+  elements for a fixnum or a symbol, whose words are eq exactly when they
+  are equal unless an element might be a symbol with position, and takes
+  FOR_EACH_TAIL's first quit check (nothing in the walk can set
+  `quit-flag`, so one test stands for all); any other operand runs Fmemq.
+  In undo these ops left the loop about 1,160 times a unit, at about 190
+  instructions each before the op's own work. `prim` (an op's named
+  primitive) finds its dispatch facts in a process-wide open-addressed
+  table by the name literal's address; a thread-local hash map of vectors
+  cost about 50 instructions a call.
+- A buffer switch looked each of the eight forwarded evaluator variables
+  (`quit-flag`, `load-path`, `max-lisp-eval-depth`...) up in both buffers'
+  local bindings, sixteen hash probes a switch; each buffer's bindings now
+  count those variables as they are bound and removed
+  (`LocalCells::has_forwarded_eval_binding`). In undo this cost 71,000
+  instructions a unit and now costs about 9,000.
+  Ratios against `0b0b6dc`: undo 2.35 → 2.11, bytecode-to-native 2.64 →
+  2.37, native-to-bytecode 1.73, interpreted-to-native 1.64 → 1.63; the
+  others within about 1% (interpreted dynamic 1.37 → 1.39 is `eval_sub`
+  layout, 12 instructions an iteration, and allocator noise). Measured and
+  left: `prim` still registers its arguments as precise roots (about 45
+  instructions a call) though they lie in the caller's frame, which the
+  conservative scan reads; a plain subr call still costs about 196
+  instructions in `call_plain` over a dozen steps of 3 to 9 each; undo's
+  remaining slow ops are buffer primitives (`point`, `goto-char`,
+  `point-min`, `point-max`) at about 200 instructions each where GNU's arms
+  are 30 to 50.
+- The cons and float sweeps read a block's mark bitmap a word (64 cells)
+  at a time, as alloc.c's sweep_conses reads its mark words: the live
+  cells are counted by population count, the allocation and mark bits of
+  the dead ones cleared word by word (a cons and a float have nothing to
+  drop), and the free cells linked in address order as before, where each
+  cell's bits were extracted and tested one by one. A sort unit's
+  collection swept for 27.7 million instructions; sort 2.09 → 2.03,
+  explicit GC 1.01 → 0.89 (below GNU's), mapcar, cons allocation and
+  interpreted calls about 0.5% lower. Measured and not kept: a shortcut in
+  `lookup_var_symbol` for plain cells, for the change-hook variables
+  insertion reads (about 250 instructions a lookup, three an insertion):
+  those variables are not plain cells, so it never applied.
+- The buffers' local-binding table and each buffer's bindings hash their
+  keys (a buffer id, a symbol's address) with the identity hasher (one
+  multiply) instead of FNV, which ran eight rounds a key byte by byte;
+  `case-fold-search`, read through them on every buffer comparison, cost
+  sort about 9 million instructions a unit. Sort 2.03 → 2.01.
+- `eval` calls a native-compiled function, or a byte-code function, under
+  the frame it recorded for the form, as eval_sub calls a native subr
+  (funcall_subr) or applies a byte-code function (apply_lambda): the frame
+  takes the evaluated arguments and the callee runs at once
+  (`eval_call_compiled`). It popped that frame, pushed another and went
+  through the general funcall dispatch. Interpreted-to-native 1.63 →
+  1.57, native-to-bytecode 1.73 → 1.69, native-to-interpreted 1.55 → 1.50
+  (undo read 2.04 once, but nearly all of that was the allocator).
+  Measured and not kept: classifying a resolved closure or native
+  function by its header before `kind` in `eval_call`'s resolution loop
+  (interpreted calls and lexical about 1.5% slower from `eval_sub`'s
+  layout, the native cases no faster).
+- Ffuncall's first test (`call_subr_directly`, funcall_general's SUBRP
+  and CLOSUREP) reads the callee symbol and its function cell by tag and
+  header where it built the whole kind classification twice, 22
+  instructions a call. Mapcar 1.45 → 1.43. Measured on the way: the same
+  test written with `bool::then` and a closure compiled the subr call out
+  of line, 30 instructions a call worse. Noted, not changed: mapcar's
+  result buffer is zeroed with `memset` (16 instructions an element in
+  callgrind, which counts each repetition of `rep stosb`), where GNU's
+  `xzalloc` of a large array gets fresh zero pages from `calloc`; in time
+  it is well under 1%.
+- Value conversions asked only whether they apply (`as_integer().ok()`,
+  `as_symbol().ok()`, `car().ok()`, `cdr().ok()`, about 240 sites) built a boxed
+  error with a `String` for every miss and dropped it; they now call
+  `integer_value`, `symbol_str`, `car_if_list` and `cdr_if_list`, which
+  answer the same without building one. A syntax-table entry's matching
+  character (`nil` in most entries) was one: undo spent about 25,000
+  instructions a unit in these errors' allocation and release.
+  Remaining on undo's error path: `handler-bind` dispatch clones the
+  active handler list and builds the condition names as `Vec<String>` per
+  signal, and conditions match by name where GNU compares symbols (an
+  uninterned condition symbol with a registered name would match).
+- `signal`'s walk of the handler stack worked on a deep copy of it, made
+  on every signal while a `handler-bind` was active (ert's runner keeps
+  one): each `handler-bind` entry's condition names (`Vec<String>`) and
+  each `condition-case` entry's clause heads were copied. The lists are
+  shared (`Rc<[String]>`, `Rc<[Value]>`) now, so the copy counts a
+  reference each. Undo about 34,000 instructions a unit lower (2.06 →
+  2.03 on one pair of builds).
+- `Interpreter`'s `Deref` to its state, which every field access of the
+  shell goes through, tested whether the shell was parked (its state
+  handed to a continuation) and panicked if so; the compiler cannot carry
+  the answer across a call, so the test ran at nearly every access, about
+  4% of an interpreted call. The state is read unchecked now, the test
+  kept as a debug assertion (the gate profile runs with it): a shell is
+  parked only while the thread and continuation drivers and
+  `suspend_payload` have its payload away, and nothing reaches the shell
+  before the payload is back. Interpreted calls 1.26 → 1.20, lexical
+  1.27 → 1.21, dynamic 1.38 → 1.32, mapcar 1.43 → 1.37, sort 2.01 →
+  1.95, undo 2.03 → 1.97, cons allocation 1.42 → 1.36, list traversal
+  1.38 → 1.32, interpreted-to-native 1.56 → 1.51, native-to-interpreted
+  1.51 → 1.44, native-to-bytecode 1.69 → 1.63, bindat 1.26 → 1.20,
+  native execution 1.21 → 1.18. The native runtime's shell has the same
+  check; its default shells are empty by design, so it stays checked.
+  Measured and not kept: a per-closure cache of the decoded byte-code
+  object and its verification for the in-loop frame entry (keyed by the
+  closure's address, the collection epoch and its first four slots)
+  saved 3 of the entry's 303 instructions, the verifier's direct-mapped
+  cache being about as cheap; a test now covers a byte-code caller whose
+  callee's code string changes between calls.
+- An interpreted call's parameters (funcall_lambda's bindings, which
+  `backtrace--locals` and the debugger's frame context report) were kept
+  in a detail box on its frame, taken from a pool and handed back when
+  the frame was popped, so every such frame took the slow pop: about 130
+  instructions a call. They are kept on a stack beside the frames now
+  (`frame_locals`, each entry naming its frame), and the call removes its
+  entries when it returns, its error settled; its frame owns nothing and
+  leaves as an ordinary call's does. Interpreted calls 1.20 → 1.17, sort
+  1.95 → 1.93. Measured on the way: trimming the entries in every frame
+  pop instead gave each pop a test and gained nothing.
+- The native runtime's `Deref` to its shared state (heap, thread cell,
+  link table), reached several times a native call, tested for a parked
+  shell the same way; every runtime is built with the state and only a
+  test moves it between shells, so the test is a debug assertion now.
+  Bytecode-to-native 2.35 → 2.30, native-to-bytecode 1.63 → 1.61,
+  interpreted-to-native 1.50 → 1.49, native execution 1.18 → 1.17.
+- Undo's allocations, by `malloc`'s callers: a signal's
+  `error-conditions` were copied into a vector of `String`s (now the
+  symbols, read in place into an inline `SmallVec`; matching still
+  compares names); `featurep` copied `features` into a vector; the
+  condition symbol's name was formatted through `Display`, and its `car`
+  probe built an error for a non-list datum; the message log's duplicate
+  check took a second substring only for its byte length, and the
+  `message-log-max` probe built an error for `t`; buffer text was turned
+  into strings through ropey's `Display` (`to_string`) instead of its
+  chunk copy (`String::from`). Undo 1.99 → 1.93 (2,485,000 → 2,417,000
+  instructions a unit, with the allocator's own functions about even).
+  Measured and not kept: lending the byte-code frame stack of each VM
+  activation from a per-thread pool cost about as much as the vector
+  growth it saved, and bytecode calls 0.9% more.
+- The native execution guard (the OS-thread lock that serializes native
+  activations) counted a thread's activations in a `RefCell` borrowed on
+  every native call's entry and exit; the count is a constant-initialized
+  thread-local `Cell` now, and the lock's cell is touched only when the
+  count leaves or returns to zero. Bytecode-to-native 2.30 → 2.25,
+  interpreted-to-native and native-to-interpreted about 0.6% lower.
+- On Linux x86-64 the native call trampoline records its own escape
+  point instead of calling glibc's `_setjmp` (about 38 instructions a
+  call with the PLT and `__sigjmp_save`): the callee-saved registers, the
+  stack pointer and the resume address, nine stores, plus a marker word
+  at offset 64, where glibc's `_setjmp` always stores
+  `__mask_was_saved = 0`. `jump_nonlocal` takes a buffer with the marker
+  to `emaxx_native_longjmp`, which restores those registers and resumes
+  the trampoline, and any other buffer (a handler's, filled by generated
+  code's `_setjmp`) to `longjmp`. macOS keeps `_setjmp`. The saved
+  stack and frame pointers are not mangled as glibc's are.
+  Bytecode-to-native 2.25 → 2.17, interpreted-to-native 1.49 → 1.47.
+- The native call's invocation record is written in place (it was built
+  by value and copied whole, its 200-byte jump buffer included) and its
+  eight register slots are filled by a fixed-count copy (the
+  per-argument loop after zeroing them had become a `memcpy` call);
+  `invoke_function`'s dynamic-binding path is out of line, so the
+  ordinary path inlines into its caller. Bytecode-to-native 2.17 → 2.10,
+  interpreted-to-native 1.47 → 1.46.
+- The editing primitives read `inhibit-read-only`, `buffer-read-only`,
+  `buffer-file-name`, `combine-after-change-calls` and the change hooks
+  as C does, with find_symbol_value (`symbol_value_key`): the alias
+  chain, then the buffer-local, dynamic or global value. They went
+  through the evaluator's variable lookup, which first walks the
+  caller's lexical environment, about 3,400 instructions an insertion in
+  sort. That walk was also a difference from GNU: a lexical binding of
+  one of these names (a lexical function's parameter) reached `insert`,
+  where GNU's C code reads the dynamic value; a test covers it. Sort
+  1.92 → 1.86, undo about 1.5% lower.
+- Two more of undo's allocations: `push_undo_entry` made each entry's
+  Lisp form (a deletion's is a new string) before checking that the
+  cached `buffer-undo-list` view it would extend was current, and dropped
+  it when the view was stale; it is made only for a view it extends now.
+  `decode_bytes` and `encode_text`, between a Lisp string's bytes and
+  Rust text, went a character at a time for ASCII too (about 44,000
+  instructions a unit); ASCII is copied whole. Undo 1.92 → 1.88.
+  Measured and not kept, a second time: the byte-code activation's frame
+  and handler vectors lent from a pool in the interpreter state (no
+  thread-local, kept only once allocated) saved 0.36% of undo, inside the
+  noise, with bytecode calls even.
+- `prim`, the VM's call of a primitive for a dedicated op (`Bnth`,
+  `Bsubstring`, `Bconcat2`, ...), opened an explicit stack-root scope
+  for its arguments (`with_lisp_stack_roots`: an `Rc` clone, a `RefCell`
+  borrow and a slot, then the guard's drop, about 120 instructions),
+  though they are a small array on the Rust stack, which the conservative
+  scan reads as it reads a C function's locals; the explicit scopes
+  predate that scan (the honesty audit's item (c)). The arguments are
+  passed by value now, and `prim_rooted` keeps the scope for the two ops
+  whose arguments are drained into a heap vector (`insert` and `concat`
+  of N). Undo 1.88 → 1.86 (about 45,000 instructions a unit outside the
+  allocator).
+- `sort`'s arguments follow `Fsort`: only the two-argument call
+  `(sort SEQ PREDICATE)` sorts in place unless `:in-place` asks; the
+  keyword form sorts a copy. Emaxx sorted in place either way, so
+  `(sort v :lessp #'<)` changed `v`. Two arguments are always the old
+  call (a lone keyword is the predicate), another even count signals
+  "Invalid argument list", and an unknown keyword "Invalid keyword
+  argument" with the keyword (spliced when it is a list, as
+  `signal_error` does); they were wrong-number-of-arguments. Found while
+  checking the sort port below against GNU.
+- `sort` runs GNU's Timsort (sort.c, CPython's listsort with powersort
+  merging; `sequences/timsort.rs`). Rust's `sort_by` wanted a three-way
+  answer, so a comparison called the predicate a second time whenever the
+  first answered nil, and its merge order is not GNU's: the sort workload
+  called its predicate 64,700 times a unit against GNU's 35,600. That was
+  the comparison-schedule finding in
+  `docs/runtime-representation-progress.md`. The predicate now sees GNU's
+  calls in GNU's order: a trace of every call (5.7 MB over lists and
+  vectors of 2 to 3,000 entries, `:key`, `:reverse`, copies, ascending,
+  descending and interleaved runs that gallop, `value<`, signals at many
+  points and the argument forms) is byte-identical to GNU's. A signal
+  leaves a vector sorted in place as sort.c leaves its slots: once a merge
+  has outgrown sort.c's 256-slot stack array (or from the start when keys
+  were allocated, at 128 entries or more) the merge's temporary run is put
+  back; before that the run is lost and stale copies stay, as GNU's
+  abandoned stack array leaves them. A list is sorted in a copy and keeps
+  its order. Oracle tests pin a short sort's calls, checksums of longer
+  ones and a vector after a signal. Sort 1.97 → 1.36 at four and eight
+  units (below).
+- A buffer text of up to a kilobyte is one string with its counts
+  (`BufferText`'s small store), and a rope past that, a string again
+  under half a kilobyte. Ropey keeps such a text in a single leaf and
+  scans the whole leaf for its counts on every bounds check, two or three
+  times an insertion or deletion and once a chunk lookup: 133,000
+  instructions a unit of undo, whose temporary buffers and message log
+  are that small. `text_rope` builds a small text's rope for the regexp,
+  syntax and coding scans and keeps it until the next change. A test
+  takes a multibyte text through the string, the rope and back. Undo
+  1.85 → 1.72 (about 149,000 instructions a unit outside the allocator),
+  sort 1.36 → 1.355.
+- Every byte-code op dispatches through one jump table. The verified
+  loop's match covered all 256 opcodes, but some of its arms were range
+  patterns (the constants, the calls, the short variable references),
+  and rustc tests a range with comparisons ahead of the switch: LLVM's
+  table stopped at 0o266, every op paid a range check first, and
+  constants and calls went through further branches. Each byte is its
+  own case now (clippy's range-pattern lint is allowed on the function,
+  with the reason). Bytecode calls 1.864 → 1.812, bytecode-to-native
+  2.109 → 2.056; undo's verified loop about 22,800 instructions a unit
+  lower (its ratio moved with the allocator's state).
+- A call of a lexical native function of fixed arity, with a count it
+  accepts, goes from `native_comp::call_function` to the trampoline
+  through one function, `invoke_fixed`: the runtime found once
+  (`current_runtime`, the pointer `with_current_runtime` lends), the
+  arity read from the function object (`descriptor` and `check_arity`
+  for this case), the activation's install inline, and the call frame's
+  pop inline on an ordinary return (`finish_call` stays out of line for
+  the escape and error paths). Any other callee or count, or no runtime,
+  takes the general path, which signals as before. Bytecode-to-native
+  2.056 → 1.862 (797 → 723 instructions an iteration), interpreted-to-
+  native 1.468 → 1.427. Lending a nested call the installed activation
+  when its interpreter, environment and runtime are the same was
+  measured and not kept: on the byte-code path the environments differ,
+  and the comparisons cost 9 instructions a call (interpreted-to-native
+  gained 10).
+- Allocation and copying GNU does not do, found by listing each
+  workload's calls into the allocator, `memset` and `memcpy` a unit:
+  `function`'s test for a `(lambda ...)` form took `Value::car` of its
+  argument, which for a symbol (`#'f`) built a wrong-type-argument error
+  and dropped it, two allocations and two frees each time (its two tests
+  of the body's first form did the same for a docstring); it tests the
+  cons now. A native `catch` or `condition-case` boxed a new 304-byte
+  handler record and freed it when popped; the runtime keeps up to 16
+  popped records for the next pushes, as eval.c keeps popped handlers on
+  `nextfree`. `RootedVec`'s pop cleared the vacated slot with a `memset`
+  call, its size known only at run time; one slot is cleared by stores of
+  its constant size. A new cons block zeroed every cell's weak-reference
+  serial (about 11 KB); a serial is written when its cell is allocated
+  and read only while it is, so a new block clears only its epoch and
+  bitmaps, as Fcons clears only a new block's mark bits. `cond` copied
+  each clause into a vector before evaluating it; it reads the clause in
+  place, as Fcond does, which also reads the body after the test (a test
+  that changed its clause's cdr ran the old body) and runs a dotted body
+  as no form. `forward-line` did its arithmetic in bignums, four
+  allocations a call; a nil or fixnum count moves by an isize, and the
+  argument is checked as CHECK_INTEGER does (a float, symbol or marker
+  signaled `number-or-marker-p`, or moved). A function alias chain kept
+  the symbols it had seen in a vector to catch a cycle; GNU 30's `fset`
+  refuses cycles and `indirect_function` follows the chain with no test,
+  and this one keeps a second walker at half speed instead. `ash`,
+  `logand`, `logior`, `logxor` and `lognot` computed in bignums; fixnums
+  are i64s now (the bitwise operations keep a fixnum's top bits equal; a
+  left shift that overflows takes the bignum path), and their arguments
+  are checked as data.c checks them (`logand`, `logior` and `logxor`
+  signaled `number-or-marker-p` for a float or for anything in first
+  position, and `lognot`, `ash` and `logcount` took markers). Tests pin
+  `cond`, `forward-line`, the bitwise boundaries and the argument errors
+  against GNU. Native-to-bytecode 1.572 → 1.433, native-to-interpreted
+  1.42 → 1.27, mapcar 1.353 → 1.324, sort 1.353 → 1.314, bindat 1.190
+  → 1.150, undo about 1.73 → 1.67 to 1.70 (the allocator's state),
+  interpreted calls 1.164 → 1.150, lexical 1.204 → 1.197.
+- An evaluator call and a byte-code call each repeated work. For a
+  subr or a function `eval_sub` resolved: `set_backtrace_args` replaced
+  the frame's arguments by assignment, which calls the `FrameArgs`
+  enum's drop glue out of line, though the frame `eval_sub` recorded
+  holds borrowed words (it now writes over words that own nothing); the
+  frame's function went through `Value::Symbol`'s test for the built-in
+  nil and t, which a symbol with a function never is
+  (`Value::symbol_of_cell`); and `call_with_facts` checked the arity
+  `eval_call` had just checked against the same descriptor, the facts'
+  arity authority (`call_with_facts_arity_checked`). The byte-code Call
+  arm read its callee's function cell and `enter_closure_frame` resolved
+  it again (`plain_bytecode_callee`, removed: the arm passes the closure
+  and the entry runs `plain_bcall_entry`'s tests), and the loop tested
+  the entered frame's verification at pc 0, which `verified_code` had
+  just established (`FastExit::Entered` skips it). Interpreted calls
+  1.150 → 1.131, lexical 1.197 → 1.186, cons allocation 1.354 → 1.322,
+  list traversal 1.310 → 1.282, interpreted-to-native 1.437 → 1.398,
+  bytecode calls 1.809 → 1.761; bytecode-to-native 1.863 → 1.872 (the
+  loop's code around the call arm: 3 instructions an iteration more).
+- The verified loop's dispatch and its frame switches. The head read
+  the opcode, kept the op's offset in a second register, advanced the
+  pc and computed the address of the stack's top before its jump, and
+  arms that read the opcode again (a constant's index, a call's count)
+  kept it in a third: about ten instructions an op, 14 for a stack-ref,
+  where GNU's NEXT is three or four. The pc now stays at the op until
+  its arm moves it by the op's length (or jumps), the stack pointer
+  addresses the top operand as bytecode.c's `top` does, and each op with
+  its operand in the opcode (Bconstant, Bcall0 to 5, Bvarref and Bvarset
+  0 to 5, Bsetcar and Bsetcdr) has its own arm: the head is the byte's
+  load, the table entry and the jump, and a stack-ref is 8. A call into
+  byte code re-read and checked the callee's four slots (`for_call`) and
+  looked up its verified code each time; `verify::entry_program` keeps
+  a closure's program and verified code (64 entries by identity), valid
+  while the closure's four slots hold the words they were read from and
+  its code string the bytes verified. A call into byte code, a return
+  into a byte-code caller and a plain native or subr call now go on in
+  the loop instead of leaving it to enter again; the frame entry and
+  Breturn's fast path are inline, as setup_frame and Breturn are in
+  exec_byte_code, and the code string's bytes are taken again without
+  counting a borrow. A call's few arguments are stored one by one, into
+  the frame and into a native call's register slots, which are cleared
+  first (an omitted optional argument reads nil, as funcall_subr pads
+  it; a version that left them unwritten crashed building the image).
+  Inlining the fixed-arity native call into the loop's plain call made
+  bytecode-to-native worse (634.7 → 654.2 an iteration) and was
+  reverted. Bytecode calls 1.761 → 1.236 (579 instructions an
+  iteration, all in the loop), bytecode-to-native 1.872 → 1.633, sort
+  1.314 → 1.289, bindat 1.150 → 1.113, native-to-bytecode 1.433 → 1.416,
+  undo 1.67 to 1.70 → 1.649; the rest within 0.02 (interpreted dynamic
+  1.29, calls 1.124, lexical 1.183).
+- **Rust 1.99.1.** CI and the local builds moved to Rust 1.99.1, the
+  current stable release (CI pinned 1.97.1; the rounds above were
+  measured on 1.97.0). Its Clippy asked for `try_update` for the
+  deprecated `fetch_update`, `as_chunks` for a constant chunk size, and
+  an error closure passed to `map_err` by value; the generated
+  native-subr table is byte for byte the same under its rustc and
+  rustfmt. With the same source, 1.99.1 compiled three compares into
+  calls to `bcmp` that 1.97 made inline: `invoke_subr` chose a direct
+  path by comparing the subr's name with up to 36 names on each call
+  from native code; the Bcall entry tested for `backtrace-eval` by name
+  (a call for any 14-character callee name); and the entry cache
+  compared a closure's four words as an array (17 instructions an
+  iteration of bytecode calls in `bcmp`). Native-execution read 1.171 →
+  1.255, native-to-bytecode 1.416 → 1.443 and bytecode calls 1.236 →
+  1.293. The direct paths go by a kind read from a table by the subr's
+  index in the ABI now (`DirectSubr`, built once from the same names,
+  which stay inside the source the native fast-path audit reads; a test
+  pins its 36 kinds to the table), `backtrace-eval` is compared as an
+  array of 14 bytes, and the four words one by one; no `bcmp` or
+  `memcmp` call is left in the byte-code loop or `invoke_subr`. Against
+  1.97.0 the 1.99.1 build then reads native-execution 1.144,
+  native-to-bytecode 1.425 and bytecode calls 1.251 (the loop's code: 7
+  instructions an iteration more), bindat 1.113 → 1.126, interpreted
+  calls 1.124 → 1.136, bytecode-to-native 1.633 → 1.640, lexical 1.183 →
+  1.174, explicit-gc 0.887 → 0.876, native-to-interpreted 1.267 → 1.254;
+  the rest within 0.005.
+- An evaluator form whose head symbol's function cell holds a C
+  primitive takes eval_sub's SUBRP branch directly (`eval_fixed_subr`
+  and `eval_special_form`, from `eval_cons`). `eval_call` resolves a
+  head through a loop that also handles aliases, autoloads, macros and
+  lambdas; it wrapped a subr in a `FunctionResolution`, decoded the
+  cell's object a second time to classify it (a special form, which the
+  first test leaves out, only there), walked the arguments with branches
+  for MANY subrs and lambdas at each one, and matched the resolution
+  again to dispatch. For a subr of at most eight fixed arguments the
+  frame is recorded, the arguments counted and checked against both
+  bounds, the subr's maximum positions evaluated as eval_sub does (Fcar
+  before and Fcdr after each, so a position past the list's end
+  evaluates nil and one the list grew to is evaluated: a first version
+  that evaluated only the counted arguments was wrong, GNU answers "b"
+  for a `substring` form grown that way, and
+  `eval_call_fixed_subrs_read_cdr_after_evaluation_and_fill_optional_positions`
+  pins it), and the subr called through its facts; for a special form
+  with a native body the frame is recorded, the minimum checked and the
+  body run. The choice reads the subr's raw MAX_ARGS word rather than
+  building a `NativeMaxArgs` from it (7 instructions a form: cons
+  allocation 5,909 → 5,792 an iteration). A list form of cons allocation
+  costs `eval_sub` about 233 instructions now against 302 (GNU's
+  `eval_sub` 173, with `list_length` 53 and its `Fassq` lexical lookups
+  apart). Measured and not kept: the same direct path for a head holding
+  a closure or a native function cost the subr loops about 17
+  instructions a form, inline or out of line (cons allocation 5,909 →
+  6,290 or 6,181 an iteration), and gained interpreted calls nothing
+  (3,607 → 3,623 or 3,627). Cons allocation 1.322 → 1.111, list
+  traversal 1.283 → 1.122, interpreted dynamic 1.289 → 1.161, sort 1.291
+  → 1.169, lexical 1.174 → 1.071, interpreted-to-native 1.403 → 1.325,
+  bindat 1.126 → 1.050, native-to-bytecode 1.425 → 1.362, interpreted
+  calls 1.136 → 1.073, native-to-interpreted 1.254 → 1.201, undo 1.646 →
+  1.622; the rest within 0.005.
+- **Small blocks from per-thread lists.** On Linux the host allocator
+  takes a block of at most 256 bytes (aligned to at most 16) from libc in
+  a class of 16 bytes and keeps a freed one on its thread's list for the
+  class, up to 64 blocks, for the thread's next request in the class; a
+  reallocation that stays in its class keeps the block, and the lists go
+  back to libc when their thread exits (a destructor arranged before the
+  thread's first block is kept; a block freed while it registers, or
+  after it ran, goes to libc). Taking a block is 17 instructions and
+  keeping one 16, where glibc's `malloc` and `free` took about 160 a pair
+  in undo (its per-thread cache holds seven blocks a size, and its `free`
+  goes to the arena past that): undo's 1,340 allocations a unit cost
+  about 217,000 instructions in the allocator and 85,000 now, nine in ten
+  served from the lists. Each entry point is a function of its own, as
+  `malloc` is: inlined, the allocator went into every cold allocating
+  path of a hot function, and the fixnum `1+` kept two more registers for
+  its bignum case (mapcar 1.293 → 1.316). With it, `RootedVec` skips the
+  registry test on a push within its capacity and takes a first buffer
+  zeroed from the allocator instead of clearing it, and the list walks of
+  `visit_list_elements` and of `mapcar`, `mapc` and `mapcan` test the cons
+  by its word. Undo 1.622
+  → 1.470, mapcar 1.319 → 1.287, bindat 1.050 → 1.022, sort 1.169 →
+  1.155, interpreted dynamic 1.161 → 1.150, interpreted-to-native 1.325 →
+  1.314; native-to-interpreted 1.201 → 1.211 (`eval_sub`, with no change
+  on its path); the rest within 0.005.
+- **No locked exchange on a native call; string data compacted only
+  when an entry died.** `with_active_call` swapped the process-wide
+  native heap pointer, a locked `xchg` on x86 (one instruction, about 20
+  cycles) on every native call; every store to that pointer is made
+  under the native execution lock, which the call holds from its guard,
+  so a load and a store exchange it. An instruction-level scan of all
+  sixteen workloads for locked instructions found it once a native call
+  (bytecode-to-native, interpreted-to-native, native-to-interpreted,
+  native-to-bytecode) and otherwise only `mem_find`'s registry mutex
+  (about 5,000 a collection) and ropey's `Arc` counts in sort, both
+  under 1% of their time. Bytecode-to-native wall time at 4,000,000
+  iterations 0.222 → 0.200 s (GNU 0.109). Each collection walked every
+  small string data block twice, the image's strings' data included:
+  `pinned` read each entry's owner for a borrow, then the compaction read
+  each owner again for its size. Without a dead entry the compaction
+  moves nothing (each live entry is copied to where it is), so it runs
+  only when an entry was retired since the last one or a borrow held a
+  block back, and it tests each block for borrows as its walk reaches
+  it, so the owners are in cache when their sizes are read; the held and
+  moving chains come out as before. An explicit collection 57.9 → 55.4
+  million instructions, L1 data misses 736,000 → 588,000, last-level
+  8,600 → 2,100 (GNU's: 66.2 million, 297,000 and none); an otherwise
+  empty collection 15.1 → 11.5 ms (GNU 9.8); explicit-gc wall time
+  0.145 → 0.133 s (GNU 0.107). Explicit-gc 0.874 → 0.834, the rest within
+  their noise (undo read 1.486, `mem_find` 340,000 instructions more in
+  the conservative scan's collection, and bindat 1.045: it reads 1.022 to
+  1.048 on one build).
+- **The byte-code dispatch copied into each arm.** The verified loop's
+  opcode match is one jump table at the loop's head (5 indirect jumps in
+  `run_verified`, against 125 in GNU's `exec_byte_code`, whose
+  computed-goto dispatch ends every op with its own). LLVM copies such a
+  dispatch into its predecessors (tail duplication), but since LLVM 18
+  only for a block with at most 16 predecessors and 16 successors; this
+  one has hundreds. `.cargo/config.toml` raises both limits
+  (`-tail-dup-pred-size`, `-tail-dup-succ-size`, 1024): six functions
+  change, `run_verified` to 144 indirect jumps (3.8 KB more code), the
+  others `direct_assq_family`, `values_equal_recursive`,
+  `find_operation_coding_system_value`, `values_eq_plain` and
+  `values_eql` by a few dozen bytes; instruction counts within 1% on all
+  sixteen. Wall time (five rounds of five samples, the minimum):
+  bytecode-to-native 1.95 → 1.68 of GNU's, consistently in three runs;
+  the rest moved within ±0.03 except explicit-gc 1.12 → 1.24 and
+  interpreted dynamic 1.23 → 1.16, though neither's code changed (the
+  collector, `eval_sub` and the native call path are the same bytes):
+  moving the code after the loop moves wall time by up to about 10% on
+  this host, so a wall-time change without a mechanism behind it is
+  layout. The options are LLVM's own (`cl::opt`), not rustc's; a
+  toolchain update that drops them fails the build at once, and an
+  explicit `RUSTFLAGS` replaces them.
+- **A case table's signature checked by its few non-table nodes.** A
+  regexp search validates its cached case classes with
+  `CaseTableSignature::matches_current`, and when no char-table store
+  happened since the last full match, `CharTableChainSignature::matches`
+  still walked the whole captured node array to skip the table nodes: a
+  case table's chain is hundreds of sub-char-table nodes of about 50
+  bytes each, twice (down and up), more than the L1 data cache holds,
+  so each check missed on most of it (undo: 3,400 L1 misses a unit for
+  2,500 instructions, 15% of the unit's misses). The capture now keeps
+  the indices of the nodes that are not tables, in capture order, and the
+  fast path reads only those (the debug assertion still compares it with
+  the full match). Undo wall time 0.179 → 0.174 s (GNU 0.107);
+  instruction counts unchanged. Undo also takes 74,000 L1 instruction-cache misses a unit
+  against GNU's 21,000: the byte-code VM's functions alone (`run_verified`
+  7,900 a unit, `exec_op`, `run`, `run_frames`, `call_plain`,
+  `closure_program`) take about 16,000 against `exec_byte_code`'s 1,700,
+  and the rest is spread over `eval_sub` and dozens of large primitive
+  dispatchers. At about a dozen cycles each that is a large share of
+  undo's time; code layout (hot and cold blocks apart, or
+  profile-guided optimization, which would also order the functions and
+  place the blocks by their counts) is the lever, and PGO is a build
+  change (instrumented build, `llvm-profdata` from `llvm-tools`, a
+  profile kept with the source and renewed as the code changes).
+- **A count of live string guards spares the collector two walks.**
+  Each collection read every string cell's borrow count before marking
+  (`borrowed_string_roots`, to root a borrowed string and reject a
+  mutable borrow) and, before compacting, every data entry's owner for a
+  borrow (`pinned`). The string guards (`borrow`, `borrow_mut` and a
+  construction's) now count themselves on their thread as they are made
+  and dropped; the collector scans only its own thread's stack and Lisp
+  threads switch stacks on it (a parked one's guards counted too), so at
+  zero no cell is borrowed and both walks are skipped. Checked builds
+  still walk every cell and assert that the count was right. Two
+  instructions a guard (sort, the heaviest borrower, takes 30,000 to
+  60,000 guards a unit, out of 243 million instructions). An explicit collection: L1 misses 588,000 →
+  529,000 and the sweep's 603,000 instructions fewer (marking read
+  1.13 million more on that build, the conservative scan finding another
+  graph, as `mem_find` did in undo above); explicit-gc wall time 0.119 →
+  0.110 s (GNU 0.103), 1.15 → 1.06 of GNU's.
+- **The vector sweep's buffers from `all_buffers`.** Before reclaiming
+  vector storage the sweep walks each buffer's marker chain (alloc.c's
+  `sweep_buffers`), and it found the buffers by reading every vector
+  header in every block, the image's included. A buffer's header is now
+  listed when it is allocated (`BufferRef::new` and `for_restore`, image
+  restoration included, both through `VectorlikeRef::allocate`) and
+  unlisted when `cleanup_vector` reclaims it, as GNU's `all_buffers`, and
+  the pass follows the list; checked builds still walk every header and
+  assert that the list matches it. An explicit collection 55.7 → 54.7
+  million instructions, L1 misses 529,000 → 502,000; wall time within
+  noise (0.115 and 0.117 s).
+- **Byte code entered from Rust as Bcall enters it.** A byte-code
+  function called through funcall from native code, `apply` or a hook
+  (`execute_closure`) had its closure's four slots decoded afresh
+  (`closure_program`), its verification looked up again, and then went
+  through the general activation (`run` and `run_frames`: their setup,
+  a dispatch closure whose entry stored some forty loop constants, and
+  the verified loop): about 550 instructions before its first op, where
+  Bcall's frame entry reads the cache `entry_program` keeps. A closure
+  that cache holds, called with arguments its packed list takes, is now
+  entered the same way (`run_entered`): the frame and the arguments
+  pushed, the verified loop run at once, and a return from the entry
+  frame finishes there; any other exit (a signal, a quit check, a frame
+  or handler still pushed) goes, with the loop's state, to the general
+  loop (`run_loop`, the former body of `run_frames`), which takes that
+  exit up first. The callback's entry in native-to-bytecode costs about
+  290 instructions instead of about 550. Filling the cache from funcall
+  showed that its entries, held in static TLS, were read by the
+  conservative stack scan on a thread whose stack range covers its TLS:
+  glibc places a spawned thread's static TLS at the top of its stack
+  mapping, and `os_stack_base` reports the mapping's end (the runtime's
+  own entry records a local as the base instead, so the editor's main
+  thread was not affected). Two `suspended_bytecode_*` retention tests
+  and two census tests failed, the entries keeping a finished thread's
+  code and constants alive. The table is now on the heap behind a
+  thread-local pointer (an empty static table until the thread's first
+  miss), where the scan does not look.
+- **Two stores the next load spans.** callgrind does not see a load that
+  needs bytes from two stores still in the store buffer: store
+  forwarding fails and the load waits for both to reach the cache, about
+  a dozen cycles. Each backtrace record's argument field (`FrameArgs`)
+  was built in a stack temporary, held across the reservation's growth
+  call, and copied in with 16-byte loads that each spanned two of its
+  8-byte stores, on every interpreted form, Bcall and native funcall;
+  `write_backtrace_frame` now takes the field as a closure it calls once
+  the slot is reserved, and the field is stored in place. A byte-code
+  return moved the caller's frame out whole (`pop_if`, an Option whose
+  None is the argument list's tag byte), so the 48-byte program was
+  copied as that byte and three misaligned 16-byte pieces, and the
+  loop's next read of the caller's constants spanned two of them; the
+  frame is now read in place and released by the length (`BcFrame` has
+  no drop glue, which a compile-time assertion keeps so). The
+  temporaries' stores and loads went too: bytecode calls 579 → 558
+  instructions an iteration, bytecode-to-native 634 → 617, the
+  interpreted workloads about 2% fewer, native-to-bytecode 5,160 → 4,818
+  with the entry above. Wall time, five rounds of five samples with the
+  build before in the same rounds, the minimum: bytecode calls 0.158 →
+  0.130 s (1.41 → 1.16 of GNU's), interpreted dynamic 0.106 → 0.097
+  (1.19 → 1.09), lexical 0.094 → 0.087 (0.85 → 0.78), native-to-bytecode
+  0.147 → 0.134 (1.45 → 1.33); the others within their noise (native
+  execution, which runs neither path, read 1.03 and 1.07). Bytecode
+  calls lost 18% of its time for 4% of its instructions: look for such
+  copies (an aggregate built on the stack, then moved with wider or
+  offset loads) on the other hot paths. A scan of the eight main
+  workloads' hot code for loads that span younger narrower stores (each
+  function's instructions in address order, a store's slot retired when
+  its base register is written) found none left that runs more than once
+  an iteration, the largest in undo the copy of `run_verified`'s exit in
+  `run_entered` (119 a unit).
+- **Four smaller cuts on the callback paths and undo.**
+  `call_function_value_inner` classified an interpreted closure (itself,
+  or a symbol's function) with `kind()` four times before
+  `funcall_interpreted_lambda`; a closure now goes there by its tag and
+  header, once (native-to-interpreted's callback: 157 → 129 instructions
+  in that function). A native `catch` reused a spare handler record and
+  zeroed all 304 bytes of it (`memset`); generated code reads only `next`
+  and `val`, both set on each push, and its setjmp fills the jump buffer,
+  as `push_handler_nosignal` reuses `nextfree` without clearing it. The
+  direct-mapped closure entry table had 64 slots, and undo's byte-code
+  functions missed it 185 times a unit (conflicts; a miss decodes the
+  closure and looks its verification up, about 130 instructions); with
+  256 (22 KB a thread, on the heap) 21 times. A dynamic binding's record
+  (`SpecialBindingRestore`) held a buffer's whole undo state inline, for
+  a binding of `buffer-undo-list`: 144 bytes, moved by `memcpy` into the
+  unwind list and out again on every binding; that state is boxed now.
+  Undo 1,806,000 → 1,786,000 instructions a unit (at 20 and 40 units: the
+  10 and 20 pair read lower, a collector function negative in it),
+  native-to-interpreted 4,923 → 4,864 an iteration, native-to-bytecode
+  4,818 → 4,788, interpreted dynamic and calls 0.6% fewer. Wall time,
+  the same way against the build before: native-to-interpreted 0.971 of
+  it, native-to-bytecode 0.958, undo 0.980, the rest 0.93 to 1.03, the
+  host's noise (bytecode-to-native and interpreted-to-native read 0.93
+  and 0.94 with no change on their paths or in their counts).
+- **Profile-guided builds for timing (`tools/pgo-build.sh`).** Undo takes
+  three and a half times GNU's L1 instruction-cache misses (see the
+  case-table bullet), and code laid out by its execution counts is the
+  lever named there. The script builds an instrumented release binary and
+  its image, runs GNU's own tests under ERT in batch (`test/src`'s files
+  and 26 of `test/lisp`'s, about 2,500 tests in two minutes), merges the
+  counts with the toolchain's `llvm-profdata` (component `llvm-tools`),
+  and builds again with them. None of the files the locked workloads load
+  is in the training (`undo-tests.el`, `sort-tests.el`, `bindat-tests.el`,
+  nor `comp-tests.el` and its native resources), nor are the workloads
+  themselves; the profile is made from the source being built, for every
+  build, and none is kept in the tree. Its flags go through `--config`,
+  joining `.cargo/config.toml`'s (the dispatch copy's tail-duplication
+  limits are kept: `run_verified` has its indirect jumps as without the
+  profile). The mismatch warning is off: only the build scripts' and the
+  fingerprint helper's `main` met the editor's `main` in the profile.
+  Against the same source without it (five rounds of five samples in the
+  same rounds, the minimum), the geometric mean of the sixteen is 0.90 of
+  its time: native execution 0.73 (its native code is GNU's, the runtime
+  helpers Emaxx's), native-to-interpreted 0.79, native-to-bytecode 0.83,
+  bindat 0.84, lexical 0.86, sort 0.87, undo 0.90, dynamic 0.90,
+  interpreted-to-native 0.92; the byte-code loop and the collector barely
+  move (bytecode calls 0.99, bytecode-to-native 1.02, mapcar 1.03,
+  explicit-gc 0.96). Trained on the sixteen workloads instead (an upper
+  bound, not a fair build) the mean was 0.88. With the profile, against
+  GNU (built as the oracle records, `-O2`, no profile): lexical 0.69,
+  calls 0.72, native execution 0.75, bindat 0.81, list traversal 0.94,
+  sort 1.01, dynamic 1.02, native-to-interpreted 1.03; above the bound
+  bytecode-to-native 1.54, undo 1.35 (1.46), mapcar 1.29, cons allocation
+  1.22 (the in-sample collection), interpreted-to-native 1.19, bytecode
+  calls 1.10, explicit-gc 1.09, native-to-bytecode 1.06; the geometric
+  mean of all sixteen 1.03. Timing pilots and the final run use this
+  build from here (the gates keep the gate profile); instruction counts
+  stay on the plain release build, whose code the profile does not
+  change in kind. The script ran end to end with no warning (about
+  fifteen minutes from nothing); seven of GNU's test files run with the
+  final binary (777 tests) gave the outcomes of the instrumented run, and
+  the sixteen workloads' result checks pass with it.
+- **mapcar's list from its results in place (`Value::list_of`).** mapcar
+  built its value with `Value::list`, which collected the rooted results
+  into a new vector (a copy loop, 13 instructions an element) and then
+  read a `vector-literal` head as a vector: `(mapcar #'identity
+  '(vector-literal 1 2))` returned `[1 2]` where GNU returns the list.
+  `Value::list_of` conses the results from the last, as Flist does over
+  mapcar1's array, which stays rooted meanwhile. Mapcar 30.09 → 28.76
+  million instructions a unit (1.29 → 1.24 of GNU's); the mapping test
+  takes the `vector-literal` case. The same reading remains in `list`,
+  `copy-sequence`, `reverse`, `butlast`, `take` and `seq-map` (each
+  returns a vector for a list whose first element is the symbol
+  `vector-literal`, and `(delq nil (list 'vector-literal nil 1))`
+  signals): Emaxx carries vectors through lists headed by that interned
+  symbol (`Value::to_vec` of a vector puts it first, `Value::list` turns
+  such a list back into a vector, the reader and about sixty producers
+  build vectors that way, and some sixteen consumers test for the head
+  by name). The fix is a head Lisp cannot make, tested by identity: an
+  uninterned symbol kept as a static root, or an internal immediate such
+  as the unbound marker, at every producer and consumer (about 120 sites
+  with the tests); see the next steps.
+- **Native calls: the escape record in the calling frame, and a Bcall
+  into native code in one frame.** Three changes, on the paths every
+  locked workload takes (batch startup runs `--eval` and `-l` inside
+  startup.el's native `command-line-1`, in GNU as here, so their calls
+  nest in an active native call):
+  - `invoke_fixed_registers`, for a callee whose arguments all travel in
+    registers (at most six, the maximum, not the count): the trampoline's
+    escape record (callee-saved registers, stack pointer, resume address
+    and marker, as `emaxx_native_longjmp` reads them) is written by inline
+    assembly in the calling frame, which then calls the target with the
+    arguments in registers, zero past them. No Rust frame lies between
+    the generated code and the record, as with the trampoline; the
+    trampoline's own frame and the invocation record it loaded the
+    registers from are gone. A call nested in an active call of the same
+    runtime and interpreter (`is_nested_call`) changes only the active
+    call's record: every change of stack clears the active call
+    (`with_thread_suspended`), so that call is on this stack, holds the
+    execution lock and set the heap pointer and the stack's bottom.
+  - `call_native_nested`: a Bcall whose callee is such a native function
+    and whose call nests in the active call of its interpreter
+    (`NestedCall`) runs in one frame: `call_plain`'s and
+    `call_fixed_function`'s tests (the arity read unsigned, MANY and
+    UNEVALLED exceeding six), Ffuncall's depth and frame, the call frame
+    pushed without the thread activation and heap depth the active call
+    holds (`invoke_nested_fixed`), and the value written by the loop in
+    place of the function and its arguments (the stack's top as
+    `replace_call` leaves it). Anything else, or any test failing, takes
+    `call_plain` with nothing changed. The call frame is written in its
+    slot (`Vec::push` built it on the stack and copied it in by a call
+    that was not inlined).
+  - `profiling()`: `EMAXX_PROFILE`'s test on every call is one byte, not
+    the OnceLock's state and its Option.
+
+  Bytecode-to-native 620 → 493 instructions an iteration (1.60 → 1.27 of
+  GNU's; `run_verified` 259, `call_native_nested` 222), interpreted-to-native
+  3,121 → 3,069 (the native layer 297 → 272), native-to-bytecode 4,788 →
+  4,768, the interpreted loops' `eval_sub` a few instructions lower;
+  the other rows move within the allocator's noise (undo at twenty and
+  forty units: 1,775,165 before, 1,770,842 after). In wall time (release
+  builds, five rounds of five samples alternating, the minimum):
+  bytecode-to-native 0.170 → 0.132 s (GNU 0.111: 1.53 → 1.19),
+  native-to-interpreted 0.135 → 0.133, native-to-bytecode 0.131 → 0.126,
+  interpreted-to-native 0.1025 → 0.1027. With `native_comp::call_function`
+  always inline (in the evaluator's calls too) interpreted-to-native ran
+  20 instructions an iteration lower and native-to-interpreted 30, but
+  interpreted-to-native took 0.110 s, 8% more, in two runs; it stays
+  `#[inline]`. Fusing `call_plain`
+  with the general native entry instead measured worse (599: the
+  register allocator spilled 46 values and outlined `Vec::push`), as the
+  earlier inlining of `invoke_fixed` did, and so did skipping the thread
+  activation and heap depth in the general nested call (no gain, the
+  spills around the assembly call). A new test,
+  `bytecode_calls_native_functions_nested_in_native_calls_like_funcall_subr`,
+  runs byte code called from native code (`assoc-delete-all`'s TEST)
+  whose own native calls return, signal to its `condition-case` and
+  throw out of a native callee to its `catch`, against GNU.
+- **Undo: a signal's conditions by symbol, and three lookups on its
+  edits.**
+  - `LispErrorKind::condition_symbol`: the signaled condition is the car
+    of a signal's data or the symbol the C core signals, read from its
+    fixed slot (`cached_symbol!`, a Qsymbol), and
+    `error_condition_names_of` reads its `error-conditions` by the
+    property's symbol (`get_symbol_property_of`, eq as in Fget). Every
+    signal used to build the condition's name as a `String`, find its
+    symbol by hashing the name, and walk the plist comparing each key's
+    name. Every handler search takes it: the interpreter's
+    `condition-case`, the VM's and native code's handlers,
+    `capture_batch_error_backtrace`'s test and
+    `dispatch_handler_bindings`. `condition_type` is the symbol's name.
+  - `dispatch_handler_bindings` searches the handler stack in place up
+    to the first `handler-bind` handler it would call. Only then does it
+    copy the stack and build the handlers' argument. Most signals meet
+    their `condition-case` first.
+  - `is_window_configuration_value` tests the record kind and its two
+    frame slots, the only parts `window_configuration_snapshot_from_value`
+    requires, without building the snapshot's window lists (about 4,900
+    instructions a call, 4 a unit).
+  - `adjust_window_point_slots`, run on every insertion and deletion,
+    iterates the window ids from a `SmallVec`, not a fresh vector, and
+    `create_buffer` sets its two locals by symbol through the
+    address-keyed cache.
+
+  Undo 1,770,842 → 1,741,232 instructions a unit at twenty and forty
+  units (1.41 → 1.39 of GNU's). The window and buffer lookups account
+  for 13,400 and the signals for 16,200: `error_condition_names` went
+  from about 400 to 170 a call (59 calls a unit), and
+  `dispatch_handler_bindings` from 1,150 to 390. The remaining signal
+  cost is mostly Lisp: `error`'s `format-message` through `apply` (about
+  24,000 a call, two a unit, against GNU's 19,000).
+- **Undo: change hooks without the local hook's copy; the slow ops' fast
+  paths measured and left out.**
+  - `hook_values` asked `buffer_local_hook` only whether the buffer has
+    a Rust-side local hook, which cloned the hook's vector each time;
+    `has_buffer_local_hook` tests it in place. A local hook's default is
+    read by the hook's symbol (`default_value_symbol`) rather than
+    interned again by name. Together that is about 2,300 instructions a
+    unit in undo (`buffer_local_hook` 1,520, `hook_values` 800; 1,741,232
+    → 1,740,124 at twenty and forty units, with the allocator's noise
+    around it). The byte-code workloads are unchanged (bytecode calls
+    549.5, bytecode-to-native 489.0).
+  - The ops that leave the verified loop for `op_in_place` and
+    `exec_op` were tried in eight arrangements. Relative to `4e49cce`
+    rebuilt (bytecode calls 550.0, bytecode-to-native 491.5,
+    native-to-bytecode 4,751, undo 1,741,232):
+
+    | Variant | Undo | Bytecode calls | b2n | n2b |
+    | --- | --- | --- | --- | --- |
+    | Q: Bvarbind and Bunbind arms in `run_verified`, calling an out-of-line function and continuing the loop | −8,600 | +0.9 | +2.0 | +6 |
+    | R: Q plus arms for Bpoint, Bpoint_max, Bpoint_min and Bgoto_char of a fixnum | −25,100 | +3.3 | 0 | +7 |
+    | S1: Bvarbind and Bunbind dispatched by their byte at the head of `op_in_place` | −11,100 | +4.6 | −2.1 | −2.8 |
+    | S2: S1 plus Bvarref (not plain) and the point ops | −17,300 | +4.3 | +2.0 | −8.4 |
+    | S3: S2 with the bind and unbind shared, not inlined, plus the hooks | −21,200 | +5.3 | 0 | 0 |
+    | S5: S3 with the callee's entry depth read again after its frame record | — | +10.7 | +0.5 | — |
+    | S6: `op_in_place` as before, a small `exec_op` running those ops | −1,500 | −0.2 | +0.3 | −4.5 |
+    | S7: S3's dispatch with `op_in_place`'s general body out of line | — | +5.7 | — | — |
+
+    The n2b column is `run_verified`'s own change for Q and R, whose
+    totals include a one-time rehash of the address-keyed symbol cache
+    (38.9 an iteration) that fell inside the measured range; for the
+    others it is the whole iteration, with no rehash in range.
+
+    In every variant that touches `run_verified` or `op_in_place`, the
+    extra cost in bytecode calls and native-to-bytecode sits in
+    `run_verified` alone, a function whose source did not change in S1
+    to S7. Per-instruction profiles of bytecode calls (P against S2, 452
+    against 456 instructions an iteration, each run once) trace it to
+    `enter_closure_frame`, inlined into the Call arm. There the callee's
+    arity bytes and entry depth stay live across the thread-local read
+    and the 88-byte frame record's push; P keeps them in registers, and
+    S2 stores three of them on the stack and reloads them for
+    `push_arguments`. Re-reading the depth after the push (S5) moved the
+    spills and cost more. S6 leaves the loop alone, but the small
+    `exec_op` costs about 35 instructions a call (other ops then pay it
+    and `exec_op_general`'s frame too), so it gains nothing. Wall time
+    agreed: S2 against P on bytecode calls, minimum of 25 and 40
+    samples, 0.1257 against 0.1242 s and 0.1272 against 0.1245 s. Undo's
+    wall time on this machine varied more than the difference (0.663 to
+    0.697 s for P). None of these is kept. Moving those ops (about 360 a
+    unit in undo at 60 to 136 instructions each) needs the closure-entry
+    path made insensitive to the allocator first: fewer values live
+    across the frame record, or that record's push out of line.
+- **The evaluator's call into native code nested in the active call.**
+  `call_fixed_function`, which the evaluator's calls to native-compiled
+  functions take (`eval_call_compiled`, Ffuncall's subr path), sends a
+  callee of at most six arguments whose call nests in the active call of
+  its interpreter (`NestedCall`) to `invoke_nested_fixed`, as Bcall does:
+  the call frame pushed, the active call's record replaced, the frame
+  popped. The thread activation and the heap's depth, which the active
+  call holds, are left alone. The caller has made maybe_gc's test
+  (`eval_sub` at the form, Ffuncall before dispatch), so no collection
+  test is added. Interpreted-to-native 3,067 → 3,039 instructions an
+  iteration (1.29 → 1.27; wall time 0.1034 → 0.0992 s on the plain
+  release build, six rounds of five samples), native-to-interpreted
+  4,789 → 4,767 (1.16 → 1.15), native-to-bytecode 4,751 → 4,741, mapcar
+  28.58 → 28.47 million (1.229 → 1.225); bytecode calls, bytecode-to-native,
+  native execution and undo unchanged.
+- **Collections that leave the image's cells unread, and a census without
+  the registry walk.** A collection's census found the obarrays by
+  walking the whole record registry (`gnu_hash_storage_bytes`: about
+  584,000 instructions and 24,000 L1 misses a collection); it reads the
+  obarray and abbrev-table types from the type index instead (checked
+  builds compare it with the walk). The block registry carries each
+  block's image flag, so the five sweeps no longer clone the set of image
+  blocks. And the string, symbol and small-vector sweeps leave the
+  image's blocks unread when nothing in them died: a string or symbol
+  allocated while an image loads carries an image flag (a padding byte;
+  the cells stay 48 and 64 bytes), as does a vector block registered
+  then, and a mark that first reaches such a cell raises its kind's
+  count (`ImageCells`, reset as each mark epoch begins). Only a sweep
+  frees an image cell and none is allocated outside a load, so when the
+  count equals the image cells the last sweep that read them left, every
+  one of them is marked again: the sweep passes the image's blocks by,
+  carrying over their live buffers for gcstat; otherwise it reads them all
+  and records the new count. Checked builds re-read every block passed by
+  and assert that each allocated cell in it is marked. GNU's sweeps never
+  read its dump. An explicit collection (100,000 live conses): 54.53 →
+  49.31 million instructions (0.82 → 0.74 of GNU's), L1 data misses
+  502,000 → 381,000 (GNU 297,000), and misses of a 1 MB cache modelled as
+  this host's L2 (`--LL=1048576,16,64`) 408,000 → 318,000 (GNU 236,000),
+  the sweeps' 100,000 → 16,500 (GNU's about 9,500). Timed with per-phase
+  clocks in an experiment build (best of five rounds of 32 collections
+  with a 100,000-cons list live), the vector sweep 994 → 39 µs, strings
+  714 → 108, symbols 198 → 29, and a whole collection 11.5–12.0 → 10.3–10.8
+  ms against GNU's 10.7–11.0. Wall time on the line-table release builds
+  (five rounds of five samples, the minimum, GNU's in parentheses):
+  explicit-gc 0.1040 → 0.0917 s (0.0973; 1.07 → 0.94), cons allocation
+  0.0917 → 0.0893 (0.0733), mapcar 0.0764 → 0.0710 (0.0629; 1.21 → 1.13),
+  undo 0.1673 → 0.1651 (0.1111). Instruction counts of the other fourteen
+  are within their noise: undo 1,739,519 → 1,745,355 a unit (the byte-code
+  verifier's address-keyed caches collide more on this layout,
+  `entry_program_slow` 40 → 65 calls a unit) and mapcar 28.47 → 28.62
+  million (`direct_add1`, whose source did not change, gained one
+  instruction from an inlining change, 100,000 calls a unit). In mapcar
+  and undo the string phase still takes 1.3 to 2.0 ms a collection: heap
+  strings die every cycle, and the compaction that follows
+  (`data::sweep`) reads the image's string data and its owners as well
+  (next).
+- **The image's string data out of the compaction.** The small data of
+  strings allocated while an image loads goes to a chain of its own
+  (`IMAGE_SMALL`), packed apart and never compacted, as pure data already
+  was and as GNU's dumped strings keep their data in the dump, which
+  `compact_small_strings` never reads. A dead image string's entry is
+  retired in place and its block kept. Before, any heap string that died
+  made the next compaction walk every small block from the oldest, the
+  image's 52,600 strings' entries and their owners' sizes included. The
+  string phase of a collection (per-phase clocks, as above): mapcar's
+  compaction 1,300–1,465 → 161–179 µs, undo's 1,460–2,005 → 284–379 µs.
+  Wall time against `85f3e00` (five rounds of five samples, the minimum,
+  GNU's in parentheses): mapcar 0.0700 → 0.0673 s (0.0639; 1.10 → 1.05),
+  sort 0.2036 → 0.1977 (0.1807; 1.13 → 1.09), cons allocation 0.0886 →
+  0.0874 (0.0727), explicit-gc 0.0859 → 0.0827 (0.0999), undo 0.1630 →
+  0.1638 (0.1107; one collection a sample, its gap is the mutator's:
+  about 0.145 s outside collection against GNU's 0.093). Instruction
+  counts: undo 1,742,444 a unit, mapcar 28.59 million, sort, cons
+  allocation and explicit-gc unchanged (their callgrind sizes hold
+  almost no compaction).
+- **The conservative scan's lookups, and the sweeps' block lists by
+  kind.** `mem_find` tests the heap's bounds before the registry
+  (`HEAP_LOW` and `HEAP_HIGH`, alloc.c's `min_heap_address` and
+  `max_heap_address`, raised as blocks register): most words a stack
+  scan reads are return addresses, stack addresses and small numbers. The
+  collection's scan of the native stack (about 4,400 words) looks all of
+  them up under one lock (`conservative_values`), where each took the
+  registry's mutex, its poison test and a B-tree descent, about 228
+  instructions a word. The registry keeps each kind's blocks in a map of
+  their own beside the one `mem_find` reads, so a sweep's block list is
+  its kind's alone, not a filter of every block, six times a collection.
+  An explicit collection 49.32 → 48.89 million instructions with the
+  bounds and the one lock, 48.55 million with the per-kind lists (0.744 →
+  0.733 of GNU's).
+
+**Local validation of this round** (gate profile, `--test-threads=1`): the
+36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
+25 sorting/case-folding/substring tests plus the comparison tests, and 95
+mapping and bytecode tests, 208 native-runtime/funcall/GC tests and 189
+bytecode/reclamation/finalizer/weak-table tests pass; clippy `-D warnings`, rustfmt and
+`git diff --check` pass. For the in-loop frame switch: 681 of 683
+byte-code, backtrace, native, funcall, unwind, handler, condition, catch,
+throw, debug, nesting and compiled-code tests pass; the two others are
+the as-root and image round-trip failures below, which pass in CI. For
+the evaluator's tag tests and the verifier fix: 349 evaluation, `let`,
+lambda, funcall, `setq`, keyboard, backtrace, binding, quit and nesting
+tests and 188 keymap, interning, verification, undo and jump-table tests
+pass, with the three new tests. A broad local run over the GC, special-form, `eval_`
+and native filters was stopped after 89 CPU minutes, with one failure:
+`byte_compile_file_reports_an_unwritable_target_like_gnu`, which cannot
+pass as root (this container's user writes into a mode-555 directory) and
+passes in CI. For the in-place ops, plain native and subr calls and the
+forwarded-variable count: 625 of 626 native, byte-code, funcall,
+backtrace, arity, buffer-local, forwarded-variable, `memq`, undo,
+symbol-with-position, unwind, handler, catch, quit and nesting tests pass
+with the new one (predicates and `memq` in the loop against GNU); the
+other is the image round trip below. For the compiled callees under
+eval's frame and the probes: 2,148 of the 2,150 evaluator tests pass, the
+two others being the as-root and image round-trip failures; for the
+shared handler lists, 267 of 267 handler, condition and signal tests
+pass; for the unchecked shell, 154 of 154 thread, continuation,
+funcall, binding, unwind and backtrace tests and 179 of 180 byte-code,
+closure and verifier tests with the new one (the other is the as-root
+failure); for the parameters beside the frames, 335 of 335 backtrace,
+debugger, Edebug, ert, lambda, funcall, thread, root, copy, collection,
+handler and signal tests; for the native runtime's unchecked shell, 397
+of 398 native tests (the other is the image round trip below); for
+undo's allocations, 418 of 419 handler, condition, signal, feature,
+message, substring, multibyte, coding and dump tests (the other is the
+image round trip); for the activation counter, 446 of 447 native and
+thread tests (the other is the image round trip); for the trampoline's
+escape record, 672 of 673 native, thread, handler, condition and signal
+tests (the other is the image round trip), and errors, `catch`/`throw`
+and handlers through the native test functions answer as before on the
+release build; for the in-place invocation record, 446 of 447 native
+and thread tests (the other is the image round trip); for the C-style
+variable reads, 177 of 178 insertion, hook, read-only, undo and lexical
+tests with the new one (the other is the save-buffer test below); for
+undo's lazy entries and the ASCII copies, 558 of 559 undo, string-coding,
+multibyte, unibyte, handler, message, insertion and dump tests (the other
+is the print-charset test below); for the unrooted op arguments, the
+sort arguments and the sort port, 583 of 583 sort, byte-code, VM, root,
+collection, weak-table, undo, string-coding and handler tests (on the
+build before the signal handling and argument changes) and 13 of 13 sort
+tests on the final build, with the five new ones. Under
+`EMAXX_GC_STRESS` (a collection at every `maybe_gc`) the 47 VM unit
+tests pass; the 49 byte-code tests that boot a full batch interpreter
+take hours each under it and were not run to the end. For the small
+buffer texts, 1,272 of 1,272 buffer, insertion, deletion, region,
+search, regexp, syntax, line, marker, undo, text-property, narrowing,
+coding, case, message and sexp tests, and 250 of 250 editing tests on
+the final build with the new one. For the jump table, 653 of 653 VM,
+byte-code, native, funcall, catch, condition, unwind and handler tests;
+for the fixed-arity native calls, 540 of 541 native, funcall, thread,
+handler, condition, signal, escape, catch, throw, unwind and suspension
+tests (the other is the image round trip below). For the allocation
+sweep: 711 of 712 native, catch, handler, condition, closure, lambda,
+function, documentation and unwind tests (the other is the image round
+trip), 641 of 641 collection, weak-reference, cons, root, census, `let`
+and environment tests, 759 of 759 `cond`, line, function, alias, closure, documentation and `eval_01` tests with the new ones, 126 of 126 numeric, integer, bignum and bindat tests on the final build, and scripts of `cond` forms
+(dotted, non-list and self-modifying clauses), `forward-line` counts and
+arguments, alias chains with a cycle, `function` forms with
+documentation and interactive specs, every `ash` shift of fixnum and
+bignum values and the bitwise operations' argument errors, identical to
+GNU's output. For the call trims: 1,301 of the 1,302 evaluator,
+backtrace and frame tests run by the commit (of 1,732; the rest were
+still running, and the other is the as-root byte-compile test below),
+and 653 of 653 VM, byte-code, native, funcall, catch, condition, unwind
+and handler tests on the build before the entry took the closure from
+the arm, and 131 of 132 byte-code and compile tests on the final build
+(the other is the as-root byte-compile test). The call trims' evaluator
+run was stopped at its time limit: 1,479 of the 1,480 tests it finished
+passed (the other is the as-root byte-compile test), and the 252 it had
+not reached pass on the next round's build. For the dispatch round, the
+continuation test and Rust 1.99.1: 654 of 654 VM, byte-code, native,
+funcall, catch, condition, unwind and handler tests with the new one,
+the 190 native-runtime tests and the new kind test, and the lightweight
+group's 590 tests in each of 10 runs pass on the final build, and 26 of
+26 backtrace and debugger tests on the build before the entry cache's
+word compare; the 654 and the lightweight group passed on the dispatch
+round's own build (Rust 1.97.0) too. On 1.97.1 the changed continuation
+test passed 40 of 40 runs of the lightweight group, where the old one
+failed about one run in six. Clippy `-D warnings` and rustfmt pass under
+1.99.1. For eval_sub's direct path: 3,134 of the 3,138 unit tests pass,
+run in four parallel parts; the others are the as-root byte-compile and
+save-buffer tests and
+`file_writable_p_is_nil_for_missing_files_in_unwritable_directories`
+(root may write where the test expects no access), all three failing on
+the build before too, and
+`process_tls_state_survives_collection_before_and_after_async_handshake`,
+whose GNU run disagreed under that load and which passes alone, 3 of 3.
+For the buffer list: the same 3,134 of 3,138 and four failures, the
+checked build's comparison of the list with every buffer header holding
+at every collection. For the guard count: 3,134 of the 3,138 with 2 ignored, the as-root three
+and the load-sensitive TLS test failing; the checked build's assertion
+that no cell is borrowed when the count is zero held at every collection
+of the suite. For the case-table signature: the 137 char-table, case-table, case-fold,
+regexp, search and signature tests pass (run one at a time; at two
+threads four of them fail the same way on the build before, the tests
+sharing one process heap), and the full 3,138 as below with the as-root
+three and the load-sensitive TLS test. For the dispatch copy: the same,
+with `subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`
+failing in that load and passing alone. For the exchange and the
+compaction: 3,133 of the 3,138 pass with 2
+ignored, the three failing being the as-root ones above, and the four
+allocator tests; the compaction's held-block path is pinned by
+`string_sblocks_compact_unborrowed_data_and_hold_borrowed_blocks` (the
+borrow released, the next collection moves the held string). For the
+small-block lists: the same 3,134 of 3,138 with the same four
+failures, less
+`subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`,
+which failed in that load on this round's builds (its child had exited
+and been reaped before the first `process-live-p`): under twelve
+concurrent runs it fails 12 of 60 times on the eval_sub round's build
+and 5 of 60 on this one, and passes alone, 3 of 3; and the four
+allocator tests, three of them new (reuse, alignment and zeroing past
+the lists' depth, reallocation within and across classes, and blocks
+freed by another thread that then exits).
+For the byte-code entry and the two stores: 3,135 of the 3,141 pass
+with 2 ignored (the allocator's three tests are in the parts now), the
+as-root three and the load-sensitive TLS test failing (it passes alone,
+3 of 3); the round's first build also failed
+`suspended_bytecode_retains_operand_and_unwind_roots`,
+`suspended_bytecode_observes_live_constant_vector_mutation`,
+`native_vector_and_closure_census_matches_gnu_word_layout` and
+`native_pseudovector_census_matches_gnu_word_layout` (the cache in TLS,
+above), which pass on the final build and passed on the one before.
+For the four smaller cuts: 3,134 of the 3,141 with 2 ignored, the as-root
+three failing and the two load-sensitive tests
+(`subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`
+and `process_tls_state_survives_collection_before_and_after_async_handshake`)
+failing in that load and passing alone, 3 of 3.
+For mapcar's list: 3,134 of the 3,141 with 2 ignored and the same
+five failures (the as-root three, both load-sensitive tests), with the
+mapping test's new `vector-literal` case. A first run of that suite
+failed about 960 tests at startup because of how it was run, not the
+change: a test run from the cargo target directory had dumped the
+shared fixture image (`EMAXX_FIXTURE_IMAGE_DIR`), whose native units are
+recorded relative to the dumping executable's directory, and the copy of
+the same binary run from another directory (same fingerprint, so the
+same image name) resolved them to a missing path. Run the suite's
+binary from one place per fixture directory, or give each place its own.
+For the native calls: 3,134 of the 3,141 with 2 ignored on the final
+build before the new test (the as-root three and both load-sensitive
+tests failing), and on the build with `call_function` always inline
+3,135 of them and the new test, the as-root three and
+`process_tls_state_survives_collection_before_and_after_async_handshake`
+failing; on the final source 600 of 600 native, byte-code, funcall,
+catch, throw, condition, handler, signal, escape, suspension, thread and
+unwind tests pass with the new one, and clippy `-D warnings` and rustfmt
+pass; the
+round's earlier builds gave the same with the other load-sensitive tests
+(`subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`,
+and once `just_this_one_wait_still_notifies_an_exited_distractor`, whose
+GNU run had not yet read the distractor's output under that load; it
+passes alone, 3 of 3). The new test's program gives GNU's output on the
+release build too, and under callgrind it enters `call_native_nested`
+138 times and leaves it by the escape record 5 times.
+For the signals' conditions by symbol: 3,135 of the 3,142 with 2
+ignored, the as-root three and two load-sensitive tests failing
+(`subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`
+and `process_tls_state_survives_collection_before_and_after_async_handshake`,
+both passing alone), with clippy `-D warnings` and rustfmt clean. Its
+release build leaves bytecode calls (551.0 instructions an iteration),
+bytecode-to-native (491.5) and native-to-bytecode (4,751) where they
+were. For the change hooks: 256 of the 257 hook, change, local, undo,
+insert, deletion and overlay tests pass, with the as-root
+`save_buffer_skips_unmodified_and_unchanged_files` the one failure;
+clippy `-D warnings` and rustfmt are clean. For the nested evaluator
+call: 925 of the 928 native, byte-code, funcall, catch, throw,
+condition, handler, signal, escape, suspension, thread, unwind and
+nested-call tests pass, the as-root three failing; clippy and rustfmt
+clean. For the census by type: 135 of the 136 obarray, abbrev, GC and
+collection tests pass with the checked comparison, the other being the
+load-sensitive TLS test, which passes alone (2 of 2). For the image cells
+left unread: 1,110 of the 1,112 GC, image, dump, weak, finalizer, obarray,
+interning, symbol, string, vector, record, buffer, allocation and mark
+tests pass in three parallel parts with the checked assertions, the
+others being the as-root save-buffer test and the TLS test, which passes
+alone; clippy `-D warnings` and rustfmt clean. For the image's string
+data: 676 of 676 string, data, compaction, relocation, borrow, multibyte,
+unibyte, coding, substring, concatenation, format, collection, image,
+dump, `aset` and text-property tests pass in three parallel parts; clippy
+and rustfmt clean. For the scan's bounds and the per-kind lists: 592 of
+the 593 conservative-scan, stack, native, collection, weak, finalizer,
+sweep, block, heap, root, allocation and vector tests pass in four
+parallel parts, the other being the load-sensitive TLS test, which passes
+alone (2 of 2); clippy and rustfmt clean.
+CI's full gate and frozen runs are the merge evidence.
+
+Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
+
+| Case | Before | Now |
+| --- | --- | --- |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.39 |
+| upstream-sort (4 units) | 3.26 (at 1 unit) | 1.14 |
+| interpreted-calls | 2.10 | 1.06 |
+| interpreted-lexical | 2.04 | 1.05 |
+| interpreted-dynamic | 2.14 | 1.12 |
+| mapcar | 2.95 | 1.22 |
+| bytecode-calls | 3.30 | 1.17 |
+| bytecode-to-native | — | 1.27 |
+| interpreted-to-native | — | 1.27 |
+| native-to-interpreted / -bytecode | — | 1.15 / 1.26 |
+| cons-allocation / list-traversal | 2.24 / — | 1.09 / 1.10 |
+| native-execution | — | 1.13 |
+| bindat | — | 1.02 |
+| explicit-gc | — | 0.74 |
+
+The table is one full run of all sixteen on the native calls' build
+(mapcar's on the round before, 1.24 there; undo's on the signals'
+round, 1.41 on the native calls' build; mapcar, interpreted-to-native
+and native-to-interpreted/-bytecode on the nested evaluator call's
+round, 1.23, 1.29 and 1.16/1.27 on its base), undo at twenty and forty
+units (1.45 at ten and twenty on the same build, the closure entry
+table's misses and `malloc_consolidate` in the difference), compiled by
+Rust 1.99.1 as the rounds since the Rust 1.99.1 bullet were (the rounds
+above those were measured on 1.97.0); interpreted dynamic read 1.13 on
+the round's build with `call_function` always inline, `eval_sub`
+unchanged (one `malloc_consolidate` falling in the difference); on the
+byte-code entry round's build bytecode calls read 1.19,
+bytecode-to-native 1.59, interpreted-to-native 1.30 and bindat 1.02,
+and mapcar 1.30 there and 1.29 on the round before. Undo read 1.47 to 1.49 and
+bindat 1.02 to 1.05 on the last three builds (the conservative scan's
+`mem_find` calls in a collection in the difference),
+native-to-interpreted 1.20 to 1.21 on one build. Undo read 1.67 to 1.70 across the
+allocation sweep's builds (the allocator's state), and a collection's
+stack scan or a hash table's growth falling in the difference moves the
+interpreted rows by about 0.01.
+Sort at one and two units read 1.84 before the port and 1.12 after it,
+but after it Emaxx's two collections fell at both sizes, out of the
+difference, while one of GNU's fell in it; at four and eight units it
+reads 1.97 before (two collections each in the difference) and 1.36
+after (one of Emaxx's, two of GNU's; 1.44 without collections, an
+Emaxx collection costing about twice GNU's). Count each editor's
+collections in a difference before reading a ratio.
+Interpreted calls and lexical read 1.24 to 1.27 across this round's
+builds before the unchecked shell with no change on their path
+(`eval_sub` layout); undo read 2.03 to 2.06 on the same code (the
+allocator's state, below; it read 1.97 and 1.99 on two builds before
+the allocation fixes and 1.93 to 1.97 after them). Earlier, undo
+moved between 2.37 and 2.42 from one build to the next with no code
+change on its path: the
+difference sits in glibc's `_int_malloc`, `malloc_consolidate` and
+`unlink_chunk` (the allocator's free-list state), not in Emaxx code.
+Undo's earlier 2.34 at ten units was an artifact: in that pair of runs the
+collector worked more at ten units than at twenty (`mem_find` and the
+stack scan came out negative in the difference), hiding about 0.57 million
+instructions per unit. The like-for-like figure before byte-code
+verification was about 2.80 as well. A pair with negative collector
+functions in its difference is not a measurement; repeat it.
+
+**CI on `2c7c55f`:** full Rust gate passed (run 38737706552, every group;
+3,104 tests in the counted groups plus the bins and integration groups, the
+two existing ignores), frozen **7,928 of 7,928 outcomes match across 519
+files** with no unsuccessful execution (run 38737719924).
+
+**CI on `352ea91`** (everything through `c100767`): full Rust gate passed
+(run 38751776827; 3,105 tests in the counted groups plus bins and
+integration, the two existing ignores), frozen **7,928 of 7,928 outcomes
+match across 519 files**, no unsuccessful execution (run 38751781622).
+
+**CI on `4008098`** (everything through `898a088`): full Rust gate passed
+(run 38761724660; 3,105 tests in the counted groups plus bins and
+integration, the two existing ignores), frozen **7,928 of 7,928 outcomes
+match across 519 files**, no unsuccessful execution (run 38761729296).
+
+**CI on `cf18c9d`** (byte-code verification): full Rust gate passed (run
+38783494477; 3,111 tests in the counted groups plus bins and integration),
+frozen **7,928 of 7,928 outcomes match across 519 files** (run
+38783499025). **CI on `bfb9c1a`** (Bcall into native functions): full
+Rust gate passed (run 38789815645; 3,112 tests), frozen 7,928 of 7,928
+(run 38789820093). **CI on `36f1a67`** (fixnum fast paths, in-place
+frame pops): full Rust gate passed (run 38803520645; 3,114 tests in the
+counted groups plus bins and integration, the two existing ignores),
+frozen 7,928 of 7,928 across 519 files, no unsuccessful execution (run
+38803524575). **CI on `7172429`** (eval_sub's lambda calls, kept buffer
+counts, Bcall subrs, in-loop varref/varset): full Rust gate passed (run
+38819256699; 3,116 tests in the counted groups plus bins and
+integration), frozen 7,928 of 7,928 across 519 files, no unsuccessful
+execution (run 38819259588). **CI on `41be443`** (covering `6761153`
+too: word tests, closures from funcall, the opcode match): full Rust gate
+passed (run 38828973274; 3,118 tests in the counted groups plus bins and
+integration), frozen 7,928 of 7,928 across 519 files, no unsuccessful
+execution (run 38828975757). **CI on `b31d6d9`** (in-place funcall
+frames): full Rust gate passed (run 38835660142; 3,119 tests in the
+counted groups, 2 ignored, plus bins and integration), frozen 7,928 of
+7,928 across 519 files, no unsuccessful execution (run 38835662192).
+**CI on `dee8061`** (frameless Fcons): full Rust gate passed (run
+38838677038; 3,119 tests, 2 ignored), frozen 7,928 of 7,928 across 519
+files, no unsuccessful execution (run 38838679538). **CI on `29e7780`**
+(in-loop byte-code frames): full Rust gate passed (run 38852469382; 3,120
+tests, 2 ignored), frozen 7,928 of 7,928 across 519 files, no
+unsuccessful execution (run 38852471256). **CI on `0b0b6dc`** (evaluator
+tag tests, jump-table verification): full Rust gate passed (run
+38864048354; 3,122 tests, 2 ignored, plus bins and integration), frozen
+7,928 of 7,928 across 519 files, no unsuccessful execution (run
+38864051065). **CI on `d20ca14`** (ops in place, plain subr and native
+calls): full Rust gate passed (run 38874710028; 3,123 tests, 2 ignored,
+plus bins and integration), frozen 7,928 of 7,928 across 519 files, no
+unsuccessful execution (run 38874712632). **CI on `40de0bc`** (bitmap
+sweep): full Rust gate passed (run 38881670816; 3,123 tests, 2 ignored,
+plus bins and integration), frozen 7,928 of 7,928 across 519 files, no
+unsuccessful execution (run 38881676646). **CI on `b22d7ba`**
+(identity-hashed local bindings): full Rust gate passed (run 38888654939;
+3,123 tests, 2 ignored, plus bins and integration), frozen 7,928 of 7,928
+across 519 files, no unsuccessful execution (run 38888657799). **CI on
+`e8740a5`** (compiled callees under eval's frame, the tag-tested
+funcall, the error-free probes) and **on `6118781`** (shared handler
+lists): full Rust gate passed on each (runs 38904376618 and
+38906537195; 3,124 tests, 2 ignored, plus bins and integration), frozen
+7,928 of 7,928 across 519 files, no unsuccessful execution (runs
+38904379904 and 38906541122). **CI on `c1c555e`** (the unchecked
+interpreter shell): full Rust gate passed (run 38916491905; 3,125 tests,
+2 ignored, plus bins and integration), frozen 7,928 of 7,928 across 519
+files, no unsuccessful execution (run 38916498890). **CI on `62986d1`**
+(the parameters beside the frames, the unchecked native shell): full
+Rust gate passed (run 38922630018; 3,125 tests, 2 ignored, plus bins
+and integration), frozen 7,928 of 7,928 across 519 files, no
+unsuccessful execution (run 38922634093). **CI on `4cae2ef`** (undo's
+allocations): full Rust gate passed (run 38928340091; 3,125 tests, 2
+ignored, plus bins and integration), frozen 7,928 of 7,928 across 519
+files, no unsuccessful execution (run 38928344036). **On `8845616`** (the
+activation counter): full Rust gate passed (run 38932458858; same
+counts), frozen passed (run 38932463661). **On `9eb7217`** (with
+`abb9239`: the trampoline's escape record and the in-place invocation
+record): full Rust gate passed (run 38940592177; 3,125 tests in the
+counted groups, the two ignores, plus bins and integration), frozen
+7,928 of 7,928 across 519 files, no unsuccessful execution (run
+38940597467). **On `3f61e10`** (the C-style variable reads): full Rust
+gate passed (run 38941429841; 3,126 tests with the new one), frozen
+7,928 of 7,928 across 519 files, no unsuccessful execution (run
+38941434201). **On `2529c2e`** (the sort port and argument forms): the
+Rust gate failed in its first group (run 38959692157):
+`eval_string_ops` expected `(sort '(3 1 2) #'< :in-place t)` to sort,
+which GNU rejects with "Invalid argument list" (a positional predicate
+only in the two-argument call); the next commit corrects the test.
+Frozen on `2529c2e`: 7,928 of 7,928 across 519 files, no unsuccessful
+execution (run 38959695796). **On `3716780`** (the corrected test): full
+Rust gate passed (run 38964025272; 3,131 tests in the counted groups,
+the two ignores, plus bins and integration). **On `0c6564e`** (the small
+buffer texts): full Rust gate passed (run 38970736660; 3,132 tests, the
+two ignores, plus bins and integration), frozen 7,928 of 7,928 across 519
+files, no unsuccessful execution (run 38970739812). **On `e50b127`** (the
+jump table) and **on `5dc69d1`** (the fixed-arity native calls): full
+Rust gate passed on each (runs 38975258598 and 38977491857; 3,132 tests,
+the two ignores, plus bins and integration), frozen 7,928 of 7,928 across
+519 files, no unsuccessful execution (runs 38975261428 and
+38977494311). **On `961b207`** (the allocation sweep): full Rust gate
+passed (run 38986010893; 3,134 tests with the two new ones, the two
+ignores, plus bins and integration), frozen 7,928 of 7,928 across 519
+files, no unsuccessful execution, on its second attempt (run
+38986012909); the first attempt matched 7,927, the other,
+`eglot-test-rust-completion-exit-function`, ending in GNU's run with a
+`jsonrpc-error` from the language server while Emaxx's passed. **On
+`ef33383`** (the call trims): the full Rust gate stopped in its
+lightweight group (run 38995229528):
+`native_continuations_can_return_in_non_lifo_order` found the first
+probe's key still in its weak table after the first continuation had
+returned. The test fails so here about one run in six on Rust 1.97.1, on
+`961b207` too (which passed CI): the two probes shared one table, so the
+second probe's `puthash` read the first key, and a copy of it that a
+returned callee left in the second stack, below a frame still live when
+that stack parked, kept it through the conservative scan of the parked
+stack. `89dc6a3` gives each probe its own table (40 of 40 runs of the
+lightweight group pass on 1.97.1). Frozen on `ef33383`: 7,928 of 7,928
+across 519 files, no unsuccessful execution, on its second attempt (run
+38995231316); the first matched 7,927, GNU's run of
+`eglot-test-rust-completion-exit-function` failing again after
+rust-analyzer's cargo watcher failed to start. **On `d4f6b94`** (the
+first CI on Rust 1.99.1): full Rust gate passed (run 39003317809; 3,136
+tests in the counted groups, the two ignores, plus bins and
+integration), frozen 7,928 of 7,928 across 519 files, no unsuccessful
+execution, on its first attempt (run 39003319679). **On `200e450`**
+(eval_sub's direct path): full Rust gate passed (run 39007442705; 3,136
+tests), frozen 7,928 of 7,928, no unsuccessful execution, on its first
+attempt (run 39007444124). **On `c722291`** (the small-block lists): full
+Rust gate passed (run 39011047978; 3,139 tests in the counted groups,
+the two ignores, plus bins and integration), frozen 7,928 of 7,928, no
+unsuccessful execution, on its first attempt (run 39011049487). **On
+`c65fc87`** (the exchange and the compaction): full Rust gate passed (run
+39015057290; 3,139 tests); frozen's first attempt matched 7,927 of 7,928
+(run 39015058719), the one mismatch GNU's again: the oracle's
+`eglot-test-rust-completion-exit-function` failed with a `jsonrpc-error`
+and Emaxx's passed, as on `ef33383`; its second attempt matched 7,928 of
+7,928 with no unsuccessful execution. **On `34b7f48`** (the dispatch
+copy): full Rust gate passed (run 39018268679; 3,139 tests), frozen
+7,928 of 7,928, no unsuccessful execution, on its first attempt (run
+39018270078). **On `2d491d2`** (the case-table signature): full Rust gate
+passed (run 39020019119; 3,139 tests), frozen 7,928 of 7,928, no
+unsuccessful execution, on its first attempt (run 39020021023). **On
+`e655fb2`** (the guard count): full Rust gate passed (run 39022801774;
+3,139 tests), frozen 7,928 of 7,928, no unsuccessful execution, on its
+first attempt (run 39022803610). **On `0c448c6`** (the buffer list):
+full Rust gate passed (run 39024108508; 3,139 tests), frozen 7,928 of
+7,928 across 519 files, no unsuccessful execution, on its first attempt
+(run 39024110358). **On `d9a3c9a`** (the byte-code entry and the two
+stores): full Rust gate passed (run 39032410374; 3,139 tests), frozen
+7,928 of 7,928 across 519 files, no unsuccessful execution, on its first
+attempt (run 39032411872). **On `d80e451`** (the four smaller cuts): full
+Rust gate passed (run 39038064118; 3,139 tests), frozen 7,928 of 7,928
+across 519 files, no unsuccessful execution, on its first attempt (run
+39038065785). **On `d588d70`** (mapcar's list): full Rust gate passed
+(run 39044968844; 3,139 tests), frozen 7,928 of 7,928 across 519 files,
+no unsuccessful execution, on its first attempt (run 39044970894). **On
+`ccdf45e`** (native calls from the calling frame): full Rust gate passed
+(run 39055982318; 3,140 tests). Frozen matched 7,927 of 7,928 across 519
+files (run 39055984062). The one mismatch is GNU's
+`eglot-test-rust-completion-exit-function` failing in the oracle while
+Emaxx passed, the rust-analyzer timing recorded above. Its failed job was
+re-run once (attempt 2) and matched 7,928 of 7,928, with no unsuccessful
+execution. **On `4e49cce`** (signals' conditions by symbol): full Rust
+gate passed (run 39061192531; 3,140 tests), frozen passed on its first
+attempt (run 39061194462). **On `a56f990`** (change hooks, slow-op
+trials recorded): full Rust gate passed (run 39066922265; 3,140 tests),
+frozen passed on its first attempt (run 39066924074). **On `5147b2e`**
+(the evaluator's nested native call): full Rust gate passed (run
+39069860003; 3,140 tests), frozen passed on its first attempt (run
+39069862192). **On `85f3e00`** (the image's cells left unread): full
+Rust gate passed (run 39074166122; 3,140 tests), frozen passed on its
+first attempt (run 39074167800). **On `3e1cced`** (the image's string
+data): full Rust gate (run 39075363648) and frozen (run 39075365786)
+pending. Locally,
+`batch_startup_image_round_trip_or_explicit_native_image_limit`
+fails in this container on `4008098` already (the restored image's first
+native function in `mapatoms` order differs) and passes in CI, like the
+as-root `byte_compile_file_reports_an_unwritable_target_like_gnu`,
+`save_buffer_skips_unmodified_and_unchanged_files` (root writes the
+read-only file instead of being asked) and
+`file_writable_p_is_nil_for_missing_files_in_unwritable_directories`, and
+`print_prunes_charset_properties_like_print_prune_string_charset`, where
+this container's GNU build itself disagrees with the expected text (under
+`default` it prints the Latin-1 string without its `charset` property);
+`char_charset_family_follows_charset_c` fails the same way on its GNU side
+(this build answers `iso-8859-1` where the expected text, CI's, has
+`unicode`).
+
+**Findings recorded, not fixed:**
+- A condition symbol with no `error-conditions` (never `define-error`ed):
+  GNU's handlers do not catch it except through `t`, so
+  `(condition-case e (signal 'my-err '(3)) (my-err ...))` leaves it
+  uncaught ("peculiar error: 3"); Emaxx's `condition_symbol_matches`
+  matches a handler named exactly like the signal when the list is empty,
+  contrary to its own comment. The same holds through native code.
+- `backtrace--locals` on the frame of a `let` inside an interpreted
+  lexical function: GNU reports the lexical environment there (the
+  function's parameters and the `let`'s variables, `((a . 1) (b . 2) (z .
+  5))`), Emaxx reports nil; and frame 0 without BASE signals
+  `(wrong-type-argument wholenump -1)` in GNU where Emaxx answers. Emaxx
+  reports a call's parameters on the call's own frame, as before the
+  parameters moved beside the frames.
+- GNU's `Fapply` with a one-element spread list stores that element into
+  its own argument array (`args[nargs - 1] = XCAR (spread_arg)`), which is
+  the `apply` frame's argument vector: a backtrace taken inside shows
+  `(apply f 3)` for `(apply f '(3))`. Emaxx's frame keeps `(3)`.
+- Loading prints "Loading FILE..." through Lisp `message`, so in batch it is
+  also logged in `*Messages*` and obeys `inhibit-message`; GNU's
+  `message_with_string` writes it only to stderr in batch. Switching needs a
+  separate quiet mode for `batch.rs`'s image reconstruction, which relies on
+  `inhibit-message` to keep that chatter out of stderr.
+- GNU 30.2's `mapconcat` crashes (segfault) when FUNCTION shortens the list
+  it maps (`eassert (nmapped == leni)` is off in release builds and the
+  uninitialized tail is concatenated); Emaxx concatenates what was mapped.
+  Exclude that case from oracle comparisons.
+- Library tests share one process heap and are not thread-safe: run the gate
+  locally with `--test-threads=1`, as CI does; parallel runs crash in string
+  data.
+- Keeping the interpreter state behind `Option` costs a test and branch per
+  field access (about 18 of the 108 instructions `eval_sub` spends per list
+  form). Removing the check would make a parked shell's use undefined
+  behavior instead of a panic, so it stays.
+
+**Where the remaining gap is** (instruction counts per unit; the native
+and byte-code calls on the Rust 1.99.1 round's final build, the rest on
+`41be443`):
+- **Wall time** parts from the counts, and the criterion is wall time. A
+  native pilot of all sixteen on the small-block build with the exchange
+  removed (a quarter of each contract n, two rounds of three samples
+  after a warmup, the minimum; `core-perf-run` in each editor without
+  valgrind) read, Emaxx/GNU: lexical 0.84,
+  calls 0.86, bindat 0.98, native-execution 1.08, list traversal 1.13,
+  sort 1.16, dynamic 1.18, native-to-interpreted 1.31, mapcar 1.33,
+  explicit-gc 1.34, interpreted-to-native 1.41, bytecode calls 1.43,
+  cons allocation 1.43, undo 1.49, native-to-bytecode 1.50,
+  bytecode-to-native 1.76. The calls through native code read about 0.1
+  above their counts. On the buffer-list round's build (`0c448c6`), five
+  rounds of five samples, the minimum (the median in parentheses where
+  it differs by more than 0.05): bytecode-to-native 1.61 (1.78), undo
+  1.52 (1.65), native-to-bytecode 1.45, bytecode calls 1.39,
+  interpreted-to-native 1.36, cons allocation 1.32 (1.19),
+  native-to-interpreted 1.29, mapcar 1.28, interpreted dynamic 1.19,
+  sort 1.16 (1.09), explicit-gc 1.10 (1.17), list traversal 1.09 (1.00),
+  native-execution 1.03, bindat 1.01, lexical 0.84, calls 0.79. On the
+  byte-code entry round's build, the same way: bytecode-to-native 1.59,
+  undo 1.57 (1.65), interpreted-to-native 1.35, native-to-bytecode 1.33
+  (1.47), cons allocation 1.30, native-to-interpreted 1.29, mapcar 1.19
+  (1.26), bytecode calls 1.16, sort 1.16 (1.13), dynamic 1.09,
+  native-execution 1.07 (1.19), list traversal 1.06, explicit-gc 1.05
+  (1.13), bindat 0.97, calls 0.79, lexical 0.78. On `a56f990`'s plain
+  release build (not the profile-guided one), five rounds of five
+  samples, the minimum (median where it differs by more than 0.05): undo
+  1.50 (1.58), interpreted-to-native 1.31, explicit-gc 1.24 (1.14), cons
+  allocation 1.24 (1.19), bytecode-to-native 1.24, native-to-bytecode
+  1.22, native-to-interpreted 1.18, mapcar 1.16, sort 1.16 (1.21),
+  bytecode calls 1.10, dynamic 1.06, native execution 1.03, list
+  traversal 1.01, bindat 0.95, calls 0.79, lexical 0.78. On `3e1cced`
+  (the image's cells and string data left out of the sweeps), the same
+  way: on its plain release build undo 1.46, interpreted-to-native 1.31,
+  cons allocation 1.22, bytecode-to-native 1.19, native-to-bytecode 1.19,
+  native-to-interpreted 1.17, bytecode calls 1.13, dynamic 1.11, mapcar
+  1.09, sort 1.08, native execution 1.05, list traversal 1.01, bindat
+  0.93, explicit-gc 0.91, lexical 0.79, calls 0.73; with the profile
+  (`tools/pgo-build.sh`, the timing build) undo 1.26, bytecode-to-native
+  1.23, cons allocation 1.22, interpreted-to-native 1.14, bytecode calls
+  1.07, mapcar 1.06, native-to-bytecode 1.02, dynamic 1.00,
+  native-to-interpreted 0.97, sort 0.96, list traversal 0.95, explicit-gc
+  0.93, bindat 0.76, native execution 0.74, calls 0.70, lexical 0.66: six
+  of the sixteen above the bound. Collections cost Emaxx more time than GNU at fewer
+  instructions: 19 to 22 ms each in the workloads against GNU's 12 to 16,
+  an otherwise empty one 15.0 ms against 9.8 (11.5 after the compaction
+  change), though marking a long list costs less a cell (6.6 ns against
+  9.6). The difference is memory traffic: L1 data misses 736,000 against
+  297,000 (callgrind `--cache-sim=yes`), nearly half in the sweeps, which
+  read every string, vector and symbol cell, the image's included,
+  where GNU's sweeps never touch its dump region and its cons sweep reads
+  mark bitmaps; what is left after the compaction and guard-count changes
+  is the string sweep's mark reads (58,000), vectors (about 19,000 since
+  the buffers are listed) and symbols (19,000), each reading the image's
+  cells as well, which GNU's sweeps never do, and marking (301,000 against
+  GNU's 281,000). Since the sweeps leave the image's unchanged blocks
+  unread (above), a collection's L1 misses are 381,000 and an explicit
+  collection is GNU's time or less; marking (302,000 L1 misses, 297,000 of
+  a modelled 1 MB L2 against GNU's 225,000) and, where heap strings die,
+  the string data compaction over the image's data are what remain.
+  Cons allocation's samples collect once each in
+  Emaxx (0.021 s of 0.11) and never in GNU: the harness's
+  `(garbage-collect)` before each sample still finds the previous
+  sample's 500,000-cell list through GNU's conservative stack scan, so
+  with `gc-cons-percentage` 1.0 GNU's next threshold is about 8 MB;
+  Emaxx frees the list and its threshold stays at 800,000 bytes. At the
+  contract's size (2,000,000 cells a sample, the profile build, two
+  rounds of three samples) GNU's samples after the warmup collect never
+  (the warmup three times, about 19.5 ms each) and Emaxx's twice each
+  (about 17 ms each): 0.3363 s against 0.3021, 1.11, all of it the two
+  collections. Emaxx's collections are the cheaper; the count is GNU's
+  conservative stack scan finding the previous sample's list, so this
+  case's gap is the retention, which a precise collector does not
+  reproduce. Emaxx
+  collects less often than GNU in lexical, calls, sort, bindat and the
+  native-to-* cases (its census of live bytes is larger). Mapcar
+  (collection about half of each sample in both editors) misses the
+  last-level cache where GNU does not: at sixteen units a sample
+  (callgrind's 34 MB last-level cache) Emaxx takes about 66,000
+  last-level misses a unit against GNU's 800, in marking (16,700 reads a
+  unit), the sweep (7,700 reads, 16,100 writes) and the mutator's own
+  conses (17,800 writes, about half of a result list's lines). Each unit
+  allocates about 71 new 32 KB cons blocks (no collection between most
+  units; the dead results' blocks go back to `free` at the next one),
+  and an Emaxx cons costs 24 bytes (16 of payload and an 8-byte
+  weak-reference serial in the block's metadata) against GNU's 16 and a
+  mark bit, so a cycle's churn is about half again GNU's; page faults
+  are not it (past startup, 8,300 against GNU's 6,800 a run). Those
+  misses are mostly sequential streams, which the hardware prefetches:
+  an experiment build without the serial (2,000 cells a block instead of
+  1,350, weak upgrades not checked) ran mapcar 0.0827 → 0.0814 s, cons
+  allocation 0.0963 → 0.0961 and list traversal 0.145 → 0.154 (layout),
+  so the serial's cost is not worth a redesign of weak host references,
+  and callgrind's last-level figures over-predict sequential traffic.
+  Measure wall time with the counts for any change to collection,
+  allocation or the native call path.
+- **Native calls** (bytecode-to-native 1.27): 493 instructions an
+  iteration against GNU's 388, the byte-code loop below GNU's (259
+  against `exec_byte_code`'s 339 with its call setup). A Bcall into
+  native code nested in an active call costs 222 in `call_native_nested`
+  where GNU's Bcall and `funcall_subr` spend about 100: the prologue and
+  epilogue (16), the entry and arity tests (about 25), the nested call's
+  and the collection's tests (13), Ffuncall's frame record, its pop and
+  the depth (about 35), the native call frame's push and pop with its
+  balance and pending-error tests (about 30), the handler lists' two
+  reconciliations (14), the escape record and the call (17), the
+  argument registers by the count (about 12) and the active call's
+  record (8). What is left beyond GNU's is the bookkeeping the Rust
+  callers of native code require (the call frame, the escape record,
+  the active call and the handler reconciliation), about 80, and the
+  arm's own tests in the loop.
+- **Byte-code calls** (bytecode calls 1.19): 558 instructions an
+  iteration against GNU's 468 (586 on the dispatch copy's build), all in the verified loop
+  now that the frame entry and the return are inline: its ops at GNU's
+  cost or below, and a call and return about 210 against GNU's 100 or so
+  (the plain-entry tests, the entry cache's check of the closure's four
+  words, the 64-byte backtrace record and its pop, the 88-byte `BcFrame`
+  and the 48-byte `ByteCodeObject` copied into and out of it, the code
+  string read again on each switch). GNU's frame lives in the byte-code
+  stack and its running state in registers.
+- **Source interpreter** (lexical 1.07, calls 1.07, cons allocation
+  1.11, sort 1.17): a list form whose head holds a C primitive costs
+  `eval_sub` about 233 instructions (cons allocation; GNU's 173 with
+  `list_length`'s 53 apart): the entry tests, `maybe_gc` and the depth
+  (about 30), the head's cell and the subr's arity (about 20), the frame
+  record, its argument update and its pop (about 35), the argument
+  count, and for each argument its inline evaluation. An interpreted
+  call (interpreted calls, 3,561 instructions an iteration against GNU's
+  3,315) still goes through `eval_call`'s resolution and its
+  `funcall_interpreted_lambda` (300), and
+  `maybe_gc` at each list form (two thread-local reads and the owning
+  runtime's trigger, where GNU tests one global counter). Sort is mostly this path too
+  (`eval_sub` is 44% of it since the port, 118 million instructions a
+  unit at one and two units); before the port
+  `eval_sub` spent about 400 instructions of its own on each of 473,000
+  list forms a unit, where GNU's spends 111 on each of 548,000 forms
+  (symbols included); per form the backtrace record costs about 65 (the
+  push 20, the argument update 27, the pop 12, the debugger-context test
+  6), the function cell's resolution 32, the argument count 16 and the
+  subr dispatch 19, and the rest is spread over the entry tests and
+  moves. Sort's buffer side
+  (rope chunk lookups, `compare-buffer-substrings`, insertion and its
+  change hooks) is about 25 million instructions a unit
+  against GNU's 10 million.
+- **Ffuncall into a subr** (mapcar 1.45): about 200 per call against
+  GNU's 147 across Ffuncall, funcall_general and funcall_subr;
+  `Value::cons` is 37 against `Fcons`' 27 (the per-cell serial, the
+  allocated and mark bits, and a live count GNU does not keep).
+- Undo's remainder (1.39 on the signals' round, 1.74 million
+  instructions a unit; the figures below are from 1.47, 1.84 million
+  against GNU's 1.25 million, on the small-block round's build) is
+  broad. Buffer edits from byte code cost about twice GNU's:
+  `delete-region` about 5,900 instructions a call against
+  `Fdelete_region`'s 2,844 (18 a unit), `insert` about 6,080 against
+  `Finsert`'s 4,730 (21 a unit), and `run_change_hooks` 125,000 a unit,
+  mostly the hook functions' Lisp. Native code's calls also cost about
+  twice GNU's for the same Lisp:
+  `cconv-make-interpreted-closure`, run for each interpreted closure,
+  takes 146,000 a unit against GNU's 67,000, made up of its `funcall`s
+  (101,000 against 48,000), `mapcar` (26,000 against 12,500), `delq`
+  (about 660 a call against 211) and `specbind` (793 a call against
+  300). Ops run in place: 622 a unit leave the verified loop through
+  `op_in_place` and `exec_op` (Bvarref of a symbol that is not plain 92,
+  Bvarbind 97 with its 144-byte record pushed by `memcpy`, Bunbind 91,
+  and buffer primitives: `goto-char`, `point-min`, `point-max`,
+  `gethash`, `get`, `set`, `memq`), each about 190 instructions before
+  its own work (the op decoded again, `exec_op`'s frame and match, and
+  the loop's re-entry); GNU runs them in `exec_byte_code`'s loop.
+  Allocation is about 1,330 blocks a unit, 85,000 instructions in the
+  allocator (217,000 before the lists), from copies GNU does not make:
+  `string_like` decoding a string to read a flag or compare a name (124
+  a unit: `format` five times a call, `get-buffer`, `insert`), `apply`
+  copying its arguments twice, `condition-case` copying each clause to
+  read its head, a change hook's list copied to test it for nil. At 1.67
+  it was about 3,000 calls into the allocator, `memset` and `memcpy` a
+  unit, 230,000 to 290,000 instructions in malloc and free as their state
+  varied (vectors' growth 530 calls, string coding 390, special bindings'
+  records 240, errors' condition types 106). `eval_sub` is 140,000 a
+  unit against GNU's 90,000 (181,000 at 1.67). Measured at 1.67: the
+  window configuration snapshot copies its lists on each restore (about
+  19,000), `ert-set-test` grows a vector each run (about 15,000), plain
+  subr calls (`call_plain` about 196 a call, 340 a unit), byte-code frame
+  entry (290 a call, 165 a unit) and native code's subr calls
+  (`invoke_subr`, `invoke_native_funcall` 65,000).
+
+## How the work is split
+
+- **Linux (cloud sessions):** build GNU 30.2 at `636f166c` locally with the
+  configure options from
+  `src/lisp/native_comp/generated_native_subrs_x86_64_unknown_linux_gnu.rs`
+  (as `frozen-run.yml` does) and place it at `../emacs`. The native ABI table
+  must match exactly. A local build's binary hash differs from the CI lock, so
+  authoritative Linux Rust/frozen/timing results come from `frozen-run.yml`.
+- **macOS host:** PR87's closing items, and macOS validation at milestones.
+
+## Validation tiers (agreed 15 October 2026)
+
+1. **Each draft:** `cargo fmt --all -- --check`, `cargo check --locked
+   --all-targets --all-features`, `cargo clippy --locked --all-targets
+   --all-features -- -D warnings`, `git diff --check`, the affected controls in
+   the gate profile (and release when the change is release-sensitive), and the
+   affected ordinary GNU comparisons.
+2. **Each checkpoint merge:** full Linux Rust and frozen runs through CI, plus
+   Linux timing pilots.
+3. **macOS frozen, terminal and Tramp:** at milestones, at the end, or when a
+   change touches platform-specific code.
+
+Rejected experiments get a short note and their patch; full evidence packages
+are for merges, and raw samples may live in CI artifacts. Unfavorable results
+and failures are still recorded.
+
+## Next steps, in the agreed order
+
+1. Merge PR87 after its macOS closing items; then validate and merge the
+   counter branch.
+2. **Performance, worst ratios first** (instruction ratios in the section
+   above; worst now undo 1.41, interpreted-to-native 1.29,
+   bytecode-to-native 1.27, native-to-bytecode 1.27, mapcar 1.23,
+   native-to-interpreted 1.18, bytecode calls 1.17, sort 1.14,
+   interpreted dynamic 1.12; by
+   wall time, with the profile-guided build (`tools/pgo-build.sh`, the
+   PGO bullet above): bytecode-to-native 1.54, undo 1.35, mapcar 1.29,
+   cons allocation 1.22 (an in-sample collection, see above),
+   interpreted-to-native 1.19, bytecode calls 1.10, explicit-gc 1.09,
+   native-to-bytecode 1.06; native-to-interpreted 1.03, dynamic 1.02,
+   sort 1.01 and the rest below. The profile helps the interpreter and
+   the native callbacks most and the byte-code loop and the collector
+   least, so those (and undo's in-place ops) are where code changes now
+   count most. A wall ratio
+   well above its instruction ratio points at stalls callgrind does not
+   count, such as the store-forwarding failures of the last round. Per
+   iteration bytecode calls runs 65 conditional branches against GNU's 28
+   and bytecode-to-native 70 against 28 (callgrind `--branch-sim=yes`;
+   indirect ones 17 against 17 since the dispatch copy), the excess in
+   the call path's tests. The remaining costs are listed
+   under "Where the remaining gap is": the native call layer needs
+   structural work (a lighter native boundary: inlining `invoke_fixed` into
+   `call_plain` measured 20 instructions a call worse), and the byte-code
+   call less now (frames kept in the byte-code stack, as GNU's are, instead
+   of a `BcFrame` vector holding copies of the decoded object; a cache of
+   the decoded closure saves only when it hands the program out by
+   reference, as `entry_program` does); in the byte-code loop, an arm that
+   reads its opcode again or keeps a second copy of the pc costs every op
+   (see the dispatch bullet above). A compiler update can turn a compare
+   into a library call (see the Rust 1.99.1 bullet): look for `memcmp` and
+   `bcmp` in the profiles after one. The interpreter and funcall paths are
+   spread over many small steps, each worth about 1%. The source
+   interpreter's subr calls take their own path now (about 233 instructions
+   a list form against GNU's 173 plus `list_length`'s 53); what is left
+   there is the frame record (about 35 a form against record_in_backtrace's
+   15 or so), the entry tests and `maybe_gc`, and an interpreted call's way
+   through `eval_call` (a direct path for it measured worse, see the
+   eval_sub bullet).
+   Changes to `eval_sub`'s inlined body move its register allocation;
+   measure interpreted calls and lexical with each. Micro-changes measure within
+   about 1% of noise: keep only what moves the counts, record the rest.
+   Iterate with instruction counts (callgrind) on the locked workloads for
+   both editors; timing pilots at merges. Remaining adapters that show up in
+   profiles are fixed as performance work.
+3. **Remaining architecture and ownership:** the `vector-literal` head that
+   carries vectors through lists, which Lisp data can forge (the mapcar
+   bullet: `list`, `copy-sequence`, `reverse`, `butlast` and `take` turn a
+   list headed by that symbol into a vector); symbol host-name, buffer-local and
+   function adapters; text-property intervals (also needed for
+   `intervals-consed`); pure storage (check what the pinned GNU revision
+   actually does first); public Rust ownership, multiple editors, descriptor
+   lifetimes and reclamation; the September 21 audit findings.
+4. **Final validation and calibrated performance** once, on the final source:
+   full Linux/macOS gates and the native, module, dump, startup, thread and GC
+   contracts; calibration (the GNU self-comparison must resolve) and the
+   nine-round run on a quiet host; the final adversarial review.
 
 ## Remaining full-goal requirements
 
-Finish shared compact object authority (including bytecode closures and allocated
-symbols), remove remaining adapters and unnecessary ordinary-path bookkeeping,
-implement honest physical allocation/GC accounting and real counters, preserve
-survival and reclamation, and complete VM/call optimization from profiles. The
-final adversarial review, zero-warning Linux/macOS validation, pinned compatibility
-and **locked 16-workload GNU performance criterion with its unchanged 3% ceiling**
-remain required. Source284 has a diagnostic pilot and profiles; no GNU-parity claim exists.
-
-Receipts and reproduction helpers are under `target/runtime-goal/resume-2026-09-28`;
-recovered checkouts and GNU are under `target/runtime-goal/recovered-2026-09-30`.
-Rebuild on another machine; local executable/image identities are not portable
-validation claims. Do not reapply historical patches over the existing task branch.
-
-The [archived full continuation index](docs/runtime-representation-handover-history-2026-10-01.md)
-retains every earlier checkpoint, failure, diagnosis and handover link. It includes
-the original [27 September handover](docs/runtime-representation-handover.md) and
-[complete September 21 audit](docs/adversarial-decheating-audit-2026-09-21.md).
+Shared compact object authority without remaining adapters; honest physical
+accounting (string data, allocator overhead and capacity, intervals); preserved
+survival and reclamation with sound public ownership; profile-driven VM/call
+work; the final adversarial review; zero-warning Linux/macOS validation and
+pinned compatibility; and the **locked 16-workload GNU performance criterion:
+every workload's upper 95% bound at or below 1.03× GNU**, with calibration,
+nine rounds and real allocation counters. No GNU-parity claim exists.

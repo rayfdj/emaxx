@@ -173,7 +173,7 @@ pub(crate) fn window_buffer_id(interp: &Interpreter, value: &Value) -> Option<u6
         Some(id) => interp
             .find_record(id)
             .and_then(|record| record.slots.get(WINDOW_BUFFER_SLOT))
-            .and_then(|slot| slot.as_integer().ok())
+            .and_then(|slot| slot.integer_value())
             .map(|buffer_id| buffer_id.max(0) as u64)
             .filter(|buffer_id| interp.has_buffer_id(*buffer_id)),
         None => None,
@@ -202,7 +202,7 @@ pub(crate) fn window_start(
             Ok(interp
                 .find_record(id)
                 .and_then(|record| record.slots.get(WINDOW_START_SLOT))
-                .and_then(|slot| slot.as_integer().ok())
+                .and_then(|slot| slot.integer_value())
                 .map(|start| start.clamp(point_min as i64, point_max as i64) as usize)
                 .unwrap_or(point_min))
         }
@@ -323,7 +323,7 @@ pub(crate) fn scroll_selected_window(
     let text_height = text_height.max(1);
     let context = interp
         .lookup_var("next-screen-context-lines", env)
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .unwrap_or(2)
         .max(0) as isize;
     let count = arg.unwrap_or_else(|| default_sign * (text_height as isize - context).max(1));

@@ -2863,7 +2863,16 @@ fn assert_eval_string_ops() {
         Value::Nil
     );
     assert_eq!(
-        eval_str(r#"(equal (sort '(3 1 2) #'< :in-place t) '(1 2 3))"#),
+        eval_str(r#"(equal (sort '(3 1 2) :lessp #'< :in-place t) '(1 2 3))"#),
+        Value::T
+    );
+    // fns.c:Fsort takes a positional predicate only in the two-argument
+    // call; with keywords after it, the argument list is invalid.
+    assert_eq!(
+        eval_str(
+            r#"(equal (condition-case err (sort '(3 1 2) #'< :in-place t) (error err))
+                      '(error "Invalid argument list"))"#
+        ),
         Value::T
     );
     assert_eq!(
@@ -5940,7 +5949,7 @@ fn builtin_startup_defaults_are_intrinsically_special() {
             "missing `{name}` default"
         );
         assert!(
-            interp.is_special_variable(name),
+            interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(name)),
             "builtin startup variable `{name}` did not inherit special binding semantics"
         );
     }
@@ -6252,7 +6261,7 @@ fn native_overlay_arrow_cluster_matches_xdisp_startup_contract() {
         "overlay-arrow-variable-list",
     ] {
         assert!(
-            interp.is_special_variable(name),
+            interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(name)),
             "xdisp.c startup variable `{name}` must be dynamically special"
         );
     }
@@ -6275,7 +6284,9 @@ fn startup_global_values_and_special_declarations_share_one_registry() {
     let interp = Interpreter::new();
     for (name, _) in &interp.globals {
         assert!(
-            interp.is_special_variable(name.as_str()),
+            interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(
+                name.as_str()
+            )),
             "startup global `{name}` was not registered as special"
         );
     }
@@ -6439,7 +6450,11 @@ fn native_syntax_propertize_progress_is_buffer_local() {
         Some(Value::Integer(-1))
     );
     assert!(interp.is_auto_buffer_local("syntax-propertize--done"));
-    assert!(interp.is_special_variable("syntax-propertize--done"));
+    assert!(
+        interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(
+            "syntax-propertize--done"
+        ))
+    );
     assert_eq!(
         interp.lookup_var("font-lock-defaults", &Env::new()),
         None,
@@ -6454,7 +6469,7 @@ fn native_change_hook_controls_are_bound_and_dynamically_special() {
     for name in GNU_CHANGE_HOOK_SPECIAL_VARIABLES {
         assert_eq!(interp.lookup_var(name, &env), Some(Value::Nil));
         assert!(
-            interp.is_special_variable(name),
+            interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(name)),
             "GNU native change-hook variable `{name}` must be dynamically special"
         );
     }
@@ -6790,7 +6805,7 @@ fn gnu_lread_c_variables_are_declared_special() {
     let interp = Interpreter::new();
     for name in GNU_LREAD_SPECIAL_VARIABLES {
         assert!(
-            interp.is_special_variable(name),
+            interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(name)),
             "GNU lread.c DEFVAR `{name}` must remain dynamically scoped"
         );
         assert!(
@@ -6863,7 +6878,7 @@ fn gnu_emacs_c_locale_variables_exist_before_lisp_startup_policy_runs() {
     let interp = Interpreter::new();
     for name in GNU_EMACS_LOCALE_SPECIAL_VARIABLES {
         assert!(
-            interp.is_special_variable(name),
+            interp.is_special_variable_symbol(&crate::lisp::types::SymbolName::intern_str(name)),
             "GNU emacs.c locale DEFVAR `{name}` must remain dynamically scoped"
         );
         assert_eq!(
@@ -10001,5 +10016,88 @@ fn quoted_objects_share_reader_identity_through_mutation_and_gc() {
     assert_eq!(
         eval_str(&renamed).to_string(),
         "((wrong-number-of-arguments quote 2) (wrong-number-of-arguments quote 2) (t replacement) (t 73) (t replacement) (t t 47) (t t replacement) (t 101) (t replacement))"
+    );
+}
+
+#[test]
+fn cond_reads_each_clause_in_place_and_forward_line_takes_only_integers() {
+    // eval.c:Fcond evaluates (car CLAUSE) and then runs the true
+    // clause's cdr, read after the test, with Fprogn: a dotted body is no
+    // form, and a clause that is no list signals. cmds.c:Fforward_line's
+    // CHECK_INTEGER rejects a float, a symbol or a marker. The expected
+    // text is GNU 30.2's.
+    assert_eq!(
+        eval_str(
+            r#"(list (cond (t . 7)) (cond ((progn 3) . 7)) (cond (nil . 7) (t 8))
+                     (cond (nil) (5))
+                     (condition-case err (cond 5) (error err))
+                     (let ((clause (list nil 1 2)))
+                       (setcar clause
+                               (list 'progn (list 'setcdr (list 'quote clause) ''(9)) t))
+                       (eval (list 'cond clause) t)))"#,
+        )
+        .to_string(),
+        "(nil nil 8 5 (wrong-type-argument listp 5) 9)"
+    );
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                 (insert "a\nb\nc")
+                 (let ((marker (copy-marker 1)))
+                   (list (progn (goto-char 1) (forward-line)) (point)
+                         (forward-line 5) (point) (forward-line -5) (point)
+                         (condition-case err (forward-line 1.5) (error err))
+                         (condition-case err (forward-line 'a) (error err))
+                         (condition-case err (forward-line marker) (error (car err)))
+                         (forward-line (1+ most-positive-fixnum)) (point))))"#,
+        )
+        .to_string(),
+        "(0 3 3 6 -3 1 (wrong-type-argument integerp 1.5) (wrong-type-argument integerp a) \
+         wrong-type-argument 2305843009213693949 6)"
+    );
+}
+
+#[test]
+fn bitwise_operations_on_fixnums_cross_into_bignums_as_gnus_do() {
+    // `ash', `logand', `logior', `logxor' and `lognot' compute fixnums as
+    // i64s and leave other integers to bignums; the results at the fixnum
+    // and i64 boundaries are GNU 30.2's.
+    assert_eq!(
+        eval_str(
+            r#"(list (ash 1 60) (ash 1 61) (ash 1 62) (ash -1 61) (ash -1 62) (ash -1 63)
+                     (ash most-positive-fixnum 1) (ash most-negative-fixnum 1) (ash 3 61)
+                     (ash 5 -1) (ash -5 -1) (ash 5 -100) (ash -5 -100) (ash 0 100)
+                     (ash most-negative-fixnum -61) (ash (1+ most-positive-fixnum) -1)
+                     (logand) (logior) (logxor) (logand 12 10 -1) (logior 12 10)
+                     (logxor 12 10 6)
+                     (logand most-negative-fixnum most-positive-fixnum)
+                     (logior most-negative-fixnum most-positive-fixnum)
+                     (logxor most-negative-fixnum -1) (lognot most-negative-fixnum)
+                     (lognot most-positive-fixnum) (logand (1+ most-positive-fixnum) -1))"#,
+        )
+        .to_string(),
+        "(1152921504606846976 2305843009213693952 4611686018427387904 -2305843009213693952 \
+         -4611686018427387904 -9223372036854775808 4611686018427387902 -4611686018427387904 \
+         6917529027641081856 2 -3 0 -1 0 -1 1152921504606846976 -1 0 0 8 14 0 0 -1 \
+         2305843009213693951 2305843009213693951 -2305843009213693952 2305843009213693952)"
+    );
+    // data.c's argument checks: the first argument of `logand', `logior'
+    // and `logxor' an integer or marker, a later one a number or marker
+    // and no float; `lognot', `ash' and `logcount' integers alone.
+    assert_eq!(
+        eval_str(
+            r#"(with-temp-buffer
+                 (insert "abcdef")
+                 (let ((m (copy-marker 3)))
+                   (mapcar (lambda (form)
+                             (condition-case err (eval form t) (error (cadr err))))
+                           `((logand 1.5 2) (logand 2 1.5) (logand 2 'a) (logand 'a)
+                             (logior 1 'a) (logxor 3 2.0) (logand ,m 7) (logior ,m)
+                             (lognot 1.0) (lognot ,m) (ash 1 2.0) (ash ,m 1)
+                             (logcount ,m) (logcount -7)))))"#,
+        )
+        .to_string(),
+        "(integer-or-marker-p integer-or-marker-p number-or-marker-p integer-or-marker-p \
+         number-or-marker-p integer-or-marker-p 3 3 integerp integerp integerp integerp integerp 2)"
     );
 }

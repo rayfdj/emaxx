@@ -105,6 +105,13 @@ impl NativeSubr {
         }
     }
 
+    /// MAX_ARGS as the subr records it: a count, UNEVALLED (-1) or MANY
+    /// (-2).
+    #[inline(always)]
+    pub(crate) fn max_args_word(&self) -> i16 {
+        self.max_args_word
+    }
+
     pub(crate) fn max_args(&self) -> NativeMaxArgs {
         match self.max_args_word {
             -2 => NativeMaxArgs::Many,
@@ -113,9 +120,8 @@ impl NativeSubr {
         }
     }
 
-    pub(crate) fn facts(&'static self) -> crate::lisp::primitives::NameFacts {
-        *self
-            .facts
+    pub(crate) fn facts(&'static self) -> &'static crate::lisp::primitives::NameFacts {
+        self.facts
             .get_or_init(|| crate::lisp::primitives::compute_name_facts(self.name))
     }
 }
@@ -153,7 +159,7 @@ impl BuiltinRef {
         self.0
     }
 
-    pub(crate) fn facts(self) -> crate::lisp::primitives::NameFacts {
+    pub(crate) fn facts(self) -> &'static crate::lisp::primitives::NameFacts {
         self.0.facts()
     }
 

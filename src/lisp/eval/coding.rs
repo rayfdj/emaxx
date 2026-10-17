@@ -180,11 +180,11 @@ impl Interpreter {
             })
         };
         if let Some(final_char) = property(":iso-final-char")
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .and_then(|value| u32::try_from(value).ok())
         {
             let dimension = property(":dimension")
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .unwrap_or(1);
             let chars_96 = property(":code-space")
                 .and_then(|space| space.to_vec().ok())
@@ -196,8 +196,8 @@ impl Interpreter {
                 })
                 .and_then(|values| {
                     Some((
-                        values.first()?.as_integer().ok()?,
-                        values.get(1)?.as_integer().ok()?,
+                        values.first()?.integer_value()?,
+                        values.get(1)?.integer_value()?,
                     ))
                 })
                 .is_some_and(|(min, max)| max - min + 1 == 96);
@@ -580,7 +580,7 @@ impl Interpreter {
                     matches!(charset_list.kind(), Kind::Symbol(name) if name == "iso-2022");
                 let flags = type_args
                     .get(3)
-                    .and_then(|flags| flags.as_integer().ok())
+                    .and_then(|flags| flags.integer_value())
                     .unwrap_or(0) as u32
                     | if full_support {
                         ISO_FLAG_FULL_SUPPORT
@@ -608,13 +608,13 @@ impl Interpreter {
                         .and_then(|items| items.get(1).cloned())
                         .filter(|charset| !charset.is_nil());
                     let g1_dimension = g1
-                        .and_then(|charset| charset.as_symbol().ok().map(str::to_string))
+                        .and_then(|charset| charset.symbol_str().map(str::to_string))
                         .and_then(|charset| self.charset_plist_value(&charset))
                         .and_then(|plist| plist.to_vec().ok())
                         .and_then(|items| {
                             items.windows(2).find_map(|pair| {
                                 matches!(pair[0].kind(), Kind::Symbol(key) if key == ":dimension")
-                                    .then(|| pair[1].as_integer().ok())
+                                    .then(|| pair[1].integer_value())
                                     .flatten()
                             })
                         });
@@ -1196,7 +1196,14 @@ impl Interpreter {
             crate::lisp::primitives::WINDOW_OLD_POINT_SLOT,
             crate::lisp::primitives::WINDOW_POINT_SLOT,
         ];
-        for window_id in self.record_ids_by_type("window") {
+        // The ids in place, not a fresh vector: this runs on every
+        // insertion and deletion, and frames have few windows.
+        let windows: smallvec::SmallVec<[u64; 8]> = self
+            .record_ids_by_type_index
+            .get("window")
+            .map(|ids| ids.iter().copied().collect())
+            .unwrap_or_default();
+        for window_id in windows {
             let Some(record) = self.find_record_mut(window_id) else {
                 continue;
             };

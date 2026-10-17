@@ -68,7 +68,7 @@ impl KeySequenceReader {
         });
         let position = event.and_then(|event| {
             mouse_event_head(interp, &event)?;
-            event.cdr().ok()?.car().ok()
+            event.cdr_if_list()?.car_if_list()
         });
         let maps = current_active_maps(interp, env, true, position.as_ref())?;
         self.roots[6] = Value::cons(Value::symbol("keymap"), Value::list(maps));
@@ -262,7 +262,7 @@ impl KeySequenceReader {
                     let table = interp.current_case_table_id();
                     let mapped = interp
                         .char_table_get(table, character as u32)
-                        .and_then(|value| value.as_integer().ok())
+                        .and_then(|value| value.integer_value())
                         .unwrap_or(character);
                     mapped | (code & KEY_DESCRIPTION_MODIFIER_MASK)
                 };
@@ -378,8 +378,8 @@ impl KeySequenceReader {
             && let Some(position_tail) = event
                 .cdr()
                 .ok()
-                .and_then(|tail| tail.car().ok())
-                .and_then(|position| position.cdr().ok())
+                .and_then(|tail| tail.car_if_list())
+                .and_then(|position| position.cdr_if_list())
             && let Ok(area) = position_tail.car()
             && ["menu-bar", "tab-bar", "tool-bar"]
                 .iter()
@@ -441,9 +441,9 @@ impl KeySequenceReader {
             } else if event
                 .cdr()
                 .ok()
-                .and_then(|tail| tail.car().ok())
-                .and_then(|position| position.cdr().ok())
-                .and_then(|tail| tail.car().ok())
+                .and_then(|tail| tail.car_if_list())
+                .and_then(|position| position.cdr_if_list())
+                .and_then(|tail| tail.car_if_list())
                 .is_some_and(|position| position.is_cons())
             {
                 real_start = self.read.saturating_sub(1);

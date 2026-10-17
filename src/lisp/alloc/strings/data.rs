@@ -6,7 +6,7 @@ use super::{SharedStringState, StringCell};
 use crate::lisp::types::string_data::StringError;
 use std::alloc::{Layout, alloc, dealloc};
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 const ALIGN: usize = std::mem::align_of::<usize>();
 const PREFIX: usize = std::mem::size_of::<*mut SharedStringState>();
@@ -47,6 +47,17 @@ static LARGE: AtomicPtr<Block> = AtomicPtr::new(ptr::null_mut());
 // other object kinds or claim complete physical allocation accounting.
 static PURE_SMALL: SmallBlocks = SmallBlocks::new();
 static PURE_LARGE: AtomicPtr<Block> = AtomicPtr::new(ptr::null_mut());
+/// The small data of strings allocated while an image loads, packed apart
+/// and never compacted, as GNU's dumped strings keep their data in the
+/// dump, which compact_small_strings never reads. A dead image string's
+/// entry is retired in place; its block stays.
+static IMAGE_SMALL: SmallBlocks = SmallBlocks::new();
+/// An entry has been retired since the small blocks were last compacted,
+/// or a compaction held a block back: the next one has entries to squeeze
+/// out. Without a dead entry compact_small_strings moves nothing (it
+/// copies each live entry to where it is), so a collection with none
+/// leaves the blocks as they are and reads no owner.
+static SMALL_ENTRIES_RETIRED: AtomicBool = AtomicBool::new(false);
 
 unsafe fn new_block(bytes: usize) -> Result<*mut Block, StringError> {
     let layout = Layout::from_size_align(bytes, ALIGN).expect("string block layout");
@@ -95,7 +106,13 @@ impl PendingStringData {
                 chain.store(block, Ordering::Relaxed);
                 block
             } else {
-                let chain = if pure { &PURE_SMALL } else { &SMALL };
+                let chain = if pure {
+                    &PURE_SMALL
+                } else if super::super::image_region_open() {
+                    &IMAGE_SMALL
+                } else {
+                    &SMALL
+                };
                 let mut block = chain.current.load(Ordering::Relaxed);
                 if block.is_null()
                     || (*block).next_free.offset_from(block.cast()) as usize + needed > BLOCK_BYTES
@@ -148,6 +165,7 @@ impl Drop for PendingStringData {
 /// DATA names an allocated sdata entry with BYTES content bytes. No guard
 /// may retain its contents after retirement. Empty static data is excluded.
 pub(crate) unsafe fn retire_string_data(data: NonNull<u8>, bytes: usize) {
+    SMALL_ENTRIES_RETIRED.store(true, Ordering::Relaxed);
     unsafe {
         let entry = data.as_ptr().sub(PREFIX);
         entry
@@ -227,48 +245,56 @@ pub(super) fn sweep() {
         }
         LARGE.store(large.first, Ordering::Relaxed);
 
+        if !SMALL_ENTRIES_RETIRED.load(Ordering::Relaxed) {
+            return;
+        }
+        // Each block is tested for a borrowed owner as the walk reaches
+        // it, so the owners it reads are still in cache when the walk reads
+        // their sizes. A held block is never a target: the target stays at
+        // or before the block being walked, among the moving blocks.
         let mut held = Chain::default();
         let mut moving = Chain::default();
+        let mut target: *mut Block = ptr::null_mut();
+        let mut to: *mut u8 = ptr::null_mut();
         block = SMALL.oldest.load(Ordering::Relaxed);
         while !block.is_null() {
             let next = (*block).next;
-            if pinned(block) {
+            // A block is pinned only by a live guard on one of its owners.
+            if super::string_guards_live() && pinned(block) {
                 held.append(block);
-            } else {
-                moving.append(block);
+                block = next;
+                continue;
+            }
+            moving.append(block);
+            if target.is_null() {
+                target = block;
+                to = target.cast::<u8>().add(HEADER);
+            }
+            let end = (*block).next_free;
+            let mut from = block.cast::<u8>().add(HEADER);
+            while from < end {
+                let owner = from.cast::<*mut SharedStringState>().read();
+                let size = string_data_size(entry_bytes(from, owner));
+                let next_entry = from.add(size);
+                if !owner.is_null() {
+                    if to.offset_from(target.cast()) as usize + size > BLOCK_BYTES {
+                        (*target).next_free = to;
+                        target = (*target).next;
+                        to = target.cast::<u8>().add(HEADER);
+                    }
+                    if from != to {
+                        debug_assert!(target != block || to < from);
+                        debug_assert_eq!((*owner.cast::<StringCell>()).borrows.get(), 0);
+                        ptr::copy(from, to, size);
+                        (*owner).relocate_data(NonNull::new_unchecked(to.add(PREFIX)));
+                    }
+                    to = to.add(size);
+                }
+                from = next_entry;
             }
             block = next;
         }
-
-        let mut target = moving.first;
         if !target.is_null() {
-            let mut to = target.cast::<u8>().add(HEADER);
-            block = moving.first;
-            while !block.is_null() {
-                let end = (*block).next_free;
-                let mut from = block.cast::<u8>().add(HEADER);
-                while from < end {
-                    let owner = from.cast::<*mut SharedStringState>().read();
-                    let size = string_data_size(entry_bytes(from, owner));
-                    let next = from.add(size);
-                    if !owner.is_null() {
-                        if to.offset_from(target.cast()) as usize + size > BLOCK_BYTES {
-                            (*target).next_free = to;
-                            target = (*target).next;
-                            to = target.cast::<u8>().add(HEADER);
-                        }
-                        if from != to {
-                            debug_assert!(target != block || to < from);
-                            debug_assert_eq!((*owner.cast::<StringCell>()).borrows.get(), 0);
-                            ptr::copy(from, to, size);
-                            (*owner).relocate_data(NonNull::new_unchecked(to.add(PREFIX)));
-                        }
-                        to = to.add(size);
-                    }
-                    from = next;
-                }
-                block = (*block).next;
-            }
             block = (*target).next;
             while !block.is_null() {
                 let next = (*block).next;
@@ -282,6 +308,8 @@ pub(super) fn sweep() {
             (*target).next_free = to;
             moving.last = target;
         }
+        // A held block keeps its dead entries for the next compaction.
+        SMALL_ENTRIES_RETIRED.store(!held.first.is_null(), Ordering::Relaxed);
         if held.last.is_null() {
             SMALL.oldest.store(moving.first, Ordering::Relaxed);
         } else {
@@ -309,6 +337,7 @@ pub(super) fn census() -> (usize, usize, usize) {
         (LARGE.load(Ordering::Relaxed), false),
         (PURE_SMALL.oldest.load(Ordering::Relaxed), true),
         (PURE_LARGE.load(Ordering::Relaxed), false),
+        (IMAGE_SMALL.oldest.load(Ordering::Relaxed), true),
     ] {
         let mut block = first;
         // SAFETY: tests hold the existing process runtime lock; this reads

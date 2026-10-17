@@ -65,6 +65,7 @@ impl SymbolCells {
 
     pub(crate) fn mark_symbol_roots(&self, mark: &mut dyn FnMut(&Value)) {
         self.symbols.mark_roots(mark);
+        mark(&Value::Symbol(self.edebug_entered));
     }
 
     pub(crate) fn names(&self) -> Vec<SymbolName> {
@@ -77,6 +78,14 @@ impl SymbolCells {
 
     pub(crate) fn contains_name(&self, name: &str) -> bool {
         self.symbols.contains(name)
+    }
+
+    pub(crate) fn find_name(&self, name: &str) -> Option<SymbolName> {
+        self.symbols.find(name)
+    }
+
+    pub(crate) fn remove_name(&self, name: &str) -> Option<SymbolName> {
+        self.symbols.remove(name)
     }
 
     #[cfg(test)]
@@ -110,6 +119,7 @@ impl SymbolCells {
         symbol.cell().replace_bound_value(value)
     }
 
+    #[cfg(test)]
     pub(crate) fn is_bound_name(&self, name: &str) -> bool {
         self.value_by_name(name).is_some()
     }
@@ -147,10 +157,6 @@ impl SymbolCells {
     pub(crate) fn function(&self, symbol: &SymbolName) -> Option<Value> {
         let function = symbol.cell().function.get();
         (!function.is_nil()).then_some(function)
-    }
-
-    pub(crate) fn function_by_name(&self, name: &str) -> Option<Value> {
-        self.function(&SymbolName::find(name)?)
     }
 
     pub(crate) fn set_function(&mut self, symbol: &SymbolName, function: Option<Value>) {
@@ -317,8 +323,12 @@ impl SymbolCells {
 
     pub(crate) fn clear_flag_by_name(&mut self, name: &str, flag: u8) {
         if let Some(symbol) = SymbolName::find(name) {
-            symbol.cell().flags.set(symbol.cell().flags.get() & !flag);
+            self.clear_flag(&symbol, flag);
         }
+    }
+
+    pub(crate) fn clear_flag(&mut self, symbol: &SymbolName, flag: u8) {
+        symbol.cell().flags.set(symbol.cell().flags.get() & !flag);
     }
 }
 
@@ -360,13 +370,13 @@ mod tests {
         cells.insert(&symbol, old_value);
         cells.set_function_definition(&symbol, Some(function));
         assert!(cells.has_function_definition(&symbol));
-        symbol.cell().note_no_c_slot();
+        symbol.cell().set_c_slot(false);
         cells.set_plist(&symbol, plist);
         cells.set_plain_store(&symbol, true);
         cells.set_alias(&symbol, first);
         assert!(!cells.plain_store(&symbol));
         assert!(cells.has_function_definition(&symbol));
-        assert!(symbol.cell().has_no_c_slot());
+        assert!(!symbol.cell().has_c_slot());
         assert!(cells.snapshot(&symbol).value.is_none());
         assert_eq!(cells.snapshot(&symbol).alias, Some(first));
         assert_eq!(cells.bound_len(), 0);
@@ -404,7 +414,7 @@ mod tests {
         assert_eq!(cells.aliases_len(), 0);
         assert_eq!(cells.function(&symbol), Some(function));
         assert!(cells.has_function_definition(&symbol));
-        assert!(symbol.cell().has_no_c_slot());
+        assert!(!symbol.cell().has_c_slot());
         assert_eq!(cells.plist(&symbol), plist);
         assert_eq!(
             std::mem::size_of_val(&symbol.cell().payload),
@@ -525,17 +535,14 @@ mod tests {
         let direct = SymbolName::intern_str("function-order-direct");
         cells.set_function(&direct, Some(Value::Integer(71)));
         assert_eq!(cells.function_definitions_len(), 0);
-        assert_eq!(
-            cells.function_by_name(direct.as_str()),
-            Some(Value::Integer(71))
-        );
+        assert_eq!(cells.function(&direct), Some(Value::Integer(71)));
         for (index, symbol) in symbols.iter().enumerate() {
             cells.set_function_definition(symbol, Some(Value::Integer(index as i64)));
         }
         cells.set_function_definition(&symbols[0], Some(Value::Integer(17)));
         cells.set_function_definition(&symbols[1], Some(Value::Nil));
         assert!(!cells.has_function_definition(&symbols[1]));
-        assert!(cells.function_by_name(symbols[1].as_str()).is_none());
+        assert!(cells.function(&symbols[1]).is_none());
         cells.set_function_definition(&symbols[1], Some(Value::Integer(43)));
         let transient = SymbolName::intern_str("function-order-transient");
         let owner_count = cells.names_len();

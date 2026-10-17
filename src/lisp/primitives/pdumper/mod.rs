@@ -390,9 +390,9 @@ pub(crate) fn pdumper_load(
         return Err(PdumperLoadError::Error("a dump is already loaded".into()));
     }
     let started = std::time::Instant::now();
-    interp
-        .native_compiler
-        .garbage_collection_note_image_load_start();
+    // The objects rebuilt from here on are the image's: pdumper's mapped
+    // region, outside the heap's census and never reused.
+    let image_region = crate::lisp::alloc::ImageRegion::open();
     let bytes = match load::ImageBytes::open(path) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -442,6 +442,22 @@ pub(crate) fn pdumper_load(
     // baseline below.)
     interp.set_symbol_value_cell("gcs-done", Value::Integer(0));
     interp.set_symbol_value_cell("gc-elapsed", Value::float(0.0));
+    // pdumper.c:dump_fwd_int restores each DEFVAR_INT word from the dump,
+    // and the dump's objects are mapped, not consed: the allocation counters
+    // stand where the image recorded them, whatever this loader allocated
+    // while rebuilding those objects.
+    for symbol in &image.symbols {
+        let name = symbol.symbol.as_str();
+        if let Some((_, counter)) = crate::lisp::alloc::counters::FORWARDED_COUNTERS
+            .iter()
+            .find(|(counter_name, _)| *counter_name == name)
+            && let Some(Ok(recorded)) = symbol.value.map(|value| value.as_integer())
+        {
+            counter.store(recorded, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    // Objects made after this are the heap's own.
+    drop(image_region);
     // alloc.c: `consing_until_gc' and `gc_threshold' are plain globals
     // the image does not carry, zero in a process that starts from a
     // dump, and pdumper's objects are not consing.  The loader's

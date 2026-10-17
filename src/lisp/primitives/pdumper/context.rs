@@ -1202,12 +1202,12 @@ impl DumpContext {
         };
         let cell = interp.dump_symbol_cell(&symbol);
         let function = interp
-            .raw_function_binding(symbol.as_str(), &crate::lisp::types::Env::new())
+            .raw_function_binding_symbol(&symbol, &crate::lisp::types::Env::new())
             .unwrap_or(Value::Nil);
-        let plist = interp.symbol_plist(symbol.as_str());
+        let plist = interp.symbol_plist_symbol(&symbol);
         let watchers = interp.variable_watchers(symbol.as_str());
         let start = self.object_start()?;
-        let uninterned_from_obarray = interp.standard_obarray_symbol_is_uninterned(symbol.as_str());
+        let uninterned_from_obarray = false; // Object state now owns membership.
         let mut words = vec![
             symbol_flags_word(
                 &symbol,
@@ -2564,8 +2564,13 @@ pub(crate) fn symbol_flags_word(
     if cell.flags & flags::SPECIAL != 0 {
         word |= FLAG_DECLARED_SPECIAL;
     }
-    if trapped_write {
+    if symbol.cell().is_constant() {
+        word |= FLAG_CONSTANT;
+    } else if trapped_write {
         word |= FLAG_TRAPPED_WRITE;
+    }
+    if symbol.cell().has_c_slot() {
+        word |= FLAG_C_SLOT;
     }
     for (cell_flag, bit) in [
         (flags::LOCAL_IF_SET, FLAG_LOCAL_IF_SET),
@@ -2596,6 +2601,8 @@ pub(crate) const SYMBOL_INTERNED_IN_INITIAL_OBARRAY: u64 = 2;
 pub(crate) const SYMBOL_INTERNED_SHIFT: u32 = 4;
 pub(crate) const FLAG_DECLARED_SPECIAL: u64 = 1 << 3;
 pub(crate) const FLAG_TRAPPED_WRITE: u64 = 1 << 6;
+/// lisp.h: SYMBOL_NOWRITE is the second trapped_write state.
+pub(crate) const FLAG_CONSTANT: u64 = 2 << 6;
 pub(crate) const FLAG_LOCAL_IF_SET: u64 = 1 << 8;
 pub(crate) const FLAG_PER_BUFFER: u64 = 1 << 9;
 pub(crate) const FLAG_ALWAYS_LOCAL: u64 = 1 << 10;
@@ -2608,3 +2615,5 @@ pub(crate) const FLAG_UNINTERNED_FROM_OBARRAY: u64 = 1 << 13;
 /// LOCALIZED; GNU's redirect field holds one kind, so this bit keeps the
 /// second.
 pub(crate) const FLAG_LOCALIZED_BESIDE_FORWARDED: u64 = 1 << 14;
+/// Emaxx's remaining dedicated-slot adapter belongs to this actual object.
+pub(crate) const FLAG_C_SLOT: u64 = 1 << 15;

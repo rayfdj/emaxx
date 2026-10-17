@@ -36,7 +36,7 @@ pub(crate) fn run_change_hooks(
     }
     let hooks = hook_values(interp, hook_name, env, Some(interp.current_buffer_id()));
     let combining = interp
-        .lookup_var_key(cached_symbol!("combine-after-change-calls"), env)
+        .symbol_value_key(cached_symbol!("combine-after-change-calls"))
         .is_some_and(|value| value.is_truthy());
     if hook_name == "before-change-functions" {
         if hooks.is_empty() && combining {
@@ -189,8 +189,9 @@ pub(crate) fn hook_values(
         }
         _ => crate::lisp::types::SymbolName::interned_cached(hook_name),
     };
+    // run_hook_with_args reads the hook with find_symbol_value.
     let current = match &symbol {
-        Some(symbol) => interp.lookup_var_symbol(symbol, env),
+        Some(symbol) => interp.symbol_value_symbol(symbol),
         None => interp.lookup_var(hook_name, env),
     };
     let local = buffer_id.is_some_and(|id| {
@@ -200,7 +201,7 @@ pub(crate) fn hook_values(
                 .is_some_and(|binding| binding.is_some()),
             None => interp.buffer_local_value(id, hook_name).is_some(),
         };
-        has_local_value || interp.buffer_local_hook(id, hook_name).is_some()
+        has_local_value || interp.has_buffer_local_hook(id, hook_name)
     });
     let mut hooks = value_hooks(current);
     if !local {
@@ -213,7 +214,10 @@ pub(crate) fn hook_values(
     // through the native bootstrap helper, so the Rust depth mirror may be
     // absent.  A local `t' sentinel splices the default at that exact point;
     // local nil deliberately suppresses the default.
-    let mut default = value_hooks(interp.default_value(hook_name));
+    let mut default = value_hooks(match &symbol {
+        Some(symbol) => interp.default_value_symbol(symbol).ok().flatten(),
+        None => interp.default_value(hook_name),
+    });
     default.retain(|hook| !matches!(hook.kind(), Kind::T));
     let mut result = Vec::new();
     for hook in hooks {
@@ -572,7 +576,7 @@ pub(crate) fn delete_region_with_hooks(
     with_overlay_hook_roots(interp, &overlay_calls, |interp| {
         run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
         let has_before_hooks = interp
-            .lookup_var_key(cached_symbol!("before-change-functions"), env)
+            .symbol_value_key(cached_symbol!("before-change-functions"))
             .map(|value| !value.to_vec().unwrap_or_default().is_empty())
             .or_else(|| {
                 interp
@@ -655,7 +659,6 @@ pub(crate) fn ensure_region_modifiable(
     interp: &Interpreter,
     from: usize,
     to: usize,
-    env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
     let (from, to) = if from <= to { (from, to) } else { (to, from) };
     let from = from.max(interp.buffer.borrow().point_min());
@@ -664,9 +667,9 @@ pub(crate) fn ensure_region_modifiable(
         return Ok(());
     }
     let inhibit_read_only = interp
-        .lookup_var_key(cached_symbol!("inhibit-read-only"), env)
+        .symbol_value_key(cached_symbol!("inhibit-read-only"))
         .unwrap_or(Value::Nil);
-    let buffer_read_only = buffer_read_only_active(interp, env, &inhibit_read_only);
+    let buffer_read_only = buffer_read_only_active(interp, &inhibit_read_only);
     // insdel.c: with no intervals there is no read-only text to verify,
     // and the buffer's own flag was decided above.
     if !buffer_read_only && !interp.buffer.borrow().has_text_properties() {
@@ -700,14 +703,11 @@ pub(crate) fn ensure_region_modifiable(
     Ok(())
 }
 
-pub(crate) fn ensure_insert_modifiable(
-    interp: &Interpreter,
-    env: &mut crate::lisp::types::Env,
-) -> Result<(), LispError> {
+pub(crate) fn ensure_insert_modifiable(interp: &Interpreter) -> Result<(), LispError> {
     let inhibit_read_only = interp
-        .lookup_var_key(cached_symbol!("inhibit-read-only"), env)
+        .symbol_value_key(cached_symbol!("inhibit-read-only"))
         .unwrap_or(Value::Nil);
-    if !buffer_read_only_active(interp, env, &inhibit_read_only) {
+    if !buffer_read_only_active(interp, &inhibit_read_only) {
         return Ok(());
     }
     let point = interp.buffer.borrow().point();
@@ -721,13 +721,9 @@ pub(crate) fn ensure_insert_modifiable(
     Err(buffer_read_only_signal(interp))
 }
 
-fn buffer_read_only_active(
-    interp: &Interpreter,
-    env: &mut crate::lisp::types::Env,
-    inhibit_read_only: &Value,
-) -> bool {
+fn buffer_read_only_active(interp: &Interpreter, inhibit_read_only: &Value) -> bool {
     interp
-        .lookup_var_key(cached_symbol!("buffer-read-only"), env)
+        .symbol_value_key(cached_symbol!("buffer-read-only"))
         .is_some_and(|value| value.is_truthy())
         && !inhibit_read_only.is_truthy()
 }

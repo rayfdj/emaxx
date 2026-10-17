@@ -172,8 +172,8 @@ pub(super) fn bare_symbol_identity(
 ) -> Option<crate::lisp::types::SymbolName> {
     match value.kind() {
         Kind::Symbol(symbol) => return Some(symbol),
-        Kind::Nil => return Some("nil".into()),
-        Kind::T => return Some("t".into()),
+        Kind::Nil => return Some(crate::lisp::types::symbols::builtin_boolean(false)),
+        Kind::T => return Some(crate::lisp::types::symbols::builtin_boolean(true)),
         _ => {}
     }
     if symbols_with_pos_enabled(interp, env)
@@ -181,8 +181,8 @@ pub(super) fn bare_symbol_identity(
     {
         return match bare.kind() {
             Kind::Symbol(symbol) => Some(symbol),
-            Kind::Nil => Some("nil".into()),
-            Kind::T => Some("t".into()),
+            Kind::Nil => Some(crate::lisp::types::symbols::builtin_boolean(false)),
+            Kind::T => Some(crate::lisp::types::symbols::builtin_boolean(true)),
             _ => None,
         };
     }
@@ -214,13 +214,13 @@ fn symbol_property_by_eq(
         if guard.step(crate::lisp::types::ConsCell::identity(cell)) {
             return None;
         }
-        let key = tail.car().ok()?;
-        let rest = tail.cdr().ok()?;
-        let value = rest.car().ok()?;
+        let key = tail.car_if_list()?;
+        let rest = tail.cdr_if_list()?;
+        let value = rest.car_if_list()?;
         if values_eq_in_env(interp, &key, property, env) {
             return Some(value);
         }
-        tail = rest.cdr().ok()?;
+        tail = rest.cdr_if_list()?;
     }
     None
 }
@@ -244,36 +244,36 @@ fn overriding_plist_property(
         if entry_guard.step(crate::lisp::types::ConsCell::identity(entries_cell)) {
             break;
         }
-        let entry = entries.car().ok()?;
+        let entry = entries.car_if_list()?;
         let entry_key = entry
             .car()
             .ok()
             .and_then(|key| bare_symbol_name(interp, env, &key));
         if entry_key.as_deref() == Some(symbol) {
-            let mut plist = entry.cdr().ok()?;
+            let mut plist = entry.cdr_if_list()?;
             let mut plist_guard = crate::lisp::types::CycleGuard::new();
             while let Kind::Cons(ref plist_cell) = plist.kind() {
                 if plist_guard.step(crate::lisp::types::ConsCell::identity(plist_cell)) {
                     break;
                 }
-                let key = plist.car().ok()?;
-                let rest = plist.cdr().ok()?;
+                let key = plist.car_if_list()?;
+                let rest = plist.cdr_if_list()?;
                 if !matches!(rest.kind(), Kind::Cons(_)) {
                     break;
                 }
                 if bare_symbol_name(interp, env, &key).as_deref() == Some(property) {
-                    let value = rest.car().ok()?;
+                    let value = rest.car_if_list()?;
                     // plist_get stops at the first key, even when its
                     // value is nil. Fget then falls back to the real
                     // plist instead of examining a later duplicate.
                     return (!value.is_nil()).then_some(value);
                 }
-                plist = rest.cdr().ok()?;
+                plist = rest.cdr_if_list()?;
             }
             // GNU reads only the first assq hit before the real plist.
             return None;
         }
-        entries = entries.cdr().ok()?;
+        entries = entries.cdr_if_list()?;
     }
     None
 }
@@ -350,24 +350,6 @@ fn run_hooks_dispatch(
     Ok(Value::Nil)
 }
 
-/// data.c:set_internal with SET_INTERNAL_SET, after CHECK_SYMBOL: follow
-/// the alias, normalize for a forwarded slot, notify watchers with the
-/// caller's original NEWVAL, then store.  `set' and bytecode.c's Bvarset
-/// share it.
-pub(crate) fn set_internal(
-    interp: &mut Interpreter,
-    name: &str,
-    value: Value,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    set_internal_symbol(
-        interp,
-        &crate::lisp::types::SymbolName::intern_str(name),
-        value,
-        env,
-    )
-}
-
 /// data.c:set_internal for the symbol in hand: its alias chain, flags,
 /// scope and cells are read from the object (see `resolve_variable_symbol').
 pub(crate) fn set_internal_symbol(
@@ -380,16 +362,37 @@ pub(crate) fn set_internal_symbol(
     if interp.assign_plain_global(symbol, value) {
         return Ok(());
     }
+    if interp.check_constant_assignment_symbol(symbol, value)? {
+        return Ok(());
+    }
     let resolved = interp.resolve_variable_symbol(symbol)?;
     // data.c:set_internal notifies with NEWVAL before the forwarded C slot
     // normalizes it.  The stored value may be t/nil for a DEFVAR_BOOL, but
     // the watcher must receive the caller's original object.
-    let stored = interp.prepare_variable_assignment_symbol(&resolved, value)?;
+    let stored = interp.prepare_forwarded_assignment_symbol(&resolved, value)?;
     interp.notify_assignment_symbol(&resolved, value, env)?;
     interp.set_symbol_value_cell_resolved(&resolved, stored);
     if resolved == *symbol {
         interp.learn_plain_store(symbol);
     }
+    Ok(())
+}
+
+/// data.c:set_default_internal checks the original object's trapped_write,
+/// then follows its alias redirect to the actual default cell.
+fn set_default_internal_symbol(
+    interp: &mut Interpreter,
+    symbol: &crate::lisp::types::SymbolName,
+    value: Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    if interp.check_constant_assignment_symbol(symbol, value)? {
+        return Ok(());
+    }
+    let resolved = interp.resolve_variable_symbol(symbol)?;
+    let stored = interp.prepare_forwarded_assignment_symbol(&resolved, value)?;
+    interp.notify_variable_watchers_symbol(&resolved, value, "set", None, env)?;
+    interp.set_global_binding_resolved(&resolved, stored);
     Ok(())
 }
 
@@ -412,8 +415,7 @@ define_dispatch!(
                     .unwrap_or(Value::Nil);
                 // lread.c:Fread and Fread_positioning_symbols share these
                 // defaults and resolve read-minibuffer through its cell.
-                if matches!(source.kind(), Kind::T) || source.as_symbol().ok() == Some("read-char")
-                {
+                if matches!(source.kind(), Kind::T) || source.symbol_str() == Some("read-char") {
                     call_named_function(
                         interp,
                         "read-minibuffer",
@@ -699,92 +701,25 @@ define_dispatch!(
                             .lookup_var("obarray", env)
                             .filter(|value| !value.is_nil())
                     });
-                let symbol_name = match args[0].kind() {
-                    // `nil' and `t' are symbols in Elisp even though Emaxx
-                    // gives their canonical values dedicated representations.
-                    // Like every other symbol argument, GNU's `intern-soft'
-                    // returns the exact object only when it belongs to the
-                    // requested obarray.  `nil' is also the miss result, so it
-                    // can be returned immediately for every obarray.
-                    Kind::Nil => return Ok(Value::Nil),
-                    Kind::T if obarray.is_none() => return Ok(Value::T),
-                    Kind::T if matches!(obarray.map(|v| v.kind()), Some(Kind::Record(id)) if interp.is_standard_obarray_id(id.id)) =>
-                    {
-                        return Ok(if interp.standard_obarray_contains_symbol("t") {
-                            Value::T
-                        } else {
-                            Value::Nil
-                        });
-                    }
-                    Kind::T => return Ok(Value::Nil),
-                    Kind::Symbol(symbol) if obarray.is_none() => {
-                        return Ok(if interp.standard_obarray_contains_symbol(&symbol) {
-                            Value::Symbol(symbol)
-                        } else {
-                            Value::Nil
-                        });
-                    }
-                    Kind::Symbol(symbol)
-                        if matches!(obarray.map(|v| v.kind()), Some(Kind::Record(id)) if interp.is_standard_obarray_id(id.id))
-                            && crate::lisp::types::visible_symbol_name(&symbol) == symbol =>
-                    {
-                        // An ordinary symbol object read by Lisp is already a
-                        // member of the standard obarray.  Synthetic `make-symbol'
-                        // and private-obarray names carry identity markers and
-                        // must still miss here.
-                        return Ok(if interp.standard_obarray_contains_symbol(&symbol) {
-                            Value::Symbol(symbol)
-                        } else {
-                            Value::Nil
-                        });
-                    }
-                    Kind::Symbol(symbol) => {
-                        let Some(obarray) = &obarray else {
-                            return Ok(Value::Symbol(symbol));
-                        };
-                        let interned = intern_soft_in_obarray(
-                            interp,
-                            obarray,
-                            crate::lisp::types::visible_symbol_name(&symbol),
-                        )?;
-                        return Ok(if interned == args[0] {
-                            args[0]
-                        } else {
-                            Value::Nil
-                        });
-                    }
-                    positioned
-                        if symbols_with_pos_enabled(interp, env)
-                            && symbol_with_pos_parts(interp, &positioned.value()).is_some() =>
-                    {
-                        // GNU 30.2 lread.c:Fintern_soft treats a positioned
-                        // symbol as a symbol while the dynamic switch is on,
-                        // searches for its bare symbol, and returns the exact
-                        // positioned object on a hit.
-                        let (bare, _) = symbol_with_pos_parts(interp, &positioned.value())
-                            .expect("guard established symbol-with-position");
-                        let bare_name = bare.as_symbol()?;
-                        if obarray.is_none() {
-                            return Ok(if interp.standard_obarray_contains_symbol(bare_name) {
-                                positioned.value()
-                            } else {
-                                Value::Nil
-                            });
+                if let Some(symbol) = bare_symbol_identity(interp, env, &args[0]) {
+                    // Fintern_soft's symbol argument searches for this exact
+                    // object. A later symbol with the same name is different.
+                    let present = match &obarray {
+                        None => interp.standard_obarray_contains_object(&symbol),
+                        Some(value) if matches!(value.kind(), Kind::Record(id) if interp.is_standard_obarray_id(id.id)) => {
+                            interp.standard_obarray_contains_object(&symbol)
                         }
-                        let obarray = obarray.as_ref().expect("checked above");
-                        let interned = intern_soft_in_obarray(
-                            interp,
-                            obarray,
-                            crate::lisp::types::visible_symbol_name(bare_name),
-                        )?;
-                        return Ok(if interned == bare {
-                            positioned.value()
-                        } else {
-                            Value::Nil
-                        });
-                    }
-                    _ => string_text(&args[0])?,
-                };
+                        Some(value) => {
+                            intern_soft_in_obarray(
+                                interp,
+                                value,
+                                crate::lisp::types::visible_symbol_name(symbol.as_str()),
+                            )? == Value::Symbol(symbol)
+                        }
+                    };
+                    return Ok(if present { args[0] } else { Value::Nil });
+                }
+                let symbol_name = string_text(&args[0])?;
                 let symbol_name = apply_symbol_shorthands_in_env(interp, &symbol_name, env)?;
                 if let Some(obarray) = obarray {
                     // lread.c:Fintern_soft only looks in the requested obarray.
@@ -916,28 +851,16 @@ define_dispatch!(
             "set" => {
                 need_args(name, args, 2)?;
                 // GNU 30.2 data.c:Fset reaches set_internal's CHECK_SYMBOL.
-                let checked = checked_symbol_name(interp, &args[0], env)?;
-                set_internal(interp, &checked, args[1], env)?;
+                let checked = checked_symbol_identity(interp, &args[0], env)?;
+                set_internal_symbol(interp, &checked, args[1], env)?;
                 Ok(args[1])
             }
             "set-default" => {
                 need_args(name, args, 2)?;
                 // GNU 30.2 data.c:Fset_default reaches
                 // set_default_internal's CHECK_SYMBOL.
-                let checked = checked_symbol_name(interp, &args[0], env)?;
-                let symbol = interp.resolve_variable_name(&checked)?;
-                let watcher_value = args[1];
-                let value = interp.prepare_variable_assignment(&symbol, watcher_value)?;
-                interp.notify_variable_watchers(
-                    &symbol,
-                    watcher_value,
-                    // data.c:notify_variable_watchers canonicalizes
-                    // Qset_default to Qset before invoking callbacks.
-                    "set",
-                    None,
-                    env,
-                )?;
-                interp.set_global_binding(&symbol, value);
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                set_default_internal_symbol(interp, &symbol, args[1], env)?;
                 Ok(args[1])
             }
             "symbol-value" => direct_symbol_value(interp, args, env),
@@ -945,28 +868,37 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 // GNU 30.2 data.c:Fdefault_value delegates to
                 // default_value, which uses CHECK_SYMBOL/XSYMBOL.
-                let symbol = checked_symbol_name(interp, &args[0], env)?;
-                interp.default_value(&symbol).ok_or(LispError::Void(symbol))
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                interp.default_value_symbol(&symbol)?.ok_or_else(|| {
+                    LispError::SignalValue(Value::list([
+                        Value::symbol("void-variable"),
+                        Value::Symbol(symbol),
+                    ]))
+                })
             }
             "default-toplevel-value" => {
                 need_args(name, args, 1)?;
                 // GNU 30.2 eval.c:Fdefault_toplevel_value ultimately uses
                 // the same CHECK_SYMBOL default-value path.
-                let symbol = checked_symbol_name(interp, &args[0], env)?;
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
                 interp
-                    .default_toplevel_value(&symbol)
-                    .ok_or(LispError::Void(symbol))
+                    .default_toplevel_value_symbol(&symbol)?
+                    .ok_or_else(|| {
+                        LispError::SignalValue(Value::list([
+                            Value::symbol("void-variable"),
+                            Value::Symbol(symbol),
+                        ]))
+                    })
             }
             "set-default-toplevel-value" => {
                 need_args(name, args, 2)?;
                 // GNU 30.2 eval.c:Fset_default_toplevel_value uses the
                 // CHECK_SYMBOL default binding path.
-                let checked = checked_symbol_name(interp, &args[0], env)?;
-                let symbol = interp.resolve_variable_name(&checked)?;
-                let value = interp.prepare_variable_assignment(&symbol, args[1])?;
-                interp.notify_variable_watchers(&symbol, value, "set", None, env)?;
-                interp.set_default_toplevel_value(&symbol, value);
-                Ok(value)
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                if !interp.set_active_toplevel_value_symbol(&symbol, args[1]) {
+                    set_default_internal_symbol(interp, &symbol, args[1], env)?;
+                }
+                Ok(Value::Nil)
             }
             "symbol-plist" => {
                 need_args(name, args, 1)?;
@@ -1032,7 +964,7 @@ define_dispatch!(
                     );
                 }
                 if let (Some(symbol), Some((file, _, _))) =
-                    (args[0].as_symbol().ok(), autoload_parts(&value))
+                    (args[0].symbol_str(), autoload_parts(&value))
                 {
                     interp.load_autoload_target(&file, env)?;
                     value = interp.lookup_function(symbol, env)?;
@@ -1098,15 +1030,31 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 // GNU 30.2 data.c:Fmakunbound uses CHECK_SYMBOL/XSYMBOL and
                 // returns the original symbol argument.
-                let checked = checked_symbol_name(interp, &args[0], env)?;
-                if interp.is_constant_symbol(&checked) || checked == "initial-window-system" {
+                let checked = checked_symbol_identity(interp, &args[0], env)?;
+                if interp.is_constant_symbol(&checked)
+                    || (checked.cell().has_c_slot() && checked == "initial-window-system")
+                {
                     return Err(LispError::SignalValue(Value::list([
                         Value::Symbol("setting-constant".into()),
                         args[0],
                     ])));
                 }
-                let symbol = interp.resolve_variable_name(&checked)?;
+                let symbol = interp.resolve_variable_symbol(&checked)?;
                 let buffer_id = interp.current_buffer_id();
+                if !symbol.cell().has_c_slot()
+                    && symbol.cell().flags.get() & crate::lisp::eval::symbol_cell_flags::LOCALIZED
+                        == 0
+                {
+                    interp.notify_variable_watchers(
+                        symbol.as_str(),
+                        Value::Nil,
+                        "makunbound",
+                        None,
+                        env,
+                    )?;
+                    interp.remove_global_binding_symbol(&symbol);
+                    return Ok(args[0]);
+                }
                 // Fset (symbol, Qunbound) through data.c:set_internal's
                 // SYMBOL_LOCALIZED case: an existing alist cell (bound or
                 // void) becomes void and stays a local binding; a
@@ -1172,8 +1120,8 @@ define_dispatch!(
                     } else {
                         interp.forwarded_c_value(&symbol, env).unwrap_or(Value::Nil)
                     };
-                    interp.remove_global_binding(&symbol);
-                    interp.detach_forwarded_variable(&symbol, slot_value);
+                    interp.remove_global_binding_symbol(&symbol);
+                    interp.detach_forwarded_variable_symbol(&symbol, slot_value);
                 }
                 Ok(args[0])
             }
@@ -1191,8 +1139,8 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let alias = args[0].as_symbol()?.to_string();
-                let base = args[1].as_symbol()?.to_string();
+                let alias = checked_symbol_identity(interp, &args[0], env)?;
+                let base = checked_symbol_identity(interp, &args[1], env)?;
                 let visible =
                     |symbol: &str| crate::lisp::types::visible_symbol_name(symbol).to_owned();
                 if interp.is_constant_symbol(&alias) {
@@ -1201,45 +1149,51 @@ define_dispatch!(
                         visible(&alias)
                     )));
                 }
-                interp.check_variable_alias_cycle(&alias, &base)?;
+                interp.check_variable_alias_cycle_symbol(&alias, &base)?;
                 // A DEFVAR_PER_BUFFER slot is SYMBOL_FORWARDED until
                 // something localizes it; Emaxx marks those auto-buffer-local
                 // from the start, so for them the oracle's own startup
                 // classification decides, and the forwarded manifest is
                 // consulted before Emaxx's flag.
-                if (interp.is_localized_variable(&alias) && !interp.is_per_buffer_special(&alias))
-                    || interp.is_localized_at_startup_in_gnu(&alias)
+                let flags = alias.cell().flags.get();
+                use crate::lisp::eval::symbol_cell_flags::{FORWARDED, LOCALIZED, PER_BUFFER};
+                if (flags & LOCALIZED != 0 && flags & PER_BUFFER == 0)
+                    || (alias.cell().has_c_slot() && interp.is_localized_at_startup_in_gnu(&alias))
                 {
                     return Err(LispError::Signal(format!(
                         "Don't know how to make a buffer-local variable an alias: {}",
                         visible(&alias)
                     )));
                 }
-                if interp.is_forwarded_variable(&alias) {
+                if flags & FORWARDED != 0 {
                     return Err(LispError::Signal(format!(
                         "Cannot make a built-in variable an alias: {}",
                         visible(&alias)
                     )));
                 }
-                if interp.is_localized_variable(&alias) {
+                if flags & LOCALIZED != 0 {
                     return Err(LispError::Signal(format!(
                         "Don't know how to make a buffer-local variable an alias: {}",
                         visible(&alias)
                     )));
                 }
                 // https://lists.gnu.org/r/emacs-devel/2008-04/msg00834.html
-                let alias_value = interp.symbol_value_cell(&alias).ok();
+                let alias_value = interp.symbol_value_cell_symbol(&alias).ok();
                 match interp
-                    .symbol_value_cell(&base)
+                    .symbol_value_cell_symbol(&base)
                     .map_err(LispError::into_kind)
                 {
                     Err(LispErrorKind::Void(_)) => {
                         if let Some(value) = alias_value {
                             // set_internal (base, value, Qnil, SET_INTERNAL_BIND)
+                            interp.check_constant_assignment_symbol(&base, value)?;
+                            let resolved = interp.resolve_variable_symbol(&base)?;
+                            let stored =
+                                interp.prepare_forwarded_assignment_symbol(&resolved, value)?;
                             if !interp.variable_watchers(&base).is_empty() {
                                 interp.notify_variable_watchers(&base, value, "let", None, env)?;
                             }
-                            interp.set_symbol_value_cell(&base, value);
+                            interp.set_symbol_value_cell_resolved(&resolved, stored);
                         }
                     }
                     Err(error) => return Err(LispError::from(error)),
@@ -1252,15 +1206,15 @@ define_dispatch!(
                                 "format-message",
                                 &[
                                     Value::string("Overwriting value of `%s' by aliasing to `%s'"),
-                                    Value::Symbol(alias.clone().into()),
-                                    Value::Symbol(base.clone().into()),
+                                    Value::Symbol(alias),
+                                    Value::Symbol(base),
                                 ],
                                 env,
                             )?;
                             let warning = Value::list([
                                 Value::Symbol("defvaralias".into()),
                                 Value::Symbol("losing-value".into()),
-                                Value::Symbol(alias.clone().into()),
+                                Value::Symbol(alias),
                             ]);
                             call_named_function(
                                 interp,
@@ -1280,29 +1234,36 @@ define_dispatch!(
                 if !interp.variable_watchers(&alias).is_empty() {
                     interp.notify_variable_watchers(
                         &alias,
-                        Value::Symbol(base.clone().into()),
+                        Value::Symbol(base),
                         "defvaralias",
                         None,
                         env,
                     )?;
                     interp.clear_variable_watchers(&alias);
                 }
-                interp.mark_special_variable(&alias);
-                interp.mark_special_variable(&base);
-                interp.set_variable_alias(&alias, &base)?;
-                interp.remove_global_binding(&alias);
-                interp.remove_buffer_local_value(interp.current_buffer_id(), &alias);
+                interp.mark_special_variable_symbol(&alias);
+                interp.mark_special_variable_symbol(&base);
+                interp.set_variable_alias_symbol(&alias, &base)?;
                 // LOADHIST_ATTACH (new_alias): the bare symbol, as for defvar.
-                interp.record_definition_in_load_history("defvar", &alias);
+                interp.record_symbol_definition_in_load_history("defvar", &alias);
                 // "Even if docstring is nil: remove old docstring."
                 let doc = args.get(2).cloned().unwrap_or(Value::Nil);
-                interp.put_symbol_property(&alias, "variable-documentation", doc);
-                Ok(Value::Symbol(base.into()))
+                super::call(
+                    interp,
+                    "put",
+                    &[
+                        Value::Symbol(alias),
+                        Value::symbol("variable-documentation"),
+                        doc,
+                    ],
+                    env,
+                )?;
+                Ok(Value::Symbol(base))
             }
             "indirect-variable" => {
                 need_args(name, args, 1)?;
-                let symbol = args[0].as_symbol()?;
-                Ok(Value::Symbol(interp.indirect_variable_name(symbol)?.into()))
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                Ok(Value::Symbol(interp.resolve_variable_symbol(&symbol)?))
             }
             "internal--define-uninitialized-variable" => {
                 // GNU: (SYMBOL &optional DOC) — cus-start.el passes one arg.
@@ -2307,9 +2268,9 @@ pub(super) fn direct_symbol_value(
     need_args(name, args, 1)?;
     // GNU 30.2 data.c:Fsymbol_value reaches
     // find_symbol_value's CHECK_SYMBOL.
-    let symbol = checked_symbol_name(interp, &args[0], env)?;
+    let symbol = checked_symbol_identity(interp, &args[0], env)?;
     match interp
-        .symbol_value_cell(&symbol)
+        .symbol_value_cell_symbol(&symbol)
         .map_err(LispError::into_kind)
     {
         // Fsymbol_value signals with its original argument,

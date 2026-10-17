@@ -1,6 +1,6 @@
 use super::*;
 use crate::lisp::primitives::string_like;
-use crate::lisp::types::{CharTableRef, Kind};
+use crate::lisp::types::Kind;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,23 +10,15 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
-// keymap.c keeps the Unicode menu-case table in a staticpro'd slot. The
-// existing serialized runtime owns this process slot, including host-thread
-// handoff; it is also an explicit image root below.
-static UNICODE_MENU_CASE_TABLE: crate::lisp::types::ProcessTable<Option<CharTableRef>> =
-    crate::lisp::types::ProcessTable::new();
-
-pub(crate) fn unicode_menu_case_table() -> Value {
-    UNICODE_MENU_CASE_TABLE.with_borrow(|table| table.map_or(Value::Nil, Value::CharTable))
-}
-
-pub(crate) fn restore_unicode_menu_case_table(value: Value) -> Result<(), String> {
-    let table = match value.kind() {
-        Kind::Nil => None,
-        Kind::CharTable(table) => Some(table),
+pub(crate) fn restore_unicode_menu_case_table(
+    interp: &mut Interpreter,
+    value: Value,
+) -> Result<(), String> {
+    match value.kind() {
+        Kind::Nil | Kind::CharTable(_) => {}
         _ => return Err("Unicode menu case table: expected nil or char-table".into()),
-    };
-    UNICODE_MENU_CASE_TABLE.with_borrow_mut(|slot| *slot = table);
+    }
+    interp.unicode_menu_case_table = value;
     Ok(())
 }
 
@@ -119,7 +111,7 @@ fn lookup_key_value(
     {
         return Ok(found);
     }
-    let unicode = match unicode_menu_case_table().kind() {
+    let unicode = match interp.unicode_menu_case_table.kind() {
         Kind::CharTable(table) => table,
         _ => {
             let table = super::strings::call(
@@ -134,7 +126,7 @@ fn lookup_key_value(
             if !table.is_uniprop() {
                 return Ok(found);
             }
-            UNICODE_MENU_CASE_TABLE.with_borrow_mut(|slot| *slot = Some(table));
+            interp.unicode_menu_case_table = Value::CharTable(table);
             table
         }
     };
@@ -691,7 +683,7 @@ define_dispatch!(
                 let mut call_args = Vec::with_capacity(args.len());
                 call_args.push(args[0]);
                 call_args.extend_from_slice(&args[2..]);
-                interp.call_function_value(function, args[1].as_symbol().ok(), &call_args, env)
+                interp.call_function_value(function, args[1].symbol_str(), &call_args, env)
             }
             "symbol-function" => direct_symbol_function(interp, args, env),
             "symbol-name" => direct_symbol_name(interp, args, env),
@@ -1582,12 +1574,12 @@ define_dispatch!(
             }
             "memory-use-counts" => {
                 need_args(name, args, 0)?;
-                // GNU's seven counters are incremented at type-specific C arena
-                // allocation sites and survive GC.  Rust ownership has neither
-                // those arenas nor equivalent category accounting; allocator
-                // byte totals or live-object scans would not implement this API.
-                Err(LispError::Signal(
-                    "GNU allocation counters are unavailable in the Rust ownership backend".into(),
+                // alloc.c:Fmemory_use_counts: `make_int' of each counter, in
+                // DEFVAR order. The words are the allocator's own, raised at
+                // its allocation points and never lowered by collection.
+                Ok(Value::list(
+                    crate::lisp::alloc::counters::memory_use_counts()
+                        .map(crate::lisp::primitives::normalize_integer_value),
                 ))
             }
             "num-processors" => {
@@ -1702,7 +1694,7 @@ pub(crate) fn oclosure_type_of(value: &Value) -> Option<String> {
     };
     // GNU oclosure-type recognizes a closure whose public slot four is a
     // symbol.  Read the actual slot without reconstructing closure metadata.
-    (lambda.public_len() > 4).then(|| lambda.documentation()?.as_symbol().ok().map(String::from))?
+    (lambda.public_len() > 4).then(|| lambda.documentation()?.symbol_str().map(String::from))?
 }
 
 fn widget_get(interp: &Interpreter, widget: &Value, property: &Value) -> Result<Value, LispError> {
@@ -1839,8 +1831,8 @@ pub(super) fn direct_symbol_function(
     // GNU 30.2 data.c:Fsymbol_function uses
     // CHECK_SYMBOL/XSYMBOL, sharing the positioned-symbol
     // contract with `fboundp'.
-    let symbol = checked_symbol_name(interp, &args[0], env)?;
-    Ok(match interp.logical_function_binding(&symbol, env) {
+    let symbol = checked_symbol_identity(interp, &args[0], env)?;
+    Ok(match interp.raw_function_binding_symbol(&symbol, env) {
         Some(value) => value,
         // GNU returns nil for an unbound function cell (nadvice's
         // pending-advice path reads it).
@@ -1859,17 +1851,17 @@ pub(super) fn direct_symbol_name(
     // GNU 30.2 data.c:Fsymbol_name uses CHECK_SYMBOL/XSYMBOL.
     let symbol_name = match args[0].kind() {
         Kind::Nil => {
-            return Ok(crate::lisp::types::SymbolName::from("nil").lisp_name());
+            return Ok(crate::lisp::types::symbols::builtin_boolean(false).lisp_name());
         }
-        Kind::T => return Ok(crate::lisp::types::SymbolName::from("t").lisp_name()),
+        Kind::T => return Ok(crate::lisp::types::symbols::builtin_boolean(true).lisp_name()),
         Kind::Symbol(symbol) => symbol,
         _ if symbols_with_pos_enabled(interp, env) => {
             match symbol_with_pos_parts(interp, &args[0]).map(|(a0, a1)| (a0.kind(), a1)) {
                 Some((Kind::Nil, _)) => {
-                    return Ok(crate::lisp::types::SymbolName::from("nil").lisp_name());
+                    return Ok(crate::lisp::types::symbols::builtin_boolean(false).lisp_name());
                 }
                 Some((Kind::T, _)) => {
-                    return Ok(crate::lisp::types::SymbolName::from("t").lisp_name());
+                    return Ok(crate::lisp::types::symbols::builtin_boolean(true).lisp_name());
                 }
                 Some((Kind::Symbol(symbol), _)) => symbol,
                 _ => return Err(wrong_type_argument("symbolp", args[0])),
@@ -1880,9 +1872,9 @@ pub(super) fn direct_symbol_name(
     Ok(symbol_name.lisp_name())
 }
 
-/// Include tags and GNU's captured Unicode menu table are roots while cached.
+/// Include tags are roots while cached. The captured Unicode menu table is
+/// marked with the editor that owns it.
 pub(crate) fn mark_semantic_cache_roots(mark: &mut dyn FnMut(&Value)) {
-    mark(&unicode_menu_case_table());
     SEMANTIC_CPP_INCLUDE_TAG_CACHE.with_borrow(|cache| {
         for tags in cache.values() {
             for tag in tags {
@@ -1931,7 +1923,7 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
         entry(
             "symbols",
             &[
-                crate::lisp::eval::GNU_SYMBOL_SIZE as i64,
+                crate::lisp::eval::SYMBOL_SIZE as i64,
                 census.symbols as i64,
                 0,
             ],
@@ -1939,7 +1931,7 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
         entry(
             "strings",
             &[
-                crate::lisp::eval::GNU_STRING_SIZE as i64,
+                crate::lisp::eval::STRING_HEADER_SIZE as i64,
                 census.strings as i64,
                 0,
             ],

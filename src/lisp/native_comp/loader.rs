@@ -229,6 +229,12 @@ pub(super) fn with_active_registered_runtime<R>(
     })
 }
 
+/// The runtime `with_active_registered_runtime' lends, or null.
+#[inline(always)]
+pub(super) fn active_registered_runtime() -> *mut NativeRuntime {
+    ACTIVE_REGISTERED_RUNTIME.with(Cell::get)
+}
+
 pub(super) fn with_active_compiler<R>(body: impl FnOnce(&SharedCompiler) -> R) -> Option<R> {
     ACTIVE_COMPILER.with(|compiler| {
         let compiler = compiler.get();
@@ -470,7 +476,7 @@ fn comp_unit_relocations_match(
         let Ok(actual) = runtime.decode_relocation(word) else {
             return false;
         };
-        if actual.as_symbol().ok() == Some("lambda-fixup") {
+        if actual.symbol_str() == Some("lambda-fixup") {
             return false;
         }
         let native_function = matches!(actual.kind(), Kind::NativeFunction(_));
@@ -906,7 +912,7 @@ pub(super) fn register_with_state(
             crate::lisp::primitives::symbols_with_pos_enabled(interpreter, environment)
                 .then(|| crate::lisp::primitives::symbol_with_pos_parts(interpreter, &arguments[0]))
                 .flatten()
-                .and_then(|(symbol, _)| symbol.as_symbol().ok().map(str::to_owned))
+                .and_then(|(symbol, _)| symbol.symbol_str().map(str::to_owned))
                 .ok_or_else(|| {
                     crate::lisp::primitives::wrong_type_argument("symbolp", arguments[0])
                 })
@@ -1057,6 +1063,62 @@ pub(crate) fn register_active(
     )
 }
 
+/// `call_active_function' for the usual callee, a lexical function of
+/// fixed arity (eval.c:funcall_subr's a0 to a8) given a count it
+/// accepts: the runtime found once and the call made by `invoke_fixed'.
+/// None for any other callee or count, or with no runtime to lend, which
+/// the general path handles (and signals for).
+#[inline(always)]
+pub(crate) fn call_fixed_function(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    native: NativeFunctionRef,
+    arguments: &[Value],
+) -> Option<Result<Value, LispError>> {
+    // `descriptor' and `check_arity' for this case.
+    let maximum = native.max_args_word();
+    let count = arguments.len();
+    if native.is_dynamic()
+        || !(0..=8).contains(&maximum)
+        || count > maximum as usize
+        || i64::try_from(count).ok()? < i64::from(native.min_args())
+    {
+        return None;
+    }
+    let target = native.target();
+    if target.is_null() {
+        return None;
+    }
+    // A call nested in the active call of this interpreter runs in that
+    // call's activation (`invoke_nested_fixed', as a Bcall's does): the
+    // thread is activated and the heap's depth counted already.  The
+    // caller made maybe_gc's test (eval_sub's, Ffuncall's).
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if maximum <= 6
+        && let Some(nested) = super::runtime::NestedCall::of(interpreter)
+    {
+        // SAFETY: the active call lends its runtime for this synchronous
+        // call, as `current_runtime' does; NESTED is its call, and TARGET
+        // takes at most six arguments, among them ARGUMENTS.
+        let runtime = unsafe { &mut *nested.runtime() };
+        return Some(unsafe {
+            runtime.invoke_nested_fixed(nested, interpreter, environment, target, arguments)
+        });
+    }
+    let runtime = super::runtime::current_runtime();
+    if runtime.is_null() {
+        return None;
+    }
+    // SAFETY: as `with_current_runtime's loan of the runtime, for this
+    // synchronous call.
+    let runtime = unsafe { &mut *runtime };
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if maximum <= 6 {
+        return Some(runtime.invoke_fixed_registers(interpreter, environment, target, arguments));
+    }
+    Some(runtime.invoke_fixed(interpreter, environment, target, arguments))
+}
+
 pub(crate) fn call_active_function(
     interpreter: &mut Interpreter,
     environment: &mut Env,
@@ -1099,6 +1161,7 @@ pub(crate) fn call_function(
     })
 }
 
+#[inline]
 fn invoke_function(
     function: NativeFunction,
     native: NativeFunctionRef,
@@ -1116,7 +1179,26 @@ fn invoke_function(
             arguments,
         );
     }
+    invoke_dynamic_function(
+        function,
+        native,
+        runtime,
+        interpreter,
+        environment,
+        arguments,
+    )
+}
 
+/// `invoke_function' for a function compiled with dynamic binding.
+#[inline(never)]
+fn invoke_dynamic_function(
+    function: NativeFunction,
+    native: NativeFunctionRef,
+    runtime: &mut NativeRuntime,
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    arguments: &[Value],
+) -> Result<Value, LispError> {
     // eval.c:funcall_lambda owns the calling convention for Lisp/d native
     // functions.  It binds the recorded lambda list dynamically and enters
     // the generated function through its zero-argument machine entry.
@@ -1535,7 +1617,7 @@ pub(super) fn resolve_dumped_function(
         }
         let current = runtime
             .decode_relocation(unsafe { std::ptr::read(unit.impure_relocations().add(index)) })?;
-        if current.as_symbol().ok() != Some("lambda-fixup") {
+        if current.symbol_str() != Some("lambda-fixup") {
             return Err(super::lisp::native_ice(
                 "dumped lambda relocation is not a lambda-fixup placeholder",
             ));

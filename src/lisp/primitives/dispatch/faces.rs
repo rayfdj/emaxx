@@ -13,7 +13,7 @@ fn resolve_face_name(interp: &Interpreter, value: &Value) -> Result<String, Lisp
     while seen.insert(name.clone()) {
         let Some(alias) = interp
             .get_symbol_property(&name, "face-alias")
-            .and_then(|value| value.as_symbol().ok().map(str::to_string))
+            .and_then(|value| value.symbol_str().map(str::to_string))
         else {
             break;
         };

@@ -164,7 +164,7 @@ impl CasingContext {
             self.titlecase?,
             code,
         )?;
-        u32::try_from(value.as_integer().ok()?).ok()
+        u32::try_from(value.integer_value()?).ok()
     }
 
     fn special_string(&self, interp: &Interpreter, property: &str, code: u32) -> Option<String> {
@@ -207,7 +207,7 @@ pub(crate) fn case_table_mapping(
     }
     interp
         .char_table_get(table_id, code)
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .and_then(|mapped| u32::try_from(mapped).ok())
         .map(normalize_case_key)
 }
@@ -455,7 +455,7 @@ pub(crate) fn casify_value(
                 let table = if flag == CaseAction::Down { down } else { up };
                 let mapped = interp
                     .char_table_get(table, code)
-                    .and_then(|value| value.as_integer().ok())
+                    .and_then(|value| value.integer_value())
                     .and_then(|value| u32::try_from(value).ok())
                     .unwrap_or(code);
                 let mut mapped =
@@ -472,7 +472,7 @@ pub(crate) fn casify_value(
                     };
                     mapped = dispatch::strings::uniprop_table_id(interp, property, env)
                         .and_then(|table| interp.char_table_get(table, code))
-                        .and_then(|value| value.as_integer().ok())
+                        .and_then(|value| value.integer_value())
                         .and_then(|value| u32::try_from(value).ok())
                         .unwrap_or(code);
                 }
@@ -560,7 +560,7 @@ pub(crate) fn casify_buffer_region(
     let changed_start = lo + unchanged_prefix;
     let old_changed_end = hi - unchanged_suffix;
     let new_changed_end = new_end - unchanged_suffix;
-    ensure_region_modifiable(interp, lo, hi, env)?;
+    ensure_region_modifiable(interp, lo, hi)?;
     ensure_no_supersession_threat(interp, env)?;
     let overlay_calls = overlay_change_hook_calls(interp, &interp.buffer.borrow(), lo, hi, new_end);
     with_overlay_hook_roots(interp, &overlay_calls, |interp| {

@@ -181,7 +181,7 @@ fn pattern_expand(
     if is_vector_value(pattern) {
         let mut items = pattern.to_vec()?;
         debug_assert_eq!(
-            items.first().and_then(|value| value.as_symbol().ok()),
+            items.first().and_then(|value| value.symbol_str()),
             Some("vector-literal")
         );
         items.remove(0);
@@ -372,12 +372,12 @@ fn setting_predicate(
         .unwrap_or(Value::Nil);
     for language_entry in settings.to_vec()? {
         let values = language_entry.to_vec()?;
-        if values.first().and_then(|value| value.as_symbol().ok()) != Some(language) {
+        if values.first().and_then(|value| value.symbol_str()) != Some(language) {
             continue;
         }
         for entry in &values[1..] {
             let definition = entry.to_vec()?;
-            if definition.first().and_then(|value| value.as_symbol().ok()) == Some(thing) {
+            if definition.first().and_then(|value| value.symbol_str()) == Some(thing) {
                 return Ok(definition.get(1).cloned());
             }
         }
@@ -421,7 +421,7 @@ fn validate_predicate(
     if predicate.is_cons() {
         let car = predicate.car()?;
         let cdr = predicate.cdr()?;
-        if car.as_symbol().ok() == Some("not") {
+        if car.symbol_str() == Some("not") {
             let values = cdr.to_vec()?;
             if values.len() != 1 {
                 return Err(predicate_signal(
@@ -432,7 +432,7 @@ fn validate_predicate(
             }
             return validate_predicate(interp, &values[0], language, env, depth + 1);
         }
-        if car.as_symbol().ok() == Some("or") {
+        if car.symbol_str() == Some("or") {
             let values = cdr.to_vec()?;
             if values.is_empty() {
                 return Err(predicate_signal(
@@ -502,7 +502,7 @@ fn node_matches(
     }
     let car = predicate.car()?;
     let cdr = predicate.cdr()?;
-    if car.as_symbol().ok() == Some("not") {
+    if car.symbol_str() == Some("not") {
         return Ok(!node_matches(
             interp,
             source,
@@ -513,7 +513,7 @@ fn node_matches(
             env,
         )?);
     }
-    if car.as_symbol().ok() == Some("or") {
+    if car.symbol_str() == Some("or") {
         for option in cdr.to_vec()? {
             if node_matches(interp, source, tree, index, &option, language, env)? {
                 return Ok(true);

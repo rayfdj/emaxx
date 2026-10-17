@@ -1912,7 +1912,7 @@ pub(crate) fn dispatch_file_name_handler(
                 .to_vec()
                 .ok()
                 .and_then(|items| items.get(1).cloned())
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .and_then(|value| usize::try_from(value).ok())
                 .unwrap_or(0);
             finish_insert_file_contents(interp, env, inserted, &args[1..])?;

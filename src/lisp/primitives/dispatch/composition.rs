@@ -748,7 +748,7 @@ fn terminal_font(interp: &Interpreter, value: &Value) -> Result<Value, LispError
 fn char_width_table_width(interp: &Interpreter, env: &Env, character: char) -> i64 {
     char_table_id_from_var(interp, env, "char-width-table")
         .and_then(|id| interp.char_table_get(id, character as u32))
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .unwrap_or(0)
         .max(0)
 }

@@ -17,10 +17,7 @@ impl Interpreter {
         // its value form signals wrong-number-of-arguments with the count
         // read so far.
         let mut result = Value::Nil;
-        let mut cur = match args.kind() {
-            Kind::Cons(cell) => Some(cell),
-            _ => None,
-        };
+        let mut cur = args.cons_ref();
         let mut nargs = 0usize;
         while let Some(symbol_cell) = cur {
             let sym = symbol_cell.car.get();
@@ -31,15 +28,14 @@ impl Interpreter {
             cur = next_cons(&value_cell);
             nargs += 2;
             // The symbol itself, resolved and assigned by its id.
-            let symbol = match sym.kind() {
-                Kind::Symbol(symbol) => symbol,
-                Kind::Nil => SymbolName::intern_str("nil"),
-                Kind::T => SymbolName::intern_str("t"),
-                other => {
-                    return Err(LispError::WrongTypeArgument(
-                        "symbolp".into(),
-                        other.value(),
-                    ));
+            let symbol = match sym.symbol_cell() {
+                Some(symbol) => symbol,
+                None if sym.is_nil() => crate::lisp::types::symbols::builtin_boolean(false),
+                None if sym.word() == Value::T.word() => {
+                    crate::lisp::types::symbols::builtin_boolean(true)
+                }
+                None => {
+                    return Err(LispError::WrongTypeArgument("symbolp".into(), sym));
                 }
             };
             // Fsetq: the value, then the lexical alist, then Fset -- for
@@ -63,9 +59,12 @@ impl Interpreter {
                 result = evaluated;
                 continue;
             }
+            result = evaluated;
+            if self.check_constant_assignment_symbol(&symbol, evaluated)? {
+                continue;
+            }
             let resolved = self.resolve_variable_symbol(&symbol)?;
-            let val = self.prepare_variable_assignment_symbol(&resolved, evaluated)?;
-            result = val;
+            let val = self.prepare_forwarded_assignment_symbol(&resolved, evaluated)?;
             if local_only {
                 self.notify_variable_watchers(
                     resolved.as_str(),
@@ -167,8 +166,7 @@ impl Interpreter {
             let length = self.eval_list_length(*args, env)?;
             return Err(LispError::WrongNumberOfArgs("function".into(), length));
         }
-        if !matches!(quoted.car().map(|value| value.kind()), Ok(Kind::Symbol(head)) if head == "lambda")
-        {
+        if !form_head_is(quoted, "lambda") {
             return Ok(quoted);
         }
         let tail = quoted.cdr()?;
@@ -183,8 +181,7 @@ impl Interpreter {
                     documentation = first;
                     body = rest;
                 }
-            } else if matches!(first.car().map(|value| value.kind()), Ok(Kind::Symbol(head)) if head == ":documentation")
-            {
+            } else if form_head_is(first, ":documentation") {
                 documentation = self.eval(&first.cdr()?.car()?, env)?;
                 // Re-read after evaluation: dynamic documentation can mutate
                 // the source cell whose cdr GNU reads here.
@@ -194,8 +191,7 @@ impl Interpreter {
         let mut iform = Value::Nil;
         if let Kind::Cons(cell) = body.kind() {
             let first = cell.car.get();
-            if matches!(first.car().map(|value| value.kind()), Ok(Kind::Symbol(head)) if head == "interactive")
-            {
+            if form_head_is(first, "interactive") {
                 iform = first;
                 body = cell.cdr.get();
             }
@@ -232,4 +228,12 @@ impl Interpreter {
         }
         self.make_interpreted_closure(parameters, body, closure_env, documentation, iform)
     }
+}
+
+/// Whether FORM is a list whose car is the symbol NAME. `Value::car'
+/// would build a wrong-type-argument error for any other object, only to
+/// drop it.
+fn form_head_is(form: Value, name: &str) -> bool {
+    form.cons_ref()
+        .is_some_and(|cell| matches!(cell.car.get().kind(), Kind::Symbol(head) if head == name))
 }

@@ -2164,6 +2164,41 @@ fn backtrace_locals_show_lambda_arguments_for_requested_frame() {
 }
 
 #[test]
+fn insertion_reads_read_only_and_change_hook_variables_without_lexical_bindings() {
+    // C reads `inhibit-read-only' and runs `before-change-functions' with
+    // find_symbol_value, so a lexical binding of either name (a lexical
+    // function's parameter) is not seen; a dynamic `let' is. GNU answers
+    // (read-only nil t).
+    assert_eq!(
+        eval_str(
+            r#"(eval
+                 '(list
+                   (funcall (lambda (inhibit-read-only)
+                              (with-temp-buffer
+                                (insert "x")
+                                (setq buffer-read-only t)
+                                (condition-case nil
+                                    (progn (insert "y") (buffer-string))
+                                  (buffer-read-only 'read-only))))
+                            t)
+                   (let ((ran nil))
+                     (with-temp-buffer
+                       (funcall (lambda (before-change-functions) (insert "a"))
+                                (list (lambda (&rest _) (setq ran t)))))
+                     ran)
+                   (let ((ran nil))
+                     (with-temp-buffer
+                       (let ((before-change-functions
+                              (list (lambda (&rest _) (setq ran t)))))
+                         (insert "a")))
+                     ran))
+                 t)"#
+        ),
+        Value::list([Value::symbol("read-only"), Value::Nil, Value::T])
+    );
+}
+
+#[test]
 fn backtrace_eval_reads_and_updates_suspended_lexical_bindings() {
     assert_eq!(
         eval_str(

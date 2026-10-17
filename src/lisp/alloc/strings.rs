@@ -14,7 +14,7 @@ pub(crate) fn string_data_census() -> (usize, usize, usize) {
 }
 
 use super::super::types::{LispError, MarkBit, SharedStringState, Value};
-use super::{BlockKind, FREE_MARK, blocks_of, new_block, release_block};
+use super::{BlockKind, FREE_MARK, blocks_of, new_block, release_block, sweep_blocks_of};
 use std::cell::{Cell, UnsafeCell};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
@@ -28,6 +28,21 @@ pub(crate) struct StringCell {
     mark: MarkBit,
     pure: bool,
     permanent_empty: bool,
+    /// A `CodeState': whether the bytecode verifier holds a result for
+    /// this string as a function's code.
+    code: Cell<u8>,
+    /// Allocated while an image loaded (see `ImageCells').
+    image: bool,
+}
+
+/// The bytecode verifier's view of a string (see `bytecode::verify'): no
+/// result, a result for the current bytes, or results made stale by a
+/// change to the string. Any exclusive borrow counts as a change.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum CodeState {
+    Unverified = 0,
+    Current = 1,
+    Stale = 2,
 }
 
 pub(super) const STRING_CELL_SIZE: usize = std::mem::size_of::<StringCell>();
@@ -49,6 +64,8 @@ impl StringCell {
             mark,
             pure,
             permanent_empty: false,
+            code: Cell::new(CodeState::Unverified as u8),
+            image: super::image_region_open(),
         }
     }
 }
@@ -106,6 +123,21 @@ impl StringObjectRef {
         }
     }
 
+    /// The string's bytes with no guard counted, for a reader that holds
+    /// them only while nothing runs that could store into the string.
+    ///
+    /// # Safety
+    /// Neither a store into the string nor a collection happens while the
+    /// slice is in use (a mutable guard alive now panics, as `borrow').
+    #[inline(always)]
+    pub(crate) unsafe fn bytes_unguarded<'a>(&self) -> &'a [u8] {
+        let cell = self.cell();
+        assert!(cell.borrows.get() >= 0, "string already mutably borrowed");
+        // SAFETY: as the caller's contract: no mutable guard aliases the
+        // state, and its bytes stay in place while the slice is used.
+        unsafe { (*cell.state.get()).bytes_unbounded() }
+    }
+
     pub fn borrow(&self) -> StringBorrow<'_> {
         let cell = self.cell();
         let count = cell.borrows.get();
@@ -114,6 +146,7 @@ impl StringObjectRef {
             "string already mutably borrowed"
         );
         cell.borrows.set(count + 1);
+        guard_taken();
         StringBorrow(cell)
     }
 
@@ -125,7 +158,24 @@ impl StringObjectRef {
         assert!(!cell.pure, "pure string cannot be mutably borrowed");
         assert_eq!(cell.borrows.get(), 0, "string already borrowed");
         cell.borrows.set(-1);
+        guard_taken();
+        if cell.code.get() == CodeState::Current as u8 {
+            cell.code.set(CodeState::Stale as u8);
+        }
         StringBorrowMut(cell)
+    }
+
+    pub(crate) fn code_state(&self) -> CodeState {
+        match self.cell().code.get() {
+            0 => CodeState::Unverified,
+            1 => CodeState::Current,
+            _ => CodeState::Stale,
+        }
+    }
+
+    /// The verifier now holds a result for these bytes.
+    pub(crate) fn set_code_current(&self) {
+        self.cell().code.set(CodeState::Current as u8);
     }
 
     pub(crate) fn mark_bit(&self) -> StringMark<'_> {
@@ -146,6 +196,7 @@ impl Deref for StringBorrow<'_> {
 impl Drop for StringBorrow<'_> {
     fn drop(&mut self) {
         self.0.borrows.set(self.0.borrows.get() - 1);
+        guard_released();
     }
 }
 
@@ -170,7 +221,33 @@ impl DerefMut for StringBorrowMut<'_> {
 impl Drop for StringBorrowMut<'_> {
     fn drop(&mut self) {
         self.0.borrows.set(0);
+        guard_released();
     }
+}
+
+thread_local! {
+    /// The string guards alive on this thread: `borrow`'s, `borrow_mut`'s
+    /// and a construction's, counted as they are made and dropped. The
+    /// collector scans this thread's stack alone, as it runs with the Lisp
+    /// heap to itself, and Lisp threads switch stacks on this thread, a
+    /// parked one's guards included, so at a collection the count is every
+    /// guard a cell can have; at zero no cell's borrow count is read.
+    static LIVE_GUARDS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[inline(always)]
+fn guard_taken() {
+    LIVE_GUARDS.set(LIVE_GUARDS.get() + 1);
+}
+
+#[inline(always)]
+fn guard_released() {
+    LIVE_GUARDS.set(LIVE_GUARDS.get() - 1);
+}
+
+/// Whether any string guard is alive (see `LIVE_GUARDS`).
+pub(crate) fn string_guards_live() -> bool {
+    LIVE_GUARDS.get() != 0
 }
 
 pub(crate) struct StringMark<'a>(&'a StringCell);
@@ -182,7 +259,11 @@ impl StringMark<'_> {
 
     pub(crate) fn mark(&self, epoch: u32) -> bool {
         // Pure strings have no properties and no collectable children.
-        !self.0.pure && self.0.mark.mark(epoch)
+        let marked = !self.0.pure && self.0.mark.mark(epoch);
+        if marked && self.0.image {
+            super::IMAGE_STRINGS.note_marked();
+        }
+        marked
     }
 }
 
@@ -221,6 +302,12 @@ static BUMP_END: AtomicUsize = AtomicUsize::new(0);
 static LIVE_STRINGS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static LIVE_SPANS: AtomicUsize = AtomicUsize::new(0);
+
+/// The next string header takes a new block (see `ImageRegion').
+pub(super) fn abandon_allocation_frontier() {
+    FREE_LIST.store(std::ptr::null_mut(), Ordering::Relaxed);
+    BUMP_NEXT.store(BUMP_END.load(Ordering::Relaxed), Ordering::Relaxed);
+}
 
 /// Ordinary constructors canonicalize empties; restoration and purecopy
 /// allocate distinct headers, as their GNU C paths require.
@@ -291,6 +378,7 @@ pub(crate) fn allocate_string<E>(
     let construction = StringConstruction(cell);
     let handle = unsafe {
         (*cell).borrows.set(-1);
+        guard_taken();
         let mut guard = StringBorrowMut(&*cell);
         initialize(&mut guard)?;
         drop(guard);
@@ -303,6 +391,16 @@ pub(crate) fn allocate_string<E>(
     if kind == StringAllocation::Pure {
         assert!(state.props.is_empty(), "pure strings have no intervals");
     } else {
+        if kind == StringAllocation::Ordinary {
+            // alloc.c:make_clear_multibyte_string: allocate_string's
+            // `++strings_consed' and `string_chars_consed += nbytes'.
+            // Restored image strings are pdumper's objects, not consing.
+            super::counters::tally(&super::counters::STRINGS_CONSED, 1);
+            super::counters::tally(
+                &super::counters::STRING_CHARS_CONSED,
+                state.storage_bytes() as i64,
+            );
+        }
         super::super::types::note_string_allocation(state.storage_bytes());
         LIVE_STRINGS.store(LIVE_STRINGS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
         LIVE_BYTES.store(
@@ -353,6 +451,12 @@ pub(super) unsafe fn live_string_holding(start: usize, address: usize) -> Option
 /// collection before its mark epoch begins instead of reading through that
 /// reference or discovering the conflict after other objects were swept.
 pub(crate) fn borrowed_string_roots() -> Vec<Value> {
+    // With no guard alive no cell is borrowed: the walk below, a read of
+    // every string cell, is left to checked builds, which confirm it.
+    let guards_live = string_guards_live();
+    if !guards_live && !cfg!(debug_assertions) {
+        return Vec::new();
+    }
     let mut roots = Vec::new();
     let mut inspect = |cell: *mut StringCell| {
         // SAFETY: block mark words are initialized even in free cells. The
@@ -382,6 +486,10 @@ pub(crate) fn borrowed_string_roots() -> Vec<Value> {
     {
         inspect(address as *mut StringCell);
     }
+    debug_assert!(
+        guards_live || roots.is_empty(),
+        "a borrowed string with no live guard counted"
+    );
     roots
 }
 
@@ -391,7 +499,17 @@ pub(crate) fn sweep_strings(epoch: u32) {
     let mut free_count = 0;
     let (mut strings, mut bytes, mut spans) = (0, 0, 0);
     let mut released = Vec::new();
-    for start in blocks_of(BlockKind::String) {
+    // When no image string died, the image's blocks are left unread
+    // (checked builds read them and assert so).
+    let image_unchanged = super::IMAGE_STRINGS.unchanged();
+    let mut image_live = 0;
+    for (start, image_block) in sweep_blocks_of(BlockKind::String) {
+        if image_block && image_unchanged {
+            if cfg!(debug_assertions) {
+                assert_image_strings_marked(start, epoch);
+            }
+            continue;
+        }
         let limit =
             if BUMP_END.load(Ordering::Relaxed) == start + STRINGS_PER_BLOCK * STRING_CELL_SIZE {
                 (BUMP_NEXT.load(Ordering::Relaxed) - start) / STRING_CELL_SIZE
@@ -411,6 +529,10 @@ pub(crate) fn sweep_strings(epoch: u32) {
                         continue;
                     }
                     if mark == epoch {
+                        image_live += usize::from((*cell).image);
+                        if image_block {
+                            continue;
+                        }
                         let handle = StringObjectRef::from_raw(cell);
                         let state = handle.borrow();
                         strings += 1;
@@ -419,15 +541,25 @@ pub(crate) fn sweep_strings(epoch: u32) {
                         continue;
                     }
                     debug_assert_eq!((*cell).borrows.get(), 0, "unmarked string borrow");
+                    if (*cell).code.get() != CodeState::Unverified as u8 {
+                        crate::lisp::bytecode::verify::forget(cell as usize);
+                    }
                     std::ptr::drop_in_place((*cell).state.get());
                     (*cell).mark.set_raw(FREE_MARK);
+                }
+                block_free += 1;
+                if image_block {
+                    continue;
                 }
                 cell.cast::<*mut StringCell>().write(free_list);
             }
             free_list = cell;
-            block_free += 1;
         }
-        if block_free == STRINGS_PER_BLOCK && free_count > STRINGS_PER_BLOCK {
+        if image_block {
+            if block_free == STRINGS_PER_BLOCK {
+                released.push(start);
+            }
+        } else if block_free == STRINGS_PER_BLOCK && free_count > STRINGS_PER_BLOCK {
             free_list = previous_chain;
             released.push(start);
         } else {
@@ -435,6 +567,9 @@ pub(crate) fn sweep_strings(epoch: u32) {
         }
     }
     FREE_LIST.store(free_list, Ordering::Relaxed);
+    if !image_unchanged {
+        super::IMAGE_STRINGS.set_live(image_live);
+    }
     for start in released {
         release_block(start, BlockKind::String);
     }
@@ -442,6 +577,24 @@ pub(crate) fn sweep_strings(epoch: u32) {
     LIVE_STRINGS.store(strings, Ordering::Relaxed);
     LIVE_BYTES.store(bytes, Ordering::Relaxed);
     LIVE_SPANS.store(spans, Ordering::Relaxed);
+}
+
+/// A checked build's test of an image block a sweep leaves unread: every
+/// allocated string in it is marked (or pure, which is never marked).
+fn assert_image_strings_marked(start: usize, epoch: u32) {
+    for index in 0..STRINGS_PER_BLOCK {
+        let cell = (start + index * STRING_CELL_SIZE) as *mut StringCell;
+        // SAFETY: every mark is initialized; `pure' is read only for an
+        // allocated cell.
+        unsafe {
+            let mark = (*cell).mark.raw();
+            assert!(
+                mark == FREE_MARK || mark == epoch || (*cell).pure,
+                "an unread image block holds a dead string at {:#x}",
+                cell as usize
+            );
+        }
+    }
 }
 
 pub(crate) fn live_string_object_census() -> (usize, usize, usize) {

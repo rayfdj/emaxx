@@ -41,9 +41,7 @@ pub(crate) use lists::{
     next_kbd_macro_event, prepare_kbd_macro_minibuffer_entry,
     read_minibuffer_text_from_kbd_macro_inner,
 };
-pub(crate) use misc_keymaps::{
-    oclosure_type_of, restore_unicode_menu_case_table, unicode_menu_case_table,
-};
+pub(crate) use misc_keymaps::{oclosure_type_of, restore_unicode_menu_case_table};
 mod overlays;
 mod predicates;
 mod search_coding;
@@ -160,6 +158,8 @@ pub(crate) struct NameFacts {
     /// The GNU subr's declared maximum argument count; None for MANY,
     /// UNEVALLED, and names outside the generated C manifest.
     pub(crate) max_args: Option<u16>,
+    /// The evaluator's arm for a special form, found once by name.
+    pub(crate) native_form: Option<crate::lisp::eval::NativeForm>,
 }
 
 macro_rules! define_dispatch_modules {
@@ -323,6 +323,7 @@ pub(crate) fn compute_name_facts(name: &str) -> NameFacts {
         (&raw mut (*facts_ptr).direct).write(direct);
         (&raw mut (*facts_ptr).min_args).write(min_args);
         (&raw mut (*facts_ptr).max_args).write(max_args);
+        (&raw mut (*facts_ptr).native_form).write(crate::lisp::eval::NativeForm::for_name(name));
         facts.assume_init()
     }
 }
@@ -391,14 +392,58 @@ pub fn call(
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    call_with_facts(interp, name, name_facts(name), args, env)
+    call_with_facts(interp, name, &name_facts(name), args, env)
 }
 
 /// `call' for callers that already fetched the name's facts this call.
+#[inline(always)]
 pub(crate) fn call_with_facts(
     interp: &mut Interpreter,
     name: &str,
-    facts: NameFacts,
+    facts: &NameFacts,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    // funcall_subr's usual case: an ordinary subr with a function pointer
+    // and the arguments within its arity.
+    if facts.builtin
+        && !facts.special_form
+        && args.len() >= usize::from(facts.min_args)
+        && facts
+            .max_args
+            .is_none_or(|maximum| args.len() <= usize::from(maximum))
+        && let Some(direct) = facts.direct
+    {
+        return direct(interp, args, env);
+    }
+    call_with_facts_general(interp, name, facts, args, env)
+}
+
+/// `call_with_facts' for a subr whose arity the caller checked against
+/// its descriptor, the facts' arity authority (eval_sub's test before it
+/// evaluates the arguments).
+#[inline(always)]
+pub(crate) fn call_with_facts_arity_checked(
+    interp: &mut Interpreter,
+    name: &str,
+    facts: &NameFacts,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    if facts.builtin
+        && !facts.special_form
+        && let Some(direct) = facts.direct
+    {
+        return direct(interp, args, env);
+    }
+    call_with_facts_general(interp, name, facts, args, env)
+}
+
+#[inline(never)]
+fn call_with_facts_general(
+    interp: &mut Interpreter,
+    name: &str,
+    facts: &NameFacts,
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {

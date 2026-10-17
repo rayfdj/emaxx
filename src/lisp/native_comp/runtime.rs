@@ -13,7 +13,7 @@ use super::abi::{
     THREAD_HANDLERLIST_OFFSET, THREAD_STATE_SIZE,
 };
 use crate::lisp::eval::{SavedExcursion, SavedRestriction, SpecialBindingRestore};
-use crate::lisp::primitives::{symbol_with_pos_parts, wrong_type_argument};
+use crate::lisp::primitives::wrong_type_argument;
 #[cfg(test)]
 use crate::lisp::types::SharedCons;
 use crate::lisp::types::{ConsCell, Kind, LispErrorKind, SymbolName, Value};
@@ -176,16 +176,69 @@ struct NativeInvocation {
     target: *const c_void,
     arguments: [NativeWord; 8],
     result: NativeWord,
-    jump_buffer: [u8; SYS_JMP_BUF_SIZE],
+    /// Written by the trampoline's `_setjmp` before anything can jump to
+    /// it, as GNU's handler jmp_buf is: never read uninitialized.
+    jump_buffer: MaybeUninit<[u8; SYS_JMP_BUF_SIZE]>,
 }
 
 impl NativeInvocation {
+    #[cfg(test)]
     fn new(target: *const c_void) -> Self {
         Self {
             target,
             arguments: [0; 8],
             result: 0,
-            jump_buffer: [0; SYS_JMP_BUF_SIZE],
+            jump_buffer: MaybeUninit::uninit(),
+        }
+    }
+
+    /// `new' written into SLOT where it stays, with ARGUMENTS' words in
+    /// its register slots and zero past them, the nil of a missing
+    /// optional argument as funcall_subr pads it: the slots cleared at
+    /// once and a store for each argument, chosen by the count (a copy
+    /// loop becomes a `memcpy' call).  At most eight.
+    #[inline(always)]
+    fn init<'a>(
+        slot: &'a mut MaybeUninit<Self>,
+        target: *const c_void,
+        arguments: &[Value],
+    ) -> &'a mut Self {
+        let invocation = slot.as_mut_ptr();
+        // SAFETY: every field but the jump buffer, itself MaybeUninit, is
+        // written before the record is used; the argument slots written are
+        // within the eight.
+        unsafe {
+            std::ptr::addr_of_mut!((*invocation).target).write(target);
+            let slots = std::ptr::addr_of_mut!((*invocation).arguments).cast::<NativeWord>();
+            slots.write_bytes(0, 8);
+            let store = |index: usize, argument: &Value| slots.add(index).write(argument.word());
+            match arguments {
+                [] => {}
+                [a] => store(0, a),
+                [a, b] => {
+                    store(0, a);
+                    store(1, b);
+                }
+                [a, b, c] => {
+                    store(0, a);
+                    store(1, b);
+                    store(2, c);
+                }
+                [a, b, c, d] => {
+                    store(0, a);
+                    store(1, b);
+                    store(2, c);
+                    store(3, d);
+                }
+                arguments => {
+                    assert!(arguments.len() <= 8, "at most eight native arguments");
+                    for (index, argument) in arguments.iter().enumerate() {
+                        store(index, argument);
+                    }
+                }
+            }
+            std::ptr::addr_of_mut!((*invocation).result).write(0);
+            slot.assume_init_mut()
         }
     }
 
@@ -276,9 +329,18 @@ unsafe fn invoke_platform(invocation: *mut NativeInvocation) -> Result<bool, Str
     Ok(unsafe { native_call_trampoline(invocation) } != 0)
 }
 
+/// The word at offset 64 of an invocation's escape buffer: the
+/// trampoline's own record (see `emaxx_native_longjmp'), where glibc's
+/// `_setjmp' stores `__mask_was_saved', which it always sets to 0.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const NATIVE_ESCAPE_MARKER: u32 = 0x454d_4158;
+
 // System V x86-64: the first six words travel in registers and the last two
-// on the stack.  `rbx` keeps the invocation pointer across `_setjmp`, which
-// saves and restores it, so a `longjmp` back here still finds the record.
+// on the stack.  The escape buffer records what `_setjmp' would for a
+// return through `emaxx_native_longjmp': the callee-saved registers (`rbx'
+// is the invocation pointer), the stack pointer below the saved registers
+// and the resume address, then the marker. A `longjmp' resumes at 1 with
+// the trampoline's frame as it was.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 core::arch::global_asm!(
     r#"
@@ -293,10 +355,16 @@ native_call_trampoline:
     push rbx
     push r12
     mov rbx, rdi
-    lea rdi, [rbx + {jump_buffer}]
-    call _setjmp@PLT
-    test eax, eax
-    jnz 1f
+    mov [rbx + {jump_buffer}], rbx
+    mov [rbx + {jump_buffer} + 8], rbp
+    mov [rbx + {jump_buffer} + 16], r12
+    mov [rbx + {jump_buffer} + 24], r13
+    mov [rbx + {jump_buffer} + 32], r14
+    mov [rbx + {jump_buffer} + 40], r15
+    mov [rbx + {jump_buffer} + 48], rsp
+    lea rax, [rip + 1f]
+    mov [rbx + {jump_buffer} + 56], rax
+    mov dword ptr [rbx + {jump_buffer} + 64], {marker}
     mov rax, [rbx + {target}]
     mov rdi, [rbx + {arguments}]
     mov rsi, [rbx + {arguments} + 8]
@@ -319,16 +387,112 @@ native_call_trampoline:
     pop rbp
     ret
     .size native_call_trampoline, .-native_call_trampoline
+
+    .p2align 4
+    .globl emaxx_native_longjmp
+    .hidden emaxx_native_longjmp
+    .type emaxx_native_longjmp, @function
+emaxx_native_longjmp:
+    mov rbx, [rdi]
+    mov rbp, [rdi + 8]
+    mov r12, [rdi + 16]
+    mov r13, [rdi + 24]
+    mov r14, [rdi + 32]
+    mov r15, [rdi + 40]
+    mov rsp, [rdi + 48]
+    jmp qword ptr [rdi + 56]
+    .size emaxx_native_longjmp, .-emaxx_native_longjmp
     "#,
     target = const std::mem::offset_of!(NativeInvocation, target),
     arguments = const std::mem::offset_of!(NativeInvocation, arguments),
     result = const std::mem::offset_of!(NativeInvocation, result),
     jump_buffer = const std::mem::offset_of!(NativeInvocation, jump_buffer),
+    marker = const NATIVE_ESCAPE_MARKER,
 );
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 unsafe extern "C" {
     fn native_call_trampoline(invocation: *mut NativeInvocation) -> std::ffi::c_int;
+    /// longjmp to an invocation's escape buffer (the trampoline's record).
+    fn emaxx_native_longjmp(buffer: *mut c_void) -> !;
+}
+
+/// The escape record of a call made by `call_fixed_registers': the
+/// trampoline's jump buffer, in the calling frame.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[repr(C, align(16))]
+struct EscapeBuffer(MaybeUninit<[u8; 72]>);
+
+/// The trampoline's call of a fixed-arity TARGET whose arguments all
+/// travel in registers (at most six), made from the calling frame itself:
+/// the same escape record (`emaxx_native_longjmp' restores the
+/// callee-saved registers and the stack pointer stored here and resumes
+/// at the second label) without the trampoline's frame and the
+/// invocation record it reads the registers from.  A register past
+/// ARGUMENTS holds 0, nil, as funcall_subr pads a missing optional.  The
+/// answer is the callee's word and whether it escaped.
+///
+/// # Safety
+///
+/// TARGET is a generated function taking at most six arguments, and
+/// BUFFER is the active call frame's escape buffer, live until this
+/// returns.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[inline(always)]
+unsafe fn call_fixed_registers(
+    target: *const c_void,
+    arguments: &[Value],
+    buffer: *mut EscapeBuffer,
+) -> (NativeWord, bool) {
+    let word = |index: usize| arguments.get(index).map_or(0, |value| value.word());
+    // By the count, so that each register is a load or a zero and not a
+    // bounds test.
+    let (a0, a1, a2, a3, a4, a5) = match *arguments {
+        [] => (0, 0, 0, 0, 0, 0),
+        [a] => (a.word(), 0, 0, 0, 0, 0),
+        [a, b] => (a.word(), b.word(), 0, 0, 0, 0),
+        [a, b, c] => (a.word(), b.word(), c.word(), 0, 0, 0),
+        _ => (word(0), word(1), word(2), word(3), word(4), word(5)),
+    };
+    let result: NativeWord;
+    let escaped: usize;
+    // SAFETY: the stack pointer is aligned for a call at an asm block
+    // without `nostack'.  On an ordinary return the callee preserved the
+    // callee-saved registers; on an escape `emaxx_native_longjmp' restores
+    // the ones stored here, so both ways out leave them as the block found
+    // them, and only the caller-saved registers (`clobber_abi') change.
+    unsafe {
+        std::arch::asm!(
+            "mov [r10], rbx",
+            "mov [r10 + 8], rbp",
+            "mov [r10 + 16], r12",
+            "mov [r10 + 24], r13",
+            "mov [r10 + 32], r14",
+            "mov [r10 + 40], r15",
+            "mov [r10 + 48], rsp",
+            "lea rax, [rip + 2f]",
+            "mov [r10 + 56], rax",
+            "mov dword ptr [r10 + 64], {marker}",
+            "call r11",
+            "xor ecx, ecx",
+            "jmp 3f",
+            "2:",
+            "mov ecx, 1",
+            "3:",
+            marker = const NATIVE_ESCAPE_MARKER,
+            in("r10") buffer,
+            in("r11") target,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") a2,
+            inout("rcx") a3 => escaped,
+            in("r8") a4,
+            in("r9") a5,
+            lateout("rax") result,
+            clobber_abi("C"),
+        );
+    }
+    (result, escaped != 0)
 }
 
 // System V counterpart of alloc.c:flush_stack_call_func.  The generated
@@ -423,15 +587,14 @@ thread_local! {
 static NATIVE_EXECUTION_LOCK: Mutex<()> = Mutex::new(());
 static ACTIVE_NATIVE_HEAP: AtomicPtr<NativeHeap> = AtomicPtr::new(std::ptr::null_mut());
 
-#[derive(Default)]
-struct NativeExecutionOwnership {
-    activations: usize,
-    lock: Option<MutexGuard<'static, ()>>,
-}
-
 thread_local! {
-    static NATIVE_EXECUTION_OWNERSHIP: RefCell<NativeExecutionOwnership> =
-        RefCell::new(NativeExecutionOwnership::default());
+    /// The thread's live native activations. A plain counter, read and
+    /// written on every native call; the lock below changes hands only
+    /// when the count leaves or returns to zero.
+    static NATIVE_EXECUTION_ACTIVATIONS: Cell<usize> = const { Cell::new(0) };
+    /// The execution lock while the thread has an activation.
+    static NATIVE_EXECUTION_LOCK_HELD: RefCell<Option<MutexGuard<'static, ()>>> =
+        const { RefCell::new(None) };
 }
 
 struct NativeExecutionGuard {
@@ -440,33 +603,43 @@ struct NativeExecutionGuard {
 }
 
 impl NativeExecutionGuard {
+    #[inline]
     fn enter() -> Self {
-        NATIVE_EXECUTION_OWNERSHIP.with(|ownership| {
-            let mut ownership = ownership.borrow_mut();
-            if ownership.activations == 0 {
-                ownership.lock = Some(
-                    NATIVE_EXECUTION_LOCK
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner),
-                );
-            }
-            ownership.activations += 1;
-        });
+        let activations = NATIVE_EXECUTION_ACTIVATIONS.get();
+        if activations == 0 {
+            Self::acquire();
+        }
+        NATIVE_EXECUTION_ACTIVATIONS.set(activations + 1);
         Self {
             _not_send: PhantomData,
         }
     }
+
+    #[cold]
+    #[inline(never)]
+    fn acquire() {
+        let lock = NATIVE_EXECUTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        NATIVE_EXECUTION_LOCK_HELD.with_borrow_mut(|held| *held = Some(lock));
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn release() {
+        let lock = NATIVE_EXECUTION_LOCK_HELD.with_borrow_mut(Option::take);
+        drop(lock);
+    }
 }
 
 impl Drop for NativeExecutionGuard {
+    #[inline]
     fn drop(&mut self) {
-        NATIVE_EXECUTION_OWNERSHIP.with(|ownership| {
-            let mut ownership = ownership.borrow_mut();
-            ownership.activations -= 1;
-            if ownership.activations == 0 {
-                ownership.lock.take();
-            }
-        });
+        let activations = NATIVE_EXECUTION_ACTIVATIONS.get() - 1;
+        NATIVE_EXECUTION_ACTIVATIONS.set(activations);
+        if activations == 0 {
+            Self::release();
+        }
     }
 }
 
@@ -487,6 +660,7 @@ impl Drop for ActiveCallGuard {
     }
 }
 
+#[inline(always)]
 pub(crate) fn with_active_call<R>(
     interpreter: &mut Interpreter,
     environment: &mut Env,
@@ -501,8 +675,11 @@ pub(crate) fn with_active_call<R>(
         runtime,
     };
     let previous = ACTIVE_CALL.replace(&mut active);
-    let previous_heap =
-        ACTIVE_NATIVE_HEAP.swap(std::ptr::from_mut(&mut runtime.heap), Ordering::Relaxed);
+    // Every store to the heap pointer is made under the execution lock,
+    // held from the guard above, so a load and a store exchange it: a
+    // swap is a locked `xchg' on x86, about 20 cycles on each native call.
+    let previous_heap = ACTIVE_NATIVE_HEAP.load(Ordering::Relaxed);
+    ACTIVE_NATIVE_HEAP.store(std::ptr::from_mut(&mut runtime.heap), Ordering::Relaxed);
     let previous_stack_bottom = runtime.heap.native_stack_bottom;
     if outermost {
         runtime.heap.set_stack_bottom(current_native_stack_bottom());
@@ -514,6 +691,55 @@ pub(crate) fn with_active_call<R>(
         previous_stack_bottom,
     };
     body()
+}
+
+/// Whether a call by RUNTIME for INTERPRETER is nested in PREVIOUS, the
+/// active call, of the same runtime and interpreter.  Every change of
+/// stack clears the active call (`with_thread_suspended'), so that call
+/// is on this stack and returns after this one: it holds the execution
+/// lock, the heap pointer is its runtime's and the stack's bottom is set,
+/// and a nested call changes only the active call's record.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[inline(always)]
+fn is_nested_call(
+    previous: *mut ActiveCall,
+    runtime: *const NativeRuntime,
+    interpreter: *const Interpreter,
+) -> bool {
+    // SAFETY: a non-null active call is live for its synchronous extent,
+    // which contains this one.
+    !previous.is_null()
+        && unsafe {
+            std::ptr::eq((*previous).runtime, runtime)
+                && std::ptr::eq((*previous).interpreter, interpreter)
+        }
+}
+
+/// The active call a call by INTERPRETER would nest in
+/// (`is_nested_call'), to be restored after it.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[derive(Clone, Copy)]
+pub(crate) struct NestedCall(*mut ActiveCall);
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+impl NestedCall {
+    /// The active call when it is INTERPRETER's: None outside an active
+    /// call or in another interpreter's.
+    #[inline(always)]
+    pub(crate) fn of(interpreter: &Interpreter) -> Option<Self> {
+        let previous = ACTIVE_CALL.get();
+        // SAFETY: a non-null active call is live for its synchronous
+        // extent, which contains this one.
+        (!previous.is_null() && unsafe { std::ptr::eq((*previous).interpreter, interpreter) })
+            .then_some(Self(previous))
+    }
+
+    /// The runtime the active call lends, which a nested call runs on.
+    #[inline(always)]
+    pub(crate) fn runtime(self) -> *mut NativeRuntime {
+        // SAFETY: as `of's read.
+        unsafe { (*self.0).runtime }
+    }
 }
 
 #[inline(always)]
@@ -577,11 +803,38 @@ pub(crate) fn with_current_runtime<R>(body: impl FnOnce(&mut NativeRuntime) -> R
     })
 }
 
+/// The runtime `with_current_runtime' lends, or null when it lends none.
+/// The caller may use it for a synchronous call, as that function's body
+/// does.
+#[inline(always)]
+pub(crate) fn current_runtime() -> *mut NativeRuntime {
+    let active = ACTIVE_CALL.with(Cell::get);
+    if active.is_null() {
+        super::loader::active_registered_runtime()
+    } else {
+        // SAFETY: as `with_current_runtime's read of the active call.
+        unsafe { (*active).runtime }
+    }
+}
+
 /// eval.c:lisp.h:maybe_gc's active native boundary. The assembly trampoline
 /// spills callee-saved registers before the conservative collector scans the
 /// stack, exactly as the generated native call path does.
 pub(crate) fn maybe_gc_active() {
-    if ACTIVE_CALL.with(|active| active.get().is_null()) {
+    let active = ACTIVE_CALL.with(Cell::get);
+    if active.is_null() {
+        return;
+    }
+    // lisp.h:maybe_gc's inline `consing_until_gc < 0' guard: the trampoline
+    // spills the registers for the collector only once the active runtime's
+    // trigger is reached. Below it the collector's own first test returns
+    // without changing anything.
+    // SAFETY: the active call's runtime outlives the activation, and this
+    // reads one counter without holding the reference across a call.
+    if unsafe { &*(*active).runtime }
+        .heap
+        .collection_cannot_be_due()
+    {
         return;
     }
     #[cfg(any(
@@ -591,6 +844,29 @@ pub(crate) fn maybe_gc_active() {
     unsafe {
         emaxx_native_gc_trampoline();
     }
+}
+
+/// maybe_gc's tests, reading only: true when maybe_gc would return
+/// without collecting or touching the counters.  A caller that finds a
+/// collection possible takes the path that runs maybe_gc itself.
+#[inline]
+pub(crate) fn collection_cannot_be_due(interpreter: &crate::lisp::eval::InterpreterState) -> bool {
+    let active = ACTIVE_CALL.with(Cell::get);
+    if !active.is_null() {
+        // SAFETY: as maybe_gc_active's read of the active runtime.
+        return unsafe { &*(*active).runtime }
+            .heap
+            .collection_cannot_be_due();
+    }
+    if crate::lisp::alloc::stress_collections() {
+        return false;
+    }
+    super::loader::with_active_registered_runtime(|runtime| runtime.heap.collection_cannot_be_due())
+        .unwrap_or_else(|| {
+            interpreter
+                .native_compiler
+                .garbage_collection_cannot_be_due()
+        })
 }
 
 /// alloc.c:Fgarbage_collect_maybe's threshold test: `since_gc >
@@ -610,7 +886,7 @@ pub(crate) fn garbage_collection_maybe_due(interpreter: &mut Interpreter, factor
 pub(crate) fn gc_tuning(interpreter: &Interpreter, environment: &Env) -> (i64, Option<f64>) {
     let threshold = interpreter
         .lookup_var("gc-cons-threshold", environment)
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .unwrap_or(NATIVE_GC_DEFAULT_THRESHOLD);
     let percentage = match interpreter
         .lookup_var("gc-cons-percentage", environment)
@@ -751,6 +1027,15 @@ impl NativeHandler {
         self.set_word(HANDLER_NEXT_OFFSET, next as NativeWord);
     }
 
+    /// This record as `new' makes it, for its reuse.
+    /// A spare record reused, as push_handler_nosignal reuses
+    /// `nextfree': only the words read before they are written again are
+    /// set. Generated code reads `next' and `val' (the caller sets it),
+    /// and its setjmp fills the jump buffer before anything jumps there.
+    fn reset(&mut self, next: *mut NativeHandler) {
+        self.set_next(next);
+    }
+
     fn set_value(&mut self, value: NativeWord) {
         self.set_word(HANDLER_VALUE_OFFSET, value);
     }
@@ -810,10 +1095,19 @@ pub(crate) struct NativeRuntime {
     shared: Option<Box<NativeSharedState>>,
     thread: Box<NativeThreadState>,
     handlers: Vec<HandlerEntry>,
+    /// Records of popped handlers, for the next pushes (eval.c keeps its
+    /// popped handlers on `nextfree' the same way). Each stays boxed: a
+    /// record's address is what native code holds, and it moves between
+    /// this vector and a handler entry.
+    #[allow(clippy::vec_box)]
+    spare_handlers: Vec<Box<NativeHandler>>,
     unwind: Vec<UnwindEntry>,
     calls: Vec<NativeCallFrame>,
     ephemeral_root_ranges: Vec<NativeRootRange>,
 }
+
+/// The most popped handler records a runtime keeps.
+const SPARE_HANDLERS: usize = 16;
 
 /// One editor's native heap and loaded-code relocation storage. GNU's
 /// current-thread relocation points to a stable cell shared by all units;
@@ -841,18 +1135,25 @@ impl Drop for NativeSharedState {
 impl std::ops::Deref for NativeRuntime {
     type Target = NativeSharedState;
 
+    /// The native call path reaches the heap, the thread cell and the link
+    /// table through here several times a call; the test stays a debug
+    /// assertion, as for the interpreter's shell.
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
-        self.shared
-            .as_deref()
-            .expect("native runtime shell is parked")
+        debug_assert!(self.shared.is_some(), "native runtime shell is parked");
+        // SAFETY: every runtime is built with its shared state (`Default'),
+        // and only a test moves it from one shell to another (as a thread
+        // switch would), using neither shell while it has none.
+        unsafe { self.shared.as_deref().unwrap_unchecked() }
     }
 }
 
 impl std::ops::DerefMut for NativeRuntime {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.shared
-            .as_deref_mut()
-            .expect("native runtime shell is parked")
+        debug_assert!(self.shared.is_some(), "native runtime shell is parked");
+        // SAFETY: as Deref's.
+        unsafe { self.shared.as_deref_mut().unwrap_unchecked() }
     }
 }
 
@@ -886,6 +1187,7 @@ impl Default for NativeRuntime {
             })),
             thread,
             handlers: Vec::new(),
+            spare_handlers: Vec::new(),
             unwind: Vec::new(),
             calls: Vec::new(),
             ephemeral_root_ranges: Vec::new(),
@@ -910,10 +1212,18 @@ impl NativeRuntime {
         *self.thread_pointer = thread;
     }
 
+    #[inline(always)]
     pub(crate) fn begin_call(&mut self, escape_buffer: *mut c_void, interpreter: &Interpreter) {
         self.activate_thread();
         self.heap.begin_call();
-        self.calls.push(NativeCallFrame {
+        self.push_call_frame(escape_buffer, interpreter);
+    }
+
+    /// `begin_call's frame alone, for a call nested in an active call of
+    /// this runtime (`invoke_nested_fixed').
+    #[inline(always)]
+    fn push_call_frame(&mut self, escape_buffer: *mut c_void, interpreter: &Interpreter) {
+        let frame = NativeCallFrame {
             handler_depth: self.handlers.len(),
             unwind_depth: self.unwind.len(),
             ephemeral_root_depth: self.ephemeral_root_ranges.len(),
@@ -921,7 +1231,24 @@ impl NativeRuntime {
             backtrace_depth: interpreter.backtrace_frames_len(),
             pending_error: None,
             escape_buffer,
-        });
+        };
+        // The frame written in its slot: `push' builds it on the stack and
+        // copies it in by a call that is not inlined.
+        if self.calls.len() == self.calls.capacity() {
+            self.reserve_call_frames();
+        }
+        let len = self.calls.len();
+        // SAFETY: the slot at LEN is within the capacity just ensured.
+        unsafe {
+            self.calls.as_mut_ptr().add(len).write(frame);
+            self.calls.set_len(len + 1);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn reserve_call_frames(&mut self) {
+        self.calls.reserve(1);
     }
 
     fn collect_native_heap_now(
@@ -982,12 +1309,12 @@ impl NativeRuntime {
         self.heap.collection_might_be_due()
     }
 
-    /// The counters of a process that starts from a dump, once the image
-    /// is loaded (see `NativeGcState::baseline_after_image_load').
-    pub(crate) fn garbage_collection_note_image_load_start(&mut self) {
-        self.heap.note_image_load_start();
+    pub(crate) fn garbage_collection_cannot_be_due(&self) -> bool {
+        self.heap.collection_cannot_be_due()
     }
 
+    /// The counters of a process that starts from a dump, once the image
+    /// is loaded (see `NativeGcState::baseline_after_image_load').
     pub(crate) fn garbage_collection_baseline_after_image_load(&mut self) {
         self.heap.baseline_after_image_load();
     }
@@ -1099,10 +1426,13 @@ impl NativeRuntime {
                 "attempted to call a null native function",
             ));
         }
-        if matches!(convention, NativeCallingConvention::Fixed) && arguments.len() > 8 {
-            return Err(super::lisp::native_ice(
-                "fixed native function exceeds the eight-register ABI",
-            ));
+        if matches!(convention, NativeCallingConvention::Fixed) {
+            if arguments.len() > 8 {
+                return Err(super::lisp::native_ice(
+                    "fixed native function exceeds the eight-register ABI",
+                ));
+            }
+            return self.invoke_fixed(interpreter, environment, target, arguments);
         }
 
         // GNU has one authoritative `thread_state.handlerlist`.  A generated
@@ -1111,40 +1441,162 @@ impl NativeRuntime {
         // registrations before snapshotting the nested call's handler depth.
         self.sync_handlers(interpreter)?;
 
-        let mut invocation = NativeInvocation::new(target);
+        let mut slot = MaybeUninit::uninit();
+        let invocation = NativeInvocation::init(&mut slot, target, &[]);
         self.begin_call(invocation.jump_buffer(), interpreter);
 
-        // eval.c:funcall_subr passes the authoritative Lisp_Object words
-        // directly to a fixed-arity entry. Fill the trampoline's register
-        // slots once, without first staging the same words in a SmallVec.
         // MANY retains owned, writable argument storage for its pointer ABI;
         // no native pointer aliases the caller's shared Rust Value slice.
         let mut encoded = smallvec::SmallVec::<[NativeWord; 8]>::new();
-        match convention {
-            NativeCallingConvention::Fixed => {
-                for (slot, argument) in invocation.arguments.iter_mut().zip(arguments) {
-                    *slot = argument.word();
+        for argument in arguments {
+            let word = match self.heap.encode(argument) {
+                Ok(word) => word,
+                Err(error) => {
+                    let finish = self.finish_call(interpreter);
+                    finish?;
+                    return Err(super::lisp::native_ice(&error));
                 }
-            }
-            NativeCallingConvention::Many => {
-                for argument in arguments {
-                    let word = match self.heap.encode(argument) {
-                        Ok(word) => word,
-                        Err(error) => {
-                            let finish = self.finish_call(interpreter);
-                            finish?;
-                            return Err(super::lisp::native_ice(&error));
-                        }
-                    };
-                    encoded.push(word);
-                }
-                invocation.arguments[0] = encoded.len();
-                invocation.arguments[1] = encoded.as_ptr() as NativeWord;
-            }
+            };
+            encoded.push(word);
         }
+        invocation.arguments[0] = encoded.len();
+        invocation.arguments[1] = encoded.as_ptr() as NativeWord;
+        self.run_invocation(interpreter, environment, invocation)
+    }
 
+    /// `invoke' of a fixed-arity TARGET, not null, with at most eight
+    /// ARGUMENTS.  eval.c:funcall_subr passes the authoritative
+    /// Lisp_Object words directly to a fixed-arity entry: `init' fills
+    /// the trampoline's register slots with them.
+    #[inline(never)]
+    pub(crate) fn invoke_fixed(
+        &mut self,
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        target: *const c_void,
+        arguments: &[Value],
+    ) -> Result<Value, LispError> {
+        // As in `invoke'.
+        self.sync_handlers(interpreter)?;
+        let mut slot = MaybeUninit::uninit();
+        let invocation = NativeInvocation::init(&mut slot, target, arguments);
+        self.begin_call(invocation.jump_buffer(), interpreter);
+        self.run_invocation(interpreter, environment, invocation)
+    }
+
+    /// `invoke_fixed' of a TARGET whose arguments all travel in registers
+    /// (at most six, its maximum among them): the call made from this
+    /// frame by `call_fixed_registers', its escape record here.  A call
+    /// nested in an active call of this runtime and interpreter, on its
+    /// stack, changes only the active call's record (`is_nested_call').
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[inline(never)]
+    pub(crate) fn invoke_fixed_registers(
+        &mut self,
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        target: *const c_void,
+        arguments: &[Value],
+    ) -> Result<Value, LispError> {
+        // As in `invoke'.
+        self.sync_handlers(interpreter)?;
+        let mut escape = EscapeBuffer(MaybeUninit::uninit());
+        let buffer = std::ptr::from_mut(&mut escape);
+        self.begin_call(buffer.cast(), interpreter);
+        let previous = ACTIVE_CALL.get();
+        let (word, escaped) = if is_nested_call(previous, self, interpreter) {
+            let mut active = ActiveCall {
+                interpreter,
+                environment,
+                runtime: self,
+            };
+            ACTIVE_CALL.set(&mut active);
+            // SAFETY: the caller's maximum is at most six, and the frame
+            // pushed above holds BUFFER until it is popped below.
+            let answer = unsafe { call_fixed_registers(target, arguments, buffer) };
+            ACTIVE_CALL.set(previous);
+            answer
+        } else {
+            // SAFETY: as in the nested case.
+            with_active_call(interpreter, environment, self, || unsafe {
+                call_fixed_registers(target, arguments, buffer)
+            })
+        };
+        if escaped {
+            return self.finish_escaped_call(interpreter);
+        }
+        // SAFETY: as `decode_result's: the returned word still belongs to
+        // the protected activation.
+        let result = unsafe { Value::from_word(word) };
+        self.finish_call_inline(interpreter)?;
+        Ok(result)
+    }
+
+    /// `invoke_fixed_registers' for a call NESTED in the active call of
+    /// this runtime (`NestedCall::runtime'), inline in its caller: the
+    /// frame pushed, the active call's record replaced while the callee
+    /// runs, the frame popped.  The thread is activated and the heap's
+    /// depth counted by the active call already.
+    ///
+    /// # Safety
+    ///
+    /// NESTED is the active call of this runtime and INTERPRETER, and
+    /// TARGET a generated function taking at most six arguments, among
+    /// them ARGUMENTS.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[inline(always)]
+    pub(crate) unsafe fn invoke_nested_fixed(
+        &mut self,
+        nested: NestedCall,
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        target: *const c_void,
+        arguments: &[Value],
+    ) -> Result<Value, LispError> {
+        // As in `invoke'.
+        self.sync_handlers(interpreter)?;
+        let mut escape = EscapeBuffer(MaybeUninit::uninit());
+        let buffer = std::ptr::from_mut(&mut escape);
+        self.push_call_frame(buffer.cast(), interpreter);
+        let mut active = ActiveCall {
+            interpreter,
+            environment,
+            runtime: self,
+        };
+        ACTIVE_CALL.set(&mut active);
+        // SAFETY: as the caller's; the frame pushed above holds BUFFER
+        // until it is popped below.
+        let (word, escaped) = unsafe { call_fixed_registers(target, arguments, buffer) };
+        ACTIVE_CALL.set(nested.0);
+        if escaped {
+            return self.finish_escaped_frame(interpreter, false);
+        }
+        // SAFETY: as `decode_result's: the returned word still belongs to
+        // the protected activation.
+        let result = unsafe { Value::from_word(word) };
+        self.finish_frame(interpreter, false)?;
+        Ok(result)
+    }
+
+    /// maybe_gc's tests on this runtime's counters (see
+    /// `collection_cannot_be_due').
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[inline(always)]
+    pub(crate) fn collection_cannot_be_due(&self) -> bool {
+        self.heap.collection_cannot_be_due()
+    }
+
+    /// The rest of `invoke' once the call frame is pushed: the
+    /// trampoline's call through INVOCATION and the frame's pop.
+    #[inline(always)]
+    fn run_invocation(
+        &mut self,
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        invocation: &mut NativeInvocation,
+    ) -> Result<Value, LispError> {
         let escaped = with_active_call(interpreter, environment, self, || unsafe {
-            invoke_platform(&mut invocation)
+            invoke_platform(invocation)
         });
         let escaped = match escaped {
             Ok(escaped) => escaped,
@@ -1154,30 +1606,63 @@ impl NativeRuntime {
                 return Err(super::lisp::native_ice(&error));
             }
         };
-        let result = if escaped {
-            None
-        } else {
-            Some(
-                self.heap
-                    .decode_result(invocation.result)
-                    .map_err(|error| super::lisp::native_ice(&error)),
-            )
-        };
-        let finish = self.finish_call(interpreter);
         if escaped {
-            return match finish {
-                Err(error) => Err(error),
-                Ok(()) => Err(super::lisp::native_ice(
-                    "native function escaped without a pending Lisp error",
-                )),
-            };
+            return self.finish_escaped_call(interpreter);
         }
-        let result = result.expect("ordinary native return has a result")?;
+        let result = self
+            .heap
+            .decode_result(invocation.result)
+            .map_err(|error| super::lisp::native_ice(&error));
+        let finish = self.finish_call_inline(interpreter);
+        let result = result?;
         finish?;
         Ok(result)
     }
 
+    /// `finish_call' after a jump to the trampoline's escape record, which
+    /// leaves the signal in the frame's pending error.
+    #[cold]
+    #[inline(never)]
+    fn finish_escaped_call(&mut self, interpreter: &mut Interpreter) -> Result<Value, LispError> {
+        self.finish_escaped_frame(interpreter, true)
+    }
+
+    /// `finish_escaped_call', the heap's depth left alone unless
+    /// HEAP_CALL (`push_call_frame').
+    #[cold]
+    #[inline(never)]
+    fn finish_escaped_frame(
+        &mut self,
+        interpreter: &mut Interpreter,
+        heap_call: bool,
+    ) -> Result<Value, LispError> {
+        match self.finish_frame(interpreter, heap_call) {
+            Err(error) => Err(error),
+            Ok(()) => Err(super::lisp::native_ice(
+                "native function escaped without a pending Lisp error",
+            )),
+        }
+    }
+
+    #[inline(never)]
     pub(crate) fn finish_call(&mut self, interpreter: &mut Interpreter) -> Result<(), LispError> {
+        self.finish_call_inline(interpreter)
+    }
+
+    /// `finish_call', inline in an ordinary return.
+    #[inline(always)]
+    fn finish_call_inline(&mut self, interpreter: &mut Interpreter) -> Result<(), LispError> {
+        self.finish_frame(interpreter, true)
+    }
+
+    /// `finish_call', the heap's depth left alone unless HEAP_CALL
+    /// (`push_call_frame').
+    #[inline(always)]
+    fn finish_frame(
+        &mut self,
+        interpreter: &mut Interpreter,
+        heap_call: bool,
+    ) -> Result<(), LispError> {
         let sync_result = self.sync_handlers(interpreter);
         let Some(frame) = self.calls.pop() else {
             return Err(super::lisp::native_ice(
@@ -1186,7 +1671,9 @@ impl NativeRuntime {
         };
         self.ephemeral_root_ranges
             .truncate(frame.ephemeral_root_depth);
-        self.heap.end_call();
+        if heap_call {
+            self.heap.end_call();
+        }
         sync_result?;
         if self.handlers.len() != frame.handler_depth || self.unwind.len() != frame.unwind_depth {
             return Err(super::lisp::native_ice(
@@ -1200,8 +1687,27 @@ impl NativeRuntime {
         }
     }
 
+    /// Reconcile the Rust handler registrations with the native handler
+    /// list. They agree on every call that pushed and popped no handler.
+    #[inline(always)]
     fn sync_handlers(&mut self, interpreter: &mut Interpreter) -> Result<(), LispError> {
         let current = self.thread.handler();
+        if self
+            .handlers
+            .last()
+            .map_or(current.is_null(), |entry| entry.address() == current)
+        {
+            return Ok(());
+        }
+        self.sync_handlers_unwinding(interpreter, current)
+    }
+
+    #[inline(never)]
+    fn sync_handlers_unwinding(
+        &mut self,
+        interpreter: &mut Interpreter,
+        current: *mut NativeHandler,
+    ) -> Result<(), LispError> {
         while self
             .handlers
             .last()
@@ -1213,6 +1719,9 @@ impl NativeRuntime {
                 HandlerRegistration::ConditionCase(start) => {
                     interpreter.pop_handler_bindings(start)
                 }
+            }
+            if self.spare_handlers.len() < SPARE_HANDLERS {
+                self.spare_handlers.push(entry.storage);
             }
         }
         if current.is_null()
@@ -1247,12 +1756,15 @@ impl NativeRuntime {
         let is_throw = matches!(error.kind(), LispErrorKind::Throw(_, _));
         let (condition, conditions) =
             if is_throw || matches!(error.kind(), LispErrorKind::Terminate(_)) {
-                (String::new(), Vec::new())
+                (None, crate::lisp::eval::ConditionNames::new())
             } else {
-                let condition = error.condition_type();
-                let conditions = interpreter.error_condition_names(&condition);
-                (condition, conditions)
+                let condition = error.condition_symbol();
+                let conditions = interpreter.error_condition_names_of(&condition);
+                (Some(condition), conditions)
             };
+        let condition = condition
+            .as_ref()
+            .map_or("", |condition| condition.as_str());
         let handler_depth = self
             .calls
             .last()
@@ -1271,7 +1783,7 @@ impl NativeRuntime {
                     _ => false,
                 },
                 1 if !is_throw && !matches!(error.kind(), LispErrorKind::Terminate(_)) => {
-                    Interpreter::clause_head_matches(&handler.match_value, &condition, &conditions)
+                    Interpreter::clause_head_matches(&handler.match_value, condition, &conditions)
                 }
                 _ => false,
             })
@@ -1438,44 +1950,157 @@ impl NativeRuntime {
     }
 }
 
-#[inline(always)]
+#[cfg(test)]
 fn invoke_context_free_subr(index: usize, arguments: &[NativeWord]) -> Option<NativeWord> {
-    let subroutine = super::abi::native_subrs().get(index)?;
-    match (subroutine.name, arguments) {
-        ("null", [value]) => Some(native_boolean(*value == 0)),
-        ("consp", [value]) => Some(native_boolean(native_consp(*value))),
-        ("atom", [value]) => Some(native_boolean(!native_consp(*value))),
-        ("bare-symbol-p", [value]) => Some(native_boolean(*value & TAG_MASK == TAG_SYMBOL)),
-        ("stringp", [value]) => Some(direct_native_stringp(*value)),
-        ("car", [value]) if *value == 0 || native_consp(*value) => Some(if native_consp(*value) {
+    invoke_context_free_kind(DirectSubr::of_index(index), arguments)
+}
+
+/// The subrs `invoke_subr' answers on its own paths, by name. A subr's
+/// kind is read by its index into the ABI's table, one byte, where the
+/// names were compared one after another on every call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DirectSubr {
+    Other,
+    Funcall,
+    Less,
+    Greater,
+    LessOrEqual,
+    GreaterOrEqual,
+    NumberEqual,
+    Plus,
+    Minus,
+    Cons,
+    Eq,
+    Null,
+    Consp,
+    Atom,
+    BareSymbolp,
+    Symbolp,
+    Stringp,
+    Car,
+    CarSafe,
+    Cdr,
+    CdrSafe,
+    Listp,
+    Nlistp,
+    Identity,
+    List,
+    TypeOf,
+    SymbolValue,
+    Assq,
+    Memq,
+    Get,
+    Apply,
+    Mapcar,
+    Maphash,
+    Nreverse,
+    Length,
+    PlistMember,
+    MakeClosure,
+}
+
+impl DirectSubr {
+    fn of_name(name: &str) -> Self {
+        match name {
+            "funcall" => Self::Funcall,
+            "<" => Self::Less,
+            ">" => Self::Greater,
+            "<=" => Self::LessOrEqual,
+            ">=" => Self::GreaterOrEqual,
+            "=" => Self::NumberEqual,
+            "+" => Self::Plus,
+            "-" => Self::Minus,
+            "cons" => Self::Cons,
+            "eq" => Self::Eq,
+            "null" => Self::Null,
+            "consp" => Self::Consp,
+            "atom" => Self::Atom,
+            "bare-symbol-p" => Self::BareSymbolp,
+            "symbolp" => Self::Symbolp,
+            "stringp" => Self::Stringp,
+            "car" => Self::Car,
+            "car-safe" => Self::CarSafe,
+            "cdr" => Self::Cdr,
+            "cdr-safe" => Self::CdrSafe,
+            "listp" => Self::Listp,
+            "nlistp" => Self::Nlistp,
+            "identity" => Self::Identity,
+            "list" => Self::List,
+            "type-of" => Self::TypeOf,
+            "symbol-value" => Self::SymbolValue,
+            "assq" => Self::Assq,
+            "memq" => Self::Memq,
+            "get" => Self::Get,
+            "apply" => Self::Apply,
+            "mapcar" => Self::Mapcar,
+            "maphash" => Self::Maphash,
+            "nreverse" => Self::Nreverse,
+            "length" => Self::Length,
+            "plist-member" => Self::PlistMember,
+            "make-closure" => Self::MakeClosure,
+            _ => Self::Other,
+        }
+    }
+
+    /// The kind of the subr at INDEX in the ABI's table; `Other' past it.
+    #[inline(always)]
+    fn of_index(index: usize) -> Self {
+        static KINDS: OnceLock<Box<[DirectSubr]>> = OnceLock::new();
+        KINDS
+            .get_or_init(|| {
+                super::abi::native_subrs()
+                    .iter()
+                    .map(|subroutine| Self::of_name(subroutine.name))
+                    .collect()
+            })
+            .get(index)
+            .copied()
+            .unwrap_or(Self::Other)
+    }
+}
+
+#[inline(always)]
+fn invoke_context_free_kind(kind: DirectSubr, arguments: &[NativeWord]) -> Option<NativeWord> {
+    match (kind, arguments) {
+        (DirectSubr::Null, [value]) => Some(native_boolean(*value == 0)),
+        (DirectSubr::Consp, [value]) => Some(native_boolean(native_consp(*value))),
+        (DirectSubr::Atom, [value]) => Some(native_boolean(!native_consp(*value))),
+        (DirectSubr::BareSymbolp, [value]) => Some(native_boolean(*value & TAG_MASK == TAG_SYMBOL)),
+        (DirectSubr::Stringp, [value]) => Some(direct_native_stringp(*value)),
+        (DirectSubr::Car, [value]) if *value == 0 || native_consp(*value) => {
+            Some(if native_consp(*value) {
+                unsafe { native_car(*value) }
+            } else {
+                0
+            })
+        }
+        (DirectSubr::CarSafe, [value]) => Some(if native_consp(*value) {
             unsafe { native_car(*value) }
         } else {
             0
         }),
-        ("car-safe", [value]) => Some(if native_consp(*value) {
-            unsafe { native_car(*value) }
-        } else {
-            0
-        }),
-        ("cdr", [value]) if *value == 0 || native_consp(*value) => Some(if native_consp(*value) {
+        (DirectSubr::Cdr, [value]) if *value == 0 || native_consp(*value) => {
+            Some(if native_consp(*value) {
+                unsafe { native_cdr(*value) }
+            } else {
+                0
+            })
+        }
+        (DirectSubr::CdrSafe, [value]) => Some(if native_consp(*value) {
             unsafe { native_cdr(*value) }
         } else {
             0
         }),
-        ("cdr-safe", [value]) => Some(if native_consp(*value) {
-            unsafe { native_cdr(*value) }
-        } else {
-            0
-        }),
-        ("listp", [value]) => Some(native_boolean(*value == 0 || native_consp(*value))),
-        ("nlistp", [value]) => Some(native_boolean(*value != 0 && !native_consp(*value))),
-        ("identity", [value]) => Some(*value),
+        (DirectSubr::Listp, [value]) => Some(native_boolean(*value == 0 || native_consp(*value))),
+        (DirectSubr::Nlistp, [value]) => Some(native_boolean(*value != 0 && !native_consp(*value))),
+        (DirectSubr::Identity, [value]) => Some(*value),
         _ => None,
     }
 }
 
 pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord {
-    if let Some(result) = invoke_context_free_subr(index, arguments) {
+    let kind = DirectSubr::of_index(index);
+    if let Some(result) = invoke_context_free_kind(kind, arguments) {
         return result;
     }
     with_active(|active| {
@@ -1499,7 +2124,7 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
         }
         // GNU native code enters Ffuncall directly. After synchronizing
         // handlers, use the same call path before unrelated primitive checks.
-        if subroutine.name == "funcall"
+        if kind == DirectSubr::Funcall
             && let Some(result) = invoke_native_funcall(active, arguments)
         {
             return result;
@@ -1508,12 +2133,12 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             && let (Some(left), Some(right)) =
                 (decode_fixnum(arguments[0]), decode_fixnum(arguments[1]))
         {
-            let result = match subroutine.name {
-                "<" => Some(left < right),
-                ">" => Some(left > right),
-                "<=" => Some(left <= right),
-                ">=" => Some(left >= right),
-                "=" => Some(left == right),
+            let result = match kind {
+                DirectSubr::Less => Some(left < right),
+                DirectSubr::Greater => Some(left > right),
+                DirectSubr::LessOrEqual => Some(left <= right),
+                DirectSubr::GreaterOrEqual => Some(left >= right),
+                DirectSubr::NumberEqual => Some(left == right),
                 _ => None,
             };
             if let Some(result) = result {
@@ -1523,9 +2148,9 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             // machine accumulator. Two fixnums cannot overflow i64; return
             // their immediate result without staging or decoding Values.
             // Bignum results and every other operand use the general path.
-            let integer = match subroutine.name {
-                "+" => Some(left + right),
-                "-" => Some(left - right),
+            let integer = match kind {
+                DirectSubr::Plus => Some(left + right),
+                DirectSubr::Minus => Some(left - right),
                 _ => None,
             };
             if let Some(integer) = integer
@@ -1534,61 +2159,65 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
                 return ((integer as NativeWord) << FIXNUM_BITS) | TAG_FIXNUM_LOW;
             }
         }
-        if subroutine.name == "cons" && arguments.len() == 2 {
+        if kind == DirectSubr::Cons && arguments.len() == 2 {
             return unsafe { &mut *active.runtime }
                 .heap
                 .cons(arguments[0], arguments[1]);
         }
-        match (subroutine.name, arguments) {
-            ("eq", [left, right])
+        match (kind, arguments) {
+            (DirectSubr::Eq, [left, right])
                 if left == right
                     || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
             {
                 return native_boolean(left == right);
             }
-            ("null", [value]) => return native_boolean(*value == 0),
-            ("consp", [value]) => return native_boolean(native_consp(*value)),
-            ("atom", [value]) => return native_boolean(!native_consp(*value)),
-            ("bare-symbol-p", [value]) => {
+            (DirectSubr::Null, [value]) => return native_boolean(*value == 0),
+            (DirectSubr::Consp, [value]) => return native_boolean(native_consp(*value)),
+            (DirectSubr::Atom, [value]) => return native_boolean(!native_consp(*value)),
+            (DirectSubr::BareSymbolp, [value]) => {
                 return native_boolean(*value & TAG_MASK == TAG_SYMBOL);
             }
-            ("symbolp", [value])
+            (DirectSubr::Symbolp, [value])
                 if *value & TAG_MASK == TAG_SYMBOL
                     || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
             {
                 return native_boolean(*value & TAG_MASK == TAG_SYMBOL);
             }
-            ("car", [value]) if *value == 0 || native_consp(*value) => {
+            (DirectSubr::Car, [value]) if *value == 0 || native_consp(*value) => {
                 return if native_consp(*value) {
                     unsafe { native_car(*value) }
                 } else {
                     0
                 };
             }
-            ("car-safe", [value]) => {
+            (DirectSubr::CarSafe, [value]) => {
                 return if native_consp(*value) {
                     unsafe { native_car(*value) }
                 } else {
                     0
                 };
             }
-            ("cdr", [value]) if *value == 0 || native_consp(*value) => {
+            (DirectSubr::Cdr, [value]) if *value == 0 || native_consp(*value) => {
                 return if native_consp(*value) {
                     unsafe { native_cdr(*value) }
                 } else {
                     0
                 };
             }
-            ("cdr-safe", [value]) => {
+            (DirectSubr::CdrSafe, [value]) => {
                 return if native_consp(*value) {
                     unsafe { native_cdr(*value) }
                 } else {
                     0
                 };
             }
-            ("listp", [value]) => return native_boolean(*value == 0 || native_consp(*value)),
-            ("nlistp", [value]) => return native_boolean(*value != 0 && !native_consp(*value)),
-            ("list", values) => {
+            (DirectSubr::Listp, [value]) => {
+                return native_boolean(*value == 0 || native_consp(*value));
+            }
+            (DirectSubr::Nlistp, [value]) => {
+                return native_boolean(*value != 0 && !native_consp(*value));
+            }
+            (DirectSubr::List, values) => {
                 let heap = &mut unsafe { &mut *active.runtime }.heap;
                 return values
                     .iter()
@@ -1600,70 +2229,70 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
         // These are direct translations of the corresponding C-owned word
         // operations in data.c and alloc.c.  Keep them at the GNU ABI instead
         // of decoding into Emaxx's richer interpreter representation.
-        match (subroutine.name, arguments) {
-            ("eq", [left, right]) => match native_eq(active, *left, *right) {
+        match (kind, arguments) {
+            (DirectSubr::Eq, [left, right]) => match native_eq(active, *left, *right) {
                 Ok(equal) => return native_boolean(equal),
                 Err(error) => {
                     remember_helper_error(active, error);
                     return 0;
                 }
             },
-            ("symbolp", [value]) => match native_symbolp(active, *value) {
+            (DirectSubr::Symbolp, [value]) => match native_symbolp(active, *value) {
                 Ok(is_symbol) => return native_boolean(is_symbol),
                 Err(error) => {
                     remember_helper_error(active, error);
                     return 0;
                 }
             },
-            ("type-of", [value]) => {
+            (DirectSubr::TypeOf, [value]) => {
                 if let Some(result) = native_scalar_type_word(*value) {
                     return result;
                 }
             }
-            ("symbol-value", [symbol]) => {
+            (DirectSubr::SymbolValue, [symbol]) => {
                 if let Some(result) = invoke_native_symbol_value(active, *symbol) {
                     return result;
                 }
             }
             _ => {}
         }
-        if subroutine.name == "assq" && arguments.len() == 2 {
+        if kind == DirectSubr::Assq && arguments.len() == 2 {
             return native_assq(active, arguments[0], arguments[1]);
         }
-        if subroutine.name == "memq" && arguments.len() == 2 {
+        if kind == DirectSubr::Memq && arguments.len() == 2 {
             return native_memq(active, arguments[0], arguments[1]);
         }
-        if subroutine.name == "get" && arguments.len() == 2 {
+        if kind == DirectSubr::Get && arguments.len() == 2 {
             return invoke_native_get(active, arguments[0], arguments[1]);
         }
-        if subroutine.name == "apply"
+        if kind == DirectSubr::Apply
             && let Some(result) = invoke_native_apply(active, arguments)
         {
             return result;
         }
-        if subroutine.name == "mapcar"
+        if kind == DirectSubr::Mapcar
             && let Some(result) = invoke_native_mapcar(active, arguments)
         {
             return result;
         }
-        if subroutine.name == "maphash"
+        if kind == DirectSubr::Maphash
             && let Some(result) = invoke_native_maphash(active, arguments)
         {
             return result;
         }
-        if subroutine.name == "nreverse"
+        if kind == DirectSubr::Nreverse
             && let [sequence] = arguments
             && let Some(result) = invoke_native_nreverse(active, *sequence)
         {
             return result;
         }
-        if subroutine.name == "length"
+        if kind == DirectSubr::Length
             && let [sequence] = arguments
             && let Some(result) = invoke_native_length(active, *sequence)
         {
             return result;
         }
-        if subroutine.name == "plist-member" {
+        if kind == DirectSubr::PlistMember {
             match arguments {
                 [plist, property] => return native_plist_member(active, *plist, *property, 0),
                 [plist, property, predicate] => {
@@ -1672,7 +2301,7 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
                 _ => {}
             }
         }
-        if subroutine.name == "make-closure" {
+        if kind == DirectSubr::MakeClosure {
             return invoke_native_make_closure(active, arguments);
         }
         let mut decoded = smallvec::SmallVec::<[Value; 8]>::new();
@@ -2113,80 +2742,87 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
         remember_helper_error(active, error);
         return Some(0);
     }
-    let result =
-        interpreter.with_native_backtrace_frame(original_function, call_arguments, |interpreter| {
-            interpreter.capture_current_backtrace_context(None, environment, None);
+    // The frame is written and popped in place, as eval_sub's is.
+    let depth = interpreter.backtrace_frames_len();
+    interpreter.push_native_backtrace_frame(original_function, call_arguments);
+    let result = {
+        interpreter.capture_current_backtrace_context(None, environment, None);
 
-            // Ffuncall calls maybe_gc after record_in_backtrace and before dispatch.
+        // Ffuncall calls maybe_gc after record_in_backtrace and before
+        // dispatch; the registers are spilled for the collector only
+        // once the trigger is reached (`maybe_gc_active').
+        if !runtime.heap.collection_cannot_be_due() {
             unsafe { emaxx_native_gc_trampoline() };
-            // The collection's hooks/finalizers may replace the function cell.
-            // Resolve it only after collection, including changes of callable
-            // kind. The fallback reuses this same Ffuncall frame and depth.
-            let result = match direct_funcall_target(interpreter, environment, &original_function) {
-                Some(target) => target.invoke(active, call_arguments),
-                None => {
-                    let decoded = call_arguments
-                        .iter()
-                        .map(|word| {
-                            runtime
-                                .heap
-                                .decode(*word)
-                                .map_err(|error| super::lisp::native_ice(&error))
-                        })
-                        .collect::<Result<smallvec::SmallVec<[Value; 8]>, _>>();
-                    decoded
-                        .and_then(|args| {
-                            interpreter.funcall_body(original_function, &args, environment)
-                        })
+        }
+        // The collection's hooks/finalizers may replace the function cell.
+        // Resolve it only after collection, including changes of callable
+        // kind. The fallback reuses this same Ffuncall frame and depth.
+        let result = match direct_funcall_target(interpreter, environment, &original_function) {
+            Some(target) => target.invoke(active, call_arguments),
+            None => {
+                let decoded = call_arguments
+                    .iter()
+                    .map(|word| {
+                        runtime
+                            .heap
+                            .decode(*word)
+                            .map_err(|error| super::lisp::native_ice(&error))
+                    })
+                    .collect::<Result<smallvec::SmallVec<[Value; 8]>, _>>();
+                decoded
+                    .and_then(|args| {
+                        interpreter.funcall_body(original_function, &args, environment)
+                    })
+                    .and_then(|value| {
+                        runtime
+                            .heap
+                            .encode(&value)
+                            .map_err(|error| super::lisp::native_ice(&error))
+                    })
+            }
+        };
+        let result = match result.map_err(LispError::into_kind) {
+            Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
+                // eval.c:Ffuncall calls call_debugger with (exit VALUE) before
+                // dropping its backtrace record when backtrace-debug marked the
+                // frame.  Keep the native word live until the debugger receives
+                // the same Lisp object, then encode the debugger's return value.
+                let value = runtime
+                    .heap
+                    .decode(word)
+                    .map_err(|error| super::lisp::native_ice(&error));
+                value.and_then(|value| {
+                    let argument = Value::list([Value::symbol("exit"), value]);
+                    interpreter
+                        .call_debugger(argument, environment)
                         .and_then(|value| {
                             runtime
                                 .heap
                                 .encode(&value)
                                 .map_err(|error| super::lisp::native_ice(&error))
                         })
-                }
-            };
-            let result = match result.map_err(LispError::into_kind) {
-                Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
-                    // eval.c:Ffuncall calls call_debugger with (exit VALUE) before
-                    // dropping its backtrace record when backtrace-debug marked the
-                    // frame.  Keep the native word live until the debugger receives
-                    // the same Lisp object, then encode the debugger's return value.
-                    let value = runtime
-                        .heap
-                        .decode(word)
-                        .map_err(|error| super::lisp::native_ice(&error));
-                    value.and_then(|value| {
-                        let argument = Value::list([Value::symbol("exit"), value]);
-                        interpreter
-                            .call_debugger(argument, environment)
-                            .and_then(|value| {
-                                runtime
-                                    .heap
-                                    .encode(&value)
-                                    .map_err(|error| super::lisp::native_ice(&error))
-                            })
-                    })
-                }
-                Ok(word) => Ok(word),
-                Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
-                    Err(LispError::from(error))
-                }
-                Err(error) => match interpreter
-                    .dispatch_handler_bindings(LispError::from(error), environment)
-                {
+                })
+            }
+            Ok(word) => Ok(word),
+            Err(error @ (LispErrorKind::Throw(_, _) | LispErrorKind::Terminate(_))) => {
+                Err(LispError::from(error))
+            }
+            Err(error) => {
+                match interpreter.dispatch_handler_bindings(LispError::from(error), environment) {
                     Ok(value) => runtime
                         .heap
                         .encode(&value)
                         .map_err(|error| super::lisp::native_ice(&error)),
                     Err(error) => Err(error),
-                },
-            };
-            if let Err(error) = &result {
-                interpreter.capture_batch_error_backtrace(error, environment);
+                }
             }
-            result
-        });
+        };
+        if let Err(error) = &result {
+            interpreter.capture_batch_error_backtrace(error, environment);
+        }
+        result
+    };
+    interpreter.truncate_backtrace_frames(depth);
     interpreter.end_funcall();
 
     Some(match result {
@@ -2663,36 +3299,24 @@ fn invoke_native_symbol_value(active: &mut ActiveCall, word: NativeWord) -> Opti
     if word & TAG_MASK != TAG_SYMBOL {
         return None;
     }
-    let symbol_state = if word == 0 || word == native_boolean(true) {
-        None
+    let symbol = if word == 0 {
+        crate::lisp::types::symbols::builtin_boolean(false)
+    } else if word == native_boolean(true) {
+        crate::lisp::types::symbols::builtin_boolean(true)
     } else {
-        Some(unsafe { (&*active.runtime).heap.bare_symbol_value_state(word) }?)
+        unsafe { (&*active.runtime).heap.bare_symbol_value_state(word) }?
     };
-    let name = match &symbol_state {
-        Some(symbol) => symbol.as_str(),
-        None if word == 0 => "nil",
-        None => "t",
-    };
-    if let Some(symbol) = &symbol_state
-        && let Some(value) =
-            unsafe { &*active.interpreter }.plain_global_binding_value_symbol(symbol)
+    if let Some(value) = unsafe { &*active.interpreter }.plain_global_binding_value_symbol(&symbol)
     {
         return Some(value.word());
     }
-    let value = match &symbol_state {
-        Some(symbol) => unsafe { &*active.interpreter }.symbol_value_cell_symbol(symbol),
-        None => unsafe { &*active.interpreter }.symbol_value_cell(name),
-    };
+    let value = unsafe { &*active.interpreter }.symbol_value_cell_symbol(&symbol);
     let value = value.map_err(|error| match error.into_kind() {
         // data.c:Fsymbol_value uses the original SYMBOL in xsignal1,
         // not the name of the final cell reached through a variable alias.
         LispErrorKind::Void(_) => LispError::SignalValue(Value::list([
             Value::symbol("void-variable"),
-            match &symbol_state {
-                Some(symbol) => Value::Symbol(*symbol),
-                None if word == 0 => Value::Nil,
-                None => Value::T,
-            },
+            Value::Symbol(symbol),
         ])),
         error => LispError::from(error),
     });
@@ -2997,10 +3621,10 @@ fn native_get_symbol_name(
     symbol: NativeWord,
 ) -> Result<SymbolName, LispError> {
     if symbol == 0 {
-        return Ok(SymbolName::from("nil"));
+        return Ok(crate::lisp::types::symbols::builtin_boolean(false));
     }
     if symbol == native_boolean(true) {
-        return Ok(SymbolName::from("t"));
+        return Ok(crate::lisp::types::symbols::builtin_boolean(true));
     }
     if symbol & TAG_MASK == TAG_SYMBOL
         && let Some(name) = unsafe { (&*active.runtime).heap.bare_symbol_value_state(symbol) }
@@ -3009,16 +3633,11 @@ fn native_get_symbol_name(
     }
 
     let value = decode_word(active, symbol)?;
-    if let Ok(name) = value.as_symbol() {
-        return Ok(SymbolName::from(name));
-    }
-    if unsafe { &*active.interpreter }.symbols_with_positions_enabled()
-        && let Some((bare, _)) = symbol_with_pos_parts(unsafe { &*active.interpreter }, &value)
-        && let Ok(name) = bare.as_symbol()
-    {
-        return Ok(SymbolName::from(name));
-    }
-    Err(wrong_type_argument("symbolp", value))
+    crate::lisp::primitives::checked_symbol_identity(
+        unsafe { &*active.interpreter },
+        &value,
+        unsafe { &*active.environment },
+    )
 }
 
 /// fns.c:Fget: CHECK_SYMBOL, the overriding-plist Fassq/plist_get pair, and
@@ -3230,7 +3849,16 @@ unsafe extern "C" {
     fn platform_longjmp(buffer: *mut c_void, value: std::ffi::c_int) -> !;
 }
 
+/// longjmp to BUFFER: a handler's buffer, which generated code filled
+/// with `_setjmp', or an invocation's escape buffer.
 unsafe fn jump_nonlocal(buffer: *mut c_void) -> ! {
+    // SAFETY: both kinds of buffer are larger than 68 bytes, and glibc's
+    // `_setjmp' wrote the word at 64 of a handler's.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if unsafe { buffer.cast::<u8>().add(64).cast::<u32>().read_unaligned() } == NATIVE_ESCAPE_MARKER
+    {
+        unsafe { emaxx_native_longjmp(buffer) }
+    }
     unsafe { platform_longjmp(buffer, 1) }
 }
 
@@ -3332,7 +3960,14 @@ extern "C" fn runtime_push_handler(match_value: NativeWord, kind: i32) -> *mut N
                     ));
                 }
             };
-            let mut storage = Box::new(NativeHandler::new(runtime.thread.handler()));
+            let next = runtime.thread.handler();
+            let mut storage = match runtime.spare_handlers.pop() {
+                Some(mut storage) => {
+                    storage.reset(next);
+                    storage
+                }
+                None => Box::new(NativeHandler::new(next)),
+            };
             storage.set_value(0);
             let address = (&mut *storage) as *mut NativeHandler;
             runtime.thread.set_handler(address);
@@ -3539,12 +4174,17 @@ extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
         let result = (|| {
             let symbol = decode_word(active, symbol)?;
             let value = decode_word(active, value)?;
-            let name = symbol
-                .as_symbol()
-                .map_err(|_| wrong_type_argument("symbolp", symbol))?;
-            let restore =
-                unsafe { &mut *active.interpreter }
-                    .bind_special_dynamic(name, value, unsafe { &mut *active.environment })?;
+            let interpreter = unsafe { &mut *active.interpreter };
+            let environment = unsafe { &mut *active.environment };
+            let restore = match symbol.kind() {
+                Kind::Symbol(name) => interpreter.bind_special_symbol(&name, value, environment)?,
+                _ => {
+                    let name = symbol
+                        .as_symbol()
+                        .map_err(|_| wrong_type_argument("symbolp", symbol))?;
+                    interpreter.bind_special_dynamic(name, value, environment)?
+                }
+            };
             unsafe { &mut *active.runtime }.record_unwind(
                 unsafe { &*active.interpreter },
                 UnwindAction::Special(restore),
@@ -3577,7 +4217,7 @@ extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
         let threshold = interpreter
             .symbol_value_cell("gc-cons-threshold")
             .ok()
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or(NATIVE_GC_DEFAULT_THRESHOLD);
         let percentage = match interpreter
             .symbol_value_cell("gc-cons-percentage")
@@ -3667,23 +4307,13 @@ struct NativeGcState {
     /// public threshold variable adjusts the remaining allowance by the
     /// difference between the old and new effective thresholds.
     gc_threshold: i64,
-    /// The allocator census captured by the most recent collection, matching
-    /// the `gcstat' input to `total_bytes_of_live_objects': the objects in
-    /// the allocator's blocks that the image did not bring (see
-    /// `image_bytes').
+    /// The allocator census captured by the most recent collection: the
+    /// `gcstat' input to `total_bytes_of_live_objects'. As in GNU, where a
+    /// dumped object is in pdumper's mapped region and never in a swept
+    /// block, the image's objects are not in it: they are in the
+    /// allocator's image blocks, which the sweeps leave out of the census
+    /// (see `alloc::ImageRegion').
     live_bytes: usize,
-    /// The bytes the image loader allocated (GNU sizes), as `baseline_after_image_load'
-    /// left them.  alloc.c's `total_bytes_of_live_objects' sums `gcstat',
-    /// which the sweep of the allocator's blocks fills: a dumped object is in
-    /// pdumper's mapped region, never in a block, so it never counts toward
-    /// `consing_threshold'.  This loader puts the image's objects in the
-    /// blocks, so the census counts them; taking the image's bytes back out
-    /// is C's rule under this loader (to go when the image is a mapped
-    /// region of its own).
-    image_bytes: usize,
-    /// `lisp_allocated_bytes' when the image load began (`image_bytes' is
-    /// the growth to the baseline).
-    image_load_started: u64,
     /// Last point consumed from LISP_ALLOCATED_BYTES.  Keeping the source
     /// monotonic makes allocations outside native activation visible here.
     observed_allocated_bytes: u64,
@@ -3704,8 +4334,6 @@ impl Default for NativeGcState {
             consing_until_gc: 0,
             gc_threshold: 0,
             live_bytes: 0,
-            image_bytes: 0,
-            image_load_started: 0,
             observed_allocated_bytes: lisp_allocated_bytes(),
             trigger_allocated_bytes: 0,
             collections: 0,
@@ -3746,22 +4374,11 @@ impl NativeGcState {
     /// `maybe_garbage_collect' retunes the counters from the Lisp
     /// variables, and pdumper's objects are not consing.  The bytes the
     /// loader allocated are the baseline from here on.
-    /// The counter as the image load begins: the loader's allocations
-    /// from here to `baseline_after_image_load' are the image's.
-    fn note_image_load_start(&mut self) {
-        self.image_load_started = lisp_allocated_bytes();
-    }
-
     fn baseline_after_image_load(&mut self) {
         self.consing_until_gc = 0;
         self.gc_threshold = 0;
         self.live_bytes = 0;
         self.observed_allocated_bytes = lisp_allocated_bytes();
-        self.image_bytes = usize::try_from(
-            self.observed_allocated_bytes
-                .saturating_sub(self.image_load_started),
-        )
-        .unwrap_or(usize::MAX);
         self.publish_trigger();
     }
 
@@ -3817,7 +4434,7 @@ impl NativeGcState {
     fn collection_finished(&mut self, live_bytes: usize, threshold: i64, percentage: Option<f64>) {
         self.collections += 1;
         self.observed_allocated_bytes = lisp_allocated_bytes();
-        self.live_bytes = live_bytes.saturating_sub(self.image_bytes);
+        self.live_bytes = live_bytes;
         self.gc_threshold = self.consing_threshold(threshold, percentage, 0);
         self.consing_until_gc = self.gc_threshold;
         self.publish_trigger();
@@ -3846,6 +4463,7 @@ impl NativeHeap {
         self.native_call_depth == 0
     }
 
+    #[inline(always)]
     pub(crate) fn begin_call(&mut self) {
         self.native_call_depth += 1;
     }
@@ -3863,8 +4481,9 @@ impl NativeHeap {
         self.gc.collection_might_be_due()
     }
 
-    fn note_image_load_start(&mut self) {
-        self.gc.note_image_load_start();
+    /// `collection_might_be_due's first test alone, which reads only.
+    fn collection_cannot_be_due(&self) -> bool {
+        lisp_allocated_bytes() < self.gc.trigger_allocated_bytes
     }
 
     fn baseline_after_image_load(&mut self) {
@@ -3932,10 +4551,7 @@ impl NativeHeap {
             }
         }
 
-        let lisp_roots = pending
-            .into_iter()
-            .filter_map(crate::lisp::alloc::conservative_value)
-            .collect::<Vec<_>>();
+        let lisp_roots = crate::lisp::alloc::conservative_values(pending);
         let reachability = interpreter.weak_hash_reachability(environment, &lisp_roots);
         // From here to the sweep, no other mark phase may begin (a checked
         // build's guard; see `begin_mark_epoch').
@@ -3955,6 +4571,7 @@ impl NativeHeap {
         crate::lisp::alloc::sweep_strings(epoch);
     }
 
+    #[inline(always)]
     fn end_call(&mut self) {
         assert!(
             self.native_call_depth > 0,
@@ -4138,6 +4755,7 @@ impl NativeHeap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lisp::primitives::symbol_with_pos_parts;
 
     #[test]
     fn positioned_symbol_fields_use_the_public_native_word_without_preparation() {
@@ -4812,25 +5430,34 @@ mod tests {
         let first = NativeExecutionGuard::enter();
         let second = NativeExecutionGuard::enter();
         drop(first);
-        NATIVE_EXECUTION_OWNERSHIP.with(|ownership| {
-            let ownership = ownership.borrow();
-            assert_eq!(ownership.activations, 1);
-            assert!(ownership.lock.is_some());
-        });
+        assert_eq!(NATIVE_EXECUTION_ACTIVATIONS.get(), 1);
+        assert!(NATIVE_EXECUTION_LOCK_HELD.with_borrow(Option::is_some));
         assert!(matches!(
             NATIVE_EXECUTION_LOCK.try_lock(),
             Err(std::sync::TryLockError::WouldBlock),
         ));
         drop(second);
-        NATIVE_EXECUTION_OWNERSHIP.with(|ownership| {
-            let ownership = ownership.borrow();
-            assert_eq!(ownership.activations, 0);
-            assert!(ownership.lock.is_none());
-        });
+        assert_eq!(NATIVE_EXECUTION_ACTIVATIONS.get(), 0);
+        assert!(NATIVE_EXECUTION_LOCK_HELD.with_borrow(Option::is_none));
     }
 
     extern "C" fn add_one_fixnum(value: NativeWord) -> NativeWord {
         value.wrapping_add(1 << FIXNUM_BITS)
+    }
+
+    /// t when every argument past the first is nil (the zero word).
+    #[allow(clippy::too_many_arguments)]
+    extern "C" fn rest_arguments_are_nil(
+        _first: NativeWord,
+        second: NativeWord,
+        third: NativeWord,
+        fourth: NativeWord,
+        fifth: NativeWord,
+        sixth: NativeWord,
+        seventh: NativeWord,
+        eighth: NativeWord,
+    ) -> NativeWord {
+        native_boolean(second | third | fourth | fifth | sixth | seventh | eighth == 0)
     }
 
     extern "C" fn call_maybe_quit() -> NativeWord {
@@ -4947,6 +5574,32 @@ mod tests {
                 &[value],
             )
         }
+    }
+
+    #[test]
+    fn direct_subr_kinds_follow_the_abi_table_names() {
+        let subrs = super::super::abi::native_subrs();
+        for (index, subroutine) in subrs.iter().enumerate() {
+            assert_eq!(
+                DirectSubr::of_index(index),
+                DirectSubr::of_name(subroutine.name),
+                "{}",
+                subroutine.name
+            );
+        }
+        assert_eq!(DirectSubr::of_index(subrs.len()), DirectSubr::Other);
+        // Each of the 36 kinds names exactly one subr of the ABI, so no
+        // direct path is left unreachable by a name the table lacks.
+        let mut kinds: Vec<u8> = subrs
+            .iter()
+            .map(|subroutine| DirectSubr::of_name(subroutine.name))
+            .filter(|kind| *kind != DirectSubr::Other)
+            .map(|kind| kind as u8)
+            .collect();
+        let named = kinds.len();
+        kinds.sort_unstable();
+        kinds.dedup();
+        assert_eq!((named, kinds.len()), (36, 36));
     }
 
     #[test]
@@ -6028,6 +6681,36 @@ mod tests {
     }
 
     #[test]
+    fn a_fixed_call_passes_nil_for_the_arguments_it_omits() {
+        // funcall_subr pads a call to a fixed-arity entry with nil up to
+        // its maximum: an optional argument the caller omits reads as nil,
+        // whatever the slots held before.
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let mut call = |arguments: &[Value]| {
+            runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    rest_arguments_are_nil as *const c_void,
+                    NativeCallingConvention::Fixed,
+                    arguments,
+                )
+                .expect("ordinary native return")
+        };
+        // Each call with all eight non-nil leaves its words where the next
+        // call's record goes.
+        let eight = [Value::Integer(1); 8];
+        let mut shorter = [Value::Nil; 8];
+        shorter[0] = Value::Integer(1);
+        for count in 1..=8 {
+            assert_eq!(call(&eight), Value::Nil);
+            assert_eq!(call(&shorter[..count]), Value::T, "{count} arguments");
+        }
+    }
+
+    #[test]
     fn native_call_trampoline_returns_values_and_lisp_errors_through_rust() {
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();
@@ -6678,6 +7361,80 @@ mod tests {
     }
 
     #[test]
+    fn symbol_constant_native_booleans_keep_their_actual_cells() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let property = Value::symbol("native-boolean-identity");
+        for (old, name) in [(Value::Nil, "nil"), (Value::T, "t")] {
+            crate::lisp::primitives::call(
+                &mut interpreter,
+                "put",
+                &[old, property, Value::Integer(79)],
+                &mut environment,
+            )
+            .expect("property belongs to the original boolean");
+            crate::lisp::primitives::call(&mut interpreter, "unintern", &[old], &mut environment)
+                .expect("remove actual boolean from the obarray");
+            let new = crate::lisp::primitives::call(
+                &mut interpreter,
+                "intern",
+                &[Value::string(name)],
+                &mut environment,
+            )
+            .expect("same-spelled replacement");
+            assert!(!old.eq_value(new));
+            crate::lisp::primitives::call(
+                &mut interpreter,
+                "set",
+                &[new, Value::Integer(31)],
+                &mut environment,
+            )
+            .expect("the replacement has an ordinary value cell");
+            crate::lisp::primitives::call(
+                &mut interpreter,
+                "put",
+                &[new, property, Value::Integer(53)],
+                &mut environment,
+            )
+            .expect("the replacement has its own plist");
+            for entry in [
+                call_symbol_value as *const c_void,
+                call_symbol_value_by_subr as *const c_void,
+            ] {
+                for (symbol, expected) in [(old, old), (new, Value::Integer(31))] {
+                    assert_eq!(
+                        runtime
+                            .invoke(
+                                &mut interpreter,
+                                &mut environment,
+                                entry,
+                                NativeCallingConvention::Fixed,
+                                &[symbol],
+                            )
+                            .expect("native symbol-value reads the actual object"),
+                        expected
+                    );
+                }
+            }
+            for (symbol, expected) in [(old, 79), (new, 53)] {
+                assert_eq!(
+                    runtime
+                        .invoke(
+                            &mut interpreter,
+                            &mut environment,
+                            direct_native_get as *const c_void,
+                            NativeCallingConvention::Fixed,
+                            &[symbol, property],
+                        )
+                        .expect("native get reads the actual object's plist"),
+                    Value::Integer(expected)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn native_symbol_value_errors_preserve_the_original_symbol() {
         // data.c:Fsymbol_value passes the original SYMBOL to xsignal1,
         // not the final alias target or a reconstructed bare symbol.
@@ -6685,10 +7442,16 @@ mod tests {
         let mut environment = Env::new();
         let mut runtime = NativeRuntime::default();
         interpreter
-            .set_variable_alias("value-error-alias", "value-error-target")
+            .set_variable_alias_symbol(
+                &crate::lisp::types::SymbolName::intern_str("value-error-alias"),
+                &crate::lisp::types::SymbolName::intern_str("value-error-target"),
+            )
             .expect("alias to a void variable");
         interpreter
-            .set_variable_alias("value-error-target", "value-error-final")
+            .set_variable_alias_symbol(
+                &crate::lisp::types::SymbolName::intern_str("value-error-target"),
+                &crate::lisp::types::SymbolName::intern_str("value-error-final"),
+            )
             .expect("extend the alias chain after its first link was installed");
         interpreter.set_global_binding("symbols-with-pos-enabled", Value::T);
         let uninterned = crate::lisp::primitives::call(
@@ -6904,7 +7667,10 @@ mod tests {
         );
         interpreter.set_global_binding("native-hot-target", Value::Integer(91));
         interpreter
-            .set_variable_alias("native-hot-global", "native-hot-target")
+            .set_variable_alias_symbol(
+                &crate::lisp::types::SymbolName::intern_str("native-hot-global"),
+                &crate::lisp::types::SymbolName::intern_str("native-hot-target"),
+            )
             .expect("install variable alias");
         assert_eq!(
             runtime
@@ -11160,13 +11926,19 @@ mod tests {
     fn native_char_table_stores_invalidate_warm_regexp_syntax_caches() {
         use crate::lisp::types::CharTableRef;
 
+        // What comp.c emits for `(aset table ?a value)': a call of the `aset'
+        // subr through the native subr table. GNU's native compiler inlines
+        // only car/cdr/setcar/setcdr and a few predicates and arithmetic
+        // operations, so native code reaches a char table's slots only
+        // through such calls; the descriptor mutation below covers the
+        // inlined `setcar'.
         unsafe extern "C" fn replace_ascii(table: NativeWord, value: NativeWord) -> NativeWord {
-            unsafe {
-                let root = (table - TAG_VECTORLIKE) as *mut NativeWord;
-                let leaf = (*root.add(4) - TAG_VECTORLIKE) as *mut NativeWord;
-                *leaf.add(2 + 97) = value;
-                table
-            }
+            let aset = super::super::abi::native_subrs()
+                .iter()
+                .position(|subroutine| subroutine.name == "aset")
+                .expect("aset belongs to the configured GNU ABI");
+            invoke_subr(aset, &[table, Value::Integer(97).word(), value]);
+            table
         }
 
         fn matches_word(interpreter: &mut Interpreter, environment: &mut Env) -> Value {
@@ -12400,7 +13172,7 @@ mod tests {
             .to_vec()
             .expect("alist")
             .into_iter()
-            .find(|entry| entry.car().expect("pair").as_symbol().ok() == Some("name"))
+            .find(|entry| entry.car().expect("pair").symbol_str() == Some("name"))
             .expect("name parameter");
         assert_eq!(pair.cdr().expect("parameter value").word(), name.word());
     }
@@ -12454,6 +13226,14 @@ mod tests {
                 face,
             ]
             .map(|value| value.word() ^ HIDE)
+        }
+        // Decode the hidden words only in frames of their own, as `check'
+        // does: unhidden words left in this test's callee-saved registers
+        // would be spilled and scanned as roots by the next collection,
+        // where the next iteration may have reused the same cells.
+        #[inline(never)]
+        fn reclaimed(heap: &mut NativeHeap, hidden: [usize; 8]) -> bool {
+            hidden.iter().all(|word| heap.decode(word ^ HIDE).is_err())
         }
         #[inline(never)]
         fn check(heap: &mut NativeHeap, holder: &mut Interpreter, hidden: [usize; 8]) {
@@ -12517,12 +13297,10 @@ mod tests {
                 &mut holder,
                 &environment,
             );
-            for word in hidden {
-                assert!(
-                    heap.decode(word ^ HIDE).is_err(),
-                    "unreachable frame graph must be reclaimed"
-                );
-            }
+            assert!(
+                reclaimed(&mut heap, hidden),
+                "unreachable frame graph must be reclaimed"
+            );
         }
     }
 

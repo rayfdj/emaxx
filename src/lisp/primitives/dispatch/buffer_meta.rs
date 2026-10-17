@@ -10,7 +10,7 @@ fn plist_property_is_truthy(plist: &Value, property: &str) -> bool {
         .as_chunks::<2>()
         .0
         .iter()
-        .find(|pair| pair[0].as_symbol().ok() == Some(property))
+        .find(|pair| pair[0].symbol_str() == Some(property))
         .is_some_and(|pair| pair[1].is_truthy())
 }
 
@@ -28,12 +28,15 @@ fn coding_charset_list_is_ascii_compatible(interp: &Interpreter, value: &Value) 
     })
 }
 
-fn comparison_substring(
-    interp: &Interpreter,
+/// One `compare-buffer-substrings' operand: its buffer and ordered bounds,
+/// nil bounds meaning the buffer's accessible region. editfns.c signals
+/// `args-out-of-range' with the original bounds for a range outside it.
+fn comparison_range<'a>(
+    interp: &'a Interpreter,
     buffer: &Value,
     start: &Value,
     end: &Value,
-) -> Result<String, LispError> {
+) -> Result<(std::cell::Ref<'a, crate::buffer::Buffer>, usize, usize), LispError> {
     let buffer_id = if buffer.is_nil() {
         interp.current_buffer_id()
     } else {
@@ -42,19 +45,25 @@ fn comparison_substring(
     let buffer = interp
         .get_buffer_by_id(buffer_id)
         .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-    let start = if start.is_nil() {
+    let from = if start.is_nil() {
         buffer.point_min()
     } else {
         position_from_value(interp, start)?
     };
-    let end = if end.is_nil() {
+    let to = if end.is_nil() {
         buffer.point_max()
     } else {
         position_from_value(interp, end)?
     };
-    buffer
-        .buffer_substring(start, end)
-        .map_err(|error| LispError::Signal(error.to_string()))
+    let (from, to) = (from.min(to), from.max(to));
+    if from < buffer.point_min() || to > buffer.point_max() {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            *start,
+            *end,
+        ])));
+    }
+    Ok((buffer, from, to))
 }
 
 define_dispatch!(
@@ -125,18 +134,13 @@ define_dispatch!(
             }
             "compare-buffer-substrings" => {
                 need_args(name, args, 6)?;
-                let left = comparison_substring(interp, &args[0], &args[1], &args[2])?;
-                let right = comparison_substring(interp, &args[3], &args[4], &args[5])?;
                 // GNU editfns.c consults `case-fold-search' in the current
                 // buffer, even when either substring belongs to another
                 // buffer.  Its canonical table is extra slot one of the
                 // current downcase table; Emaxx's lazily initialized standard
                 // table has the same effective mapping in the downcase table
                 // until a materialized canonical slot exists.
-                let canonical_table = if interp
-                    .lookup_var("case-fold-search", env)
-                    .is_some_and(|value| value.is_truthy())
-                {
+                let canonical_table = if interp.case_fold_search_active(env) {
                     let downcase_table = interp.current_case_table_id();
                     Some(
                         match interp
@@ -150,9 +154,36 @@ define_dispatch!(
                 } else {
                     None
                 };
+                // Both operands are read in place, as editfns.c reads the
+                // buffer text; neither is copied.
+                let interp = &*interp;
+                let substring_error =
+                    |error: crate::buffer::BufferError| LispError::Signal(error.to_string());
+                let (left_buffer, left_start, left_end) =
+                    comparison_range(interp, &args[0], &args[1], &args[2])?;
+                let (right_buffer, right_start, right_end) =
+                    comparison_range(interp, &args[3], &args[4], &args[5])?;
+                // Two ASCII ranges, each within one chunk of its rope, are
+                // compared as bytes; a byte is its character there.
+                if canonical_table.is_none()
+                    && let Some(left) = left_buffer.ascii_chunk_range(left_start, left_end)
+                    && let Some(right) = right_buffer.ascii_chunk_range(right_start, right_end)
+                {
+                    return Ok(Value::Integer(compare_buffer_substrings(
+                        left.bytes().map(char::from),
+                        right.bytes().map(char::from),
+                        |character| character as u32,
+                    )));
+                }
+                let left = left_buffer
+                    .substring_chars(left_start, left_end)
+                    .map_err(substring_error)?;
+                let right = right_buffer
+                    .substring_chars(right_start, right_end)
+                    .map_err(substring_error)?;
                 Ok(Value::Integer(compare_buffer_substrings(
-                    &left,
-                    &right,
+                    left,
+                    right,
                     |character| {
                         let code = character as u32;
                         let Some(table) = canonical_table else {
@@ -724,8 +755,8 @@ define_dispatch!(
                 // then give this buffer its own cell holding the default
                 // cell's value -- void stays void -- unless it has one
                 // already; a let made for this buffer draws a message.
-                let checked = checked_symbol_name(interp, &args[0], env)?;
-                let symbol = interp.resolve_variable_name(&checked)?;
+                let checked = checked_symbol_identity(interp, &args[0], env)?;
+                let symbol = interp.resolve_variable_symbol(&checked)?;
                 if interp.is_constant_symbol(&symbol) {
                     return Err(LispError::SignalValue(Value::list([
                         Value::symbol("setting-constant"),
@@ -758,7 +789,7 @@ define_dispatch!(
                     let value = interp.symbol_value_cell(&symbol).unwrap_or(Value::Unbound);
                     interp.set_buffer_local_value(buffer_id, &symbol, value);
                 }
-                Ok(Value::Symbol(symbol.into()))
+                Ok(Value::Symbol(symbol))
             }
             "buffer-list" => {
                 let bufs: Vec<Value> = interp
@@ -1335,7 +1366,7 @@ define_dispatch!(
                     .and_then(|items| {
                         items.windows(2).find_map(|pair| {
                             matches!(pair[0].kind(), Kind::Symbol(key) if key == ":code-offset")
-                                .then(|| pair[1].as_integer().ok())
+                                .then(|| pair[1].integer_value())
                                 .flatten()
                         })
                     });
@@ -1962,7 +1993,7 @@ fn iso_final_chars_in_use(
                 .as_symbol()
                 .is_ok_and(|key| key == ":iso-final-char")
             {
-                final_char = items[index + 1].as_integer().ok();
+                final_char = items[index + 1].integer_value();
                 break;
             }
             index += 2;
@@ -1982,7 +2013,7 @@ fn iso_final_chars_in_use(
                     env,
                 )
                 .ok()
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
         };
         // charset.c:1395 reduces CHARS to a BOOLEAN -- `chars_flag' is
         // `chars == 96' -- and ISO_CHARSET_TABLE is indexed by that flag, not

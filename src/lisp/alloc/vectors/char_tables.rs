@@ -8,6 +8,29 @@
 use super::*;
 use crate::lisp::types::Kind;
 
+/// Raised by every store into a char-table or sub-char-table slot. GNU's
+/// regexp engine reads the tables directly; Emaxx's backend compiles their
+/// contents into its patterns, so its caches must notice any table change.
+/// An unchanged count proves no table slot changed and no table was made:
+/// every store passes through `set_slot' or `set_extra' (the cells are
+/// private), every new table or subtable through `allocate_words', and
+/// native code cannot store into a char table inline (comp.c emits a call
+/// for `aset'; only `setcar' and `setcdr' are inlined).
+static CHAR_TABLE_STORES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The current count of char-table stores (see `CHAR_TABLE_STORES').
+pub(crate) fn char_table_store_epoch() -> u64 {
+    CHAR_TABLE_STORES.load(Ordering::Relaxed)
+}
+
+#[inline]
+fn note_char_table_store() {
+    CHAR_TABLE_STORES.store(
+        CHAR_TABLE_STORES.load(Ordering::Relaxed).wrapping_add(1),
+        Ordering::Relaxed,
+    );
+}
+
 pub(crate) const CHAR_TABLE_STANDARD_SLOTS: usize = 68;
 pub(crate) const CHAR_TABLE_MAX_SLOTS: usize = PSEUDOVECTOR_SIZE_MASK;
 pub(crate) const CHAR_TABLE_MAX_CHAR: u32 = 0x3f_ffff;
@@ -55,6 +78,10 @@ pub struct SubCharTableRef(NonNull<VectorHeader>);
 fn allocate_words(tag: VectorTag, slots: usize) -> NonNull<VectorHeader> {
     let nbytes = vroundup(HEADER_SIZE + slots * WORD_SIZE);
     crate::lisp::native_comp::note_lisp_allocation(nbytes);
+    // A new table or subtable may occupy a dead one's address, and its
+    // slots are initialized here rather than through `set_slot': count it,
+    // so a cached graph's raw table words never vouch for a new object.
+    note_char_table_store();
     let header = allocate_vectorlike(nbytes);
     // SAFETY: freshly allocated, aligned storage; allocation does not collect.
     // The caller initializes all fields before publishing the object.
@@ -136,6 +163,7 @@ impl CharTableRef {
     #[inline]
     pub(crate) fn set_slot(&self, index: usize, value: Value) {
         self.cells()[index].set(value);
+        note_char_table_store();
     }
 
     #[inline]
@@ -189,6 +217,7 @@ impl CharTableRef {
             return false;
         };
         slot.set(value);
+        note_char_table_store();
         true
     }
 
@@ -510,6 +539,7 @@ impl SubCharTableRef {
     #[inline]
     pub(crate) fn set_slot(&self, index: usize, value: Value) {
         self.cells()[index].set(value);
+        note_char_table_store();
     }
 
     pub(crate) fn child(&self, index: usize, uniprop: bool) -> Value {

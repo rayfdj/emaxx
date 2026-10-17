@@ -52,7 +52,7 @@ pub(crate) mod coding;
 mod color_lcms;
 mod completion;
 mod dispatch;
-pub(crate) use dispatch::{restore_unicode_menu_case_table, unicode_menu_case_table};
+pub(crate) use dispatch::restore_unicode_menu_case_table;
 mod file_io;
 mod generated_builtin_arities;
 pub(crate) mod generated_gnu_c_bool_variables;
@@ -280,7 +280,6 @@ pub(crate) fn arith_error() -> LispError {
 pub(crate) use dispatch::DirectPrimitive;
 pub(crate) use dispatch::FnvBuildHasher;
 pub(crate) use dispatch::NameFacts;
-pub(crate) use dispatch::call_with_facts;
 pub(crate) use dispatch::compute_name_facts;
 pub(crate) use dispatch::echo_area_message;
 #[cfg(test)]
@@ -305,6 +304,7 @@ pub(crate) use dispatch::{
     window_render_layout,
 };
 pub use dispatch::{call, is_builtin};
+pub(crate) use dispatch::{call_with_facts, call_with_facts_arity_checked};
 
 #[cfg(test)]
 mod tests;

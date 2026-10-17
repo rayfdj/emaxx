@@ -147,14 +147,14 @@ fn store_frame_parameter(
             .parameter_overrides
             .iter()
             .find(|(key, _)| key == "menu-bar-lines")
-            .and_then(|(_, value)| value.as_integer().ok())
+            .and_then(|(_, value)| value.integer_value())
             .unwrap_or(0)
             .clamp(0, 1);
         let tab = frame
             .parameter_overrides
             .iter()
             .find(|(key, _)| key == "tab-bar-lines")
-            .and_then(|(_, value)| value.as_integer().ok())
+            .and_then(|(_, value)| value.integer_value())
             .unwrap_or(0)
             .clamp(0, 1);
         frame.text_height = frame.height - menu - tab;
@@ -517,7 +517,7 @@ define_dispatch!(
                     id,
                     args.get(1).is_some_and(Value::is_truthy),
                     args.get(1)
-                        .is_some_and(|value| value.as_symbol().ok() == Some("noelisp")),
+                        .is_some_and(|value| value.symbol_str() == Some("noelisp")),
                     env,
                 )?;
                 Ok(Value::Nil)
@@ -663,7 +663,7 @@ fn make_terminal_frame(
     let parameter = |name: &str| {
         entries.iter().find_map(|entry| {
             let (key, value) = entry.cons_values()?;
-            (key.as_symbol().ok() == Some(name)).then_some(value)
+            (key.symbol_str() == Some(name)).then_some(value)
         })
     };
     let terminal = if let Some(value) = parameter("terminal") {

@@ -4,13 +4,68 @@
 //! contents, so native stores as well as Lisp setters must invalidate a cache.
 //! Capture the traversal on a miss; a hit compares each payload in place,
 //! without rebuilding the graph, a visited set or a signature vector.
+//!
+//! Char-table and sub-char-table slots change only through their Rust
+//! setters, which count every store and every new table or subtable
+//! (`char_table_store_epoch'), so a dead table's address reused by a new
+//! one cannot match by its raw word. While that
+//! count is unchanged since the nodes last matched in full, a hit skips the
+//! table nodes and compares only the other nodes (conses, vectors, records,
+//! strings), which native code can store into directly. Builds with debug
+//! assertions compare the full graph as well and require the same answer.
+//!
+//! A capture of a table whose recent capture still matches is that capture:
+//! the traversal of an unchanged graph records the same nodes in the same
+//! order. The nodes are shared, and a digest taken at capture time stands
+//! for them in hashing.
 
 use super::{CharTableRef, HashSet, Kind, Value};
+use crate::lisp::alloc::vectors::char_tables::char_table_store_epoch;
+use std::cell::{Cell, RefCell};
+use std::hash::{BuildHasher, Hash, Hasher};
+use std::rc::Rc;
 
-#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct CharTableChainSignature {
     root: Option<usize>,
-    nodes: Vec<Node>,
+    nodes: Rc<[Node]>,
+    /// The indices of the NODES that are not tables, in capture order: all
+    /// that a match with no char-table store since the last one reads (a
+    /// case table's chain is hundreds of table nodes, more than the data
+    /// cache holds).
+    others: Rc<[u32]>,
+    /// A hash of ROOT and NODES, taken once at capture.
+    digest: u64,
+    /// The char-table store count when the nodes last matched in full.
+    verified_at: Cell<u64>,
+}
+
+/// Equality is the captured graph's; when it was last verified is not part
+/// of the signature. Equal graphs have equal digests, so hashing the digest
+/// agrees with equality.
+impl PartialEq for CharTableChainSignature {
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root
+            && self.digest == other.digest
+            && (Rc::ptr_eq(&self.nodes, &other.nodes) || self.nodes == other.nodes)
+    }
+}
+
+impl Eq for CharTableChainSignature {}
+
+impl Hash for CharTableChainSignature {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.root.hash(state);
+        self.digest.hash(state);
+    }
+}
+
+/// The most recent captures, by root. Raw words, like every cached
+/// signature: they do not root the graph, and `matches' rejects any change.
+const RECENT_CAPTURES: usize = 8;
+
+thread_local! {
+    static RECENT: RefCell<Vec<CharTableChainSignature>> = const { RefCell::new(Vec::new()) };
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -45,11 +100,35 @@ fn same_slots(slots: impl Iterator<Item = Value>, expected: &[usize]) -> bool {
 
 impl CharTableChainSignature {
     pub(crate) fn capture(table: CharTableRef) -> Self {
+        let root = Some(Value::CharTable(table).word());
+        let recent = RECENT.with_borrow(|recent| {
+            recent
+                .iter()
+                .find(|signature| signature.root == root && signature.matches(Some(table)))
+                .cloned()
+        });
+        if let Some(recent) = recent {
+            debug_assert!(
+                recent == Self::capture_fresh(table),
+                "a matching recent capture differs from a fresh one"
+            );
+            return recent;
+        }
+        let fresh = Self::capture_fresh(table);
+        RECENT.with_borrow_mut(|recent| {
+            recent.retain(|signature| signature.root != root);
+            if recent.len() == RECENT_CAPTURES {
+                recent.remove(0);
+            }
+            recent.push(fresh.clone());
+        });
+        fresh
+    }
+
+    fn capture_fresh(table: CharTableRef) -> Self {
         let root = Value::CharTable(table).word();
-        let mut result = Self {
-            root: Some(root),
-            nodes: Vec::new(),
-        };
+        let verified_at = char_table_store_epoch();
+        let mut nodes = Vec::new();
         let mut pending = vec![Value::CharTable(table)];
         let mut seen = HashSet::with_hasher(crate::lisp::primitives::FnvBuildHasher::default());
         while let Some(value) = pending.pop() {
@@ -83,23 +162,73 @@ impl CharTableChainSignature {
                 _ => continue,
             };
             // A node is recorded before its children are taken from PENDING.
-            result.nodes.push(Node {
+            nodes.push(Node {
                 word: value.word(),
                 payload,
             });
         }
-        result
+        let mut hasher = crate::lisp::primitives::FnvBuildHasher::default().build_hasher();
+        root.hash(&mut hasher);
+        nodes.hash(&mut hasher);
+        let others = (0..nodes.len())
+            .filter(|&index| !nodes[index].is_table())
+            .map(|index| u32::try_from(index).expect("a char-table graph of fewer than 2^32 nodes"))
+            .collect();
+        Self {
+            root: Some(root),
+            nodes: nodes.into(),
+            others,
+            digest: hasher.finish(),
+            verified_at: Cell::new(verified_at),
+        }
     }
 
     pub(crate) fn matches(&self, table: Option<CharTableRef>) -> bool {
         if self.root != table.map(|table| Value::CharTable(table).word()) {
             return false;
         }
-        self.nodes.iter().all(|node| {
+        let epoch = char_table_store_epoch();
+        if self.verified_at.get() == epoch {
+            // No table slot changed, so every edge out of a table node is the
+            // captured one and each other node is still reached through it.
+            let matched = self
+                .others
+                .iter()
+                .all(|&index| self.nodes[index as usize].matches_current());
+            debug_assert_eq!(
+                matched,
+                self.nodes.iter().all(Node::matches_current),
+                "char-table store count missed a table change"
+            );
+            return matched;
+        }
+        let matched = self.nodes.iter().all(Node::matches_current);
+        if matched {
+            self.verified_at.set(epoch);
+        }
+        matched
+    }
+}
+
+impl Node {
+    fn is_table(&self) -> bool {
+        matches!(
+            self.payload,
+            Payload::CharTable(_) | Payload::SubCharTable(..)
+        )
+    }
+
+    /// Nodes are compared in capture order, so a node is read only after
+    /// the node it was reached through has matched (or, on the fast path,
+    /// is a table node whose slots the unchanged store count vouches for).
+    fn matches_current(&self) -> bool {
+        let node = self;
+        {
             // SAFETY: the current root is live. Every other node was reached
-            // through a preceding node, whose complete current slots have
-            // already matched. A replaced edge returns false before its old
-            // referent is read. This check neither calls Lisp nor collects;
+            // through a preceding node whose complete current slots have
+            // already matched, or through a table node no store has changed
+            // since the graph last matched in full. A replaced edge returns
+            // false before its old referent is read. This check neither calls Lisp nor collects;
             // runtime ownership excludes a concurrent native mutation.
             // Raw words do not root the cached graph across collections.
             let current = unsafe { Value::from_word(node.word) };
@@ -127,6 +256,34 @@ impl CharTableChainSignature {
                 }
                 _ => false,
             }
-        })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lisp::types::SubCharTableRef;
+
+    #[test]
+    fn making_or_storing_into_a_table_changes_the_store_count() {
+        // A new table may take a dead one's address: its creation must
+        // invalidate fast hits as any slot store does.
+        let before = char_table_store_epoch();
+        let table = CharTableRef::new(Value::Nil, Value::Nil, 0);
+        assert_ne!(char_table_store_epoch(), before, "char table creation");
+        let before = char_table_store_epoch();
+        let _sub = SubCharTableRef::new(1, 0, Value::Nil);
+        assert_ne!(char_table_store_epoch(), before, "subtable creation");
+        let before = char_table_store_epoch();
+        table.set(97, Value::T);
+        assert_ne!(char_table_store_epoch(), before, "slot store");
+        let before = char_table_store_epoch();
+        let signature = CharTableChainSignature::capture(table);
+        assert!(signature.matches(Some(table)));
+        assert_eq!(char_table_store_epoch(), before, "reads store nothing");
+        // A store the signature does not cover by value still invalidates.
+        table.set(98, Value::T);
+        assert!(!signature.matches(Some(table)));
     }
 }

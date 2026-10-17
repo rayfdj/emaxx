@@ -31,6 +31,7 @@ pub(crate) const MOST_NEGATIVE_FIXNUM: i64 = -(1_i64 << 61);
 
 /// GNU lisp.h's `make_int`: keep values in the immediate fixnum range and
 /// represent every other mathematical integer as a bignum.
+#[inline]
 pub(crate) fn normalize_integer_value(value: i64) -> Value {
     if (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&value) {
         Value::Integer(value)
@@ -344,7 +345,7 @@ pub(crate) fn function_arity_value(
                 .into_iter()
                 .map(|parameter| {
                     arity_bare_symbol(interp, &parameter, positions_enabled)
-                        .and_then(|symbol| symbol.as_symbol().ok().map(str::to_string))
+                        .and_then(|symbol| symbol.symbol_str().map(str::to_string))
                         .ok_or_else(|| invalid_function_arity(function))
                 })
                 .collect::<Result<Vec<_>, _>>()?;

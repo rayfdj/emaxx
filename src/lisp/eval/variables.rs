@@ -6,6 +6,26 @@ use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::SymbolName;
 
+/// The variables forwarded to evaluator cells (`update_forwarded_eval_cell').
+const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 8] = [
+    cached_symbol!("quit-flag"),
+    cached_symbol!("inhibit-quit"),
+    cached_symbol!("throw-on-input"),
+    cached_symbol!("overriding-plist-environment"),
+    cached_symbol!("load-path"),
+    cached_symbol!("max-lisp-eval-depth"),
+    cached_symbol!("debug-on-next-call"),
+    cached_symbol!("symbols-with-pos-enabled"),
+];
+
+/// Whether SYMBOL is one of the variables whose evaluator cells hold the
+/// current buffer's value.
+pub(super) fn is_forwarded_eval_cell(symbol: &SymbolName) -> bool {
+    FORWARDED_EVAL_CELLS
+        .iter()
+        .any(|key| key.with(|cell| cell == symbol))
+}
+
 #[derive(Default)]
 struct ReadSymbolContainers {
     cons: HashSet<usize>,
@@ -15,7 +35,7 @@ struct ReadSymbolContainers {
 impl BacktraceFrame {
     pub(super) fn function_snapshot(&self) -> Value {
         self.source_form()
-            .and_then(|form| form.car().ok())
+            .and_then(|form| form.car_if_list())
             .unwrap_or_else(|| self.function.value())
     }
 
@@ -98,6 +118,13 @@ impl Interpreter {
                     .and_then(primitives::parse_remote_file_name)
             })
             .map(|remote| remote.prefix)
+    }
+
+    /// Whether `buffer_local_hook' has one, without its copy.
+    pub(crate) fn has_buffer_local_hook(&self, buffer_id: u64, hook_name: &str) -> bool {
+        self.buffer_local_hooks
+            .get(&buffer_id)
+            .is_some_and(|hooks| hooks.contains_key(hook_name))
     }
 
     pub fn buffer_local_hook(&self, buffer_id: u64, hook_name: &str) -> Option<Vec<Value>> {
@@ -311,9 +338,21 @@ impl Interpreter {
 
     pub fn clear_buffer_local_state(&mut self, buffer_id: u64) {
         self.reset_buffer_text_conversion_style(buffer_id);
-        self.buffer_locals.remove(&buffer_id);
+        self.remove_buffer_locals(buffer_id);
         self.buffer_local_hooks.remove(&buffer_id);
         self.buffer_case_tables.retain(|(id, _)| *id != buffer_id);
+    }
+
+    /// Drop every local binding of BUFFER_ID. A current buffer's evaluator
+    /// cells return to the global values, as GNU's swap_in_global_binding
+    /// does for each killed local.
+    pub(super) fn remove_buffer_locals(&mut self, buffer_id: u64) {
+        let refresh =
+            buffer_id == self.current_buffer_id() && self.has_forwarded_eval_local(buffer_id);
+        self.buffer_locals.remove(&buffer_id);
+        if refresh {
+            self.refresh_forwarded_eval_cells();
+        }
     }
 
     // `kill-all-local-variables' keeps buffer-local hook functions whose
@@ -332,7 +371,7 @@ impl Interpreter {
             })
             .map(|(name, values)| (name.clone(), values.clone()))
             .collect::<Vec<_>>();
-        self.buffer_locals.remove(&buffer_id);
+        self.remove_buffer_locals(buffer_id);
         if permanent_hooks.is_empty() {
             self.buffer_local_hooks.remove(&buffer_id);
         } else {
@@ -448,18 +487,21 @@ impl Interpreter {
     /// Native DEFVAR-style startup state must never require two coordinated
     /// calls at the definition site.
     pub fn define_special_variable(&mut self, name: &str, value: Value) {
+        SymbolName::intern_str(name).cell().set_c_slot(true);
         self.set_global_binding(name, value);
         self.mark_special_variable(name);
     }
 
     /// Define a native per-buffer value and its locality metadata atomically.
     pub fn define_per_buffer_special(&mut self, name: &str, value: Value) {
+        SymbolName::intern_str(name).cell().set_c_slot(true);
         self.set_global_binding(name, value);
         self.mark_per_buffer_special(name);
     }
 
     /// Define a native always-buffer-local value and its locality metadata.
     pub fn define_always_buffer_local_special(&mut self, name: &str, value: Value) {
+        SymbolName::intern_str(name).cell().set_c_slot(true);
         self.set_global_binding(name, value);
         self.mark_always_buffer_local_special(name);
     }
@@ -467,6 +509,7 @@ impl Interpreter {
     /// Mark a native DEFVAR_PER_BUFFER variable that inherits its default
     /// until assigned locally (a positive buffer_local_flags index in GNU).
     pub fn mark_per_buffer_special(&mut self, name: &str) {
+        SymbolName::intern_str(name).cell().set_c_slot(true);
         self.mark_auto_buffer_local(name);
         self.mark_special_variable(name);
         self.globals.set_flag_by_name(name, PER_BUFFER);
@@ -502,8 +545,12 @@ impl Interpreter {
     }
 
     pub fn mark_special_variable(&mut self, name: &str) {
-        if self.globals.set_flag_by_name(name, SPECIAL) {
-            self.special_variables.push(name.to_string());
+        self.mark_special_variable_symbol(&SymbolName::intern_str(name));
+    }
+
+    pub(crate) fn mark_special_variable_symbol(&mut self, symbol: &SymbolName) {
+        if self.globals.set_flag(symbol, SPECIAL) {
+            self.special_variables.push(symbol.as_str().to_owned());
         }
     }
 
@@ -539,9 +586,9 @@ impl Interpreter {
     /// whether NAME is declared locally special in the current
     /// environment. The Lisp environment itself is authoritative, including
     /// bare symbols installed or mutated after a closure was constructed.
-    pub(crate) fn local_special_active(&self, name: &str, env: &Env) -> bool {
+    pub(crate) fn local_special_active(&self, symbol: &SymbolName, env: &Env) -> bool {
         crate::lisp::types::current_environment(env).is_some_and(|environment| {
-            crate::lisp::types::environment_declares_special(environment, name)
+            crate::lisp::types::environment_declares_special(environment, symbol)
         })
     }
 
@@ -554,18 +601,9 @@ impl Interpreter {
             .unwrap_or_else(|| crate::lisp::types::environment_is_lexical(env))
     }
 
-    /// `is_special_variable' for a symbol in hand: the flag by id, the
-    /// C-slot registry by name.
+    /// eval.c:Fspecial_variable_p reads this object's declared_special bit.
     pub(crate) fn is_special_variable_symbol(&self, symbol: &SymbolName) -> bool {
-        if self.globals.has_flag(symbol, SPECIAL) || self.has_c_slot_symbol(symbol) {
-            return true;
-        }
-        if self.globals.alias(symbol).is_none() {
-            return false;
-        }
-        let resolved = self.resolve_variable_symbol(symbol).unwrap_or(*symbol);
-        self.globals.has_flag(&resolved, SPECIAL)
-            || self.builtin_var_value(resolved.as_str()).is_some()
+        self.globals.has_flag(symbol, SPECIAL)
     }
 
     /// Whether a binding form must use GNU's dynamic value-cell semantics.
@@ -575,49 +613,13 @@ impl Interpreter {
     pub(crate) fn binding_is_dynamic_symbol(&self, symbol: &SymbolName, env: &Env) -> bool {
         self.lambda_capture_override() == Some(false)
             || self.is_special_variable_symbol(symbol)
-            || self.local_special_active(symbol.as_str(), env)
+            || self.local_special_active(symbol, env)
     }
 
-    /// Whether SYMBOL names a C-owned value cell (`builtin_var_value'
-    /// synthesizes one).  The registry is a match over the names; a name
-    /// outside it is outside it for good. Until dedicated slots use the
-    /// allocated redirect, keep that verdict in the symbol's state byte.
-    /// Ordinary lexical bindings then need neither a thread-local lookup nor
-    /// a hash-table probe. A detached forwarded variable must not acquire
-    /// the negative bit, as a later store can restore its dedicated slot.
+    /// Only the object registered by a C initializer owns its dedicated slot.
+    /// Ordinary queries do not classify names or maintain a negative cache.
     pub(crate) fn has_c_slot_symbol(&self, symbol: &SymbolName) -> bool {
-        if symbol.cell().has_no_c_slot() {
-            return false;
-        }
-        if self.builtin_var_value(symbol.as_str()).is_some() {
-            return true;
-        }
-        if !self
-            .detached_forwarded_variables
-            .contains_key(symbol.as_str())
-        {
-            symbol.cell().note_no_c_slot();
-        }
-        false
-    }
-
-    pub fn is_special_variable(&self, name: &str) -> bool {
-        // Every value synthesized by `builtin_var_value' represents a
-        // dumped/native value cell (or a dumped Lisp defvar) and is therefore
-        // dynamically scoped under lexical binding.  Derive that property
-        // from the value registry itself so adding a startup default cannot
-        // silently omit its binding semantics.
-        if self.globals.has_flag_by_name(name, SPECIAL) || self.builtin_var_value(name).is_some() {
-            return true;
-        }
-        if self.globals.alias_by_name(name).is_none() {
-            return false;
-        }
-        let resolved = self
-            .resolve_variable_name(name)
-            .unwrap_or_else(|_| name.to_string());
-        self.globals.has_flag_by_name(&resolved, SPECIAL)
-            || self.builtin_var_value(&resolved).is_some()
+        symbol.cell().has_c_slot()
     }
 
     #[cfg(test)]
@@ -728,17 +730,15 @@ impl Interpreter {
 
     pub fn intern_symbol_name(&mut self, name: &str) {
         SymbolName::intern_str(name);
-        if self.uninterned_standard_symbol_names.remove(name) {
-            self.note_obarray_removal();
-        }
     }
 
     pub(crate) fn unintern_standard_symbol_name(&mut self, name: &str) -> bool {
         if !self.standard_obarray_contains_symbol(name) {
             return false;
         }
-        self.uninterned_standard_symbol_names
-            .insert(name.to_owned());
+        self.globals
+            .remove_name(name)
+            .expect("verified obarray member");
         self.note_obarray_removal();
         true
     }
@@ -1142,20 +1142,20 @@ impl Interpreter {
 
     /// eval.c:Fdefvaralias's non-circularity loop: walk BASE's redirect
     /// chain, and signal with BASE if it reaches ALIAS.
-    pub(crate) fn check_variable_alias_cycle(
+    pub(crate) fn check_variable_alias_cycle_symbol(
         &self,
-        alias: &str,
-        base: &str,
+        alias: &SymbolName,
+        base: &SymbolName,
     ) -> Result<(), LispError> {
-        let mut current = base.to_owned();
+        let mut current = *base;
         loop {
-            if current == alias {
+            if current == *alias {
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("cyclic-variable-indirection".into()),
-                    Value::Symbol(base.to_string().into()),
+                    Value::Symbol(*base),
                 ])));
             }
-            match self.direct_variable_alias(&current) {
+            match self.globals.alias(&current) {
                 Some(next) => current = next,
                 None => return Ok(()),
             }
@@ -1166,12 +1166,17 @@ impl Interpreter {
     /// names BASE itself, not the end of BASE's chain, so re-pointing BASE
     /// later re-points every alias of it (data.c:indirect_variable walks
     /// the chain on each read).
-    pub fn set_variable_alias(&mut self, alias: &str, target: &str) -> Result<(), LispError> {
-        self.check_variable_alias_cycle(alias, target)?;
-        self.globals.set_alias(
-            &SymbolName::intern_str(alias),
-            SymbolName::intern_str(target),
-        );
+    pub(crate) fn set_variable_alias_symbol(
+        &mut self,
+        alias: &SymbolName,
+        target: &SymbolName,
+    ) -> Result<(), LispError> {
+        self.check_variable_alias_cycle_symbol(alias, target)?;
+        self.globals.set_alias(alias, *target);
+        // eval.c:Fdefvaralias copies trapped_write from BASE itself, not
+        // from the end of its chain. Later re-aliasing BASE does not rewrite
+        // the headers of aliases that already refer to it.
+        alias.cell().set_constant(target.cell().is_constant());
         Ok(())
     }
 
@@ -1180,24 +1185,8 @@ impl Interpreter {
     /// a `make_symbol_constant' call in the pinned sources (data.c's fixnum
     /// bounds, buffer.c's `enable-multibyte-characters', font.c's three
     /// tables).
-    pub(crate) fn is_constant_symbol(&self, name: &str) -> bool {
-        matches!(
-            name,
-            "nil"
-                | "t"
-                | "most-positive-fixnum"
-                | "most-negative-fixnum"
-                | "enable-multibyte-characters"
-                | "font-weight-table"
-                | "font-slant-table"
-                | "font-width-table"
-        ) || name.starts_with(':')
-    }
-
-    /// `SYMBOL_LOCALIZED': the symbol has ever acquired a buffer-local
-    /// binding (data.c never clears the redirect).
-    pub(crate) fn is_localized_variable(&self, name: &str) -> bool {
-        self.globals.has_flag_by_name(name, LOCALIZED)
+    pub(crate) fn is_constant_symbol(&self, symbol: &SymbolName) -> bool {
+        symbol.cell().is_constant()
     }
 
     /// `SYMBOL_FORWARDED': a DEFVAR_* the pinned oracle build carries, and
@@ -1212,7 +1201,9 @@ impl Interpreter {
     /// data.c:store_symval_forwarding does for that kind.
     pub(crate) fn mark_forwarded_variables(&mut self) {
         for name in crate::lisp::primitives::gnu_c_forwarded_variables() {
-            let mut flags = FORWARDED;
+            let symbol = SymbolName::intern_str(name);
+            symbol.cell().set_c_slot(true);
+            let mut flags = FORWARDED | SPECIAL;
             if crate::lisp::primitives::generated_gnu_c_bool_variables::is_gnu_c_bool_variable(name)
             {
                 flags |= FWD_BOOL;
@@ -1220,22 +1211,35 @@ impl Interpreter {
             if crate::lisp::primitives::generated_gnu_c_int_variables::is_gnu_c_int_variable(name) {
                 flags |= FWD_INT;
             }
-            self.globals.set_flag_by_name(name, flags);
+            self.globals.set_flag(&symbol, flags);
+        }
+        // alloc.c's DEFVAR_INT counters: reads, stores and bindings of these
+        // symbols act on the allocator's own words.
+        for (name, counter) in &crate::lisp::alloc::counters::FORWARDED_COUNTERS {
+            SymbolName::intern_str(name)
+                .cell()
+                .forward_to_counter(counter);
         }
     }
 
     /// data.c:set_internal storing Qunbound into a forwarded symbol:
     /// `sym->u.s.redirect = SYMBOL_PLAINVAL' -- later stores cannot
     /// reconnect it to the C variable.
-    pub(crate) fn detach_forwarded_variable(&mut self, name: &str, slot_value: Value) {
+    pub(crate) fn detach_forwarded_variable_symbol(
+        &mut self,
+        symbol: &SymbolName,
+        slot_value: Value,
+    ) {
+        let name = symbol.as_str();
+        symbol.cell().set_c_slot(false);
         if self.has_native_text_conversion_style(name) {
             // The symbol becomes plain; the buffer's actual C field and its
             // local flag continue to exist independently of that redirect.
             self.globals
-                .clear_flag_by_name(name, LOCALIZED | LOCAL_IF_SET | PER_BUFFER);
+                .clear_flag(symbol, LOCALIZED | LOCAL_IF_SET | PER_BUFFER);
         }
         self.globals
-            .clear_flag_by_name(name, FORWARDED | FWD_BOOL | FWD_INT);
+            .clear_flag(symbol, FORWARDED | FWD_BOOL | FWD_INT);
         self.detached_forwarded_variables
             .insert(name.to_owned(), slot_value);
     }
@@ -1249,10 +1253,10 @@ impl Interpreter {
     }
 
     /// Whether a `SPECPDL_LET*' record for NAME is on the binding stack.
-    pub(crate) fn is_let_bound_special(&self, name: &str) -> bool {
+    pub(crate) fn is_let_bound_special(&self, name: &SymbolName) -> bool {
         self.active_special_restores
             .iter()
-            .any(|restore| restore.name == name)
+            .any(|restore| restore.name == *name)
     }
 
     #[cfg(test)]
@@ -1260,27 +1264,24 @@ impl Interpreter {
         self.globals.clear_alias_by_name(name)
     }
 
-    pub fn indirect_variable_name(&self, name: &str) -> Result<String, LispError> {
-        self.resolve_variable_name(name)
-    }
-
     pub(super) fn global_value(&self, name: &str) -> Option<Value> {
         self.global_binding_value(name)
     }
 
     pub fn default_value(&self, name: &str) -> Option<Value> {
-        let resolved = self
-            .resolve_variable_name(name)
-            .unwrap_or_else(|_| name.to_string());
-        self.global_value(&resolved)
-            .or_else(|| self.builtin_var_value(&resolved))
+        self.default_value_symbol(&SymbolName::intern_str(name))
+            .ok()
+            .flatten()
     }
 
-    pub fn is_default_bound(&self, name: &str) -> bool {
-        let resolved = self
-            .resolve_variable_name(name)
-            .unwrap_or_else(|_| name.to_string());
-        self.globals.is_bound_name(&resolved)
+    pub(crate) fn default_value_symbol(
+        &self,
+        symbol: &SymbolName,
+    ) -> Result<Option<Value>, LispError> {
+        let resolved = self.resolve_variable_symbol(symbol)?;
+        Ok(self
+            .global_binding_value_symbol(&resolved)
+            .or_else(|| self.builtin_symbol_value(&resolved)))
     }
 
     pub fn remove_global_binding(&mut self, name: &str) {
@@ -1292,8 +1293,11 @@ impl Interpreter {
 
     /// `remove_global_binding' for a symbol in hand.
     pub(crate) fn remove_global_binding_symbol(&mut self, symbol: &SymbolName) {
-        for terminal in &mut self.terminals {
-            terminal.borrow_mut().keyboard.remove(symbol.as_str());
+        // Only a KBOARD variable has terminal-local values.
+        if symbol.cell().is_kboard_forwarded() {
+            for terminal in &mut self.terminals {
+                terminal.borrow_mut().keyboard.remove(symbol.as_str());
+            }
         }
         self.globals.remove(symbol);
     }
@@ -1371,22 +1375,35 @@ impl Interpreter {
     }
 
     pub(super) fn refresh_forwarded_eval_cells(&mut self) {
-        for name in [
-            "quit-flag",
-            "inhibit-quit",
-            "throw-on-input",
-            "overriding-plist-environment",
-            "load-path",
-            "max-lisp-eval-depth",
-            "debug-on-next-call",
-            "symbols-with-pos-enabled",
-        ] {
+        for key in FORWARDED_EVAL_CELLS {
+            let name = key.with(|symbol| *symbol);
+            let name = name.as_str();
             if let Some(value) = self
                 .buffer_local_value(self.current_buffer_id(), name)
                 .or_else(|| self.global_binding_value(name))
             {
                 self.update_forwarded_eval_cell(name, &value);
             }
+        }
+    }
+
+    /// Whether BUFFER_ID has a local binding of a variable whose evaluator
+    /// cell holds the current buffer's value.
+    pub(super) fn has_forwarded_eval_local(&self, buffer_id: u64) -> bool {
+        self.buffer_locals
+            .get(&buffer_id)
+            .is_some_and(super::local_cells::LocalCells::has_forwarded_eval_binding)
+    }
+
+    /// The cells after the current buffer changed from PREVIOUS. Without a
+    /// local binding in either buffer each cell holds the global value
+    /// before and after (set_buffer_internal_2 swaps only the buffers'
+    /// local bindings), so only such a binding calls for a refresh.
+    pub(super) fn refresh_forwarded_eval_cells_after_switch(&mut self, previous: u64) {
+        if self.has_forwarded_eval_local(previous)
+            || self.has_forwarded_eval_local(self.current_buffer_id())
+        {
+            self.refresh_forwarded_eval_cells();
         }
     }
 
@@ -1446,7 +1463,8 @@ impl Interpreter {
     }
 
     pub(crate) fn global_binding_value_symbol(&self, name: &SymbolName) -> Option<Value> {
-        if Self::is_keyboard_variable(name)
+        if name.cell().is_kboard_forwarded()
+            && Self::is_keyboard_variable(name)
             && let Some(value) = self.terminal_keyboard_value(name.as_str())
         {
             return Some(value);
@@ -1465,6 +1483,10 @@ impl Interpreter {
     /// `set_global_binding' for a symbol whose alias chain is resolved:
     /// the buffer-local and global cells are read and written by id.
     pub(crate) fn set_global_binding_resolved(&mut self, symbol: &SymbolName, value: Value) {
+        if !symbol.cell().has_c_slot() {
+            self.globals.insert(symbol, value);
+            return;
+        }
         let name = symbol.as_str();
         let value = self.normalize_forwarded_eval_cell(name, value);
         if self.has_native_text_conversion_style(name) {
@@ -1487,7 +1509,7 @@ impl Interpreter {
                 .to_vec()
                 .unwrap_or_default()
                 .into_iter()
-                .filter_map(|feature| feature.as_symbol().ok().map(str::to_string))
+                .filter_map(|feature| feature.symbol_str().map(str::to_string))
                 .collect();
         }
         if self
@@ -1682,14 +1704,41 @@ impl Interpreter {
     }
 
     pub fn default_toplevel_value(&self, name: &str) -> Option<Value> {
-        let resolved = self
-            .resolve_variable_name(name)
-            .unwrap_or_else(|_| name.to_string());
-        if let Some(previous) = self.active_global_toplevel_value(&resolved) {
-            return previous.or_else(|| self.builtin_var_value(&resolved));
+        self.default_toplevel_value_symbol(&SymbolName::intern_str(name))
+            .ok()
+            .flatten()
+    }
+
+    pub(crate) fn default_toplevel_value_symbol(
+        &self,
+        symbol: &SymbolName,
+    ) -> Result<Option<Value>, LispError> {
+        // eval.c:default_toplevel_binding matches the original symbol in
+        // the specpdl. Only the fallback default_value follows aliases.
+        if let Some(restore) = self.active_special_restores.iter().find(|restore| {
+            !restore.local_binding_killed
+                && restore.name == *symbol
+                && matches!(restore.scope, SpecialBindingScope::Global)
+        }) {
+            return Ok(restore.previous);
         }
-        self.global_value(&resolved)
-            .or_else(|| self.builtin_var_value(&resolved))
+        self.default_value_symbol(symbol)
+    }
+
+    pub(crate) fn set_active_toplevel_value_symbol(
+        &mut self,
+        symbol: &SymbolName,
+        value: Value,
+    ) -> bool {
+        let Some(restore) = self.active_special_restores.iter_mut().find(|restore| {
+            !restore.local_binding_killed
+                && restore.name == *symbol
+                && matches!(restore.scope, SpecialBindingScope::Global)
+        }) else {
+            return false;
+        };
+        restore.previous = (!matches!(value.kind(), Kind::Unbound)).then_some(value);
+        true
     }
 
     pub fn set_default_toplevel_value(&mut self, name: &str, value: Value) {
@@ -1778,23 +1827,43 @@ impl Interpreter {
         }
     }
 
-    pub fn prepare_variable_assignment(
-        &self,
-        name: &str,
-        value: Value,
-    ) -> Result<Value, LispError> {
-        self.prepare_variable_assignment_with(name, value, |flag| {
-            self.globals.has_flag_by_name(name, flag)
-        })
-    }
-
-    /// `prepare_variable_assignment' for a symbol in hand: the forwarding
-    /// flags are read by id.
+    /// specbind resolves aliases before do_specbind checks trapped_write.
     pub(crate) fn prepare_variable_assignment_symbol(
         &self,
         symbol: &SymbolName,
         value: Value,
     ) -> Result<Value, LispError> {
+        self.check_constant_assignment_symbol(symbol, value)?;
+        self.prepare_forwarded_assignment_symbol(symbol, value)
+    }
+
+    /// set_internal/set_default_internal check the original symbol before
+    /// following aliases. An allowed keyword assignment is already done.
+    pub(crate) fn check_constant_assignment_symbol(
+        &self,
+        symbol: &SymbolName,
+        value: Value,
+    ) -> Result<bool, LispError> {
+        if !symbol.cell().is_constant() {
+            return Ok(false);
+        }
+        if symbol.is_keyword() && self.symbol_value_cell_symbol(symbol)? == value {
+            return Ok(true);
+        }
+        Err(LispError::SignalValue(Value::list([
+            Value::symbol("setting-constant"),
+            Value::Symbol(*symbol),
+        ])))
+    }
+
+    pub(crate) fn prepare_forwarded_assignment_symbol(
+        &self,
+        symbol: &SymbolName,
+        value: Value,
+    ) -> Result<Value, LispError> {
+        if !symbol.cell().has_c_slot() {
+            return Ok(value);
+        }
         self.prepare_variable_assignment_with(symbol.as_str(), value, |flag| {
             self.globals.has_flag(symbol, flag)
         })
@@ -1806,25 +1875,6 @@ impl Interpreter {
         value: Value,
         has_flag: impl Fn(u8) -> bool,
     ) -> Result<Value, LispError> {
-        if matches!(
-            name,
-            "nil" | "t" | "most-positive-fixnum" | "most-negative-fixnum"
-        ) {
-            return Err(LispError::SignalValue(Value::list([
-                Value::Symbol("setting-constant".into()),
-                Value::Symbol(name.to_string().into()),
-            ])));
-        }
-        if name.starts_with(':') {
-            return if value == Value::Symbol(name.to_string().into()) {
-                Ok(value)
-            } else {
-                Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("setting-constant".into()),
-                    Value::Symbol(name.to_string().into()),
-                ])))
-            };
-        }
         // CHECK_SYMBOL/constant checks still apply, but the symbol no longer
         // forwards through a typed C slot after data.c:set_internal voids it.
         if self.detached_forwarded_variables.contains_key(name) {
@@ -1903,58 +1953,9 @@ impl Interpreter {
         })
     }
 
-    /// A name whose store is not the symbol's value cell alone: the
-    /// constants, keywords, the buffer's own fields, the forwarded eval
-    /// cells, the keyboard's per-terminal variables and the frame
-    /// parameters with a normalizing store (every name the assignment
-    /// paths below match on).
-    fn dedicated_store_name(name: &str) -> bool {
-        name.starts_with(':')
-            || matches!(
-                name,
-                "nil"
-                    | "t"
-                    | "most-positive-fixnum"
-                    | "most-negative-fixnum"
-                    | "buffer-file-name"
-                    | "buffer-file-truename"
-                    | "mark-active"
-                    | "buffer-undo-list"
-                    | "features"
-                    | "ascii-case-table"
-                    | "initial-window-system"
-                    | "quit-flag"
-                    | "inhibit-quit"
-                    | "throw-on-input"
-                    | "overriding-plist-environment"
-                    | "load-path"
-                    | "max-lisp-eval-depth"
-                    | "debug-on-next-call"
-                    | "symbols-with-pos-enabled"
-                    | "display-hourglass"
-                    | "scroll-up-aggressively"
-                    | "vertical-scroll-bar"
-                    | "overwrite-mode"
-                    | "overriding-terminal-local-map"
-                    | "last-command"
-                    | "real-last-command"
-                    | "keyboard-translate-table"
-                    | "last-repeatable-command"
-                    | "prefix-arg"
-                    | "last-prefix-arg"
-                    | "defining-kbd-macro"
-                    | "last-kbd-macro"
-                    | "system-key-alist"
-                    | "window-system"
-                    | "default-minibuffer-frame"
-                    | "input-decode-map"
-                    | "local-function-key-map"
-            )
-    }
-
     /// Learn whether SYMBOL's assignments are a plain store (data.c's
     /// SYMBOL_PLAINVAL, untrapped): no alias, none of the localizing or
-    /// forwarding flags, no watcher, not a name with a dedicated store.
+    /// forwarding flags, no watcher, no constant bit or dedicated C slot.
     /// Recorded on the cell after a full assignment has run once, read by
     /// the fast paths of `set_internal_symbol', `bind_special_symbol' and
     /// `restore_special_binding'.
@@ -1973,7 +1974,8 @@ impl Interpreter {
             )
             && self.variable_watcher_index(name).is_none()
             && !self.detached_forwarded_variables.contains_key(name)
-            && !Self::dedicated_store_name(name);
+            && !symbol.cell().is_constant()
+            && !symbol.cell().has_c_slot();
         self.globals.set_plain_store(symbol, plain);
     }
 
@@ -2083,7 +2085,7 @@ impl Interpreter {
         let buffer_id = self.current_buffer_id();
         let binding_id = self.next_special_binding_id;
         self.next_special_binding_id += 1;
-        if name == "buffer-undo-list" {
+        if resolved.cell().has_c_slot() && name == "buffer-undo-list" {
             let previous = crate::lisp::primitives::buffer_undo_list_value(&self.buffer.borrow());
             self.notify_variable_watchers(name, value, "let", Some(buffer_id), env)?;
             let previous_undo_state = self.buffer.borrow_mut().take_undo_state();
@@ -2095,7 +2097,7 @@ impl Interpreter {
                 binding_buffer_id: None,
                 keyboard_terminal_id: None,
                 previous: Some(previous),
-                previous_undo_state: Some(previous_undo_state),
+                previous_undo_state: Some(Box::new(previous_undo_state)),
                 let_default: false,
                 local_binding_killed: false,
             };
@@ -2122,7 +2124,8 @@ impl Interpreter {
         } else {
             // specbind saves find_symbol_value even for LET_DEFAULT.
             // A prior bset may differ from the per-buffer default.
-            let native_style = self.has_native_text_conversion_style(name);
+            let native_style =
+                resolved.cell().has_c_slot() && self.has_native_text_conversion_style(name);
             let previous = if native_style {
                 Some(self.buffer.borrow().text_conversion_style)
             } else {
@@ -2157,7 +2160,9 @@ impl Interpreter {
             self.set_global_binding_resolved(&resolved, value);
             SpecialBindingRestore {
                 binding_id,
-                keyboard_terminal_id: if Self::is_keyboard_variable(&resolved) {
+                keyboard_terminal_id: if resolved.cell().is_kboard_forwarded()
+                    && Self::is_keyboard_variable(&resolved)
+                {
                     self.keyboard_binding_terminal(name)
                 } else {
                     None
@@ -2267,17 +2272,15 @@ impl Interpreter {
             }
             match record.scope {
                 SpecialBindingScope::Global => {
-                    if let Some(undo_state) = record.previous_undo_state.take() {
+                    if let Some(mut undo_state) = record.previous_undo_state.take() {
                         // buffer-undo-list binds through the buffer's undo
                         // machinery rather than a value cell.
                         let buffer_id = self.current_buffer_id();
                         if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
                             let current = buffer.take_undo_state();
-                            buffer.restore_undo_state(undo_state);
-                            record.previous_undo_state = Some(current);
-                        } else {
-                            record.previous_undo_state = Some(undo_state);
+                            buffer.restore_undo_state(std::mem::replace(&mut *undo_state, current));
                         }
+                        record.previous_undo_state = Some(undo_state);
                         continue;
                     }
                     let current = self.global_value(&record.name);
@@ -2290,14 +2293,12 @@ impl Interpreter {
                     record.previous = current;
                 }
                 SpecialBindingScope::BufferLocal(buffer_id) => {
-                    if let Some(undo_state) = record.previous_undo_state.take() {
+                    if let Some(mut undo_state) = record.previous_undo_state.take() {
                         if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
                             let current = buffer.take_undo_state();
-                            buffer.restore_undo_state(undo_state);
-                            record.previous_undo_state = Some(current);
-                        } else {
-                            record.previous_undo_state = Some(undo_state);
+                            buffer.restore_undo_state(std::mem::replace(&mut *undo_state, current));
                         }
+                        record.previous_undo_state = Some(undo_state);
                         continue;
                     }
                     let current = self.buffer_local_value(buffer_id, &record.name);
@@ -2387,7 +2388,7 @@ impl Interpreter {
                 env,
             )?;
             if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
-                buffer.restore_undo_state(previous_undo_state);
+                buffer.restore_undo_state(*previous_undo_state);
             }
             return Ok(());
         }
@@ -2453,12 +2454,16 @@ impl Interpreter {
     /// public API may release ARGS before popping the frame.
     #[inline]
     pub fn push_backtrace_frame(&mut self, function: Value, args: &[Value]) {
-        self.push_plain_backtrace_frame(function, FrameArgs::Owned(args.to_vec()), true);
+        self.push_plain_backtrace_frame(function, || FrameArgs::Owned(args.to_vec()), true);
     }
 
     /// eval.c:record_in_backtrace borrows the activation's arguments.
     /// Keep that borrow inside this scope, including Rust panic unwinding.
-    #[inline]
+    /// Production calls write and pop their frame in place (a Rust panic
+    /// ends the process: the batch driver reports it and the module ABI
+    /// aborts); this scoped form, which also pops on a caught unwind, is
+    /// kept for the tests that unwind through a borrowed frame.
+    #[cfg(test)]
     pub(crate) fn with_backtrace_frame<R>(
         &mut self,
         function: Value,
@@ -2468,7 +2473,7 @@ impl Interpreter {
         self.with_backtrace_arguments(function, FrameArgs::borrowed(args), body)
     }
 
-    #[inline]
+    #[cfg(test)]
     fn with_backtrace_arguments<R>(
         &mut self,
         function: Value,
@@ -2476,7 +2481,7 @@ impl Interpreter {
         body: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let depth = self.backtrace_frames.len();
-        self.push_plain_backtrace_frame(function, args, true);
+        self.push_plain_backtrace_frame(function, || args, true);
         // The frame is popped on every exit, a Rust unwind included, by a
         // guard's drop rather than a catch_unwind around the body (the
         // catch cost a call of its own on every Lisp call).
@@ -2503,7 +2508,12 @@ impl Interpreter {
 
     /// The four-word frame record_in_backtrace writes.
     #[inline(always)]
-    fn push_plain_backtrace_frame(&mut self, function: Value, args: FrameArgs, evald: bool) {
+    fn push_plain_backtrace_frame(
+        &mut self,
+        function: Value,
+        args: impl FnOnce() -> FrameArgs,
+        evald: bool,
+    ) {
         Self::write_backtrace_frame(
             &mut self.backtrace_frames,
             FrameFunction::Owned(function),
@@ -2514,12 +2524,15 @@ impl Interpreter {
 
     /// record_in_backtrace's stores into `specpdl_ptr': the frame's words
     /// written into the vector's next slot (a frame built on the stack
-    /// and copied in was a stall per interpreted call).
+    /// and copied in was a stall per interpreted call). ARGS makes the
+    /// arguments' record once the slot is reserved: one made before it,
+    /// kept across the reservation's growth call, was built on the stack
+    /// and copied in with loads that each span two of its stores.
     #[inline(always)]
     fn write_backtrace_frame(
         frames: &mut Vec<BacktraceFrame>,
         function: FrameFunction,
-        args: FrameArgs,
+        args: impl FnOnce() -> FrameArgs,
         evald: bool,
     ) {
         frames.reserve(1);
@@ -2530,7 +2543,7 @@ impl Interpreter {
         unsafe {
             let slot = frames.as_mut_ptr().add(len);
             std::ptr::addr_of_mut!((*slot).function).write(function);
-            std::ptr::addr_of_mut!((*slot).args).write(args);
+            std::ptr::addr_of_mut!((*slot).args).write(args());
             std::ptr::addr_of_mut!((*slot).evald).write(evald);
             std::ptr::addr_of_mut!((*slot).debug_on_exit).write(false);
             std::ptr::addr_of_mut!((*slot).detail).write(None);
@@ -2538,21 +2551,17 @@ impl Interpreter {
         }
     }
 
-    /// The same, for native Ffuncall's word vector.
-    pub(crate) fn with_native_backtrace_frame<R>(
-        &mut self,
-        function: Value,
-        args: &[usize],
-        body: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        self.with_backtrace_arguments(
+    /// The frame native Ffuncall records: FUNCTION with the native words.
+    #[inline(always)]
+    pub(crate) fn push_native_backtrace_frame(&mut self, function: Value, args: &[usize]) {
+        self.push_plain_backtrace_frame(
             function,
-            FrameArgs::NativeWords {
+            || FrameArgs::NativeWords {
                 ptr: args.as_ptr(),
                 len: args.len(),
             },
-            body,
-        )
+            true,
+        );
     }
 
     /// A frame that outlives the scope holding its arguments (a byte op
@@ -2563,23 +2572,32 @@ impl Interpreter {
         args: Vec<Value>,
         evald: bool,
     ) {
-        self.push_plain_backtrace_frame(function, FrameArgs::Owned(args), evald);
+        self.push_plain_backtrace_frame(function, || FrameArgs::Owned(args), evald);
     }
 
     /// record_in_backtrace for a byte-code call whose arguments stay on
     /// the thread's bytecode stack: the frame holds them by address.
     #[inline(always)]
     pub(crate) fn push_backtrace_frame_borrowed(&mut self, function: Value, args: &[Value]) {
-        self.push_plain_backtrace_frame(function, FrameArgs::borrowed(args), true);
+        self.push_plain_backtrace_frame(function, || FrameArgs::borrowed(args), true);
     }
 
     /// eval.c's set_backtrace_args on the frame eval_sub recorded before
     /// the arguments were evaluated: the frame now names the function and
     /// holds the evaluated arguments (nargs no longer UNEVALLED).
+    #[inline(always)]
     pub(super) fn set_backtrace_args(&mut self, function: Value, args: &[Value]) {
         if let Some(frame) = self.backtrace_frames.last_mut() {
             frame.function = FrameFunction::Owned(function);
-            frame.args = FrameArgs::borrowed(args);
+            let args = FrameArgs::borrowed(args);
+            if frame.args.is_borrowed() {
+                // SAFETY: borrowed words own nothing, so overwriting them
+                // without their drop leaks nothing; an assignment calls
+                // the enum's drop glue out of line first.
+                unsafe { std::ptr::write(&mut frame.args, args) };
+            } else {
+                frame.args = args;
+            }
             frame.evald = true;
         }
     }
@@ -2600,7 +2618,7 @@ impl Interpreter {
         Self::write_backtrace_frame(
             &mut self.backtrace_frames,
             function,
-            FrameArgs::borrowed(&[]),
+            || FrameArgs::borrowed(&[]),
             false,
         );
     }
@@ -2617,7 +2635,7 @@ impl Interpreter {
     /// replaces the full variable lookup (whose builtin-variable fallback
     /// tables are a measurable per-call cost); with edebug loaded, defer
     /// to the real lookup, buffer-local bindings included.
-    #[inline]
+    #[inline(always)]
     fn edebug_entered_active(&self, env: &Env) -> bool {
         // GNU's Qsymbol belongs to the editor that owns its value and
         // declared-special flag. Keep a direct reference in this owner;
@@ -2628,14 +2646,16 @@ impl Interpreter {
                 .is_some_and(|value| value.is_truthy())
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn capture_current_backtrace_context(
         &mut self,
         function_name: Option<&str>,
         env: &Env,
         activation_frame: Option<&EnvFrame>,
     ) {
-        if !self.edebug_entered_active(env) && function_name != Some("backtrace-eval") {
+        if !self.edebug_entered_active(env)
+            && !function_name.is_some_and(super::core::is_backtrace_eval_name)
+        {
             return;
         }
         self.capture_backtrace_context(env, activation_frame);
@@ -2654,24 +2674,84 @@ impl Interpreter {
 
     #[inline]
     pub fn pop_backtrace_frame(&mut self) {
-        self.backtrace_frames.pop();
+        if let Some(len) = self.backtrace_frames.len().checked_sub(1) {
+            self.truncate_backtrace_frames(len);
+        }
     }
 
     pub fn backtrace_frames_len(&self) -> usize {
         self.backtrace_frames.len()
+    }
+}
+
+/// The frame record's steps that touch nothing but the state: callers
+/// holding the shell reach them through its Deref, and a caller that
+/// already holds the state (the byte-code VM's call and return) pays
+/// the shell's parked test once.
+impl InterpreterState {
+    /// record_in_backtrace and Ffuncall's depth for a call that does
+    /// nothing else on its way in (see `plain_bcall_entry'). Returns
+    /// the frame depth `leave_plain_funcall' restores.
+    #[inline(always)]
+    pub(crate) fn enter_plain_funcall(&mut self, function: Value, args: &[Value]) -> usize {
+        self.lisp_eval_depth += 1;
+        let depth = self.backtrace_frames.len();
+        Interpreter::write_backtrace_frame(
+            &mut self.backtrace_frames,
+            FrameFunction::Owned(function),
+            || FrameArgs::borrowed(args),
+            true,
+        );
+        depth
+    }
+
+    /// The frame pop and depth restore of a call's normal return.
+    #[inline(always)]
+    pub(crate) fn leave_plain_funcall(&mut self, backtrace_depth: usize) {
+        self.truncate_backtrace_frames(backtrace_depth);
+        self.end_funcall();
     }
 
     /// Pop frames down to LEN.  The bytecode VM records a signaling byte
     /// op as a frame (bytecode.c's record_in_backtrace) that outlives the
     /// op itself; the VM balances the stack with this once the signal has
     /// been dispatched.
+    #[inline(always)]
     pub fn truncate_backtrace_frames(&mut self, len: usize) {
         // Lisp words need no destructor, but copied frames can own argument
         // vectors even when their function is immediate and detail is empty.
-        // Dropping every removed frame releases those Rust allocations.
-        self.backtrace_frames.truncate(len);
+        // Dropping every removed frame releases those Rust allocations; a
+        // frame that owns nothing leaves as a specpdl entry does, by the
+        // length moving back. A call's own frame is the usual one.
+        let frames = &mut self.backtrace_frames;
+        if frames.len() == len.wrapping_add(1) && frames[len].owns_nothing() {
+            // SAFETY: the frame holds no allocation and its Drop would do
+            // nothing; forgetting it releases nothing.
+            unsafe { frames.set_len(len) };
+            return;
+        }
+        if frames.len() > len {
+            self.truncate_backtrace_frames_to(len);
+        }
     }
 
+    #[inline(never)]
+    fn truncate_backtrace_frames_to(&mut self, len: usize) {
+        let frames = &mut self.backtrace_frames;
+        while frames.len() > len {
+            let last = frames.len() - 1;
+            if frames[last].owns_nothing() {
+                // SAFETY: the frame holds no allocation and its Drop would
+                // do nothing; forgetting it releases nothing.
+                unsafe { frames.set_len(last) };
+            } else {
+                frames.truncate(last);
+            }
+        }
+    }
+}
+
+impl Interpreter {
     pub fn set_current_backtrace_debug(&mut self, enabled: bool) {
         if let Some(frame) = self.backtrace_frames.last_mut() {
             frame.debug_on_exit = enabled;
@@ -2720,14 +2800,24 @@ impl Interpreter {
         ) {
             return;
         }
-        let frames = self.backtrace_frames_snapshot();
+        // Every frame the error unwinds through reports it here; only a
+        // deeper stack than the one already recorded replaces it, so decide
+        // before copying the frames.
         if self
             .batch_error_backtrace
             .as_ref()
-            .is_some_and(|snapshot| snapshot.frames.len() >= frames.len())
+            .is_some_and(|snapshot| snapshot.frames.len() >= self.backtrace_frames.len())
         {
             return;
         }
+        // keyboard.c's toplevel reports an uncaught error through an
+        // outermost `handler-bind' (debug-early--handler); signal_or_quit
+        // stops its search at a matching `condition-case', which then
+        // discards the report, so take no copy for it.
+        if self.condition_case_catches(error) {
+            return;
+        }
+        let frames = self.backtrace_frames_snapshot();
         self.batch_error_backtrace = Some(BatchErrorBacktrace {
             enabled: self
                 .lookup_var("backtrace-on-error-noninteractive", env)
@@ -2763,11 +2853,25 @@ impl Interpreter {
                     .position(|frame| frame.function_snapshot() == *base)
             })
             .unwrap_or(0);
-        frames
-            .into_iter()
-            .skip(start)
-            .nth(index)
-            .map(|frame| frame.locals().to_vec())
+        let frame = frames.len().checked_sub(start + index + 1)?;
+        Some(
+            self.frame_locals_of(frame)
+                .iter()
+                .map(|local| (local.symbol, local.value))
+                .collect(),
+        )
+    }
+
+    /// The parameters FRAME's interpreted call bound (see `FrameLocal'):
+    /// the stack is ordered by frame, each frame's run in binding order.
+    fn frame_locals_of(&self, frame: usize) -> &[FrameLocal] {
+        let begin = self
+            .frame_locals
+            .partition_point(|local| local.frame < frame);
+        let end = self
+            .frame_locals
+            .partition_point(|local| local.frame <= frame);
+        &self.frame_locals[begin..end]
     }
 
     // The lexical context visible at an activation frame.  While Edebug is
@@ -2790,10 +2894,11 @@ impl Interpreter {
             return context;
         }
         let mut merged: Vec<(SymbolName, Value)> = Vec::new();
-        for frame in frames.into_iter().skip(start + index) {
-            for (name, value) in frame.locals() {
-                if !merged.iter().any(|(existing, _)| existing == name) {
-                    merged.push((*name, *value));
+        let innermost = frames.len().checked_sub(start + index + 1);
+        for frame in (0..innermost.map_or(0, |frame| frame + 1)).rev() {
+            for local in self.frame_locals_of(frame) {
+                if !merged.iter().any(|(existing, _)| *existing == local.symbol) {
+                    merged.push((local.symbol, local.value));
                 }
             }
         }
@@ -2826,17 +2931,16 @@ impl Interpreter {
 
     pub fn push_handler_bindings(&mut self, bindings: &[(Vec<String>, Value)]) -> usize {
         let start = self.active_handlers.len();
-        self.active_handlers.extend(
-            bindings
-                .iter()
-                .map(|(conditions, handler)| ActiveHandler::Bind(conditions.clone(), *handler)),
-        );
+        self.active_handlers
+            .extend(bindings.iter().map(|(conditions, handler)| {
+                ActiveHandler::Bind(conditions.as_slice().into(), *handler)
+            }));
         start
     }
 
     pub(crate) fn push_condition_case_handler(&mut self, heads: Vec<Value>) -> usize {
         let start = self.active_handlers.len();
-        self.active_handlers.push(ActiveHandler::Case(heads));
+        self.active_handlers.push(ActiveHandler::Case(heads.into()));
         start
     }
 
@@ -2851,16 +2955,45 @@ impl Interpreter {
     }
 
     /// The `error-conditions' of CONDITION, or empty when undefined.
-    pub(crate) fn error_condition_names(&mut self, condition: &str) -> Vec<String> {
-        self.get_symbol_property(condition, "error-conditions")
-            .and_then(|value| value.to_vec().ok())
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| item.as_symbol().ok().map(str::to_string))
-                    .collect()
+    /// CONDITION's `error-conditions', the symbols of the property's
+    /// list in order (none for a circular or dotted list), read in place:
+    /// a signal's handler walk asks for them each time.
+    pub(crate) fn error_condition_names(&mut self, condition: &str) -> ConditionNames {
+        match SymbolName::find(condition) {
+            Some(symbol) => self.error_condition_names_of(&symbol),
+            None => ConditionNames::new(),
+        }
+    }
+
+    /// CONDITION's `error-conditions' (Fget of the property's Qsymbol).
+    pub(crate) fn error_condition_names_of(&mut self, condition: &SymbolName) -> ConditionNames {
+        let mut names = ConditionNames::new();
+        let Some(value) = cached_symbol!("error-conditions")
+            .with(|property| self.get_symbol_property_of(condition, property))
+        else {
+            return names;
+        };
+        let mut push = |item: Value| match item.kind() {
+            Kind::Symbol(name) => names.push(name),
+            Kind::Nil => names.push(crate::lisp::types::symbols::builtin_boolean(false)),
+            Kind::T => names.push(crate::lisp::types::symbols::builtin_boolean(true)),
+            _ => {}
+        };
+        if matches!(value.kind(), Kind::Vector(_)) {
+            // A vector reads as `to_vec' gives it, marker first.
+            value.to_vec().into_iter().flatten().for_each(push);
+            return names;
+        }
+        if value
+            .visit_list_elements(|item| {
+                push(item);
+                Ok(())
             })
-            .unwrap_or_default()
+            .is_err()
+        {
+            return ConditionNames::new();
+        }
+        names
     }
 
     /// GNU handler matching (`eval.c:find_handler_clause' ->
@@ -2875,7 +3008,7 @@ impl Interpreter {
     pub(super) fn condition_symbol_matches(
         symbol: &str,
         error_type: &str,
-        condition_list: &[String],
+        condition_list: &[SymbolName],
     ) -> bool {
         if symbol == "t" {
             return true;
@@ -2883,13 +3016,13 @@ impl Interpreter {
         if condition_list.is_empty() {
             return symbol == error_type;
         }
-        condition_list.iter().any(|entry| entry == symbol)
+        condition_list.iter().any(|entry| entry.as_str() == symbol)
     }
 
     pub(crate) fn clause_head_matches(
         head: &Value,
         error_type: &str,
-        condition_list: &[String],
+        condition_list: &[SymbolName],
     ) -> bool {
         match head.kind() {
             Kind::T => true,
@@ -2942,6 +3075,26 @@ impl Interpreter {
         })
     }
 
+    /// Whether an active `condition-case' catches ERROR.
+    fn condition_case_catches(&mut self, error: &LispError) -> bool {
+        if !self
+            .active_handlers
+            .iter()
+            .any(|handler| matches!(handler, ActiveHandler::Case(_)))
+        {
+            return false;
+        }
+        let error_symbol = error.condition_symbol();
+        let error_type = error_symbol.as_str();
+        let condition_list = self.error_condition_names_of(&error_symbol);
+        self.active_handlers.iter().any(|handler| match handler {
+            ActiveHandler::Case(heads) => heads
+                .iter()
+                .any(|head| Self::clause_head_matches(head, error_type, &condition_list)),
+            ActiveHandler::Module | ActiveHandler::Bind(..) => false,
+        })
+    }
+
     pub(crate) fn dispatch_handler_bindings(
         &mut self,
         error: LispError,
@@ -2976,13 +3129,42 @@ impl Interpreter {
         {
             return Err(error);
         }
+        let error_symbol = error.condition_symbol();
+        let error_type = error_symbol.as_str();
+        let condition_list = self.error_condition_names_of(&error_symbol);
+        // The search below up to the first handler it would call, in place:
+        // most signals meet their `condition-case' first, and then neither
+        // the stack's copy nor the handlers' argument is made.
+        let mut innermost = None;
+        for (index, entry) in self.active_handlers.iter().enumerate().rev() {
+            match entry {
+                ActiveHandler::Module => break,
+                ActiveHandler::Case(heads) => {
+                    if heads
+                        .iter()
+                        .any(|head| Self::clause_head_matches(head, error_type, &condition_list))
+                    {
+                        break;
+                    }
+                }
+                ActiveHandler::Bind(conditions, _) => {
+                    if conditions.iter().any(|condition| {
+                        Self::condition_symbol_matches(condition, error_type, &condition_list)
+                    }) {
+                        innermost = Some(index);
+                        break;
+                    }
+                }
+            }
+        }
+        let Some(innermost) = innermost else {
+            return Err(error);
+        };
         let error_value = error_condition_value(&error);
-        let error_type = error.condition_type();
-        let condition_list = self.error_condition_names(&error_type);
         let mut handled = false;
         self.handler_dispatch_depth += 1;
         let snapshot = self.active_handlers.clone();
-        for (index, entry) in snapshot.iter().enumerate().rev() {
+        for (index, entry) in snapshot[..=innermost].iter().enumerate().rev() {
             match entry {
                 ActiveHandler::Module => break,
                 // A matching `condition-case' between the signal point and
@@ -2991,14 +3173,14 @@ impl Interpreter {
                 ActiveHandler::Case(heads) => {
                     if heads
                         .iter()
-                        .any(|head| Self::clause_head_matches(head, &error_type, &condition_list))
+                        .any(|head| Self::clause_head_matches(head, error_type, &condition_list))
                     {
                         break;
                     }
                 }
                 ActiveHandler::Bind(conditions, handler) => {
                     if !conditions.iter().any(|condition| {
-                        Self::condition_symbol_matches(condition, &error_type, &condition_list)
+                        Self::condition_symbol_matches(condition, error_type, &condition_list)
                     }) {
                         continue;
                     }

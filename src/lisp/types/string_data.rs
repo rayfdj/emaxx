@@ -377,6 +377,17 @@ impl SharedStringState {
         // A zero-length header points at EMPTY_DATA; neither case is null.
         unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.storage_bytes()) }
     }
+
+    /// `bytes', for a caller whose guard on the state is its own contract
+    /// (`StringObjectRef::bytes_unguarded').
+    ///
+    /// # Safety
+    /// The bytes stay in place and unchanged while the slice is used.
+    #[inline(always)]
+    pub(crate) unsafe fn bytes_unbounded<'a>(&self) -> &'a [u8] {
+        // SAFETY: as `bytes', for the caller's lifetime.
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.storage_bytes()) }
+    }
     pub(crate) fn len(&self) -> usize {
         self.size
     }
@@ -566,6 +577,18 @@ impl SharedStringState {
         Some(offset)
     }
 
+    /// character.h:fetch_string_char_advance: the character at byte
+    /// OFFSET, a unibyte string's byte as itself, advancing the cursor.
+    pub(crate) fn character_advance(&self, offset: &mut usize) -> Option<i64> {
+        let (code, width) = if self.is_multibyte() {
+            decode_character(self.bytes().get(*offset..)?).ok()?
+        } else {
+            (u32::from(*self.bytes().get(*offset)?), 1)
+        };
+        *offset += width;
+        Some(i64::from(code))
+    }
+
     /// character.h:fetch_string_char_as_multibyte_advance reads one
     /// character from the actual bytes, promoting an unibyte octet to
     /// byte8 before any case-table lookup. The caller owns the byte cursor.
@@ -727,6 +750,10 @@ pub(crate) fn encode_text(
     multibyte: bool,
     extended: &[(usize, u32)],
 ) -> Result<Vec<u8>, LispError> {
+    if extended.is_empty() && text.is_ascii() {
+        // Each ASCII character is its own byte, unibyte or multibyte.
+        return Ok(text.as_bytes().to_vec());
+    }
     let mut bytes = Vec::with_capacity(text.len());
     for (index, ch) in text.chars().enumerate() {
         let code = extended
@@ -834,6 +861,12 @@ pub(crate) fn decode_bytes(
     bytes: &[u8],
     multibyte: bool,
 ) -> Result<(String, Vec<(usize, u32)>), LispError> {
+    if bytes.is_ascii() {
+        // Each byte is its own character, unibyte or multibyte.
+        // SAFETY: ASCII is UTF-8.
+        let text = unsafe { std::str::from_utf8_unchecked(bytes) };
+        return Ok((text.to_owned(), Vec::new()));
+    }
     let mut text = String::with_capacity(bytes.len());
     let mut extended = Vec::new();
     let mut offset = 0;

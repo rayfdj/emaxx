@@ -9,13 +9,17 @@
 //! for a void local.
 
 use super::super::types::{SymbolName, Value};
-use crate::lisp::primitives::FnvBuildHasher;
+use crate::lisp::types::IdentityBuildHasher;
 use crate::lisp::types::Kind;
 use hashlink::LinkedHashMap;
 
 #[derive(Clone, Default)]
 pub(crate) struct LocalCells {
-    cells: LinkedHashMap<SymbolName, Value, FnvBuildHasher>,
+    cells: LinkedHashMap<SymbolName, Value, IdentityBuildHasher>,
+    /// How many of the bindings are of the variables whose evaluator cells
+    /// hold the current buffer's value (`is_forwarded_eval_cell'), so that
+    /// a buffer switch need not look each of them up.
+    forwarded_eval: usize,
 }
 
 impl LocalCells {
@@ -43,6 +47,9 @@ impl LocalCells {
         match self.cells.get_mut(symbol) {
             Some(existing) => *existing = value,
             None => {
+                if super::variables::is_forwarded_eval_cell(symbol) {
+                    self.forwarded_eval += 1;
+                }
                 self.cells.insert(*symbol, value);
             }
         }
@@ -50,7 +57,17 @@ impl LocalCells {
 
     pub(crate) fn remove(&mut self, name: &str) -> Option<Value> {
         let symbol = SymbolName::find(name)?;
-        self.cells.remove(&symbol)
+        let removed = self.cells.remove(&symbol);
+        if removed.is_some() && super::variables::is_forwarded_eval_cell(&symbol) {
+            self.forwarded_eval -= 1;
+        }
+        removed
+    }
+
+    /// Whether a variable whose evaluator cell holds the current buffer's
+    /// value has a binding here, void or not.
+    pub(crate) fn has_forwarded_eval_binding(&self) -> bool {
+        self.forwarded_eval != 0
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -73,5 +90,10 @@ impl LocalCells {
             .into_iter()
             .map(|(symbol, value)| (copy(symbol), value))
             .collect();
+        self.forwarded_eval = self
+            .cells
+            .keys()
+            .filter(|symbol| super::variables::is_forwarded_eval_cell(symbol))
+            .count();
     }
 }

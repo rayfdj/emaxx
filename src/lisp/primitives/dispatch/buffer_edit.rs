@@ -914,7 +914,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let from = position_from_value(interp, &args[0])?;
                 let to = position_from_value(interp, &args[1])?;
-                ensure_region_modifiable(interp, from, to, env)?;
+                ensure_region_modifiable(interp, from, to)?;
                 let (start, end) = if from <= to { (from, to) } else { (to, from) };
                 let props = interp.buffer.borrow().substring_property_spans(start, end);
                 let multibyte = interp.buffer.borrow().is_multibyte();
@@ -1067,7 +1067,7 @@ define_dispatch!(
 
                 let tab_width = interp
                     .lookup_var("tab-width", env)
-                    .and_then(|value| value.as_integer().ok())
+                    .and_then(|value| value.integer_value())
                     .unwrap_or(8)
                     .max(1);
                 let use_tabs = interp
@@ -2326,7 +2326,7 @@ fn motion_line_number_columns(interp: &mut Interpreter, env: &mut Env) -> usize 
     }
     let text_rows = super::call(interp, "window-body-height", &[], env)
         .ok()
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .unwrap_or(0)
         .max(1) as usize;
     let start = interp.selected_window_start().clamp(
@@ -2555,7 +2555,7 @@ fn display_motion_width(
     if character == '\t' {
         let tab_width = interp
             .lookup_var("tab-width", env)
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or(8)
             .max(1);
         let origin = hpos + tab_offset + hscroll - i64::from(hscroll > 0);
@@ -2857,7 +2857,7 @@ fn line_number_display_width_value(
         let computed_width = displayed_maximum.max(1).to_string().len().max(2) as i64;
         let requested_width = interp
             .lookup_var("display-line-numbers-width", env)
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or(0)
             .max(0);
         let columns = computed_width.max(requested_width);
@@ -3072,7 +3072,7 @@ pub(super) fn direct_beginning_of_line(
     let old_pos = interp.buffer.borrow().point();
     let n = args
         .first()
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .unwrap_or(1);
     if n != 1 {
         interp.buffer.borrow_mut().forward_line((n - 1) as isize);
@@ -3119,7 +3119,7 @@ pub(super) fn direct_end_of_line(
     // current one (0 = previous line's end).
     let n = args
         .first()
-        .and_then(|value| value.as_integer().ok())
+        .and_then(|value| value.integer_value())
         .unwrap_or(1);
     if n != 1 {
         interp.buffer.borrow_mut().forward_line((n - 1) as isize);
@@ -3134,10 +3134,24 @@ pub(super) fn direct_forward_line(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let n = if args.is_empty() || args[0].is_nil() {
-        BigInt::from(1u8)
-    } else {
-        integer_like_bigint(interp, &args[0])?
+    // A count that is nil or a fixnum moves by an isize, as
+    // `forward_line_bigint' does for any count in that range, without
+    // the bignums it builds for the count, its bounds and the shortage.
+    let step = match args.first().map(|value| value.kind()) {
+        None | Some(Kind::Nil) => Some(1),
+        Some(Kind::Integer(count)) => isize::try_from(count).ok(),
+        Some(_) => None,
+    };
+    if let Some(step) = step {
+        let shortage = interp.buffer.borrow_mut().forward_line(step);
+        return Ok(Value::Integer(shortage as i64));
+    }
+    // cmds.c:Fforward_line's CHECK_INTEGER: a bignum moves as far as the
+    // buffer allows; a marker or any other object signals.
+    let n: BigInt = match args[0].kind() {
+        Kind::Integer(count) => BigInt::from(count),
+        Kind::BigInteger(count) => count.into(),
+        _ => return Err(LispError::WrongTypeArgument("integerp".into(), args[0])),
     };
     Ok(normalize_bigint_value(forward_line_bigint(
         &mut interp.buffer.borrow_mut(),
@@ -3210,7 +3224,7 @@ pub(super) fn direct_delete_region(
     need_args(name, args, 2)?;
     let from = position_from_value(interp, &args[0])?;
     let to = position_from_value(interp, &args[1])?;
-    ensure_region_modifiable(interp, from, to, env)?;
+    ensure_region_modifiable(interp, from, to)?;
     delete_region_with_hooks(interp, from, to, env)?;
     Ok(Value::Nil)
 }

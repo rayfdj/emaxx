@@ -1,0 +1,37 @@
+--- a/src/lisp/types.rs
++++ b/src/lisp/types.rs
+@@ -1653,11 +1653,16 @@
+                 Kind::Cons(unsafe { SharedCons::from_raw((word & !TAG_MASK) as *const ConsCell) })
+             }
+             TAG_SYMBOL => {
+-                match word {
+-                    0 => return Kind::Nil,
+-                    48 => return Kind::T,
+-                    96 => return Kind::Unbound,
+-                    _ => {}
++                // nil, t and the unbound marker are the small words; every
++                // symbol cell lies far above them, so one compare passes a
++                // symbol.
++                if word < 0x80 {
++                    match word {
++                        0 => return Kind::Nil,
++                        48 => return Kind::T,
++                        96 => return Kind::Unbound,
++                        _ => {}
++                    }
+                 }
+                 // SAFETY: as above, a symbol cell.
+                 Kind::Symbol(SymbolName::from_ref(unsafe {
+@@ -2277,8 +2282,11 @@
+         self.0 & TAG_MASK == TAG_STRING
+     }
+ 
++    /// `SYMBOLP' (nil and t included): the symbol tag, the unbound marker
++    /// excepted.
++    #[inline(always)]
+     pub fn is_symbol(&self) -> bool {
+-        matches!(self.kind(), Kind::Nil | Kind::T | Kind::Symbol(_))
++        self.0 & TAG_MASK == TAG_SYMBOL && self.0 != Value::Unbound.0
+     }
+ 
+     /// `CONSP': the tag alone.

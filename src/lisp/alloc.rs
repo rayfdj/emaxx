@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
+pub(crate) mod counters;
 mod finalizers;
 mod strings;
 mod symbols;
@@ -33,12 +34,15 @@ pub use strings::StringObjectRef;
 #[cfg(test)]
 pub(crate) use strings::string_data_census;
 pub(crate) use strings::{
-    PendingStringData, StringAllocation, allocate_string, borrowed_string_roots,
+    CodeState, PendingStringData, StringAllocation, allocate_string, borrowed_string_roots,
     live_string_object_census, retire_string_data, string_data_size, sweep_strings,
 };
 pub(crate) mod vectors;
-use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 pub use symbols::{SymbolCell, SymbolRef};
+/// The actual header cells this allocator holds, as charged to collection.
+pub(crate) const SYMBOL_CELL_BYTES: usize = symbols::SYMBOL_CELL_SIZE;
+pub(crate) const STRING_CELL_BYTES: usize = strings::STRING_CELL_SIZE;
 pub(crate) use symbols::{allocate_symbol, live_symbols, sweep_symbols};
 pub use vectors::{ClosureRef, VectorHeader, VectorRef, VectorTag, VectorlikeRef};
 pub(crate) use vectors::{
@@ -95,6 +99,7 @@ pub(crate) const FREE_MARK: u32 = u32::MAX;
 
 /// alloc.c's `mem_type' of a block: what its cells are.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
 pub(crate) enum BlockKind {
     Cons,
     Float,
@@ -108,26 +113,175 @@ pub(crate) enum BlockKind {
     String,
 }
 
-/// The blocks, by start address, with their kinds, for `mem_find'
-/// (alloc.c's mem tree, a red-black tree there; the map's lookup is the
-/// same order).
-static BLOCKS: Mutex<BTreeMap<usize, BlockKind>> = Mutex::new(BTreeMap::new());
+const BLOCK_KINDS: usize = 6;
+const _: () = assert!(BlockKind::String as usize == BLOCK_KINDS - 1);
 
-/// alloc.c's `mem_insert' of a block of KIND at START.
-fn register_block(start: usize, kind: BlockKind) {
-    BLOCKS
+/// The registered blocks.
+struct BlockRegistry {
+    /// Every block by start address, with its kind, for `mem_find'
+    /// (alloc.c's mem tree, a red-black tree there; the map's lookup is
+    /// the same order).
+    all: BTreeMap<usize, BlockKind>,
+    /// Each kind's blocks by start address, each with whether an image
+    /// load registered it (see `IMAGE_REGION_OPEN'), for its sweep.
+    by_kind: [BTreeMap<usize, bool>; BLOCK_KINDS],
+}
+
+static BLOCKS: Mutex<BlockRegistry> = Mutex::new(BlockRegistry {
+    all: BTreeMap::new(),
+    by_kind: [const { BTreeMap::new() }; BLOCK_KINDS],
+});
+
+/// alloc.c's `min_heap_address' and `max_heap_address': the lowest block
+/// start and the highest block end registered, which `mem_find' tests
+/// before it takes the registry's lock (most words a stack scan reads are
+/// return addresses, stack addresses and small numbers). A block's
+/// release leaves them as they are.
+static HEAP_LOW: AtomicUsize = AtomicUsize::new(usize::MAX);
+static HEAP_HIGH: AtomicUsize = AtomicUsize::new(0);
+
+/// alloc.c's `mem_insert' of a block of KIND and BYTES at START.
+fn register_block(start: usize, bytes: usize, kind: BlockKind) {
+    let image = IMAGE_REGION_OPEN.load(Ordering::Relaxed);
+    let mut blocks = BLOCKS
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(start, kind);
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    blocks.all.insert(start, kind);
+    blocks.by_kind[kind as usize].insert(start, image);
+    drop(blocks);
+    HEAP_LOW.fetch_min(start, Ordering::Relaxed);
+    HEAP_HIGH.fetch_max(start + bytes, Ordering::Relaxed);
 }
 
 /// alloc.c's `mem_delete'.
 fn unregister_block(start: usize) {
-    let removed = BLOCKS
+    let mut blocks = BLOCKS
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&start);
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let removed = blocks.all.remove(&start);
     debug_assert!(removed.is_some());
+    if let Some(kind) = removed {
+        blocks.by_kind[kind as usize].remove(&start);
+    }
+}
+
+/// pdumper's mapped region, as this loader has it. GNU's sweeps never visit
+/// dumped objects, gcstat never counts them (so `total_bytes_of_live_objects'
+/// and the `garbage-collect' census are the heap's own objects), and their
+/// storage is never reused. This loader rebuilds the image's objects in
+/// ordinary blocks, so every block registered while an image loads is an
+/// image block: the sweeps leave its objects out of the census and its freed
+/// cells off the free lists. Dead objects there are still cleaned, because
+/// they own host storage, and a block with nothing live is still released.
+static IMAGE_REGION_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// The image's cells of one kind (strings and symbols allocated while an
+/// image loads, vectors in its blocks), for a sweep that need not read
+/// them: how many the current mark epoch has marked, raised as a mark
+/// first reaches one, and how many the last sweep that read them left
+/// (`UNKNOWN' until one has since an image load).  Only a sweep frees an
+/// image cell and none is allocated outside a load, so when the two agree
+/// every image cell that sweep left is marked again: nothing in the image
+/// died, and the sweep passes its blocks by unread, as GNU's sweeps never
+/// read its dump.
+pub(crate) struct ImageCells {
+    marked: AtomicUsize,
+    live: AtomicUsize,
+}
+
+impl ImageCells {
+    const UNKNOWN: usize = usize::MAX;
+
+    const fn new() -> Self {
+        Self {
+            marked: AtomicUsize::new(0),
+            live: AtomicUsize::new(Self::UNKNOWN),
+        }
+    }
+
+    /// A mark reached an image cell not yet marked in this epoch.
+    #[inline(always)]
+    pub(crate) fn note_marked(&self) {
+        self.marked
+            .store(self.marked.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+    }
+
+    /// True when every image cell the last reading sweep left is marked.
+    fn unchanged(&self) -> bool {
+        let live = self.live.load(Ordering::Relaxed);
+        live != Self::UNKNOWN && self.marked.load(Ordering::Relaxed) == live
+    }
+
+    /// A sweep read every image cell and left LIVE of them (unknown while
+    /// an image loads, as more are still to come).
+    fn set_live(&self, live: usize) {
+        let live = if IMAGE_REGION_OPEN.load(Ordering::Relaxed) {
+            Self::UNKNOWN
+        } else {
+            live
+        };
+        self.live.store(live, Ordering::Relaxed);
+    }
+}
+
+pub(crate) static IMAGE_STRINGS: ImageCells = ImageCells::new();
+pub(crate) static IMAGE_SYMBOLS: ImageCells = ImageCells::new();
+pub(crate) static IMAGE_VECTORS: ImageCells = ImageCells::new();
+
+/// A mark epoch begins: no image cell is marked in it yet.
+pub(crate) fn begin_image_mark_epoch() {
+    for cells in [&IMAGE_STRINGS, &IMAGE_SYMBOLS, &IMAGE_VECTORS] {
+        cells.marked.store(0, Ordering::Relaxed);
+    }
+}
+
+/// True while an image loads: what is allocated now is the image's.
+#[inline]
+fn image_region_open() -> bool {
+    IMAGE_REGION_OPEN.load(Ordering::Relaxed)
+}
+
+/// An image load in progress: blocks registered until this is dropped are
+/// image blocks. Opening and closing both start every allocator on fresh
+/// blocks, so no block holds both image objects and the heap's own.
+pub(crate) struct ImageRegion(());
+
+impl ImageRegion {
+    pub(crate) fn open() -> Self {
+        let was_open = IMAGE_REGION_OPEN.swap(true, Ordering::Relaxed);
+        assert!(!was_open, "an image region is already open");
+        abandon_allocation_frontiers();
+        forget_image_live();
+        Self(())
+    }
+}
+
+impl Drop for ImageRegion {
+    fn drop(&mut self) {
+        abandon_allocation_frontiers();
+        IMAGE_REGION_OPEN.store(false, Ordering::Relaxed);
+        forget_image_live();
+    }
+}
+
+/// The image's cells change: the next sweep reads them all.
+fn forget_image_live() {
+    for cells in [&IMAGE_STRINGS, &IMAGE_SYMBOLS, &IMAGE_VECTORS] {
+        cells.live.store(ImageCells::UNKNOWN, Ordering::Relaxed);
+    }
+}
+
+/// Make the next allocation of every kind take a new block. The cells left
+/// behind stay free and return to the free lists at the next sweep (or, in
+/// an image block, stay unused).
+fn abandon_allocation_frontiers() {
+    FREE_LIST.store(std::ptr::null_mut(), Ordering::Relaxed);
+    BUMP_NEXT.store(BUMP_END.load(Ordering::Relaxed), Ordering::Relaxed);
+    FLOAT_FREE_LIST.store(std::ptr::null_mut(), Ordering::Relaxed);
+    FLOAT_BUMP_NEXT.store(FLOAT_BUMP_END.load(Ordering::Relaxed), Ordering::Relaxed);
+    symbols::abandon_allocation_frontier();
+    strings::abandon_allocation_frontier();
+    vectors::abandon_allocation_frontier();
 }
 /// gcstat's `total_conses' and `total_free_conses': raised by allocation
 /// on any thread, set by the sweep (the heap is the process's).
@@ -240,12 +394,6 @@ impl FloatMark<'_> {
         let (word, mask) = self.bit();
         self.block.allocated[word].set(self.block.allocated[word].get() | mask);
         self.mark(epoch);
-    }
-
-    fn release(&self) {
-        let (word, mask) = self.bit();
-        self.block.allocated[word].set(self.block.allocated[word].get() & !mask);
-        self.block.marked[word].set(self.block.marked[word].get() & !mask);
     }
 }
 
@@ -367,6 +515,7 @@ pub(crate) fn allocate_float(value: f64) -> FloatRef {
         head
     };
     LIVE_FLOATS.store(LIVE_FLOATS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+    counters::tally(&counters::FLOATS_CONSED, 1);
     // SAFETY: SLOT is a free cell of a float block. Initialize its one word
     // and the block's allocation/mark bits before publishing a handle.
     unsafe {
@@ -400,7 +549,7 @@ pub(crate) fn sweep_floats(epoch: u32) -> usize {
     let mut num_free = 0usize;
     let mut num_used = 0usize;
     let mut released = Vec::new();
-    for start in blocks_of(BlockKind::Float) {
+    for (start, image_block) in sweep_blocks_of(BlockKind::Float) {
         let lim = if bump_end == start + FLOATS_PER_BLOCK * FLOAT_CELL_SIZE {
             (bump_next - start) / FLOAT_CELL_SIZE
         } else {
@@ -408,24 +557,48 @@ pub(crate) fn sweep_floats(epoch: u32) -> usize {
         };
         let chain_before = free_list;
         let mut this_free = 0usize;
-        for index in 0..lim {
-            let cell = (start + index * FLOAT_CELL_SIZE) as *mut FloatCell;
-            // SAFETY: inside a registered float block.
-            let mark = unsafe { float_mark(cell) };
-            if mark.is_marked(epoch) {
-                num_used += 1;
+        // SAFETY: a registered float block's marks stay initialized until
+        // the block is released.
+        let marks = unsafe { &*std::ptr::addr_of!((*(start as *const FloatBlock)).marks) };
+        let current = marks.epoch.get() == epoch;
+        // A bitmap word at a time: an unmarked cell holds no owned storage,
+        // so its bits are cleared (and, outside the image, it is linked
+        // through its one word, in address order).
+        for word in 0..lim.div_ceil(usize::BITS as usize) {
+            let first = word * usize::BITS as usize;
+            let valid = if lim - first >= usize::BITS as usize {
+                usize::MAX
+            } else {
+                (1usize << (lim - first)) - 1
+            };
+            let marked = marks.marked[word].get();
+            let live = if current { marked } else { 0 } & valid;
+            let mut free = !live & valid;
+            if free != 0 {
+                marks.allocated[word].set(marks.allocated[word].get() & !free);
+                marks.marked[word].set(marked & !free);
+            }
+            if !image_block {
+                num_used += live.count_ones() as usize;
+            }
+            this_free += free.count_ones() as usize;
+            if image_block {
                 continue;
             }
-            // SAFETY: an unmarked cell holds no owned storage; clear its
-            // allocation bit and store the free-list link in its one word.
-            unsafe {
-                mark.release();
-                (*cell.cast::<FreeFloat>()).next = free_list;
+            while free != 0 {
+                let index = first + free.trailing_zeros() as usize;
+                free &= free - 1;
+                let cell = (start + index * FLOAT_CELL_SIZE) as *mut FloatCell;
+                // SAFETY: the cell is free; its one word is the free-list link.
+                unsafe { (*cell.cast::<FreeFloat>()).next = free_list };
+                free_list = cell;
             }
-            this_free += 1;
-            free_list = cell;
         }
-        if this_free == FLOATS_PER_BLOCK && num_free > FLOATS_PER_BLOCK {
+        if image_block {
+            if this_free == FLOATS_PER_BLOCK {
+                released.push(start);
+            }
+        } else if this_free == FLOATS_PER_BLOCK && num_free > FLOATS_PER_BLOCK {
             free_list = chain_before;
             released.push(start);
         } else {
@@ -563,8 +736,13 @@ impl<T> RootedVec<T> {
 
     #[inline(never)]
     fn register(&mut self, region: (usize, usize)) {
-        self.region = region;
         self.clear_spare();
+        self.record(region);
+    }
+
+    /// Enter REGION, the buffer whose spare room is zero, in the registry.
+    fn record(&mut self, region: (usize, usize)) {
+        self.region = region;
         let mut roots = heap_roots();
         if self.slot == UNREGISTERED {
             self.slot = match roots.free_slots.pop() {
@@ -588,7 +766,40 @@ impl<T> RootedVec<T> {
     }
 
     pub fn push(&mut self, value: T) {
+        // Within the capacity the buffer stays where it was registered.
+        if self.inner.len() < self.inner.capacity() {
+            self.inner.push(value);
+            return;
+        }
         self.inner.push(value);
+        self.refresh();
+    }
+
+    /// Room for ADDITIONAL more elements, registered once. A first buffer
+    /// is taken zeroed from the allocator, as SAFE_ALLOCA_LISP's xzalloc
+    /// takes it: a large one comes as fresh zero pages instead of being
+    /// cleared by a pass over it.
+    pub fn reserve(&mut self, additional: usize) {
+        if self.inner.capacity() == 0
+            && additional != 0
+            && std::mem::size_of::<T>() != 0
+            && let Ok(layout) = std::alloc::Layout::array::<T>(additional)
+        {
+            // SAFETY: LAYOUT is nonzero. The buffer is the global
+            // allocator's, with the layout a vector of ADDITIONAL elements
+            // of T has, and holds no element yet (length 0).
+            unsafe {
+                let buffer = std::alloc::alloc_zeroed(layout);
+                if buffer.is_null() {
+                    std::alloc::handle_alloc_error(layout);
+                }
+                self.inner = Vec::from_raw_parts(buffer.cast::<T>(), 0, additional);
+            }
+            let region = (self.inner.as_ptr() as usize, layout.size());
+            self.record(region);
+            return;
+        }
+        self.inner.reserve(additional);
         self.refresh();
     }
 
@@ -611,11 +822,14 @@ impl<T> RootedVec<T> {
         }
         // SAFETY: slots inside the buffer past the initialized elements.
         unsafe {
-            std::ptr::write_bytes(
-                self.inner.as_mut_ptr().add(self.inner.len()).cast::<u8>(),
-                0,
-                count * std::mem::size_of::<T>(),
-            );
+            let start = self.inner.as_mut_ptr().add(self.inner.len()).cast::<u8>();
+            // One slot, the usual pop, is cleared by stores of its constant
+            // size; a size known only at run time is a `memset' call.
+            if count == 1 {
+                std::ptr::write_bytes(start, 0, std::mem::size_of::<T>());
+            } else {
+                std::ptr::write_bytes(start, 0, count * std::mem::size_of::<T>());
+            }
         }
     }
 
@@ -1050,23 +1264,35 @@ struct ConsMetadata {
     marked: [Cell<usize>; CONS_BITMAP_WORDS],
     // A reused address must not revive a WeakConsRef. GNU's raw Lisp values
     // need no serial; Rust's weak host cache references do. Ordinary car/cdr
-    // and stores never read these serials or the bitmaps.
-    serials: [Cell<u64>; CELLS_PER_BLOCK],
+    // and stores never read these serials or the bitmaps. A cell's serial
+    // is written when the cell is allocated and read only while it is, so
+    // a free cell's may be uninitialized.
+    serials: [Cell<std::mem::MaybeUninit<u64>>; CELLS_PER_BLOCK],
 }
 
 impl ConsMetadata {
-    const fn new() -> Self {
-        Self {
-            epoch: Cell::new(0),
-            allocated: [const { Cell::new(0) }; CONS_BITMAP_WORDS],
-            marked: [const { Cell::new(0) }; CONS_BITMAP_WORDS],
-            serials: [const { Cell::new(0) }; CELLS_PER_BLOCK],
+    /// A new block's metadata, every cell free: the epoch and the bitmaps.
+    /// GNU's Fcons clears only a new block's mark bits; the serials are
+    /// left as they are (about 11 KB a block that zeroing wrote).
+    ///
+    /// # Safety
+    /// METADATA is a new block's metadata, not yet in use.
+    unsafe fn init(metadata: *mut Self) {
+        // SAFETY: the caller's contract; the serials are MaybeUninit.
+        unsafe {
+            std::ptr::addr_of_mut!((*metadata).epoch).write(Cell::new(0));
+            std::ptr::addr_of_mut!((*metadata).allocated)
+                .write([const { Cell::new(0) }; CONS_BITMAP_WORDS]);
+            std::ptr::addr_of_mut!((*metadata).marked)
+                .write([const { Cell::new(0) }; CONS_BITMAP_WORDS]);
         }
     }
 }
 
 const _: () = {
     assert!(CELL_SIZE == 16);
+    // The sweep frees a cell by its bits alone.
+    assert!(!std::mem::needs_drop::<ConsCell>());
     assert!(std::mem::size_of::<ConsBlock>() == CONS_BLOCK_ALIGN);
     assert!(std::mem::offset_of!(ConsBlock, cells) == 0);
     assert!(std::mem::offset_of!(ConsCell, car) == 0);
@@ -1103,10 +1329,7 @@ impl ConsMark<'_> {
     pub(crate) fn mark(&self, epoch: u32) -> bool {
         debug_assert!(self.allocated(), "marking a free cons");
         if self.block.epoch.get() != epoch {
-            for word in &self.block.marked {
-                word.set(0);
-            }
-            self.block.epoch.set(epoch);
+            self.clear_marks(epoch);
         }
         let (word, mask) = self.bit();
         let old = self.block.marked[word].get();
@@ -1114,21 +1337,43 @@ impl ConsMark<'_> {
         old & mask == 0
     }
 
+    #[inline(always)]
     fn allocate(&self, epoch: u32, serial: u64) {
         let (word, mask) = self.bit();
-        self.block.serials[self.index].set(serial);
-        self.block.allocated[word].set(self.block.allocated[word].get() | mask);
-        self.mark(epoch);
+        debug_assert!(self.index < CELLS_PER_BLOCK);
+        // SAFETY: `cons_mark' made this mark for a payload slot: its index
+        // is below CELLS_PER_BLOCK, and its word below CONS_BITMAP_WORDS.
+        let (serial_slot, allocated, marked) = unsafe {
+            (
+                self.block.serials.get_unchecked(self.index),
+                self.block.allocated.get_unchecked(word),
+                self.block.marked.get_unchecked(word),
+            )
+        };
+        serial_slot.set(std::mem::MaybeUninit::new(serial));
+        allocated.set(allocated.get() | mask);
+        if self.block.epoch.get() != epoch {
+            self.clear_marks(epoch);
+        }
+        marked.set(marked.get() | mask);
     }
 
-    fn release(&self) {
-        let (word, mask) = self.bit();
-        self.block.allocated[word].set(self.block.allocated[word].get() & !mask);
-        self.block.marked[word].set(self.block.marked[word].get() & !mask);
+    /// A block's first mark of a collection: the marks of the last one
+    /// are stale.
+    #[cold]
+    fn clear_marks(&self, epoch: u32) {
+        for word in &self.block.marked {
+            word.set(0);
+        }
+        self.block.epoch.set(epoch);
     }
 
     fn serial(&self) -> u64 {
-        self.block.serials[self.index].get()
+        debug_assert!(self.allocated(), "the serial of a free cons");
+        // SAFETY: an allocated cell's serial was written when it was
+        // allocated; callers ask only for allocated cells (a live ConsRef,
+        // or one `mem_find' found allocated).
+        unsafe { self.block.serials[self.index].get().assume_init() }
     }
 }
 
@@ -1283,22 +1528,45 @@ pub(crate) fn allocate_cons(cell: ConsCell) -> ConsRef {
     // newest block.
     let head = FREE_LIST.load(Ordering::Relaxed);
     let slot = if head.is_null() {
-        bump_cell()
+        let next = BUMP_NEXT.load(Ordering::Relaxed);
+        if next >= BUMP_END.load(Ordering::Relaxed) {
+            return allocate_cons_in_new_block(cell);
+        }
+        BUMP_NEXT.store(next + CELL_SIZE, Ordering::Relaxed);
+        next as *mut ConsCell
     } else {
         // SAFETY: a free cell's first word is the free-list link.
         let next = unsafe { (*head.cast::<FreeCell>()).next };
         FREE_LIST.store(next, Ordering::Relaxed);
-        FREE_CONSES.store(
-            FREE_CONSES.load(Ordering::Relaxed).saturating_sub(1),
-            Ordering::Relaxed,
-        );
         head
     };
+    // SAFETY: SLOT is a free cell of a block.
+    unsafe { fill_cons(slot, cell) }
+}
+
+/// Fcons's `cons_block_index == CONS_BLOCK_SIZE' arm.  Out of line, and
+/// reached by a tail call, so the allocation path needs no frame.
+#[cold]
+#[inline(never)]
+fn allocate_cons_in_new_block(cell: ConsCell) -> ConsRef {
+    let block = new_block(BlockKind::Cons);
+    BUMP_NEXT.store(block + CELL_SIZE, Ordering::Relaxed);
+    BUMP_END.store(block + CELLS_PER_BLOCK * CELL_SIZE, Ordering::Relaxed);
+    // SAFETY: the new block's first cell is free.
+    unsafe { fill_cons(block as *mut ConsCell, cell) }
+}
+
+/// # Safety
+/// SLOT is an uninitialized (free) cell of a block, just taken from the
+/// free list or the bump region.
+#[inline(always)]
+unsafe fn fill_cons(slot: *mut ConsCell, cell: ConsCell) -> ConsRef {
     let serial = SERIAL.load(Ordering::Relaxed) + 1;
     SERIAL.store(serial, Ordering::Relaxed);
     LIVE_CONSES.store(LIVE_CONSES.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
-    // SAFETY: SLOT is an uninitialized (free) cell of a block; every
-    // field is written before a handle is made.
+    counters::tally(&counters::CONS_CELLS_CONSED, 1);
+    // SAFETY: the caller's contract; every field is written before a
+    // handle is made.
     unsafe {
         std::ptr::write(slot, cell);
         // A cell born during a collection (the weak-table sweep conses
@@ -1308,19 +1576,6 @@ pub(crate) fn allocate_cons(cell: ConsCell) -> ConsRef {
         cons_mark(slot).allocate(super::types::current_mark_epoch(), serial);
         ConsRef(NonNull::new_unchecked(slot))
     }
-}
-
-fn bump_cell() -> *mut ConsCell {
-    let next = BUMP_NEXT.load(Ordering::Relaxed);
-    let end = BUMP_END.load(Ordering::Relaxed);
-    if next < end {
-        BUMP_NEXT.store(next + CELL_SIZE, Ordering::Relaxed);
-        return next as *mut ConsCell;
-    }
-    let block = new_block(BlockKind::Cons);
-    BUMP_NEXT.store(block + CELL_SIZE, Ordering::Relaxed);
-    BUMP_END.store(block + CELLS_PER_BLOCK * CELL_SIZE, Ordering::Relaxed);
-    block as *mut ConsCell
 }
 
 /// alloc.c's `lisp_align_free' of a block every cell of which is free
@@ -1346,8 +1601,9 @@ fn new_block(kind: BlockKind) -> usize {
         BlockKind::Cons => {
             // SAFETY: fresh aligned storage; no payload slot is allocated.
             unsafe {
-                std::ptr::addr_of_mut!((*(block.cast::<ConsBlock>())).metadata)
-                    .write(ConsMetadata::new())
+                ConsMetadata::init(std::ptr::addr_of_mut!(
+                    (*(block.cast::<ConsBlock>())).metadata
+                ))
             };
         }
         BlockKind::Float => {
@@ -1370,7 +1626,7 @@ fn new_block(kind: BlockKind) -> usize {
             unreachable!("vectors have their own blocks (alloc/vectors.rs)")
         }
     }
-    register_block(start, kind);
+    register_block(start, block_bytes(kind), kind);
     start
 }
 
@@ -1381,17 +1637,41 @@ fn new_block(kind: BlockKind) -> usize {
 /// The blocks registry is read under its lock; the cell's mark word is
 /// readable in every state.
 pub(crate) unsafe fn mem_find(address: usize) -> Option<Found> {
+    // SAFETY: the caller's contract; the registry is locked for the
+    // lookup alone.
+    unsafe {
+        mem_find_with(address, |address| {
+            BLOCKS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .all
+                .range(..=address)
+                .next_back()
+                .map(|(&start, &kind)| (start, kind))
+        })
+    }
+}
+
+/// `mem_find', with LOOKUP naming the registered block at or below an
+/// address inside the heap's bounds.
+///
+/// # Safety
+/// As `mem_find'.
+#[inline(always)]
+unsafe fn mem_find_with(
+    address: usize,
+    lookup: impl FnOnce(usize) -> Option<(usize, BlockKind)>,
+) -> Option<Found> {
     if let Some(vector) = vectors::zero_vector_at(address) {
         return Some(Found::Vectorlike(vector));
     }
     if let Some(string) = strings::empty_string_at(address) {
         return Some(Found::String(string));
     }
-    let blocks = BLOCKS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (&start, &kind) = blocks.range(..=address).next_back()?;
-    drop(blocks);
+    if address < HEAP_LOW.load(Ordering::Relaxed) || address >= HEAP_HIGH.load(Ordering::Relaxed) {
+        return None;
+    }
+    let (start, kind) = lookup(address)?;
     let offset = address.checked_sub(start)?;
     match kind {
         BlockKind::Cons => {
@@ -1457,14 +1737,25 @@ pub(crate) fn allocated_serial(address: usize) -> Option<u64> {
     }
 }
 
-/// The blocks of KIND, for a sweep.
+/// The blocks of KIND.
 fn blocks_of(kind: BlockKind) -> Vec<usize> {
     BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .by_kind[kind as usize]
+        .keys()
+        .copied()
+        .collect()
+}
+
+/// The blocks of KIND for a sweep, each with whether it is an image block.
+fn sweep_blocks_of(kind: BlockKind) -> Vec<(usize, bool)> {
+    BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .by_kind[kind as usize]
         .iter()
-        .filter(|entry| *entry.1 == kind)
-        .map(|entry| *entry.0)
+        .map(|(&start, &image)| (start, image))
         .collect()
 }
 
@@ -1491,7 +1782,7 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
     let mut num_free = 0usize;
     let mut num_used = 0usize;
     let mut released = Vec::new();
-    for start in all_blocks() {
+    for (start, image_block) in sweep_blocks_of(BlockKind::Cons) {
         let lim = if bump_end == start + CELLS_PER_BLOCK * CELL_SIZE {
             (bump_next - start) / CELL_SIZE
         } else {
@@ -1499,33 +1790,62 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
         };
         let chain_before = free_list;
         let mut this_free = 0usize;
-        for index in 0..lim {
-            let cell = (start + index * CELL_SIZE) as *mut ConsCell;
-            // SAFETY: inside a registered block; the mark word is
-            // readable in every state.
-            let mark = unsafe { cons_mark(cell) };
-            if mark.is_marked(epoch) {
-                num_used += 1;
-                continue;
-            }
-            if mark.allocated() {
-                // SAFETY: an allocated, unmarked cell: nothing reaches
-                // it, so its fields are dropped and the slot becomes free
-                // (the free mark, the link in its first word).
-                unsafe {
-                    std::ptr::drop_in_place(cell);
-                    if cfg!(debug_assertions) {
-                        poison(cell);
+        // SAFETY: a registered block's metadata stays initialized until the
+        // block is released.
+        let metadata = unsafe { &*std::ptr::addr_of!((*(start as *const ConsBlock)).metadata) };
+        // A block no mark reached this collection holds stale marks only.
+        let current = metadata.epoch.get() == epoch;
+        // A bitmap word at a time, as alloc.c's sweep_conses reads its mark
+        // words: a cell is live when allocated and marked; an allocated
+        // cell that is not becomes free (its bits cleared; a cons has
+        // nothing to drop); every cell that is not live goes on the free
+        // list, in address order as before.
+        for word in 0..lim.div_ceil(usize::BITS as usize) {
+            let first = word * usize::BITS as usize;
+            let valid = if lim - first >= usize::BITS as usize {
+                usize::MAX
+            } else {
+                (1usize << (lim - first)) - 1
+            };
+            let allocated = metadata.allocated[word].get();
+            let marked = metadata.marked[word].get();
+            let live = allocated & if current { marked } else { 0 } & valid;
+            let dead = allocated & !live & valid;
+            if dead != 0 {
+                metadata.allocated[word].set(allocated & !dead);
+                metadata.marked[word].set(marked & !dead);
+                if cfg!(debug_assertions) {
+                    let mut bits = dead;
+                    while bits != 0 {
+                        let index = first + bits.trailing_zeros() as usize;
+                        bits &= bits - 1;
+                        // SAFETY: a cell of this block nothing reaches.
+                        unsafe { poison((start + index * CELL_SIZE) as *mut ConsCell) };
                     }
-                    mark.release();
                 }
             }
-            this_free += 1;
-            // SAFETY: a free cell's first word is the free-list link.
-            unsafe { (*cell.cast::<FreeCell>()).next = free_list };
-            free_list = cell;
+            if !image_block {
+                num_used += live.count_ones() as usize;
+            }
+            let mut free = !live & valid;
+            this_free += free.count_ones() as usize;
+            if image_block {
+                continue;
+            }
+            while free != 0 {
+                let index = first + free.trailing_zeros() as usize;
+                free &= free - 1;
+                let cell = (start + index * CELL_SIZE) as *mut ConsCell;
+                // SAFETY: a free cell's first word is the free-list link.
+                unsafe { (*cell.cast::<FreeCell>()).next = free_list };
+                free_list = cell;
+            }
         }
-        if this_free == CELLS_PER_BLOCK && num_free > CELLS_PER_BLOCK {
+        if image_block {
+            if this_free == CELLS_PER_BLOCK {
+                released.push(start);
+            }
+        } else if this_free == CELLS_PER_BLOCK && num_free > CELLS_PER_BLOCK {
             // Unhook the block's cells (the ones just linked) and give
             // the block back.
             free_list = chain_before;
@@ -1710,7 +2030,8 @@ pub(crate) fn live_conses() -> usize {
     LIVE_CONSES.load(Ordering::Relaxed)
 }
 
-/// gcstat's `total_free_conses'.
+/// gcstat's `total_free_conses': the last sweep's count (Fcons does not
+/// decrement it).
 #[allow(dead_code)]
 pub(crate) fn free_conses() -> usize {
     FREE_CONSES.load(Ordering::Relaxed)
@@ -1821,7 +2142,36 @@ const TAG_BITS: usize = 7;
 /// roots and conservative stack scans enter the same ordinary graph walk.
 pub(crate) fn conservative_value(word: usize) -> Option<Value> {
     // SAFETY: mem_find validates the allocation before any payload is read.
-    Some(match unsafe { mem_find(word & !TAG_BITS) }? {
+    value_of_found(word, unsafe { mem_find(word & !TAG_BITS) }?)
+}
+
+/// `conservative_value' of each of WORDS, the registry locked once for
+/// them all (a stack scan's thousands of words).
+pub(crate) fn conservative_values(words: impl IntoIterator<Item = usize>) -> Vec<Value> {
+    let blocks = BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let lookup = |address: usize| {
+        blocks
+            .all
+            .range(..=address)
+            .next_back()
+            .map(|(&start, &kind)| (start, kind))
+    };
+    words
+        .into_iter()
+        .filter_map(|word| {
+            // SAFETY: as in `conservative_value'; nothing below takes the
+            // registry's lock.
+            let found = unsafe { mem_find_with(word & !TAG_BITS, lookup) }?;
+            value_of_found(word, found)
+        })
+        .collect()
+}
+
+/// The value WORD names, given the allocation `mem_find' found for it.
+fn value_of_found(word: usize, found: Found) -> Option<Value> {
+    Some(match found {
         Found::Cons(cell) => {
             // alloc.c:live_cons_holding accepts the cell, its Lisp tag,
             // or the actual cdr field address. Clearing arbitrary tag bits

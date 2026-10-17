@@ -2,6 +2,8 @@ use super::*;
 use crate::lisp::eval::RecordKind;
 use crate::lisp::types::Kind;
 
+mod timsort;
+
 pub(crate) fn copy_sequence_value(
     interp: &mut Interpreter,
     value: &Value,
@@ -50,7 +52,7 @@ pub(crate) fn sort_sequence_kind_and_items(
         let items = value.to_vec()?;
         let tag = items
             .first()
-            .and_then(|value| value.as_symbol().ok())
+            .and_then(|value| value.symbol_str())
             .unwrap_or("vector")
             .to_string();
         return Ok((
@@ -84,31 +86,35 @@ fn resolve_sort_function(
     )
 }
 
-fn sort_compare_ordering_resolved(
+/// sort.c's `inorder': whether LEFT < RIGHT by PREDICATE (`value<' for
+/// nil).
+fn sort_inorder(
     interp: &mut Interpreter,
     predicate: Value,
-    left: &Value,
-    right: &Value,
+    left: Value,
+    right: Value,
     env: &mut Env,
-) -> Result<Ordering, LispError> {
-    let less = if predicate.is_nil() {
-        value_less(interp, left, right, env)?
+) -> Result<bool, LispError> {
+    if predicate.is_nil() {
+        value_less(interp, &left, &right, env)
     } else {
-        call_function_value(interp, &predicate, &[*left, *right], env)?.is_truthy()
-    };
-    if less {
-        return Ok(Ordering::Less);
+        Ok(call_function_value(interp, &predicate, &[left, right], env)?.is_truthy())
     }
-    let greater = if predicate.is_nil() {
-        value_less(interp, right, left, env)?
-    } else {
-        call_function_value(interp, &predicate, &[*right, *left], env)?.is_truthy()
-    };
-    Ok(if greater {
-        Ordering::Greater
-    } else {
-        Ordering::Equal
-    })
+}
+
+/// A signal from a sort's resolution, key function or predicate, with the
+/// items in the order the sort had left them once it began to move them:
+/// sort.c works in a vector's own slots, so a vector sorted in place keeps
+/// that order, while a list is sorted in a copy (fns.c:sort_list).
+pub(crate) struct SortFailure {
+    pub(crate) error: LispError,
+    pub(crate) items: Option<Vec<Value>>,
+}
+
+impl From<LispError> for SortFailure {
+    fn from(error: LispError) -> Self {
+        Self { error, items: None }
+    }
 }
 
 pub(crate) fn sort_sequence_items(
@@ -118,7 +124,7 @@ pub(crate) fn sort_sequence_items(
     lessp: Option<&Value>,
     reverse: bool,
     env: &mut Env,
-) -> Result<Vec<Value>, LispError> {
+) -> Result<Vec<Value>, SortFailure> {
     // sort_list/sort_vector do not invoke callbacks for fewer than two elements.
     if items.len() < 2 {
         return Ok(items);
@@ -143,7 +149,15 @@ pub(crate) fn sort_sequence_items(
         {
             Value::Nil
         }
-        value => resolve_sort_function(interp, value, env)?,
+        value => match resolve_sort_function(interp, value, env) {
+            Ok(function) => function,
+            Err(error) => {
+                return Err(SortFailure {
+                    error,
+                    items: Some(items),
+                });
+            }
+        },
     };
     let functions = (predicate, key_function);
     interp.with_lisp_stack_roots(&functions, |interp| {
@@ -151,46 +165,41 @@ pub(crate) fn sort_sequence_items(
         // callback runs GC. Never substitute a parsed comparator body.
         let mut keyed: crate::lisp::alloc::RootedVec<_> =
             items.into_iter().map(|item| (item, Value::Nil)).collect();
+        let mut result = Ok(());
         for index in 0..keyed.len() {
-            let item = keyed[index].0;
-            let sort_key = if key_function.is_nil() {
-                item
-            } else {
-                call_function_value(interp, &key_function, &[item], env)?
-            };
-            keyed[index].1 = sort_key;
-        }
-        let mut error = None;
-        // Keep Lisp values in the rooted storage while Rust sorts indices.
-        // This still uses Rust's comparison schedule; matching GNU's Timsort
-        // schedule is a separate outstanding compatibility requirement.
-        let mut order: Vec<usize> = (0..keyed.len()).collect();
-        order.sort_by(|&left, &right| {
-            if error.is_some() {
-                return Ordering::Equal;
-            }
-            match sort_compare_ordering_resolved(
-                interp,
-                predicate,
-                &keyed[left].1,
-                &keyed[right].1,
-                env,
-            ) {
-                Ok(ordering) => ordering,
-                Err(err) => {
-                    error = Some(err);
-                    Ordering::Equal
+            if !key_function.is_nil() {
+                let item = keyed[index].0;
+                match call_function_value(interp, &key_function, &[item], env) {
+                    Ok(sort_key) => keyed[index].1 = sort_key,
+                    Err(error) => {
+                        result = Err(error);
+                        break;
+                    }
                 }
+            } else {
+                keyed[index].1 = keyed[index].0;
             }
-        });
-        if let Some(error) = error {
-            return Err(error);
         }
-        let mut sorted: Vec<Value> = order.iter().map(|&index| keyed[index].0).collect();
-        if reverse {
-            sorted.reverse();
+        // GNU's Timsort, so the predicate sees GNU's comparisons in GNU's
+        // order; the entries stay in the rooted storage as they move.
+        if result.is_ok() {
+            result = timsort::tim_sort(&mut keyed, !key_function.is_nil(), |left, right| {
+                sort_inorder(interp, predicate, left, right, env)
+            });
         }
-        Ok(sorted)
+        let mut sorted: Vec<Value> = keyed.iter().map(|&(item, _)| item).collect();
+        match result {
+            Ok(()) => {
+                if reverse {
+                    sorted.reverse();
+                }
+                Ok(sorted)
+            }
+            Err(error) => Err(SortFailure {
+                error,
+                items: Some(sorted),
+            }),
+        }
     })
 }
 

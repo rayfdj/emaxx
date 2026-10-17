@@ -1,0 +1,127 @@
+{
+  "archive": {
+    "path": "symbol-object-state-drafts7-15-results.tar.gz",
+    "bytes": 1036574,
+    "sha256": "b594e17307083a6c4f1415d1f409c1d4c7ddf63379820915cb51b3cfa6204215",
+    "members": 440
+  },
+  "excluded_large_inputs": [
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft12-gate/fixture-images/loadup-b6a82035-d44829be.pdmp",
+      "bytes": 21787608,
+      "sha256": "5b6f6e782ef218d0b360cd6ae2cc828dc9b245352ea0ae6a80b9d62d37b0c25e"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft12-gate/retained-artifacts/0-emaxx-51c583d2b156da0e",
+      "bytes": 30047936,
+      "sha256": "b6a82035e621ff2949bedef7d6270f0d6be9f5f2132595d57dad1f0c4447c46f"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft12-gate/retained-artifacts/1-loadup-b6a82035-d44829be.pdmp",
+      "bytes": 21787608,
+      "sha256": "5b6f6e782ef218d0b360cd6ae2cc828dc9b245352ea0ae6a80b9d62d37b0c25e"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft15-gate/fixture-images/loadup-0d2947aa-d44829be.pdmp",
+      "bytes": 21787568,
+      "sha256": "7e27ca2e752b19846a10f57da5f937b92ef1924f990d708577bd70e569cb4563"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft15-selected-gate/fixture-images/loadup-0d2947aa-d44829be.pdmp",
+      "bytes": 21834464,
+      "sha256": "febba54bea6687ebb826d0f4c4af54071c7cf15a0a808fb105870d09965bc190"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft15-selected-gate/libtest",
+      "bytes": 30156080,
+      "sha256": "0d2947aa533faa1eb970702689e1ba6f3ce8666a0aac389153d006af9d34c731"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft15-selected-release/fixture-images/loadup-a34dd1a7-d44829be.pdmp",
+      "bytes": 21834488,
+      "sha256": "b88804350e7305cfbbc92148c3827e857a1d4126b7722bdfe5c7bea56bf4747c"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft15-selected-release/libtest",
+      "bytes": 22782624,
+      "sha256": "a34dd1a7cf18fe6fa6e077bad348f9aba32402e2b199276a7192333bd98a927a"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft15-ordinary/retained-inputs/29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5-emacs",
+      "bytes": 9600848,
+      "sha256": "29cfb20de2474c040d439d4bdf69b4dfcfb7921464f1f686b6e1f6bcca7c74e5"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft15-ordinary/retained-inputs/496ab7c78400857174a34db1a63441398d69e5f04b5a9c15ca2e5639e2631336-emaxx.pdmp",
+      "bytes": 21791336,
+      "sha256": "496ab7c78400857174a34db1a63441398d69e5f04b5a9c15ca2e5639e2631336"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft15-ordinary/retained-inputs/ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67-emacs.pdmp",
+      "bytes": 22954264,
+      "sha256": "ce5651aaa28de23a59f61aa1200bf8b6434bf2dc72ef0ac8f6f8abe3406eaa67"
+    },
+    {
+      "path": "/Users/nbmhqa186/projects/emaxx/target/runtime-goal/symbol-obarray-2026-10-09/symbol-object-state-draft15-ordinary/retained-inputs/eae266d62dedba2d6221db81f42c73b6d09fcbba46007e72168a8f72c35ded71-emaxx",
+      "bytes": 13208368,
+      "sha256": "eae266d62dedba2d6221db81f42c73b6d09fcbba46007e72168a8f72c35ded71"
+    }
+  ],
+  "goal_complete": false,
+  "checkpoint": "unapplied symbol object-state draft15; native comparison failure retained",
+  "source_inputs": 584,
+  "selected": {
+    "results": [
+      {
+        "profile": "gate",
+        "passed": 406,
+        "failed": 0,
+        "ignored": 0,
+        "prior_inventory_preserved": 403,
+        "added_controls": 3,
+        "source_inputs": 584,
+        "source_sha256": "4f9215786d04d3d9c08bc573807a259572bf3999c082a6ac674473421dde7913",
+        "selected_sha256": "4d8600d794d8ad2181ac49bdf6f27e087d2ec51d90a653b5901c2dffb0d45041",
+        "binary_sha256": "0d2947aa533faa1eb970702689e1ba6f3ce8666a0aac389153d006af9d34c731"
+      },
+      {
+        "profile": "release",
+        "passed": 406,
+        "failed": 0,
+        "ignored": 0,
+        "prior_inventory_preserved": 403,
+        "added_controls": 3,
+        "source_inputs": 584,
+        "source_sha256": "4f9215786d04d3d9c08bc573807a259572bf3999c082a6ac674473421dde7913",
+        "selected_sha256": "8f49494076ff6c4b7c34553d8a0bc4629d05c78901025737e78198b6b0ac4aa8",
+        "binary_sha256": "a34dd1a7cf18fe6fa6e077bad348f9aba32402e2b199276a7192333bd98a927a"
+      }
+    ],
+    "qualification": "All prior selected control names preserved in both profiles. Ordinary and complete platform validation are separate. Runtime is unapplied.",
+    "goal_complete": false
+  },
+  "ordinary_failure": {
+    "status": "failed",
+    "processes": 88,
+    "successful_processes": 87,
+    "failed_processes": [
+      {
+        "fixture": "symbol-constant-object-state",
+        "mode": "native",
+        "editor": "emaxx",
+        "exit_code": 255,
+        "expected": "(t ((t t t t t t t t) (t t t t t t t t) (t t t t t t t t) (t t t t t t t t) (t t t t t t t t)))",
+        "stdout": "\nError: void-variable (nil)\n  #<subr F616e6f6e796d6f75732d6c616d626461_anonymous_lambda_0>(\"nil\")\n  #<subr --anonymous-lambda>()\n  funcall(#<subr --anonymous-lambda>)\n  (list (native-comp-function-p function) (funcall function))\n  (prin1 (list (native-comp-function-p function) (funcall function)))\n  (let (#'(native-compile '(lambda nil (mapcar (lambda (name) (let* ((old (intern name)) (previous (symbol-value old)) (removed (unintern old)) (new (intern (copy-sequence name))) (keyword (string-prefix-p \":\" name))) (list removed (not (eq old new)) (eq (symbol-value old) previous) (eq (boundp new) keyword) (eq (special-variable-p new) keyword) (condition-case err (progn (set old 43) nil) (setting-constant (eq (cadr err) old))) (condition-case err (progn (set new 71) (and (not keyword) (= (symbol-value new) 71))) (setting-constant (and keyword (eq (cadr err) new)))) (condition-case err (progn (makunbound new) (and (not keyword) (not (boundp new)))) (setting-constant (and keyword (eq (cadr err) new))))))) (list \"nil\" \"t\" \"most-positive-fixnum\" \"most-negative-fixnum\" \":detached-store-\u00ce\u00bb\"))))) (prin1 (list (native-comp-function-p function) (funcall function))))\n  (progn (require 'comp) (let (#'(native-compile '(lambda nil (mapcar (lambda (name) (let* ((old (intern name)) (previous (symbol-value old)) (removed (unintern old)) (new (intern (copy-sequence name))) (keyword (string-prefix-p \":\" name))) (list removed (not (eq old new)) (eq (symbol-value old) previous) (eq (boundp new) keyword) (eq (special-variable-p new) keyword) (condition-case err (progn (set old 43) nil) (setting-constant (eq (cadr err) old))) (condition-case err (progn (set new 71) (and (not keyword) (= (symbol-value new) 71))) (setting-constant (and keyword (eq (cadr err) new)))) (condition-case err (progn (makunbound new) (and (not keyword) (not (boundp new)))) (setting-constant (and keyword (eq (cadr err) new))))))) (list \"nil\" \"t\" \"most-positive-fixnum\" \"most-negative-fixnum\" \":detached-store-\u00ce\u00bb\"))))) (prin1 (list (native-comp-function-p function) (funcall function)))))\n  eval((progn (require 'comp) (let (#'(native-compile '(lambda nil (mapcar (lambda (name) (let* ((old (intern name)) (previous (symbol-value old)) (removed (unintern old)) (new (intern (copy-sequence name))) (keyword (string-prefix-p \":\" name))) (list removed (not (eq old new)) (eq (symbol-value old) previous) (eq (boundp new) keyword) (eq (special-variable-p new) keyword) (condition-case err (progn (set old 43) nil) (setting-constant (eq (cadr err) old))) (condition-case err (progn (set new 71) (and (not keyword) (= (symbol-value new) 71))) (setting-constant (and keyword (eq (cadr err) new)))) (condition-case err (progn (makunbound new) (and (not keyword) (not (boundp new)))) (setting-constant (and keyword (eq (cadr err) new))))))) (list \"nil\" \"t\" \"most-positive-fixnum\" \"most-negative-fixnum\" \":detached-store-\u00ce\u00bb\"))))) (prin1 (list (native-comp-function-p function) (funcall function))))) t)\n  command-line-1((\"--eval\" \"(progn (require 'comp) (let ((function (native-compile '(lambda () (mapcar\\n (lambda (name)\\n   (let* ((old (intern name))\\n          (previous (symbol-value old))\\n          (removed (unintern old))\\n          (new (intern (copy-sequence name)))\\n          (keyword (string-prefix-p \\\":\\\" name)))\\n     (list removed (not (eq old new))\\n           (eq (symbol-value old) previous)\\n           (eq (boundp new) keyword)\\n           (eq (special-variable-p new) keyword)\\n           (condition-case err (progn (set old 43) nil)\\n             (setting-constant (eq (cadr err) old)))\\n           (condition-case err\\n               (progn (set new 71) (and (not keyword) (= (symbol-value new) 71)))\\n             (setting-constant (and keyword (eq (cadr err) new))))\\n           (condition-case err\\n               (progn (makunbound new) (and (not keyword) (not (boundp new))))\\n             (setting-constant (and keyword (eq (cadr err) new)))))))\\n (list \\\"nil\\\" \\\"t\\\" \\\"most-positive-fixnum\\\" \\\"most-negative-fixnum\\\" \\\":detached-store-\\316\\273\\\"))\\n)))) (prin1 (list (native-comp-function-p function) (funcall function)))))\"))\n  command-line()\n  normal-top-level()\n",
+        "passed": false
+      }
+    ],
+    "previous_comparisons_preserved_and_matching": 38,
+    "matching_comparisons": 43,
+    "failed_comparisons": 1,
+    "source_inputs_verified": 584,
+    "retained_artifacts_verified": 4,
+    "diagnosis": "invoke_native_symbol_value maps nativeQnil/Qt to text nil/t and relooks up the obarray. Afterunintern/reintern the fresh replacement is void. Native bridge mustuse actualownerbuiltinobject, justas interpreter does.",
+    "goal_complete": false
+  },
+  "qualification": "Drafts7-11/13-14 compile/lint failures remain failed. Draft12 passes the unchanged40-predicate GNU control. Draft15 passes strict0warnings,93interpretedGNU predicates,imagecopy/restore and406selectedcontrols perprofile; its44ordinarycomparisons retain43matches/one actualnativeEmaxx exit255 on the unchanged40-predicate program. All38previous comparisons match. Every patch replays captured input bytes/modes from99936262. Neither partialsuccess nor the pending native repair is full correctness or goal completion. Large retained executable/image files are explicitly excluded with hashes and local paths."
+}

@@ -56,6 +56,10 @@ impl Hasher for IdentityHasher {
     fn write_usize(&mut self, value: usize) {
         self.0 = value as u64;
     }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
 }
 
 pub(crate) type IdentityBuildHasher = BuildHasherDefault<IdentityHasher>;
@@ -193,6 +197,7 @@ pub(crate) fn begin_mark_epoch() -> u32 {
     );
     let epoch = current_mark_epoch().wrapping_add(1).max(1);
     GC_MARK_EPOCH.store(epoch, std::sync::atomic::Ordering::Relaxed);
+    crate::lisp::alloc::begin_image_mark_epoch();
     epoch
 }
 
@@ -423,7 +428,7 @@ impl SymbolName {
             if let Some(name) = names.get(text.as_str()) {
                 return name.0;
             }
-            crate::lisp::native_comp::note_lisp_allocation(48);
+            crate::lisp::native_comp::note_lisp_allocation(crate::lisp::alloc::SYMBOL_CELL_BYTES);
             let private = text.contains(OBARRAY_SYMBOL_MARKER);
             let lisp_name = lisp_name.unwrap_or_else(|| {
                 Value::String(SharedText::from(if private {
@@ -440,10 +445,22 @@ impl SymbolName {
                     plist: Cell::new(Value::Nil),
                     payload: Cell::new(Default::default()),
                     flags: Cell::new(0),
+                    image: false,
                     state: Cell::new(0),
                     mark: MarkBit::default(),
                 },
             ));
+            symbols::note_builtin_boolean(name);
+            // lread.c:intern_sym initializes only keywords in the initial
+            // obarray. Their value is this actual object, including after
+            // it is removed and another symbol takes the same spelling.
+            if !private && name.as_str().starts_with(':') {
+                name.cell().set_constant(true);
+                name.cell()
+                    .flags
+                    .set(crate::lisp::eval::symbol_cell_flags::SPECIAL);
+                name.cell().set_value(Value::Symbol(name));
+            }
             names.insert(symbols::NameEntry(name));
             name
         })
@@ -452,6 +469,12 @@ impl SymbolName {
     /// alloc.c's mark bit on the symbol object.
     pub(crate) fn mark_bit(&self) -> &MarkBit {
         self.0.mark_bit()
+    }
+
+    /// Mark the symbol for EPOCH; true when it was not yet marked in it.
+    #[inline]
+    pub(crate) fn mark(&self, epoch: u32) -> bool {
+        self.0.mark(epoch)
     }
 
     /// Room for ADDITIONAL interned names (the image loader knows how many
@@ -518,7 +541,7 @@ impl SymbolName {
     }
 
     fn new_uninterned(lisp_name: Value, internal: String) -> Self {
-        crate::lisp::native_comp::note_lisp_allocation(48);
+        crate::lisp::native_comp::note_lisp_allocation(crate::lisp::alloc::SYMBOL_CELL_BYTES);
         let name = Self(crate::lisp::alloc::allocate_symbol(
             crate::lisp::alloc::SymbolCell {
                 internal,
@@ -527,6 +550,7 @@ impl SymbolName {
                 plist: Cell::new(Value::Nil),
                 payload: Cell::new(Default::default()),
                 flags: Cell::new(0),
+                image: false,
                 state: Cell::new(0),
                 mark: MarkBit::default(),
             },
@@ -554,6 +578,18 @@ impl SymbolName {
 
     pub(crate) fn lisp_name(&self) -> Value {
         self.0.lisp_name.get()
+    }
+
+    /// data.c:Fkeywordp: initial-obarray membership and the actual name's
+    /// first byte. Constant state is separate and survives uninterning.
+    pub(crate) fn is_keyword(&self) -> bool {
+        if self.cell().is_uninterned() || is_private_obarray_symbol(self.as_str()) {
+            return false;
+        }
+        let Kind::StringObject(name) = self.lisp_name().kind() else {
+            return false;
+        };
+        name.borrow().bytes().first() == Some(&b':')
     }
 
     /// The symbol's cell (for the census and the dump).
@@ -642,7 +678,8 @@ impl From<String> for SymbolName {
 
 impl From<&str> for SymbolName {
     fn from(text: &str) -> Self {
-        Self::intern(text.to_owned())
+        // An existing name is found without copying the text first.
+        Self::intern_str(text)
     }
 }
 
@@ -1080,16 +1117,20 @@ const _: () = {
 // independently of GC. Runtime serialization is required by that allocator;
 // running tests serially does not itself establish public API soundness.
 pub(crate) fn note_string_allocation(bytes: usize) {
-    // alloc.c allocates a 32-byte Lisp_String plus `sdata_size': an 8-byte
-    // back-pointer, the bytes, a terminating NUL, at least the 16-byte free
-    // form, rounded to the 8-byte sdata alignment on the supported GNU ABI.
+    // The actual string header cell (GNU's Lisp_String is 32 bytes) plus
+    // alloc.c's `sdata_size': an 8-byte back-pointer, the bytes, a
+    // terminating NUL, at least the 16-byte free form, rounded to the 8-byte
+    // sdata alignment. The data charge is still GNU's formula, not a
+    // measurement of this string's own storage.
     let sdata = 8_usize
         .saturating_add(bytes)
         .saturating_add(1)
         .max(16)
         .div_ceil(8)
         .saturating_mul(8);
-    crate::lisp::native_comp::note_lisp_allocation(32_usize.saturating_add(sdata));
+    crate::lisp::native_comp::note_lisp_allocation(
+        crate::lisp::alloc::STRING_CELL_BYTES.saturating_add(sdata),
+    );
 }
 
 #[derive(Default)]
@@ -1512,14 +1553,17 @@ impl Value {
     }
     #[inline]
     pub fn Symbol(name: SymbolName) -> Value {
-        // Temporary until the builtin symbols and their mutable cells
-        // share the same symbol allocation. Private-obarray and uninterned
-        // names carry a distinct internal key and cannot take these arms.
-        match name.as_str() {
-            "nil" => Value::Nil,
-            "t" => Value::T,
-            _ => Value::from_bits(name.identity_ptr() | TAG_SYMBOL),
-        }
+        name.cell()
+            .builtin_boolean()
+            .unwrap_or_else(|| Value::from_bits(name.identity_ptr() | TAG_SYMBOL))
+    }
+    /// `Symbol' for a name `symbol_cell' answered, or any symbol other
+    /// than the built-in nil and t, whose words are not their cells':
+    /// the cell's address with the symbol tag, without the test.
+    #[inline(always)]
+    pub(crate) fn symbol_of_cell(name: SymbolName) -> Value {
+        debug_assert!(name.cell().builtin_boolean().is_none());
+        Value::from_bits(name.identity_ptr() | TAG_SYMBOL)
     }
     #[inline]
     pub fn Cons(cell: SharedCons) -> Value {
@@ -1817,6 +1861,13 @@ impl Value {
     pub(crate) fn discard(self) {
         let _ = self;
     }
+
+    /// lisp.h's `FIXNUMP' and `XFIXNUM' in one test of the tag bits, for
+    /// a caller that needs no other kind.
+    #[inline(always)]
+    pub(crate) fn fixnum(self) -> Option<i64> {
+        (self.0 & 3 == TAG_INT0).then_some((self.0 as i64) >> 2)
+    }
 }
 
 /// eval.c's `Vinternal_interpreter_environment' as one scope holds it:
@@ -1922,7 +1973,11 @@ pub(crate) fn assq_binding(
     environment: &Value,
     symbol: &SymbolName,
 ) -> Result<Option<SharedCons>, LispError> {
-    assq_environment(environment, |bound| bound == symbol)
+    // Fassq's EQ: the binding's car is the symbol's own word (its cell's
+    // address with the symbol tag). nil and t, whose words are 0 and 48,
+    // are never bound, and their cells' addresses match no word.
+    let target = symbol.identity_ptr() | TAG_SYMBOL;
+    assq_environment(environment, |bound| bound.word() == target)
 }
 
 /// `assq_binding' for a name in hand: the binding whose symbol has that
@@ -1931,18 +1986,21 @@ pub(crate) fn assq_binding_named(
     environment: &Value,
     name: &str,
 ) -> Result<Option<SharedCons>, LispError> {
-    assq_environment(environment, |bound| bound.as_str() == name)
+    assq_environment(
+        environment,
+        |bound| matches!(bound.kind(), Kind::Symbol(bound) if bound.as_str() == name),
+    )
 }
 
 #[inline]
 fn assq_environment(
     environment: &Value,
-    matches: impl Fn(&SymbolName) -> bool,
+    matches: impl Fn(Value) -> bool,
 ) -> Result<Option<SharedCons>, LispError> {
-    let mut tail = match environment.kind() {
-        Kind::Cons(cell) => cell,
-        Kind::Nil => return Ok(None),
-        _ => return Err(improper_environment(environment, false)),
+    let mut tail = match environment.cons_ref() {
+        Some(cell) => cell,
+        None if environment.is_nil() => return Ok(None),
+        None => return Err(improper_environment(environment, false)),
     };
     // FOR_EACH_TAIL's cycle check (Brent): the tortoise moves to the hare
     // at every power of two.
@@ -1952,16 +2010,17 @@ fn assq_environment(
     loop {
         {
             let entry = tail.car.get();
-            if let Kind::Cons(binding) = (entry).kind()
-                && matches!(binding.car.get().kind(), Kind::Symbol(bound) if matches(&bound))
+            if let Some(binding) = entry.cons_ref()
+                && matches(binding.car.get())
             {
                 return Ok(Some(binding));
             }
         }
-        let next = match tail.cdr.get().kind() {
-            Kind::Cons(cell) => cell,
-            Kind::Nil => return Ok(None),
-            _ => return Err(improper_environment(environment, false)),
+        let rest = tail.cdr.get();
+        let next = match rest.cons_ref() {
+            Some(cell) => cell,
+            None if rest.is_nil() => return Ok(None),
+            None => return Err(improper_environment(environment, false)),
         };
         if next.as_ptr() == tortoise {
             return Err(improper_environment(environment, true));
@@ -1989,13 +2048,16 @@ fn improper_environment(environment: &Value, circular: bool) -> LispError {
 /// Flet's `Fmemq (var, Vinternal_interpreter_environment)': whether NAME
 /// is an entry of the environment itself, a bare symbol declared locally
 /// special.
-pub(crate) fn environment_declares_special(environment: &Value, name: &str) -> bool {
+/// Flet's `Fmemq (var, Vinternal_interpreter_environment)': whether SYMBOL
+/// itself (EQ, its word) is declared special in the lexical environment.
+pub(crate) fn environment_declares_special(environment: &Value, symbol: &SymbolName) -> bool {
+    let target = symbol.identity_ptr() | TAG_SYMBOL;
     let mut tail = match environment.kind() {
         Kind::Cons(cell) => cell,
         _ => return false,
     };
     loop {
-        if matches!(tail.car.get().kind(), Kind::Symbol(entry) if entry.as_str() == name) {
+        if tail.car.get().word() == target {
             return true;
         }
         let next = match tail.cdr.get().kind() {
@@ -2075,11 +2137,7 @@ fn render_error_symbol_name(symbol: &str) -> String {
 }
 
 pub(crate) fn interned_symbol_value(symbol: String) -> Value {
-    match symbol.as_str() {
-        "nil" => Value::Nil,
-        "t" => Value::T,
-        _ => Value::Symbol(symbol.into()),
-    }
+    Value::Symbol(symbol.into())
 }
 
 pub(crate) fn format_float(value: f64) -> String {
@@ -2206,6 +2264,18 @@ impl Value {
         Value::Buffer(BufferRef::new(id, crate::buffer::Buffer::new(&name.into())))
     }
 
+    /// fns.c's Flist over VALUES: a proper list of them, consed from the
+    /// last, with no copy of them first and none of `list's reading of a
+    /// `vector-literal' head (a list of Lisp data that starts with that
+    /// symbol is a list).
+    pub(crate) fn list_of(values: &[Value]) -> Self {
+        let mut result = Value::Nil;
+        for value in values.iter().rev() {
+            result = Value::cons(*value, result);
+        }
+        result
+    }
+
     /// Build a proper list from an iterator of values.
     pub fn list(items: impl IntoIterator<Item = Value>) -> Self {
         let items: Vec<Value> = items.into_iter().collect();
@@ -2224,8 +2294,10 @@ impl Value {
 
     // Predicates
 
+    /// `NILP': nil is the word zero.
+    #[inline(always)]
     pub fn is_nil(&self) -> bool {
-        matches!(self.kind(), Kind::Nil)
+        self.0 == 0
     }
 
     pub fn is_truthy(&self) -> bool {
@@ -2240,16 +2312,119 @@ impl Value {
         self.0 & TAG_MASK == TAG_STRING
     }
 
+    /// SYMBOLP: nil, t or a symbol cell -- the symbol tag on any word but
+    /// the unbound marker's.
+    #[inline(always)]
     pub fn is_symbol(&self) -> bool {
-        matches!(self.kind(), Kind::Nil | Kind::T | Kind::Symbol(_))
+        self.0 & TAG_MASK == TAG_SYMBOL && self.0 != Value::Unbound.0
     }
 
+    /// The symbol a word names, without nil, t and the unbound marker:
+    /// `Kind::Symbol' by the tag and one compare, since every symbol cell
+    /// lies far above those small words.
+    #[inline(always)]
+    pub(crate) fn symbol_cell(self) -> Option<SymbolName> {
+        if self.0 & TAG_MASK == TAG_SYMBOL && self.0 >= 0x80 {
+            // SAFETY: a symbol-tagged word other than nil, t and unbound
+            // names an allocated symbol cell, as in `kind'.
+            Some(SymbolName::from_ref(unsafe {
+                crate::lisp::alloc::SymbolRef::from_raw(
+                    self.0 as *mut crate::lisp::alloc::SymbolCell,
+                )
+            }))
+        } else {
+            None
+        }
+    }
+
+    /// nil, t or a fixnum: the immediates `eval' returns as they are.
+    #[inline(always)]
+    pub(crate) fn is_nil_t_or_fixnum(self) -> bool {
+        self.0 == 0 || self.0 == Value::T.0 || self.0 & 3 == TAG_INT0
+    }
+
+    /// `CONSP': the tag alone.
+    #[inline(always)]
     pub fn is_cons(&self) -> bool {
-        matches!(self.kind(), Kind::Cons(_))
+        self.0 & TAG_MASK == TAG_CONS
     }
 
+    /// XCONS after CONSP: the cell, by the tag alone. `kind' builds the
+    /// whole classification, which a site that wants a cons or nothing
+    /// does not need.
+    #[inline(always)]
+    pub(crate) fn cons_ref(self) -> Option<SharedCons> {
+        if self.0 & TAG_MASK == TAG_CONS {
+            // SAFETY: as `kind's cons arm.
+            Some(unsafe { SharedCons::from_raw((self.0 & !TAG_MASK) as *const ConsCell) })
+        } else {
+            None
+        }
+    }
+
+    /// SUBRP for a C primitive (not a native-compiled function), by the
+    /// tag and the header alone.
+    #[inline(always)]
+    pub(crate) fn builtin_ref(self) -> Option<BuiltinRef> {
+        if self.0 & TAG_MASK != TAG_VECTORLIKE {
+            return None;
+        }
+        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        // SAFETY: as `kind's vectorlike arm.
+        unsafe {
+            (crate::lisp::alloc::vectors::header_tag(header) == crate::lisp::alloc::VectorTag::Subr
+                && !crate::lisp::alloc::vectors::subr_is_allocated(header))
+            .then(|| BuiltinRef::from_raw(header as usize))
+        }
+    }
+
+    /// VECTORLIKEP, by the tag alone.
+    #[inline(always)]
+    pub(crate) fn is_vectorlike(self) -> bool {
+        self.0 & TAG_MASK == TAG_VECTORLIKE
+    }
+
+    /// FLOATP, by the tag alone.
+    #[inline(always)]
+    pub(crate) fn is_float(self) -> bool {
+        self.0 & TAG_MASK == TAG_FLOAT
+    }
+
+    /// CLOSUREP, by the tag and the header alone.
+    #[inline(always)]
+    pub(crate) fn closure_ref(self) -> Option<ClosureRef> {
+        if self.0 & TAG_MASK != TAG_VECTORLIKE {
+            return None;
+        }
+        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        // SAFETY: as `kind's vectorlike arm.
+        unsafe {
+            (crate::lisp::alloc::vectors::header_tag(header)
+                == crate::lisp::alloc::VectorTag::Closure)
+                .then(|| ClosureRef::from_raw(header))
+        }
+    }
+
+    /// NATIVE_COMP_FUNCTIONP: a subr allocated for native code, by the tag
+    /// and the header alone.
+    #[inline(always)]
+    pub(crate) fn native_function_ref(self) -> Option<NativeFunctionRef> {
+        if self.0 & TAG_MASK != TAG_VECTORLIKE {
+            return None;
+        }
+        let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
+        // SAFETY: as `kind's vectorlike arm.
+        unsafe {
+            (crate::lisp::alloc::vectors::header_tag(header) == crate::lisp::alloc::VectorTag::Subr
+                && crate::lisp::alloc::vectors::subr_is_allocated(header))
+            .then(|| NativeFunctionRef::from_raw(header))
+        }
+    }
+
+    /// `LISTP': nil or a cons, by the word alone.
+    #[inline(always)]
     pub fn is_list(&self) -> bool {
-        matches!(self.kind(), Kind::Nil | Kind::Cons(_))
+        self.0 == 0 || self.0 & TAG_MASK == TAG_CONS
     }
 
     // Accessors
@@ -2267,6 +2442,17 @@ impl Value {
             // A bignum is an integer but not a fixnum, which is exactly what
             // CHECK_FIXNUM rejects.
             _ => Err(LispError::WrongTypeArgument("fixnump".into(), *self)),
+        }
+    }
+
+    /// `as_integer' for a caller that only asks whether the value is an
+    /// integer in range: no error is built for any other value.
+    #[inline]
+    pub fn integer_value(&self) -> Option<i64> {
+        match self.kind() {
+            Kind::Integer(n) => Some(n),
+            Kind::BigInteger(n) => n.to_i64(),
+            _ => None,
         }
     }
 
@@ -2305,6 +2491,18 @@ impl Value {
         }
     }
 
+    /// `as_symbol' for a caller that only asks: None for a value that is
+    /// no symbol, with no error built.
+    #[inline]
+    pub fn symbol_str(&self) -> Option<&str> {
+        match self.kind() {
+            Kind::Nil => Some("nil"),
+            Kind::T => Some("t"),
+            Kind::Symbol(_) => Some(self.symbol_name_by_tag().expect("symbol tag")),
+            _ => None,
+        }
+    }
+
     pub fn as_symbol(&self) -> Result<&str, LispError> {
         match self.kind() {
             Kind::Nil => Ok("nil"),
@@ -2314,19 +2512,38 @@ impl Value {
         }
     }
 
+    /// `car' for a caller that only asks: None for a value that is no
+    /// list, with no error built.
+    #[inline]
+    pub fn car_if_list(&self) -> Option<Value> {
+        match self.cons_ref() {
+            Some(cell) => Some(cell.car.get()),
+            None => self.is_nil().then_some(Value::Nil),
+        }
+    }
+
+    /// `cdr' for a caller that only asks, as `car_if_list'.
+    #[inline]
+    pub fn cdr_if_list(&self) -> Option<Value> {
+        match self.cons_ref() {
+            Some(cell) => Some(cell.cdr.get()),
+            None => self.is_nil().then_some(Value::Nil),
+        }
+    }
+
     pub fn car(&self) -> Result<Value, LispError> {
-        match self.kind() {
-            Kind::Cons(cell) => Ok(cell.car.get()),
-            Kind::Nil => Ok(Value::Nil),
-            _ => Err(LispError::WrongTypeArgument("listp".into(), *self)),
+        match self.cons_ref() {
+            Some(cell) => Ok(cell.car.get()),
+            None if self.is_nil() => Ok(Value::Nil),
+            None => Err(LispError::WrongTypeArgument("listp".into(), *self)),
         }
     }
 
     pub fn cdr(&self) -> Result<Value, LispError> {
-        match self.kind() {
-            Kind::Cons(cell) => Ok(cell.cdr.get()),
-            Kind::Nil => Ok(Value::Nil),
-            _ => Err(LispError::WrongTypeArgument("listp".into(), *self)),
+        match self.cons_ref() {
+            Some(cell) => Ok(cell.cdr.get()),
+            None if self.is_nil() => Ok(Value::Nil),
+            None => Err(LispError::WrongTypeArgument("listp".into(), *self)),
         }
     }
 
@@ -2405,20 +2622,18 @@ impl Value {
     ) -> Result<(), LispError> {
         let mut current = *self;
         let mut seen = CycleGuard::new();
-        loop {
-            match current.kind() {
-                Kind::Nil => return Ok(()),
-                Kind::Cons(cell) => {
-                    if seen.step(ConsCell::identity(&cell)) {
-                        return Err(circular_list_error());
-                    }
-                    visit(cell.car.get())?;
-                    current = cell.cdr.get();
-                }
-                _ => {
-                    return Err(LispError::WrongTypeArgument("listp".into(), current));
-                }
+        // CONSP and NILP by the word, as FOR_EACH_TAIL tests them.
+        while let Some(cell) = current.cons_ref() {
+            if seen.step(ConsCell::identity(&cell)) {
+                return Err(circular_list_error());
             }
+            visit(cell.car.get())?;
+            current = cell.cdr.get();
+        }
+        if current.is_nil() {
+            Ok(())
+        } else {
+            Err(LispError::WrongTypeArgument("listp".into(), current))
         }
     }
 
@@ -2748,26 +2963,34 @@ pub enum LispErrorKind {
 
 impl LispErrorKind {
     pub fn condition_type(&self) -> String {
-        match self {
-            LispErrorKind::TypeError(_, _) => "wrong-type-argument".into(),
-            LispErrorKind::WrongTypeArgument(_, _) => "wrong-type-argument".into(),
-            LispErrorKind::Void(_) => "void-variable".into(),
-            LispErrorKind::VoidFunction(_) => "void-function".into(),
-            LispErrorKind::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments".into(),
-            LispErrorKind::Signal(_) => "error".into(),
-            LispErrorKind::SignalValue(value) => match value.car().map(|v| v.kind()) {
-                Ok(Kind::Symbol(symbol)) => symbol.to_string(),
-                _ => "error".into(),
+        self.condition_symbol().as_str().to_owned()
+    }
+
+    /// The signaled condition: the car of a signal's data, or the symbol
+    /// the C core signals for the error (a Qsymbol, by its fixed slot).
+    pub fn condition_symbol(&self) -> SymbolName {
+        let key = match self {
+            LispErrorKind::TypeError(_, _) | LispErrorKind::WrongTypeArgument(_, _) => {
+                cached_symbol!("wrong-type-argument")
+            }
+            LispErrorKind::Void(_) => cached_symbol!("void-variable"),
+            LispErrorKind::VoidFunction(_) => cached_symbol!("void-function"),
+            LispErrorKind::WrongNumberOfArgs(_, _) => cached_symbol!("wrong-number-of-arguments"),
+            LispErrorKind::Signal(_) => cached_symbol!("error"),
+            LispErrorKind::SignalValue(value) => match value.car_if_list().map(|v| v.kind()) {
+                Some(Kind::Symbol(symbol)) => return symbol,
+                _ => cached_symbol!("error"),
             },
-            LispErrorKind::ErtTestFailed(_) => "ert-test-failed".into(),
-            LispErrorKind::Throw(_, _) => "no-catch".into(),
+            LispErrorKind::ErtTestFailed(_) => cached_symbol!("ert-test-failed"),
+            LispErrorKind::Throw(_, _) => cached_symbol!("no-catch"),
             LispErrorKind::Terminate(_) => {
                 unreachable!("process termination is non-catchable evaluator control flow")
             }
-            LispErrorKind::TestSkipped(_) => "ert-test-skipped".into(),
-            LispErrorKind::EndOfInput => "end-of-file".into(),
-            LispErrorKind::ReadError(_) => "invalid-read-syntax".into(),
-        }
+            LispErrorKind::TestSkipped(_) => cached_symbol!("ert-test-skipped"),
+            LispErrorKind::EndOfInput => cached_symbol!("end-of-file"),
+            LispErrorKind::ReadError(_) => cached_symbol!("invalid-read-syntax"),
+        };
+        key.with(|symbol| *symbol)
     }
 }
 
@@ -2892,6 +3115,10 @@ impl LispError {
 
     pub fn condition_type(&self) -> String {
         self.0.condition_type()
+    }
+
+    pub fn condition_symbol(&self) -> SymbolName {
+        self.0.condition_symbol()
     }
 
     pub fn TypeError(a0: String, a1: String) -> Self {
@@ -3143,7 +3370,10 @@ mod tests {
         assert!(
             matches!(tail.kind(), Kind::Cons(cell) if matches!(outer.environment().kind(), Kind::Cons(o) if SharedCons::ptr_eq(&cell, &o)))
         );
-        assert!(!environment_declares_special(frame.environment(), "cell"));
+        assert!(!environment_declares_special(
+            frame.environment(),
+            &SymbolName::intern_str("cell")
+        ));
     }
 
     #[test]

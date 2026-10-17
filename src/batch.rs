@@ -1086,13 +1086,13 @@ fn call_safe_hook_function(
             let mut found = false;
             let mut kept = Vec::new();
             while tail.is_cons() {
-                let entry = tail.car().ok()?;
+                let entry = tail.car_if_list()?;
                 if lisp::primitives::values::values_eq_in_env(interpreter, &entry, function, env) {
                     found = true;
                 } else {
                     kept.push(entry);
                 }
-                tail = tail.cdr().ok()?;
+                tail = tail.cdr_if_list()?;
             }
             found.then(|| Value::list(kept))
         };

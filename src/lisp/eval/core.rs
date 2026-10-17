@@ -17,12 +17,34 @@ fn eval_list_type_error(value: Value) -> LispError {
 // ── Dev-only flat profiler (EMAXX_PROFILE=<path>) ──
 // Per-name call counts, cumulative and self wall time; the report file is
 // rewritten every few thousand calls.  Zero cost unless the variable is
-// set (one cached Option check per call).
+// set (one byte tested per call, `profiling').
 
 fn profile_path() -> Option<&'static str> {
     static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     PATH.get_or_init(|| std::env::var("EMAXX_PROFILE").ok())
         .as_deref()
+}
+
+/// `profile_path().is_some()' as one byte once known (1 off, 2 on, 0
+/// before the first test): the calls that test it on every call read
+/// the byte, not the OnceLock's state and then its Option.
+static PROFILING: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+#[inline(always)]
+fn profiling() -> bool {
+    match PROFILING.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => false,
+        2 => true,
+        _ => profiling_first(),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn profiling_first() -> bool {
+    let on = profile_path().is_some();
+    PROFILING.store(1 + u8::from(on), std::sync::atomic::Ordering::Relaxed);
+    on
 }
 
 struct ProfileEntry {
@@ -135,7 +157,7 @@ macro_rules! define_native_forms {
         }
 
         impl NativeForm {
-            fn for_name(name: &str) -> Option<Self> {
+            pub(crate) fn for_name(name: &str) -> Option<Self> {
                 match name {
                     $($($name)|+ => Some(Self::$variant),)+
                     _ => None,
@@ -172,10 +194,7 @@ define_native_forms! {
 /// The cell after CELL, when its cdr is one (`CONSP (XCDR (tail))').
 #[inline]
 pub(super) fn next_cons(cell: &crate::lisp::types::ConsCell) -> Option<SharedCons> {
-    match cell.cdr.get().kind() {
-        Kind::Cons(next) => Some(next),
-        _ => None,
-    }
+    cell.cdr.get().cons_ref()
 }
 
 /// A walk over a list's elements by its cells (eval_sub's `while (CONSP
@@ -186,10 +205,7 @@ pub(super) struct ListForms(Option<SharedCons>);
 /// The elements of LIST, from its first cell.
 #[inline]
 pub(super) fn list_forms(list: &Value) -> ListForms {
-    ListForms(match list.kind() {
-        Kind::Cons(cell) => Some(cell),
-        _ => None,
-    })
+    ListForms(list.cons_ref())
 }
 
 impl Iterator for ListForms {
@@ -209,28 +225,19 @@ impl Iterator for ListForms {
 /// loops do).
 #[inline]
 pub(super) fn list_next(tail: &Value) -> Option<(Value, Value)> {
-    match tail.kind() {
-        Kind::Cons(cell) => Some((cell.car.get(), cell.cdr.get())),
-        _ => None,
-    }
+    tail.cons_ref().map(|cell| (cell.car.get(), cell.cdr.get()))
 }
 
 /// Fcar of a list: the first element, nil for nil.
 #[inline]
 pub(super) fn list_car(list: &Value) -> Value {
-    match list.kind() {
-        Kind::Cons(cell) => cell.car.get(),
-        _ => Value::Nil,
-    }
+    list.cons_ref().map_or(Value::Nil, |cell| cell.car.get())
 }
 
 /// Fcdr of a list: the rest, nil for nil.
 #[inline]
 pub(super) fn list_cdr(list: &Value) -> Value {
-    match list.kind() {
-        Kind::Cons(cell) => cell.cdr.get(),
-        _ => Value::Nil,
-    }
+    list.cons_ref().map_or(Value::Nil, |cell| cell.cdr.get())
 }
 
 /// Fnth: the Nth element, nil past the end.
@@ -264,7 +271,7 @@ impl Interpreter {
     /// enables that mode while macroexpanding source forms, so this is part of
     /// ordinary evaluator dispatch rather than merely a predicate detail.
     fn callable_symbol_name(&self, value: &Value, env: &Env) -> Option<SymbolName> {
-        if let Kind::Symbol(name) = value.kind() {
+        if let Some(name) = value.symbol_cell() {
             return Some(name);
         }
         if crate::lisp::primitives::symbols_with_pos_enabled(self, env)
@@ -276,12 +283,75 @@ impl Interpreter {
         None
     }
 
+    /// eval_sub. A symbol or a self-evaluating immediate returns before
+    /// the quit, collection and depth steps; below the outermost
+    /// evaluation that test is inlined into every caller, so an argument
+    /// that is a variable or a constant costs its lookup alone and a form
+    /// takes the out-of-line path.
+    #[inline(always)]
     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
-        let outermost = self.lisp_eval_depth == 0;
+        let state: &InterpreterState = self;
+        if state.lisp_eval_depth != 0 && state.pending_termination.is_none() {
+            if let Some(name) = expr.symbol_cell() {
+                if let Some(result) = state.lookup_symbol_plain(&name, env) {
+                    return result;
+                }
+                return self.lookup_symbol_global(&name);
+            }
+            if expr.is_nil_t_or_fixnum() {
+                return Ok(*expr);
+            }
+        }
+        self.eval_sub(expr, env)
+    }
+
+    #[inline(never)]
+    fn eval_sub(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
+        // A form below the outermost evaluation, with no termination or
+        // quit pending: the entry tests read the state through one borrow,
+        // and every other case takes the general entry.
+        let state: &mut InterpreterState = self;
+        if state.lisp_eval_depth == 0
+            || state.pending_termination.is_some()
+            || !state.quit_flag.is_nil()
+        {
+            return self.eval_sub_general(expr, env);
+        }
+        let Some(cell) = expr.cons_ref() else {
+            return self.eval_inner(expr, env);
+        };
+        // eval.c:2502's maybe_gc, then the depth increment (see
+        // `eval_sub_general').
+        crate::lisp::native_comp::maybe_gc(self, env);
+        let state: &mut InterpreterState = self;
+        state.lisp_eval_depth += 1;
+        if i64::try_from(state.lisp_eval_depth).unwrap_or(i64::MAX) > state.max_lisp_eval_depth
+            && self.lisp_eval_depth_exceeded()
+        {
+            let reached = self.lisp_eval_depth;
+            self.lisp_eval_depth -= 1;
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("excessive-lisp-nesting"),
+                Value::Integer(reached as i64),
+            ])));
+        }
+        let result = self.eval_cons(expr, cell, env);
+        self.lisp_eval_depth -= 1;
+        result
+    }
+
+    /// eval_sub at the outermost evaluation, with a termination or a quit
+    /// pending.
+    #[inline(never)]
+    fn eval_sub_general(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
+        // The entry tests read the state through one borrow.
+        let state: &InterpreterState = self;
+        let outermost = state.lisp_eval_depth == 0;
+        let terminating = state.pending_termination.is_some();
         if outermost {
             self.clear_batch_error_backtrace();
         }
-        if self.pending_termination.is_some() {
+        if terminating {
             return Err(LispError::Terminate(
                 self.pending_termination()
                     .cloned()
@@ -291,7 +361,7 @@ impl Interpreter {
         // eval_sub: a symbol or a self-evaluating object returns before the
         // quit, collection and depth tests; the body below is inlined here,
         // one function as eval_sub is (its result crossed two frames before).
-        if !matches!(expr.kind(), Kind::Cons(_)) {
+        if !expr.is_cons() {
             let result = self.eval_inner(expr, env);
             if outermost && result.is_ok() {
                 self.clear_batch_error_backtrace();
@@ -306,7 +376,10 @@ impl Interpreter {
         // scan; the ordinary interpreter collects when its consing counter
         // says alloc.c would.
         crate::lisp::native_comp::maybe_gc(self, env);
-        self.lisp_eval_depth += 1;
+        let state: &mut InterpreterState = self;
+        state.lisp_eval_depth += 1;
+        let deeper =
+            i64::try_from(state.lisp_eval_depth).unwrap_or(i64::MAX) > state.max_lisp_eval_depth;
         // eval.c:2504-2509.  GNU increments separately in `eval_sub' and
         // `Ffuncall'; this is the eval_sub half.  Public
         // `call_function_value' below owns the Ffuncall half, while direct
@@ -324,7 +397,7 @@ impl Interpreter {
         // raised a plain `error' where GNU raises `excessive-lisp-nesting'
         // carrying the depth -- a condition this tree already defines
         // (eval.rs:732) and never signalled.
-        if self.lisp_eval_depth_exceeded() {
+        if deeper && self.lisp_eval_depth_exceeded() {
             let reached = self.lisp_eval_depth;
             self.lisp_eval_depth -= 1;
             return Err(LispError::SignalValue(Value::list([
@@ -434,29 +507,197 @@ impl Interpreter {
 
             Kind::Symbol(name) => self.lookup_symbol(&name, env),
 
-            Kind::Cons(cell) => {
-                // eval_sub: XCAR (form) read for its symbol (copied only
-                // when it is something else), XCDR (form) held by its
-                // cell, CHECK_LIST (original_args).
-                let head = cell.car.get();
-                let (head_symbol, head_value) = match head.kind() {
-                    Kind::Symbol(name) => (Some(name), None),
-                    _ => (None, Some(head)),
-                };
-                let tail = cell.cdr.get();
-                let args_cell: Option<SharedCons> = match tail.kind() {
-                    Kind::Cons(args) => Some(args),
-                    Kind::Nil => None,
-                    _ => return Err(eval_list_type_error(tail)),
-                };
-                let callable_name = match head_value.as_ref() {
-                    None => head_symbol,
-                    Some(value) => self.callable_symbol_name(value, env),
-                };
-                // Regular function call
-                self.eval_call(expr, head_value.as_ref(), callable_name, args_cell, env)
+            Kind::Cons(cell) => self.eval_cons(expr, cell, env),
+        }
+    }
+
+    /// eval_sub's form: EXPR, whose cell is CELL.
+    #[inline(always)]
+    fn eval_cons(
+        &mut self,
+        expr: &Value,
+        cell: SharedCons,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        // eval_sub: XCAR (form) read for its symbol (copied only
+        // when it is something else), XCDR (form) held by its
+        // cell, CHECK_LIST (original_args).
+        let head = cell.car.get();
+        let (head_symbol, head_value) = match head.symbol_cell() {
+            Some(name) => (Some(name), None),
+            None => (None, Some(head)),
+        };
+        let tail = cell.cdr.get();
+        let args_cell: Option<SharedCons> = if tail.is_nil() {
+            None
+        } else if let Some(args) = tail.cons_ref() {
+            Some(args)
+        } else {
+            return Err(eval_list_type_error(tail));
+        };
+        // eval_sub's SUBRP branch, for a head whose function cell holds a
+        // C primitive itself: no resolution loop and no classification of
+        // the cell beyond the subr's own arity.
+        if let Some(name) = head_symbol
+            && let Some(subr) = self.globals.function(&name).and_then(Value::builtin_ref)
+        {
+            match subr.descriptor().max_args_word() {
+                maximum @ 0..=8 => {
+                    return self.eval_fixed_subr(
+                        expr,
+                        head,
+                        name,
+                        subr,
+                        maximum as usize,
+                        tail,
+                        env,
+                    );
+                }
+                -1 => {
+                    if let Some(native_form) = subr.facts().native_form {
+                        return self.eval_special_form(expr, head, subr, native_form, tail, env);
+                    }
+                }
+                _ => {}
             }
         }
+        let callable_name = match head_value.as_ref() {
+            None => head_symbol,
+            Some(value) => self.callable_symbol_name(value, env),
+        };
+        // Regular function call
+        self.eval_call(
+            expr,
+            head,
+            head_value.as_ref(),
+            callable_name,
+            args_cell,
+            env,
+        )
+    }
+
+    /// `eval_call' for a form whose head NAME holds SUBR, a C primitive of
+    /// at most eight fixed arguments (MAXIMUM): the frame recorded with the
+    /// unevaluated form, the arguments counted and checked against both
+    /// bounds, and MAXIMUM positions evaluated in order into eight slots
+    /// (Fcar before and Fcdr after each evaluation, as eval_sub does, so
+    /// a position past the list's end evaluates nil, and one the list
+    /// grew to during an earlier argument's evaluation is evaluated too),
+    /// and the subr called through its facts.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn eval_fixed_subr(
+        &mut self,
+        source_form: &Value,
+        original_function: Value,
+        name: SymbolName,
+        subr: crate::lisp::types::BuiltinRef,
+        maximum: usize,
+        original_args: Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let depth = self.backtrace_frames.len();
+        self.push_unevaluated_backtrace_frame(source_form);
+        let nargs = match self.short_list_length(original_args, env) {
+            Ok(count) => count,
+            Err(error) => return self.eval_call_argument_error(depth, true, error, env),
+        };
+        if nargs < usize::from(subr.descriptor().min_args) || maximum < nargs {
+            let error = LispError::SignalValue(Value::list([
+                Value::symbol("wrong-number-of-arguments"),
+                original_function,
+                Value::Integer(nargs as i64),
+            ]));
+            return self.eval_call_argument_error(depth, true, error, env);
+        }
+        let mut argvals = [Value::Nil; 8];
+        let mut args_left = original_args;
+        for slot in &mut argvals[..maximum] {
+            let cell = args_left.cons_ref();
+            let form = match cell {
+                Some(cell) => cell.car.get(),
+                None if args_left.is_nil() => Value::Nil,
+                None => {
+                    let error = LispError::WrongTypeArgument("listp".into(), args_left);
+                    return self.eval_call_argument_error(depth, true, error, env);
+                }
+            };
+            *slot = match self.eval(&form, env) {
+                Ok(value) => value,
+                Err(error) => return self.eval_call_argument_error(depth, true, error, env),
+            };
+            args_left = cell.map_or(Value::Nil, |cell| cell.cdr.get());
+        }
+        // The callee's symbol has a function, so it is no built-in nil or t.
+        self.set_backtrace_args(Value::symbol_of_cell(name), &argvals[..nargs]);
+        self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+        let result = primitives::call_with_facts_arity_checked(
+            self,
+            subr.as_str(),
+            subr.facts(),
+            &argvals[..maximum],
+            env,
+        );
+        let result = self.settle_frame_result(result, env);
+        self.truncate_backtrace_frames(depth);
+        result
+    }
+
+    /// `eval_call' for a form whose head holds SUBR, a special form with a
+    /// native body: the frame recorded, the arguments counted and the
+    /// minimum checked, and the body run on the unevaluated arguments.
+    #[inline(always)]
+    fn eval_special_form(
+        &mut self,
+        source_form: &Value,
+        original_function: Value,
+        subr: crate::lisp::types::BuiltinRef,
+        native_form: NativeForm,
+        original_args: Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let depth = self.backtrace_frames.len();
+        self.push_unevaluated_backtrace_frame(source_form);
+        let nargs = match self.short_list_length(original_args, env) {
+            Ok(count) => count,
+            Err(error) => return self.eval_call_argument_error(depth, true, error, env),
+        };
+        if nargs < usize::from(subr.descriptor().min_args) {
+            let error = LispError::SignalValue(Value::list([
+                Value::symbol("wrong-number-of-arguments"),
+                original_function,
+                Value::Integer(nargs as i64),
+            ]));
+            return self.eval_call_argument_error(depth, true, error, env);
+        }
+        let result = self.eval_native_form(native_form, &original_args, env);
+        let result = self.settle_frame_result(result, env);
+        self.truncate_backtrace_frames(depth);
+        result
+    }
+
+    /// `eval_list_length' of a form's arguments, inline for the usual
+    /// zero to two elements. FOR_EACH_TAIL's one comparison before the
+    /// second element can find a cycle only in a cell that is its own cdr,
+    /// whose cdr is no nil; its quit check comes after the second element.
+    #[inline(always)]
+    fn short_list_length(&mut self, list: Value, env: &mut Env) -> Result<usize, LispError> {
+        if list.is_nil() {
+            return Ok(0);
+        }
+        if let Some(first) = list.cons_ref() {
+            let rest = first.cdr.get();
+            if rest.is_nil() {
+                return Ok(1);
+            }
+            if let Some(second) = rest.cons_ref()
+                && second.cdr.get().is_nil()
+            {
+                self.maybe_quit(env)?;
+                return Ok(2);
+            }
+        }
+        self.eval_list_length(list, env)
     }
 
     /// fns.c:list_length, including lisp.h:FOR_EACH_TAIL's cycle and
@@ -471,7 +712,7 @@ impl Interpreter {
         let mut maximum = 2usize;
         let mut remaining = 0isize;
         let mut quit_count = 2u16;
-        while let Kind::Cons(cell) = tail.kind() {
+        while let Some(cell) = tail.cons_ref() {
             length += 1;
             tail = cell.cdr.get();
             quit_count = quit_count.wrapping_sub(1);
@@ -503,9 +744,11 @@ impl Interpreter {
         }
     }
 
+    #[inline(always)]
     pub(super) fn eval_call(
         &mut self,
         source_form: &Value,
+        original_function: Value,
         head: Option<&Value>,
         callable_name: Option<SymbolName>,
         args_list: Option<SharedCons>,
@@ -525,7 +768,6 @@ impl Interpreter {
         if unevald_frame {
             self.push_unevaluated_backtrace_frame(source_form);
         }
-        let original_function = source_form.cons_values().expect("a call is a cons").0;
         let original_args = args_list.map_or(Value::Nil, Value::Cons);
         let prepared = loop {
             let resolution = if let Some(name) = callable_name.as_ref() {
@@ -620,7 +862,7 @@ impl Interpreter {
             }
         };
         let mut args_left = original_args;
-        let nargs = match self.eval_list_length(args_left, env) {
+        let nargs = match self.short_list_length(args_left, env) {
             Ok(count) => count,
             Err(error) => {
                 return self.eval_call_argument_error(depth, unevald_frame, error, env);
@@ -651,7 +893,7 @@ impl Interpreter {
                 return self.eval_call_argument_error(depth, unevald_frame, error, env);
             }
             if descriptor.max_args() == NativeMaxArgs::Unevalled
-                && let Some(native_form) = NativeForm::for_name(subr.as_str())
+                && let Some(native_form) = subr.facts().native_form
             {
                 let result = self.eval_native_form(native_form, &original_args, env);
                 let result = self.settle_frame_result(result, env);
@@ -674,11 +916,11 @@ impl Interpreter {
         let limit = fixed_max.map_or(nargs, usize::from);
         let mut argnum = 0usize;
         for slot in &mut argvals[..limit] {
-            let cell = match args_left.kind() {
-                Kind::Cons(cell) => Some(cell),
-                _ if subr.is_some() && fixed_max.is_none() => break,
-                Kind::Nil => None,
-                _ => {
+            let cell = match args_left.cons_ref() {
+                Some(cell) => Some(cell),
+                None if subr.is_some() && fixed_max.is_none() => break,
+                None if args_left.is_nil() => None,
+                None => {
                     let error = LispError::WrongTypeArgument("listp".into(), args_left);
                     return self.eval_call_argument_error(depth, unevald_frame, error, env);
                 }
@@ -709,6 +951,30 @@ impl Interpreter {
             backtrace_argc,
             env,
         )
+    }
+
+    /// `finish_eval_call' for a native-compiled function or a byte-code
+    /// function: the frame recorded for the call takes the evaluated
+    /// arguments, the function runs under it, and the frame is popped.
+    #[inline(never)]
+    fn eval_call_compiled(
+        &mut self,
+        depth: usize,
+        name: &SymbolName,
+        func: Value,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        self.set_backtrace_args(Value::symbol_of_cell(*name), args);
+        self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+        let result = match (func.native_function_ref(), func.closure_ref()) {
+            (Some(native), _) => crate::lisp::native_comp::call_function(self, env, native, args),
+            (None, Some(closure)) => self.execute_bytecode_funcall_body(closure, args, env),
+            (None, None) => unreachable!("a native-compiled or byte-code function"),
+        };
+        let result = self.settle_frame_result(result, env);
+        self.truncate_backtrace_frames(depth);
+        result
     }
 
     /// eval_sub's UNEVALLED subr branch.  The caller has already recorded
@@ -803,7 +1069,7 @@ impl Interpreter {
         Err(error)
     }
 
-    #[inline]
+    #[inline(always)]
     fn finish_eval_call(
         &mut self,
         depth: usize,
@@ -813,19 +1079,23 @@ impl Interpreter {
         backtrace_argc: usize,
         env: &mut Env,
     ) -> Result<Value, LispError> {
+        // A subr eval_call resolved has had its arity checked (see
+        // `eval_call').
         let builtin = match &prepared {
-            FunctionResolution::DirectBuiltin(subr) => Some((*subr, subr.facts())),
+            FunctionResolution::DirectBuiltin(subr) => Some((*subr, subr.facts(), true)),
             FunctionResolution::Resolved(func) => match func.kind() {
-                Kind::BuiltinFunc(subr) => Some((subr, subr.facts())),
+                Kind::BuiltinFunc(subr) => Some((subr, subr.facts(), false)),
                 _ => None,
             },
         };
-        if let Some((subr, facts)) = builtin {
+        if let Some((subr, facts, arity_checked)) = builtin {
             let original_name = callable_name
                 .as_ref()
                 .map_or(subr.as_str(), SymbolName::as_str);
             if let Some(symbol) = callable_name {
-                self.set_backtrace_args(Value::Symbol(symbol), &args[..backtrace_argc]);
+                // The callee's symbol has a function, so it is no
+                // built-in nil or t (both constant).
+                self.set_backtrace_args(Value::symbol_of_cell(symbol), &args[..backtrace_argc]);
             } else {
                 self.push_backtrace_frame_borrowed(
                     Value::BuiltinFunc(subr),
@@ -833,15 +1103,47 @@ impl Interpreter {
                 );
             }
             self.capture_current_backtrace_context(Some(original_name), env, None);
-            let result = primitives::call_with_facts(self, subr.as_str(), facts, args, env)
-                .map_err(|error| {
-                    Self::builtin_call_error(original_name, backtrace_argc, false, error)
-                });
+            let result = if arity_checked {
+                primitives::call_with_facts_arity_checked(self, subr.as_str(), facts, args, env)
+            } else {
+                primitives::call_with_facts(self, subr.as_str(), facts, args, env)
+            }
+            .map_err(|error| Self::builtin_call_error(original_name, backtrace_argc, false, error));
             let result = self.settle_frame_result(result, env);
             self.truncate_backtrace_frames(depth);
             return result;
         }
         match (callable_name.as_ref(), prepared) {
+            // eval_sub's apply_lambda for an interpreted closure: the frame
+            // recorded for the call takes the evaluated arguments, and
+            // funcall_lambda runs under it.
+            (Some(name), FunctionResolution::Resolved(func))
+                if matches!(func.kind(), Kind::Closure(closure) if !closure.is_bytecode())
+                    && self.pending_termination().is_none()
+                    && !profiling() =>
+            {
+                self.set_backtrace_args(Value::symbol_of_cell(*name), args);
+                self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+                let result =
+                    self.funcall_interpreted_lambda(func, Some(CallName::Symbol(name)), args, env);
+                let result = self.settle_frame_result(result, env);
+                self.truncate_backtrace_frames(depth);
+                result
+            }
+            // eval_sub's own call of a native-compiled subr (funcall_subr)
+            // or, through apply_lambda, of a byte-code function: the frame
+            // recorded for the call takes the evaluated arguments, as for
+            // a subr or an interpreted closure above.
+            (Some(name), FunctionResolution::Resolved(func))
+                if (func.native_function_ref().is_some()
+                    || func
+                        .closure_ref()
+                        .is_some_and(|closure| closure.is_bytecode()))
+                    && self.pending_termination().is_none()
+                    && !profiling() =>
+            {
+                self.eval_call_compiled(depth, name, func, args, env)
+            }
             (Some(name), FunctionResolution::Resolved(func)) => {
                 self.pop_backtrace_frame();
                 self.call_function_value_named(func, Some(CallName::Symbol(name)), args, env, false)
@@ -863,14 +1165,44 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         self.begin_funcall(env)?;
-        let result = self.call_function_value_named(
-            func,
-            original_name.map(CallName::Text),
-            args,
-            env,
-            true,
-        );
+        let result = match original_name {
+            None => self.funcall_unnamed(func, args, env),
+            Some(name) => {
+                self.call_function_value_named(func, Some(CallName::Text(name)), args, env, true)
+            }
+        };
         self.end_funcall();
+        result
+    }
+
+    /// Ffuncall with no call name to record (mapcar, apply, sort and
+    /// funcall itself): the frame names FUNC with the borrowed arguments,
+    /// as `call_function_value_named' records it, written and popped in
+    /// place, then maybe_gc and funcall_general on the live cell.
+    #[inline(always)]
+    fn funcall_unnamed(
+        &mut self,
+        func: Value,
+        args: &[Value],
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        if self.pending_termination().is_some() {
+            return Err(LispError::Terminate(
+                self.pending_termination()
+                    .cloned()
+                    .expect("checked pending termination"),
+            ));
+        }
+        let depth = self.backtrace_frames.len();
+        self.push_backtrace_frame_borrowed(func, args);
+        self.capture_current_backtrace_context(None, env, None);
+        crate::lisp::native_comp::maybe_gc(self, env);
+        let result = match self.call_subr_directly(&func, None, args, env, true) {
+            Some(result) => result,
+            None => self.call_function_body(func, None, args, env, true),
+        };
+        let result = self.settle_frame_result(result, env);
+        self.truncate_backtrace_frames(depth);
         result
     }
 
@@ -939,12 +1271,20 @@ impl Interpreter {
         Ok(())
     }
 
+    /// bytecode.c's Bcall entry: maybe_quit, then the depth test, which
+    /// signals a plain `error' where Ffuncall's signals
+    /// `excessive-lisp-nesting'.
     #[inline(always)]
-    pub(crate) fn end_funcall(&mut self) {
-        self.lisp_eval_depth = self
-            .lisp_eval_depth
-            .checked_sub(1)
-            .expect("Ffuncall depth is balanced");
+    pub(crate) fn begin_bytecode_call(&mut self, env: &mut Env) -> Result<(), LispError> {
+        self.maybe_quit(env)?;
+        self.lisp_eval_depth += 1;
+        if self.lisp_eval_depth_exceeded() {
+            self.lisp_eval_depth -= 1;
+            return Err(LispError::Signal(
+                "Lisp nesting exceeds `max-lisp-eval-depth'".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// eval.c:maybe_quit/probably_quit/process_quit_flag for the Lisp-visible
@@ -1008,21 +1348,93 @@ impl Interpreter {
         let backtrace_function = original_name
             .map(CallName::original_symbol_value)
             .unwrap_or(func);
-        self.with_backtrace_frame(backtrace_function, args, |interp| {
-            interp.capture_current_backtrace_context(
-                original_name.map(CallName::as_str),
-                env,
-                None,
-            );
-            // eval.c:Ffuncall records the unresolved callee and its arguments,
-            // then collects before looking at the live function cell. Source
-            // evaluation already collected before evaluating its arguments.
-            if funcall {
-                crate::lisp::native_comp::maybe_gc(interp, env);
+        // The frame is written and popped in place, as eval_sub's is.
+        let depth = self.backtrace_frames.len();
+        self.push_backtrace_frame_borrowed(backtrace_function, args);
+        self.capture_current_backtrace_context(original_name.map(CallName::as_str), env, None);
+        // eval.c:Ffuncall records the unresolved callee and its arguments,
+        // then collects before looking at the live function cell. Source
+        // evaluation already collected before evaluating its arguments.
+        if funcall {
+            crate::lisp::native_comp::maybe_gc(self, env);
+        }
+        let result = match self.call_subr_directly(&func, original_name, args, env, funcall) {
+            Some(result) => result,
+            None => self.call_function_body(func, original_name, args, env, funcall),
+        };
+        let result = self.settle_frame_result(result, env);
+        self.truncate_backtrace_frames(depth);
+        result
+    }
+
+    /// eval.c:funcall_general's first test: a symbol whose live function
+    /// cell is a subr (or a native-compiled function) is called through
+    /// funcall_subr at once. Anything else (an alias, an autoload, a special
+    /// form, a lambda, a void cell) takes `call_function_body', which
+    /// reaches the same calls for these two after its general checks.
+    #[inline(always)]
+    fn call_subr_directly(
+        &mut self,
+        func: &Value,
+        original_name: Option<CallName<'_>>,
+        args: &[Value],
+        env: &mut Env,
+        funcall: bool,
+    ) -> Option<Result<Value, LispError>> {
+        if self.pending_termination().is_some() || profiling() {
+            return None;
+        }
+        // The callee and its function cell are tested by tag and header,
+        // as funcall_general's SUBRP and CLOSUREP tests are.
+        let Some(name) = func.symbol_cell() else {
+            // funcall_lambda for an interpreted closure called as a value.
+            return match func.closure_ref() {
+                Some(closure) if !closure.is_bytecode() => {
+                    Some(self.funcall_interpreted_lambda(*func, original_name, args, env))
+                }
+                _ => None,
+            };
+        };
+        let function = self.globals.function(&name)?;
+        if let Some(subr) = function.builtin_ref() {
+            if subr.descriptor().max_args()
+                == crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled
+            {
+                return None;
             }
-            let result = interp.call_function_body(func, original_name, args, env, funcall);
-            interp.settle_frame_result(result, env)
-        })
+            return Some(self.call_subr(subr, args, env, funcall));
+        }
+        if let Some(native) = function.native_function_ref() {
+            return Some(crate::lisp::native_comp::call_function(
+                self, env, native, args,
+            ));
+        }
+        match function.closure_ref() {
+            Some(closure) if !closure.is_bytecode() => {
+                let name = CallName::Symbol(&name);
+                Some(self.funcall_interpreted_lambda(
+                    function,
+                    original_name.or(Some(name)),
+                    args,
+                    env,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// eval.c:funcall_subr: a subr (not a special form) found in the live
+    /// function cell, called with its arguments.
+    #[inline(always)]
+    pub(crate) fn call_subr(
+        &mut self,
+        subr: crate::lisp::types::BuiltinRef,
+        args: &[Value],
+        env: &mut Env,
+        funcall: bool,
+    ) -> Result<Value, LispError> {
+        primitives::call_with_facts(self, subr.as_str(), subr.facts(), args, env)
+            .map_err(|error| Self::builtin_call_error(subr.as_str(), args.len(), funcall, error))
     }
 
     /// funcall_general after Ffuncall/Bcall has established depth, roots and
@@ -1086,14 +1498,15 @@ impl Interpreter {
     /// function cell. Aliases and redefinitions therefore select the actual
     /// callable before any subr metadata is consulted. Ffuncall and Bcall do
     /// this after collection; source evaluation does it before its arguments.
+    #[inline]
     fn resolve_symbol_call(
         &mut self,
         name: &SymbolName,
         env: &Env,
     ) -> Result<FunctionResolution, LispError> {
         let function = self.lookup_function_symbol(name, env)?;
-        Ok(match function.kind() {
-            Kind::BuiltinFunc(subr)
+        Ok(match function.builtin_ref() {
+            Some(subr)
                 if subr.descriptor().max_args()
                     != crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled =>
             {
@@ -1192,27 +1605,44 @@ impl Interpreter {
         result
     }
 
-    /// Bcall can enter packed byte-code closures without a host function
-    /// registry. Classification reads the shared closure's actual code slot.
-    pub(crate) fn bytecode_callee(
-        &self,
-        func: &Value,
-    ) -> Option<(crate::lisp::bytecode::ByteCodeObject, Value)> {
-        if profile_path().is_some() {
-            return None;
+    /// Bcall's callee, read after maybe_gc as bytecode.c reads it: a
+    /// symbol's function cell, or the function itself. A lexical byte-code
+    /// closure gets its frame set up in place (`goto setup_frame'); a
+    /// native-compiled function is called directly, as funcall_general
+    /// calls a SUBR through funcall_subr; anything else (an alias, an
+    /// autoload, a subr, an interpreted function, a void cell) goes
+    /// through funcall.
+    #[inline(always)]
+    pub(crate) fn bcall_callee(&self, func: &Value) -> BcallCallee {
+        // A termination maybe_gc left pending is funcall's to report.
+        if self.pending_termination().is_some() || profiling() {
+            return BcallCallee::Funcall;
         }
-        let function = match func.kind() {
-            Kind::Symbol(name) => self.globals.function(&name)?,
-            _ => *func,
+        let function = match func.symbol_cell() {
+            Some(name) => match self.globals.function(&name) {
+                Some(function) => function,
+                None => return BcallCallee::Funcall,
+            },
+            None => *func,
         };
-        let Kind::Closure(closure) = function.kind() else {
-            return None;
-        };
-        if !closure.is_bytecode() || !matches!(closure.parameters().kind(), Kind::Integer(_)) {
-            return None;
+        if let Some(closure) = function.closure_ref() {
+            return match crate::lisp::bytecode::ByteCodeObject::for_call(closure) {
+                Some(program) => BcallCallee::ByteCode(program, function),
+                None => BcallCallee::Funcall,
+            };
         }
-        let program = crate::lisp::bytecode::vm::closure_program(closure).ok()?;
-        Some((program, function))
+        if let Some(native) = function.native_function_ref() {
+            return BcallCallee::Native(native);
+        }
+        match function.builtin_ref() {
+            Some(subr)
+                if subr.descriptor().max_args()
+                    != crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled =>
+            {
+                BcallCallee::Subr(subr)
+            }
+            _ => BcallCallee::Funcall,
+        }
     }
 
     fn call_function_value_inner(
@@ -1223,6 +1653,14 @@ impl Interpreter {
         env: &mut Env,
         funcall: bool,
     ) -> Result<Value, LispError> {
+        // A closure, by the tag and the header (funcall_general's
+        // CLOSUREP): no symbol to strip, resolve or autoload.
+        if let Some(closure) = func.closure_ref() {
+            if closure.is_bytecode() {
+                return self.execute_bytecode_funcall_body(closure, args, env);
+            }
+            return self.funcall_interpreted_lambda(func, original_name, args, env);
+        }
         // eval.c/bytecode.c use XBARE_SYMBOL for a positioned callee while
         // the byte compiler's symbol-position mode is active.  This covers
         // explicit `funcall'/`apply' as well as ordinary source dispatch.
@@ -1270,6 +1708,12 @@ impl Interpreter {
             other => other.value(),
         };
         let original_name = original_name.or_else(|| owned_name.as_ref().map(CallName::Symbol));
+        // A symbol's interpreted closure, as one called directly above.
+        if let Some(closure) = func.closure_ref()
+            && !closure.is_bytecode()
+        {
+            return self.funcall_interpreted_lambda(func, original_name, args, env);
+        }
         let func = match func.kind() {
             Kind::Cons(_) => {
                 if let Some((file, _, _)) = crate::lisp::primitives::autoload_parts(&func) {
@@ -1369,13 +1813,15 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let (mut parameters, mut lexical_environment) = match function.kind() {
-            Kind::Closure(lambda) => (lambda.parameters(), lambda.environment_value()),
-            Kind::Cons(cell) => match cell.cdr.get().kind() {
-                Kind::Cons(tail) => (tail.car.get(), Value::Nil),
-                _ => return self.settle_frame_result(Err(invalid_function(function)), env),
+        let (mut parameters, mut lexical_environment) = match function.closure_ref() {
+            Some(lambda) => (lambda.parameters(), lambda.environment_value()),
+            None => match function.cons_ref().map(|cell| cell.cdr.get().cons_ref()) {
+                Some(Some(tail)) => (tail.car.get(), Value::Nil),
+                Some(None) => {
+                    return self.settle_frame_result(Err(invalid_function(function)), env);
+                }
+                None => unreachable!("an interpreted lambda was selected"),
             },
-            _ => unreachable!("an interpreted lambda was selected"),
         };
         let lexical = !lexical_environment.is_nil();
         let override_capture = self.lambda_capture_override() != Some(lexical);
@@ -1384,18 +1830,22 @@ impl Interpreter {
         }
         let depth = env.len();
         let count = self.specpdl_index();
+        let locals = self.frame_locals.len();
         let result = (|| {
             let mut index = 0;
             let mut optional = false;
             let mut rest = false;
             let mut previous_rest = false;
-            while let Kind::Cons(cell) = parameters.kind() {
+            while let Some(cell) = parameters.cons_ref() {
                 self.maybe_quit(env)?;
                 let value = cell.car.get();
-                let parameter = match value.kind() {
-                    Kind::Nil => SymbolName::intern_str("nil"),
-                    Kind::T => SymbolName::intern_str("t"),
-                    _ => self
+                let parameter = match value.symbol_cell() {
+                    Some(name) => name,
+                    None if value.is_nil() => crate::lisp::types::symbols::builtin_boolean(false),
+                    None if value.word() == Value::T.word() => {
+                        crate::lisp::types::symbols::builtin_boolean(true)
+                    }
+                    None => self
                         .callable_symbol_name(&value, env)
                         .ok_or_else(|| invalid_function(function))?,
                 };
@@ -1430,12 +1880,16 @@ impl Interpreter {
                     // Dynamic specbind can run variable watchers. Bind
                     // immediately, retaining GNU's order and the live
                     // parameter cell until its cdr is read below.
-                    self.backtrace_frames
-                        .last_mut()
-                        .expect("active call frame")
-                        .detail_mut()
-                        .locals
-                        .push((parameter, argument));
+                    let frame = self
+                        .backtrace_frames
+                        .len()
+                        .checked_sub(1)
+                        .expect("active call frame");
+                    self.frame_locals.push(FrameLocal {
+                        frame,
+                        symbol: parameter,
+                        value: argument,
+                    });
                     if lexical {
                         lexical_environment =
                             Self::cons_binding(parameter, argument, lexical_environment);
@@ -1471,6 +1925,9 @@ impl Interpreter {
         // GNU signals before unbinding: handlers can inspect partial
         // dynamic argument bindings and the signaling call's frame.
         let result = self.settle_frame_result(result, env);
+        // The parameters leave with the call; its frame, which the caller
+        // pops, reports none after this.
+        self.frame_locals.truncate(locals);
         env.truncate(depth);
         let unbind = self.unbind_to(count, env);
         if override_capture {
@@ -1483,6 +1940,66 @@ impl Interpreter {
     }
 
     // ── Special forms ──
+}
+
+impl InterpreterState {
+    #[inline(always)]
+    pub(crate) fn end_funcall(&mut self) {
+        self.lisp_eval_depth = self
+            .lisp_eval_depth
+            .checked_sub(1)
+            .expect("Ffuncall depth is balanced");
+    }
+
+    /// Bcall's way to a native-compiled function or a subr that evaluates
+    /// its arguments when nothing else happens on the way in
+    /// (`plain_bcall_entry'): the function in FUNC's live cell (or FUNC
+    /// itself).
+    #[inline(always)]
+    pub(crate) fn plain_bcall_callee(&self, func: Value) -> Option<super::PlainCallee> {
+        let name = func.symbol_cell();
+        let function = match &name {
+            Some(name) => self.globals.function(name)?,
+            None => func,
+        };
+        let callee = if let Some(native) = function.native_function_ref() {
+            super::PlainCallee::Native(native)
+        } else {
+            let subr = function.builtin_ref()?;
+            if subr.descriptor().max_args()
+                == crate::lisp::native_comp::abi::NativeMaxArgs::Unevalled
+            {
+                return None;
+            }
+            super::PlainCallee::Subr(subr)
+        };
+        self.plain_bcall_entry(name).then_some(callee)
+    }
+
+    /// The entry tests of a Bcall when nothing else happens on the way
+    /// in: Ffuncall's maybe_quit finds no quit, the depth stays within
+    /// max-lisp-eval-depth, no termination is pending, no debugger context
+    /// is captured (edebug is not loaded and the callee is not
+    /// `backtrace-eval'), and calls are not being profiled. NAME is the
+    /// callee's symbol, if it is one. Reads only: the full Call arm takes
+    /// every other case from the same state.
+    #[inline(always)]
+    pub(crate) fn plain_bcall_entry(&self, name: Option<SymbolName>) -> bool {
+        self.quit_flag.is_nil()
+            && self.pending_termination.is_none()
+            && !self.globals.edebug_is_special()
+            && i64::try_from(self.lisp_eval_depth + 1)
+                .is_ok_and(|depth| depth <= self.max_lisp_eval_depth)
+            && !profiling()
+            && name.is_none_or(|name| !is_backtrace_eval_name(name.as_str()))
+    }
+}
+
+/// Whether NAME is `backtrace-eval': its fourteen bytes compared as an
+/// array of known size, two loads rather than a call to memcmp.
+#[inline(always)]
+pub(crate) fn is_backtrace_eval_name(name: &str) -> bool {
+    <&[u8; 14]>::try_from(name.as_bytes()).is_ok_and(|bytes| bytes == b"backtrace-eval")
 }
 
 #[cfg(test)]

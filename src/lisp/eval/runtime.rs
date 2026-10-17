@@ -311,8 +311,8 @@ impl Interpreter {
             // "Required feature ... was not provided" when there is none.
             let loaded_file = self
                 .lookup_var("load-history", env)
-                .and_then(|history| history.car().ok())
-                .and_then(|entry| entry.car().ok())
+                .and_then(|history| history.car_if_list())
+                .and_then(|entry| entry.car_if_list())
                 .and_then(|file| crate::lisp::primitives::string_like(&file).map(|s| s.text));
             return Err(LispError::Signal(match loaded_file {
                 Some(file) => {
@@ -362,13 +362,23 @@ impl Interpreter {
         self.inactive_buffers
             .push((id, crate::lisp::types::BufferRef::new(id, buffer)));
         self.buffer_list.push((id, name.to_string()));
+        // The two locals by their symbols (`set_buffer_local_value_symbol'),
+        // found through the address-keyed cache, not by hashing the names
+        // for each buffer.
+        let set_local = |this: &mut Self, name: &'static str, value: Value| {
+            if let Some(symbol) = SymbolName::interned_cached(name) {
+                this.set_buffer_local_value_symbol(id, &symbol, value);
+            } else {
+                this.set_buffer_local_value(id, name, value);
+            }
+        };
         if let Some(directory) = inherited_directory {
-            self.set_buffer_local_value(id, "default-directory", directory);
+            set_local(self, "default-directory", directory);
         }
         // GNU reset_buffer materializes buffer-read-only as a local nil in
         // every new buffer.  This keeps a process-wide dynamic binding in
         // the creating buffer from making a fresh temporary buffer read-only.
-        self.set_buffer_local_value(id, "buffer-read-only", Value::Nil);
+        set_local(self, "buffer-read-only", Value::Nil);
         (id, name.to_string())
     }
 
@@ -405,7 +415,7 @@ impl Interpreter {
         self.current_buffer_id = id;
         // A localized GNU forwarding symbol loads the newly current
         // buffer's cell into its C variable during a buffer switch.
-        self.refresh_forwarded_eval_cells();
+        self.refresh_forwarded_eval_cells_after_switch(current_id);
         Ok(())
     }
 
@@ -437,7 +447,7 @@ impl Interpreter {
         let selected_window_already_displays_target = self
             .find_record(self.selected_window_id)
             .and_then(|window| window.slots.first())
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             == Some(id as i64);
         if id == current_id && selected_window_already_displays_target {
             return Ok(());
@@ -453,7 +463,7 @@ impl Interpreter {
             let previous = window
                 .slots
                 .first()
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .unwrap_or(current_id as i64);
             window.slots[0] = Value::Integer(id as i64);
             if window.slots.len() < 2 {
@@ -541,7 +551,7 @@ impl Interpreter {
     pub(crate) fn window_use_time(&self, id: u64) -> i64 {
         self.find_record(id)
             .and_then(|record| record.slots.get(primitives::WINDOW_USE_TIME_SLOT))
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or_default()
     }
 
@@ -574,7 +584,7 @@ impl Interpreter {
     pub fn selected_window_buffer_id(&self) -> u64 {
         self.find_record(self.selected_window_id)
             .and_then(|record| record.slots.first())
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .map(|value| value.max(0) as u64)
             .unwrap_or(self.current_buffer_id)
     }
@@ -593,7 +603,7 @@ impl Interpreter {
             ));
         self.find_record(self.selected_window_id)
             .and_then(|record| record.slots.get(1))
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .map(|value| value.clamp(point_min as i64, point_max as i64) as usize)
             .unwrap_or(point_min)
     }
@@ -624,7 +634,7 @@ impl Interpreter {
             let previous = window
                 .slots
                 .first()
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .unwrap_or(current_buffer_id);
             if window.slots.len() < 2 {
                 window.slots.resize(2, Value::Nil);
@@ -743,7 +753,7 @@ impl Interpreter {
         // force menu_bar_lines to 0 or 1 regardless of the parameter).
         let menu_bar_lines = self
             .frame_parameter_override("menu-bar-lines")
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or(1)
             .clamp(0, 1)
             .min(height - 2);
@@ -767,7 +777,7 @@ impl Interpreter {
         let integer_slot = |slot: usize, fallback: i64| {
             self.find_record(id)
                 .and_then(|record| record.slots.get(slot))
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .unwrap_or(fallback)
         };
         (
@@ -1037,7 +1047,7 @@ impl Interpreter {
         let slots = &record.slots;
         let selected_window_id = slots
             .get(1)
-            .and_then(|value| value.as_integer().ok())
+            .and_then(|value| value.integer_value())
             .unwrap_or_default() as u64;
         let selected_window_slots = slots
             .get(2)
@@ -1051,7 +1061,7 @@ impl Interpreter {
                     .into_iter()
                     .filter_map(|record| {
                         let (id, slots) = record.cons_values()?;
-                        Some((id.as_integer().ok()?.max(0) as u64, slots.to_vec().ok()?))
+                        Some((id.integer_value()?.max(0) as u64, slots.to_vec().ok()?))
                     })
                     .collect()
             })
@@ -1073,7 +1083,7 @@ impl Interpreter {
             })?,
             current_buffer_id: slots
                 .first()
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .unwrap_or_default() as u64,
             selected_window_id,
             selected_window_slots,
@@ -1087,18 +1097,34 @@ impl Interpreter {
                 .unwrap_or(selected_window_id),
             frame_width: slots
                 .get(3)
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .unwrap_or(80),
             frame_height: slots
                 .get(4)
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .unwrap_or(24),
         })
     }
 
+    /// Whether `window_configuration_snapshot_from_value' would find a
+    /// configuration in VALUE: a window-configuration record whose frame
+    /// slots (7 and 8) hold frames, the only parts it requires; the
+    /// window lists it copies are not built for the test.
     pub(crate) fn is_window_configuration_value(&self, value: &Value) -> bool {
-        self.window_configuration_snapshot_from_value(value)
-            .is_some()
+        let Kind::Record(id) = value.kind() else {
+            return false;
+        };
+        self.find_record(id)
+            .filter(|record| record.kind == RecordKind::WindowConfiguration)
+            .is_some_and(|record| {
+                let frame = |index: usize| {
+                    record
+                        .slots
+                        .get(index)
+                        .is_some_and(|slot| matches!(slot.kind(), Kind::Frame(_)))
+                };
+                frame(7) && frame(8)
+            })
     }
 
     pub(crate) fn window_configurations_equal(
@@ -1205,7 +1231,7 @@ impl Interpreter {
         self.delete_buffer_overlays(id);
         let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
         self.detach_markers_for_buffer(id);
-        self.buffer_locals.remove(&id);
+        self.remove_buffer_locals(id);
         self.buffer_local_hooks.remove(&id);
         self.labeled_restrictions
             .retain(|restriction| restriction.buffer_id != id);
@@ -1263,7 +1289,7 @@ impl Interpreter {
             let showed_killed_buffer = self
                 .find_record(window_id)
                 .and_then(|window| window.slots.get(primitives::WINDOW_BUFFER_SLOT))
-                .and_then(|value| value.as_integer().ok())
+                .and_then(|value| value.integer_value())
                 .is_some_and(|buffer_id| buffer_id.max(0) as u64 == id);
             if !showed_killed_buffer {
                 continue;
@@ -1811,7 +1837,7 @@ impl Interpreter {
             crate::lisp::native_comp::note_lisp_allocation(vector_slots.saturating_mul(8));
         }
         let id = self.alloc_record_id();
-        let indexed_type = type_tag.as_symbol().ok().map(str::to_owned);
+        let indexed_type = type_tag.symbol_str().map(str::to_owned);
         let index = self.record_index_for(id);
         // alloc.c's allocate_record: the object in a vector block; the
         // registry names it by id for the side tables.
@@ -2015,15 +2041,23 @@ impl Interpreter {
     }
 
     pub(crate) fn record_definition_in_load_history(&mut self, kind: &str, name: &str) {
+        self.record_symbol_definition_in_load_history(kind, &SymbolName::intern_str(name));
+    }
+
+    pub(crate) fn record_symbol_definition_in_load_history(
+        &mut self,
+        kind: &str,
+        symbol: &SymbolName,
+    ) {
         let Some(current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
             return;
         };
         let entry = if kind == "defvar" {
-            Value::Symbol(name.to_string().into())
+            Value::Symbol(*symbol)
         } else {
             Value::cons(
                 Value::Symbol(kind.to_string().into()),
-                Value::Symbol(name.to_string().into()),
+                Value::Symbol(*symbol),
             )
         };
         // lisp.h:LOADHIST_ATTACH accepts an empty current-load-list too;
@@ -2158,15 +2192,27 @@ impl Interpreter {
         self.globals.function_definition_by_name(name).is_some()
     }
 
+    /// Whether FEATURE names a symbol in `features' (read in place; a
+    /// circular or dotted list has none).
     pub fn has_feature(&self, feature: &str) -> bool {
-        self.global_value("features")
-            .unwrap_or_else(|| self.features_value())
-            .to_vec()
-            .is_ok_and(|features| {
-                features
-                    .iter()
-                    .any(|value| matches!(value.kind(), Kind::Symbol(name) if name == feature))
+        let features = self
+            .global_value("features")
+            .unwrap_or_else(|| self.features_value());
+        let named = |value: &Value| matches!(value.kind(), Kind::Symbol(name) if name == feature);
+        if matches!(features.kind(), Kind::Vector(_)) {
+            // A vector reads as `to_vec' gives it, marker first.
+            return features
+                .to_vec()
+                .is_ok_and(|features| features.iter().any(named));
+        }
+        let mut found = false;
+        features
+            .visit_list_elements(|value| {
+                found = found || named(&value);
+                Ok(())
             })
+            .is_ok()
+            && found
     }
 
     pub(super) fn features_value(&self) -> Value {
@@ -2228,7 +2274,7 @@ impl Interpreter {
                         .parameter_overrides
                         .iter()
                         .find(|(key, _)| key == name)
-                        .and_then(|(_, value)| value.as_integer().ok())
+                        .and_then(|(_, value)| value.integer_value())
                         .unwrap_or(0)
                         .clamp(0, 1)
                 })
@@ -2269,7 +2315,7 @@ impl Interpreter {
                     && self
                         .error_condition_names(&error.condition_type())
                         .iter()
-                        .any(|name| name == "error") =>
+                        .any(|name| name.as_str() == "error") =>
             {
                 self.clear_batch_error_backtrace();
                 Ok(Value::Nil)

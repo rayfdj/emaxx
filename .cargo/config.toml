@@ -11,3 +11,18 @@ RUST_TEST_THREADS = { value = "2", force = false }
 # machine (second audit, B3a).  `force = false': an explicit environment
 # still wins.
 RUST_MIN_STACK = { value = "134217728", force = false }
+
+[build]
+# The byte-code loop's opcode match is one jump table at the head of the
+# loop. LLVM copies such a dispatch into each arm (an indirect jump per
+# opcode, as GNU's computed-goto dispatch has) only for a block of at most
+# 16 predecessors and successors by default, and this one has hundreds.
+# With the limits raised the copy is made in the six functions holding
+# such a block: run_verified's 5 indirect jumps become 144 (3.8 KB more
+# code), so the branch predictor sees each opcode's successor apart, for
+# the same instruction count (bytecode-to-native wall time about 14%
+# less). An explicit RUSTFLAGS replaces these flags.
+rustflags = [
+    "-C", "llvm-args=-tail-dup-pred-size=1024",
+    "-C", "llvm-args=-tail-dup-succ-size=1024",
+]
