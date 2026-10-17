@@ -513,6 +513,32 @@ impl Interpreter {
         } else {
             return Err(eval_list_type_error(tail));
         };
+        // eval_sub's SUBRP branch, for a head whose function cell holds a
+        // C primitive itself: no resolution loop and no classification of
+        // the cell beyond the subr's own arity.
+        if let Some(name) = head_symbol
+            && let Some(subr) = self.globals.function(&name).and_then(Value::builtin_ref)
+        {
+            match subr.descriptor().max_args_word() {
+                maximum @ 0..=8 => {
+                    return self.eval_fixed_subr(
+                        expr,
+                        head,
+                        name,
+                        subr,
+                        maximum as usize,
+                        tail,
+                        env,
+                    );
+                }
+                -1 => {
+                    if let Some(native_form) = subr.facts().native_form {
+                        return self.eval_special_form(expr, head, subr, native_form, tail, env);
+                    }
+                }
+                _ => {}
+            }
+        }
         let callable_name = match head_value.as_ref() {
             None => head_symbol,
             Some(value) => self.callable_symbol_name(value, env),
@@ -526,6 +552,106 @@ impl Interpreter {
             args_cell,
             env,
         )
+    }
+
+    /// `eval_call' for a form whose head NAME holds SUBR, a C primitive of
+    /// at most eight fixed arguments (MAXIMUM): the frame recorded with the
+    /// unevaluated form, the arguments counted and checked against both
+    /// bounds, and MAXIMUM positions evaluated in order into eight slots
+    /// (Fcar before and Fcdr after each evaluation, as eval_sub does, so
+    /// a position past the list's end evaluates nil, and one the list
+    /// grew to during an earlier argument's evaluation is evaluated too),
+    /// and the subr called through its facts.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn eval_fixed_subr(
+        &mut self,
+        source_form: &Value,
+        original_function: Value,
+        name: SymbolName,
+        subr: crate::lisp::types::BuiltinRef,
+        maximum: usize,
+        original_args: Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let depth = self.backtrace_frames.len();
+        self.push_unevaluated_backtrace_frame(source_form);
+        let nargs = match self.short_list_length(original_args, env) {
+            Ok(count) => count,
+            Err(error) => return self.eval_call_argument_error(depth, true, error, env),
+        };
+        if nargs < usize::from(subr.descriptor().min_args) || maximum < nargs {
+            let error = LispError::SignalValue(Value::list([
+                Value::symbol("wrong-number-of-arguments"),
+                original_function,
+                Value::Integer(nargs as i64),
+            ]));
+            return self.eval_call_argument_error(depth, true, error, env);
+        }
+        let mut argvals = [Value::Nil; 8];
+        let mut args_left = original_args;
+        for slot in &mut argvals[..maximum] {
+            let cell = args_left.cons_ref();
+            let form = match cell {
+                Some(cell) => cell.car.get(),
+                None if args_left.is_nil() => Value::Nil,
+                None => {
+                    let error = LispError::WrongTypeArgument("listp".into(), args_left);
+                    return self.eval_call_argument_error(depth, true, error, env);
+                }
+            };
+            *slot = match self.eval(&form, env) {
+                Ok(value) => value,
+                Err(error) => return self.eval_call_argument_error(depth, true, error, env),
+            };
+            args_left = cell.map_or(Value::Nil, |cell| cell.cdr.get());
+        }
+        // The callee's symbol has a function, so it is no built-in nil or t.
+        self.set_backtrace_args(Value::symbol_of_cell(name), &argvals[..nargs]);
+        self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+        let result = primitives::call_with_facts_arity_checked(
+            self,
+            subr.as_str(),
+            subr.facts(),
+            &argvals[..maximum],
+            env,
+        );
+        let result = self.settle_frame_result(result, env);
+        self.truncate_backtrace_frames(depth);
+        result
+    }
+
+    /// `eval_call' for a form whose head holds SUBR, a special form with a
+    /// native body: the frame recorded, the arguments counted and the
+    /// minimum checked, and the body run on the unevaluated arguments.
+    #[inline(always)]
+    fn eval_special_form(
+        &mut self,
+        source_form: &Value,
+        original_function: Value,
+        subr: crate::lisp::types::BuiltinRef,
+        native_form: NativeForm,
+        original_args: Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let depth = self.backtrace_frames.len();
+        self.push_unevaluated_backtrace_frame(source_form);
+        let nargs = match self.short_list_length(original_args, env) {
+            Ok(count) => count,
+            Err(error) => return self.eval_call_argument_error(depth, true, error, env),
+        };
+        if nargs < usize::from(subr.descriptor().min_args) {
+            let error = LispError::SignalValue(Value::list([
+                Value::symbol("wrong-number-of-arguments"),
+                original_function,
+                Value::Integer(nargs as i64),
+            ]));
+            return self.eval_call_argument_error(depth, true, error, env);
+        }
+        let result = self.eval_native_form(native_form, &original_args, env);
+        let result = self.settle_frame_result(result, env);
+        self.truncate_backtrace_frames(depth);
+        result
     }
 
     /// `eval_list_length' of a form's arguments, inline for the usual

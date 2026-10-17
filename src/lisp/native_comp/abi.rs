@@ -105,6 +105,13 @@ impl NativeSubr {
         }
     }
 
+    /// MAX_ARGS as the subr records it: a count, UNEVALLED (-1) or MANY
+    /// (-2).
+    #[inline(always)]
+    pub(crate) fn max_args_word(&self) -> i16 {
+        self.max_args_word
+    }
+
     pub(crate) fn max_args(&self) -> NativeMaxArgs {
         match self.max_args_word {
             -2 => NativeMaxArgs::Many,

@@ -885,6 +885,39 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   calls 1.124 → 1.136, bytecode-to-native 1.633 → 1.640, lexical 1.183 →
   1.174, explicit-gc 0.887 → 0.876, native-to-interpreted 1.267 → 1.254;
   the rest within 0.005.
+- An evaluator form whose head symbol's function cell holds a C
+  primitive takes eval_sub's SUBRP branch directly (`eval_fixed_subr`
+  and `eval_special_form`, from `eval_cons`). `eval_call` resolves a
+  head through a loop that also handles aliases, autoloads, macros and
+  lambdas; it wrapped a subr in a `FunctionResolution`, decoded the
+  cell's object a second time to classify it (a special form, which the
+  first test leaves out, only there), walked the arguments with branches
+  for MANY subrs and lambdas at each one, and matched the resolution
+  again to dispatch. For a subr of at most eight fixed arguments the
+  frame is recorded, the arguments counted and checked against both
+  bounds, the subr's maximum positions evaluated as eval_sub does (Fcar
+  before and Fcdr after each, so a position past the list's end
+  evaluates nil and one the list grew to is evaluated: a first version
+  that evaluated only the counted arguments was wrong, GNU answers "b"
+  for a `substring` form grown that way, and
+  `eval_call_fixed_subrs_read_cdr_after_evaluation_and_fill_optional_positions`
+  pins it), and the subr called through its facts; for a special form
+  with a native body the frame is recorded, the minimum checked and the
+  body run. The choice reads the subr's raw MAX_ARGS word rather than
+  building a `NativeMaxArgs` from it (7 instructions a form: cons
+  allocation 5,909 → 5,792 an iteration). A list form of cons allocation
+  costs `eval_sub` about 233 instructions now against 302 (GNU's
+  `eval_sub` 173, with `list_length` 53 and its `Fassq` lexical lookups
+  apart). Measured and not kept: the same direct path for a head holding
+  a closure or a native function cost the subr loops about 17
+  instructions a form, inline or out of line (cons allocation 5,909 →
+  6,290 or 6,181 an iteration), and gained interpreted calls nothing
+  (3,607 → 3,623 or 3,627). Cons allocation 1.322 → 1.111, list
+  traversal 1.283 → 1.122, interpreted dynamic 1.289 → 1.161, sort 1.291
+  → 1.169, lexical 1.174 → 1.071, interpreted-to-native 1.403 → 1.325,
+  bindat 1.126 → 1.050, native-to-bytecode 1.425 → 1.362, interpreted
+  calls 1.136 → 1.073, native-to-interpreted 1.254 → 1.201, undo 1.646 →
+  1.622; the rest within 0.005.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -974,34 +1007,41 @@ word compare; the 654 and the lightweight group passed on the dispatch
 round's own build (Rust 1.97.0) too. On 1.97.1 the changed continuation
 test passed 40 of 40 runs of the lightweight group, where the old one
 failed about one run in six. Clippy `-D warnings` and rustfmt pass under
-1.99.1.
+1.99.1. For eval_sub's direct path: 3,134 of the 3,138 unit tests pass,
+run in four parallel parts; the others are the as-root byte-compile and
+save-buffer tests and
+`file_writable_p_is_nil_for_missing_files_in_unwritable_directories`
+(root may write where the test expects no access), all three failing on
+the build before too, and
+`process_tls_state_survives_collection_before_and_after_async_handshake`,
+whose GNU run disagreed under that load and which passes alone, 3 of 3.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.65 |
-| upstream-sort (4 units) | 3.26 (at 1 unit) | 1.29 |
-| interpreted-calls | 2.10 | 1.14 |
-| interpreted-lexical | 2.04 | 1.17 |
-| interpreted-dynamic | 2.14 | 1.29 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.62 |
+| upstream-sort (4 units) | 3.26 (at 1 unit) | 1.17 |
+| interpreted-calls | 2.10 | 1.07 |
+| interpreted-lexical | 2.04 | 1.07 |
+| interpreted-dynamic | 2.14 | 1.16 |
 | mapcar | 2.95 | 1.32 |
 | bytecode-calls | 3.30 | 1.25 |
 | bytecode-to-native | — | 1.64 |
-| interpreted-to-native | — | 1.40 |
-| native-to-interpreted / -bytecode | — | 1.25 / 1.43 |
-| cons-allocation / list-traversal | 2.24 / — | 1.32 / 1.28 |
+| interpreted-to-native | — | 1.32 |
+| native-to-interpreted / -bytecode | — | 1.20 / 1.36 |
+| cons-allocation / list-traversal | 2.24 / — | 1.11 / 1.12 |
 | native-execution | — | 1.14 |
-| bindat | — | 1.13 |
+| bindat | — | 1.05 |
 | explicit-gc | — | 0.88 |
 
-The table is one full run of all sixteen on the final build of the Rust
-1.99.1 round, compiled by 1.99.1 (the rounds above it were measured on
-1.97.0). Undo read 1.67 to 1.70 across the allocation sweep's builds
-(the allocator's state), and a collection's stack scan or a hash table's
-growth falling in the difference moves the interpreted rows by about
-0.01.
+The table is one full run of all sixteen on the eval_sub round's final
+build, compiled by Rust 1.99.1 as the round before it was (the rounds
+above those were measured on 1.97.0). Undo read 1.67 to 1.70 across the
+allocation sweep's builds (the allocator's state), and a collection's
+stack scan or a hash table's growth falling in the difference moves the
+interpreted rows by about 0.01.
 Sort at one and two units read 1.84 before the port and 1.12 after it,
 but after it Emaxx's two collections fell at both sizes, out of the
 difference, while one of GNU's fell in it; at four and eight units it
@@ -1142,13 +1182,18 @@ lightweight group pass on 1.97.1). Frozen on `ef33383`: 7,928 of 7,928
 across 519 files, no unsuccessful execution, on its second attempt (run
 38995231316); the first matched 7,927, GNU's run of
 `eglot-test-rust-completion-exit-function` failing again after
-rust-analyzer's cargo watcher failed to start. Locally,
+rust-analyzer's cargo watcher failed to start. **On `d4f6b94`** (the
+first CI on Rust 1.99.1): full Rust gate passed (run 39003317809; 3,136
+tests in the counted groups, the two ignores, plus bins and
+integration), frozen 7,928 of 7,928 across 519 files, no unsuccessful
+execution, on its first attempt (run 39003319679). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
-as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
+as-root `byte_compile_file_reports_an_unwritable_target_like_gnu`,
 `save_buffer_skips_unmodified_and_unchanged_files` (root writes the
-read-only file instead of being asked), and
+read-only file instead of being asked) and
+`file_writable_p_is_nil_for_missing_files_in_unwritable_directories`, and
 `print_prunes_charset_properties_like_print_prune_string_charset`, where
 this container's GNU build itself disagrees with the expected text (under
 `default` it prints the Latin-1 string without its `charset` property);
@@ -1216,14 +1261,16 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   and the 48-byte `ByteCodeObject` copied into and out of it, the code
   string read again on each switch). GNU's frame lives in the byte-code
   stack and its running state in registers.
-- **Source interpreter** (lexical 1.21, calls 1.16, sort 1.36): an
-  iteration of interpreted calls is 3,854 instructions against GNU's
-  3,315 (4,022 before the shell's parked test became an assertion and the
-  parameters moved beside the frames; 3,748 after the call trims). What
-  is left is spread: the frame record (about 22 a form),
-  `resolve_symbol_call` and the argument count (about 27 and 25 a form,
-  close to their minimum), the subr dispatch through `call_with_facts`,
-  and an interpreted call's `funcall_interpreted_lambda` (300), and
+- **Source interpreter** (lexical 1.07, calls 1.07, cons allocation
+  1.11, sort 1.17): a list form whose head holds a C primitive costs
+  `eval_sub` about 233 instructions (cons allocation; GNU's 173 with
+  `list_length`'s 53 apart): the entry tests, `maybe_gc` and the depth
+  (about 30), the head's cell and the subr's arity (about 20), the frame
+  record, its argument update and its pop (about 35), the argument
+  count, and for each argument its inline evaluation. An interpreted
+  call (interpreted calls, 3,561 instructions an iteration against GNU's
+  3,315) still goes through `eval_call`'s resolution and its
+  `funcall_interpreted_lambda` (300), and
   `maybe_gc` at each list form (two thread-local reads and the owning
   runtime's trigger, where GNU tests one global counter). Sort is mostly this path too
   (`eval_sub` is 44% of it since the port, 118 million instructions a
@@ -1288,9 +1335,9 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now undo 1.65, bytecode-to-native 1.64, native-to-bytecode
-   1.43, interpreted-to-native 1.40, cons allocation 1.32, mapcar 1.32,
-   sort 1.29, interpreted dynamic 1.29). The remaining costs are listed
+   above; worst now bytecode-to-native 1.64, undo 1.62, native-to-bytecode
+   1.36, interpreted-to-native 1.32, mapcar 1.32, bytecode calls 1.25,
+   native-to-interpreted 1.20, sort 1.17). The remaining costs are listed
    under "Where the remaining gap is": the native call layer needs
    structural work (a lighter native boundary: inlining `invoke_fixed` into
    `call_plain` measured 20 instructions a call worse), and the byte-code
@@ -1303,16 +1350,12 @@ and failures are still recorded.
    into a library call (see the Rust 1.99.1 bullet): look for `memcmp` and
    `bcmp` in the profiles after one. The interpreter and funcall paths are
    spread over many small steps, each worth about 1%. The source
-   interpreter is now
-   the largest shared cost: `eval_sub` is 64 to 71% of interpreted
-   dynamic, cons allocation and the native-to-* loops and 44% of sort, at
-   330 to 400 instructions a list form against GNU's 110. Each step costs
-   two to three times GNU's (the 64-byte frame record and its argument
-   update, the resolution enum, the descriptor read twice, the generic
-   argument loop, the arity check repeated in `call_with_facts`), so the
-   next gain there is a restructured subr-call path in `eval_call`
-   (resolve, count, check and call with the descriptor read once and the
-   frame written once) and a smaller frame record, not more 1% trims.
+   interpreter's subr calls take their own path now (about 233 instructions
+   a list form against GNU's 173 plus `list_length`'s 53); what is left
+   there is the frame record (about 35 a form against record_in_backtrace's
+   15 or so), the entry tests and `maybe_gc`, and an interpreted call's way
+   through `eval_call` (a direct path for it measured worse, see the
+   eval_sub bullet).
    Changes to `eval_sub`'s inlined body move its register allocation;
    measure interpreted calls and lexical with each. Micro-changes measure within
    about 1% of noise: keep only what moves the counts, record the rest.
