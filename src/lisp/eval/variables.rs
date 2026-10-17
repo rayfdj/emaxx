@@ -2952,8 +2952,18 @@ impl Interpreter {
     /// list in order (none for a circular or dotted list), read in place:
     /// a signal's handler walk asks for them each time.
     pub(crate) fn error_condition_names(&mut self, condition: &str) -> ConditionNames {
+        match SymbolName::find(condition) {
+            Some(symbol) => self.error_condition_names_of(&symbol),
+            None => ConditionNames::new(),
+        }
+    }
+
+    /// CONDITION's `error-conditions' (Fget of the property's Qsymbol).
+    pub(crate) fn error_condition_names_of(&mut self, condition: &SymbolName) -> ConditionNames {
         let mut names = ConditionNames::new();
-        let Some(value) = self.get_symbol_property(condition, "error-conditions") else {
+        let Some(value) = cached_symbol!("error-conditions")
+            .with(|property| self.get_symbol_property_of(condition, property))
+        else {
             return names;
         };
         let mut push = |item: Value| match item.kind() {
@@ -3067,12 +3077,13 @@ impl Interpreter {
         {
             return false;
         }
-        let error_type = error.condition_type();
-        let condition_list = self.error_condition_names(&error_type);
+        let error_symbol = error.condition_symbol();
+        let error_type = error_symbol.as_str();
+        let condition_list = self.error_condition_names_of(&error_symbol);
         self.active_handlers.iter().any(|handler| match handler {
             ActiveHandler::Case(heads) => heads
                 .iter()
-                .any(|head| Self::clause_head_matches(head, &error_type, &condition_list)),
+                .any(|head| Self::clause_head_matches(head, error_type, &condition_list)),
             ActiveHandler::Module | ActiveHandler::Bind(..) => false,
         })
     }
@@ -3111,13 +3122,42 @@ impl Interpreter {
         {
             return Err(error);
         }
+        let error_symbol = error.condition_symbol();
+        let error_type = error_symbol.as_str();
+        let condition_list = self.error_condition_names_of(&error_symbol);
+        // The search below up to the first handler it would call, in place:
+        // most signals meet their `condition-case' first, and then neither
+        // the stack's copy nor the handlers' argument is made.
+        let mut innermost = None;
+        for (index, entry) in self.active_handlers.iter().enumerate().rev() {
+            match entry {
+                ActiveHandler::Module => break,
+                ActiveHandler::Case(heads) => {
+                    if heads
+                        .iter()
+                        .any(|head| Self::clause_head_matches(head, error_type, &condition_list))
+                    {
+                        break;
+                    }
+                }
+                ActiveHandler::Bind(conditions, _) => {
+                    if conditions.iter().any(|condition| {
+                        Self::condition_symbol_matches(condition, error_type, &condition_list)
+                    }) {
+                        innermost = Some(index);
+                        break;
+                    }
+                }
+            }
+        }
+        let Some(innermost) = innermost else {
+            return Err(error);
+        };
         let error_value = error_condition_value(&error);
-        let error_type = error.condition_type();
-        let condition_list = self.error_condition_names(&error_type);
         let mut handled = false;
         self.handler_dispatch_depth += 1;
         let snapshot = self.active_handlers.clone();
-        for (index, entry) in snapshot.iter().enumerate().rev() {
+        for (index, entry) in snapshot[..=innermost].iter().enumerate().rev() {
             match entry {
                 ActiveHandler::Module => break,
                 // A matching `condition-case' between the signal point and
@@ -3126,14 +3166,14 @@ impl Interpreter {
                 ActiveHandler::Case(heads) => {
                     if heads
                         .iter()
-                        .any(|head| Self::clause_head_matches(head, &error_type, &condition_list))
+                        .any(|head| Self::clause_head_matches(head, error_type, &condition_list))
                     {
                         break;
                     }
                 }
                 ActiveHandler::Bind(conditions, handler) => {
                     if !conditions.iter().any(|condition| {
-                        Self::condition_symbol_matches(condition, &error_type, &condition_list)
+                        Self::condition_symbol_matches(condition, error_type, &condition_list)
                     }) {
                         continue;
                     }

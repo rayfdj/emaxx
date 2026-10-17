@@ -97,6 +97,17 @@ const KEY_NAMES: &[&str] = &[
     "max-lisp-eval-depth",
     "debug-on-next-call",
     "symbols-with-pos-enabled",
+    "error-conditions",
+    "error",
+    "wrong-type-argument",
+    "void-variable",
+    "void-function",
+    "wrong-number-of-arguments",
+    "ert-test-failed",
+    "no-catch",
+    "ert-test-skipped",
+    "end-of-file",
+    "invalid-read-syntax",
 ];
 
 struct Symbols {

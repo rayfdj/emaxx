@@ -1756,12 +1756,15 @@ impl NativeRuntime {
         let is_throw = matches!(error.kind(), LispErrorKind::Throw(_, _));
         let (condition, conditions) =
             if is_throw || matches!(error.kind(), LispErrorKind::Terminate(_)) {
-                (String::new(), crate::lisp::eval::ConditionNames::new())
+                (None, crate::lisp::eval::ConditionNames::new())
             } else {
-                let condition = error.condition_type();
-                let conditions = interpreter.error_condition_names(&condition);
-                (condition, conditions)
+                let condition = error.condition_symbol();
+                let conditions = interpreter.error_condition_names_of(&condition);
+                (Some(condition), conditions)
             };
+        let condition = condition
+            .as_ref()
+            .map_or("", |condition| condition.as_str());
         let handler_depth = self
             .calls
             .last()
@@ -1780,7 +1783,7 @@ impl NativeRuntime {
                     _ => false,
                 },
                 1 if !is_throw && !matches!(error.kind(), LispErrorKind::Terminate(_)) => {
-                    Interpreter::clause_head_matches(&handler.match_value, &condition, &conditions)
+                    Interpreter::clause_head_matches(&handler.match_value, condition, &conditions)
                 }
                 _ => false,
             })

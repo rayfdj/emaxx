@@ -2954,26 +2954,34 @@ pub enum LispErrorKind {
 
 impl LispErrorKind {
     pub fn condition_type(&self) -> String {
-        match self {
-            LispErrorKind::TypeError(_, _) => "wrong-type-argument".into(),
-            LispErrorKind::WrongTypeArgument(_, _) => "wrong-type-argument".into(),
-            LispErrorKind::Void(_) => "void-variable".into(),
-            LispErrorKind::VoidFunction(_) => "void-function".into(),
-            LispErrorKind::WrongNumberOfArgs(_, _) => "wrong-number-of-arguments".into(),
-            LispErrorKind::Signal(_) => "error".into(),
+        self.condition_symbol().as_str().to_owned()
+    }
+
+    /// The signaled condition: the car of a signal's data, or the symbol
+    /// the C core signals for the error (a Qsymbol, by its fixed slot).
+    pub fn condition_symbol(&self) -> SymbolName {
+        let key = match self {
+            LispErrorKind::TypeError(_, _) | LispErrorKind::WrongTypeArgument(_, _) => {
+                cached_symbol!("wrong-type-argument")
+            }
+            LispErrorKind::Void(_) => cached_symbol!("void-variable"),
+            LispErrorKind::VoidFunction(_) => cached_symbol!("void-function"),
+            LispErrorKind::WrongNumberOfArgs(_, _) => cached_symbol!("wrong-number-of-arguments"),
+            LispErrorKind::Signal(_) => cached_symbol!("error"),
             LispErrorKind::SignalValue(value) => match value.car_if_list().map(|v| v.kind()) {
-                Some(Kind::Symbol(symbol)) => symbol.as_str().to_owned(),
-                _ => "error".into(),
+                Some(Kind::Symbol(symbol)) => return symbol,
+                _ => cached_symbol!("error"),
             },
-            LispErrorKind::ErtTestFailed(_) => "ert-test-failed".into(),
-            LispErrorKind::Throw(_, _) => "no-catch".into(),
+            LispErrorKind::ErtTestFailed(_) => cached_symbol!("ert-test-failed"),
+            LispErrorKind::Throw(_, _) => cached_symbol!("no-catch"),
             LispErrorKind::Terminate(_) => {
                 unreachable!("process termination is non-catchable evaluator control flow")
             }
-            LispErrorKind::TestSkipped(_) => "ert-test-skipped".into(),
-            LispErrorKind::EndOfInput => "end-of-file".into(),
-            LispErrorKind::ReadError(_) => "invalid-read-syntax".into(),
-        }
+            LispErrorKind::TestSkipped(_) => cached_symbol!("ert-test-skipped"),
+            LispErrorKind::EndOfInput => cached_symbol!("end-of-file"),
+            LispErrorKind::ReadError(_) => cached_symbol!("invalid-read-syntax"),
+        };
+        key.with(|symbol| *symbol)
     }
 }
 
@@ -3098,6 +3106,10 @@ impl LispError {
 
     pub fn condition_type(&self) -> String {
         self.0.condition_type()
+    }
+
+    pub fn condition_symbol(&self) -> SymbolName {
+        self.0.condition_symbol()
     }
 
     pub fn TypeError(a0: String, a1: String) -> Self {

@@ -3897,11 +3897,11 @@ fn run_loop(
                             | (HandlerKind::ConditionCase(_), LispErrorKind::Terminate(_))
                             | (HandlerKind::Catch(_), _) => None,
                             (HandlerKind::ConditionCase(clause), kind) => {
-                                let condition = kind.condition_type();
-                                let condition_list = interp.error_condition_names(&condition);
+                                let condition = kind.condition_symbol();
+                                let condition_list = interp.error_condition_names_of(&condition);
                                 if Interpreter::clause_head_matches(
                                     clause,
-                                    &condition,
+                                    condition.as_str(),
                                     &condition_list,
                                 ) {
                                     Some(super::super::eval::error_condition_value(&error))

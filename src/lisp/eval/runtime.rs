@@ -362,13 +362,23 @@ impl Interpreter {
         self.inactive_buffers
             .push((id, crate::lisp::types::BufferRef::new(id, buffer)));
         self.buffer_list.push((id, name.to_string()));
+        // The two locals by their symbols (`set_buffer_local_value_symbol'),
+        // found through the address-keyed cache, not by hashing the names
+        // for each buffer.
+        let set_local = |this: &mut Self, name: &'static str, value: Value| {
+            if let Some(symbol) = SymbolName::interned_cached(name) {
+                this.set_buffer_local_value_symbol(id, &symbol, value);
+            } else {
+                this.set_buffer_local_value(id, name, value);
+            }
+        };
         if let Some(directory) = inherited_directory {
-            self.set_buffer_local_value(id, "default-directory", directory);
+            set_local(self, "default-directory", directory);
         }
         // GNU reset_buffer materializes buffer-read-only as a local nil in
         // every new buffer.  This keeps a process-wide dynamic binding in
         // the creating buffer from making a fresh temporary buffer read-only.
-        self.set_buffer_local_value(id, "buffer-read-only", Value::Nil);
+        set_local(self, "buffer-read-only", Value::Nil);
         (id, name.to_string())
     }
 
@@ -1096,9 +1106,25 @@ impl Interpreter {
         })
     }
 
+    /// Whether `window_configuration_snapshot_from_value' would find a
+    /// configuration in VALUE: a window-configuration record whose frame
+    /// slots (7 and 8) hold frames, the only parts it requires; the
+    /// window lists it copies are not built for the test.
     pub(crate) fn is_window_configuration_value(&self, value: &Value) -> bool {
-        self.window_configuration_snapshot_from_value(value)
-            .is_some()
+        let Kind::Record(id) = value.kind() else {
+            return false;
+        };
+        self.find_record(id)
+            .filter(|record| record.kind == RecordKind::WindowConfiguration)
+            .is_some_and(|record| {
+                let frame = |index: usize| {
+                    record
+                        .slots
+                        .get(index)
+                        .is_some_and(|slot| matches!(slot.kind(), Kind::Frame(_)))
+                };
+                frame(7) && frame(8)
+            })
     }
 
     pub(crate) fn window_configurations_equal(

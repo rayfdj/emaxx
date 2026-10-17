@@ -1196,7 +1196,14 @@ impl Interpreter {
             crate::lisp::primitives::WINDOW_OLD_POINT_SLOT,
             crate::lisp::primitives::WINDOW_POINT_SLOT,
         ];
-        for window_id in self.record_ids_by_type("window") {
+        // The ids in place, not a fresh vector: this runs on every
+        // insertion and deletion, and frames have few windows.
+        let windows: smallvec::SmallVec<[u64; 8]> = self
+            .record_ids_by_type_index
+            .get("window")
+            .map(|ids| ids.iter().copied().collect())
+            .unwrap_or_default();
+        for window_id in windows {
             let Some(record) = self.find_record_mut(window_id) else {
                 continue;
             };

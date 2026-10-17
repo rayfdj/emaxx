@@ -1237,6 +1237,39 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   runs byte code called from native code (`assoc-delete-all`'s TEST)
   whose own native calls return, signal to its `condition-case` and
   throw out of a native callee to its `catch`, against GNU.
+- **Undo: a signal's conditions by symbol, and three lookups on its
+  edits.**
+  - `LispErrorKind::condition_symbol`: the signaled condition is the car
+    of a signal's data or the symbol the C core signals, read from its
+    fixed slot (`cached_symbol!`, a Qsymbol), and
+    `error_condition_names_of` reads its `error-conditions` by the
+    property's symbol (`get_symbol_property_of`, eq as in Fget). Every
+    signal used to build the condition's name as a `String`, find its
+    symbol by hashing the name, and walk the plist comparing each key's
+    name. Every handler search takes it: the interpreter's
+    `condition-case`, the VM's and native code's handlers,
+    `capture_batch_error_backtrace`'s test and
+    `dispatch_handler_bindings`. `condition_type` is the symbol's name.
+  - `dispatch_handler_bindings` searches the handler stack in place up
+    to the first `handler-bind` handler it would call. Only then does it
+    copy the stack and build the handlers' argument. Most signals meet
+    their `condition-case` first.
+  - `is_window_configuration_value` tests the record kind and its two
+    frame slots, the only parts `window_configuration_snapshot_from_value`
+    requires, without building the snapshot's window lists (about 4,900
+    instructions a call, 4 a unit).
+  - `adjust_window_point_slots`, run on every insertion and deletion,
+    iterates the window ids from a `SmallVec`, not a fresh vector, and
+    `create_buffer` sets its two locals by symbol through the
+    address-keyed cache.
+
+  Undo 1,770,842 → 1,741,232 instructions a unit at twenty and forty
+  units (1.41 → 1.39 of GNU's). The window and buffer lookups account
+  for 13,400 and the signals for 16,200: `error_condition_names` went
+  from about 400 to 170 a call (59 calls a unit), and
+  `dispatch_handler_bindings` from 1,150 to 390. The remaining signal
+  cost is mostly Lisp: `error`'s `format-message` through `apply` (about
+  24,000 a call, two a unit, against GNU's 19,000).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1401,13 +1434,21 @@ GNU run had not yet read the distractor's output under that load; it
 passes alone, 3 of 3). The new test's program gives GNU's output on the
 release build too, and under callgrind it enters `call_native_nested`
 138 times and leaves it by the escape record 5 times.
+For the signals' conditions by symbol: 3,135 of the 3,142 with 2
+ignored, the as-root three and two load-sensitive tests failing
+(`subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`
+and `process_tls_state_survives_collection_before_and_after_async_handshake`,
+both passing alone), with clippy `-D warnings` and rustfmt clean. Its
+release build leaves bytecode calls (551.0 instructions an iteration),
+bytecode-to-native (491.5) and native-to-bytecode (4,751) where they
+were.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.41 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.39 |
 | upstream-sort (4 units) | 3.26 (at 1 unit) | 1.14 |
 | interpreted-calls | 2.10 | 1.06 |
 | interpreted-lexical | 2.04 | 1.05 |
@@ -1423,7 +1464,8 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | explicit-gc | — | 0.82 |
 
 The table is one full run of all sixteen on the native calls' build
-(mapcar's on the round before, 1.24 there), undo at twenty and forty
+(mapcar's on the round before, 1.24 there; undo's on the signals'
+round, 1.41 on the native calls' build), undo at twenty and forty
 units (1.45 at ten and twenty on the same build, the closure entry
 table's misses and `malloc_consolidate` in the difference), compiled by
 Rust 1.99.1 as the rounds since the Rust 1.99.1 bullet were (the rounds
@@ -1614,7 +1656,13 @@ Rust gate passed (run 39038064118; 3,139 tests), frozen 7,928 of 7,928
 across 519 files, no unsuccessful execution, on its first attempt (run
 39038065785). **On `d588d70`** (mapcar's list): full Rust gate passed
 (run 39044968844; 3,139 tests), frozen 7,928 of 7,928 across 519 files,
-no unsuccessful execution, on its first attempt (run 39044970894). Locally,
+no unsuccessful execution, on its first attempt (run 39044970894). **On
+`ccdf45e`** (native calls from the calling frame): full Rust gate passed
+(run 39055982318; 3,140 tests). Frozen matched 7,927 of 7,928 across 519
+files (run 39055984062). The one mismatch is GNU's
+`eglot-test-rust-completion-exit-function` failing in the oracle while
+Emaxx passed, the rust-analyzer timing recorded above; its failed job is
+being re-run once. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1782,9 +1830,15 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   GNU's 147 across Ffuncall, funcall_general and funcall_subr;
   `Value::cons` is 37 against `Fcons`' 27 (the per-cell serial, the
   allocated and mark bits, and a live count GNU does not keep).
-- Undo's remainder (1.47; about 1.84 million instructions a unit
+- Undo's remainder (1.39 on the signals' round, 1.74 million
+  instructions a unit; the figures below are from 1.47, 1.84 million
   against GNU's 1.25 million, on the small-block round's build) is
-  broad. Ops run in place: 622 a unit leave the verified loop through
+  broad. Native code's calls cost about twice GNU's for the same Lisp:
+  `cconv-make-interpreted-closure`, run for each interpreted closure,
+  takes 146,000 a unit against GNU's 67,000, made up of its `funcall`s
+  (101,000 against 48,000), `mapcar` (26,000 against 12,500), `delq`
+  (about 660 a call against 211) and `specbind` (793 a call against
+  300). Ops run in place: 622 a unit leave the verified loop through
   `op_in_place` and `exec_op` (Bvarref of a symbol that is not plain 92,
   Bvarbind 97 with its 144-byte record pushed by `memcpy`, Bunbind 91,
   and buffer primitives: `goto-char`, `point-min`, `point-max`,

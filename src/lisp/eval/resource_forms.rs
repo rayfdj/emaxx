@@ -207,18 +207,19 @@ impl Interpreter {
                 ) {
                     return Err(e);
                 }
-                let condition = e.condition_type();
+                let symbol = e.condition_symbol();
+                let condition = symbol.as_str();
                 // GNU matches a handler when it is `memq' in the signaled
                 // symbol's `error-conditions' (or is `t'); fall back to the
                 // legacy condition-or-error rule when no property is defined.
-                let condition_list = self.error_condition_names(&condition);
+                let condition_list = self.error_condition_names_of(&symbol);
                 // Try to find a matching handler
                 for handler in list_forms(&handlers) {
                     let parts = handler.to_vec()?;
                     if parts.is_empty() {
                         continue;
                     }
-                    if !Self::clause_head_matches(&parts[0], &condition, &condition_list) {
+                    if !Self::clause_head_matches(&parts[0], condition, &condition_list) {
                         continue;
                     }
                     self.clear_batch_error_backtrace();
