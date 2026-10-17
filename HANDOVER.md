@@ -1322,6 +1322,21 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
     unit in undo at 60 to 136 instructions each) needs the closure-entry
     path made insensitive to the allocator first: fewer values live
     across the frame record, or that record's push out of line.
+- **The evaluator's call into native code nested in the active call.**
+  `call_fixed_function`, which the evaluator's calls to native-compiled
+  functions take (`eval_call_compiled`, Ffuncall's subr path), sends a
+  callee of at most six arguments whose call nests in the active call of
+  its interpreter (`NestedCall`) to `invoke_nested_fixed`, as Bcall does:
+  the call frame pushed, the active call's record replaced, the frame
+  popped. The thread activation and the heap's depth, which the active
+  call holds, are left alone. The caller has made maybe_gc's test
+  (`eval_sub` at the form, Ffuncall before dispatch), so no collection
+  test is added. Interpreted-to-native 3,067 → 3,039 instructions an
+  iteration (1.29 → 1.27; wall time 0.1034 → 0.0992 s on the plain
+  release build, six rounds of five samples), native-to-interpreted
+  4,789 → 4,767 (1.16 → 1.15), native-to-bytecode 4,751 → 4,741, mapcar
+  28.58 → 28.47 million (1.229 → 1.225); bytecode calls, bytecode-to-native,
+  native execution and undo unchanged.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1496,7 +1511,11 @@ bytecode-to-native (491.5) and native-to-bytecode (4,751) where they
 were. For the change hooks: 256 of the 257 hook, change, local, undo,
 insert, deletion and overlay tests pass, with the as-root
 `save_buffer_skips_unmodified_and_unchanged_files` the one failure;
-clippy `-D warnings` and rustfmt are clean.
+clippy `-D warnings` and rustfmt are clean. For the nested evaluator
+call: 925 of the 928 native, byte-code, funcall, catch, throw,
+condition, handler, signal, escape, suspension, thread, unwind and
+nested-call tests pass, the as-root three failing; clippy and rustfmt
+clean.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
@@ -1508,11 +1527,11 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 | interpreted-calls | 2.10 | 1.06 |
 | interpreted-lexical | 2.04 | 1.05 |
 | interpreted-dynamic | 2.14 | 1.12 |
-| mapcar | 2.95 | 1.23 |
+| mapcar | 2.95 | 1.22 |
 | bytecode-calls | 3.30 | 1.17 |
 | bytecode-to-native | — | 1.27 |
-| interpreted-to-native | — | 1.29 |
-| native-to-interpreted / -bytecode | — | 1.18 / 1.27 |
+| interpreted-to-native | — | 1.27 |
+| native-to-interpreted / -bytecode | — | 1.15 / 1.26 |
 | cons-allocation / list-traversal | 2.24 / — | 1.09 / 1.10 |
 | native-execution | — | 1.13 |
 | bindat | — | 1.02 |
@@ -1520,7 +1539,9 @@ Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 The table is one full run of all sixteen on the native calls' build
 (mapcar's on the round before, 1.24 there; undo's on the signals'
-round, 1.41 on the native calls' build), undo at twenty and forty
+round, 1.41 on the native calls' build; mapcar, interpreted-to-native
+and native-to-interpreted/-bytecode on the nested evaluator call's
+round, 1.23, 1.29 and 1.16/1.27 on its base), undo at twenty and forty
 units (1.45 at ten and twenty on the same build, the closure entry
 table's misses and `malloc_consolidate` in the difference), compiled by
 Rust 1.99.1 as the rounds since the Rust 1.99.1 bullet were (the rounds
@@ -1719,8 +1740,10 @@ files (run 39055984062). The one mismatch is GNU's
 Emaxx passed, the rust-analyzer timing recorded above. Its failed job was
 re-run once (attempt 2) and matched 7,928 of 7,928, with no unsuccessful
 execution. **On `4e49cce`** (signals' conditions by symbol): full Rust
-gate passed (run 39061192531; 3,140 tests); frozen pending (run
-39061194462). Locally,
+gate passed (run 39061192531; 3,140 tests), frozen passed on its first
+attempt (run 39061194462). **On `a56f990`** (change hooks, slow-op
+trials recorded): full Rust gate passed (run 39066922265; 3,140 tests);
+frozen pending (run 39066924074). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1796,7 +1819,14 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   (1.47), cons allocation 1.30, native-to-interpreted 1.29, mapcar 1.19
   (1.26), bytecode calls 1.16, sort 1.16 (1.13), dynamic 1.09,
   native-execution 1.07 (1.19), list traversal 1.06, explicit-gc 1.05
-  (1.13), bindat 0.97, calls 0.79, lexical 0.78. Collections cost Emaxx more time than GNU at fewer
+  (1.13), bindat 0.97, calls 0.79, lexical 0.78. On `a56f990`'s plain
+  release build (not the profile-guided one), five rounds of five
+  samples, the minimum (median where it differs by more than 0.05): undo
+  1.50 (1.58), interpreted-to-native 1.31, explicit-gc 1.24 (1.14), cons
+  allocation 1.24 (1.19), bytecode-to-native 1.24, native-to-bytecode
+  1.22, native-to-interpreted 1.18, mapcar 1.16, sort 1.16 (1.21),
+  bytecode calls 1.10, dynamic 1.06, native execution 1.03, list
+  traversal 1.01, bindat 0.95, calls 0.79, lexical 0.78. Collections cost Emaxx more time than GNU at fewer
   instructions: 19 to 22 ms each in the workloads against GNU's 12 to 16,
   an otherwise empty one 15.0 ms against 9.8 (11.5 after the compaction
   change), though marking a long list costs less a cell (6.6 ns against

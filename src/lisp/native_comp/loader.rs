@@ -1086,8 +1086,27 @@ pub(crate) fn call_fixed_function(
         return None;
     }
     let target = native.target();
+    if target.is_null() {
+        return None;
+    }
+    // A call nested in the active call of this interpreter runs in that
+    // call's activation (`invoke_nested_fixed', as a Bcall's does): the
+    // thread is activated and the heap's depth counted already.  The
+    // caller made maybe_gc's test (eval_sub's, Ffuncall's).
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if maximum <= 6
+        && let Some(nested) = super::runtime::NestedCall::of(interpreter)
+    {
+        // SAFETY: the active call lends its runtime for this synchronous
+        // call, as `current_runtime' does; NESTED is its call, and TARGET
+        // takes at most six arguments, among them ARGUMENTS.
+        let runtime = unsafe { &mut *nested.runtime() };
+        return Some(unsafe {
+            runtime.invoke_nested_fixed(nested, interpreter, environment, target, arguments)
+        });
+    }
     let runtime = super::runtime::current_runtime();
-    if target.is_null() || runtime.is_null() {
+    if runtime.is_null() {
         return None;
     }
     // SAFETY: as `with_current_runtime's loan of the runtime, for this
