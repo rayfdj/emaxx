@@ -2090,7 +2090,7 @@ impl Interpreter {
                 binding_buffer_id: None,
                 keyboard_terminal_id: None,
                 previous: Some(previous),
-                previous_undo_state: Some(previous_undo_state),
+                previous_undo_state: Some(Box::new(previous_undo_state)),
                 let_default: false,
                 local_binding_killed: false,
             };
@@ -2265,17 +2265,15 @@ impl Interpreter {
             }
             match record.scope {
                 SpecialBindingScope::Global => {
-                    if let Some(undo_state) = record.previous_undo_state.take() {
+                    if let Some(mut undo_state) = record.previous_undo_state.take() {
                         // buffer-undo-list binds through the buffer's undo
                         // machinery rather than a value cell.
                         let buffer_id = self.current_buffer_id();
                         if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
                             let current = buffer.take_undo_state();
-                            buffer.restore_undo_state(undo_state);
-                            record.previous_undo_state = Some(current);
-                        } else {
-                            record.previous_undo_state = Some(undo_state);
+                            buffer.restore_undo_state(std::mem::replace(&mut *undo_state, current));
                         }
+                        record.previous_undo_state = Some(undo_state);
                         continue;
                     }
                     let current = self.global_value(&record.name);
@@ -2288,14 +2286,12 @@ impl Interpreter {
                     record.previous = current;
                 }
                 SpecialBindingScope::BufferLocal(buffer_id) => {
-                    if let Some(undo_state) = record.previous_undo_state.take() {
+                    if let Some(mut undo_state) = record.previous_undo_state.take() {
                         if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
                             let current = buffer.take_undo_state();
-                            buffer.restore_undo_state(undo_state);
-                            record.previous_undo_state = Some(current);
-                        } else {
-                            record.previous_undo_state = Some(undo_state);
+                            buffer.restore_undo_state(std::mem::replace(&mut *undo_state, current));
                         }
+                        record.previous_undo_state = Some(undo_state);
                         continue;
                     }
                     let current = self.buffer_local_value(buffer_id, &record.name);
@@ -2385,7 +2381,7 @@ impl Interpreter {
                 env,
             )?;
             if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
-                buffer.restore_undo_state(previous_undo_state);
+                buffer.restore_undo_state(*previous_undo_state);
             }
             return Ok(());
         }

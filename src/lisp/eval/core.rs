@@ -1631,6 +1631,14 @@ impl Interpreter {
         env: &mut Env,
         funcall: bool,
     ) -> Result<Value, LispError> {
+        // A closure, by the tag and the header (funcall_general's
+        // CLOSUREP): no symbol to strip, resolve or autoload.
+        if let Some(closure) = func.closure_ref() {
+            if closure.is_bytecode() {
+                return self.execute_bytecode_funcall_body(closure, args, env);
+            }
+            return self.funcall_interpreted_lambda(func, original_name, args, env);
+        }
         // eval.c/bytecode.c use XBARE_SYMBOL for a positioned callee while
         // the byte compiler's symbol-position mode is active.  This covers
         // explicit `funcall'/`apply' as well as ordinary source dispatch.
@@ -1678,6 +1686,12 @@ impl Interpreter {
             other => other.value(),
         };
         let original_name = original_name.or_else(|| owned_name.as_ref().map(CallName::Symbol));
+        // A symbol's interpreted closure, as one called directly above.
+        if let Some(closure) = func.closure_ref()
+            && !closure.is_bytecode()
+        {
+            return self.funcall_interpreted_lambda(func, original_name, args, env);
+        }
         let func = match func.kind() {
             Kind::Cons(_) => {
                 if let Some((file, _, _)) = crate::lisp::primitives::autoload_parts(&func) {
@@ -1777,13 +1791,15 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        let (mut parameters, mut lexical_environment) = match function.kind() {
-            Kind::Closure(lambda) => (lambda.parameters(), lambda.environment_value()),
-            Kind::Cons(cell) => match cell.cdr.get().kind() {
-                Kind::Cons(tail) => (tail.car.get(), Value::Nil),
-                _ => return self.settle_frame_result(Err(invalid_function(function)), env),
+        let (mut parameters, mut lexical_environment) = match function.closure_ref() {
+            Some(lambda) => (lambda.parameters(), lambda.environment_value()),
+            None => match function.cons_ref().map(|cell| cell.cdr.get().cons_ref()) {
+                Some(Some(tail)) => (tail.car.get(), Value::Nil),
+                Some(None) => {
+                    return self.settle_frame_result(Err(invalid_function(function)), env);
+                }
+                None => unreachable!("an interpreted lambda was selected"),
             },
-            _ => unreachable!("an interpreted lambda was selected"),
         };
         let lexical = !lexical_environment.is_nil();
         let override_capture = self.lambda_capture_override() != Some(lexical);

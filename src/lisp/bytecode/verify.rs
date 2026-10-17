@@ -185,7 +185,7 @@ struct ClosureEntry {
     program: MaybeUninit<ByteCodeObject>,
 }
 
-const CLOSURE_SLOTS: usize = 64;
+const CLOSURE_SLOTS: usize = 256;
 
 const EMPTY_ENTRY: ClosureEntry = ClosureEntry {
     identity: 0,

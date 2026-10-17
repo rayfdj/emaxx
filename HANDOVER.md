@@ -1093,7 +1093,36 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   execution, which runs neither path, read 1.03 and 1.07). Bytecode
   calls lost 18% of its time for 4% of its instructions: look for such
   copies (an aggregate built on the stack, then moved with wider or
-  offset loads) on the other hot paths.
+  offset loads) on the other hot paths. A scan of the eight main
+  workloads' hot code for loads that span younger narrower stores (each
+  function's instructions in address order, a store's slot retired when
+  its base register is written) found none left that runs more than once
+  an iteration, the largest in undo the copy of `run_verified`'s exit in
+  `run_entered` (119 a unit).
+- **Four smaller cuts on the callback paths and undo.**
+  `call_function_value_inner` classified an interpreted closure (itself,
+  or a symbol's function) with `kind()` four times before
+  `funcall_interpreted_lambda`; a closure now goes there by its tag and
+  header, once (native-to-interpreted's callback: 157 → 129 instructions
+  in that function). A native `catch` reused a spare handler record and
+  zeroed all 304 bytes of it (`memset`); generated code reads only `next`
+  and `val`, both set on each push, and its setjmp fills the jump buffer,
+  as `push_handler_nosignal` reuses `nextfree` without clearing it. The
+  direct-mapped closure entry table had 64 slots, and undo's byte-code
+  functions missed it 185 times a unit (conflicts; a miss decodes the
+  closure and looks its verification up, about 130 instructions); with
+  256 (22 KB a thread, on the heap) 21 times. A dynamic binding's record
+  (`SpecialBindingRestore`) held a buffer's whole undo state inline, for
+  a binding of `buffer-undo-list`: 144 bytes, moved by `memcpy` into the
+  unwind list and out again on every binding; that state is boxed now.
+  Undo 1,806,000 → 1,786,000 instructions a unit (at 20 and 40 units: the
+  10 and 20 pair read lower, a collector function negative in it),
+  native-to-interpreted 4,923 → 4,864 an iteration, native-to-bytecode
+  4,818 → 4,788, interpreted dynamic and calls 0.6% fewer. Wall time,
+  the same way against the build before: native-to-interpreted 0.971 of
+  it, native-to-bytecode 0.958, undo 0.980, the rest 0.93 to 1.03, the
+  host's noise (bytecode-to-native and interpreted-to-native read 0.93
+  and 0.94 with no change on their paths or in their counts).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1227,31 +1256,38 @@ as-root three and the load-sensitive TLS test failing (it passes alone,
 `native_vector_and_closure_census_matches_gnu_word_layout` and
 `native_pseudovector_census_matches_gnu_word_layout` (the cache in TLS,
 above), which pass on the final build and passed on the one before.
+For the four smaller cuts: 3,134 of the 3,141 with 2 ignored, the as-root
+three failing and the two load-sensitive tests
+(`subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`
+and `process_tls_state_survives_collection_before_and_after_async_handshake`)
+failing in that load and passing alone, 3 of 3.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.44 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.43 |
 | upstream-sort (4 units) | 3.26 (at 1 unit) | 1.14 |
 | interpreted-calls | 2.10 | 1.06 |
 | interpreted-lexical | 2.04 | 1.05 |
 | interpreted-dynamic | 2.14 | 1.13 |
-| mapcar | 2.95 | 1.30 |
-| bytecode-calls | 3.30 | 1.19 |
-| bytecode-to-native | — | 1.59 |
-| interpreted-to-native | — | 1.30 |
-| native-to-interpreted / -bytecode | — | 1.19 / 1.28 |
+| mapcar | 2.95 | 1.29 |
+| bytecode-calls | 3.30 | 1.20 |
+| bytecode-to-native | — | 1.60 |
+| interpreted-to-native | — | 1.31 |
+| native-to-interpreted / -bytecode | — | 1.18 / 1.28 |
 | cons-allocation / list-traversal | 2.24 / — | 1.09 / 1.10 |
 | native-execution | — | 1.14 |
-| bindat | — | 1.02 |
+| bindat | — | 1.03 |
 | explicit-gc | — | 0.82 |
 
-The table is one full run of all sixteen on the byte-code entry round's
+The table is one full run of all sixteen on the four smaller cuts'
 build, compiled by Rust 1.99.1 as the rounds since the Rust 1.99.1
-bullet were (the rounds above those were measured on 1.97.0); mapcar
-read 1.29 on the round before. Undo read 1.47 to 1.49 and
+bullet were (the rounds above those were measured on 1.97.0); on the
+byte-code entry round's build bytecode calls read 1.19,
+bytecode-to-native 1.59, interpreted-to-native 1.30 and bindat 1.02,
+and mapcar 1.30 there and 1.29 on the round before. Undo read 1.47 to 1.49 and
 bindat 1.02 to 1.05 on the last three builds (the conservative scan's
 `mem_find` calls in a collection in the difference),
 native-to-interpreted 1.20 to 1.21 on one build. Undo read 1.67 to 1.70 across the
@@ -1425,7 +1461,10 @@ unsuccessful execution, on its first attempt (run 39020021023). **On
 first attempt (run 39022803610). **On `0c448c6`** (the buffer list):
 full Rust gate passed (run 39024108508; 3,139 tests), frozen 7,928 of
 7,928 across 519 files, no unsuccessful execution, on its first attempt
-(run 39024110358). Locally,
+(run 39024110358). **On `d9a3c9a`** (the byte-code entry and the two
+stores): full Rust gate passed (run 39032410374; 3,139 tests), frozen
+7,928 of 7,928 across 519 files, no unsuccessful execution, on its first
+attempt (run 39032411872). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1648,9 +1687,9 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 1.59, undo 1.44, interpreted-to-native
-   1.30, mapcar 1.30, native-to-bytecode 1.28, bytecode calls 1.19,
-   native-to-interpreted 1.19, sort 1.14, interpreted dynamic 1.13; by
+   above; worst now bytecode-to-native 1.60, undo 1.43, interpreted-to-native
+   1.31, mapcar 1.29, native-to-bytecode 1.28, bytecode calls 1.20,
+   native-to-interpreted 1.18, sort 1.14, interpreted dynamic 1.13; by
    wall time, see "Wall time" above, on the byte-code entry round's build:
    bytecode-to-native 1.59, undo 1.57, interpreted-to-native 1.35,
    native-to-bytecode 1.33, cons allocation 1.30 (an in-sample collection,

@@ -1485,7 +1485,10 @@ pub(crate) struct SpecialBindingRestore {
     binding_buffer_id: Option<u64>,
     keyboard_terminal_id: Option<u64>,
     previous: Option<Value>,
-    previous_undo_state: Option<crate::buffer::UndoState>,
+    /// Boxed: a binding of buffer-undo-list holds the buffer's whole undo
+    /// state, and every other binding's record is moved by `memcpy' at
+    /// its size.
+    previous_undo_state: Option<Box<crate::buffer::UndoState>>,
     /// eval.c's SPECPDL_LET_DEFAULT: the symbol was localized (or a
     /// per-buffer one) without a cell in the binding buffer, so the
     /// binding wrote the default and the unbind writes it back through

@@ -901,8 +901,11 @@ impl NativeHandler {
     }
 
     /// This record as `new' makes it, for its reuse.
+    /// A spare record reused, as push_handler_nosignal reuses
+    /// `nextfree': only the words read before they are written again are
+    /// set. Generated code reads `next' and `val' (the caller sets it),
+    /// and its setjmp fills the jump buffer before anything jumps there.
     fn reset(&mut self, next: *mut NativeHandler) {
-        self.bytes.fill(0);
         self.set_next(next);
     }
 
