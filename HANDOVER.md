@@ -969,6 +969,28 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   their noise (undo read 1.486, `mem_find` 340,000 instructions more in
   the conservative scan's collection, and bindat 1.045: it reads 1.022 to
   1.048 on one build).
+- **The byte-code dispatch copied into each arm.** The verified loop's
+  opcode match is one jump table at the loop's head (5 indirect jumps in
+  `run_verified`, against 125 in GNU's `exec_byte_code`, whose
+  computed-goto dispatch ends every op with its own). LLVM copies such a
+  dispatch into its predecessors (tail duplication), but since LLVM 18
+  only for a block with at most 16 predecessors and 16 successors; this
+  one has hundreds. `.cargo/config.toml` raises both limits
+  (`-tail-dup-pred-size`, `-tail-dup-succ-size`, 1024): six functions
+  change, `run_verified` to 144 indirect jumps (3.8 KB more code), the
+  others `direct_assq_family`, `values_equal_recursive`,
+  `find_operation_coding_system_value`, `values_eq_plain` and
+  `values_eql` by a few dozen bytes; instruction counts within 1% on all
+  sixteen. Wall time (five rounds of five samples, the minimum):
+  bytecode-to-native 1.95 → 1.68 of GNU's, consistently in three runs;
+  the rest moved within ±0.03 except explicit-gc 1.12 → 1.24 and
+  interpreted dynamic 1.23 → 1.16, though neither's code changed (the
+  collector, `eval_sub` and the native call path are the same bytes):
+  moving the code after the loop moves wall time by up to about 10% on
+  this host, so a wall-time change without a mechanism behind it is
+  layout. The options are LLVM's own (`cl::opt`), not rustc's; a
+  toolchain update that drops them fails the build at once, and an
+  explicit `RUSTFLAGS` replaces them.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1261,7 +1283,13 @@ tests), frozen 7,928 of 7,928, no unsuccessful execution, on its first
 attempt (run 39007444124). **On `c722291`** (the small-block lists): full
 Rust gate passed (run 39011047978; 3,139 tests in the counted groups,
 the two ignores, plus bins and integration), frozen 7,928 of 7,928, no
-unsuccessful execution, on its first attempt (run 39011049487). Locally,
+unsuccessful execution, on its first attempt (run 39011049487). **On
+`c65fc87`** (the exchange and the compaction): full Rust gate passed (run
+39015057290; 3,139 tests); frozen's first attempt matched 7,927 of 7,928
+(run 39015058719), the one mismatch GNU's again: the oracle's
+`eglot-test-rust-completion-exit-function` failed with a `jsonrpc-error`
+and Emaxx's passed, as on `ef33383`; its second attempt is the record
+for the next round. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1457,10 +1485,15 @@ and failures are still recorded.
    above; worst now bytecode-to-native 1.64, undo 1.47 to 1.49,
    native-to-bytecode 1.36, interpreted-to-native 1.32, mapcar 1.29,
    bytecode calls 1.25, native-to-interpreted 1.20, sort and interpreted
-   dynamic 1.15; by wall time, see "Wall time" above: bytecode-to-native
-   1.76, native-to-bytecode 1.50, undo 1.49, cons allocation and
-   bytecode calls 1.43, explicit-gc about 1.25 after the compaction
-   change). The remaining costs are listed
+   dynamic 1.15; by wall time, see "Wall time" above, five rounds of
+   five on the dispatch round's build: bytecode-to-native 1.68, undo
+   1.54, native-to-bytecode 1.47, bytecode calls 1.43, cons allocation
+   1.37, interpreted-to-native 1.35, mapcar 1.34, native-to-interpreted
+   1.28, explicit-gc 1.12 to 1.24, sort 1.19, dynamic 1.16; bindat,
+   lexical and calls below 1.0. Per iteration bytecode calls runs 65
+   conditional branches against GNU's 28 and bytecode-to-native 70
+   against 28 (callgrind `--branch-sim=yes`; indirect ones 17 against 17
+   since the dispatch copy): the call path's tests). The remaining costs are listed
    under "Where the remaining gap is": the native call layer needs
    structural work (a lighter native boundary: inlining `invoke_fixed` into
    `call_plain` measured 20 instructions a call worse), and the byte-code
