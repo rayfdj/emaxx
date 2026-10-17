@@ -27848,6 +27848,41 @@ fn bytecode_calls_native_functions_through_the_live_cell_like_funcall_subr() {
 }
 
 #[test]
+fn bytecode_calls_native_functions_nested_in_native_calls_like_funcall_subr() {
+    // A byte-code function that native code calls (assoc-delete-all's
+    // TEST) runs inside that native call, and its own calls of native
+    // functions take the nested call's path: their values, a signal
+    // caught by the caller's condition-case and a throw out of a native
+    // callee to the caller's catch stay GNU's.
+    // The results go to a special variable: byte-compile gives a
+    // compiled closure its own copy of a captured lexical one.
+    let program = r#"(progn
+   (require 'bytecomp)
+   (defvar zz-nested-native-results nil)
+   (setq zz-nested-native-results nil)
+   (let* ((byte-compile-warnings nil)
+          (inner (byte-compile (lambda (_a _b) (throw 'done 'thrown))))
+          (outer (byte-compile
+                  (lambda (a b)
+                    (push (list (ensure-list a)
+                                (condition-case e (assq-delete-all a b)
+                                  (error (list 'caught e)))
+                                (catch 'done (assoc-delete-all a (list (cons a 1)) inner))
+                                (assq-delete-all a (list (cons a 1) (cons b 2))))
+                          zz-nested-native-results)
+                    nil))))
+     (list (native-comp-function-p (symbol-function 'assoc-delete-all))
+           (native-comp-function-p (symbol-function 'assq-delete-all))
+           (assoc-delete-all 7 (list (cons 7 1) (cons 8 2)) outer)
+           (nreverse zz-nested-native-results))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t t ((7 . 1) (8 . 2)) (((7) (caught (wrong-type-argument listp 7)) thrown nil) ((8) (caught (wrong-type-argument listp 7)) thrown ((7 . 2)))))",
+        "bytecode calls into native functions nested in native calls",
+    );
+}
+
+#[test]
 fn funcall_reaches_subrs_and_counts_lists_like_funcall_subr_and_list_length() {
     // Ffuncall calls a symbol's subr directly (funcall_general's first
     // test), mapcar gathers into an array of the list's length, and

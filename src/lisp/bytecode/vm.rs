@@ -605,6 +605,64 @@ fn callee_function(func: Value) -> Value {
     }
 }
 
+/// `call_plain' of NATIVE, FUNC's function, a lexical native function of
+/// fixed arity whose arguments all travel in registers (at most six),
+/// when the call nests in the active call of this interpreter
+/// (`NestedCall'): the same tests, Ffuncall's depth and frame, and the
+/// call made by `invoke_nested_fixed' in this frame, without the
+/// general native entry's layers.  The answer is the call's value, which
+/// the caller puts in place of the function and its arguments, or its
+/// signal; None, with nothing changed but the stack's TOP, for
+/// `call_plain' to take.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[inline(never)]
+fn call_native_nested(
+    vm: &mut VmFrames<'_>,
+    top: usize,
+    argc: usize,
+    func: Value,
+    native: crate::lisp::types::NativeFunctionRef,
+) -> Option<Result<Value, LispError>> {
+    let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
+    state.bc_stack.top = top;
+    if vm.trace_errors {
+        return None;
+    }
+    // `call_fixed_function's tests, for at most six arguments.  Read
+    // unsigned, MANY and UNEVALLED (negative) exceed six, and a negative
+    // minimum, which no fixed arity has, admits no count: the general
+    // path takes both.
+    let maximum = usize::from(native.max_args_word() as u16);
+    let minimum = usize::from(native.min_args() as u16);
+    if maximum > 6 || argc > maximum || argc < minimum || native.is_dynamic() {
+        return None;
+    }
+    let target = native.target();
+    if target.is_null() || !state.plain_bcall_entry(func.symbol_cell()) {
+        return None;
+    }
+    let nested = crate::lisp::native_comp::NestedCall::of(vm.interp)?;
+    // SAFETY: the active call lends its runtime for this synchronous
+    // call, as `current_runtime' does.
+    let runtime = unsafe { &mut *nested.runtime() };
+    if !runtime.collection_cannot_be_due() {
+        return None;
+    }
+    let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
+    let args_start = state.bc_stack.len() - argc;
+    // SAFETY: as the Call arm's: the arguments stay on the caller's stack
+    // until the call returns, and verification found them there.
+    let call_args = unsafe { state.bc_stack.slice_from_unchecked(args_start, argc) };
+    let backtrace_depth = state.enter_plain_funcall(func, call_args);
+    // SAFETY: NESTED is the active call of this runtime and interpreter,
+    // and TARGET takes at most six arguments, among them CALL_ARGS.
+    let result =
+        unsafe { runtime.invoke_nested_fixed(nested, vm.interp, vm.env, target, call_args) };
+    let result = vm.interp.settle_frame_result(result, vm.env);
+    vm.interp.leave_plain_funcall(backtrace_depth);
+    Some(result)
+}
+
 /// Bcall into a native-compiled function or a subr when nothing else
 /// happens on the way in (`plain_bcall_callee'; maybe_gc would not
 /// collect; no error trace is asked for): Ffuncall's depth and frame
@@ -1602,16 +1660,15 @@ fn run_verified(
                             at = 0;
                             continue 'run;
                         }
-                    } else if function.is_vectorlike()
-                        && let Some(result) = call_plain(vm, top, argc, func)
-                    {
-                        match result {
-                            Ok((top, depth)) => {
-                                // The call ran in this frame, which goes on
-                                // after it: its code is still the bytes
-                                // verified unless the call stored into the
-                                // string, and verification found the call's
-                                // successor with the operands it left.
+                    } else if function.is_vectorlike() {
+                        // The call ran in this frame, which goes on after
+                        // it: its code is still the bytes verified unless
+                        // the call stored into the string, and verification
+                        // found the call's successor with the operands it
+                        // left.
+                        macro_rules! resume_after_call {
+                            ($top:expr, $depth:expr) => {{
+                                let top = $top;
                                 // SAFETY: as the outer loop's slice.
                                 let (bytes, current) = unsafe { vm.program.code.bytes_unguarded() };
                                 if current
@@ -1627,9 +1684,11 @@ fn run_verified(
                                     continue 'run;
                                 }
                                 *pc = next;
-                                break 'run FastExit::Switched(top, depth);
-                            }
-                            Err(error) => {
+                                break 'run FastExit::Switched(top, $depth);
+                            }};
+                        }
+                        macro_rules! raise_from_call {
+                            ($error:expr) => {{
                                 *pc = next;
                                 break 'run FastExit::Raised(
                                     super::Instr {
@@ -1637,8 +1696,33 @@ fn run_verified(
                                         len: $len,
                                         op: Op::Call(count),
                                     },
-                                    error,
+                                    $error,
                                 );
+                            }};
+                        }
+                        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                        if let Some(native) = function.native_function_ref()
+                            && let Some(result) = call_native_nested(vm, top, argc, func, native)
+                        {
+                            match result {
+                                Ok(value) => {
+                                    // The value replaces the function and its
+                                    // arguments, the stack's top left as
+                                    // `replace_call' leaves it.
+                                    let top = top - argc;
+                                    // SAFETY: the function's slot lies within
+                                    // the frame, below its arguments.
+                                    unsafe { *words.add(top - 1) = value };
+                                    vm.interp.bc_stack.top = top;
+                                    resume_after_call!(top, vm.interp.bc_stack.len())
+                                }
+                                Err(error) => raise_from_call!(error),
+                            }
+                        }
+                        if let Some(result) = call_plain(vm, top, argc, func) {
+                            match result {
+                                Ok((top, depth)) => resume_after_call!(top, depth),
+                                Err(error) => raise_from_call!(error),
                             }
                         }
                     }

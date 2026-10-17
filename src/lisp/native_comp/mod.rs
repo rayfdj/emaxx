@@ -23,6 +23,8 @@ mod runtime;
 mod state;
 
 pub(crate) use loader::{DumpedNativeFunction, RegistrationKind, UnitLibrary, open_unit};
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) use runtime::NestedCall;
 pub(crate) use runtime::with_thread_suspended;
 pub(crate) use runtime::{
     collection_cannot_be_due, decode_active_backtrace_arguments, garbage_collection_maybe_due,

@@ -17,12 +17,34 @@ fn eval_list_type_error(value: Value) -> LispError {
 // ── Dev-only flat profiler (EMAXX_PROFILE=<path>) ──
 // Per-name call counts, cumulative and self wall time; the report file is
 // rewritten every few thousand calls.  Zero cost unless the variable is
-// set (one cached Option check per call).
+// set (one byte tested per call, `profiling').
 
 fn profile_path() -> Option<&'static str> {
     static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     PATH.get_or_init(|| std::env::var("EMAXX_PROFILE").ok())
         .as_deref()
+}
+
+/// `profile_path().is_some()' as one byte once known (1 off, 2 on, 0
+/// before the first test): the calls that test it on every call read
+/// the byte, not the OnceLock's state and then its Option.
+static PROFILING: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+#[inline(always)]
+fn profiling() -> bool {
+    match PROFILING.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => false,
+        2 => true,
+        _ => profiling_first(),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn profiling_first() -> bool {
+    let on = profile_path().is_some();
+    PROFILING.store(1 + u8::from(on), std::sync::atomic::Ordering::Relaxed);
+    on
 }
 
 struct ProfileEntry {
@@ -1098,7 +1120,7 @@ impl Interpreter {
             (Some(name), FunctionResolution::Resolved(func))
                 if matches!(func.kind(), Kind::Closure(closure) if !closure.is_bytecode())
                     && self.pending_termination().is_none()
-                    && profile_path().is_none() =>
+                    && !profiling() =>
             {
                 self.set_backtrace_args(Value::symbol_of_cell(*name), args);
                 self.capture_current_backtrace_context(Some(name.as_str()), env, None);
@@ -1118,7 +1140,7 @@ impl Interpreter {
                         .closure_ref()
                         .is_some_and(|closure| closure.is_bytecode()))
                     && self.pending_termination().is_none()
-                    && profile_path().is_none() =>
+                    && !profiling() =>
             {
                 self.eval_call_compiled(depth, name, func, args, env)
             }
@@ -1359,7 +1381,7 @@ impl Interpreter {
         env: &mut Env,
         funcall: bool,
     ) -> Option<Result<Value, LispError>> {
-        if self.pending_termination().is_some() || profile_path().is_some() {
+        if self.pending_termination().is_some() || profiling() {
             return None;
         }
         // The callee and its function cell are tested by tag and header,
@@ -1593,7 +1615,7 @@ impl Interpreter {
     #[inline(always)]
     pub(crate) fn bcall_callee(&self, func: &Value) -> BcallCallee {
         // A termination maybe_gc left pending is funcall's to report.
-        if self.pending_termination().is_some() || profile_path().is_some() {
+        if self.pending_termination().is_some() || profiling() {
             return BcallCallee::Funcall;
         }
         let function = match func.symbol_cell() {
@@ -1968,7 +1990,7 @@ impl InterpreterState {
             && !self.globals.edebug_is_special()
             && i64::try_from(self.lisp_eval_depth + 1)
                 .is_ok_and(|depth| depth <= self.max_lisp_eval_depth)
-            && profile_path().is_none()
+            && !profiling()
             && name.is_none_or(|name| !is_backtrace_eval_name(name.as_str()))
     }
 }

@@ -1181,6 +1181,62 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   uninterned symbol kept as a static root, or an internal immediate such
   as the unbound marker, at every producer and consumer (about 120 sites
   with the tests); see the next steps.
+- **Native calls: the escape record in the calling frame, and a Bcall
+  into native code in one frame.** Three changes, on the paths every
+  locked workload takes (batch startup runs `--eval` and `-l` inside
+  startup.el's native `command-line-1`, in GNU as here, so their calls
+  nest in an active native call):
+  - `invoke_fixed_registers`, for a callee whose arguments all travel in
+    registers (at most six, the maximum, not the count): the trampoline's
+    escape record (callee-saved registers, stack pointer, resume address
+    and marker, as `emaxx_native_longjmp` reads them) is written by inline
+    assembly in the calling frame, which then calls the target with the
+    arguments in registers, zero past them. No Rust frame lies between
+    the generated code and the record, as with the trampoline; the
+    trampoline's own frame and the invocation record it loaded the
+    registers from are gone. A call nested in an active call of the same
+    runtime and interpreter (`is_nested_call`) changes only the active
+    call's record: every change of stack clears the active call
+    (`with_thread_suspended`), so that call is on this stack, holds the
+    execution lock and set the heap pointer and the stack's bottom.
+  - `call_native_nested`: a Bcall whose callee is such a native function
+    and whose call nests in the active call of its interpreter
+    (`NestedCall`) runs in one frame: `call_plain`'s and
+    `call_fixed_function`'s tests (the arity read unsigned, MANY and
+    UNEVALLED exceeding six), Ffuncall's depth and frame, the call frame
+    pushed without the thread activation and heap depth the active call
+    holds (`invoke_nested_fixed`), and the value written by the loop in
+    place of the function and its arguments (the stack's top as
+    `replace_call` leaves it). Anything else, or any test failing, takes
+    `call_plain` with nothing changed. The call frame is written in its
+    slot (`Vec::push` built it on the stack and copied it in by a call
+    that was not inlined).
+  - `profiling()`: `EMAXX_PROFILE`'s test on every call is one byte, not
+    the OnceLock's state and its Option.
+
+  Bytecode-to-native 620 → 493 instructions an iteration (1.60 → 1.27 of
+  GNU's; `run_verified` 259, `call_native_nested` 222), interpreted-to-native
+  3,121 → 3,069 (the native layer 297 → 272), native-to-bytecode 4,788 →
+  4,768, the interpreted loops' `eval_sub` a few instructions lower;
+  the other rows move within the allocator's noise (undo at twenty and
+  forty units: 1,775,165 before, 1,770,842 after). In wall time (release
+  builds, five rounds of five samples alternating, the minimum):
+  bytecode-to-native 0.170 → 0.132 s (GNU 0.111: 1.53 → 1.19),
+  native-to-interpreted 0.135 → 0.133, native-to-bytecode 0.131 → 0.126,
+  interpreted-to-native 0.1025 → 0.1027. With `native_comp::call_function`
+  always inline (in the evaluator's calls too) interpreted-to-native ran
+  20 instructions an iteration lower and native-to-interpreted 30, but
+  interpreted-to-native took 0.110 s, 8% more, in two runs; it stays
+  `#[inline]`. Fusing `call_plain`
+  with the general native entry instead measured worse (599: the
+  register allocator spilled 46 values and outlined `Vec::push`), as the
+  earlier inlining of `invoke_fixed` did, and so did skipping the thread
+  activation and heap depth in the general nested call (no gain, the
+  spills around the assembly call). A new test,
+  `bytecode_calls_native_functions_nested_in_native_calls_like_funcall_subr`,
+  runs byte code called from native code (`assoc-delete-all`'s TEST)
+  whose own native calls return, signal to its `condition-case` and
+  throw out of a native callee to its `catch`, against GNU.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1329,30 +1385,51 @@ recorded relative to the dumping executable's directory, and the copy of
 the same binary run from another directory (same fingerprint, so the
 same image name) resolved them to a missing path. Run the suite's
 binary from one place per fixture directory, or give each place its own.
+For the native calls: 3,134 of the 3,141 with 2 ignored on the final
+build before the new test (the as-root three and both load-sensitive
+tests failing), and on the build with `call_function` always inline
+3,135 of them and the new test, the as-root three and
+`process_tls_state_survives_collection_before_and_after_async_handshake`
+failing; on the final source 600 of 600 native, byte-code, funcall,
+catch, throw, condition, handler, signal, escape, suspension, thread and
+unwind tests pass with the new one, and clippy `-D warnings` and rustfmt
+pass; the
+round's earlier builds gave the same with the other load-sensitive tests
+(`subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`,
+and once `just_this_one_wait_still_notifies_an_exited_distractor`, whose
+GNU run had not yet read the distractor's output under that load; it
+passes alone, 3 of 3). The new test's program gives GNU's output on the
+release build too, and under callgrind it enters `call_native_nested`
+138 times and leaves it by the escape record 5 times.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.43 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.41 |
 | upstream-sort (4 units) | 3.26 (at 1 unit) | 1.14 |
 | interpreted-calls | 2.10 | 1.06 |
 | interpreted-lexical | 2.04 | 1.05 |
-| interpreted-dynamic | 2.14 | 1.13 |
-| mapcar | 2.95 | 1.24 |
-| bytecode-calls | 3.30 | 1.20 |
-| bytecode-to-native | — | 1.60 |
-| interpreted-to-native | — | 1.31 |
-| native-to-interpreted / -bytecode | — | 1.18 / 1.28 |
+| interpreted-dynamic | 2.14 | 1.12 |
+| mapcar | 2.95 | 1.23 |
+| bytecode-calls | 3.30 | 1.17 |
+| bytecode-to-native | — | 1.27 |
+| interpreted-to-native | — | 1.29 |
+| native-to-interpreted / -bytecode | — | 1.18 / 1.27 |
 | cons-allocation / list-traversal | 2.24 / — | 1.09 / 1.10 |
-| native-execution | — | 1.14 |
-| bindat | — | 1.03 |
+| native-execution | — | 1.13 |
+| bindat | — | 1.02 |
 | explicit-gc | — | 0.82 |
 
-The table is one full run of all sixteen on the four smaller cuts'
-build, compiled by Rust 1.99.1 as the rounds since the Rust 1.99.1
-bullet were (the rounds above those were measured on 1.97.0); on the
+The table is one full run of all sixteen on the native calls' build
+(mapcar's on the round before, 1.24 there), undo at twenty and forty
+units (1.45 at ten and twenty on the same build, the closure entry
+table's misses and `malloc_consolidate` in the difference), compiled by
+Rust 1.99.1 as the rounds since the Rust 1.99.1 bullet were (the rounds
+above those were measured on 1.97.0); interpreted dynamic read 1.13 on
+the round's build with `call_function` always inline, `eval_sub`
+unchanged (one `malloc_consolidate` falling in the difference); on the
 byte-code entry round's build bytecode calls read 1.19,
 bytecode-to-native 1.59, interpreted-to-native 1.30 and bindat 1.02,
 and mapcar 1.30 there and 1.29 on the round before. Undo read 1.47 to 1.49 and
@@ -1535,7 +1612,9 @@ stores): full Rust gate passed (run 39032410374; 3,139 tests), frozen
 attempt (run 39032411872). **On `d80e451`** (the four smaller cuts): full
 Rust gate passed (run 39038064118; 3,139 tests), frozen 7,928 of 7,928
 across 519 files, no unsuccessful execution, on its first attempt (run
-39038065785). Locally,
+39038065785). **On `d588d70`** (mapcar's list): full Rust gate passed
+(run 39044968844; 3,139 tests), frozen 7,928 of 7,928 across 519 files,
+no unsuccessful execution, on its first attempt (run 39044970894). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1651,19 +1730,21 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   and callgrind's last-level figures over-predict sequential traffic.
   Measure wall time with the counts for any change to collection,
   allocation or the native call path.
-- **Native calls** (bytecode-to-native 1.59): 617 instructions an
-  iteration against GNU's 388, the byte-code loop below GNU's (258
+- **Native calls** (bytecode-to-native 1.27): 493 instructions an
+  iteration against GNU's 388, the byte-code loop below GNU's (259
   against `exec_byte_code`'s 339 with its call setup). A Bcall into
-  native code costs 178 in the native layer (`invoke_fixed` 145: the
-  invocation record's setup, the call frame's push and pop, the
-  activation's thread-local swaps and the execution counter; the
-  trampoline with its escape record 33) and 189 in `call_plain` (the
-  callee's resolution and entry tests, the collection test, the arity
-  and runtime tests, the frame record and its pop, the result's stack
-  update), where GNU's `funcall_subr` spends about 40. What is left is
-  the bookkeeping that Rust frames between native code and its caller
-  require: the call-frame record, the thread-local swaps and the escape
-  record.
+  native code nested in an active call costs 222 in `call_native_nested`
+  where GNU's Bcall and `funcall_subr` spend about 100: the prologue and
+  epilogue (16), the entry and arity tests (about 25), the nested call's
+  and the collection's tests (13), Ffuncall's frame record, its pop and
+  the depth (about 35), the native call frame's push and pop with its
+  balance and pending-error tests (about 30), the handler lists' two
+  reconciliations (14), the escape record and the call (17), the
+  argument registers by the count (about 12) and the active call's
+  record (8). What is left beyond GNU's is the bookkeeping the Rust
+  callers of native code require (the call frame, the escape record,
+  the active call and the handler reconciliation), about 80, and the
+  arm's own tests in the loop.
 - **Byte-code calls** (bytecode calls 1.19): 558 instructions an
   iteration against GNU's 468 (586 on the dispatch copy's build), all in the verified loop
   now that the frame entry and the return are inline: its ops at GNU's
@@ -1758,9 +1839,10 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now bytecode-to-native 1.60, undo 1.43, interpreted-to-native
-   1.31, mapcar 1.24, native-to-bytecode 1.28, bytecode calls 1.20,
-   native-to-interpreted 1.18, sort 1.14, interpreted dynamic 1.13; by
+   above; worst now undo 1.41, interpreted-to-native 1.29,
+   bytecode-to-native 1.27, native-to-bytecode 1.27, mapcar 1.23,
+   native-to-interpreted 1.18, bytecode calls 1.17, sort 1.14,
+   interpreted dynamic 1.12; by
    wall time, with the profile-guided build (`tools/pgo-build.sh`, the
    PGO bullet above): bytecode-to-native 1.54, undo 1.35, mapcar 1.29,
    cons allocation 1.22 (an in-sample collection, see above),

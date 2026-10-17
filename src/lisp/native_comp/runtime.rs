@@ -417,6 +417,84 @@ unsafe extern "C" {
     fn emaxx_native_longjmp(buffer: *mut c_void) -> !;
 }
 
+/// The escape record of a call made by `call_fixed_registers': the
+/// trampoline's jump buffer, in the calling frame.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[repr(C, align(16))]
+struct EscapeBuffer(MaybeUninit<[u8; 72]>);
+
+/// The trampoline's call of a fixed-arity TARGET whose arguments all
+/// travel in registers (at most six), made from the calling frame itself:
+/// the same escape record (`emaxx_native_longjmp' restores the
+/// callee-saved registers and the stack pointer stored here and resumes
+/// at the second label) without the trampoline's frame and the
+/// invocation record it reads the registers from.  A register past
+/// ARGUMENTS holds 0, nil, as funcall_subr pads a missing optional.  The
+/// answer is the callee's word and whether it escaped.
+///
+/// # Safety
+///
+/// TARGET is a generated function taking at most six arguments, and
+/// BUFFER is the active call frame's escape buffer, live until this
+/// returns.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[inline(always)]
+unsafe fn call_fixed_registers(
+    target: *const c_void,
+    arguments: &[Value],
+    buffer: *mut EscapeBuffer,
+) -> (NativeWord, bool) {
+    let word = |index: usize| arguments.get(index).map_or(0, |value| value.word());
+    // By the count, so that each register is a load or a zero and not a
+    // bounds test.
+    let (a0, a1, a2, a3, a4, a5) = match *arguments {
+        [] => (0, 0, 0, 0, 0, 0),
+        [a] => (a.word(), 0, 0, 0, 0, 0),
+        [a, b] => (a.word(), b.word(), 0, 0, 0, 0),
+        [a, b, c] => (a.word(), b.word(), c.word(), 0, 0, 0),
+        _ => (word(0), word(1), word(2), word(3), word(4), word(5)),
+    };
+    let result: NativeWord;
+    let escaped: usize;
+    // SAFETY: the stack pointer is aligned for a call at an asm block
+    // without `nostack'.  On an ordinary return the callee preserved the
+    // callee-saved registers; on an escape `emaxx_native_longjmp' restores
+    // the ones stored here, so both ways out leave them as the block found
+    // them, and only the caller-saved registers (`clobber_abi') change.
+    unsafe {
+        std::arch::asm!(
+            "mov [r10], rbx",
+            "mov [r10 + 8], rbp",
+            "mov [r10 + 16], r12",
+            "mov [r10 + 24], r13",
+            "mov [r10 + 32], r14",
+            "mov [r10 + 40], r15",
+            "mov [r10 + 48], rsp",
+            "lea rax, [rip + 2f]",
+            "mov [r10 + 56], rax",
+            "mov dword ptr [r10 + 64], {marker}",
+            "call r11",
+            "xor ecx, ecx",
+            "jmp 3f",
+            "2:",
+            "mov ecx, 1",
+            "3:",
+            marker = const NATIVE_ESCAPE_MARKER,
+            in("r10") buffer,
+            in("r11") target,
+            in("rdi") a0,
+            in("rsi") a1,
+            in("rdx") a2,
+            inout("rcx") a3 => escaped,
+            in("r8") a4,
+            in("r9") a5,
+            lateout("rax") result,
+            clobber_abi("C"),
+        );
+    }
+    (result, escaped != 0)
+}
+
 // System V counterpart of alloc.c:flush_stack_call_func.  The generated
 // caller already preserves live caller-saved registers around a C call; this
 // spills every callee-saved register before the collector scans the stack.
@@ -613,6 +691,55 @@ pub(crate) fn with_active_call<R>(
         previous_stack_bottom,
     };
     body()
+}
+
+/// Whether a call by RUNTIME for INTERPRETER is nested in PREVIOUS, the
+/// active call, of the same runtime and interpreter.  Every change of
+/// stack clears the active call (`with_thread_suspended'), so that call
+/// is on this stack and returns after this one: it holds the execution
+/// lock, the heap pointer is its runtime's and the stack's bottom is set,
+/// and a nested call changes only the active call's record.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[inline(always)]
+fn is_nested_call(
+    previous: *mut ActiveCall,
+    runtime: *const NativeRuntime,
+    interpreter: *const Interpreter,
+) -> bool {
+    // SAFETY: a non-null active call is live for its synchronous extent,
+    // which contains this one.
+    !previous.is_null()
+        && unsafe {
+            std::ptr::eq((*previous).runtime, runtime)
+                && std::ptr::eq((*previous).interpreter, interpreter)
+        }
+}
+
+/// The active call a call by INTERPRETER would nest in
+/// (`is_nested_call'), to be restored after it.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[derive(Clone, Copy)]
+pub(crate) struct NestedCall(*mut ActiveCall);
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+impl NestedCall {
+    /// The active call when it is INTERPRETER's: None outside an active
+    /// call or in another interpreter's.
+    #[inline(always)]
+    pub(crate) fn of(interpreter: &Interpreter) -> Option<Self> {
+        let previous = ACTIVE_CALL.get();
+        // SAFETY: a non-null active call is live for its synchronous
+        // extent, which contains this one.
+        (!previous.is_null() && unsafe { std::ptr::eq((*previous).interpreter, interpreter) })
+            .then_some(Self(previous))
+    }
+
+    /// The runtime the active call lends, which a nested call runs on.
+    #[inline(always)]
+    pub(crate) fn runtime(self) -> *mut NativeRuntime {
+        // SAFETY: as `of's read.
+        unsafe { (*self.0).runtime }
+    }
 }
 
 #[inline(always)]
@@ -1085,10 +1212,18 @@ impl NativeRuntime {
         *self.thread_pointer = thread;
     }
 
+    #[inline(always)]
     pub(crate) fn begin_call(&mut self, escape_buffer: *mut c_void, interpreter: &Interpreter) {
         self.activate_thread();
         self.heap.begin_call();
-        self.calls.push(NativeCallFrame {
+        self.push_call_frame(escape_buffer, interpreter);
+    }
+
+    /// `begin_call's frame alone, for a call nested in an active call of
+    /// this runtime (`invoke_nested_fixed').
+    #[inline(always)]
+    fn push_call_frame(&mut self, escape_buffer: *mut c_void, interpreter: &Interpreter) {
+        let frame = NativeCallFrame {
             handler_depth: self.handlers.len(),
             unwind_depth: self.unwind.len(),
             ephemeral_root_depth: self.ephemeral_root_ranges.len(),
@@ -1096,7 +1231,24 @@ impl NativeRuntime {
             backtrace_depth: interpreter.backtrace_frames_len(),
             pending_error: None,
             escape_buffer,
-        });
+        };
+        // The frame written in its slot: `push' builds it on the stack and
+        // copies it in by a call that is not inlined.
+        if self.calls.len() == self.calls.capacity() {
+            self.reserve_call_frames();
+        }
+        let len = self.calls.len();
+        // SAFETY: the slot at LEN is within the capacity just ensured.
+        unsafe {
+            self.calls.as_mut_ptr().add(len).write(frame);
+            self.calls.set_len(len + 1);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn reserve_call_frames(&mut self) {
+        self.calls.reserve(1);
     }
 
     fn collect_native_heap_now(
@@ -1332,6 +1484,108 @@ impl NativeRuntime {
         self.run_invocation(interpreter, environment, invocation)
     }
 
+    /// `invoke_fixed' of a TARGET whose arguments all travel in registers
+    /// (at most six, its maximum among them): the call made from this
+    /// frame by `call_fixed_registers', its escape record here.  A call
+    /// nested in an active call of this runtime and interpreter, on its
+    /// stack, changes only the active call's record (`is_nested_call').
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[inline(never)]
+    pub(crate) fn invoke_fixed_registers(
+        &mut self,
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        target: *const c_void,
+        arguments: &[Value],
+    ) -> Result<Value, LispError> {
+        // As in `invoke'.
+        self.sync_handlers(interpreter)?;
+        let mut escape = EscapeBuffer(MaybeUninit::uninit());
+        let buffer = std::ptr::from_mut(&mut escape);
+        self.begin_call(buffer.cast(), interpreter);
+        let previous = ACTIVE_CALL.get();
+        let (word, escaped) = if is_nested_call(previous, self, interpreter) {
+            let mut active = ActiveCall {
+                interpreter,
+                environment,
+                runtime: self,
+            };
+            ACTIVE_CALL.set(&mut active);
+            // SAFETY: the caller's maximum is at most six, and the frame
+            // pushed above holds BUFFER until it is popped below.
+            let answer = unsafe { call_fixed_registers(target, arguments, buffer) };
+            ACTIVE_CALL.set(previous);
+            answer
+        } else {
+            // SAFETY: as in the nested case.
+            with_active_call(interpreter, environment, self, || unsafe {
+                call_fixed_registers(target, arguments, buffer)
+            })
+        };
+        if escaped {
+            return self.finish_escaped_call(interpreter);
+        }
+        // SAFETY: as `decode_result's: the returned word still belongs to
+        // the protected activation.
+        let result = unsafe { Value::from_word(word) };
+        self.finish_call_inline(interpreter)?;
+        Ok(result)
+    }
+
+    /// `invoke_fixed_registers' for a call NESTED in the active call of
+    /// this runtime (`NestedCall::runtime'), inline in its caller: the
+    /// frame pushed, the active call's record replaced while the callee
+    /// runs, the frame popped.  The thread is activated and the heap's
+    /// depth counted by the active call already.
+    ///
+    /// # Safety
+    ///
+    /// NESTED is the active call of this runtime and INTERPRETER, and
+    /// TARGET a generated function taking at most six arguments, among
+    /// them ARGUMENTS.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[inline(always)]
+    pub(crate) unsafe fn invoke_nested_fixed(
+        &mut self,
+        nested: NestedCall,
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        target: *const c_void,
+        arguments: &[Value],
+    ) -> Result<Value, LispError> {
+        // As in `invoke'.
+        self.sync_handlers(interpreter)?;
+        let mut escape = EscapeBuffer(MaybeUninit::uninit());
+        let buffer = std::ptr::from_mut(&mut escape);
+        self.push_call_frame(buffer.cast(), interpreter);
+        let mut active = ActiveCall {
+            interpreter,
+            environment,
+            runtime: self,
+        };
+        ACTIVE_CALL.set(&mut active);
+        // SAFETY: as the caller's; the frame pushed above holds BUFFER
+        // until it is popped below.
+        let (word, escaped) = unsafe { call_fixed_registers(target, arguments, buffer) };
+        ACTIVE_CALL.set(nested.0);
+        if escaped {
+            return self.finish_escaped_frame(interpreter, false);
+        }
+        // SAFETY: as `decode_result's: the returned word still belongs to
+        // the protected activation.
+        let result = unsafe { Value::from_word(word) };
+        self.finish_frame(interpreter, false)?;
+        Ok(result)
+    }
+
+    /// maybe_gc's tests on this runtime's counters (see
+    /// `collection_cannot_be_due').
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[inline(always)]
+    pub(crate) fn collection_cannot_be_due(&self) -> bool {
+        self.heap.collection_cannot_be_due()
+    }
+
     /// The rest of `invoke' once the call frame is pushed: the
     /// trampoline's call through INVOCATION and the frame's pop.
     #[inline(always)]
@@ -1370,7 +1624,19 @@ impl NativeRuntime {
     #[cold]
     #[inline(never)]
     fn finish_escaped_call(&mut self, interpreter: &mut Interpreter) -> Result<Value, LispError> {
-        match self.finish_call(interpreter) {
+        self.finish_escaped_frame(interpreter, true)
+    }
+
+    /// `finish_escaped_call', the heap's depth left alone unless
+    /// HEAP_CALL (`push_call_frame').
+    #[cold]
+    #[inline(never)]
+    fn finish_escaped_frame(
+        &mut self,
+        interpreter: &mut Interpreter,
+        heap_call: bool,
+    ) -> Result<Value, LispError> {
+        match self.finish_frame(interpreter, heap_call) {
             Err(error) => Err(error),
             Ok(()) => Err(super::lisp::native_ice(
                 "native function escaped without a pending Lisp error",
@@ -1386,6 +1652,17 @@ impl NativeRuntime {
     /// `finish_call', inline in an ordinary return.
     #[inline(always)]
     fn finish_call_inline(&mut self, interpreter: &mut Interpreter) -> Result<(), LispError> {
+        self.finish_frame(interpreter, true)
+    }
+
+    /// `finish_call', the heap's depth left alone unless HEAP_CALL
+    /// (`push_call_frame').
+    #[inline(always)]
+    fn finish_frame(
+        &mut self,
+        interpreter: &mut Interpreter,
+        heap_call: bool,
+    ) -> Result<(), LispError> {
         let sync_result = self.sync_handlers(interpreter);
         let Some(frame) = self.calls.pop() else {
             return Err(super::lisp::native_ice(
@@ -1394,7 +1671,9 @@ impl NativeRuntime {
         };
         self.ephemeral_root_ranges
             .truncate(frame.ephemeral_root_depth);
-        self.heap.end_call();
+        if heap_call {
+            self.heap.end_call();
+        }
         sync_result?;
         if self.handlers.len() != frame.handler_depth || self.unwind.len() != frame.unwind_depth {
             return Err(super::lisp::native_ice(
@@ -1410,7 +1689,7 @@ impl NativeRuntime {
 
     /// Reconcile the Rust handler registrations with the native handler
     /// list. They agree on every call that pushed and popped no handler.
-    #[inline]
+    #[inline(always)]
     fn sync_handlers(&mut self, interpreter: &mut Interpreter) -> Result<(), LispError> {
         let current = self.thread.handler();
         if self
@@ -4181,6 +4460,7 @@ impl NativeHeap {
         self.native_call_depth == 0
     }
 
+    #[inline(always)]
     pub(crate) fn begin_call(&mut self) {
         self.native_call_depth += 1;
     }
@@ -4291,6 +4571,7 @@ impl NativeHeap {
         crate::lisp::alloc::sweep_strings(epoch);
     }
 
+    #[inline(always)]
     fn end_call(&mut self) {
         assert!(
             self.native_call_depth > 0,

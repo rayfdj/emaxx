@@ -1092,7 +1092,12 @@ pub(crate) fn call_fixed_function(
     }
     // SAFETY: as `with_current_runtime's loan of the runtime, for this
     // synchronous call.
-    Some(unsafe { &mut *runtime }.invoke_fixed(interpreter, environment, target, arguments))
+    let runtime = unsafe { &mut *runtime };
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if maximum <= 6 {
+        return Some(runtime.invoke_fixed_registers(interpreter, environment, target, arguments));
+    }
+    Some(runtime.invoke_fixed(interpreter, environment, target, arguments))
 }
 
 pub(crate) fn call_active_function(
