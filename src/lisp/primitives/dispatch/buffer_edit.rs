@@ -3134,10 +3134,24 @@ pub(super) fn direct_forward_line(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    let n = if args.is_empty() || args[0].is_nil() {
-        BigInt::from(1u8)
-    } else {
-        integer_like_bigint(interp, &args[0])?
+    // A count that is nil or a fixnum moves by an isize, as
+    // `forward_line_bigint' does for any count in that range, without
+    // the bignums it builds for the count, its bounds and the shortage.
+    let step = match args.first().map(|value| value.kind()) {
+        None | Some(Kind::Nil) => Some(1),
+        Some(Kind::Integer(count)) => isize::try_from(count).ok(),
+        Some(_) => None,
+    };
+    if let Some(step) = step {
+        let shortage = interp.buffer.borrow_mut().forward_line(step);
+        return Ok(Value::Integer(shortage as i64));
+    }
+    // cmds.c:Fforward_line's CHECK_INTEGER: a bignum moves as far as the
+    // buffer allows; a marker or any other object signals.
+    let n: BigInt = match args[0].kind() {
+        Kind::Integer(count) => BigInt::from(count),
+        Kind::BigInteger(count) => count.into(),
+        _ => return Err(LispError::WrongTypeArgument("integerp".into(), args[0])),
     };
     Ok(normalize_bigint_value(forward_line_bigint(
         &mut interp.buffer.borrow_mut(),

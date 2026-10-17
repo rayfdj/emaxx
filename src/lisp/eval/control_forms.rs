@@ -34,20 +34,24 @@ impl Interpreter {
     }
 
     pub(super) fn sf_cond(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {
-        for clause in list_forms(args) {
-            let clause_items = clause.to_vec()?;
-            if clause_items.is_empty() {
-                continue;
-            }
-            let test = self.eval(&clause_items[0], env)?;
-            if test.is_truthy() {
-                if clause_items.len() == 1 {
-                    return Ok(test);
+        // eval.c:Fcond reads each clause in place: `Fcar' of it evaluated
+        // (a clause that is no list signals), and when that is true, its
+        // cdr, read after the test ran, run by Fprogn unless it is nil.
+        let mut value = Value::Nil;
+        let mut tail = *args;
+        while let Some(cell) = tail.cons_ref() {
+            let clause = cell.car.get();
+            value = self.eval(&clause.car()?, env)?;
+            if value.is_truthy() {
+                let body = list_cdr(&clause);
+                if !body.is_nil() {
+                    value = self.progn_list(&body, env)?;
                 }
-                return self.sf_progn(&clause_items[1..], env);
+                break;
             }
+            tail = cell.cdr.get();
         }
-        Ok(Value::Nil)
+        Ok(value)
     }
 
     pub(super) fn sf_and(&mut self, args: &Value, env: &mut Env) -> Result<Value, LispError> {

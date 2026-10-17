@@ -828,16 +828,20 @@ impl Interpreter {
         let Kind::Symbol(next) = binding.kind() else {
             return Ok(binding);
         };
+        // data.c:Ffset refuses a cycle, so GNU's indirect_function follows
+        // the chain with no test. A cycle made some other way still
+        // signals here: a second walker, one step for the first's two,
+        // meets it inside any cycle (no list of the symbols seen).
         let mut current = next;
-        let mut seen = vec![*symbol];
+        let mut tortoise = *symbol;
+        let mut tortoise_moves = false;
         loop {
-            if seen.contains(&current) {
+            if current == tortoise {
                 return Err(LispError::SignalValue(Value::list([
                     Value::Symbol("cyclic-function-indirection".into()),
                     Value::Symbol(*symbol),
                 ])));
             }
-            seen.push(current);
             let Some(binding) = self.raw_function_binding_symbol(&current, env) else {
                 return Err(LispError::VoidFunction(symbol.as_str().to_string()));
             };
@@ -845,6 +849,18 @@ impl Interpreter {
                 Kind::Symbol(next) => current = next,
                 other => return Ok(other.value()),
             }
+            if tortoise_moves {
+                // The chain went on past TORTOISE, so its binding is a
+                // symbol.
+                let next = self
+                    .raw_function_binding_symbol(&tortoise, env)
+                    .map(|binding| binding.kind());
+                debug_assert!(matches!(next, Some(Kind::Symbol(_))));
+                if let Some(Kind::Symbol(next)) = next {
+                    tortoise = next;
+                }
+            }
+            tortoise_moves = !tortoise_moves;
         }
     }
 

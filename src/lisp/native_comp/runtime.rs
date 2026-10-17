@@ -869,6 +869,12 @@ impl NativeHandler {
         self.set_word(HANDLER_NEXT_OFFSET, next as NativeWord);
     }
 
+    /// This record as `new' makes it, for its reuse.
+    fn reset(&mut self, next: *mut NativeHandler) {
+        self.bytes.fill(0);
+        self.set_next(next);
+    }
+
     fn set_value(&mut self, value: NativeWord) {
         self.set_word(HANDLER_VALUE_OFFSET, value);
     }
@@ -928,10 +934,19 @@ pub(crate) struct NativeRuntime {
     shared: Option<Box<NativeSharedState>>,
     thread: Box<NativeThreadState>,
     handlers: Vec<HandlerEntry>,
+    /// Records of popped handlers, for the next pushes (eval.c keeps its
+    /// popped handlers on `nextfree' the same way). Each stays boxed: a
+    /// record's address is what native code holds, and it moves between
+    /// this vector and a handler entry.
+    #[allow(clippy::vec_box)]
+    spare_handlers: Vec<Box<NativeHandler>>,
     unwind: Vec<UnwindEntry>,
     calls: Vec<NativeCallFrame>,
     ephemeral_root_ranges: Vec<NativeRootRange>,
 }
+
+/// The most popped handler records a runtime keeps.
+const SPARE_HANDLERS: usize = 16;
 
 /// One editor's native heap and loaded-code relocation storage. GNU's
 /// current-thread relocation points to a stable cell shared by all units;
@@ -1011,6 +1026,7 @@ impl Default for NativeRuntime {
             })),
             thread,
             handlers: Vec::new(),
+            spare_handlers: Vec::new(),
             unwind: Vec::new(),
             calls: Vec::new(),
             ephemeral_root_ranges: Vec::new(),
@@ -1390,6 +1406,9 @@ impl NativeRuntime {
                 HandlerRegistration::ConditionCase(start) => {
                     interpreter.pop_handler_bindings(start)
                 }
+            }
+            if self.spare_handlers.len() < SPARE_HANDLERS {
+                self.spare_handlers.push(entry.storage);
             }
         }
         if current.is_null()
@@ -3508,7 +3527,14 @@ extern "C" fn runtime_push_handler(match_value: NativeWord, kind: i32) -> *mut N
                     ));
                 }
             };
-            let mut storage = Box::new(NativeHandler::new(runtime.thread.handler()));
+            let next = runtime.thread.handler();
+            let mut storage = match runtime.spare_handlers.pop() {
+                Some(mut storage) => {
+                    storage.reset(next);
+                    storage
+                }
+                None => Box::new(NativeHandler::new(next)),
+            };
             storage.set_value(0);
             let address = (&mut *storage) as *mut NativeHandler;
             runtime.thread.set_handler(address);

@@ -773,6 +773,42 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   measured and not kept: on the byte-code path the environments differ,
   and the comparisons cost 9 instructions a call (interpreted-to-native
   gained 10).
+- Allocation and copying GNU does not do, found by listing each
+  workload's calls into the allocator, `memset` and `memcpy` a unit:
+  `function`'s test for a `(lambda ...)` form took `Value::car` of its
+  argument, which for a symbol (`#'f`) built a wrong-type-argument error
+  and dropped it, two allocations and two frees each time (its two tests
+  of the body's first form did the same for a docstring); it tests the
+  cons now. A native `catch` or `condition-case` boxed a new 304-byte
+  handler record and freed it when popped; the runtime keeps up to 16
+  popped records for the next pushes, as eval.c keeps popped handlers on
+  `nextfree`. `RootedVec`'s pop cleared the vacated slot with a `memset`
+  call, its size known only at run time; one slot is cleared by stores of
+  its constant size. A new cons block zeroed every cell's weak-reference
+  serial (about 11 KB); a serial is written when its cell is allocated
+  and read only while it is, so a new block clears only its epoch and
+  bitmaps, as Fcons clears only a new block's mark bits. `cond` copied
+  each clause into a vector before evaluating it; it reads the clause in
+  place, as Fcond does, which also reads the body after the test (a test
+  that changed its clause's cdr ran the old body) and runs a dotted body
+  as no form. `forward-line` did its arithmetic in bignums, four
+  allocations a call; a nil or fixnum count moves by an isize, and the
+  argument is checked as CHECK_INTEGER does (a float, symbol or marker
+  signaled `number-or-marker-p`, or moved). A function alias chain kept
+  the symbols it had seen in a vector to catch a cycle; GNU 30's `fset`
+  refuses cycles and `indirect_function` follows the chain with no test,
+  and this one keeps a second walker at half speed instead. `ash`,
+  `logand`, `logior`, `logxor` and `lognot` computed in bignums; fixnums
+  are i64s now (the bitwise operations keep a fixnum's top bits equal; a
+  left shift that overflows takes the bignum path), and their arguments
+  are checked as data.c checks them (`logand`, `logior` and `logxor`
+  signaled `number-or-marker-p` for a float or for anything in first
+  position, and `lognot`, `ash` and `logcount` took markers). Tests pin
+  `cond`, `forward-line`, the bitwise boundaries and the argument errors
+  against GNU. Native-to-bytecode 1.572 → 1.433, native-to-interpreted
+  1.42 → 1.27, mapcar 1.353 → 1.324, sort 1.353 → 1.314, bindat 1.190
+  → 1.150, undo about 1.73 → 1.67 to 1.70 (the allocator's state),
+  interpreted calls 1.164 → 1.150, lexical 1.204 → 1.197.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -834,32 +870,43 @@ the final build with the new one. For the jump table, 653 of 653 VM,
 byte-code, native, funcall, catch, condition, unwind and handler tests;
 for the fixed-arity native calls, 540 of 541 native, funcall, thread,
 handler, condition, signal, escape, catch, throw, unwind and suspension
-tests (the other is the image round trip below).
+tests (the other is the image round trip below). For the allocation
+sweep: 711 of 712 native, catch, handler, condition, closure, lambda,
+function, documentation and unwind tests (the other is the image round
+trip), 641 of 641 collection, weak-reference, cons, root, census, `let`
+and environment tests, 759 of 759 `cond`, line, function, alias, closure, documentation and `eval_01` tests with the new ones, 126 of 126 numeric, integer, bignum and bindat tests on the final build, and scripts of `cond` forms
+(dotted, non-list and self-modifying clauses), `forward-line` counts and
+arguments, alias chains with a cycle, `function` forms with
+documentation and interactive specs, every `ash` shift of fixnum and
+bignum values and the bitwise operations' argument errors, identical to
+GNU's output.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
 
 | Case | Before | Now |
 | --- | --- | --- |
-| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.72 |
-| upstream-sort (4 units) | 3.26 (at 1 unit) | 1.36 |
-| interpreted-calls | 2.10 | 1.16 |
-| interpreted-lexical | 2.04 | 1.21 |
+| upstream-undo (10 units) | 5.88 (4.33 at 2 units: the log grew) | 1.67 |
+| upstream-sort (4 units) | 3.26 (at 1 unit) | 1.31 |
+| interpreted-calls | 2.10 | 1.15 |
+| interpreted-lexical | 2.04 | 1.20 |
 | interpreted-dynamic | 2.14 | 1.31 |
-| mapcar | 2.95 | 1.35 |
+| mapcar | 2.95 | 1.32 |
 | bytecode-calls | 3.30 | 1.81 |
 | bytecode-to-native | — | 1.86 |
 | interpreted-to-native | — | 1.43 |
-| native-to-interpreted / -bytecode | — | 1.42 / 1.60 |
-| cons-allocation / list-traversal | 2.24 / — | 1.36 / 1.31 |
+| native-to-interpreted / -bytecode | — | 1.27 / 1.43 |
+| cons-allocation / list-traversal | 2.24 / — | 1.35 / 1.31 |
 | native-execution | — | 1.17 |
-| bindat | — | 1.18 |
+| bindat | — | 1.15 |
 | explicit-gc | — | 0.89 |
 
-The table is one full run of all sixteen on `9eb7217`, with undo
-measured again after the small buffer texts, the byte-code calls after
-the jump table, bytecode-to-native and interpreted-to-native after the
-fixed-arity native calls, and sort at four and eight units.
+The table is one full run of all sixteen after the allocation sweep,
+before its bitwise fixnum paths (bindat measured again after them).
+Interpreted dynamic read 1.32 and interpreted-to-native 1.44 in that
+run, a collection's stack scan (17 instructions an iteration) and a hash
+table's growth (19) falling in the difference; undo read 1.67 to 1.70
+across the sweep's builds (the allocator's state).
 Sort at one and two units read 1.84 before the port and 1.12 after it,
 but after it Emaxx's two collections fell at both sizes, out of the
 difference, while one of GNU's fell in it; at four and eight units it
@@ -974,7 +1021,12 @@ Rust gate passed (run 38964025272; 3,131 tests in the counted groups,
 the two ignores, plus bins and integration). **On `0c6564e`** (the small
 buffer texts): full Rust gate passed (run 38970736660; 3,132 tests, the
 two ignores, plus bins and integration), frozen 7,928 of 7,928 across 519
-files, no unsuccessful execution (run 38970739812). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
+files, no unsuccessful execution (run 38970739812). **On `e50b127`** (the
+jump table) and **on `5dc69d1`** (the fixed-arity native calls): full
+Rust gate passed on each (runs 38975258598 and 38977491857; 3,132 tests,
+the two ignores, plus bins and integration), frozen 7,928 of 7,928 across
+519 files, no unsuccessful execution (runs 38975261428 and
+38977494311). Locally, `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
 as-root `byte_compile_file_reports_an_unwritable_target_like_gnu` and
@@ -1072,9 +1124,13 @@ this container's GNU build itself disagrees with the expected text (under
   GNU's 147 across Ffuncall, funcall_general and funcall_subr;
   `Value::cons` is 37 against `Fcons`' 27 (the per-cell serial, the
   allocated and mark bits, and a live count GNU does not keep).
-- Undo's remainder (1.72; about 2.15 million instructions a unit
-  against GNU's 1.25 million) is broad: allocation (230,000 to 290,000
-  a unit in malloc and free as the allocator's state varies; the window
+- Undo's remainder (1.67; about 2.09 million instructions a unit
+  against GNU's 1.25 million) is broad: allocation (about 3,000 calls
+  into the allocator, `memset` and `memcpy` a unit, 230,000 to 290,000
+  instructions in malloc and free as its state varies: vectors' growth
+  530 calls, string coding 390, special bindings' records copied by
+  `memcpy` 240 (a record is 136 bytes, past the inline copy), errors'
+  condition types 106; the window
   configuration snapshot copies its lists on each restore, about 19,000;
   `ert-set-test` grows a vector each run, about 15,000), the source interpreter (`eval_sub` 181,000
   against 90,000), ops run in place (`op_in_place` and `exec_op` about
@@ -1115,8 +1171,8 @@ and failures are still recorded.
    counter branch.
 2. **Performance, worst ratios first** (instruction ratios in the section
    above; worst now bytecode-to-native 1.86, bytecode calls 1.81, undo
-   1.72, native-to-bytecode 1.60, interpreted-to-native 1.43, native-to-
-   interpreted 1.42, sort 1.36). The remaining costs are listed under "Where the
+   1.67, native-to-bytecode 1.43, interpreted-to-native 1.43, cons
+   allocation 1.35, mapcar 1.32, sort 1.31). The remaining costs are listed under "Where the
    remaining gap is": the native call layer and the byte-code call and
    return need structural work (a lighter native boundary; byte-code
    frames kept in the byte-code stack, as GNU's are, instead of a

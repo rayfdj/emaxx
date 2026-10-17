@@ -366,7 +366,13 @@ define_dispatch!(
             )?),
             "ash" => {
                 need_args(name, args, 2)?;
-                let value = integer_like_bigint(interp, &args[0])?;
+                if let (Some(value), Some(shift)) = (args[0].fixnum(), args[1].fixnum())
+                    && let Some(shifted) = fixnum_ash(value, shift)
+                {
+                    return Ok(normalize_integer_value(shifted));
+                }
+                let value = integer_operand(&args[0])?;
+                integer_operand(&args[1])?;
                 // data.c Fash with a bignum COUNT: 0 stays 0, a negative
                 // count shifts everything else to -1 or 0 by its sign, and a
                 // positive one overflows.  (A fixnum count follows below;
@@ -387,7 +393,7 @@ define_dispatch!(
                         "overflow-error",
                     )])));
                 }
-                let shift = integer_like_i64(interp, &args[1])?;
+                let shift = args[1].fixnum().expect("a fixnum count, checked above");
                 let shifted = if shift >= 0 {
                     value << shift as usize
                 } else {
@@ -397,7 +403,7 @@ define_dispatch!(
             }
             "logcount" => {
                 need_args(name, args, 1)?;
-                let mut value = integer_like_bigint(interp, &args[0])?;
+                let mut value = integer_operand(&args[0])?;
                 if value.sign() == Sign::Minus {
                     value = !value;
                 }
@@ -409,31 +415,41 @@ define_dispatch!(
                 Ok(Value::Integer(count))
             }
             "logand" => {
+                if let Some(result) = fold_fixnums(args, -1, |a, b| a & b) {
+                    return Ok(normalize_integer_value(result));
+                }
                 let mut result = BigInt::from(-1);
-                for arg in args {
-                    result &= integer_like_bigint(interp, arg)?;
+                for (index, arg) in args.iter().enumerate() {
+                    result &= logical_operand(interp, arg, index == 0)?;
                 }
                 Ok(normalize_bigint_value(result))
             }
             "logior" => {
+                if let Some(result) = fold_fixnums(args, 0, |a, b| a | b) {
+                    return Ok(normalize_integer_value(result));
+                }
                 let mut result = BigInt::from(0);
-                for arg in args {
-                    result |= integer_like_bigint(interp, arg)?;
+                for (index, arg) in args.iter().enumerate() {
+                    result |= logical_operand(interp, arg, index == 0)?;
                 }
                 Ok(normalize_bigint_value(result))
             }
             "logxor" => {
+                if let Some(result) = fold_fixnums(args, 0, |a, b| a ^ b) {
+                    return Ok(normalize_integer_value(result));
+                }
                 let mut result = BigInt::from(0);
-                for arg in args {
-                    result ^= integer_like_bigint(interp, arg)?;
+                for (index, arg) in args.iter().enumerate() {
+                    result ^= logical_operand(interp, arg, index == 0)?;
                 }
                 Ok(normalize_bigint_value(result))
             }
             "lognot" => {
                 need_args(name, args, 1)?;
-                Ok(normalize_bigint_value(!integer_like_bigint(
-                    interp, &args[0],
-                )?))
+                if let Some(value) = args[0].fixnum() {
+                    return Ok(normalize_integer_value(!value));
+                }
+                Ok(normalize_bigint_value(!integer_operand(&args[0])?))
             }
             "prefix-numeric-value" => {
                 need_args(name, args, 1)?;
@@ -988,4 +1004,67 @@ pub(super) fn direct_eq(
     need_args(name, args, 2)?;
     let equal = values_eq_in_env(interp, &args[0], &args[1], env);
     Ok(if equal { Value::T } else { Value::Nil })
+}
+
+/// ARGS folded from INIT by OP when every one is a fixnum, as data.c's
+/// arith_driver combines fixnums without bignums; None when any is not
+/// (a bignum or a marker takes the bignum path, which also signals).
+/// The bitwise operations keep a fixnum's three top bits equal, so the
+/// result is a fixnum again.
+fn fold_fixnums(args: &[Value], init: i64, op: impl Fn(i64, i64) -> i64) -> Option<i64> {
+    args.iter().try_fold(init, |result, arg| {
+        arg.fixnum().map(|value| op(result, value))
+    })
+}
+
+/// data.c:Fash of fixnum VALUE by fixnum SHIFT when the result is an
+/// i64: a right shift always is (arithmetic, to 0 or -1 past the width);
+/// a left one when it does not overflow. None sends a left shift that
+/// overflows to the bignum path.
+fn fixnum_ash(value: i64, shift: i64) -> Option<i64> {
+    if shift <= 0 {
+        return Some(value >> shift.unsigned_abs().min(63));
+    }
+    if value == 0 {
+        return Some(0);
+    }
+    if shift >= 63 {
+        return None;
+    }
+    let shifted = value.checked_shl(shift as u32)?;
+    (shifted >> shift == value).then_some(shifted)
+}
+
+/// data.c's CHECK_INTEGER for `lognot', `ash' and `logcount': a fixnum
+/// or a bignum, never a marker.
+fn integer_operand(value: &Value) -> Result<BigInt, LispError> {
+    match value.kind() {
+        Kind::Integer(n) => Ok(BigInt::from(n)),
+        Kind::BigInteger(n) => Ok(n.into()),
+        _ => Err(LispError::WrongTypeArgument("integerp".into(), *value)),
+    }
+}
+
+/// An argument of `logand', `logior' or `logxor': data.c takes the first
+/// with check_integer_coerce_marker, and arith_driver the others with
+/// check_number_coerce_marker before it refuses a float, so a later one
+/// that is no number names `number-or-marker-p'.
+fn logical_operand(interp: &Interpreter, value: &Value, first: bool) -> Result<BigInt, LispError> {
+    match value.kind() {
+        Kind::Integer(_) | Kind::BigInteger(_) | Kind::Marker(_) => {
+            integer_like_bigint(interp, value)
+        }
+        Kind::Float(_) => Err(LispError::WrongTypeArgument(
+            "integer-or-marker-p".into(),
+            *value,
+        )),
+        _ if first => Err(LispError::WrongTypeArgument(
+            "integer-or-marker-p".into(),
+            *value,
+        )),
+        _ => Err(LispError::WrongTypeArgument(
+            "number-or-marker-p".into(),
+            *value,
+        )),
+    }
 }

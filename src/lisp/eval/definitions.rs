@@ -166,8 +166,7 @@ impl Interpreter {
             let length = self.eval_list_length(*args, env)?;
             return Err(LispError::WrongNumberOfArgs("function".into(), length));
         }
-        if !matches!(quoted.car().map(|value| value.kind()), Ok(Kind::Symbol(head)) if head == "lambda")
-        {
+        if !form_head_is(quoted, "lambda") {
             return Ok(quoted);
         }
         let tail = quoted.cdr()?;
@@ -182,8 +181,7 @@ impl Interpreter {
                     documentation = first;
                     body = rest;
                 }
-            } else if matches!(first.car().map(|value| value.kind()), Ok(Kind::Symbol(head)) if head == ":documentation")
-            {
+            } else if form_head_is(first, ":documentation") {
                 documentation = self.eval(&first.cdr()?.car()?, env)?;
                 // Re-read after evaluation: dynamic documentation can mutate
                 // the source cell whose cdr GNU reads here.
@@ -193,8 +191,7 @@ impl Interpreter {
         let mut iform = Value::Nil;
         if let Kind::Cons(cell) = body.kind() {
             let first = cell.car.get();
-            if matches!(first.car().map(|value| value.kind()), Ok(Kind::Symbol(head)) if head == "interactive")
-            {
+            if form_head_is(first, "interactive") {
                 iform = first;
                 body = cell.cdr.get();
             }
@@ -231,4 +228,12 @@ impl Interpreter {
         }
         self.make_interpreted_closure(parameters, body, closure_env, documentation, iform)
     }
+}
+
+/// Whether FORM is a list whose car is the symbol NAME. `Value::car'
+/// would build a wrong-type-argument error for any other object, only to
+/// drop it.
+fn form_head_is(form: Value, name: &str) -> bool {
+    form.cons_ref()
+        .is_some_and(|cell| matches!(cell.car.get().kind(), Kind::Symbol(head) if head == name))
 }

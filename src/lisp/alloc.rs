@@ -705,11 +705,14 @@ impl<T> RootedVec<T> {
         }
         // SAFETY: slots inside the buffer past the initialized elements.
         unsafe {
-            std::ptr::write_bytes(
-                self.inner.as_mut_ptr().add(self.inner.len()).cast::<u8>(),
-                0,
-                count * std::mem::size_of::<T>(),
-            );
+            let start = self.inner.as_mut_ptr().add(self.inner.len()).cast::<u8>();
+            // One slot, the usual pop, is cleared by stores of its constant
+            // size; a size known only at run time is a `memset' call.
+            if count == 1 {
+                std::ptr::write_bytes(start, 0, std::mem::size_of::<T>());
+            } else {
+                std::ptr::write_bytes(start, 0, count * std::mem::size_of::<T>());
+            }
         }
     }
 
@@ -1144,17 +1147,27 @@ struct ConsMetadata {
     marked: [Cell<usize>; CONS_BITMAP_WORDS],
     // A reused address must not revive a WeakConsRef. GNU's raw Lisp values
     // need no serial; Rust's weak host cache references do. Ordinary car/cdr
-    // and stores never read these serials or the bitmaps.
-    serials: [Cell<u64>; CELLS_PER_BLOCK],
+    // and stores never read these serials or the bitmaps. A cell's serial
+    // is written when the cell is allocated and read only while it is, so
+    // a free cell's may be uninitialized.
+    serials: [Cell<std::mem::MaybeUninit<u64>>; CELLS_PER_BLOCK],
 }
 
 impl ConsMetadata {
-    const fn new() -> Self {
-        Self {
-            epoch: Cell::new(0),
-            allocated: [const { Cell::new(0) }; CONS_BITMAP_WORDS],
-            marked: [const { Cell::new(0) }; CONS_BITMAP_WORDS],
-            serials: [const { Cell::new(0) }; CELLS_PER_BLOCK],
+    /// A new block's metadata, every cell free: the epoch and the bitmaps.
+    /// GNU's Fcons clears only a new block's mark bits; the serials are
+    /// left as they are (about 11 KB a block that zeroing wrote).
+    ///
+    /// # Safety
+    /// METADATA is a new block's metadata, not yet in use.
+    unsafe fn init(metadata: *mut Self) {
+        // SAFETY: the caller's contract; the serials are MaybeUninit.
+        unsafe {
+            std::ptr::addr_of_mut!((*metadata).epoch).write(Cell::new(0));
+            std::ptr::addr_of_mut!((*metadata).allocated)
+                .write([const { Cell::new(0) }; CONS_BITMAP_WORDS]);
+            std::ptr::addr_of_mut!((*metadata).marked)
+                .write([const { Cell::new(0) }; CONS_BITMAP_WORDS]);
         }
     }
 }
@@ -1220,7 +1233,7 @@ impl ConsMark<'_> {
                 self.block.marked.get_unchecked(word),
             )
         };
-        serial_slot.set(serial);
+        serial_slot.set(std::mem::MaybeUninit::new(serial));
         allocated.set(allocated.get() | mask);
         if self.block.epoch.get() != epoch {
             self.clear_marks(epoch);
@@ -1239,7 +1252,11 @@ impl ConsMark<'_> {
     }
 
     fn serial(&self) -> u64 {
-        self.block.serials[self.index].get()
+        debug_assert!(self.allocated(), "the serial of a free cons");
+        // SAFETY: an allocated cell's serial was written when it was
+        // allocated; callers ask only for allocated cells (a live ConsRef,
+        // or one `mem_find' found allocated).
+        unsafe { self.block.serials[self.index].get().assume_init() }
     }
 }
 
@@ -1467,8 +1484,9 @@ fn new_block(kind: BlockKind) -> usize {
         BlockKind::Cons => {
             // SAFETY: fresh aligned storage; no payload slot is allocated.
             unsafe {
-                std::ptr::addr_of_mut!((*(block.cast::<ConsBlock>())).metadata)
-                    .write(ConsMetadata::new())
+                ConsMetadata::init(std::ptr::addr_of_mut!(
+                    (*(block.cast::<ConsBlock>())).metadata
+                ))
             };
         }
         BlockKind::Float => {
