@@ -108,6 +108,8 @@ const KEY_NAMES: &[&str] = &[
     "ert-test-skipped",
     "end-of-file",
     "invalid-read-syntax",
+    "messages-buffer-name",
+    "message-log-max",
 ];
 
 struct Symbols {

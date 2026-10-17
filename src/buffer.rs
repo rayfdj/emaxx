@@ -2237,6 +2237,11 @@ impl Buffer {
             _ => *view = None,
         }
         drop(view);
+        // A buffer's first entry takes room for its first few: a temporary
+        // buffer's undo list otherwise grows through four allocations.
+        if self.undo_list.capacity() == 0 {
+            self.undo_list.reserve(16);
+        }
         self.undo_list.push(entry);
     }
 

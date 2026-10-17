@@ -1411,6 +1411,25 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   An explicit collection 49.32 → 48.89 million instructions with the
   bounds and the one lock, 48.55 million with the per-kind lists (0.744 →
   0.733 of GNU's).
+- **Undo's window configurations, message log and native `set`.** A
+  window configuration keeps each window's saved slots in a vector, as
+  window.c's `saved_window` vector does, where it built a list a window
+  and read it back by a list walk; restoring one finds a frame's few saved
+  windows by a search instead of building a hash map. `message_dolog`
+  reads `messages-buffer-name` and `message-log-max` by their cached
+  symbols (DEFVAR_LISP variables, never lexically bound), not by name
+  through the lexical environment, and builds its line without
+  `format!`. A buffer's first undo entry reserves room for sixteen, where
+  a temporary buffer's list grew through four allocations. Native code's
+  `set_internal` calls the set itself, as GNU's compiled code calls
+  `set_internal`, instead of `set` by name through the primitive table;
+  the remaining word-level subrs in `invoke_subr` dispatch by one match on
+  the kind and arguments. Undo 1,751,807 → 1,702,865 instructions a unit
+  (1.40 → 1.36 of GNU's), wall time 0.1653 → 0.1627 s (six rounds of five
+  samples, the minimum, on the line-table release builds; GNU's 0.1137).
+  The other fifteen are within their noise against the round's base:
+  bindat's +6,400 a unit is a collection's stack scan and the verifier's
+  address-keyed caches falling differently between the two sizes.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1604,7 +1623,11 @@ and rustfmt clean. For the scan's bounds and the per-kind lists: 592 of
 the 593 conservative-scan, stack, native, collection, weak, finalizer,
 sweep, block, heap, root, allocation and vector tests pass in four
 parallel parts, the other being the load-sensitive TLS test, which passes
-alone (2 of 2); clippy and rustfmt clean.
+alone (2 of 2); clippy and rustfmt clean. For undo's window configurations,
+message log and native `set`: 870 of the 871 window, configuration,
+message, undo, native, subr, `set`, `setq`, buffer and hook tests pass in
+four parallel parts, the other being the as-root save-buffer test; clippy
+`-D warnings` and rustfmt clean.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
@@ -1838,8 +1861,10 @@ frozen passed on its first attempt (run 39066924074). **On `5147b2e`**
 39069862192). **On `85f3e00`** (the image's cells left unread): full
 Rust gate passed (run 39074166122; 3,140 tests), frozen passed on its
 first attempt (run 39074167800). **On `3e1cced`** (the image's string
-data): full Rust gate (run 39075363648) and frozen (run 39075365786)
-pending. Locally,
+data): full Rust gate passed (run 39075363648), frozen passed on its first
+attempt (run 39075365786). **On `ba696b3`** (the scan's bounds and the
+per-kind lists): full Rust gate passed (run 39078342040); frozen (run
+39078343825) pending. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the

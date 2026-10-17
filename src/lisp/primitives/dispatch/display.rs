@@ -300,13 +300,15 @@ pub(crate) fn message_with_string(
 // Fmessage, message3 and add_to_log all reach. This is deliberately separate
 // from message's echo/capture/stderr path, as xdisp.c:add_to_log requires.
 // Creating the log buffer does not yet call `messages-buffer-mode'.
-pub(crate) fn log_message_text(interp: &mut Interpreter, text: &str, env: &Env) {
+pub(crate) fn log_message_text(interp: &mut Interpreter, text: &str, _env: &Env) {
+    // message_dolog reads the two C variables (DEFVAR_LISP, so never
+    // lexically bound) by their symbols.
     let buffer_name = interp
-        .lookup_var("messages-buffer-name", env)
+        .symbol_value_key(cached_symbol!("messages-buffer-name"))
         .and_then(|value| string_like(&value).map(|string| string.text))
         .unwrap_or_else(|| "*Messages*".into());
     let log_max = interp
-        .lookup_var("message-log-max", env)
+        .symbol_value_key(cached_symbol!("message-log-max"))
         .unwrap_or(Value::T);
     if log_max.is_nil() {
         return;
@@ -348,7 +350,10 @@ fn message_dolog(buffer: &mut crate::buffer::Buffer, text: &str, max_lines: Opti
     let mut saved = [buffer.point(), begv, zv];
     buffer.widen();
     buffer.goto_char(end);
-    buffer.insert(&format!("{text}\n"));
+    let mut line = String::with_capacity(text.len() + 1);
+    line.push_str(text);
+    line.push('\n');
+    buffer.insert(&line);
     let end = buffer.size_total() + 1;
     let this_bol = buffer.line_start_at(end - 1);
     if this_bol > 1 {

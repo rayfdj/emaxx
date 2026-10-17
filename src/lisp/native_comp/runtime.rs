@@ -2256,53 +2256,29 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             }
             _ => {}
         }
-        if kind == DirectSubr::Assq && arguments.len() == 2 {
-            return native_assq(active, arguments[0], arguments[1]);
-        }
-        if kind == DirectSubr::Memq && arguments.len() == 2 {
-            return native_memq(active, arguments[0], arguments[1]);
-        }
-        if kind == DirectSubr::Get && arguments.len() == 2 {
-            return invoke_native_get(active, arguments[0], arguments[1]);
-        }
-        if kind == DirectSubr::Apply
-            && let Some(result) = invoke_native_apply(active, arguments)
-        {
-            return result;
-        }
-        if kind == DirectSubr::Mapcar
-            && let Some(result) = invoke_native_mapcar(active, arguments)
-        {
-            return result;
-        }
-        if kind == DirectSubr::Maphash
-            && let Some(result) = invoke_native_maphash(active, arguments)
-        {
-            return result;
-        }
-        if kind == DirectSubr::Nreverse
-            && let [sequence] = arguments
-            && let Some(result) = invoke_native_nreverse(active, *sequence)
-        {
-            return result;
-        }
-        if kind == DirectSubr::Length
-            && let [sequence] = arguments
-            && let Some(result) = invoke_native_length(active, *sequence)
-        {
-            return result;
-        }
-        if kind == DirectSubr::PlistMember {
-            match arguments {
-                [plist, property] => return native_plist_member(active, *plist, *property, 0),
-                [plist, property, predicate] => {
-                    return native_plist_member(active, *plist, *property, *predicate);
-                }
-                _ => {}
+        // The remaining word-level subrs, by one dispatch on the kind.
+        let direct = match (kind, arguments) {
+            (DirectSubr::Assq, [key, list]) => Some(native_assq(active, *key, *list)),
+            (DirectSubr::Memq, [element, list]) => Some(native_memq(active, *element, *list)),
+            (DirectSubr::Get, [symbol, property]) => {
+                Some(invoke_native_get(active, *symbol, *property))
             }
-        }
-        if kind == DirectSubr::MakeClosure {
-            return invoke_native_make_closure(active, arguments);
+            (DirectSubr::Apply, _) => invoke_native_apply(active, arguments),
+            (DirectSubr::Mapcar, _) => invoke_native_mapcar(active, arguments),
+            (DirectSubr::Maphash, _) => invoke_native_maphash(active, arguments),
+            (DirectSubr::Nreverse, [sequence]) => invoke_native_nreverse(active, *sequence),
+            (DirectSubr::Length, [sequence]) => invoke_native_length(active, *sequence),
+            (DirectSubr::PlistMember, [plist, property]) => {
+                Some(native_plist_member(active, *plist, *property, 0))
+            }
+            (DirectSubr::PlistMember, [plist, property, predicate]) => {
+                Some(native_plist_member(active, *plist, *property, *predicate))
+            }
+            (DirectSubr::MakeClosure, _) => Some(invoke_native_make_closure(active, arguments)),
+            _ => None,
+        };
+        if let Some(result) = direct {
+            return result;
         }
         let mut decoded = smallvec::SmallVec::<[Value; 8]>::new();
         for word in arguments {
@@ -4132,12 +4108,15 @@ extern "C" fn runtime_set_internal(
                     "compiled set_internal used a nonstandard context",
                 ));
             }
-            crate::lisp::primitives::call(
-                unsafe { &mut *active.interpreter },
-                "set",
-                &[symbol, value],
-                unsafe { &mut *active.environment },
+            // GNU's native code calls set_internal itself, not Fset by name.
+            let interpreter = unsafe { &mut *active.interpreter };
+            let environment = unsafe { &mut *active.environment };
+            let symbol = crate::lisp::primitives::checked_symbol_identity(
+                interpreter,
+                &symbol,
+                environment,
             )?;
+            crate::lisp::primitives::set_internal_symbol(interpreter, &symbol, value, environment)?;
             Ok(())
         })();
         if let Err(error) = result {
