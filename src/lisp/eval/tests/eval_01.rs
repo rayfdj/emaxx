@@ -4294,6 +4294,32 @@ fn syntax_property_encoding_follows_edits_without_encoding_again() {
 }
 
 #[test]
+fn removing_a_variables_last_watcher_stops_its_notifications() {
+    // data.c's trapped_write: set by the first watcher, cleared with the
+    // last, set again by the next; the binding and the stores in between
+    // notify no one.  The oracle's values.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn (defvar zz-tw 1)
+               (let* ((log nil)
+                      (w (lambda (sym new op _where) (push (list sym new op) log))))
+                 (add-variable-watcher 'zz-tw w)
+                 (let ((zz-tw 2)) (setq zz-tw 3))
+                 (remove-variable-watcher 'zz-tw w)
+                 (setq zz-tw 4)
+                 (let ((zz-tw 5)) (set 'zz-tw 6))
+                 (add-variable-watcher 'zz-tw w)
+                 (setq zz-tw 7)
+                 (list zz-tw (length (get-variable-watchers 'zz-tw)) (nreverse log))))",
+        )
+        .to_string(),
+        "(7 1 ((zz-tw 2 let) (zz-tw 3 set) (zz-tw 1 unlet) (zz-tw 7 set)))"
+    );
+}
+
+#[test]
 fn plain_stores_still_see_watchers_aliases_and_locals_added_later() {
     // data.c:set_internal and eval.c:specbind on a symbol whose cell is
     // SYMBOL_PLAINVAL and untrapped store into the cell alone; the bit

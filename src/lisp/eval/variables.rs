@@ -251,6 +251,12 @@ impl Interpreter {
                     .then_some(Some(buffer.text_conversion_style))
             });
         }
+        // Each buffer-local cell is made after its symbol is flagged
+        // LOCALIZED (make-local-variable's SYMBOL_LOCALIZED), so a symbol
+        // without the flag has none in any buffer.
+        if !self.globals.has_flag(symbol, LOCALIZED) {
+            return None;
+        }
         self.buffer_locals
             .get(&buffer_id)
             .and_then(|locals| locals.binding(symbol))
@@ -961,11 +967,27 @@ impl Interpreter {
     }
 
     /// data.c's SYMBOL_TRAPPED_WRITE test for the symbol in hand: whether
-    /// any watcher is registered under its object identity.
+    /// any watcher is registered under its object identity.  The symbol's
+    /// flag is set whenever one is, so an unwatched symbol answers by it.
     fn variable_is_watched(&self, symbol: &SymbolName) -> bool {
-        self.variable_watchers
+        symbol.cell().is_trapped_write()
+            && self
+                .variable_watchers
+                .iter()
+                .any(|(watched, _)| watched == symbol)
+    }
+
+    /// The watchers' entry at INDEX is gone: its symbol's stores stop
+    /// notifying unless another entry names it.
+    pub(super) fn remove_variable_watcher_entry(&mut self, index: usize) {
+        let (symbol, _) = self.variable_watchers.remove(index);
+        if !self
+            .variable_watchers
             .iter()
-            .any(|(watched, _)| watched == symbol)
+            .any(|(watched, _)| *watched == symbol)
+        {
+            symbol.cell().set_trapped_write(false);
+        }
     }
 
     pub fn variable_watchers(&self, name: &str) -> Vec<Value> {
@@ -980,6 +1002,10 @@ impl Interpreter {
     pub fn add_variable_watcher(&mut self, name: &str, watcher: Value) -> Result<Value, LispError> {
         let resolved = self.resolve_variable_name(name)?;
         if let Some(index) = self.variable_watcher_index(&resolved) {
+            self.variable_watchers[index]
+                .0
+                .cell()
+                .set_trapped_write(true);
             if !self.variable_watchers[index]
                 .1
                 .iter()
@@ -993,8 +1019,9 @@ impl Interpreter {
         }
         // data.c:Fadd_variable_watcher sets SYMBOL_TRAPPED_WRITE: the
         // symbol's stores notify from now on.
-        self.globals
-            .set_plain_store(&SymbolName::intern_str(&resolved), false);
+        let symbol = SymbolName::intern_str(&resolved);
+        symbol.cell().set_trapped_write(true);
+        self.globals.set_plain_store(&symbol, false);
         Ok(watcher)
     }
 
@@ -1009,7 +1036,7 @@ impl Interpreter {
                 .1
                 .retain(|existing| existing != watcher);
             if self.variable_watchers[index].1.is_empty() {
-                self.variable_watchers.remove(index);
+                self.remove_variable_watcher_entry(index);
             }
         }
         Ok(*watcher)
@@ -1017,7 +1044,7 @@ impl Interpreter {
 
     pub fn clear_variable_watchers(&mut self, name: &str) {
         if let Some(index) = self.variable_watcher_index(name) {
-            self.variable_watchers.remove(index);
+            self.remove_variable_watcher_entry(index);
         }
     }
 

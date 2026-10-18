@@ -75,6 +75,10 @@ const KBOARD_FORWARD: u16 = 1024;
 // state beyond the cell (`STORE_EFFECT_VARIABLES'), so a store to any other
 // forwarded variable is known to be the cell's alone without a name check.
 const STORE_EFFECT: u16 = 2048;
+// lisp.h: trapped_write == SYMBOL_TRAPPED_WRITE: a variable watcher is
+// registered under this object (`Interpreter::variable_watchers' holds
+// them), so a store notifies; without it none is.
+const TRAPPED_WRITE: u16 = 4096;
 
 /// The forwarded variables `Interpreter::set_global_binding_resolved' does
 /// more for than store the cell: the evaluator's own C cells, the buffers'
@@ -358,6 +362,19 @@ impl SymbolCell {
 
     pub(crate) fn is_constant(&self) -> bool {
         self.state.get() & CONSTANT != 0
+    }
+
+    #[inline(always)]
+    pub(crate) fn is_trapped_write(&self) -> bool {
+        self.state.get() & TRAPPED_WRITE != 0
+    }
+
+    pub(crate) fn set_trapped_write(&self, trapped: bool) {
+        self.state.set(if trapped {
+            self.state.get() | TRAPPED_WRITE
+        } else {
+            self.state.get() & !TRAPPED_WRITE
+        });
     }
 
     pub(crate) fn set_constant(&self, constant: bool) {

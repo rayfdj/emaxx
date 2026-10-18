@@ -1944,6 +1944,36 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   `condition-case` that caught the first exits reaches the
   `handler-bind` (GNU answers the same); clippy `-D warnings` and
   rustfmt pass.
+- **Watched and buffer-local variables by flags on the symbol.** Every store and
+  binding outside the plain-symbol fast path asked whether a variable
+  watcher is registered by scanning the watcher list (21 entries after
+  startup, the display variables `frame.el` watches with xdisp.c's
+  `set-buffer-redisplay`) for the symbol; in undo that is 49 `specbind`s, their 120
+  restores and the stores a unit, a loop of 22 compares each. GNU reads
+  `trapped_write` on the symbol. The cell's state now carries
+  `TRAPPED_WRITE`, set wherever a watcher entry is made (adding a
+  watcher, the image's watchers, the image copier) and cleared when the
+  symbol's entry goes; the list is searched only for a flagged symbol.
+  Undo: 1,430,254 → 1,411,986 instructions a unit
+  (`specbind_symbol_record` 136.8 → 91.9 a call, `apply_special_restore`
+  96.8 → 51.3, `memcmp` 5,355 fewer). A variable read or binding outside
+  the fast paths also looked the symbol up in the current buffer's local
+  cells (two hash probes, 76 instructions, 139 times a unit) whatever
+  the symbol; every buffer-local cell is made after its symbol is flagged
+  `LOCALIZED` (as `make-local-variable` makes it `SYMBOL_LOCALIZED`), so
+  a symbol without the flag answers no local at once: 1,411,986 →
+  1,408,804. Bytecode calls 519.0 (`run_verified` 518 a call, as
+  before), bytecode-to-native 486.4, interpreted-to-native 3,044.1.
+  Validation (gate profile, `--test-threads=1`): the lightweight group's
+  598 tests, 166 of 167 watcher, image, dump, clone, alias and
+  uninterned-symbol tests (the one failure is this container's
+  `batch_startup_image_round_trip_or_explicit_native_image_limit`, the
+  restored image's first native function in `mapatoms` order, as on
+  `4008098`), and 98 buffer-local, `kill-all-local-variables`,
+  `make-variable-buffer-local` and watcher tests, with a new test: a variable's watcher
+  notifies while registered, not after its removal, and again once
+  re-added (GNU answers the same); clippy `-D warnings` and rustfmt
+  pass.
 - **Profile-guided wall time on `6242417`, against `ba9f640` on the
   same host.** The container came back from a restart on a host whose
   timings differ from the earlier tables' (an Intel Xeon at 2.10 GHz with
@@ -2732,8 +2762,8 @@ and failures are still recorded.
    interpreted-to-native 1.01 and cons allocation 1.01 against 1.15 and
    1.13 on the earlier host (its one in-sample collection, see "Cons
    allocation's gap is its one collection"); compare builds only on one
-   host. By instructions on the line-table build: undo about 1.15 (after
-   one handler search a signal), interpreted-to-native 1.28, bytecode-to-native 1.26,
+   host. By instructions on the line-table build: undo about 1.13 (after
+   watched and buffer-local variables by flags on the symbol), interpreted-to-native 1.28, bytecode-to-native 1.26,
    native-to-bytecode 1.24, bytecode calls 1.11, native-execution 0.90. Where each case's instructions go is under
    "Where the byte-code call and return go" and the native call bullets.
    (Older wall figures, before these rounds: bytecode-to-native 1.54,

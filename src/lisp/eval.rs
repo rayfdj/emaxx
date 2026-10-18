@@ -2770,6 +2770,9 @@ impl ImageGraphCopier {
         }
         copied.cell().flags.set(symbol.cell().flags.get());
         copied.cell().set_constant(symbol.cell().is_constant());
+        copied
+            .cell()
+            .set_trapped_write(symbol.cell().is_trapped_write());
         copied.cell().set_c_slot(symbol.cell().has_c_slot());
         copied.cell().set_plain_store(symbol.cell().plain_store());
         copied
