@@ -403,11 +403,44 @@ fn legacy_arity_error(function: &Value, nargs: usize) -> LispError {
     }
 }
 
+/// What a running frame reads of its program, as bytecode.c re-reads
+/// `bytestr_data' and `vectorp' from the function at a return: the code,
+/// the constants and the verifier's result.  The argument template and
+/// the stack depth are read once, at the frame's entry, from the whole
+/// program (`ByteCodeObject').  Three words: a call saves the caller's
+/// and installs the callee's, a return restores the caller's.
+#[derive(Clone, Copy)]
+struct Running {
+    code: super::CodeBytes,
+    constants: crate::lisp::types::VectorRef,
+    verified: Option<&'static super::verify::VerifiedCode>,
+}
+
+impl Running {
+    #[inline(always)]
+    fn of(program: &ByteCodeObject) -> Self {
+        Self {
+            code: program.code,
+            constants: program.constants,
+            verified: program.verified,
+        }
+    }
+
+    #[inline]
+    fn constant(&self, index: u16) -> Value {
+        // bytecode.c reads vectorp[index] at the instruction, not a copy
+        // captured during decoding. End the borrow before Lisp can run.
+        self.constants
+            .get(usize::from(index))
+            .expect("validated constant index")
+    }
+}
+
 /// One suspended byte-code frame of this activation (bytecode.c's
 /// `bc_frame': the caller's program and pc, its stack top, and the
 /// watermarks the callee's return or error restores).
 struct BcFrame {
-    program: ByteCodeObject,
+    program: Running,
     /// The caller's slot holding the callee (Bcall's TOP after DISCARD):
     /// the callee's arguments and frame lie above it, and the return
     /// value replaces it.
@@ -431,7 +464,7 @@ struct BcFrame {
 struct VmFrames<'a> {
     interp: &'a mut Interpreter,
     env: &'a mut Env,
-    program: &'a mut ByteCodeObject,
+    program: &'a mut Running,
     frames: &'a mut Vec<BcFrame>,
     handlers: &'a mut Vec<Handler>,
     op_error_frames: &'a mut usize,
@@ -519,7 +552,7 @@ fn bytecode_call(
             push_pooled(
                 frames,
                 BcFrame {
-                    program: std::mem::replace(*program, callee),
+                    program: std::mem::replace(*program, Running::of(&callee)),
                     base: args_start - 1,
                     handlers_len: handlers.len(),
                     unwinds_len: interp.bc_unwinds.len(),
@@ -537,7 +570,7 @@ fn bytecode_call(
                 mandatory,
                 nonrest,
                 rest,
-            } = program.argspec
+            } = callee.argspec
             else {
                 unreachable!("bytecode_callee selects packed argument lists")
             };
@@ -561,7 +594,7 @@ fn bytecode_call(
                     interp.bc_stack.push_within_frame(Value::Nil);
                 }
             }
-            program.verified = super::verify::verified_code(program, nonrest + usize::from(rest));
+            program.verified = super::verify::verified_code(&callee, nonrest + usize::from(rest));
             return Ok(CallOutcome::Entered(
                 interp.bc_stack.top,
                 interp.bc_stack.len(),
@@ -841,7 +874,7 @@ fn enter_closure_frame(
     push_pooled(
         vm.frames,
         BcFrame {
-            program: vm.program.clone(),
+            program: *vm.program,
             base: args_start - 1,
             handlers_len: vm.handlers.len(),
             unwinds_len: state.bc_unwinds.len(),
@@ -854,7 +887,7 @@ fn enter_closure_frame(
             },
         },
     );
-    *vm.program = callee.clone();
+    *vm.program = Running::of(callee);
     // setup_frame's `PUSH (*args)' and the optionals' nils.
     state.bc_stack.push_arguments(call_args, entry_depth);
     Some((state.bc_stack.top, entry_depth))
@@ -886,7 +919,7 @@ fn return_to_bytecode_frame(
     state.leave_plain_funcall(frame.backtrace_depth);
     let resume = state.bc_stack.leave_frame();
     state.bc_stack.replace_call(frame.base, value);
-    *vm.program = frame.program.clone();
+    *vm.program = frame.program;
     *vm.op_error_frames = frame.op_error_frames;
     vm.handlers.truncate(frame.handlers_len);
     let unchanged = frame.code_changes == crate::lisp::alloc::code_changes();
@@ -1271,7 +1304,7 @@ const FAST_OPS: [FastOp; 256] = {
 /// another kind) is left untouched at PC for the full dispatch.
 #[inline(always)]
 fn run_fast(
-    object: &ByteCodeObject,
+    object: &Running,
     code: &[u8],
     ops: &mut BcStack,
     pc: &mut usize,
@@ -2534,7 +2567,7 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
     } = vm;
     let interp: &mut Interpreter = interp;
     let env: &mut Env = env;
-    let program: &mut ByteCodeObject = program;
+    let program: &mut Running = program;
     let handlers: &mut Vec<Handler> = handlers;
     let op_error_frames: &mut usize = op_error_frames;
     macro_rules! pop {
@@ -3282,6 +3315,7 @@ impl TraceLispRoots for ByteCodeObject {
     }
 }
 
+#[cfg(test)]
 impl ByteCodeObject {
     #[inline]
     fn constant(&self, index: u16) -> Value {
@@ -3421,7 +3455,7 @@ fn run_entered(
         // The caller checked the count against the list and the list's
         // slots against the frame's depth.
         interp.bc_stack.push_arguments(args, entry_depth);
-        let mut program = program;
+        let mut program = Running::of(&program);
         let mut frames = Pooled::new();
         let mut handlers = Pooled::new();
         let mut op_error_frames = 0;
@@ -3663,7 +3697,7 @@ fn run_frames(
         ArgSpec::Legacy(_) => 0,
     };
     program.verified = super::verify::verified_code(&program, entry_depth);
-    run_loop(interp, env, Activation::new(program), None)
+    run_loop(interp, env, Activation::new(Running::of(&program)), None)
 }
 
 thread_local! {
@@ -3779,7 +3813,7 @@ impl<T: Spare> std::ops::DerefMut for Pooled<T> {
 
 /// An activation's loop state, handed from its entry to `run_loop'.
 struct Activation {
-    program: ByteCodeObject,
+    program: Running,
     pc: usize,
     frames: Pooled<BcFrame>,
     handlers: Pooled<Handler>,
@@ -3794,7 +3828,7 @@ struct Activation {
 }
 
 impl Activation {
-    fn new(program: ByteCodeObject) -> Self {
+    fn new(program: Running) -> Self {
         Self {
             program,
             pc: 0,

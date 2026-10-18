@@ -20,7 +20,7 @@ records the GNU counter contract.
 | --- | --- |
 | **Main** `94295d0a` | Source324: one-word values, 16-byte cons payloads, shared object work, and symbol value/function/plist/flags on the allocated symbols. |
 | **[PR87](https://github.com/rayfdj/emaxx/pull/87)** `35c6cd9b` (`runtime-char-tables`) | Object-state draft17: membership, constants, aliases, same-name replacement, image restoration and native `nil`/`t` identity. 584 runtime inputs. |
-| **Task branch** `runtime-performance` (pushed as `claude/awesome-newton-yk6sae` through `c48c5a2`; PR #88 took it into main up to `ba696b3`, PR #89 up to `6242417`, PR #90 up to `8aaccaa`) | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
+| **Task branch** `runtime-performance` (pushed as `claude/awesome-newton-yk6sae` through `c48c5a2`; PR #88 took it into main up to `ba696b3`, PR #89 up to `6242417`, PR #90 up to `8aaccaa`, PR #91 up to `aa0c63f`) | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
 
 **PR87 evidence in this repository:** strict checks with zero warnings, 407
 affected controls in each of gate and release, and 44 ordinary GNU comparisons /
@@ -2166,6 +2166,47 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   whose GNU oracle answered `connect` for the asynchronous handshake while
   four test processes shared the machine and which passes run alone;
   clippy `-D warnings` and rustfmt pass.
+- **The contract's comparison, not the pilot minimum, on four cases.**
+  A script following the contract (`compat/core_runtime_perf.json`: full
+  sizes, nine rounds, one warmup and three samples a process, the
+  editors' order alternating, the median within each process, paired
+  round ratios and the bootstrapped 95% interval of their median with
+  the locked seed) on the profile-guided builds: on `a0034c1` bytecode
+  calls 1.043 [1.019, 1.153], bytecode-to-native 1.044 [1.009, 1.106],
+  cons allocation 0.964 [0.926, 1.025], interpreted-to-native 0.954
+  [0.919, 1.002]; on `aa0c63f` 1.045 [0.984, 1.120], 1.036 [0.979,
+  1.079], 0.940 [0.882, 1.001] and 0.996 [0.898, 1.097]. So the pilot
+  minimums (about 1.02 for the two byte-code cases) understate them:
+  bytecode calls runs 0.45 to 0.51 seconds a process against GNU's 0.42
+  to 0.46 at 12,000,000 (ten processes each), with address randomization
+  or without it, about 5 to 9% slower by median. Interpreted-to-native's
+  processes spread from 0.319 to 0.388 (one at 0.55) against GNU's 0.351
+  to 0.421; with randomization off (`setarch -R`) Emaxx's fall within
+  0.327 to 0.362, the median the same: part of that case's interval is
+  the address layout, which the contract does not fix for either
+  editor. The memory of a byte-code run does not grow with its size (88
+  MB at 3, 12 and 24 million calls).
+- **A running frame's program in three words.** A byte-code call saved
+  the caller's whole program (`ByteCodeObject`, six words, two of them
+  the argument template) in its frame, copied the callee's into the
+  loop's, and a return copied the caller's back. A running frame reads
+  only its code, constants and verifier result (bytecode.c re-reads
+  `bytestr_data` and `vectorp` from the function at a return), so frames,
+  the loops and the activation now hold those three (`Running`); the
+  argument template and stack depth are read at the entry from the whole
+  program, as before. The frames were never collector roots (their
+  functions on the byte-code stack are, and `run` roots a program run
+  without one). Bytecode calls: 504 → 491 instructions an iteration;
+  bytecode-to-native 445, native-to-bytecode 4,584 → 4,582, sort and
+  mapcar unchanged. Writing the frame record into its slot after the
+  capacity test (so the caller's program is not held across the growth
+  call) made the loop's registers worse instead (504 → 550) and is not
+  kept. Validation (gate profile, `--test-threads=1`): the lightweight
+  group's 598 tests and 168 of 169 evaluator and primitive tests whose
+  names mention byte code, compilation, funcall, signals, closures,
+  verification, unwinding or handlers pass (the other is the as-root
+  `byte_compile_file_reports_an_unwritable_target_like_gnu`); clippy
+  `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2660,7 +2701,12 @@ full Rust gate passed (run 39153644820), frozen passed on its first
 attempt (run 39153646470); PR #90 merged it into main. **On `5658349`**
 (with `a2494c7`: the print, message and word-boundary variables by their
 symbols, the watcher flag first): full Rust gate passed (run
-39158088826), frozen passed on its first attempt (run 39158090668). Locally,
+39158088826), frozen passed on its first attempt (run 39158090668).
+**On `a0034c1`** (a Bcall into native code by its count): full Rust gate
+passed (run 39164077964), frozen passed on its first attempt (run
+39164080135). **On `aa0c63f`** (maybe_gc on a mirror of the trigger):
+full Rust gate passed (run 39167951029), frozen passed on its first
+attempt (run 39167952851); PR #91 merged it into main (`bafedf4`). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
