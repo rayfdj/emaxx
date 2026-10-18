@@ -502,15 +502,18 @@ fn bytecode_call(
                     interp.bc_stack.len(),
                 ));
             }
-            frames.push(BcFrame {
-                program: std::mem::replace(*program, callee),
-                base: args_start - 1,
-                handlers_len: handlers.len(),
-                unwinds_len: interp.bc_unwinds.len(),
-                backtrace_depth,
-                op_error_frames: std::mem::take(*op_error_frames),
-                code_changes: usize::MAX,
-            });
+            push_pooled(
+                frames,
+                BcFrame {
+                    program: std::mem::replace(*program, callee),
+                    base: args_start - 1,
+                    handlers_len: handlers.len(),
+                    unwinds_len: interp.bc_unwinds.len(),
+                    backtrace_depth,
+                    op_error_frames: std::mem::take(*op_error_frames),
+                    code_changes: usize::MAX,
+                },
+            );
             // setup_frame: the callee's frame starts above the caller's
             // top; the arguments are copied into it (`PUSH (*args)'), the
             // optionals padded, the rest gathered.  The caller's own slots
@@ -773,19 +776,22 @@ fn enter_closure_frame(
     let backtrace_depth = state.enter_plain_funcall(func, call_args);
     // The caller's program copied into the frame's slot, then the callee's
     // over it: `mem::replace' moved the caller's through a temporary.
-    vm.frames.push(BcFrame {
-        program: vm.program.clone(),
-        base: args_start - 1,
-        handlers_len: vm.handlers.len(),
-        unwinds_len: state.bc_unwinds.len(),
-        backtrace_depth,
-        op_error_frames: std::mem::take(vm.op_error_frames),
-        code_changes: if verified_return {
-            crate::lisp::alloc::code_changes()
-        } else {
-            usize::MAX
+    push_pooled(
+        vm.frames,
+        BcFrame {
+            program: vm.program.clone(),
+            base: args_start - 1,
+            handlers_len: vm.handlers.len(),
+            unwinds_len: state.bc_unwinds.len(),
+            backtrace_depth,
+            op_error_frames: std::mem::take(vm.op_error_frames),
+            code_changes: if verified_return {
+                crate::lisp::alloc::code_changes()
+            } else {
+                usize::MAX
+            },
         },
-    });
+    );
     *vm.program = callee.clone();
     // setup_frame's `PUSH (*args)' and the optionals' nils.
     state.bc_stack.push_arguments(call_args, entry_depth);
@@ -2819,13 +2825,16 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
             // registry before unwinding; a VM catch frame must be
             // visible there like any `sf_catch' frame.
             interp.push_active_catch_tag(tag);
-            handlers.push(Handler {
-                kind: HandlerKind::Catch(tag),
-                dest: target as usize,
-                stack_len: interp.bc_stack.len(),
-                unwind_len: interp.bc_unwinds.len(),
-                registry_start: None,
-            });
+            push_pooled(
+                handlers,
+                Handler {
+                    kind: HandlerKind::Catch(tag),
+                    dest: target as usize,
+                    stack_len: interp.bc_stack.len(),
+                    unwind_len: interp.bc_unwinds.len(),
+                    registry_start: None,
+                },
+            );
         }
         Op::PushConditionCase { target } => {
             let conditions = pop!();
@@ -2834,13 +2843,16 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
             // boundaries sees this frame before any outer handler,
             // exactly like an interpreted `condition-case'.
             let registry_start = interp.push_condition_case_handler(vec![conditions]);
-            handlers.push(Handler {
-                kind: HandlerKind::ConditionCase(conditions),
-                dest: target as usize,
-                stack_len: interp.bc_stack.len(),
-                unwind_len: interp.bc_unwinds.len(),
-                registry_start: Some(registry_start),
-            });
+            push_pooled(
+                handlers,
+                Handler {
+                    kind: HandlerKind::ConditionCase(conditions),
+                    dest: target as usize,
+                    stack_len: interp.bc_stack.len(),
+                    unwind_len: interp.bc_unwinds.len(),
+                    registry_start: Some(registry_start),
+                },
+            );
         }
         Op::PopHandler => {
             if let Some(handler) = handlers.pop() {
@@ -3339,8 +3351,8 @@ fn run_entered(
         // slots against the frame's depth.
         interp.bc_stack.push_arguments(args, entry_depth);
         let mut program = program;
-        let mut frames = Vec::new();
-        let mut handlers = Vec::new();
+        let mut frames = Pooled::new();
+        let mut handlers = Pooled::new();
         let mut op_error_frames = 0;
         let mut pc = 0;
         let mut quitcounter = 1;
@@ -3585,12 +3597,123 @@ fn run_frames(
     run_loop(interp, env, Activation::new(program), None)
 }
 
+thread_local! {
+    /// Frame and handler vectors of finished activations, cleared and
+    /// kept with their capacity: an activation's first calls and
+    /// handlers grew fresh vectors from nothing (an allocation, then a
+    /// reallocation and a copy at each doubling) and freed them at its end.
+    static SPARE_FRAMES: std::cell::RefCell<Vec<Vec<BcFrame>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static SPARE_HANDLERS: std::cell::RefCell<Vec<Vec<Handler>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The spare vectors kept for each element type, at most this many.
+const SPARE_VECTORS: usize = 8;
+
+/// An element type whose activation vectors are kept on a spare list.
+trait Spare: Sized + 'static {
+    fn spares() -> &'static std::thread::LocalKey<std::cell::RefCell<Vec<Vec<Self>>>>;
+}
+
+impl Spare for BcFrame {
+    fn spares() -> &'static std::thread::LocalKey<std::cell::RefCell<Vec<Vec<Self>>>> {
+        &SPARE_FRAMES
+    }
+}
+
+impl Spare for Handler {
+    fn spares() -> &'static std::thread::LocalKey<std::cell::RefCell<Vec<Vec<Self>>>> {
+        &SPARE_HANDLERS
+    }
+}
+
+/// An activation's vector, empty until its first push takes a spare
+/// (`push_pooled'), and given back cleared when the activation ends,
+/// whichever way it ends; most activations push nothing and touch no
+/// list. Its elements are no roots: a frame's program is its closure's,
+/// which the byte-code stack's header holds.
+struct Pooled<T: Spare>(Vec<T>);
+
+impl<T: Spare> Pooled<T> {
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+}
+
+/// The largest spare kept, in elements: a deep recursion's vector is
+/// freed rather than held.
+const SPARE_CAPACITY: usize = 1024;
+
+impl<T: Spare> Drop for Pooled<T> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        // An activation that pushed nothing has nothing to give back.
+        if self.0.capacity() != 0 {
+            give_back(&mut self.0);
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn give_back<T: Spare>(vector: &mut Vec<T>) {
+    let mut vector = std::mem::take(vector);
+    if vector.capacity() > SPARE_CAPACITY {
+        return;
+    }
+    vector.clear();
+    let _ = T::spares().try_with(|spares| {
+        let mut spares = spares.borrow_mut();
+        if spares.len() < SPARE_VECTORS {
+            spares.push(vector);
+        }
+    });
+}
+
+/// `Vec::push' for an activation's vector, whose growth from nothing
+/// takes a spare first.
+#[inline(always)]
+fn push_pooled<T: Spare>(vector: &mut Vec<T>, value: T) {
+    if vector.len() == vector.capacity() {
+        grow_pooled(vector);
+    }
+    vector.push(value);
+}
+
+#[cold]
+#[inline(never)]
+fn grow_pooled<T: Spare>(vector: &mut Vec<T>) {
+    if vector.capacity() == 0
+        && let Ok(Some(spare)) = T::spares().try_with(|spares| spares.borrow_mut().pop())
+    {
+        *vector = spare;
+        if vector.capacity() > 0 {
+            return;
+        }
+    }
+    vector.reserve(1);
+}
+
+impl<T: Spare> std::ops::Deref for Pooled<T> {
+    type Target = Vec<T>;
+    fn deref(&self) -> &Vec<T> {
+        &self.0
+    }
+}
+
+impl<T: Spare> std::ops::DerefMut for Pooled<T> {
+    fn deref_mut(&mut self) -> &mut Vec<T> {
+        &mut self.0
+    }
+}
+
 /// An activation's loop state, handed from its entry to `run_loop'.
 struct Activation {
     program: ByteCodeObject,
     pc: usize,
-    frames: Vec<BcFrame>,
-    handlers: Vec<Handler>,
+    frames: Pooled<BcFrame>,
+    handlers: Pooled<Handler>,
     /// Frames pushed by signaling byte ops (record_in_backtrace); an
     /// in-frame condition-case that catches must unwind them, and the
     /// caller (`run') balances whatever is left after handler dispatch.
@@ -3606,8 +3729,8 @@ impl Activation {
         Self {
             program,
             pc: 0,
-            frames: Vec::new(),
-            handlers: Vec::new(),
+            frames: Pooled::new(),
+            handlers: Pooled::new(),
             op_error_frames: 0,
             quitcounter: 1,
         }
@@ -3678,7 +3801,7 @@ fn run_loop(
             match frames.pop() {
                 Some(frame) => {
                     if let Err(error) = leave_frame(interp, env, &frame) {
-                        frames.push(frame);
+                        push_pooled(&mut frames, frame);
                         return Err(error);
                     }
                     pc = interp.bc_stack.leave_frame();
@@ -4059,7 +4182,7 @@ fn run_loop(
     // the frame's specpdl watermark), running unwind-protect handlers
     // and restoring saved buffer state on the way out; catch tags of
     // still-pushed handlers leave the registry with their frame.
-    for handler in handlers.into_iter().rev() {
+    for handler in handlers.drain(..).rev() {
         if matches!(handler.kind, HandlerKind::Catch(_)) {
             interp.pop_active_catch_tag();
         }

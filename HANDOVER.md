@@ -1737,6 +1737,29 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   insertion, region, column, indentation and message tests pass (the
   other the as-root save-buffer test below); clippy `-D warnings` and
   rustfmt pass.
+- **Activation vectors kept, and the operandless table built at compile
+  time.** Each activation (`run_entered`, `Activation::new`; 119 a unit
+  in undo) began with empty frame and handler vectors, so the first calls
+  of one that called grew a fresh vector (an allocation, then a
+  reallocation and a copy at each doubling, about 10,000 instructions a
+  unit with glibc's consolidation) and freed it at its end. They are now
+  `Pooled`: empty until a push finds no room (`push_pooled`), when the
+  cold `grow_pooled` takes a spare from a per-thread list first; the drop
+  gives a vector with capacity back cleared (`give_back`, at most eight
+  spares of at most 1,024 elements). A frame is no root (its program is
+  its closure's, which the byte-code stack's header holds). The table of
+  one-byte ops `op_in_place` reads sat behind a `OnceLock` (about 8
+  instructions a slow op); `decode_instr`'s operand-free arms are now a
+  `const fn plain_op`, and `OPERANDLESS_OPS` is built from it at compile
+  time with the stack-ref, call and unbind members whose operand is in
+  the opcode (a test compares it with the decoder's answer for every
+  byte). Undo: 1,574,485 → 1,556,807 instructions a unit; bytecode calls
+  525.0 → 521.5 an iteration on the line-table build (round 4 had moved
+  the verified loop's register allocation by 4 instructions, this round
+  back by 3.5: the loop is that sensitive to code beside it). Validation:
+  the 97 byte-code, decoder and VM tests and the 93 condition-case,
+  catch, unwind, handler, recursion, nesting, depth and throw tests pass;
+  clippy `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2205,7 +2228,9 @@ and the verified return, the mark phase): full Rust gate passed (run
 39108333438). Frozen matched 7,927 of 7,928 (run 39108334830), the same
 oracle failure of `eglot-test-rust-completion-exit-function` (third run
 in a row, each time on the GNU side only); its failed job, re-run once
-(attempt 2), passed. Locally,
+(attempt 2), passed. **On `d7b02ff`** (undo's slow ops, the ASCII
+newline search): full Rust gate passed (run 39115079701); frozen run
+39115081583 is pending at this commit. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -2486,7 +2511,7 @@ and failures are still recorded.
    1.13 (its one in-sample collection, see "Cons allocation's gap is its
    one collection"), bytecode calls 1.05 to 1.07, and the other eleven
    below 1.0 (mapcar 0.96 since the mark phase's change). By instructions
-   on the line-table build: undo about 1.26 (after this round's slow ops),
+   on the line-table build: undo about 1.25 (after the slow ops' rounds),
    interpreted-to-native 1.29, bytecode-to-native 1.26,
    native-to-bytecode 1.24, bytecode calls 1.09. Where each case's instructions go is under
    "Where the byte-code call and return go" and the native call bullets.

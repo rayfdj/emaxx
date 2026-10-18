@@ -339,6 +339,119 @@ impl OperandReader<'_> {
     }
 }
 
+/// The op of an opcode with no operand at all, for `decode_instr' and
+/// the table `operandless_op' reads: evaluated at compile time.
+const fn plain_op(byte: u8) -> Option<Op> {
+    match byte {
+        B_POPHANDLER => Some(Op::PopHandler),
+        B_NTH => Some(Op::Nth),
+        0o071 => Some(Op::Symbolp),
+        0o072 => Some(Op::Consp),
+        0o073 => Some(Op::Stringp),
+        0o074 => Some(Op::Listp),
+        0o075 => Some(Op::Eq),
+        0o076 => Some(Op::Memq),
+        0o077 => Some(Op::Not),
+        0o100 => Some(Op::Car),
+        0o101 => Some(Op::Cdr),
+        0o102 => Some(Op::Cons),
+        0o103 => Some(Op::List1),
+        0o104 => Some(Op::List2),
+        0o105 => Some(Op::List3),
+        0o106 => Some(Op::List4),
+        0o107 => Some(Op::Length),
+        0o110 => Some(Op::Aref),
+        0o111 => Some(Op::Aset),
+        0o112 => Some(Op::SymbolValue),
+        0o113 => Some(Op::SymbolFunction),
+        0o114 => Some(Op::Set),
+        0o115 => Some(Op::Fset),
+        0o116 => Some(Op::Get),
+        0o117 => Some(Op::Substring),
+        0o120 => Some(Op::Concat2),
+        0o121 => Some(Op::Concat3),
+        0o122 => Some(Op::Concat4),
+        0o123 => Some(Op::Sub1),
+        0o124 => Some(Op::Add1),
+        0o125 => Some(Op::Eqlsign),
+        0o126 => Some(Op::Gtr),
+        0o127 => Some(Op::Lss),
+        0o130 => Some(Op::Leq),
+        0o131 => Some(Op::Geq),
+        0o132 => Some(Op::Diff),
+        0o133 => Some(Op::Negate),
+        0o134 => Some(Op::Plus),
+        0o135 => Some(Op::Max),
+        0o136 => Some(Op::Min),
+        0o137 => Some(Op::Mult),
+        0o140 => Some(Op::Point),
+        0o141 => Some(Op::SaveCurrentBufferObsolete),
+        0o142 => Some(Op::GotoChar),
+        0o143 => Some(Op::Insert),
+        0o144 => Some(Op::PointMax),
+        0o145 => Some(Op::PointMin),
+        0o146 => Some(Op::CharAfter),
+        0o147 => Some(Op::FollowingChar),
+        0o150 => Some(Op::PrecedingChar),
+        0o151 => Some(Op::CurrentColumn),
+        0o152 => Some(Op::IndentTo),
+        0o154 => Some(Op::Eolp),
+        0o155 => Some(Op::Eobp),
+        0o156 => Some(Op::Bolp),
+        0o157 => Some(Op::Bobp),
+        0o160 => Some(Op::CurrentBuffer),
+        0o161 => Some(Op::SetBuffer),
+        0o162 => Some(Op::SaveCurrentBuffer),
+        0o164 => Some(Op::InteractiveP),
+        0o165 => Some(Op::ForwardChar),
+        0o166 => Some(Op::ForwardWord),
+        0o167 => Some(Op::SkipCharsForward),
+        0o170 => Some(Op::SkipCharsBackward),
+        0o171 => Some(Op::ForwardLine),
+        0o172 => Some(Op::CharSyntax),
+        0o173 => Some(Op::BufferSubstring),
+        0o174 => Some(Op::DeleteRegion),
+        0o175 => Some(Op::NarrowToRegion),
+        0o176 => Some(Op::Widen),
+        0o177 => Some(Op::EndOfLine),
+        B_RETURN => Some(Op::Return),
+        0o210 => Some(Op::Discard),
+        0o211 => Some(Op::Dup),
+        0o212 => Some(Op::SaveExcursion),
+        0o213 => Some(Op::SaveWindowExcursion),
+        0o214 => Some(Op::SaveRestriction),
+        0o215 => Some(Op::Catch),
+        0o216 => Some(Op::UnwindProtect),
+        0o217 => Some(Op::ConditionCase),
+        0o220 => Some(Op::TempOutputBufferSetup),
+        0o221 => Some(Op::TempOutputBufferShow),
+        0o223 => Some(Op::SetMarker),
+        0o224 => Some(Op::MatchBeginning),
+        0o225 => Some(Op::MatchEnd),
+        0o226 => Some(Op::Upcase),
+        0o227 => Some(Op::Downcase),
+        0o230 => Some(Op::StringEqlsign),
+        0o231 => Some(Op::StringLss),
+        0o232 => Some(Op::Equal),
+        0o233 => Some(Op::Nthcdr),
+        0o234 => Some(Op::Elt),
+        0o235 => Some(Op::Member),
+        0o236 => Some(Op::Assq),
+        0o237 => Some(Op::Nreverse),
+        0o240 => Some(Op::Setcar),
+        0o241 => Some(Op::Setcdr),
+        0o242 => Some(Op::CarSafe),
+        0o243 => Some(Op::CdrSafe),
+        0o244 => Some(Op::Nconc),
+        0o245 => Some(Op::Quo),
+        0o246 => Some(Op::Rem),
+        0o247 => Some(Op::Numberp),
+        0o250 => Some(Op::Integerp),
+        B_SWITCH => Some(Op::Switch),
+        _ => None,
+    }
+}
+
 /// Decode one instruction starting at `offset`.  `code` is the whole
 /// string so jump validation can happen later against full bounds.
 fn decode_instr(code: &[u8], offset: usize) -> Result<Instr, ByteCodeError> {
@@ -362,83 +475,12 @@ fn decode_instr(code: &[u8], offset: usize) -> Result<Instr, ByteCodeError> {
         0o030..=0o037 => Op::VarBind(reader.family_operand(B_VARBIND)?),
         0o040..=0o047 => Op::Call(reader.family_operand(B_CALL)?),
         0o050..=0o057 => Op::Unbind(reader.family_operand(B_UNBIND)?),
-        B_POPHANDLER => Op::PopHandler,
         B_PUSHCONDITIONCASE => Op::PushConditionCase {
             target: reader.fetch2()?,
         },
         B_PUSHCATCH => Op::PushCatch {
             target: reader.fetch2()?,
         },
-        B_NTH => Op::Nth,
-        0o071 => Op::Symbolp,
-        0o072 => Op::Consp,
-        0o073 => Op::Stringp,
-        0o074 => Op::Listp,
-        0o075 => Op::Eq,
-        0o076 => Op::Memq,
-        0o077 => Op::Not,
-        0o100 => Op::Car,
-        0o101 => Op::Cdr,
-        0o102 => Op::Cons,
-        0o103 => Op::List1,
-        0o104 => Op::List2,
-        0o105 => Op::List3,
-        0o106 => Op::List4,
-        0o107 => Op::Length,
-        0o110 => Op::Aref,
-        0o111 => Op::Aset,
-        0o112 => Op::SymbolValue,
-        0o113 => Op::SymbolFunction,
-        0o114 => Op::Set,
-        0o115 => Op::Fset,
-        0o116 => Op::Get,
-        0o117 => Op::Substring,
-        0o120 => Op::Concat2,
-        0o121 => Op::Concat3,
-        0o122 => Op::Concat4,
-        0o123 => Op::Sub1,
-        0o124 => Op::Add1,
-        0o125 => Op::Eqlsign,
-        0o126 => Op::Gtr,
-        0o127 => Op::Lss,
-        0o130 => Op::Leq,
-        0o131 => Op::Geq,
-        0o132 => Op::Diff,
-        0o133 => Op::Negate,
-        0o134 => Op::Plus,
-        0o135 => Op::Max,
-        0o136 => Op::Min,
-        0o137 => Op::Mult,
-        0o140 => Op::Point,
-        0o141 => Op::SaveCurrentBufferObsolete,
-        0o142 => Op::GotoChar,
-        0o143 => Op::Insert,
-        0o144 => Op::PointMax,
-        0o145 => Op::PointMin,
-        0o146 => Op::CharAfter,
-        0o147 => Op::FollowingChar,
-        0o150 => Op::PrecedingChar,
-        0o151 => Op::CurrentColumn,
-        0o152 => Op::IndentTo,
-        0o154 => Op::Eolp,
-        0o155 => Op::Eobp,
-        0o156 => Op::Bolp,
-        0o157 => Op::Bobp,
-        0o160 => Op::CurrentBuffer,
-        0o161 => Op::SetBuffer,
-        0o162 => Op::SaveCurrentBuffer,
-        0o164 => Op::InteractiveP,
-        0o165 => Op::ForwardChar,
-        0o166 => Op::ForwardWord,
-        0o167 => Op::SkipCharsForward,
-        0o170 => Op::SkipCharsBackward,
-        0o171 => Op::ForwardLine,
-        0o172 => Op::CharSyntax,
-        0o173 => Op::BufferSubstring,
-        0o174 => Op::DeleteRegion,
-        0o175 => Op::NarrowToRegion,
-        0o176 => Op::Widen,
-        0o177 => Op::EndOfLine,
         B_CONSTANT2 => Op::Constant2(reader.fetch2()?),
         B_GOTO => Op::Goto {
             target: reader.fetch2()?,
@@ -455,39 +497,6 @@ fn decode_instr(code: &[u8], offset: usize) -> Result<Instr, ByteCodeError> {
         0o206 => Op::GotoIfNonNilElsePop {
             target: reader.fetch2()?,
         },
-        B_RETURN => Op::Return,
-        0o210 => Op::Discard,
-        0o211 => Op::Dup,
-        0o212 => Op::SaveExcursion,
-        0o213 => Op::SaveWindowExcursion,
-        0o214 => Op::SaveRestriction,
-        0o215 => Op::Catch,
-        0o216 => Op::UnwindProtect,
-        0o217 => Op::ConditionCase,
-        0o220 => Op::TempOutputBufferSetup,
-        0o221 => Op::TempOutputBufferShow,
-        0o223 => Op::SetMarker,
-        0o224 => Op::MatchBeginning,
-        0o225 => Op::MatchEnd,
-        0o226 => Op::Upcase,
-        0o227 => Op::Downcase,
-        0o230 => Op::StringEqlsign,
-        0o231 => Op::StringLss,
-        0o232 => Op::Equal,
-        0o233 => Op::Nthcdr,
-        0o234 => Op::Elt,
-        0o235 => Op::Member,
-        0o236 => Op::Assq,
-        0o237 => Op::Nreverse,
-        0o240 => Op::Setcar,
-        0o241 => Op::Setcdr,
-        0o242 => Op::CarSafe,
-        0o243 => Op::CdrSafe,
-        0o244 => Op::Nconc,
-        0o245 => Op::Quo,
-        0o246 => Op::Rem,
-        0o247 => Op::Numberp,
-        0o250 => Op::Integerp,
         B_LISTN => Op::ListN(reader.fetch()? as u8),
         B_CONCATN => Op::ConcatN(reader.fetch()? as u8),
         B_INSERTN => Op::InsertN(reader.fetch()? as u8),
@@ -500,12 +509,15 @@ fn decode_instr(code: &[u8], offset: usize) -> Result<Instr, ByteCodeError> {
                 preserve_tos: raw & 0x80 != 0,
             }
         }
-        B_SWITCH => Op::Switch,
         B_CONSTANT.. => Op::Constant((byte - B_CONSTANT) as u16),
         // Undefined byte values: 0o063-0o067, 0o153, 0o163, 0o200,
         // 0o222, 0o251-0o256, 0o264, 0o265, 0o270-0o277.  GNU's exec
         // loop signals "Invalid byte opcode" for all of them.
-        _ => return Err(ByteCodeError::UnknownOpcode { offset, byte }),
+        // Every opcode with no operand: the table `operandless_op' reads.
+        _ => match plain_op(byte) {
+            Some(op) => op,
+            None => return Err(ByteCodeError::UnknownOpcode { offset, byte }),
+        },
     };
     Ok(Instr {
         offset,
@@ -693,27 +705,28 @@ pub struct ByteCodeObject {
 /// for that byte alone, found once for all 256.
 #[inline]
 fn operandless_op(byte: u8) -> Option<Op> {
-    static OPS: std::sync::OnceLock<[Option<Op>; 256]> = std::sync::OnceLock::new();
-    OPS.get_or_init(|| {
-        std::array::from_fn(|byte| {
-            let code = [byte as u8];
-            decode_instr(&code, 0)
-                .ok()
-                .filter(|instr| {
-                    instr.len == 1
-                        && !matches!(
-                            instr.op,
-                            Op::VarRef(_)
-                                | Op::VarSet(_)
-                                | Op::VarBind(_)
-                                | Op::Constant(_)
-                                | Op::Constant2(_)
-                        )
-                })
-                .map(|instr| instr.op)
-        })
-    })[usize::from(byte)]
+    OPERANDLESS_OPS[usize::from(byte)]
 }
+
+/// `operandless_op's answers, built at compile time: the opcodes with no
+/// operand, and the stack-ref, call and unbind families' members whose
+/// operand is in the opcode (a variable family's index names a constant
+/// to check, and stays out).
+static OPERANDLESS_OPS: [Option<Op>; 256] = {
+    let mut table = [None; 256];
+    let mut index = 0;
+    while index < 256 {
+        let byte = index as u8;
+        table[index] = match byte {
+            0o001..=0o005 => Some(Op::StackRef((byte - B_STACK_REF) as u16)),
+            0o040..=0o045 => Some(Op::Call((byte - B_CALL) as u16)),
+            0o050..=0o055 => Some(Op::Unbind((byte - B_UNBIND) as u16)),
+            _ => plain_op(byte),
+        };
+        index += 1;
+    }
+    table
+};
 
 /// Decode only the instruction about to execute. Bounds checks protect Rust
 /// indexing; no instruction inventory or offset table survives a callback.
@@ -952,6 +965,29 @@ pub fn classify_elc_header(bytes: &[u8]) -> ElcKind {
 #[allow(clippy::unwrap_used)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn the_operandless_table_is_the_decoders_answer_for_each_byte() {
+        // The one-byte instructions decode_instr decodes alone, without a
+        // constant index to check.
+        for byte in 0..=255u8 {
+            let expected = decode_instr(&[byte], 0)
+                .ok()
+                .filter(|instr| {
+                    instr.len == 1
+                        && !matches!(
+                            instr.op,
+                            Op::VarRef(_)
+                                | Op::VarSet(_)
+                                | Op::VarBind(_)
+                                | Op::Constant(_)
+                                | Op::Constant2(_)
+                        )
+                })
+                .map(|instr| instr.op);
+            assert_eq!(operandless_op(byte), expected, "opcode {byte:#o}");
+        }
+    }
 
     #[test]
     fn the_family_decoder_answers_as_fetch_instruction() {
