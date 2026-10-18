@@ -2790,7 +2790,19 @@ impl InterpreterState {
     /// the frame depth `leave_plain_funcall' restores.
     #[inline(always)]
     pub(crate) fn enter_plain_funcall(&mut self, function: Value, args: &[Value]) -> usize {
-        self.lisp_eval_depth += 1;
+        self.enter_plain_funcall_at(function, args).0
+    }
+
+    /// `enter_plain_funcall', answering Ffuncall's depth after the call's
+    /// count as well.
+    #[inline(always)]
+    pub(crate) fn enter_plain_funcall_at(
+        &mut self,
+        function: Value,
+        args: &[Value],
+    ) -> (usize, usize) {
+        let lisp_eval_depth = self.lisp_eval_depth + 1;
+        self.lisp_eval_depth = lisp_eval_depth;
         let depth = self.backtrace_frames.len();
         Interpreter::write_backtrace_frame(
             &mut self.backtrace_frames,
@@ -2798,7 +2810,7 @@ impl InterpreterState {
             || FrameArgs::borrowed(args),
             true,
         );
-        depth
+        (depth, lisp_eval_depth)
     }
 
     /// The frame pop and depth restore of a call's normal return.

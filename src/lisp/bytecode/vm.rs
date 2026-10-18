@@ -264,6 +264,20 @@ impl BcStack {
             )
         }
     }
+
+    /// The LEN operands below TOP, the frame's top as the verified loop
+    /// holds it: `slice_from_unchecked' of the last LEN without the
+    /// frame's base.
+    ///
+    /// # Safety
+    /// As `slice_from_unchecked's, TOP being the stack's top.
+    #[inline(always)]
+    unsafe fn below_top_unchecked(&self, top: usize, len: usize) -> &'static [Value] {
+        debug_assert!(top == self.top && len <= self.len());
+        unsafe {
+            std::slice::from_raw_parts(self.words.as_ptr().add(top - len).cast::<Value>(), len)
+        }
+    }
 }
 
 impl std::ops::Deref for BcStack {
@@ -625,7 +639,7 @@ fn callee_function(func: Value) -> Value {
 /// signal; None, with nothing changed but the stack's TOP, for
 /// `call_plain' to take.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-#[inline(never)]
+#[inline(always)]
 fn call_native_nested(
     vm: &mut VmFrames<'_>,
     top: usize,
@@ -656,18 +670,66 @@ fn call_native_nested(
         return None;
     }
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
-    let args_start = state.bc_stack.len() - argc;
     // SAFETY: as the Call arm's: the arguments stay on the caller's stack
     // until the call returns, and verification found them there.
-    let call_args = unsafe { state.bc_stack.slice_from_unchecked(args_start, argc) };
-    let backtrace_depth = state.enter_plain_funcall(func, call_args);
+    let call_args = unsafe { state.bc_stack.below_top_unchecked(top, argc) };
+    let (backtrace_depth, lisp_eval_depth) = state.enter_plain_funcall_at(func, call_args);
+    let depths = (lisp_eval_depth, backtrace_depth + 1);
     // SAFETY: NESTED is the active call of this runtime and interpreter,
     // and TARGET takes at most six arguments, among them CALL_ARGS.
-    let result =
-        unsafe { runtime.invoke_nested_fixed(nested, vm.interp, vm.env, target, call_args) };
+    let result = unsafe {
+        runtime.invoke_nested_fixed(nested, vm.interp, vm.env, target, call_args, depths)
+    };
     let result = vm.interp.settle_frame_result(result, vm.env);
     vm.interp.leave_plain_funcall(backtrace_depth);
     Some(result)
+}
+
+/// `call_native_nested' for ARGC arguments, a constant in the opcodes
+/// that pack the count: the registers are the arguments' loads and
+/// zeros, with no dispatch on the count.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[inline(always)]
+fn call_native_nested_fixed<const ARGC: usize>(
+    vm: &mut VmFrames<'_>,
+    top: usize,
+    func: Value,
+    native: crate::lisp::types::NativeFunctionRef,
+) -> Option<Result<Value, LispError>> {
+    call_native_nested(vm, top, ARGC, func, native)
+}
+
+/// `call_native_nested' for a count in the operand (Bcall6, Bcall7).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[inline(never)]
+fn call_native_nested_counted(
+    vm: &mut VmFrames<'_>,
+    top: usize,
+    argc: usize,
+    func: Value,
+    native: crate::lisp::types::NativeFunctionRef,
+) -> Option<Result<Value, LispError>> {
+    call_native_nested(vm, top, argc, func, native)
+}
+
+/// `call_native_nested' by ARGC: one of the fixed counts' copies, which an
+/// arm whose count is a constant calls directly.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[inline(always)]
+fn call_native_nested_by_count(
+    vm: &mut VmFrames<'_>,
+    top: usize,
+    argc: usize,
+    func: Value,
+    native: crate::lisp::types::NativeFunctionRef,
+) -> Option<Result<Value, LispError>> {
+    match argc {
+        0 => call_native_nested_fixed::<0>(vm, top, func, native),
+        1 => call_native_nested_fixed::<1>(vm, top, func, native),
+        2 => call_native_nested_fixed::<2>(vm, top, func, native),
+        3 => call_native_nested_fixed::<3>(vm, top, func, native),
+        _ => call_native_nested_counted(vm, top, argc, func, native),
+    }
 }
 
 /// Bcall into a native-compiled function or a subr when nothing else
@@ -1730,7 +1792,8 @@ fn run_verified(
                         }
                         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
                         if let Some(native) = function.native_function_ref()
-                            && let Some(result) = call_native_nested(vm, top, argc, func, native)
+                            && let Some(result) =
+                                call_native_nested_by_count(vm, top, argc, func, native)
                         {
                             match result {
                                 Ok(value) => {

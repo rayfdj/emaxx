@@ -218,7 +218,7 @@ pub(crate) fn with_thread_suspended<R>(
                 // environment, not a different or already parked thread.
                 let active = unsafe { &*active };
                 assert_eq!(active.interpreter, std::ptr::from_mut(interpreter));
-                (active.runtime, Some(unsafe { &*active.environment }))
+                (active.runtime, Some(unsafe { &*active.environment.get() }))
             };
             if runtime.is_null() {
                 return Ok(body(interpreter));

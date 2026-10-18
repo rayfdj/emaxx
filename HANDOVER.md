@@ -2068,6 +2068,56 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   unreadable (`llvm-profdata`: "too much profile data"); the same
   processes ran cleanly on a fresh file, and the build run again
   succeeded.
+- **Native execution's slower wall time on `a2494c7` is its layout.**
+  Plain release builds of `6242417` and `5658349` (line tables, no
+  profile) run native execution in 415,311,498 and 415,302,186
+  instructions a unit, and in 0.2355 and 0.2541 seconds by minimum (again
+  0.2368 and 0.2483; GNU 0.38): the same work, laid out differently, as
+  in the profile-guided pair. Bytecode-to-native, the other workload
+  through the native call boundary, measures the same on both (0.1169 and
+  0.1186 at 4,000,000), so nothing in the rounds since slowed native
+  calls; native execution stays near half of GNU's time.
+- **A Bcall into native code by its count, inline in the loop.** The
+  nested native call (`call_native_nested`, a Bcall of a native function
+  inside an active native call) spent 220 instructions a call against
+  GNU's Bcall arm and `funcall_subr` (about 40 for the call itself). It is
+  now one copy per count for Bcall0 to Bcall3, whose count is a constant
+  in its arm (the registers are the arguments' loads and zeros with no
+  jump table on the count; Bcall4 and up keep one copy taking the count),
+  inline in `run_verified`'s arm; the arguments are read below the
+  loop's top without the frame's base; the native frame records the
+  Ffuncall depth and backtrace count `enter_plain_funcall_at` just set
+  instead of reading them back; and the callee's environment is written
+  into the active call's record for the call (`ActiveCall::environment`
+  is a `Cell`, the helpers' `with_active` handing out a shared reference)
+  instead of a new record swapped into the thread-local and back.
+  Bytecode-to-native: 486 → 444 instructions an iteration (the call path
+  220 → 202 by the count, 198 with the arguments and the environment;
+  inlining took 17 more, the depths 2); bytecode calls 520 → 512 (the
+  loop's registers moved); interpreted-to-native unchanged (3,038 and
+  3,039, its native calls go through `call_fixed_function`). Wall time,
+  plain line-table builds, pilot sizes, five rounds of five samples,
+  minimum ratio to GNU, the same changes without the inlining in
+  parentheses: bytecode-to-native 1.019 and 0.996 in two runs (1.080,
+  1.060; `5658349` measured 1.10), bytecode calls 1.022 and 1.034 (1.032,
+  1.041); at the full 16,000,000, three rounds of five, 1.032 (1.058).
+  What is left of the call: the escape record (nine stores) and the
+  native frame's push and pop with its balance checks (about 40), the
+  handler list's reconciliation before and after (about 14), the entry
+  tests, and the loop's check that its code is still current after the
+  call (about 16). GNU's `exec_byte_code` runs 339 instructions an
+  iteration of this loop, Emaxx's loop without the call about 160.
+  Validation (gate profile, `--test-threads=1`): the lightweight group's
+  598 tests, including the native runtime's and the byte-code VM's, and
+  the seven Bcall, funcall and verified-code tests among them
+  `bytecode_calls_native_functions_nested_in_native_calls_like_funcall_subr`
+  (a signal and a throw out of a nested native callee) pass; clippy
+  `-D warnings` and rustfmt pass. The 286 evaluator and primitive tests
+  whose names mention native code, byte code, funcall, signals or
+  backtraces were still running at the commit, the two failures among
+  them so far this container's known ones (the as-root
+  `byte_compile_file_reports_an_unwritable_target_like_gnu` and
+  `batch_startup_image_round_trip_or_explicit_native_image_limit`).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2559,7 +2609,10 @@ buffer-local variables by flags): full Rust gate passed (run
 39149792527), frozen passed on its first attempt (run 39149794338).
 **On `8aaccaa`** (the undo list's view kept across marker adjustments):
 full Rust gate passed (run 39153644820), frozen passed on its first
-attempt (run 39153646470); PR #90 merged it into main. Locally,
+attempt (run 39153646470); PR #90 merged it into main. **On `5658349`**
+(with `a2494c7`: the print, message and word-boundary variables by their
+symbols, the watcher flag first): full Rust gate passed (run
+39158088826), frozen passed on its first attempt (run 39158090668). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the

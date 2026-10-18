@@ -1091,8 +1091,12 @@ pub(crate) fn call_fixed_function(
         // call, as `current_runtime' does; NESTED is its call, and TARGET
         // takes at most six arguments, among them ARGUMENTS.
         let runtime = unsafe { &mut *nested.runtime() };
+        let depths = (
+            interpreter.lisp_eval_depth,
+            interpreter.backtrace_frames_len(),
+        );
         return Some(unsafe {
-            runtime.invoke_nested_fixed(nested, interpreter, environment, target, arguments)
+            runtime.invoke_nested_fixed(nested, interpreter, environment, target, arguments, depths)
         });
     }
     // `descriptor' and `check_arity' for this case.
