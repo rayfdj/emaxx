@@ -161,6 +161,7 @@ impl StringObjectRef {
         guard_taken();
         if cell.code.get() == CodeState::Current as u8 {
             cell.code.set(CodeState::Stale as u8);
+            CODE_CHANGES.store(code_changes().wrapping_add(1), Ordering::Relaxed);
         }
         StringBorrowMut(cell)
     }
@@ -297,6 +298,17 @@ fn empty_string(multibyte: bool) -> StringObjectRef {
 }
 
 static FREE_LIST: AtomicPtr<StringCell> = AtomicPtr::new(std::ptr::null_mut());
+/// How many times a string whose bytes were verified as code has been
+/// borrowed to change (its state `Current' turned `Stale'): a cache of
+/// programs that holds the count it was filled at holds only current code
+/// while the count stays the same.
+static CODE_CHANGES: AtomicUsize = AtomicUsize::new(0);
+
+/// The count of `CODE_CHANGES'.
+#[inline(always)]
+pub(crate) fn code_changes() -> usize {
+    CODE_CHANGES.load(Ordering::Relaxed)
+}
 static BUMP_NEXT: AtomicUsize = AtomicUsize::new(0);
 static BUMP_END: AtomicUsize = AtomicUsize::new(0);
 static LIVE_STRINGS: AtomicUsize = AtomicUsize::new(0);

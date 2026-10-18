@@ -328,6 +328,15 @@ static LAST_INSERTED_FREE_INDEX: AtomicUsize = AtomicUsize::new(FREE_LIST_ARRAY_
 static LIVE_VECTORS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_VECTOR_SLOTS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_CLOSURES: AtomicUsize = AtomicUsize::new(0);
+/// The vector sweeps so far, each counted before it frees anything (see
+/// `verify::entry_program').
+static VECTOR_SWEEPS: AtomicUsize = AtomicUsize::new(0);
+
+/// The count of `VECTOR_SWEEPS'.
+#[inline(always)]
+pub(crate) fn vector_sweeps() -> usize {
+    VECTOR_SWEEPS.load(Ordering::Relaxed)
+}
 static LIVE_CLOSURE_SLOTS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_BIGNUMS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_BUFFERS: AtomicUsize = AtomicUsize::new(0);
@@ -1095,11 +1104,10 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
             }
             VectorTag::Finalizer => std::ptr::drop_in_place(body.cast::<super::FinalizerState>()),
             // A closure owns only inline Lisp words, which have no Rust
-            // destructor. Its children are reclaimed by tracing, as in C.
-            VectorTag::Closure
-            | VectorTag::CharTable
-            | VectorTag::SubCharTable
-            | VectorTag::SymbolWithPos => {}
+            // destructor. Its children are reclaimed by tracing, as in C;
+            // the byte-code entry cache's entry of it goes.
+            VectorTag::Closure => crate::lisp::bytecode::verify::forget_closure(header as usize),
+            VectorTag::CharTable | VectorTag::SubCharTable | VectorTag::SymbolWithPos => {}
             VectorTag::ReaderForm => std::ptr::drop_in_place(body.cast::<ReaderForm>()),
             VectorTag::HashTable => hash_tables::cleanup(header),
             VectorTag::Record if generic_records::record_has_inline_slots(header) => {}
@@ -1234,6 +1242,10 @@ pub(crate) fn close_native_units_for_runtime(thread_cell: *mut std::ffi::c_void)
 
 /// alloc.c's `sweep_vectors'.
 pub(crate) fn sweep_vectors(epoch: u32) {
+    // The byte-code entry cache of this thread forgets each closure freed
+    // below, and stays in step; other threads' empty theirs.
+    let closures_in_sweep = crate::lisp::bytecode::verify::closures_in_sweep();
+    VECTOR_SWEEPS.store(vector_sweeps().wrapping_add(1), Ordering::Relaxed);
     // alloc.c:sweep_buffers runs before vector storage can be reclaimed.
     // The chains are weak and can include markers whose buffer is also dead.
     // Checked builds find the buffers by every header as well.
@@ -1393,6 +1405,7 @@ pub(crate) fn sweep_vectors(epoch: u32) {
     LIVE_OVERLAYS.store(stats.overlays, Ordering::Relaxed);
     LIVE_RECORDS.store(stats.records, Ordering::Relaxed);
     LIVE_RECORD_SLOTS.store(stats.record_slots, Ordering::Relaxed);
+    crate::lisp::bytecode::verify::closures_swept(closures_in_sweep);
 }
 
 /// The vector census (gcstat's `total_vectors' and `total_vector_slots'

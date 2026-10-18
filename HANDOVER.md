@@ -1599,6 +1599,40 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   record 18, the handler reconciliation twice about 16, the native call
   frame's push and pop about 45, the active call 8, the argument by the
   count 13 and the escape record's call 18.
+- **The byte-code entry cache by identity, and a list's cycle test by a
+  count.** `entry_program`'s hit compared the closure's four slot words
+  with the entry's (a closure address reused after a collection), and the
+  program's code string state and verification (`Current`, `is_current`):
+  about 45 instructions a call with the hash. A closure's slots never
+  change once it is published, so its address names the program the
+  entry read until the closure is freed, and only the vector sweep frees
+  one: the sweep now forgets each freed closure's entry in its own
+  thread's table (`forget_closure`), and a table whose thread did not run
+  the last sweep is emptied at its next miss (`CLOSURES_SWEPT` against
+  `vector_sweeps`). A string verified as code turns `Stale` only by
+  `borrow_mut`, which now counts the change (`code_changes`); an entry
+  holds the count it was filled at. A hit is the identity and the two
+  counts. The table has 1,024 slots where it had 256: with the words
+  gone a hit costs no slot loads, and undo's working set of closures had
+  collided in 256 (its refills ran 41 to 340 a unit depending on where
+  the heap put the closures; 38 with 1,024). Bcall's frame entry copies
+  the caller's program into the frame's slot before the callee's goes in
+  (`mem::replace` moved it through a temporary). `CycleGuard::step`
+  counts down to the tortoise's move, out of line, where it compared,
+  stepped and shifted branch-free every step (16 instructions an element
+  of `length` against FOR_EACH_TAIL's 9). Instructions: bytecode calls
+  547.8 → 521.9 an iteration (1.170 → 1.115 of GNU's), native-to-bytecode
+  4,673 → 4,647, mapcar 28.22 → 27.78 million a unit (1.214 → 1.195);
+  undo's own code about 8,000 a unit cheaper, its total moved by glibc's
+  `malloc_consolidate` and `unlink_chunk` (between -19,000 and +11,000 a
+  unit from build to build, with the heap's layout). A test frees called
+  closures among kept ones and checks that the closures taking their
+  addresses run their own constants.
+  Validation (gate profile, one test thread, CI's stack): 132 byte-code,
+  verifier and closure tests, 103 allocation, weak-reference and
+  collection tests, 145 mapping, length, snapshot, keymap and syntax
+  tests, 180 native-runtime tests and the evaluation suite's 389
+  tests pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,

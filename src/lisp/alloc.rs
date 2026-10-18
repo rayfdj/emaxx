@@ -35,7 +35,7 @@ pub use strings::StringObjectRef;
 pub(crate) use strings::string_data_census;
 pub(crate) use strings::{
     CodeState, PendingStringData, StringAllocation, allocate_string, borrowed_string_roots,
-    live_string_object_census, retire_string_data, string_data_size, sweep_strings,
+    code_changes, live_string_object_census, retire_string_data, string_data_size, sweep_strings,
 };
 pub(crate) mod vectors;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};

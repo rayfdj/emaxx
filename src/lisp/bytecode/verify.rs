@@ -177,19 +177,19 @@ fn verified_code_slow(
 struct ClosureEntry {
     /// The closure's identity; zero for an entry that holds nothing.
     identity: usize,
-    /// The words of the closure's argument template, code, constants and
-    /// depth slots, which the program was read from.
-    slots: [usize; 4],
+    /// `code_changes' when the entry was filled: no verified code has
+    /// changed while it is the same.
+    code_changes: usize,
     /// `ByteCodeObject::for_call's program, with the verified code for
     /// its entry.
     program: MaybeUninit<ByteCodeObject>,
 }
 
-const CLOSURE_SLOTS: usize = 256;
+const CLOSURE_SLOTS: usize = 1024;
 
 const EMPTY_ENTRY: ClosureEntry = ClosureEntry {
     identity: 0,
-    slots: [0; 4],
+    code_changes: 0,
     program: MaybeUninit::uninit(),
 };
 
@@ -214,6 +214,11 @@ thread_local! {
     /// of a spawned thread's stack), and the entries' words there kept
     /// their closures' code and constants alive.
     static CLOSURES: Cell<*mut ClosureEntry> = const { Cell::new(empty_closures()) };
+    /// `vector_sweeps' when this thread's table last held no entry of a
+    /// freed closure: a sweep this thread runs forgets the closures it
+    /// frees (`forget_closure') and keeps the count; one another thread
+    /// ran leaves it behind, and the next lookup empties the table.
+    static CLOSURES_SWEPT: Cell<usize> = const { Cell::new(0) };
     /// The owner of this thread's table, which frees it at the thread's
     /// exit.
     static CLOSURE_TABLE: ClosureTable = const { ClosureTable(Cell::new(std::ptr::null_mut())) };
@@ -259,51 +264,36 @@ fn closure_slot(identity: usize) -> usize {
 /// that entry: what `ByteCodeObject::for_call' reads and `verified_code'
 /// finds, or None when either finds nothing.  A closure's slots never
 /// change once it is published (Lisp cannot aset one), so what the last
-/// entry found stands while the closure's four slots hold the same words
-/// -- another closure allocated where a collected one was matches only if
-/// every word is the same, and so reads the same program -- and the code
-/// string still holds the bytes that were verified.
+/// entry found stands while the closure is the one it read -- the vector
+/// sweep, which alone frees a closure and lets another take its address,
+/// forgets the entry of each closure it frees -- and no string verified as
+/// code has changed since, so the code string still holds the bytes that
+/// were verified.
 ///
 /// The program stays where the answer points until the next call here or
 /// to `forget' on this thread.
 #[inline(always)]
 pub(crate) fn entry_program(closure: ClosureRef) -> Option<NonNull<ByteCodeObject>> {
-    if closure.public_len() < 4 {
-        return None;
-    }
-    // SAFETY: the closure has at least four slots.
-    let slots = [0, 1, 2, 3].map(|index| unsafe { closure.get_unchecked(index) }.word());
     let identity = closure.identity();
     // SAFETY: the thread's table stays in place until its exit; nothing
     // else refers to this entry while this runs, and nothing here reenters.
     // The empty table is only read here.
     let entry = unsafe { &*CLOSURES.get().add(closure_slot(identity)) };
-    // The words compared one by one: an array's `==' can become a call
-    // to bcmp.
-    let same_slots = entry
-        .slots
-        .iter()
-        .zip(slots)
-        .fold(0, |differ, (cached, word)| differ | (cached ^ word))
-        == 0;
-    if entry.identity == identity && same_slots {
+    if entry.identity == identity
+        && entry.code_changes == crate::lisp::alloc::code_changes()
+        && CLOSURES_SWEPT.get() == crate::lisp::alloc::vectors::vector_sweeps()
+    {
         // SAFETY: an entry with an identity holds its program.
-        let program = unsafe { entry.program.assume_init_ref() };
-        if program.code.string().code_state() == CodeState::Current
-            && program.verified.is_some_and(VerifiedCode::is_current)
-        {
-            return Some(NonNull::from(program));
-        }
+        return Some(NonNull::from(unsafe { entry.program.assume_init_ref() }));
     }
-    entry_program_slow(closure, identity, slots)
+    entry_program_slow(closure, identity)
 }
 
 #[inline(never)]
-fn entry_program_slow(
-    closure: ClosureRef,
-    identity: usize,
-    slots: [usize; 4],
-) -> Option<NonNull<ByteCodeObject>> {
+fn entry_program_slow(closure: ClosureRef, identity: usize) -> Option<NonNull<ByteCodeObject>> {
+    if closure.public_len() < 4 {
+        return None;
+    }
     let mut program = ByteCodeObject::for_call(closure)?;
     let ArgSpec::Packed { nonrest, rest, .. } = program.argspec else {
         unreachable!("for_call reads packed argument lists")
@@ -312,11 +302,56 @@ fn entry_program_slow(
         &program,
         usize::from(nonrest) + usize::from(rest),
     )?);
+    let table = closure_table()?;
+    let sweeps = crate::lisp::alloc::vectors::vector_sweeps();
+    if CLOSURES_SWEPT.get() != sweeps {
+        // A sweep this thread did not run may have freed closures that
+        // entries name.
+        // SAFETY: as in `entry_program', the thread's own table.
+        for entry in unsafe { std::slice::from_raw_parts_mut(table, CLOSURE_SLOTS) } {
+            entry.identity = 0;
+        }
+        CLOSURES_SWEPT.set(sweeps);
+    }
     // SAFETY: as in `entry_program', in the thread's own table.
-    let entry = unsafe { &mut *closure_table()?.add(closure_slot(identity)) };
+    let entry = unsafe { &mut *table.add(closure_slot(identity)) };
     entry.identity = identity;
-    entry.slots = slots;
+    // Read after the verification, which may have made its code current.
+    entry.code_changes = crate::lisp::alloc::code_changes();
     Some(NonNull::from(entry.program.write(program)))
+}
+
+/// Whether this thread's table holds no entry of a closure freed by a
+/// sweep so far: a sweep this thread runs keeps it so (`forget_closure',
+/// `closures_swept').
+pub(crate) fn closures_in_sweep() -> bool {
+    CLOSURES_SWEPT
+        .try_with(|swept| swept.get() == crate::lisp::alloc::vectors::vector_sweeps())
+        .unwrap_or(false)
+}
+
+/// The sweep frees the closure at IDENTITY: this thread's entry of it goes.
+pub(crate) fn forget_closure(identity: usize) {
+    let _ = CLOSURES.try_with(|entries| {
+        let table = entries.get();
+        if table == empty_closures() {
+            return;
+        }
+        // SAFETY: as in `entry_program', in the thread's own table.
+        let entry = unsafe { &mut *table.add(closure_slot(identity)) };
+        if entry.identity == identity {
+            entry.identity = 0;
+        }
+    });
+}
+
+/// A sweep this thread ran is over, and IN_SWEEP was `closures_in_sweep'
+/// before it began: its entries name no freed closure.
+pub(crate) fn closures_swept(in_sweep: bool) {
+    if in_sweep {
+        let _ = CLOSURES_SWEPT
+            .try_with(|swept| swept.set(crate::lisp::alloc::vectors::vector_sweeps()));
+    }
 }
 
 /// The string at IDENTITY was collected: no frame can run its code.

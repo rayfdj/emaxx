@@ -766,14 +766,17 @@ fn enter_closure_frame(
         return None;
     }
     let backtrace_depth = state.enter_plain_funcall(func, call_args);
+    // The caller's program copied into the frame's slot, then the callee's
+    // over it: `mem::replace' moved the caller's through a temporary.
     vm.frames.push(BcFrame {
-        program: std::mem::replace(vm.program, callee.clone()),
+        program: vm.program.clone(),
         base: args_start - 1,
         handlers_len: vm.handlers.len(),
         unwinds_len: state.bc_unwinds.len(),
         backtrace_depth,
         op_error_frames: std::mem::take(vm.op_error_frames),
     });
+    *vm.program = callee.clone();
     // setup_frame's `PUSH (*args)' and the optionals' nils.
     state.bc_stack.push_arguments(call_args, entry_depth);
     Some((state.bc_stack.top, entry_depth))
@@ -4144,6 +4147,77 @@ mod tests {
             .expect("a list");
         let values: Vec<_> = values.into_iter().map(Value::fixnum).collect();
         assert_eq!(values, [1, 1, 2, 1, 1, 1].map(Some));
+    }
+
+    #[test]
+    fn a_closure_at_a_swept_closures_address_runs_its_own_program() {
+        // The entry cache answers for a closure's address until a vector
+        // sweep, which alone frees a closure: a closure allocated where a
+        // swept one was runs its own constants, not the program the swept
+        // one's entry read.  Doomed closures, each called once, are
+        // interleaved with kept ones, so that the sweep frees each alone
+        // (it joins neighbouring free vectors) and the next closures of
+        // their size take their places; their addresses are kept hidden
+        // from the conservative scan.
+        const HIDE: usize = 0x5555_5555_5555_5555;
+        fn eval(interp: &mut Interpreter, env: &mut Env, text: &str) -> Value {
+            let form = super::super::super::reader::Reader::new(text)
+                .read()
+                .expect("read form")
+                .expect("a form");
+            interp.eval(&form, env).expect("eval")
+        }
+        fn closure(code: Value, constants: Value) -> Value {
+            Value::Closure(crate::lisp::types::ClosureRef::allocate(&[
+                Value::Integer(0),
+                code,
+                constants,
+                Value::Integer(1),
+            ]))
+        }
+        #[inline(never)]
+        fn call_doomed(interp: &mut Interpreter, env: &mut Env, code: Value) -> Vec<usize> {
+            let ones = eval(interp, env, "[1]");
+            let mut kept = Value::Nil;
+            let mut doomed = Vec::new();
+            for _ in 0..500 {
+                kept = Value::cons(closure(code, ones), kept);
+                let callee = closure(code, ones);
+                let value = interp
+                    .call_function_value(callee, None, &[], env)
+                    .expect("call");
+                assert_eq!(value.fixnum(), Some(1));
+                doomed.push(callee.closure_ref().expect("a closure").identity() ^ HIDE);
+            }
+            kept = Value::cons(closure(code, ones), kept);
+            interp.set_variable("emaxx-test-kept-closures", kept, env);
+            doomed
+        }
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let code = eval(&mut interp, &mut env, "(unibyte-string 192 135)");
+        interp.set_variable("emaxx-test-code", code, &mut env);
+        let doomed = call_doomed(&mut interp, &mut env, code);
+        crate::lisp::alloc::clobber_stack();
+        crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
+            .expect("collect");
+        let twos = eval(&mut interp, &mut env, "[2]");
+        let mut fresh = Value::Nil;
+        let mut taken = 0;
+        for _ in 0..20_000 {
+            let callee = closure(code, twos);
+            fresh = Value::cons(callee, fresh);
+            let identity = callee.closure_ref().expect("a closure").identity();
+            if doomed.contains(&(identity ^ HIDE)) {
+                let value = interp
+                    .call_function_value(callee, None, &[], &mut env)
+                    .expect("call");
+                assert_eq!(value.fixnum(), Some(2), "the new closure's own constant");
+                taken += 1;
+            }
+        }
+        assert!(taken > 0, "closures take swept closures' addresses");
+        assert!(fresh.is_cons());
     }
 
     #[test]
