@@ -308,9 +308,35 @@ impl StringObjectRef {
         multibyte: bool,
         extended_chars: Vec<(usize, u32)>,
     ) -> Self {
+        // ASCII is its own encoding, one byte a character: the text goes
+        // into the string's data with no byte vector between and no count.
+        if extended_chars.is_empty() && text.is_ascii() {
+            return Self::from_slice(
+                text.as_bytes(),
+                text.len(),
+                multibyte,
+                props,
+                StringAllocation::Ordinary,
+            );
+        }
         let bytes = encode_text(&text, multibyte, &extended_chars)
             .expect("string constructor must supply valid Lisp characters");
         Self::from_encoded(bytes, text.chars().count(), multibyte, props)
+    }
+
+    /// `SharedText::new' for borrowed host text: ASCII is copied once,
+    /// into the string's data, and other text takes `new's conversion.
+    pub(crate) fn from_host_str(text: &str) -> Self {
+        if text.is_ascii() {
+            return Self::from_slice(
+                text.as_bytes(),
+                text.len(),
+                false,
+                Vec::new(),
+                StringAllocation::Ordinary,
+            );
+        }
+        Self::new(text.to_owned())
     }
 }
 

@@ -19,7 +19,16 @@ impl Interpreter {
         buffer_id
     }
 
-    pub fn related_buffer_ids(&self, buffer_id: u64) -> Vec<u64> {
+    pub fn related_buffer_ids(&self, buffer_id: u64) -> smallvec::SmallVec<[u64; 4]> {
+        if self.indirect_buffers.is_empty() {
+            // Every buffer is its own root: BUFFER_ID's text is its own.
+            return self
+                .buffer_list
+                .iter()
+                .map(|(id, _)| *id)
+                .filter(|id| *id == buffer_id)
+                .collect();
+        }
         let root = self.root_buffer_id(buffer_id);
         self.buffer_list
             .iter()

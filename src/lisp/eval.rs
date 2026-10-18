@@ -3313,9 +3313,11 @@ pub(crate) type MarkedIds = HashSet<u64, crate::lisp::types::IdentityBuildHasher
 pub(crate) struct LispReachability {
     /// Mark before enqueueing so cycles terminate. Drain every root's reachable
     /// graph before the weak-table fixed point or either heap can be swept.
-    /// alloc.c's `mark_stk': the objects reached and not yet traced,
-    /// copied as words.
+    /// alloc.c's `mark_stk': the objects marked and not yet traced, copied
+    /// as words (an object that holds nothing to trace is marked alone).
     pending: Vec<Value>,
+    /// Whether an object was marked since `trace_pending' last answered.
+    reached: bool,
     weak_tables: Vec<crate::lisp::types::HashTableRef>,
     /// This collection's number: a cons, string, vector or symbol is
     /// marked by carrying it (alloc.c's mark bit, on the object); the
@@ -3352,6 +3354,7 @@ impl LispReachability {
     fn default_without_epoch() -> Self {
         Self {
             pending: Vec::new(),
+            reached: false,
             weak_tables: Vec::new(),
             retaining: false,
             epoch: 0,
@@ -3424,40 +3427,45 @@ impl LispReachability {
         let mut visited = Vec::new();
         marked.enqueue(&value);
         while let Some(value) = marked.pending.pop() {
-            if marked.mark_object(&value) {
-                visited.push(value);
-                marked.trace_fields(interp, &value);
-            }
+            visited.push(value);
+            marked.trace_fields(interp, &value);
         }
         (marked.epoch, visited)
     }
 
-    /// alloc.c:process_mark_stack: pop an object, mark it, and if it
-    /// was not marked already push what it holds.
+    /// alloc.c:process_mark_stack: pop an object and push what it holds;
+    /// true when something not yet marked was reached since the last
+    /// answer (by this drain or by the enqueues before it).
     fn trace_pending(&mut self, interp: &Interpreter) -> bool {
-        let mut changed = false;
         while let Some(value) = self.pending.pop() {
-            if self.mark_object(&value) {
-                changed = true;
-                self.trace_fields(interp, &value);
-            }
+            self.trace_fields(interp, &value);
         }
-        changed
+        std::mem::take(&mut self.reached)
     }
 
-    /// Queue VALUE's object for marking (nothing for an immediate).
+    /// Mark VALUE's object, and queue it to be traced when it holds
+    /// anything: alloc.c's mark_object tests the mark before it looks
+    /// inside, so an object reached again (a symbol named by many lists)
+    /// costs neither a push nor a pop. Nothing for an immediate.
+    #[inline(always)]
     fn enqueue(&mut self, value: &Value) {
-        if matches!(
-            value.kind(),
-            Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound
-        ) {
+        if !self.mark_object(value) {
             return;
         }
-        self.pending.push(*value);
+        self.reached = true;
+        let holds_nothing = match value.kind() {
+            Kind::BigInteger(_) | Kind::Float(_) | Kind::Marker(_) => true,
+            Kind::StringObject(string) => !string.has_properties_unguarded(),
+            _ => false,
+        };
+        if !holds_nothing {
+            self.pending.push(*value);
+        }
     }
 
     /// alloc.c's mark on the object: true when VALUE's object was not yet
     /// marked in this collection.
+    #[inline(always)]
     fn mark_object(&mut self, value: &Value) -> bool {
         match value.kind() {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => false,
@@ -3486,6 +3494,7 @@ impl LispReachability {
         }
     }
 
+    #[inline(always)]
     fn trace_fields(&mut self, interp: &Interpreter, value: &Value) {
         match value.kind() {
             Kind::NativeCompUnit(unit) => {

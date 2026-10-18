@@ -172,7 +172,7 @@ impl TraceLispRoots for NativeLispRoots<'_> {
                 // then in its owning thread context). This unwind action
                 // carries a restore token with a historical copy: tracing
                 // that copy would retain values replaced by thread swaps.
-                UnwindAction::Special(_) => {}
+                UnwindAction::Special(_) | UnwindAction::SpecialId(_) => {}
                 UnwindAction::Excursion(saved) => saved.trace_lisp_roots(marker),
                 UnwindAction::Restriction(saved) => saved.trace_lisp_roots(marker),
                 UnwindAction::Cleanup { value, .. } => marker.value(value),

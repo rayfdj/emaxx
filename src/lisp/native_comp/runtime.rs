@@ -1073,12 +1073,20 @@ impl HandlerEntry {
     }
 }
 
+/// Each entry is moved on every push and pop: the records of the rare
+/// actions are boxed, so the common ones stay a few words.
 enum UnwindAction {
-    Special(SpecialBindingRestore),
+    Special(Box<SpecialBindingRestore>),
+    /// A binding whose record stays on the interpreter's binding stack
+    /// alone, unbound by its id (`Interpreter::unbind_special_id').
+    SpecialId(u64),
     Excursion(SavedExcursion),
-    Restriction(SavedRestriction),
+    Restriction(Box<SavedRestriction>),
     CurrentBuffer(u64),
-    Cleanup { function: bool, value: Value },
+    Cleanup {
+        function: bool,
+        value: Value,
+    },
 }
 
 struct UnwindEntry {
@@ -1917,14 +1925,17 @@ impl NativeRuntime {
         interpreter.lisp_eval_depth = entry.lisp_eval_depth;
         match entry.action {
             UnwindAction::Special(restore) => {
-                interpreter.restore_special_dynamic(restore, environment)
+                interpreter.restore_special_dynamic(*restore, environment)
+            }
+            UnwindAction::SpecialId(binding_id) => {
+                interpreter.unbind_special_id(binding_id, environment)
             }
             UnwindAction::Excursion(saved) => {
                 interpreter.restore_excursion_state(saved);
                 Ok(())
             }
             UnwindAction::Restriction(saved) => {
-                interpreter.restore_restriction_state(saved);
+                interpreter.restore_restriction_state(*saved);
                 Ok(())
             }
             UnwindAction::CurrentBuffer(buffer_id) => {
@@ -2256,53 +2267,29 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             }
             _ => {}
         }
-        if kind == DirectSubr::Assq && arguments.len() == 2 {
-            return native_assq(active, arguments[0], arguments[1]);
-        }
-        if kind == DirectSubr::Memq && arguments.len() == 2 {
-            return native_memq(active, arguments[0], arguments[1]);
-        }
-        if kind == DirectSubr::Get && arguments.len() == 2 {
-            return invoke_native_get(active, arguments[0], arguments[1]);
-        }
-        if kind == DirectSubr::Apply
-            && let Some(result) = invoke_native_apply(active, arguments)
-        {
-            return result;
-        }
-        if kind == DirectSubr::Mapcar
-            && let Some(result) = invoke_native_mapcar(active, arguments)
-        {
-            return result;
-        }
-        if kind == DirectSubr::Maphash
-            && let Some(result) = invoke_native_maphash(active, arguments)
-        {
-            return result;
-        }
-        if kind == DirectSubr::Nreverse
-            && let [sequence] = arguments
-            && let Some(result) = invoke_native_nreverse(active, *sequence)
-        {
-            return result;
-        }
-        if kind == DirectSubr::Length
-            && let [sequence] = arguments
-            && let Some(result) = invoke_native_length(active, *sequence)
-        {
-            return result;
-        }
-        if kind == DirectSubr::PlistMember {
-            match arguments {
-                [plist, property] => return native_plist_member(active, *plist, *property, 0),
-                [plist, property, predicate] => {
-                    return native_plist_member(active, *plist, *property, *predicate);
-                }
-                _ => {}
+        // The remaining word-level subrs, by one dispatch on the kind.
+        let direct = match (kind, arguments) {
+            (DirectSubr::Assq, [key, list]) => Some(native_assq(active, *key, *list)),
+            (DirectSubr::Memq, [element, list]) => Some(native_memq(active, *element, *list)),
+            (DirectSubr::Get, [symbol, property]) => {
+                Some(invoke_native_get(active, *symbol, *property))
             }
-        }
-        if kind == DirectSubr::MakeClosure {
-            return invoke_native_make_closure(active, arguments);
+            (DirectSubr::Apply, _) => invoke_native_apply(active, arguments),
+            (DirectSubr::Mapcar, _) => invoke_native_mapcar(active, arguments),
+            (DirectSubr::Maphash, _) => invoke_native_maphash(active, arguments),
+            (DirectSubr::Nreverse, [sequence]) => invoke_native_nreverse(active, *sequence),
+            (DirectSubr::Length, [sequence]) => invoke_native_length(active, *sequence),
+            (DirectSubr::PlistMember, [plist, property]) => {
+                Some(native_plist_member(active, *plist, *property, 0))
+            }
+            (DirectSubr::PlistMember, [plist, property, predicate]) => {
+                Some(native_plist_member(active, *plist, *property, *predicate))
+            }
+            (DirectSubr::MakeClosure, _) => Some(invoke_native_make_closure(active, arguments)),
+            _ => None,
+        };
+        if let Some(result) = direct {
+            return result;
         }
         let mut decoded = smallvec::SmallVec::<[Value; 8]>::new();
         for word in arguments {
@@ -2345,13 +2332,17 @@ fn slow_unary_subr(
     name: &'static str,
     argument: NativeWord,
 ) -> NativeWord {
-    let index = *index.get_or_init(|| {
+    invoke_subr(subr_index(index, name), &[argument])
+}
+
+/// The ABI index of the subr NAME, found once.
+fn subr_index(index: &'static OnceLock<usize>, name: &'static str) -> usize {
+    *index.get_or_init(|| {
         super::abi::native_subrs()
             .iter()
             .position(|subroutine| subroutine.name == name)
             .expect("direct native subr belongs to the configured GNU ABI")
-    });
-    invoke_subr(index, &[argument])
+    })
 }
 
 static CAR_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
@@ -2359,6 +2350,7 @@ static CDR_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static TYPE_OF_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static SYMBOL_VALUE_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static NREVERSE_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
+static FUNCALL_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 static LENGTH_SUBR_INDEX: OnceLock<usize> = OnceLock::new();
 
 pub(super) extern "C" fn direct_native_null(value: NativeWord) -> NativeWord {
@@ -2474,6 +2466,97 @@ pub(super) extern "C" fn direct_native_symbol_value(symbol: NativeWord) -> Nativ
         } else {
             slow_unary_subr(&SYMBOL_VALUE_SUBR_INDEX, "symbol-value", symbol)
         }
+    })
+}
+
+/// eval.c:Ffuncall at the MANY ABI, as native code calls it through its
+/// relocation entry: `invoke_subr's dispatch on the subr's kind is not
+/// needed to find it.  A call the direct path does not take (no function,
+/// the debugger's next-call stop) runs the general path.
+pub(super) unsafe extern "C" fn direct_native_funcall(
+    argument_count: isize,
+    arguments: *const NativeWord,
+) -> NativeWord {
+    if argument_count >= 1 && !arguments.is_null() {
+        // SAFETY: generated code supplies the GNU MANY count/pointer pair;
+        // the pointer was checked above.
+        let words = unsafe { std::slice::from_raw_parts(arguments, argument_count as usize) };
+        let direct = with_active(|active| {
+            if let Err(error) =
+                unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            {
+                remember_helper_error(active, error);
+                return Some(0);
+            }
+            invoke_native_funcall(active, words)
+        });
+        if let Some(result) = direct {
+            return result;
+        }
+    }
+    // SAFETY: as the caller's.
+    unsafe {
+        invoke_subr_many(
+            subr_index(&FUNCALL_SUBR_INDEX, "funcall"),
+            argument_count,
+            arguments,
+        )
+    }
+}
+
+/// alloc.c:Flist at the MANY ABI: the cells consed from the last argument
+/// back.  Every non-positive count is the empty list, as in C.
+pub(super) unsafe extern "C" fn direct_native_list(
+    argument_count: isize,
+    arguments: *const NativeWord,
+) -> NativeWord {
+    let count = usize::try_from(argument_count).unwrap_or(0);
+    if count != 0 && arguments.is_null() {
+        return invoke_subr_error("native subroutine arguments are null");
+    }
+    let values: &[NativeWord] = if count == 0 {
+        &[]
+    } else {
+        // SAFETY: generated code supplies the GNU MANY count/pointer pair;
+        // the nonempty pointer was checked above.
+        unsafe { std::slice::from_raw_parts(arguments, count) }
+    };
+    with_active(|active| {
+        if let Err(error) =
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+        {
+            remember_helper_error(active, error);
+            return 0;
+        }
+        let heap = &mut unsafe { &mut *active.runtime }.heap;
+        values
+            .iter()
+            .rev()
+            .fold(0, |tail, value| heap.cons(*value, tail))
+    })
+}
+
+pub(super) extern "C" fn direct_native_memq(element: NativeWord, list: NativeWord) -> NativeWord {
+    with_active(|active| {
+        if let Err(error) =
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+        {
+            remember_helper_error(active, error);
+            return 0;
+        }
+        native_memq(active, element, list)
+    })
+}
+
+pub(super) extern "C" fn direct_native_assq(key: NativeWord, list: NativeWord) -> NativeWord {
+    with_active(|active| {
+        if let Err(error) =
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+        {
+            remember_helper_error(active, error);
+            return 0;
+        }
+        native_assq(active, key, list)
     })
 }
 
@@ -2620,12 +2703,10 @@ impl DirectFuncallTarget {
         if let Self::ByteCode { closure } = self {
             let mut decoded = smallvec::SmallVec::<[Value; 8]>::new();
             for word in arguments {
-                decoded.push(
-                    unsafe { &mut *active.runtime }
-                        .heap
-                        .decode(*word)
-                        .map_err(|error| super::lisp::native_ice(&error))?,
-                );
+                // SAFETY: Ffuncall's argument vector belongs to the native
+                // caller, which keeps each Lisp_Object live, as XUNTAG
+                // reads it without a reverse map.
+                decoded.push(unsafe { Value::from_word(*word) });
             }
             let result = unsafe { &mut *active.interpreter }.execute_bytecode_funcall_body(
                 closure,
@@ -2698,23 +2779,84 @@ fn direct_funcall_target(
     environment: &Env,
     function: &Value,
 ) -> Option<DirectFuncallTarget> {
-    let resolved = match function.kind() {
-        // Ffuncall/indirect_function follows the symbol's actual function
-        // cell. The word already names that symbol; do not resolve its text
-        // back through the interned-name cache on every native call.
-        Kind::Symbol(name) => interpreter
+    // Ffuncall/indirect_function follows the symbol's actual function
+    // cell. The word already names that symbol; do not resolve its text
+    // back through the interned-name cache on every native call. The
+    // classes are read by the tag and the header (SUBRP, CLOSUREP), not
+    // by the whole classification of the word.
+    let resolved = match function.symbol_cell() {
+        Some(name) => interpreter
             .lookup_function_symbol(&name, environment)
             .ok()?,
-        other => other.value(),
+        None => *function,
     };
-    match resolved.kind() {
-        Kind::BuiltinFunc(subr) => Some(DirectFuncallTarget::Builtin(subr)),
-        Kind::NativeFunction(native) => super::loader::direct_function(native)
-            .map(|function| DirectFuncallTarget::Native { native, function }),
-        Kind::Closure(closure) if closure.is_bytecode() => {
-            Some(DirectFuncallTarget::ByteCode { closure })
+    funcall_target_of(resolved)
+}
+
+/// The class of a resolved funcall target (SUBRP, a native function,
+/// CLOSUREP), by the tag and the header.
+#[inline(always)]
+fn funcall_target_of(resolved: Value) -> Option<DirectFuncallTarget> {
+    if let Some(subr) = resolved.builtin_ref() {
+        return Some(DirectFuncallTarget::Builtin(subr));
+    }
+    if let Some(native) = resolved.native_function_ref() {
+        return super::loader::direct_function(native)
+            .map(|function| DirectFuncallTarget::Native { native, function });
+    }
+    resolved
+        .closure_ref()
+        .filter(|closure| closure.is_bytecode())
+        .map(|closure| DirectFuncallTarget::ByteCode { closure })
+}
+
+/// A native function a funcall resolved to.  Its register counts
+/// (`refresh_register_counts') admit the call when its target is not
+/// dynamic and takes at most six fixed arguments, the count among them;
+/// it is then called as funcall_subr calls it.
+#[derive(Clone, Copy)]
+struct RegisteredNative(crate::lisp::types::NativeFunctionRef);
+
+impl RegisteredNative {
+    /// funcall_subr's arity test: COUNT lies in the function's range.
+    #[inline(always)]
+    fn admits(self, count: usize) -> bool {
+        count <= 6 && self.0.register_counts() & (1 << count) != 0
+    }
+
+    /// The target called with ARGUMENTS and nil for each omitted optional
+    /// argument, as funcall_subr pads them.
+    ///
+    /// # Safety
+    /// `admits' holds for the number of ARGUMENTS.
+    #[inline(always)]
+    unsafe fn call(self, arguments: &[NativeWord]) -> NativeWord {
+        let target = self.0.target();
+        let maximum = self.0.max_args_word() as usize;
+        if arguments.len() == maximum {
+            // SAFETY: as the caller's: a fixed target of MAXIMUM arguments.
+            return unsafe { call_word_target(target, NativeCallingConvention::Fixed, arguments) };
         }
-        _ => None,
+        let mut padded = [0; 6];
+        padded[..arguments.len()].copy_from_slice(arguments);
+        // SAFETY: as above, with the omitted arguments nil.
+        unsafe { call_word_target(target, NativeCallingConvention::Fixed, &padded[..maximum]) }
+    }
+}
+
+/// funcall_general's first step in one read: FUNCTION itself, or a
+/// symbol's function cell.  A cell that is a symbol (an alias) is the
+/// start of the chain `direct_funcall_target' walks; `None' for a void
+/// cell.
+#[inline(always)]
+fn funcall_function_cell(
+    interpreter: &Interpreter,
+    environment: &Env,
+    function: Value,
+) -> Option<Value> {
+    match function.symbol_cell() {
+        Some(name) => interpreter.raw_function_binding_symbol(&name, environment),
+        None => Some(function),
     }
 }
 
@@ -2757,29 +2899,44 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
         // The collection's hooks/finalizers may replace the function cell.
         // Resolve it only after collection, including changes of callable
         // kind. The fallback reuses this same Ffuncall frame and depth.
-        let result = match direct_funcall_target(interpreter, environment, &original_function) {
-            Some(target) => target.invoke(active, call_arguments),
-            None => {
-                let decoded = call_arguments
-                    .iter()
-                    .map(|word| {
-                        runtime
-                            .heap
-                            .decode(*word)
-                            .map_err(|error| super::lisp::native_ice(&error))
-                    })
-                    .collect::<Result<smallvec::SmallVec<[Value; 8]>, _>>();
-                decoded
-                    .and_then(|args| {
-                        interpreter.funcall_body(original_function, &args, environment)
-                    })
-                    .and_then(|value| {
-                        runtime
-                            .heap
-                            .encode(&value)
-                            .map_err(|error| super::lisp::native_ice(&error))
-                    })
-            }
+        // A native function is never a symbol: the cell is tested for one
+        // before it is tested for an alias.
+        let cell = funcall_function_cell(interpreter, environment, original_function);
+        let registered = cell
+            .and_then(Value::native_function_ref)
+            .map(RegisteredNative)
+            .filter(|native| native.admits(call_arguments.len()));
+        let target = || match cell.filter(|cell| cell.symbol_cell().is_none()) {
+            Some(resolved) => funcall_target_of(resolved),
+            None => direct_funcall_target(interpreter, environment, &original_function),
+        };
+        let result = match registered {
+            // SAFETY: the register counts admit this many arguments for
+            // the native function's fixed-arity target.
+            Some(native) => Ok(unsafe { native.call(call_arguments) }),
+            None => match target() {
+                Some(target) => target.invoke(active, call_arguments),
+                None => {
+                    // SAFETY: as the byte-code case's: the caller's live words.
+                    let decoded = call_arguments
+                        .iter()
+                        .map(|word| {
+                            unsafe { runtime.heap.decode_live(*word) }
+                                .map_err(|error| super::lisp::native_ice(&error))
+                        })
+                        .collect::<Result<smallvec::SmallVec<[Value; 8]>, _>>();
+                    decoded
+                        .and_then(|args| {
+                            interpreter.funcall_body(original_function, &args, environment)
+                        })
+                        .and_then(|value| {
+                            runtime
+                                .heap
+                                .encode(&value)
+                                .map_err(|error| super::lisp::native_ice(&error))
+                        })
+                }
+            },
         };
         let result = match result.map_err(LispError::into_kind) {
             Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
@@ -2860,10 +3017,8 @@ fn invoke_native_apply(active: &mut ActiveCall, arguments: &[NativeWord]) -> Opt
     }
 
     if spread_length > 1 {
-        let function = unsafe { &mut *active.runtime }
-            .heap
-            .decode(funcall_arguments[0])
-            .ok()?;
+        // SAFETY: the caller's function word, live in its activation.
+        let function = unsafe { Value::from_word(funcall_arguments[0]) };
         let target = direct_funcall_target(
             unsafe { &*active.interpreter },
             unsafe { &*active.environment },
@@ -2905,13 +3060,29 @@ fn invoke_native_mapcar(active: &mut ActiveCall, arguments: &[NativeWord]) -> Op
             .position(|subroutine| subroutine.name == "funcall")
             .expect("funcall belongs to the native ABI")
     });
-    let mut mapped = vec![0; length];
+    // Up to 32 results on the stack; MAPPED stays where it is while its
+    // range is a root.
+    let mut mapped = smallvec::SmallVec::<[NativeWord; 32]>::from_elem(0, length);
     unsafe { &mut *active.runtime }.push_ephemeral_root_range(mapped.as_ptr(), mapped.len());
     let mut tail = *sequence;
     let mut mapped_count = 0;
     while mapped_count < length && native_consp(tail) {
         let item = unsafe { native_car(tail) };
-        mapped[mapped_count] = invoke_subr(funcall, &[*function, item]);
+        // mapcar1's Ffuncall, as `invoke_subr' reaches it for funcall: the
+        // handlers brought to the ABI's state, then the direct path.
+        let words = [*function, item];
+        mapped[mapped_count] = match unsafe { &mut *active.runtime }
+            .sync_handlers(unsafe { &mut *active.interpreter })
+        {
+            Err(error) => {
+                remember_helper_error(active, error);
+                0
+            }
+            Ok(()) => match invoke_native_funcall(active, &words) {
+                Some(result) => result,
+                None => invoke_subr(funcall, &words),
+            },
+        };
         if native_call_has_pending_error(active) {
             unsafe { &mut *active.runtime }.pop_ephemeral_root_range(mapped.len());
             return Some(0);
@@ -4035,7 +4206,7 @@ extern "C" fn runtime_save_restriction() {
         let interpreter = unsafe { &mut *active.interpreter };
         let saved = interpreter.save_restriction_state();
         unsafe { &mut *active.runtime }
-            .record_unwind(interpreter, UnwindAction::Restriction(saved));
+            .record_unwind(interpreter, UnwindAction::Restriction(Box::new(saved)));
     });
 }
 
@@ -4132,12 +4303,15 @@ extern "C" fn runtime_set_internal(
                     "compiled set_internal used a nonstandard context",
                 ));
             }
-            crate::lisp::primitives::call(
-                unsafe { &mut *active.interpreter },
-                "set",
-                &[symbol, value],
-                unsafe { &mut *active.environment },
+            // GNU's native code calls set_internal itself, not Fset by name.
+            let interpreter = unsafe { &mut *active.interpreter };
+            let environment = unsafe { &mut *active.environment };
+            let symbol = crate::lisp::primitives::checked_symbol_identity(
+                interpreter,
+                &symbol,
+                environment,
             )?;
+            crate::lisp::primitives::set_internal_symbol(interpreter, &symbol, value, environment)?;
             Ok(())
         })();
         if let Err(error) = result {
@@ -4176,19 +4350,26 @@ extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
             let value = decode_word(active, value)?;
             let interpreter = unsafe { &mut *active.interpreter };
             let environment = unsafe { &mut *active.environment };
-            let restore = match symbol.kind() {
-                Kind::Symbol(name) => interpreter.bind_special_symbol(&name, value, environment)?,
-                _ => {
+            // A symbol's record stays on the binding stack alone, as
+            // specbind's specpdl entry; the unwind list holds its id.
+            let action = match symbol.symbol_cell() {
+                Some(name) => UnwindAction::SpecialId(interpreter.specbind_symbol_id(
+                    &name,
+                    value,
+                    environment,
+                )?),
+                None => {
                     let name = symbol
                         .as_symbol()
                         .map_err(|_| wrong_type_argument("symbolp", symbol))?;
-                    interpreter.bind_special_dynamic(name, value, environment)?
+                    UnwindAction::Special(Box::new(interpreter.bind_special_dynamic(
+                        name,
+                        value,
+                        environment,
+                    )?))
                 }
             };
-            unsafe { &mut *active.runtime }.record_unwind(
-                unsafe { &*active.interpreter },
-                UnwindAction::Special(restore),
-            );
+            unsafe { &mut *active.runtime }.record_unwind(unsafe { &*active.interpreter }, action);
             Ok(())
         })();
         if let Err(error) = result {

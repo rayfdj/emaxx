@@ -790,7 +790,8 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 Ok(args[0])
             }
-            "list" => Ok(Value::list(args.iter().cloned())),
+            // alloc.c:Flist conses the arguments from the last back.
+            "list" => Ok(Value::list_of(args)),
             "nconc" => nconc_values(args),
             "append" => {
                 let mut items: Vec<Value> = Vec::new();
@@ -1096,7 +1097,7 @@ define_dispatch!(
                 if is_vector_value(last) {
                     return Err(LispError::WrongTypeArgument("listp".into(), *last));
                 }
-                all_args.extend(last.to_vec()?);
+                last.extend_list_elements(&mut all_args)?;
                 interp.call_function_value(*func, None, &all_args, env)
             }
             "funcall" => {

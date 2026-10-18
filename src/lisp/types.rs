@@ -281,7 +281,7 @@ impl From<String> for SharedText {
 
 impl From<&str> for SharedText {
     fn from(text: &str) -> Self {
-        Self::new(text.to_owned())
+        Self::from_host_str(text)
     }
 }
 
@@ -1332,7 +1332,10 @@ pub use string_data::SharedStringState;
 pub struct CycleGuard {
     tortoise: usize,
     power: usize,
-    lam: usize,
+    /// The steps before the tortoise moves to the cell in hand: `power'
+    /// less the steps since it last moved, counted down as FOR_EACH_TAIL
+    /// counts `li.q'.
+    left: usize,
 }
 
 impl CycleGuard {
@@ -1340,22 +1343,31 @@ impl CycleGuard {
         CycleGuard {
             tortoise: 0,
             power: 1,
-            lam: 0,
+            left: 1,
         }
     }
 
     /// Advance past a cons cell; returns true when the cell closes a cycle.
+    /// A step is a compare and a count; the tortoise's move, once each
+    /// power of two steps, is out of line.
+    #[inline]
     pub fn step(&mut self, cell_id: usize) -> bool {
         if cell_id == self.tortoise {
             return true;
         }
-        if self.lam == self.power {
-            self.tortoise = cell_id;
-            self.power <<= 1;
-            self.lam = 0;
+        if self.left == 0 {
+            self.move_tortoise(cell_id);
         }
-        self.lam += 1;
+        self.left -= 1;
         false
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn move_tortoise(&mut self, cell_id: usize) {
+        self.tortoise = cell_id;
+        self.power <<= 1;
+        self.left = self.power;
     }
 }
 

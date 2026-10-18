@@ -402,6 +402,12 @@ struct BcFrame {
     unwinds_len: usize,
     backtrace_depth: usize,
     op_error_frames: usize,
+    /// `code_changes' when the verified loop called from the frame, which
+    /// verification found the call's successor in with the operands the
+    /// return leaves: while it is the same, the caller's code and its
+    /// verification still hold and the return resumes without testing
+    /// them.  `usize::MAX' for a call made anywhere else.
+    code_changes: usize,
 }
 
 /// What a frame switch in the dispatch loop changes: the thread's state
@@ -496,14 +502,18 @@ fn bytecode_call(
                     interp.bc_stack.len(),
                 ));
             }
-            frames.push(BcFrame {
-                program: std::mem::replace(*program, callee),
-                base: args_start - 1,
-                handlers_len: handlers.len(),
-                unwinds_len: interp.bc_unwinds.len(),
-                backtrace_depth,
-                op_error_frames: std::mem::take(*op_error_frames),
-            });
+            push_pooled(
+                frames,
+                BcFrame {
+                    program: std::mem::replace(*program, callee),
+                    base: args_start - 1,
+                    handlers_len: handlers.len(),
+                    unwinds_len: interp.bc_unwinds.len(),
+                    backtrace_depth,
+                    op_error_frames: std::mem::take(*op_error_frames),
+                    code_changes: usize::MAX,
+                },
+            );
             // setup_frame: the callee's frame starts above the caller's
             // top; the arguments are copied into it (`PUSH (*args)'), the
             // optionals padded, the rest gathered.  The caller's own slots
@@ -527,7 +537,7 @@ fn bytecode_call(
                 interp.bc_stack.push_within_frame(*argument);
             }
             if argc > nonrest {
-                let rest_list = Value::list(call_args[nonrest..].iter().cloned());
+                let rest_list = Value::list_of(&call_args[nonrest..]);
                 interp.bc_stack.push_within_frame(rest_list);
             } else {
                 for _ in argc..nonrest {
@@ -591,7 +601,7 @@ fn enter_bytecode_frame(vm: &mut VmFrames<'_>, return_pc: usize, argc: usize) ->
     let top = vm.interp.bc_stack.top;
     let func = vm.interp.bc_stack[vm.interp.bc_stack.len() - argc - 1];
     callee_function(func).closure_ref().is_some_and(|closure| {
-        enter_closure_frame(vm, top, return_pc, argc, func, closure).is_some()
+        enter_closure_frame(vm, top, return_pc, argc, func, closure, false).is_some()
     })
 }
 
@@ -628,17 +638,14 @@ fn call_native_nested(
     if vm.trace_errors {
         return None;
     }
-    // `call_fixed_function's tests, for at most six arguments.  Read
-    // unsigned, MANY and UNEVALLED (negative) exceed six, and a negative
-    // minimum, which no fixed arity has, admits no count: the general
-    // path takes both.
-    let maximum = usize::from(native.max_args_word() as u16);
-    let minimum = usize::from(native.min_args() as u16);
-    if maximum > 6 || argc > maximum || argc < minimum || native.is_dynamic() {
+    // `call_fixed_function's tests, for at most six arguments, in the
+    // function's register counts (a target, lexical binding, the arity):
+    // the general path takes any other call.
+    if argc > 6 || native.register_counts() & (1 << argc) == 0 {
         return None;
     }
     let target = native.target();
-    if target.is_null() || !state.plain_bcall_entry(func.symbol_cell()) {
+    if !state.plain_bcall_entry(func.symbol_cell()) {
         return None;
     }
     let nested = crate::lisp::native_comp::NestedCall::of(vm.interp)?;
@@ -723,6 +730,7 @@ fn enter_closure_frame(
     argc: usize,
     func: Value,
     closure: crate::lisp::types::ClosureRef,
+    verified_return: bool,
 ) -> Option<(usize, usize)> {
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.bc_stack.top = top;
@@ -766,14 +774,25 @@ fn enter_closure_frame(
         return None;
     }
     let backtrace_depth = state.enter_plain_funcall(func, call_args);
-    vm.frames.push(BcFrame {
-        program: std::mem::replace(vm.program, callee.clone()),
-        base: args_start - 1,
-        handlers_len: vm.handlers.len(),
-        unwinds_len: state.bc_unwinds.len(),
-        backtrace_depth,
-        op_error_frames: std::mem::take(vm.op_error_frames),
-    });
+    // The caller's program copied into the frame's slot, then the callee's
+    // over it: `mem::replace' moved the caller's through a temporary.
+    push_pooled(
+        vm.frames,
+        BcFrame {
+            program: vm.program.clone(),
+            base: args_start - 1,
+            handlers_len: vm.handlers.len(),
+            unwinds_len: state.bc_unwinds.len(),
+            backtrace_depth,
+            op_error_frames: std::mem::take(vm.op_error_frames),
+            code_changes: if verified_return {
+                crate::lisp::alloc::code_changes()
+            } else {
+                usize::MAX
+            },
+        },
+    );
+    *vm.program = callee.clone();
     // setup_frame's `PUSH (*args)' and the optionals' nils.
     state.bc_stack.push_arguments(call_args, entry_depth);
     Some((state.bc_stack.top, entry_depth))
@@ -782,14 +801,15 @@ fn enter_closure_frame(
 /// Breturn into a byte-code caller when the callee left no specpdl
 /// entries above its watermark: the frame and its backtrace record are
 /// popped and the caller gets VALUE; the answer is the pc it resumes at,
-/// the stack's top and the frame's depth.  Otherwise the full return path runs the
+/// the stack's top, the frame's depth and whether the verified loop's
+/// call is still current (`BcFrame::code_changes').  Otherwise the full return path runs the
 /// unwinding; nothing changes but the stack's TOP, which is stored.
 #[inline(always)]
 fn return_to_bytecode_frame(
     vm: &mut VmFrames<'_>,
     top: usize,
     value: Value,
-) -> Option<(usize, usize, usize)> {
+) -> Option<(usize, usize, usize, bool)> {
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.bc_stack.top = top;
     let unwinds = state.bc_unwinds.len();
@@ -807,8 +827,9 @@ fn return_to_bytecode_frame(
     *vm.program = frame.program.clone();
     *vm.op_error_frames = frame.op_error_frames;
     vm.handlers.truncate(frame.handlers_len);
+    let unchanged = frame.code_changes == crate::lisp::alloc::code_changes();
     vm.frames.truncate(vm.frames.len() - 1);
-    Some((resume, state.bc_stack.top, state.bc_stack.len()))
+    Some((resume, state.bc_stack.top, state.bc_stack.len(), unchanged))
 }
 
 // A frame's slot is released by the length alone.
@@ -854,7 +875,13 @@ fn leave_frame_unwinding(
 /// One specpdl-style entry the VM must undo on Bunbind or error unwind.
 #[derive(Clone, Debug)]
 pub(crate) enum UnwindEntry {
-    Binding(super::super::eval::SpecialBindingRestore),
+    /// A binding with its restore record in hand (the rare bindings of a
+    /// name that is not a symbol constant): boxed, so the common entries
+    /// stay a few words.
+    Binding(Box<super::super::eval::SpecialBindingRestore>),
+    /// Bvarbind of a symbol: the record stays on the interpreter's binding
+    /// stack alone, unbound by its id (`Interpreter::unbind_special_id').
+    BindingId(u64),
     /// Bsave_excursion: restore buffer and (marker-tracked) point.
     Excursion {
         buffer_id: u64,
@@ -862,9 +889,7 @@ pub(crate) enum UnwindEntry {
         saved_pt: usize,
     },
     /// Bsave_current_buffer: restore the current buffer only.
-    CurrentBuffer {
-        buffer_id: u64,
-    },
+    CurrentBuffer { buffer_id: u64 },
     /// Bsave_restriction on a wide buffer: re-widen on exit.
     RestrictionWide {
         buffer_id: u64,
@@ -888,7 +913,7 @@ impl TraceLispRoots for UnwindEntry {
         match self {
             // These are restore tokens, not an alternate binding stack.
             // A thread switch updates the canonical interpreter specpdl.
-            Self::Binding(_) | Self::CurrentBuffer { .. } => {}
+            Self::Binding(_) | Self::BindingId(_) | Self::CurrentBuffer { .. } => {}
             Self::Excursion { marker_id, .. } => marker.value(&Value::Marker(*marker_id)),
             Self::RestrictionWide { labeled, .. } | Self::Restriction { labeled, .. } => {
                 if let Self::Restriction { beg_id, end_id, .. } = self {
@@ -911,7 +936,8 @@ fn unwind_one(
     env: &mut Env,
 ) -> Result<(), LispError> {
     match entry {
-        UnwindEntry::Binding(restore) => interp.restore_special_binding(restore, env),
+        UnwindEntry::Binding(restore) => interp.restore_special_binding(*restore, env),
+        UnwindEntry::BindingId(binding_id) => interp.unbind_special_id(binding_id, env),
         UnwindEntry::Excursion {
             buffer_id,
             marker_id,
@@ -1647,7 +1673,7 @@ fn run_verified(
                     let function = callee_function(func);
                     if let Some(closure) = function.closure_ref() {
                         if let Some((top, _)) =
-                            enter_closure_frame(vm, top, next, argc, func, closure)
+                            enter_closure_frame(vm, top, next, argc, func, closure, true)
                         {
                             // The callee's frame runs on from pc 0, for which
                             // `entry_program' found its code current and
@@ -2042,18 +2068,22 @@ fn run_verified(
                     if !vm.frames.is_empty() {
                         // SAFETY: sp lies within the active frame.
                         let top = unsafe { sp.offset_from(words) as usize } + 1;
-                        if let Some((resume, top, depth)) = return_to_bytecode_frame(vm, top, value)
+                        if let Some((resume, top, depth, unchanged)) =
+                            return_to_bytecode_frame(vm, top, value)
                         {
                             // The caller's frame runs on here if its code is
                             // still the bytes verified and verification found
-                            // the call's successor with these operands.
+                            // the call's successor with these operands: as
+                            // the verified loop's call found them, when no
+                            // verified code has changed since.
                             // SAFETY: as the outer loop's slice.
                             let (bytes, current) = unsafe { vm.program.code.bytes_unguarded() };
-                            if current
-                                && vm
-                                    .program
-                                    .verified
-                                    .is_some_and(|verified| verified.admits(resume, depth))
+                            if unchanged
+                                || current
+                                    && vm
+                                        .program
+                                        .verified
+                                        .is_some_and(|verified| verified.admits(resume, depth))
                             {
                                 code = bytes;
                                 constants = vm.program.constants;
@@ -2370,12 +2400,15 @@ fn op_in_place(
     let byte = unsafe { *code.get_unchecked(offset) };
     let instr = match super::operandless_op(byte) {
         Some(op) => super::Instr { offset, len: 1, op },
-        None => match super::fetch_instruction(code, offset, constants) {
-            Ok(instr) => instr,
-            Err(error) => {
-                *pc = offset;
-                return FastExit::Error(error);
-            }
+        None => match super::fetch_family_instruction(code, offset, constants) {
+            Some(instr) => instr,
+            None => match super::fetch_instruction(code, offset, constants) {
+                Ok(instr) => instr,
+                Err(error) => {
+                    *pc = offset;
+                    return FastExit::Error(error);
+                }
+            },
         },
     };
     // The verified loop runs these itself, and never leaves one to its
@@ -2400,7 +2433,7 @@ fn op_in_place(
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.bc_stack.top = top;
     *pc = offset + instr.len;
-    match exec_op(vm, instr.op, pc) {
+    match exec_op_inline(vm, instr.op, pc) {
         Ok(()) => {
             let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
             FastExit::Switched(state.bc_stack.top, state.bc_stack.len())
@@ -2417,6 +2450,13 @@ fn op_in_place(
 /// loop.
 #[inline(never)]
 fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispError> {
+    exec_op_inline(vm, op, pc)
+}
+
+/// `exec_op's body, inline in `op_in_place', the verified loop's way to
+/// these ops (a call and a second prologue for each of them).
+#[inline(always)]
+fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispError> {
     let VmFrames {
         interp,
         env,
@@ -2485,16 +2525,18 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
             // Bvarref and Bvarset read and set it, uninterned or not.
             let name = program.constant(index);
             let value = pop!();
-            let restore = match name.kind() {
-                Kind::Symbol(symbol) => interp.bind_special_symbol(&symbol, value, env)?,
-                _ => {
+            let entry = match name.symbol_cell() {
+                Some(symbol) => {
+                    UnwindEntry::BindingId(interp.specbind_symbol_id(&symbol, value, env)?)
+                }
+                None => {
                     let name = name.as_symbol().map_err(|_| {
                         LispError::Signal("varbind constant must be a symbol".into())
                     })?;
-                    interp.bind_special_variable(name, value, env)?
+                    UnwindEntry::Binding(Box::new(interp.bind_special_variable(name, value, env)?))
                 }
             };
-            interp.bc_unwinds.push(UnwindEntry::Binding(restore));
+            interp.bc_unwinds.push(entry);
         }
         Op::Unbind(count) => {
             for _ in 0..count {
@@ -2626,7 +2668,9 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
             prim(interp, "erase-buffer", [], env)?;
             let _ = interp.set_current_buffer_id(saved);
             let restore = interp.bind_special_variable("standard-output", buffer, env)?;
-            interp.bc_unwinds.push(UnwindEntry::Binding(restore));
+            interp
+                .bc_unwinds
+                .push(UnwindEntry::Binding(Box::new(restore)));
             push!(buffer);
         }
         Op::TempOutputBufferShow => {
@@ -2664,22 +2708,34 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
             push!(value);
         }
         // Zero-argument push ops.
-        Op::Point
-        | Op::PointMax
-        | Op::PointMin
-        | Op::FollowingChar
+        // Bpoint, Bpoint_max, Bpoint_min and Bcurrent_buffer push the
+        // buffer's PT, ZV, BEGV and the buffer itself, as the primitives
+        // answer, without looking them up by name.
+        Op::Point => {
+            let point = interp.buffer.borrow().point();
+            push!(Value::Integer(point as i64));
+        }
+        Op::PointMax => {
+            let zv = interp.buffer.borrow().point_max();
+            push!(Value::Integer(zv as i64));
+        }
+        Op::PointMin => {
+            let begv = interp.buffer.borrow().point_min();
+            push!(Value::Integer(begv as i64));
+        }
+        Op::CurrentBuffer => {
+            let buffer = interp.buffer;
+            push!(Value::Buffer(buffer));
+        }
+        Op::FollowingChar
         | Op::PrecedingChar
         | Op::CurrentColumn
         | Op::Eolp
         | Op::Eobp
         | Op::Bolp
         | Op::Bobp
-        | Op::CurrentBuffer
         | Op::Widen => {
             let name = match op {
-                Op::Point => "point",
-                Op::PointMax => "point-max",
-                Op::PointMin => "point-min",
                 Op::FollowingChar => "following-char",
                 Op::PrecedingChar => "preceding-char",
                 Op::CurrentColumn => "current-column",
@@ -2687,7 +2743,6 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                 Op::Eobp => "eobp",
                 Op::Bolp => "bolp",
                 Op::Bobp => "bobp",
-                Op::CurrentBuffer => "current-buffer",
                 _ => "widen",
             };
             let value = prim(interp, name, [], env)?;
@@ -2770,13 +2825,16 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
             // registry before unwinding; a VM catch frame must be
             // visible there like any `sf_catch' frame.
             interp.push_active_catch_tag(tag);
-            handlers.push(Handler {
-                kind: HandlerKind::Catch(tag),
-                dest: target as usize,
-                stack_len: interp.bc_stack.len(),
-                unwind_len: interp.bc_unwinds.len(),
-                registry_start: None,
-            });
+            push_pooled(
+                handlers,
+                Handler {
+                    kind: HandlerKind::Catch(tag),
+                    dest: target as usize,
+                    stack_len: interp.bc_stack.len(),
+                    unwind_len: interp.bc_unwinds.len(),
+                    registry_start: None,
+                },
+            );
         }
         Op::PushConditionCase { target } => {
             let conditions = pop!();
@@ -2785,13 +2843,16 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
             // boundaries sees this frame before any outer handler,
             // exactly like an interpreted `condition-case'.
             let registry_start = interp.push_condition_case_handler(vec![conditions]);
-            handlers.push(Handler {
-                kind: HandlerKind::ConditionCase(conditions),
-                dest: target as usize,
-                stack_len: interp.bc_stack.len(),
-                unwind_len: interp.bc_unwinds.len(),
-                registry_start: Some(registry_start),
-            });
+            push_pooled(
+                handlers,
+                Handler {
+                    kind: HandlerKind::ConditionCase(conditions),
+                    dest: target as usize,
+                    stack_len: interp.bc_stack.len(),
+                    unwind_len: interp.bc_unwinds.len(),
+                    registry_start: Some(registry_start),
+                },
+            );
         }
         Op::PopHandler => {
             if let Some(handler) = handlers.pop() {
@@ -3290,8 +3351,8 @@ fn run_entered(
         // slots against the frame's depth.
         interp.bc_stack.push_arguments(args, entry_depth);
         let mut program = program;
-        let mut frames = Vec::new();
-        let mut handlers = Vec::new();
+        let mut frames = Pooled::new();
+        let mut handlers = Pooled::new();
         let mut op_error_frames = 0;
         let mut pc = 0;
         let mut quitcounter = 1;
@@ -3460,9 +3521,7 @@ fn run_frames(
                 interp.bc_stack.push(*value)?;
             }
             if args.len() > nonrest {
-                interp
-                    .bc_stack
-                    .push(Value::list(args[nonrest..].iter().cloned()))?;
+                interp.bc_stack.push(Value::list_of(&args[nonrest..]))?;
             } else {
                 for _ in args.len()..nonrest {
                     interp.bc_stack.push(Value::Nil)?;
@@ -3500,7 +3559,7 @@ fn run_frames(
                     continue;
                 }
                 let value = if rest {
-                    Value::list(args[index.min(args.len())..].iter().cloned())
+                    Value::list_of(&args[index.min(args.len())..])
                 } else if index < args.len() {
                     args[index]
                 } else if optional {
@@ -3514,7 +3573,9 @@ fn run_frames(
                     index += 1;
                 }
                 let restore = interp.bind_special_variable(&name, value, env)?;
-                interp.bc_unwinds.push(UnwindEntry::Binding(restore));
+                interp
+                    .bc_unwinds
+                    .push(UnwindEntry::Binding(Box::new(restore)));
                 if rest {
                     break;
                 }
@@ -3534,12 +3595,123 @@ fn run_frames(
     run_loop(interp, env, Activation::new(program), None)
 }
 
+thread_local! {
+    /// Frame and handler vectors of finished activations, cleared and
+    /// kept with their capacity: an activation's first calls and
+    /// handlers grew fresh vectors from nothing (an allocation, then a
+    /// reallocation and a copy at each doubling) and freed them at its end.
+    static SPARE_FRAMES: std::cell::RefCell<Vec<Vec<BcFrame>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static SPARE_HANDLERS: std::cell::RefCell<Vec<Vec<Handler>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The spare vectors kept for each element type, at most this many.
+const SPARE_VECTORS: usize = 8;
+
+/// An element type whose activation vectors are kept on a spare list.
+trait Spare: Sized + 'static {
+    fn spares() -> &'static std::thread::LocalKey<std::cell::RefCell<Vec<Vec<Self>>>>;
+}
+
+impl Spare for BcFrame {
+    fn spares() -> &'static std::thread::LocalKey<std::cell::RefCell<Vec<Vec<Self>>>> {
+        &SPARE_FRAMES
+    }
+}
+
+impl Spare for Handler {
+    fn spares() -> &'static std::thread::LocalKey<std::cell::RefCell<Vec<Vec<Self>>>> {
+        &SPARE_HANDLERS
+    }
+}
+
+/// An activation's vector, empty until its first push takes a spare
+/// (`push_pooled'), and given back cleared when the activation ends,
+/// whichever way it ends; most activations push nothing and touch no
+/// list. Its elements are no roots: a frame's program is its closure's,
+/// which the byte-code stack's header holds.
+struct Pooled<T: Spare>(Vec<T>);
+
+impl<T: Spare> Pooled<T> {
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+}
+
+/// The largest spare kept, in elements: a deep recursion's vector is
+/// freed rather than held.
+const SPARE_CAPACITY: usize = 1024;
+
+impl<T: Spare> Drop for Pooled<T> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        // An activation that pushed nothing has nothing to give back.
+        if self.0.capacity() != 0 {
+            give_back(&mut self.0);
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn give_back<T: Spare>(vector: &mut Vec<T>) {
+    let mut vector = std::mem::take(vector);
+    if vector.capacity() > SPARE_CAPACITY {
+        return;
+    }
+    vector.clear();
+    let _ = T::spares().try_with(|spares| {
+        let mut spares = spares.borrow_mut();
+        if spares.len() < SPARE_VECTORS {
+            spares.push(vector);
+        }
+    });
+}
+
+/// `Vec::push' for an activation's vector, whose growth from nothing
+/// takes a spare first.
+#[inline(always)]
+fn push_pooled<T: Spare>(vector: &mut Vec<T>, value: T) {
+    if vector.len() == vector.capacity() {
+        grow_pooled(vector);
+    }
+    vector.push(value);
+}
+
+#[cold]
+#[inline(never)]
+fn grow_pooled<T: Spare>(vector: &mut Vec<T>) {
+    if vector.capacity() == 0
+        && let Ok(Some(spare)) = T::spares().try_with(|spares| spares.borrow_mut().pop())
+    {
+        *vector = spare;
+        if vector.capacity() > 0 {
+            return;
+        }
+    }
+    vector.reserve(1);
+}
+
+impl<T: Spare> std::ops::Deref for Pooled<T> {
+    type Target = Vec<T>;
+    fn deref(&self) -> &Vec<T> {
+        &self.0
+    }
+}
+
+impl<T: Spare> std::ops::DerefMut for Pooled<T> {
+    fn deref_mut(&mut self) -> &mut Vec<T> {
+        &mut self.0
+    }
+}
+
 /// An activation's loop state, handed from its entry to `run_loop'.
 struct Activation {
     program: ByteCodeObject,
     pc: usize,
-    frames: Vec<BcFrame>,
-    handlers: Vec<Handler>,
+    frames: Pooled<BcFrame>,
+    handlers: Pooled<Handler>,
     /// Frames pushed by signaling byte ops (record_in_backtrace); an
     /// in-frame condition-case that catches must unwind them, and the
     /// caller (`run') balances whatever is left after handler dispatch.
@@ -3555,8 +3727,8 @@ impl Activation {
         Self {
             program,
             pc: 0,
-            frames: Vec::new(),
-            handlers: Vec::new(),
+            frames: Pooled::new(),
+            handlers: Pooled::new(),
             op_error_frames: 0,
             quitcounter: 1,
         }
@@ -3627,7 +3799,7 @@ fn run_loop(
             match frames.pop() {
                 Some(frame) => {
                     if let Err(error) = leave_frame(interp, env, &frame) {
-                        frames.push(frame);
+                        push_pooled(&mut frames, frame);
                         return Err(error);
                     }
                     pc = interp.bc_stack.leave_frame();
@@ -4008,7 +4180,7 @@ fn run_loop(
     // the frame's specpdl watermark), running unwind-protect handlers
     // and restoring saved buffer state on the way out; catch tags of
     // still-pushed handlers leave the registry with their frame.
-    for handler in handlers.into_iter().rev() {
+    for handler in handlers.drain(..).rev() {
         if matches!(handler.kind, HandlerKind::Catch(_)) {
             interp.pop_active_catch_tag();
         }
@@ -4122,6 +4294,77 @@ mod tests {
             .expect("a list");
         let values: Vec<_> = values.into_iter().map(Value::fixnum).collect();
         assert_eq!(values, [1, 1, 2, 1, 1, 1].map(Some));
+    }
+
+    #[test]
+    fn a_closure_at_a_swept_closures_address_runs_its_own_program() {
+        // The entry cache answers for a closure's address until a vector
+        // sweep, which alone frees a closure: a closure allocated where a
+        // swept one was runs its own constants, not the program the swept
+        // one's entry read.  Doomed closures, each called once, are
+        // interleaved with kept ones, so that the sweep frees each alone
+        // (it joins neighbouring free vectors) and the next closures of
+        // their size take their places; their addresses are kept hidden
+        // from the conservative scan.
+        const HIDE: usize = 0x5555_5555_5555_5555;
+        fn eval(interp: &mut Interpreter, env: &mut Env, text: &str) -> Value {
+            let form = super::super::super::reader::Reader::new(text)
+                .read()
+                .expect("read form")
+                .expect("a form");
+            interp.eval(&form, env).expect("eval")
+        }
+        fn closure(code: Value, constants: Value) -> Value {
+            Value::Closure(crate::lisp::types::ClosureRef::allocate(&[
+                Value::Integer(0),
+                code,
+                constants,
+                Value::Integer(1),
+            ]))
+        }
+        #[inline(never)]
+        fn call_doomed(interp: &mut Interpreter, env: &mut Env, code: Value) -> Vec<usize> {
+            let ones = eval(interp, env, "[1]");
+            let mut kept = Value::Nil;
+            let mut doomed = Vec::new();
+            for _ in 0..500 {
+                kept = Value::cons(closure(code, ones), kept);
+                let callee = closure(code, ones);
+                let value = interp
+                    .call_function_value(callee, None, &[], env)
+                    .expect("call");
+                assert_eq!(value.fixnum(), Some(1));
+                doomed.push(callee.closure_ref().expect("a closure").identity() ^ HIDE);
+            }
+            kept = Value::cons(closure(code, ones), kept);
+            interp.set_variable("emaxx-test-kept-closures", kept, env);
+            doomed
+        }
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let code = eval(&mut interp, &mut env, "(unibyte-string 192 135)");
+        interp.set_variable("emaxx-test-code", code, &mut env);
+        let doomed = call_doomed(&mut interp, &mut env, code);
+        crate::lisp::alloc::clobber_stack();
+        crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
+            .expect("collect");
+        let twos = eval(&mut interp, &mut env, "[2]");
+        let mut fresh = Value::Nil;
+        let mut taken = 0;
+        for _ in 0..20_000 {
+            let callee = closure(code, twos);
+            fresh = Value::cons(callee, fresh);
+            let identity = callee.closure_ref().expect("a closure").identity();
+            if doomed.contains(&(identity ^ HIDE)) {
+                let value = interp
+                    .call_function_value(callee, None, &[], &mut env)
+                    .expect("call");
+                assert_eq!(value.fixnum(), Some(2), "the new closure's own constant");
+                taken += 1;
+            }
+        }
+        assert!(taken > 0, "closures take swept closures' addresses");
+        assert!(fresh.is_cons());
     }
 
     #[test]

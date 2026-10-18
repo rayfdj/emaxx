@@ -292,6 +292,46 @@ pub(crate) fn string_text(value: &Value) -> Result<String, LispError> {
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))
 }
 
+/// The text `string_text' would copy, read in place: F gets it while the
+/// string is borrowed, so F must not run Lisp.  The stored bytes are that
+/// text when they are ASCII, or valid UTF-8 in a multibyte string (the
+/// internal encoding of every Unicode character); only a string holding
+/// raw bytes or characters beyond Unicode is decoded into a copy.  `None'
+/// for any other object.
+pub(crate) fn with_string_text<R>(value: &Value, f: impl FnOnce(&str) -> R) -> Option<R> {
+    let Kind::StringObject(state) = value.kind() else {
+        return None;
+    };
+    let state = state.borrow();
+    let bytes = state.bytes();
+    let text = if bytes.is_ascii() {
+        // SAFETY: ASCII is UTF-8.
+        Some(unsafe { std::str::from_utf8_unchecked(bytes) })
+    } else if state.is_multibyte() {
+        std::str::from_utf8(bytes).ok()
+    } else {
+        None
+    };
+    Some(match text {
+        Some(text) => f(text),
+        None => f(&state.text()),
+    })
+}
+
+/// Whether VALUE is a multibyte string, read in place; `None' for any
+/// other object.
+pub(crate) fn string_is_multibyte(value: &Value) -> Option<bool> {
+    match value.kind() {
+        Kind::StringObject(state) => Some(state.borrow().is_multibyte()),
+        _ => None,
+    }
+}
+
+/// Whether VALUE is a string without text properties, read in place.
+pub(crate) fn string_without_properties(value: &Value) -> bool {
+    matches!(value.kind(), Kind::StringObject(state) if state.borrow().props.is_empty())
+}
+
 pub(crate) fn char_from_integer(code: i64) -> Result<char, LispError> {
     if code < 0 {
         return Err(LispError::Signal("Invalid character".into()));

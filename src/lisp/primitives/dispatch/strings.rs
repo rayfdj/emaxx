@@ -373,29 +373,37 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), 0));
                 }
                 let fmt_value = &args[0];
-                let fmt = string_text(fmt_value)?;
+                // The format string is read in place: its characters are
+                // what the conversion loop walks.
+                let chars: Vec<char> = with_string_text(fmt_value, |fmt| fmt.chars().collect())
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *fmt_value))?;
+                // Only a format string with text properties lends them to
+                // the result.
+                let fmt_has_props = !string_without_properties(fmt_value);
                 // editfns.c styled_format: a format string that is exactly
                 // "%s" without text properties returns a string argument
                 // itself (`(eq s (format "%s" s))' is t in the oracle), so
                 // the argument's properties come through untouched.
-                if fmt == "%s"
-                    && string_like(fmt_value).is_some_and(|string| string.props.is_empty())
+                if chars == ['%', 's']
+                    && !fmt_has_props
                     && let Some(arg) = args.get(1)
-                    && string_like(arg).is_some()
+                    && matches!(arg.kind(), Kind::StringObject(_))
                 {
                     return Ok(*arg);
                 }
                 let mut result = String::new();
+                // The result's length in characters, kept as it grows (a
+                // count of the whole result at each piece was quadratic).
+                let mut result_chars = 0usize;
                 let mut result_props = Vec::new();
-                let mut result_multibyte = string_like(fmt_value).is_some_and(|s| s.multibyte);
+                let mut result_multibyte = string_is_multibyte(fmt_value) == Some(true);
                 let mut arg_idx = 1;
-                let chars: Vec<char> = fmt.chars().collect();
                 let quoting_style =
                     (name == "format-message").then(|| effective_text_quoting_style(interp, env));
                 let mut i = 0;
                 while i < chars.len() {
                     if chars[i] != '%' || i + 1 >= chars.len() {
-                        let start = result.chars().count();
+                        let start = result_chars;
                         let literal = match (quoting_style, chars[i]) {
                             (Some("curve"), '`') => '‘',
                             (Some("curve"), '\'') => '’',
@@ -403,7 +411,10 @@ define_dispatch!(
                             _ => chars[i],
                         };
                         result.push(literal);
-                        if let Some(props) = format_source_props(fmt_value, i, i + 1) {
+                        result_chars += 1;
+                        if fmt_has_props
+                            && let Some(props) = format_source_props(fmt_value, i, i + 1)
+                        {
                             result_props.push(TextPropertySpan {
                                 start,
                                 end: start + 1,
@@ -417,9 +428,12 @@ define_dispatch!(
                     i += 1; // skip '%'
 
                     if chars[i] == '%' {
-                        let start = result.chars().count();
+                        let start = result_chars;
                         result.push('%');
-                        if let Some(props) = format_source_props(fmt_value, spec_start, i + 1) {
+                        result_chars += 1;
+                        if fmt_has_props
+                            && let Some(props) = format_source_props(fmt_value, spec_start, i + 1)
+                        {
                             result_props.push(TextPropertySpan {
                                 start,
                                 end: start + 1,
@@ -531,7 +545,7 @@ define_dispatch!(
                     let arg = &args[aidx];
 
                     result_multibyte |= match conv {
-                        's' => string_like(arg).is_some_and(|string| string.multibyte),
+                        's' => string_is_multibyte(arg) == Some(true),
                         'c' => arg.as_integer().is_ok_and(|code| code > 0x7F),
                         _ => false,
                     };
@@ -618,15 +632,19 @@ define_dispatch!(
                             formatted_props = shift_string_props(&formatted_props, padding);
                         }
                     }
-                    if let Some(props) = format_source_props(fmt_value, spec_start, i) {
+                    let formatted_chars = formatted.chars().count();
+                    if fmt_has_props
+                        && let Some(props) = format_source_props(fmt_value, spec_start, i)
+                    {
                         formatted_props.push(TextPropertySpan {
                             start: 0,
-                            end: formatted.chars().count(),
+                            end: formatted_chars,
                             props,
                         });
                     }
-                    let start = result.chars().count();
+                    let start = result_chars;
                     result.push_str(&formatted);
+                    result_chars += formatted_chars;
                     result_props.extend(shift_string_props(
                         &crate::lisp::primitives::strings::flatten_overlapping_string_props(
                             formatted_props,

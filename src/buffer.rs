@@ -591,7 +591,7 @@ fn undo_entry_lisp_value(entry: &UndoEntry) -> Value {
             text,
             ..
         } => Value::cons(
-            Value::String(text.clone().into()),
+            Value::String(text.as_str().into()),
             Value::Integer(if *point_after {
                 -(*pos as i64)
             } else {
@@ -1107,17 +1107,31 @@ impl Buffer {
     /// anything is read, most of a short deletion's record.
     fn text_range_string(&self, from: usize, to: usize) -> String {
         let to = to.min(self.text.len_chars());
-        let mut out = String::new();
+        // An ASCII text's char indexes are its byte indexes, and the range
+        // is that many bytes.
+        let ascii = self.text_is_ascii();
+        let mut out = String::with_capacity(to.saturating_sub(from));
         let mut index = from;
         while index < to {
             let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index);
-            let start = ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start);
-            let chunk_chars = ropey::str_utils::byte_to_char_idx(chunk, chunk.len());
+            let byte_of = |chars: usize| {
+                if ascii {
+                    chars
+                } else {
+                    ropey::str_utils::char_to_byte_idx(chunk, chars)
+                }
+            };
+            let start = byte_of(index - chunk_start);
+            let chunk_chars = if ascii {
+                chunk.len()
+            } else {
+                ropey::str_utils::byte_to_char_idx(chunk, chunk.len())
+            };
             let chunk_end = chunk_start + chunk_chars;
             let end = if to >= chunk_end {
                 chunk.len()
             } else {
-                ropey::str_utils::char_to_byte_idx(chunk, to - chunk_start)
+                byte_of(to - chunk_start)
             };
             if start >= end {
                 break;
@@ -1132,16 +1146,30 @@ impl Buffer {
     /// newline at or after char index FROM, scanned a chunk at a time
     /// with memchr.
     fn newline_at_or_after(&self, from: usize) -> Option<usize> {
+        let ascii = self.text_is_ascii();
         let mut index = from;
         while index < self.text.len_chars() {
             let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index);
-            let byte = ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start);
+            let byte = if ascii {
+                index - chunk_start
+            } else {
+                ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start)
+            };
             if let Some(offset) = memchr::memchr(b'\n', &chunk.as_bytes()[byte..]) {
                 return Some(
-                    chunk_start + ropey::str_utils::byte_to_char_idx(chunk, byte + offset),
+                    chunk_start
+                        + if ascii {
+                            byte + offset
+                        } else {
+                            ropey::str_utils::byte_to_char_idx(chunk, byte + offset)
+                        },
                 );
             }
-            let chunk_chars = ropey::str_utils::byte_to_char_idx(chunk, chunk.len());
+            let chunk_chars = if ascii {
+                chunk.len()
+            } else {
+                ropey::str_utils::byte_to_char_idx(chunk, chunk.len())
+            };
             if chunk_chars == 0 {
                 break;
             }
@@ -1150,15 +1178,33 @@ impl Buffer {
         None
     }
 
+    /// Whether every character of the text is one byte, so that a char
+    /// index within a chunk is its byte index (the counts are kept).
+    fn text_is_ascii(&self) -> bool {
+        self.text.len_chars() == self.text.len_bytes()
+    }
+
     /// search.c's find_newline backward: the 0-based index of the last
     /// newline before char index BEFORE.
     fn newline_before(&self, before: usize) -> Option<usize> {
+        let ascii = self.text_is_ascii();
         let mut index = before.min(self.text.len_chars());
         while index > 0 {
             let (chunk, _, chunk_start, _) = self.text.chunk_at_char(index - 1);
-            let byte = ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start);
+            let byte = if ascii {
+                index - chunk_start
+            } else {
+                ropey::str_utils::char_to_byte_idx(chunk, index - chunk_start)
+            };
             if let Some(offset) = memchr::memrchr(b'\n', &chunk.as_bytes()[..byte]) {
-                return Some(chunk_start + ropey::str_utils::byte_to_char_idx(chunk, offset));
+                return Some(
+                    chunk_start
+                        + if ascii {
+                            offset
+                        } else {
+                            ropey::str_utils::byte_to_char_idx(chunk, offset)
+                        },
+                );
             }
             index = chunk_start;
         }
@@ -2237,6 +2283,11 @@ impl Buffer {
             _ => *view = None,
         }
         drop(view);
+        // A buffer's first entry takes room for its first few: a temporary
+        // buffer's undo list otherwise grows through four allocations.
+        if self.undo_list.capacity() == 0 {
+            self.undo_list.reserve(16);
+        }
         self.undo_list.push(entry);
     }
 

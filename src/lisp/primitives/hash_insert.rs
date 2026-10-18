@@ -797,6 +797,15 @@ pub(crate) fn insert_text_with_hooks(
 }
 
 pub(crate) fn combine_insert_args(args: &[Value]) -> Result<StringLike, LispError> {
+    // A sole string is its own text: copied once, not again into a
+    // concatenation, and its offsets need no shift.
+    if let [arg] = args
+        && let Some(mut string) = string_like(arg)
+    {
+        string.props = merge_string_props(string.props);
+        string.multibyte = string.text.chars().any(|ch| (ch as u32) > 0x7F);
+        return Ok(string);
+    }
     let mut text = String::new();
     let mut props = Vec::new();
     let mut extended_chars = Vec::new();

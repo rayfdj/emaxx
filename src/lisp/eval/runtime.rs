@@ -71,6 +71,14 @@ impl Interpreter {
         self.buffer_list.iter().find(|(_, n)| n == name).cloned()
     }
 
+    /// The id of the live buffer named NAME, without a copy of the name.
+    pub(crate) fn find_buffer_id(&self, name: &str) -> Option<u64> {
+        self.buffer_list
+            .iter()
+            .find(|(_, n)| n == name)
+            .map(|(id, _)| *id)
+    }
+
     /// Return the current buffer ID.
     pub fn current_buffer_id(&self) -> u64 {
         self.current_buffer_id
@@ -355,7 +363,7 @@ impl Interpreter {
         // current buffer, while other per-buffer state such as read-only is
         // reset.  Materialize that inherited value on the new buffer instead
         // of making unrelated dynamic per-buffer bindings leak at lookup.
-        let inherited_directory = self.lookup_var("default-directory", &Env::new());
+        let inherited_directory = self.symbol_value_key(cached_symbol!("default-directory"));
         let id = self.alloc_buffer_id();
         let mut buffer = crate::buffer::Buffer::new(name);
         buffer.text_conversion_style = self.native_text_conversion_style_default();
@@ -363,22 +371,16 @@ impl Interpreter {
             .push((id, crate::lisp::types::BufferRef::new(id, buffer)));
         self.buffer_list.push((id, name.to_string()));
         // The two locals by their symbols (`set_buffer_local_value_symbol'),
-        // found through the address-keyed cache, not by hashing the names
-        // for each buffer.
-        let set_local = |this: &mut Self, name: &'static str, value: Value| {
-            if let Some(symbol) = SymbolName::interned_cached(name) {
-                this.set_buffer_local_value_symbol(id, &symbol, value);
-            } else {
-                this.set_buffer_local_value(id, name, value);
-            }
-        };
+        // held interned, not found by their names for each buffer.
         if let Some(directory) = inherited_directory {
-            set_local(self, "default-directory", directory);
+            let symbol = cached_symbol!("default-directory").with(Clone::clone);
+            self.set_buffer_local_value_symbol(id, &symbol, directory);
         }
         // GNU reset_buffer materializes buffer-read-only as a local nil in
         // every new buffer.  This keeps a process-wide dynamic binding in
         // the creating buffer from making a fresh temporary buffer read-only.
-        set_local(self, "buffer-read-only", Value::Nil);
+        let symbol = cached_symbol!("buffer-read-only").with(Clone::clone);
+        self.set_buffer_local_value_symbol(id, &symbol, Value::Nil);
         (id, name.to_string())
     }
 
@@ -999,21 +1001,23 @@ impl Interpreter {
         frame_id: crate::lisp::types::FrameRef,
     ) -> Value {
         let snapshot = self.snapshot_frame_window_configuration(frame_id);
+        // The windows' slots are kept in vectors (window.c's saved_window
+        // array holds each window's saved state in place): one allocation a
+        // window, read back by `window_configuration_snapshot_from_value'
+        // without a list walk.
         self.create_pseudovector(
             RecordKind::WindowConfiguration,
             "window-configuration",
             vec![
                 Value::Integer(snapshot.current_buffer_id as i64),
                 Value::Integer(snapshot.selected_window_id as i64),
-                Value::list(snapshot.selected_window_slots),
+                Value::vector(snapshot.selected_window_slots),
                 Value::Integer(snapshot.frame_width),
                 Value::Integer(snapshot.frame_height),
                 self.record_value(snapshot.root_window_id),
-                Value::list(
-                    snapshot.window_records.into_iter().map(|(id, slots)| {
-                        Value::cons(Value::Integer(id as i64), Value::list(slots))
-                    }),
-                ),
+                Value::vector(snapshot.window_records.into_iter().map(|(id, slots)| {
+                    Value::cons(Value::Integer(id as i64), Value::vector(slots))
+                })),
                 Value::Frame(frame_id),
                 Value::Frame(snapshot.selected_frame_id),
             ],
@@ -1045,25 +1049,28 @@ impl Interpreter {
             .find_record(id)
             .filter(|record| record.kind == RecordKind::WindowConfiguration)?;
         let slots = &record.slots;
+        let vector_slots = |value: &Value| match value.kind() {
+            Kind::Vector(vector) => Some(vector.slots().collect::<Vec<_>>()),
+            _ => None,
+        };
         let selected_window_id = slots
             .get(1)
             .and_then(|value| value.integer_value())
             .unwrap_or_default() as u64;
-        let selected_window_slots = slots
-            .get(2)
-            .and_then(|value| value.to_vec().ok())
-            .unwrap_or_default();
+        let selected_window_slots = slots.get(2).and_then(vector_slots).unwrap_or_default();
         let window_records = slots
             .get(6)
-            .and_then(|value| value.to_vec().ok())
-            .map(|records| {
-                records
-                    .into_iter()
-                    .filter_map(|record| {
-                        let (id, slots) = record.cons_values()?;
-                        Some((id.integer_value()?.max(0) as u64, slots.to_vec().ok()?))
-                    })
-                    .collect()
+            .and_then(|value| match value.kind() {
+                Kind::Vector(records) => Some(
+                    records
+                        .slots()
+                        .filter_map(|record| {
+                            let (id, slots) = record.cons_values()?;
+                            Some((id.integer_value()?.max(0) as u64, vector_slots(&slots)?))
+                        })
+                        .collect(),
+                ),
+                _ => None,
             })
             .unwrap_or_else(|| vec![(selected_window_id, selected_window_slots.clone())]);
         Some(WindowConfigurationSnapshot {
@@ -1109,7 +1116,7 @@ impl Interpreter {
     /// Whether `window_configuration_snapshot_from_value' would find a
     /// configuration in VALUE: a window-configuration record whose frame
     /// slots (7 and 8) hold frames, the only parts it requires; the
-    /// window lists it copies are not built for the test.
+    /// windows' slot vectors it copies are not built for the test.
     pub(crate) fn is_window_configuration_value(&self, value: &Value) -> bool {
         let Kind::Record(id) = value.kind() else {
             return false;
@@ -1168,16 +1175,14 @@ impl Interpreter {
         if !self.frame_is_live(snapshot.frame_id) {
             return Ok(());
         }
-        let saved_windows = snapshot
-            .window_records
-            .into_iter()
-            .collect::<std::collections::HashMap<_, _>>();
+        // A frame has few windows: the saved ones are found by a search.
+        let saved_windows = snapshot.window_records;
         let windows: Vec<_> = self.frame_window_records(snapshot.frame_id).collect();
         for window in windows {
             let Some(record) = self.find_record_mut(window) else {
                 continue;
             };
-            if let Some(slots) = saved_windows.get(&record.id) {
+            if let Some((_, slots)) = saved_windows.iter().find(|(id, _)| *id == record.id) {
                 record.slots.clone_from(slots);
             } else {
                 record

@@ -114,6 +114,79 @@ fn collection_frees_unreached_conses_and_expires_weak_slots() {
 }
 
 #[test]
+fn a_swept_cell_taken_again_answers_no_earlier_weak_reference() {
+    // A cell's serial is given when a weak reference first asks for it
+    // and forgotten when the sweep frees the cell, so the allocation that
+    // takes the slot next is not the one an earlier weak reference names,
+    // and gets a serial of its own.  The doomed cells are interleaved
+    // with kept ones in new blocks, so that their blocks stay (a block the
+    // sweep finds all free goes back to the allocator) and the free list
+    // hands their slots out again; the stack is scanned conservatively,
+    // so the doomed chain is built out of this frame, its address kept
+    // hidden.
+    #[inline(never)]
+    fn build_chains(interp: &mut Interpreter, env: &mut Env) -> (usize, u64) {
+        // The free list drained first, the chains take fresh cells of new
+        // blocks, each doomed cell beside a kept one.
+        let mut drain = Value::Nil;
+        for _ in 0..=crate::lisp::alloc::free_conses() {
+            drain = Value::cons(Value::Nil, drain);
+        }
+        assert!(drain.is_cons());
+        let mut kept = Value::Nil;
+        let mut doomed = Value::Nil;
+        for index in 0..20_000 {
+            kept = Value::cons(Value::Integer(index), kept);
+            doomed = Value::cons(Value::Integer(index), doomed);
+        }
+        interp.set_variable("emaxx-gc-test-interleaved", kept, env);
+        let Kind::Cons(cell) = doomed.kind() else {
+            unreachable!("constructed cons");
+        };
+        ((cell.as_ptr() as usize) ^ HIDE, cell.serial())
+    }
+    const HIDE: usize = 0x5555_5555_5555_5555;
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let (hidden, serial) = build_chains(&mut interp, &mut env);
+    crate::lisp::alloc::clobber_stack();
+    crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env).expect("collect");
+    let weak = crate::lisp::types::WeakConsRef::from_parts(hidden ^ HIDE, serial);
+    assert!(weak.upgrade().is_none(), "the doomed chain is swept");
+    // The collection's own value is consed after the sweep, from the head
+    // of the free list, which may be the swept cell already; otherwise
+    // Fcons takes the free list before a new block, so the slot comes
+    // back within as many allocations as there are free cells.
+    let address = hidden ^ HIDE;
+    let mut fresh = Value::Nil;
+    for _ in 0..=crate::lisp::alloc::free_conses() {
+        // SAFETY: a lookup of an address, which reads nothing it does not
+        // find allocated.
+        if unsafe { crate::lisp::alloc::mem_find_cons(address) }.is_some() {
+            break;
+        }
+        fresh = Value::cons(Value::Nil, fresh);
+    }
+    // SAFETY: as above; the slot's cell is allocated and no collection
+    // runs from here.
+    let found = unsafe { crate::lisp::alloc::mem_find_cons(address) }
+        .expect("the free list hands the swept slot out again");
+    // SAFETY: FOUND is an allocated cell, kept until the test ends.
+    let cell = unsafe { crate::lisp::alloc::ConsRef::from_raw(found) };
+    assert!(
+        weak.upgrade().is_none(),
+        "the slot's new cell is not the one the weak reference names"
+    );
+    assert_ne!(
+        cell.serial(),
+        serial,
+        "the new cell has a serial of its own"
+    );
+    assert!(cell.downgrade().upgrade().is_some(), "and answers its own");
+    assert!(fresh.is_nil() || fresh.is_cons());
+}
+
+#[test]
 fn eval_atoms() {
     assert_eq!(eval_str_bare("42"), Value::Integer(42));
     assert_eq!(eval_str_bare("\"hello\""), Value::String("hello".into()));

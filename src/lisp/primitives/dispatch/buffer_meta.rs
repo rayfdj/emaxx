@@ -450,13 +450,9 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 match args[0].kind() {
                     Kind::Buffer(_) => Ok(args[0]),
-                    _ => match string_like(&args[0]) {
-                        Some(name) => match interp.find_buffer(&name.text) {
-                            Some((id, buffer_name)) => {
-                                Ok(interp.buffer_value(id).expect("live buffer object"))
-                            }
-                            None => Ok(Value::Nil),
-                        },
+                    _ => match with_string_text(&args[0], |name| interp.find_buffer_id(name)) {
+                        Some(Some(id)) => Ok(interp.buffer_value(id).expect("live buffer object")),
+                        Some(None) => Ok(Value::Nil),
                         None => Err(LispError::TypeError(
                             "string-or-buffer".into(),
                             args[0].type_name(),
@@ -472,12 +468,14 @@ define_dispatch!(
                 if matches!(args[0].kind(), Kind::Buffer(_)) {
                     return Ok(args[0]);
                 }
-                let buf_name = string_text(&args[0]).map_err(|_| {
-                    LispError::TypeError("string-or-buffer".into(), args[0].type_name())
-                })?;
-                if let Some((id, _)) = interp.find_buffer(&buf_name) {
+                let found = with_string_text(&args[0], |name| interp.find_buffer_id(name))
+                    .ok_or_else(|| {
+                        LispError::TypeError("string-or-buffer".into(), args[0].type_name())
+                    })?;
+                if let Some(id) = found {
                     Ok(interp.buffer_value(id).expect("live buffer object"))
                 } else {
+                    let buf_name = string_text(&args[0])?;
                     let (id, _) = interp.create_buffer(&buf_name);
                     interp.set_buffer_hooks_inhibited(id, inhibit_hooks);
                     let buffer = interp.buffer_value(id).expect("new buffer object");
@@ -494,15 +492,22 @@ define_dispatch!(
             }
             "generate-new-buffer-name" => {
                 need_args(name, args, 1)?;
-                let base = string_text(&args[0])?;
-                let ignore = if args.len() > 1 {
-                    string_like(&args[1]).map(|string| string.text)
+                let ignore = args.get(1).and_then(|ignore| {
+                    with_string_text(ignore, |ignore| {
+                        with_string_text(&args[0], |base| base == ignore)
+                    })
+                    .flatten()
+                });
+                let taken = with_string_text(&args[0], |base| interp.has_buffer(base))
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
+                if !taken || ignore == Some(true) {
+                    // buffer.c returns NAME itself, not a copy.
+                    Ok(args[0])
                 } else {
-                    None
-                };
-                if !interp.has_buffer(&base) || ignore.as_deref() == Some(base.as_str()) {
-                    Ok(Value::String(base.into()))
-                } else {
+                    let base = string_text(&args[0])?;
+                    let ignore = args
+                        .get(1)
+                        .and_then(|ignore| string_like(ignore).map(|s| s.text));
                     let mut n = 2;
                     loop {
                         let candidate = format!("{}<{}>", base, n);

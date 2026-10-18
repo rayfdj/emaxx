@@ -20,7 +20,7 @@ records the GNU counter contract.
 | --- | --- |
 | **Main** `94295d0a` | Source324: one-word values, 16-byte cons payloads, shared object work, and symbol value/function/plist/flags on the allocated symbols. |
 | **[PR87](https://github.com/rayfdj/emaxx/pull/87)** `35c6cd9b` (`runtime-char-tables`) | Object-state draft17: membership, constants, aliases, same-name replacement, image restoration and native `nil`/`t` identity. 584 runtime inputs. |
-| **Task branch** `claude/awesome-newton-yk6sae` | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
+| **Task branch** `runtime-performance` (pushed as `claude/awesome-newton-yk6sae` through `c48c5a2`; PR #88 took it into main up to `ba696b3`) | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
 
 **PR87 evidence in this repository:** strict checks with zero warnings, 407
 affected controls in each of gate and release, and 44 ordinary GNU comparisons /
@@ -1411,6 +1411,413 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   An explicit collection 49.32 → 48.89 million instructions with the
   bounds and the one lock, 48.55 million with the per-kind lists (0.744 →
   0.733 of GNU's).
+- **Undo's window configurations, message log and native `set`.** A
+  window configuration keeps each window's saved slots in a vector, as
+  window.c's `saved_window` vector does, where it built a list a window
+  and read it back by a list walk; restoring one finds a frame's few saved
+  windows by a search instead of building a hash map. `message_dolog`
+  reads `messages-buffer-name` and `message-log-max` by their cached
+  symbols (DEFVAR_LISP variables, never lexically bound), not by name
+  through the lexical environment, and builds its line without
+  `format!`. A buffer's first undo entry reserves room for sixteen, where
+  a temporary buffer's list grew through four allocations. Native code's
+  `set_internal` calls the set itself, as GNU's compiled code calls
+  `set_internal`, instead of `set` by name through the primitive table;
+  the remaining word-level subrs in `invoke_subr` dispatch by one match on
+  the kind and arguments. Undo 1,751,807 → 1,702,865 instructions a unit
+  (1.40 → 1.36 of GNU's), wall time 0.1653 → 0.1627 s (six rounds of five
+  samples, the minimum, on the line-table release builds; GNU's 0.1137).
+  The other fifteen are within their noise against the round's base:
+  bindat's +6,400 a unit is a collection's stack scan and the verifier's
+  address-keyed caches falling differently between the two sizes.
+- **Undo's edits and native code's calls.** Two micro-benchmarks (each
+  callgrinded at two sizes on both editors) isolate undo's largest gaps:
+  an insert and a `delete-region` with undo enabled, 13,207 instructions
+  an iteration against GNU's 7,417, and an interpreted closure over a
+  non-empty environment, whose creation runs
+  `cconv-make-interpreted-closure` and its `macroexpand-all` in native
+  code, 68,843 against 34,432. For the edits: a change hook whose current
+  value is void or nil runs nothing, whatever the buffer's own binding, so
+  `hook_values` answers at once (signal_before_change's NILP test) where it
+  read the buffer-local binding and the local-hook mirror by name;
+  `run_change_hooks` compares the hook's name once; `related_buffer_ids`
+  answers the buffer alone, in a SmallVec, while no buffer is indirect; a
+  buffer without overlays skips the overlay search; and Bpoint,
+  Bpoint_max, Bpoint_min and Bcurrent_buffer push their values in
+  `exec_op`, where they called the primitives by name. For native code:
+  `funcall`, `list`, `memq` and `assq` are direct targets of the generated
+  subr table (`tools/generate_native_subrs.rs`, as `car-safe` and `get`
+  were), so their calls skip `invoke_subr`'s dispatch on the subr's kind;
+  a funcall's target is classified by the tag and the header (SUBRP,
+  CLOSUREP), not by the whole `Kind` twice; and native code's specbind,
+  like the VM's Bvarbind of a symbol, leaves its record on the
+  interpreter's binding stack alone and unbinds it by its id, where both
+  cloned the record into their unwind lists and searched for it again on
+  the way out (the interpreter's record was already the canonical one,
+  and collection already skipped the copies). The unwind lists box their
+  rare records, so each entry stays a few words. The edits 13,207 →
+  12,139 an iteration, the closure 68,843 → 62,664; undo 1,711,192 →
+  1,657,377 instructions a unit (1.363 → 1.320 of GNU's), native
+  execution 524.3 → 482.9 million (1.133 → 1.043; its recursive calls go
+  through `funcall`), bindat −2.4%, sort −1.9%, native-to-interpreted
+  −1.0%, the rest within their noise (mapcar's +0.4% is the allocator's
+  consolidation and a stack scan falling between the two sizes). Wall time
+  on the line-table release builds against `b206a4a` (five rounds of five
+  samples, the minimum, GNU's in parentheses): native execution 0.3572 →
+  0.2958 s (0.3397; 1.05 → 0.87), undo 0.1616 → 0.1583 (0.1126), sort
+  0.2001 → 0.1991 (0.1822), bindat 0.0910 → 0.0913 (0.0965).
+- **Temporary buffers and `format`.** Undo's native-compiled Lisp
+  functions run GNU's own `.eln` code in both editors, so each `F…`
+  function's own instructions are the same and its inclusive cost
+  measures the runtime it calls: against GNU's, a unit spends +63,000 in
+  `cconv-make-interpreted-closure`, +18,000 in `generate-new-buffer`
+  (`with-temp-buffer`), +9,500 in `error` and +7,000 in `user-error`
+  (`format-message` and `signal` under them), +6,300 in
+  `substitute-command-keys` and +3,700 in `menu-bar-update-yank-menu`
+  (scratch script `fincl.py`). `generate-new-buffer-name` returns its
+  argument when no buffer has that name, as buffer.c returns NAME itself,
+  where it allocated a copy; a new buffer reads `default-directory` and
+  sets its two locals by their held symbols, where it looked up the
+  directory by name through an empty environment and the locals through
+  the interned-name cache. `format`'s loop keeps the result's length in
+  characters as it grows, where it counted the whole result again for
+  every literal character and every conversion (quadratic in the
+  message), and skips the format string's text properties when it has
+  none. A `with-temp-buffer` 12,235 → 10,623 instructions (GNU 17,991), an
+  `error` and a `user-error` caught by `condition-case` 26,494 → 23,808
+  (GNU 22,509); undo 1,654,414 → 1,645,316 a unit at twenty and forty
+  units (1.311 of GNU's), the other fifteen within their noise
+  (interpreted-to-native's +1.3% is a hash table's one rehash falling in
+  the larger run). The signal itself still computes the condition's
+  names about six times an error (handler-bind dispatch, the batch
+  backtrace's catch test, the VM's handler search, the native error
+  record), where signal_or_quit reads them once; a cache across those
+  layers would have to see every change to the symbol's plist, which
+  `plist-put` on the list itself makes without `put`.
+- **Where undo's wall time goes beyond its instructions** (measured, no
+  change kept). The profile-guided build runs undo in 1,473,768
+  instructions a unit, 1.18 of GNU's, where its wall time is 1.24 of
+  GNU's. Callgrind's cache and branch simulation (`--cache-sim=yes
+  --branch-sim=yes`, a 32 KB L1i and a 1 MB last level as this host's L2)
+  gives per unit: instruction-cache misses 47,000 against GNU's 21,000,
+  L1 data misses 20,700 against 11,300, mispredicted conditional branches
+  21,700 against 13,400, indirect ones about the same (9,700 against
+  9,400). At ten to fifteen cycles each the instruction-cache misses
+  weigh more than the extra instructions; they are spread over the large
+  hot functions (`run_verified` 4,900 and 800 a unit, its code 33 KB, the
+  size of the L1i; `exec_op`, `eval_sub`, `eval_native_form` and
+  `call_function_value` about 1,500 to 2,200 each), where GNU's
+  `exec_byte_code` takes 1,500 and `eval_sub` 600. Two layout
+  experiments on `df06b81`'s profile: LLVM's machine function splitting
+  (`-Cllvm-args=-enable-split-machine-functions`, 3,296 cold parts split
+  off) left the simulated misses (472,700 against 470,500 per ten units)
+  and the wall time as they were; ext-TSP block placement
+  (`-Cllvm-args=-enable-ext-tsp-block-placement`, ten rounds of five
+  samples against the default layout, the same binary otherwise) gave
+  undo 1.242 → 1.207 (median ratio) but bytecode calls 1.072 → 1.083,
+  mapcar 1.096 → 1.113 and cons allocation 1.159 → 1.171, so neither is
+  kept. The hot code itself is larger than GNU's: fewer misses need
+  smaller hot functions, not a different order of the same ones.
+- **The six cases at the contract's size**, on `df06b81`'s profile build
+  (five rounds of three samples, minimum and median ratio): mapcar 1.015
+  and 1.057, bytecode calls 1.058 and 1.070, undo 1.154 and 1.119, cons
+  allocation 1.112 and 1.154, interpreted-to-native 1.186 and 1.183,
+  bytecode-to-native 1.195 and 1.240. In GNU's bytecode calls (468
+  instructions an iteration) a call and return cost about 110 (the frame
+  set up in the byte-code stack 40, the arguments pushed 25, the
+  backtrace record 12, the depth 8, the return 25) and the ops about what
+  Emaxx's cost; Emaxx's call and return are about twice that (the entry
+  cache's four-word test and the code string's state, about 33; the
+  program object copied into and out of the frame record). The entry
+  cache's word test guards a closure address reused after a collection,
+  in tables kept per thread; dropping it would need an epoch shared by
+  all threads, for about 8 instructions a call.
+- **A cons's weak-reference serial is given when a weak reference asks
+  for it.** Fcons wrote an 8-byte serial into the block's metadata for
+  every cell, a write stream beside the cell's own that GNU's Fcons does
+  not have (at sixteen mapcar units a sample with a 1 MB last level,
+  12,600 of Emaxx's 83,700 last-level write misses a unit, against GNU's
+  67,500 in all). A cell's serial is now given at its first `downgrade`
+  (the keymap and syntax views' `ConsMutationSnapshot` and tests are the
+  only askers) and marked in a third bitmap of the block, which the sweep
+  clears with the cell's other bits: an allocation finds its bit clear,
+  so a reference to an earlier allocation of the slot answers nothing,
+  and the slot's next serial is a new one. Three bits a cell leave 1,344
+  cells a 32 KB block (1,350 before). The funcall forwarder mapcar's loop
+  called (`hooks_overlays::call_function_value`, 7 instructions an
+  element of its own) is inline, and `RootedVec::push` tests the capacity
+  once. Mapcar's last-level write misses 83,700 → 69,900 a unit (GNU
+  67,500), its level-one write misses 96,800 → 84,300. Instructions a
+  unit against the build the full-size table used (`df06b81` with part of
+  `f001516`): mapcar 28.60 → 28.22 million (1.230 → 1.214 of GNU's), undo
+  1,668,563 → 1,595,058 (1.335 → 1.276, with `f001516`'s `format` count),
+  cons allocation 5,674 → 5,654, sort 220.9 → 220.1 million, the other
+  measured cases within 0.4%. Wall time, profile-use builds of `f001516`
+  and of this round with `df06b81`'s profile (eight rounds of three
+  samples, minimum and median, GNU's in parentheses): mapcar 0.0682 and
+  0.0717 → 0.0668 and 0.0707 s (0.0614, 0.0661), cons allocation 0.0865
+  and 0.0892 → 0.0851 and 0.0918 (0.0731, 0.0764), undo 0.1381 and 0.1437
+  → 0.1292 and 0.1449 (0.1124, 0.1243), list traversal 0.1274 and 0.1341 →
+  0.1280 and 0.1330 (0.1362, 0.1435). The experiment without any serial
+  (the collection-overheads bullet above) gave mapcar about 1.6%; this
+  keeps weak references exact for about that. A test takes a swept cell's
+  slot again (`garbage-collect`'s own value is consed from the head of the
+  free list, often the cell just swept) and checks that the earlier
+  reference answers nothing and the new cell has a serial of its own.
+  Validation (gate profile, one test thread and CI's 128 MB stack): the
+  43 weak-reference, allocation, verifier, mapping and collection tests
+  and the new one pass; clippy `-D warnings` and rustfmt pass. With more
+  than one test thread the native runtime's tests corrupt the shared
+  heap (a free-list word of 0x1, then a segfault), on the binary before
+  this round too: the allocator presumes one Lisp thread, as CI runs it.
+- **Cons allocation's collection, measured again.** Every timed sample
+  runs no collection in GNU and one in Emaxx (0.0145 s of its 0.0885 on
+  the `df06b81` profile build), so the case's whole gap is that
+  collection: GNU's start-of-sample `garbage-collect` keeps the previous
+  sample's list (the conservative stack scan), which at
+  `gc-cons-percentage` 1.0 puts its threshold above one sample's consing.
+  Emaxx's threshold follows `bump_consing_until_gc` from its census, as
+  GNU's does; matching GNU's count would mean keeping garbage alive.
+- **Where the byte-code call and return go, by instruction** (callgrind
+  `--dump-instr=yes`, bytecode calls on `df06b81`'s line-table build):
+  Emaxx's Bcall arm, frame entry and Breturn run about 98, 131 and 123
+  instructions an iteration, about 350 against GNU's 195 or so (its
+  Bcall about 80 with the backtrace record and maybe_gc, the frame set up
+  in the byte-code stack with the argument copy about 75, the return
+  about 40); Emaxx's ops are the cheaper by about 75, so the net is the
+  80 an iteration of the table. The pieces: the callee's cell and kind
+  tests, `plain_bcall_entry` and the entry cache's lookup (its hash, the
+  four closure words and two state flags, about 45) in the arm; the
+  entry's program tests, the byte-code stack's frame header, the
+  backtrace record, the 48-byte program swapped into `vm.program` through
+  a temporary and the 88-byte `BcFrame` pushed in the entry; the frame's
+  pop, the program copied back (about 25) and the caller's code and
+  verification tested again (`bytes_unguarded`'s state and
+  `VerifiedCode::admits`, about 25) on the return. For bytecode-to-native
+  the same profile gives `call_native_nested` about 210 a call: the
+  prologue and epilogue 16, the entry tests about 50, the backtrace
+  record 18, the handler reconciliation twice about 16, the native call
+  frame's push and pop about 45, the active call 8, the argument by the
+  count 13 and the escape record's call 18.
+- **The byte-code entry cache by identity, and a list's cycle test by a
+  count.** `entry_program`'s hit compared the closure's four slot words
+  with the entry's (a closure address reused after a collection), and the
+  program's code string state and verification (`Current`, `is_current`):
+  about 45 instructions a call with the hash. A closure's slots never
+  change once it is published, so its address names the program the
+  entry read until the closure is freed, and only the vector sweep frees
+  one: the sweep now forgets each freed closure's entry in its own
+  thread's table (`forget_closure`), and a table whose thread did not run
+  the last sweep is emptied at its next miss (`CLOSURES_SWEPT` against
+  `vector_sweeps`). A string verified as code turns `Stale` only by
+  `borrow_mut`, which now counts the change (`code_changes`); an entry
+  holds the count it was filled at. A hit is the identity and the two
+  counts. The table has 1,024 slots where it had 256: with the words
+  gone a hit costs no slot loads, and undo's working set of closures had
+  collided in 256 (its refills ran 41 to 340 a unit depending on where
+  the heap put the closures; 38 with 1,024). Bcall's frame entry copies
+  the caller's program into the frame's slot before the callee's goes in
+  (`mem::replace` moved it through a temporary). `CycleGuard::step`
+  counts down to the tortoise's move, out of line, where it compared,
+  stepped and shifted branch-free every step (16 instructions an element
+  of `length` against FOR_EACH_TAIL's 9). Instructions: bytecode calls
+  547.8 → 521.9 an iteration (1.170 → 1.115 of GNU's), native-to-bytecode
+  4,673 → 4,647, mapcar 28.22 → 27.78 million a unit (1.214 → 1.195);
+  undo's own code about 8,000 a unit cheaper, its total moved by glibc's
+  `malloc_consolidate` and `unlink_chunk` (between -19,000 and +11,000 a
+  unit from build to build, with the heap's layout). A test frees called
+  closures among kept ones and checks that the closures taking their
+  addresses run their own constants.
+  Validation (gate profile, one test thread, CI's stack): 132 byte-code,
+  verifier and closure tests, 103 allocation, weak-reference and
+  collection tests, 145 mapping, length, snapshot, keymap and syntax
+  tests, 180 native-runtime tests and the evaluation suite's 389
+  tests pass.
+- **Profile-guided wall time on `3c034cc`** (`tools/pgo-build.sh` afresh;
+  pilot sizes, five rounds of five samples, the minimum and median ratio
+  to GNU, `df06b81`'s build alongside in parentheses): bytecode calls
+  1.046 and 1.052 (1.084, 1.086), mapcar 1.061 and 1.011 (1.100, 1.050),
+  cons allocation 1.152 and 1.111 (1.192, 1.202), undo 1.235 and 1.217
+  (1.260, 1.309), interpreted-to-native 1.176 and 1.184 (1.169, 1.214),
+  bytecode-to-native 1.233 and 1.302 (1.219, 1.231); the other ten at or
+  below 1.0 (native-to-bytecode 0.996 and 1.017, dynamic 0.951 and
+  0.961). A first run of the script lost its profile: one training
+  process died writing the merged `.profraw` (a test past its 300-second
+  limit while a build loaded the machine), leaving it truncated, and
+  `llvm-profdata` merged nothing; with the machine otherwise idle the
+  rerun was clean. Run the script alone.
+- **The register calls by a mask, and a verified return by the code
+  count.** A native function keeps the argument counts a call may pass
+  in registers alone (a target, lexical binding, the count within an
+  arity of at most six) as a bit each, in `Lisp_Subr`'s padding after the
+  arity (offset 12, which no C or generated code reads), refreshed by
+  every setter of those fields; `call_native_nested` and
+  `call_fixed_function` test the bit where they tested the arity's two
+  words, the lambda list and the target. A frame the verified loop
+  enters records `code_changes`, and its Breturn resumes without testing
+  the caller's code string and verification while the count is the
+  same (`usize::MAX` for frames entered elsewhere). Instructions:
+  interpreted-to-native `call_function` 156 → 143 a call,
+  `call_native_nested` 222 → 220, bytecode calls 521.9 → 519.8.
+  Validation (gate profile, `--test-threads=1`): the 201 native
+  compilation tests, the 132 byte-code, verifier and closure tests and
+  445 of the 446 funcall, native and subr tests pass (the other the
+  image round-trip test below, which fails locally since `4008098` and
+  passes in CI); clippy `-D warnings` and rustfmt pass.
+- **The mark phase marks as it queues.** `LispReachability` pushed every
+  field that was not an immediate and tested the mark when it popped
+  the object (about 825,000 pops a collection, of which about 256,000
+  were symbols already marked), each pop dispatching on the kind twice.
+  An object is now marked as it is queued (alloc.c's `mark_object` tests
+  the mark before it looks inside); a float, a bignum, a marker and a
+  string without text properties are marked alone and never queued
+  (`has_properties_unguarded`: no guard is alive during a collection);
+  the drain traces each popped object inline (`trace_fields` had become
+  a call with a six-register prologue for each of about 346,000 objects
+  a collection). `trace_pending` still answers whether anything new was
+  reached, for the weak tables' fixed point: the enqueues record it.
+  Explicit collections on the line-table build: 49.0 → 39.8 million
+  instructions each (GNU's `Fgarbage_collect` about 66 million); a
+  collection of a heap of 600,000 cells with 100,000 live (`gcper2`):
+  10.9 → 10.1 ms. A ring of eight prefetched objects between the mark
+  stack and the trace was slower (11.2 ms) and is not kept. Validation:
+  the 220 collection, weak-table, finalizer, reachability, mark, sweep
+  and trace tests pass.
+- **Cons allocation's gap is its one collection.** GNU's census at a
+  sample's start holds 517,547 conses, the previous sample's list kept
+  by a stale slot of its interpreted `let*` frame in the C stack, so
+  its threshold (`gc-cons-percentage` 1.0 of about 9 MB) is above a
+  sample's 8 MB of consing; Emaxx's census holds 15,790 and its
+  threshold about 1.45 MB, so one collection runs in each sample.
+  Keeping that list alive would be keeping garbage. The rest is already
+  ahead: the timed loop alone (`core-perf-conses`, no collection) runs
+  2,321 instructions an iteration against GNU's 2,101 and its wall time
+  without the collection is below GNU's sample (0.071 against 0.079 s on
+  `3c034cc`'s profile build). The in-sample collection takes 14.5 ms
+  where back-to-back collections of a like heap take 9.6 (GNU 11.3):
+  the caches are cold after the loop, and the trace walks the image's
+  objects every time, as GNU's walks its dump. The case reaches the
+  bound when that collection costs about 11 ms.
+- **Profile-guided wall time on `ba9f640`** (`tools/pgo-build.sh` with
+  the machine otherwise idle; pilot sizes, five rounds of five samples,
+  the minimum and median ratio to GNU, `3c034cc`'s build alongside in
+  parentheses): undo 1.214 and 1.262 (1.200, 1.221), bytecode-to-native
+  1.206 and 1.206 (1.234, 1.263), interpreted-to-native 1.151 and 1.144
+  (1.190, 1.216), cons allocation 1.131 and 1.106 (1.149, 1.165),
+  bytecode calls 1.064 and 1.151 (1.045, 1.028), eight rounds of it
+  again 1.070 and 1.042 (1.050, 1.041) with 511.7 instructions an
+  iteration on the profile-guided build against 519.0 (its loop is
+  sensitive to the layout the profile gives); mapcar 0.963 and 0.946
+  (1.093, 1.074), explicit-gc 0.720 and 0.766 (0.959, 0.991): the mark
+  phase's change is worth a quarter of a collection on this build; the
+  other nine at or below 0.95 (interpreted calls 0.60, native execution
+  0.63, bindat 0.71, sort 0.91, native-to-bytecode 0.92).
+- **Undo's ops outside the verified loop.** Per unit undo leaves the
+  verified loop 622 times for an op it runs in place (`op_in_place`):
+  about 55 instructions of `op_in_place` and 25 of `exec_op`'s prologue,
+  match and epilogue before the op's own work, and 198 of them decoded
+  again by `decode_instr` (63 instructions each) for a variable or
+  unbind family's operand. `exec_op`'s body is now inline in
+  `op_in_place` (`exec_op_inline`; the full dispatch keeps the out-of-line
+  copy), and `fetch_family_instruction` reads those families' operand
+  and checks the constant index as `fetch_instruction` does (a test
+  compares the two on every opcode and operand width). Undo's
+  `line_start_at` ran about 384 instructions for each of 38 calls a unit
+  (`forward-line` and the message log's line count) converting char
+  indexes to byte indexes in a chunk; a text whose char and byte counts
+  agree is ASCII, whose indexes are the same, and `newline_before` and
+  `newline_at_or_after` skip the conversion for it. Undo: 1,614,623 →
+  1,574,485 instructions a unit (10 against 20 units; glibc's
+  `malloc_consolidate` and `unlink_chunk` add about 18,000 of noise from
+  the heap's layout). The ops still call their primitives by name
+  (`prim` → `prim_facts`' probe, about 20 instructions); the decoded
+  op table behind a `OnceLock` costs about 8 a slow op. Validation (gate
+  profile, `--test-threads=1`): the 97 byte-code, decoder and VM tests,
+  the 25 line-motion tests and 461 of the 462 buffer, undo, search,
+  insertion, region, column, indentation and message tests pass (the
+  other the as-root save-buffer test below); clippy `-D warnings` and
+  rustfmt pass.
+- **Activation vectors kept, and the operandless table built at compile
+  time.** Each activation (`run_entered`, `Activation::new`; 119 a unit
+  in undo) began with empty frame and handler vectors, so the first calls
+  of one that called grew a fresh vector (an allocation, then a
+  reallocation and a copy at each doubling, about 10,000 instructions a
+  unit with glibc's consolidation) and freed it at its end. They are now
+  `Pooled`: empty until a push finds no room (`push_pooled`), when the
+  cold `grow_pooled` takes a spare from a per-thread list first; the drop
+  gives a vector with capacity back cleared (`give_back`, at most eight
+  spares of at most 1,024 elements). A frame is no root (its program is
+  its closure's, which the byte-code stack's header holds). The table of
+  one-byte ops `op_in_place` reads sat behind a `OnceLock` (about 8
+  instructions a slow op); `decode_instr`'s operand-free arms are now a
+  `const fn plain_op`, and `OPERANDLESS_OPS` is built from it at compile
+  time with the stack-ref, call and unbind members whose operand is in
+  the opcode (a test compares it with the decoder's answer for every
+  byte). Undo: 1,574,485 → 1,556,807 instructions a unit; bytecode calls
+  525.0 → 521.5 an iteration on the line-table build (round 4 had moved
+  the verified loop's register allocation by 4 instructions, this round
+  back by 3.5: the loop is that sensitive to code beside it). Validation:
+  the 97 byte-code, decoder and VM tests and the 93 condition-case,
+  catch, unwind, handler, recursion, nesting, depth and throw tests pass;
+  clippy `-D warnings` and rustfmt pass.
+- **Strings read in place, and a native funcall's target from its cell.**
+  Per unit undo made about 1,015 Rust allocations and as many frees (17
+  instructions each in the host allocator, besides the copies). GNU's
+  undo makes almost none outside its Lisp heap. Most were copies made to
+  read something. `format` copied its format string three times and
+  each `%s` argument once, to learn whether it was multibyte; `get-buffer`
+  copied the name, and `find_buffer` cloned the buffer's own;
+  `combine_insert_args` copied a sole string twice; a Lisp string made
+  from Rust text was copied into a `String`, then by `encode_text` into a
+  byte vector, then into its data. `with_string_text` now reads a
+  string's text in place: its stored bytes are that text when they are
+  ASCII, or valid UTF-8 in a multibyte string; only raw bytes and
+  characters beyond Unicode are decoded. `string_is_multibyte` and
+  `string_without_properties` read the flags. ASCII text goes straight
+  into string data (`from_text`, `from_host_str`). `apply`, `list`,
+  `&rest` parameters (byte-code and interpreted), `signal` and the
+  interpreted `condition-case`'s clause heads no longer copy a list into
+  a vector first. `Value::list` collected into a vector and turned a list
+  headed by `vector-literal` into a vector, so `(list 'vector-literal 1)`
+  and such a `&rest` list came back as vectors; they now cons as
+  `Flist` does. `signal` copied a proper DATA (and listed a vector's
+  elements after `vector-literal`); it now conses the error symbol onto
+  DATA itself, as `signal_or_quit` does. `set-buffer-multibyte nil`
+  allocated a vector for each character and recounted its result's
+  characters after each; `text_range_string` (the deleted text undo
+  records) converts no indexes for an ASCII text; the word-boundary
+  lookup behind `forward-word` looked up the function `nil` (and
+  allocated the void-function error it discarded) for each empty
+  char-table entry. In the native call
+  layer, `cconv-make-interpreted-closure` (the closure each interpreted
+  `lambda` makes) cost 128,000 instructions a unit against GNU's 67,000.
+  Each funcall from native code ran about 250 instructions in
+  `direct_native_funcall`, `invoke_native_funcall`, `direct_funcall_target`
+  and `call_word_target` (GNU's `Ffuncall`, `funcall_general` and
+  `funcall_subr` about 70). A function cell holding a native function
+  whose register counts admit the argument count is now called from the
+  cell (`RegisteredNative`, nil for omitted optionals), and a byte-code
+  callee's class is read from the same read of the cell.
+  `mapcar` called `invoke_subr`'s whole dispatch for each element; it now
+  syncs the handlers and calls `invoke_native_funcall`, and its result
+  vector is on the stack up to 32 elements. A native funcall's arguments
+  reaching a byte-code or interpreted callee were checked word by word
+  through `mem_find` (220 to 730 instructions for a vector-like word,
+  depending on the heap's layout); they are the caller's live words, read
+  as `XUNTAG` reads them (`invoke_subr`'s general path already did).
+  Undo: 1,556,807 → 1,504,349 instructions a unit (GNU 1,248,561: 1.25 →
+  1.20), host allocations 1,015 → about 820 a unit; native-execution
+  483.2 → 415.1 million instructions (0.90 of GNU's);
+  native-to-interpreted 4,758 → 4,725 and bytecode-to-native 493.0 →
+  489.4 an iteration; native-to-bytecode, interpreted-to-native, mapcar
+  and bytecode calls unchanged. Validation (gate profile,
+  `--test-threads=1`): the 539 `format`, buffer-name, `apply`, `signal`, `condition-case`,
+  message, insertion, multibyte, undo, `delete-region`, funcall, `mapcar`,
+  `&rest`, native-runtime, byte-code, word and text-property tests pass,
+  among them three new ones (`signal`'s DATA, a leading `vector-literal`
+  in `list` and `&rest` lists, the unibyte conversion against GNU's
+  answer); clippy `-D warnings` and
+  rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1604,7 +2011,24 @@ and rustfmt clean. For the scan's bounds and the per-kind lists: 592 of
 the 593 conservative-scan, stack, native, collection, weak, finalizer,
 sweep, block, heap, root, allocation and vector tests pass in four
 parallel parts, the other being the load-sensitive TLS test, which passes
-alone (2 of 2); clippy and rustfmt clean.
+alone (2 of 2); clippy and rustfmt clean. For undo's window configurations,
+message log and native `set`: 870 of the 871 window, configuration,
+message, undo, native, subr, `set`, `setq`, buffer and hook tests pass in
+four parallel parts, the other being the as-root save-buffer test; clippy
+`-D warnings` and rustfmt clean. For undo's edits and native code's calls:
+1,392 of the 1,393 hook, change, overlay, insert, delete, undo, buffer,
+window, native, funcall, binding, list, closure, byte-code, thread,
+continuation, unwind, catch, condition and signal tests pass in four
+parallel parts (the other the as-root save-buffer test), and with the
+VM's bindings by id 487 of 487 byte-code, binding, unwind, handler,
+catch, signal, thread and buffer-local tests; the regenerated x86_64
+subr table differs from the generator's output only by the four direct
+targets (the aarch64 table, which needs that host's GNU build to
+regenerate, has the same four entries changed by hand); clippy `-D
+warnings` and rustfmt clean. For temporary buffers and `format`: 775 of
+the 776 format, buffer, directory, read-only, message, error, signal,
+condition and string tests pass in four parallel parts, the other the
+as-root save-buffer test; clippy `-D warnings` and rustfmt clean.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
@@ -1838,8 +2262,36 @@ frozen passed on its first attempt (run 39066924074). **On `5147b2e`**
 39069862192). **On `85f3e00`** (the image's cells left unread): full
 Rust gate passed (run 39074166122; 3,140 tests), frozen passed on its
 first attempt (run 39074167800). **On `3e1cced`** (the image's string
-data): full Rust gate (run 39075363648) and frozen (run 39075365786)
-pending. Locally,
+data): full Rust gate passed (run 39075363648), frozen passed on its first
+attempt (run 39075365786). **On `ba696b3`** (the scan's bounds and the
+per-kind lists): full Rust gate passed (run 39078342040), frozen passed on
+its first attempt (run 39078343825). **On `b206a4a`** (undo's window
+configurations, message log and native `set`): full Rust gate passed (run
+39080606435), frozen passed on its first attempt (run 39080608068). **On
+`df06b81`** (the change hooks, native funcall and bindings by id): full
+Rust gate passed (run 39085349381). Frozen matched 7,927 of 7,928 across
+519 files (run 39085350916): GNU's `eglot-test-rust-completion-exit-function`
+failed in the oracle with `jsonrpc-error` while Emaxx passed, the
+rust-analyzer timing recorded above; its failed job, re-run once (attempt
+2), passed. **On `f001516`** (buffer names and `format`'s count): full
+Rust gate passed (run 39087539788), frozen passed on its first attempt
+(run 39087541542). **On `3c034cc`** (with `093899a` beneath it: lazy cons
+serials, the entry cache by identity): full Rust gate passed (run
+39102085132). Frozen matched 7,927 of 7,928 (run 39102086693): GNU's
+`eglot-test-rust-completion-exit-function` failed in the oracle with
+`jsonrpc-error` again while Emaxx passed (0 unexpected outcomes for
+Emaxx, 1 for the oracle); its failed job, re-run once (attempt 2),
+passed. **On `ba9f640`** (with `71cc79f` beneath it: the register counts
+and the verified return, the mark phase): full Rust gate passed (run
+39108333438). Frozen matched 7,927 of 7,928 (run 39108334830), the same
+oracle failure of `eglot-test-rust-completion-exit-function` (third run
+in a row, each time on the GNU side only); its failed job, re-run once
+(attempt 2), passed. **On `d7b02ff`** (undo's slow ops, the ASCII
+newline search): full Rust gate passed (run 39115079701), frozen passed
+on its first attempt (run 39115081583). **On `c48c5a2`** (activation
+vectors kept, the operandless table at compile time): full Rust gate
+passed (run 39118270646), frozen passed on its first attempt (run
+39118272517). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -1934,7 +2386,14 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   1.07, mapcar 1.06, native-to-bytecode 1.02, dynamic 1.00,
   native-to-interpreted 0.97, sort 0.96, list traversal 0.95, explicit-gc
   0.93, bindat 0.76, native execution 0.74, calls 0.70, lexical 0.66: six
-  of the sixteen above the bound. Collections cost Emaxx more time than GNU at fewer
+  of the sixteen above the bound. On `df06b81` with the profile, the same
+  way: undo 1.24, bytecode-to-native 1.24, cons allocation 1.18,
+  interpreted-to-native 1.16, mapcar 1.11 (1.09 in eight rounds of five
+  against `b206a4a`'s profile build, the same, 0.0683 and 0.0685 s
+  against GNU's 0.0627), bytecode calls 1.08, native-to-bytecode 1.02,
+  dynamic 1.00, list traversal 0.94, explicit-gc 0.94, native-to-interpreted
+  0.94, sort 0.95, bindat 0.76, calls 0.66, lexical 0.66, native execution
+  0.63: six above the bound. Collections cost Emaxx more time than GNU at fewer
   instructions: 19 to 22 ms each in the workloads against GNU's 12 to 16,
   an otherwise empty one 15.0 ms against 9.8 (11.5 after the compaction
   change), though marking a long list costs less a cell (6.6 ns against
@@ -2106,17 +2565,20 @@ and failures are still recorded.
 
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
-2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now undo 1.41, interpreted-to-native 1.29,
-   bytecode-to-native 1.27, native-to-bytecode 1.27, mapcar 1.23,
-   native-to-interpreted 1.18, bytecode calls 1.17, sort 1.14,
-   interpreted dynamic 1.12; by
-   wall time, with the profile-guided build (`tools/pgo-build.sh`, the
-   PGO bullet above): bytecode-to-native 1.54, undo 1.35, mapcar 1.29,
-   cons allocation 1.22 (an in-sample collection, see above),
-   interpreted-to-native 1.19, bytecode calls 1.10, explicit-gc 1.09,
-   native-to-bytecode 1.06; native-to-interpreted 1.03, dynamic 1.02,
-   sort 1.01 and the rest below. The profile helps the interpreter and
+2. **Performance, worst ratios first.** By wall time on `ba9f640`'s
+   profile-guided build (pilot sizes, minimum ratio; the bullet "Profile-
+   guided wall time on `ba9f640`" has the medians): undo 1.21,
+   bytecode-to-native 1.21, interpreted-to-native 1.15, cons allocation
+   1.13 (its one in-sample collection, see "Cons allocation's gap is its
+   one collection"), bytecode calls 1.05 to 1.07, and the other eleven
+   below 1.0 (mapcar 0.96 since the mark phase's change). By instructions
+   on the line-table build: undo about 1.20 (after the in-place string
+   reads), interpreted-to-native 1.28, bytecode-to-native 1.26,
+   native-to-bytecode 1.24, bytecode calls 1.11, native-execution 0.90. Where each case's instructions go is under
+   "Where the byte-code call and return go" and the native call bullets.
+   (Older wall figures, before these rounds: bytecode-to-native 1.54,
+   undo 1.35, mapcar 1.29, cons allocation 1.22, interpreted-to-native
+   1.19, bytecode calls 1.10, explicit-gc 1.09.) The profile helps the interpreter and
    the native callbacks most and the byte-code loop and the collector
    least, so those (and undo's in-place ops) are where code changes now
    count most. A wall ratio
