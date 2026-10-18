@@ -2207,6 +2207,43 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   verification, unwinding or handlers pass (the other is the as-root
   `byte_compile_file_reports_an_unwritable_target_like_gnu`); clippy
   `-D warnings` and rustfmt pass.
+- **A position-dependent executable, and a frame entry's counts in one
+  bit.** On x86-64 Linux the package's own crates compile with
+  `-C relocation-model=static` (`tools/rustc-workspace-wrapper.sh`,
+  Cargo's workspace wrapper in `.cargo/config.toml`; dependencies keep
+  the default, since the procedural macros among them are shared objects
+  such code cannot be linked into, and Cargo has no stable per-package or
+  host flags). A jump table in position-independent code holds 32-bit
+  offsets from the table, so each byte-code dispatch was the opcode's
+  load, the offset's load, an add of the table's address (which held a
+  register through the loop) and the jump; with absolute entries it is
+  the load and `jmp *TABLE(,%rax,8)`, where GNU's computed goto (its
+  build is a PIE) takes four or five. The frame-entry cache
+  (`verify::EntryProgram`) now holds the callee's code, constants,
+  verified code, depth and first slots with the argument counts a plain
+  entry takes as a 64-bit mask, so setup_frame's count test and the
+  frame's room are one bit test, and the verified loop holds its code
+  without the length (the slow op reads its own). Instructions a unit
+  at a four-hundredth of the contract sizes against `c1ae4e3`, plain
+  builds: bytecode calls 495.5 → 439.2 (GNU 468), bytecode-to-native
+  450.0 → 411.8 (GNU 388), explicit GC −10.1%, interpreted-dynamic −3.1%,
+  native execution −1.5%, the others −0.03 to −1.5% but native-to-bytecode
+  (+0.05%), and undo 1,384,033 → 1,347,374 at 10 and 20 units (its
+  +1.4% at 2 and 4 is collection noise). The mask and the code without
+  its length alone, still position-independent: bytecode calls 491 → 481
+  at pilot size. Plain-build wall time at pilot sizes (seven rounds of
+  five samples, minimum and median against GNU's): bytecode calls 0.910
+  and 0.901 (`c1ae4e3` 1.005 and 0.972), bytecode-to-native 0.983 and
+  1.061 (1.028 and 1.057). Validation (gate profile,
+  `--test-threads=1`): the lightweight group's 598 tests (197 of them
+  native-code tests, 30 image and 33 dump tests), the 168 of 169 byte-code,
+  compilation, funcall, signal and closure tests as above (the as-root
+  one) and the 50 batch tests pass; clippy `-D warnings` and rustfmt
+  pass. The batch tests run two at a time in one process abort on
+  `c1ae4e3` as well (a collection meets a string another test's
+  interpreter holds mutably borrowed, "cannot collect while a string is
+  mutably borrowed", or the C heap's own abort): the string heap is the
+  process's, and the gate runs them one at a time.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2706,7 +2743,10 @@ symbols, the watcher flag first): full Rust gate passed (run
 passed (run 39164077964), frozen passed on its first attempt (run
 39164080135). **On `aa0c63f`** (maybe_gc on a mirror of the trigger):
 full Rust gate passed (run 39167951029), frozen passed on its first
-attempt (run 39167952851); PR #91 merged it into main (`bafedf4`). Locally,
+attempt (run 39167952851); PR #91 merged it into main (`bafedf4`). **On
+`c1ae4e3`** (a running frame's program in three words): full Rust gate
+passed (run 39172012232); frozen (run 39172014125) was still running
+when the next commit was made. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the

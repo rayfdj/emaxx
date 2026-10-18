@@ -426,6 +426,15 @@ impl Running {
         }
     }
 
+    #[inline(always)]
+    fn entered(program: &super::verify::EntryProgram) -> Self {
+        Self {
+            code: program.code,
+            constants: program.constants,
+            verified: Some(program.verified),
+        }
+    }
+
     #[inline]
     fn constant(&self, index: u16) -> Value {
         // bytecode.c reads vectorp[index] at the instruction, not a copy
@@ -839,23 +848,10 @@ fn enter_closure_frame(
     // SAFETY: nothing below enters a closure or collects a string before
     // the program is copied into the frame.
     let callee = unsafe { super::verify::entry_program(closure)?.as_ref() };
-    let ArgSpec::Packed {
-        mandatory,
-        nonrest,
-        rest,
-    } = callee.argspec
-    else {
-        unreachable!("bytecode_callee selects packed argument lists")
-    };
-    let nonrest = usize::from(nonrest);
-    let entry_depth = nonrest + usize::from(rest);
-    if argc < usize::from(mandatory)
-        || argc > nonrest
-        || entry_depth > callee.stack_depth
-        || !crate::lisp::native_comp::collection_cannot_be_due(state)
-    {
+    if !callee.takes(argc) || !crate::lisp::native_comp::collection_cannot_be_due(state) {
         return None;
     }
+    let entry_depth = callee.entry_depth;
     // SAFETY: as the Call arm's: the caller's argument slots stay as they
     // are below the callee's frame until it returns or unwinds. Both
     // callers found the function and the arguments on the stack: verified
@@ -887,7 +883,7 @@ fn enter_closure_frame(
             },
         },
     );
-    *vm.program = Running::of(callee);
+    *vm.program = Running::entered(callee);
     // setup_frame's `PUSH (*args)' and the optionals' nils.
     state.bc_stack.push_arguments(call_args, entry_depth);
     Some((state.bc_stack.top, entry_depth))
@@ -1721,7 +1717,7 @@ fn run_verified(
                 () => {{
                     // SAFETY: sp lies within the active frame.
                     let top = unsafe { sp.offset_from(words) as usize } + 1;
-                    break 'run op_in_place(vm, code, offset, constants.len(), top, pc);
+                    break 'run op_in_place(vm, offset, top, pc);
                 }};
             }
             // A jump op is three bytes; one to before its end is backward.
@@ -2488,14 +2484,13 @@ fn run_verified(
 /// call, since the op may have run Lisp; or its signal. An op that does
 /// not decode leaves the loop with the stack as it was.
 #[inline(never)]
-fn op_in_place(
-    vm: &mut VmFrames<'_>,
-    code: &[u8],
-    offset: usize,
-    constants: usize,
-    top: usize,
-    pc: &mut usize,
-) -> FastExit {
+fn op_in_place(vm: &mut VmFrames<'_>, offset: usize, top: usize, pc: &mut usize) -> FastExit {
+    // The frame's code, which the loop reads only by its verified offsets
+    // and so holds without its length.
+    // SAFETY: as the verified loop's: nothing runs Lisp, collects or
+    // stores into a string before the instruction is decoded.
+    let code = unsafe { vm.program.code.bytes_unguarded() }.0;
+    let constants = vm.program.constants.len();
     // SAFETY: a verified instruction lies within the code.
     let byte = unsafe { *code.get_unchecked(offset) };
     let instr = match super::operandless_op(byte) {
@@ -3353,15 +3348,8 @@ pub fn execute_closure(
     if let Some(program) = super::verify::entry_program(closure) {
         // SAFETY: nothing runs Lisp or collects before the copy below.
         let program = unsafe { program.as_ref() };
-        if let ArgSpec::Packed {
-            mandatory,
-            nonrest,
-            rest,
-        } = program.argspec
-            && (usize::from(mandatory)..=usize::from(nonrest)).contains(&args.len())
-            && usize::from(nonrest) + usize::from(rest) <= program.stack_depth
-        {
-            return run_entered(interp, program.clone(), Value::Closure(closure), args, env);
+        if program.takes(args.len()) {
+            return run_entered(interp, *program, Value::Closure(closure), args, env);
         }
     }
     let program = closure_program(closure)?;
@@ -3428,15 +3416,12 @@ fn run(
 #[inline(never)]
 fn run_entered(
     interp: &mut Interpreter,
-    program: ByteCodeObject,
+    program: super::verify::EntryProgram,
     function: Value,
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let ArgSpec::Packed { nonrest, rest, .. } = program.argspec else {
-        unreachable!("the entry cache holds packed argument lists")
-    };
-    let entry_depth = usize::from(nonrest) + usize::from(rest);
+    let entry_depth = program.entry_depth;
     interp.bc_stack.ensure_allocated();
     let stack_at_entry = (
         interp.bc_stack.frame,
@@ -3455,7 +3440,7 @@ fn run_entered(
         // The caller checked the count against the list and the list's
         // slots against the frame's depth.
         interp.bc_stack.push_arguments(args, entry_depth);
-        let mut program = Running::of(&program);
+        let mut program = Running::entered(&program);
         let mut frames = Pooled::new();
         let mut handlers = Pooled::new();
         let mut op_error_frames = 0;

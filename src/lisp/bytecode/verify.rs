@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
-use super::{ArgSpec, ByteCodeObject, Op, decode_instr};
+use super::{ArgSpec, ByteCodeObject, CodeBytes, Op, decode_instr};
 use crate::lisp::alloc::CodeState;
 use crate::lisp::types::{ClosureRef, IdentityBuildHasher, Kind, VectorRef};
 
@@ -173,6 +173,33 @@ fn verified_code_slow(
     (!version.depths.is_empty()).then_some(version)
 }
 
+/// What a plain entry of a closure runs (`entry_program'): the fields
+/// `ByteCodeObject::for_call' reads, the verified code for the entry, and
+/// what setup_frame finds from the argument template.
+#[derive(Clone, Copy)]
+pub(crate) struct EntryProgram {
+    pub(crate) code: CodeBytes,
+    pub(crate) constants: VectorRef,
+    pub(crate) verified: &'static VerifiedCode,
+    pub(crate) stack_depth: usize,
+    /// The frame's first slots: the arguments, the &optional ones' nils
+    /// and the &rest list's.
+    pub(crate) entry_depth: usize,
+    /// Bit N set when the template takes N arguments with no &rest list
+    /// to make (N from MANDATORY to NONREST) and the first slots fit the
+    /// frame; none at or above 64.
+    counts: u64,
+}
+
+impl EntryProgram {
+    /// Whether a plain entry with ARGC arguments runs this program as it
+    /// stands: setup_frame's count test and the frame's room, in one bit.
+    #[inline(always)]
+    pub(crate) fn takes(&self, argc: usize) -> bool {
+        argc < 64 && self.counts & (1 << argc) != 0
+    }
+}
+
 /// A closure's program as its last entry read it (see `entry_program').
 struct ClosureEntry {
     /// The closure's identity; zero for an entry that holds nothing.
@@ -180,9 +207,7 @@ struct ClosureEntry {
     /// `code_changes' when the entry was filled: no verified code has
     /// changed while it is the same.
     code_changes: usize,
-    /// `ByteCodeObject::for_call's program, with the verified code for
-    /// its entry.
-    program: MaybeUninit<ByteCodeObject>,
+    program: MaybeUninit<EntryProgram>,
 }
 
 const CLOSURE_SLOTS: usize = 1024;
@@ -273,7 +298,7 @@ fn closure_slot(identity: usize) -> usize {
 /// The program stays where the answer points until the next call here or
 /// to `forget' on this thread.
 #[inline(always)]
-pub(crate) fn entry_program(closure: ClosureRef) -> Option<NonNull<ByteCodeObject>> {
+pub(crate) fn entry_program(closure: ClosureRef) -> Option<NonNull<EntryProgram>> {
     let identity = closure.identity();
     // SAFETY: the thread's table stays in place until its exit; nothing
     // else refers to this entry while this runs, and nothing here reenters.
@@ -290,18 +315,34 @@ pub(crate) fn entry_program(closure: ClosureRef) -> Option<NonNull<ByteCodeObjec
 }
 
 #[inline(never)]
-fn entry_program_slow(closure: ClosureRef, identity: usize) -> Option<NonNull<ByteCodeObject>> {
+fn entry_program_slow(closure: ClosureRef, identity: usize) -> Option<NonNull<EntryProgram>> {
     if closure.public_len() < 4 {
         return None;
     }
-    let mut program = ByteCodeObject::for_call(closure)?;
-    let ArgSpec::Packed { nonrest, rest, .. } = program.argspec else {
+    let program = ByteCodeObject::for_call(closure)?;
+    let ArgSpec::Packed {
+        mandatory,
+        nonrest,
+        rest,
+    } = program.argspec
+    else {
         unreachable!("for_call reads packed argument lists")
     };
-    program.verified = Some(verified_code(
-        &program,
-        usize::from(nonrest) + usize::from(rest),
-    )?);
+    let entry_depth = usize::from(nonrest) + usize::from(rest);
+    let verified = verified_code(&program, entry_depth)?;
+    let counts = if entry_depth <= program.stack_depth {
+        (mandatory..=nonrest.min(63)).fold(0, |counts, argc| counts | 1u64 << argc)
+    } else {
+        0
+    };
+    let program = EntryProgram {
+        code: program.code,
+        constants: program.constants,
+        verified,
+        stack_depth: program.stack_depth,
+        entry_depth,
+        counts,
+    };
     let table = closure_table()?;
     let sweeps = crate::lisp::alloc::vectors::vector_sweeps();
     if CLOSURES_SWEPT.get() != sweeps {
