@@ -2394,12 +2394,15 @@ fn op_in_place(
     let byte = unsafe { *code.get_unchecked(offset) };
     let instr = match super::operandless_op(byte) {
         Some(op) => super::Instr { offset, len: 1, op },
-        None => match super::fetch_instruction(code, offset, constants) {
-            Ok(instr) => instr,
-            Err(error) => {
-                *pc = offset;
-                return FastExit::Error(error);
-            }
+        None => match super::fetch_family_instruction(code, offset, constants) {
+            Some(instr) => instr,
+            None => match super::fetch_instruction(code, offset, constants) {
+                Ok(instr) => instr,
+                Err(error) => {
+                    *pc = offset;
+                    return FastExit::Error(error);
+                }
+            },
         },
     };
     // The verified loop runs these itself, and never leaves one to its
@@ -2424,7 +2427,7 @@ fn op_in_place(
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.bc_stack.top = top;
     *pc = offset + instr.len;
-    match exec_op(vm, instr.op, pc) {
+    match exec_op_inline(vm, instr.op, pc) {
         Ok(()) => {
             let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
             FastExit::Switched(state.bc_stack.top, state.bc_stack.len())
@@ -2441,6 +2444,13 @@ fn op_in_place(
 /// loop.
 #[inline(never)]
 fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispError> {
+    exec_op_inline(vm, op, pc)
+}
+
+/// `exec_op's body, inline in `op_in_place', the verified loop's way to
+/// these ops (a call and a second prologue for each of them).
+#[inline(always)]
+fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispError> {
     let VmFrames {
         interp,
         env,

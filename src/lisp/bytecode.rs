@@ -739,6 +739,38 @@ fn fetch_instruction(
     Ok(instr)
 }
 
+/// `fetch_instruction' for the variable families and Bunbind, whose
+/// operand is in the opcode (+0..+5), the next byte (+6) or the next two
+/// (+7), read without the general decoder's match; None for any other
+/// opcode, a truncated operand or a constant out of range, which the
+/// general decoder reports.
+#[inline(always)]
+fn fetch_family_instruction(code: &[u8], offset: usize, constants_len: usize) -> Option<Instr> {
+    let byte = *code.get(offset)?;
+    let (operand, len) = match byte & 7 {
+        6 => (u16::from(*code.get(offset + 1)?), 2),
+        7 => (
+            u16::from(*code.get(offset + 1)?) | (u16::from(*code.get(offset + 2)?) << 8),
+            3,
+        ),
+        immediate => (u16::from(immediate), 1),
+    };
+    let op = match byte >> 3 {
+        1 => Op::VarRef(operand),
+        2 => Op::VarSet(operand),
+        3 => Op::VarBind(operand),
+        5 => {
+            return Some(Instr {
+                offset,
+                len,
+                op: Op::Unbind(operand),
+            });
+        }
+        _ => return None,
+    };
+    (usize::from(operand) < constants_len).then_some(Instr { offset, len, op })
+}
+
 /// Shared by direct byte dispatch and the interpreter fallback. A constant
 /// access checks its actual index when executed; dead code stays unread.
 #[inline]
@@ -920,6 +952,38 @@ pub fn classify_elc_header(bytes: &[u8]) -> ElcKind {
 #[allow(clippy::unwrap_used)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn the_family_decoder_answers_as_fetch_instruction() {
+        // Every opcode with each operand width, and constant vectors on
+        // both sides of the operand: the fast decoder gives the general
+        // decoder's instruction or leaves the opcode to it.
+        for byte in 0..=255u8 {
+            for tail in [&[][..], &[3][..], &[0x34, 0x12][..]] {
+                let mut code = vec![byte];
+                code.extend_from_slice(tail);
+                for constants_len in [0, 3, 4, 0x1235] {
+                    let general = fetch_instruction(&code, 0, constants_len).ok();
+                    match fetch_family_instruction(&code, 0, constants_len) {
+                        Some(instr) => assert_eq!(Some(instr), general, "{code:?} {constants_len}"),
+                        None => assert!(
+                            general.is_none()
+                                || !matches!(
+                                    general.map(|instr| instr.op),
+                                    Some(
+                                        Op::VarRef(_)
+                                            | Op::VarSet(_)
+                                            | Op::VarBind(_)
+                                            | Op::Unbind(_)
+                                    )
+                                ),
+                            "{code:?} {constants_len}"
+                        ),
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn decodes_operand_in_opcode_families() {

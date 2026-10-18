@@ -1698,6 +1698,45 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   the caches are cold after the loop, and the trace walks the image's
   objects every time, as GNU's walks its dump. The case reaches the
   bound when that collection costs about 11 ms.
+- **Profile-guided wall time on `ba9f640`** (`tools/pgo-build.sh` with
+  the machine otherwise idle; pilot sizes, five rounds of five samples,
+  the minimum and median ratio to GNU, `3c034cc`'s build alongside in
+  parentheses): undo 1.214 and 1.262 (1.200, 1.221), bytecode-to-native
+  1.206 and 1.206 (1.234, 1.263), interpreted-to-native 1.151 and 1.144
+  (1.190, 1.216), cons allocation 1.131 and 1.106 (1.149, 1.165),
+  bytecode calls 1.064 and 1.151 (1.045, 1.028), eight rounds of it
+  again 1.070 and 1.042 (1.050, 1.041) with 511.7 instructions an
+  iteration on the profile-guided build against 519.0 (its loop is
+  sensitive to the layout the profile gives); mapcar 0.963 and 0.946
+  (1.093, 1.074), explicit-gc 0.720 and 0.766 (0.959, 0.991): the mark
+  phase's change is worth a quarter of a collection on this build; the
+  other nine at or below 0.95 (interpreted calls 0.60, native execution
+  0.63, bindat 0.71, sort 0.91, native-to-bytecode 0.92).
+- **Undo's ops outside the verified loop.** Per unit undo leaves the
+  verified loop 622 times for an op it runs in place (`op_in_place`):
+  about 55 instructions of `op_in_place` and 25 of `exec_op`'s prologue,
+  match and epilogue before the op's own work, and 198 of them decoded
+  again by `decode_instr` (63 instructions each) for a variable or
+  unbind family's operand. `exec_op`'s body is now inline in
+  `op_in_place` (`exec_op_inline`; the full dispatch keeps the out-of-line
+  copy), and `fetch_family_instruction` reads those families' operand
+  and checks the constant index as `fetch_instruction` does (a test
+  compares the two on every opcode and operand width). Undo's
+  `line_start_at` ran about 384 instructions for each of 38 calls a unit
+  (`forward-line` and the message log's line count) converting char
+  indexes to byte indexes in a chunk; a text whose char and byte counts
+  agree is ASCII, whose indexes are the same, and `newline_before` and
+  `newline_at_or_after` skip the conversion for it. Undo: 1,614,623 →
+  1,574,485 instructions a unit (10 against 20 units; glibc's
+  `malloc_consolidate` and `unlink_chunk` add about 18,000 of noise from
+  the heap's layout). The ops still call their primitives by name
+  (`prim` → `prim_facts`' probe, about 20 instructions); the decoded
+  op table behind a `OnceLock` costs about 8 a slow op. Validation (gate
+  profile, `--test-threads=1`): the 97 byte-code, decoder and VM tests,
+  the 25 line-motion tests and 461 of the 462 buffer, undo, search,
+  insertion, region, column, indentation and message tests pass (the
+  other the as-root save-buffer test below); clippy `-D warnings` and
+  rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2160,8 +2199,13 @@ serials, the entry cache by identity): full Rust gate passed (run
 39102085132). Frozen matched 7,927 of 7,928 (run 39102086693): GNU's
 `eglot-test-rust-completion-exit-function` failed in the oracle with
 `jsonrpc-error` again while Emaxx passed (0 unexpected outcomes for
-Emaxx, 1 for the oracle); its failed job is re-run once (attempt 2).
-Locally,
+Emaxx, 1 for the oracle); its failed job, re-run once (attempt 2),
+passed. **On `ba9f640`** (with `71cc79f` beneath it: the register counts
+and the verified return, the mark phase): full Rust gate passed (run
+39108333438). Frozen matched 7,927 of 7,928 (run 39108334830), the same
+oracle failure of `eglot-test-rust-completion-exit-function` (third run
+in a row, each time on the GNU side only); its failed job, re-run once
+(attempt 2), passed. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -2435,16 +2479,16 @@ and failures are still recorded.
 
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
-2. **Performance, worst ratios first.** By wall time on `3c034cc`'s
+2. **Performance, worst ratios first.** By wall time on `ba9f640`'s
    profile-guided build (pilot sizes, minimum ratio; the bullet "Profile-
-   guided wall time on `3c034cc`" has the medians): bytecode-to-native
-   1.23, undo 1.24, interpreted-to-native 1.18, cons allocation 1.15
-   (GNU's start-of-sample collection keeps the previous list, see "Cons
-   allocation's collection, measured again"), mapcar 1.06, bytecode calls
-   1.05, and the other ten at or below 1.0. By instructions on the
-   line-table build: undo about 1.30, interpreted-to-native 1.29,
-   bytecode-to-native 1.26, native-to-bytecode 1.24, mapcar 1.19,
-   bytecode calls 1.11. Where each case's instructions go is under
+   guided wall time on `ba9f640`" has the medians): undo 1.21,
+   bytecode-to-native 1.21, interpreted-to-native 1.15, cons allocation
+   1.13 (its one in-sample collection, see "Cons allocation's gap is its
+   one collection"), bytecode calls 1.05 to 1.07, and the other eleven
+   below 1.0 (mapcar 0.96 since the mark phase's change). By instructions
+   on the line-table build: undo about 1.26 (after this round's slow ops),
+   interpreted-to-native 1.29, bytecode-to-native 1.26,
+   native-to-bytecode 1.24, bytecode calls 1.09. Where each case's instructions go is under
    "Where the byte-code call and return go" and the native call bullets.
    (Older wall figures, before these rounds: bytecode-to-native 1.54,
    undo 1.35, mapcar 1.29, cons allocation 1.22, interpreted-to-native
