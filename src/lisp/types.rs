@@ -509,7 +509,10 @@ impl SymbolName {
     /// that is not an interned symbol's is not cached (None: the caller
     /// keeps its by-name path, which may still know the name).
     pub(crate) fn interned_cached(text: &str) -> Option<Self> {
-        let key = (text.as_ptr() as usize, text.len());
+        // The text's address and length in one word: a user-space address
+        // fits in 48 bits.  A longer text's key may collide, and the text
+        // check below sends any entry that is not this text's to the table.
+        let key = (text.as_ptr() as usize) ^ (text.len() << 48);
         if let Some(symbol) = symbols::with_address_names(|cache| cache.get(&key).cloned())
             && symbol.as_str() == text
         {

@@ -1861,6 +1861,48 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   build answers with vectors (`([1] [1])`), and native code's `symbolp`,
   `symbol-function` and `fboundp` on each kind of word; clippy
   `-D warnings` and rustfmt pass.
+- **Name lookups by one multiply, `format`'s copies, native `length`
+  of a string, `min` and `max` of two fixnums.** `lookup_var` by name
+  (61 a unit in undo: `print_options` reads eight variables a print,
+  `message` four) finds the symbol through an address-keyed cache, whose
+  FNV hash of the text's address and length ran a byte at a time over 16
+  bytes (about 120 of 175 instructions a lookup). The key is now one word
+  (the address, the length in the 16 bits a user-space address leaves
+  clear) under `IdentityHasher`'s multiply; the text check after the hit
+  still rejects any colliding entry. `format` collected its format string
+  into a heap vector of characters, grew its result from empty, counted
+  each conversion's characters twice and scanned an ASCII result for
+  multibyte characters; the characters are on the stack up to 64 (an
+  ASCII format string's by its bytes), the result starts at the format
+  string's length, and an ASCII result skips the scan. Native code's
+  `length` of a string took `invoke_subr`'s general entry (decode, call
+  by name, encode); it reads the character count as `Flength`'s `SCHARS`
+  does. `min` and `max` of two fixnums return the winning argument, as
+  `minmax_driver` does. Undo: 1,444,629 → 1,437,808 instructions a unit
+  (a second build with the `format` change finished at 1,442,070, of
+  which a collection that fell inside the measured range is 5,198);
+  bytecode calls 518.5, bytecode-to-native 486.9, interpreted-to-native
+  3,054.1 (the change from 3,042.1 is glibc's `malloc_consolidate` and
+  `unlink_chunk`, not the interpreter's functions).
+  **`81fda48`'s CI failed on the anti-cheat audit**
+  `native_comp_fast_paths_are_audited_against_gnu_c`: each primitive with
+  a native fast path must be in `EXACT_NATIVE_C_FAST_PATHS` (its GNU
+  owner and contract test) or an approved deviation, and `symbol-function`
+  and `fboundp` were not (the frozen run enforces the same gates first
+  and stopped there). Every other group of the Rust gate passed (run
+  39138334869: eval_01 to eval_05 1,626 tests, primitives 728,
+  compat_runtime 86, tty 62, batch 50; lightweight 596 of 597). This
+  round lists the four new paths (`fboundp`, `symbol-function`, `min`,
+  `max`) with their GNU owners and contract tests. The local validation
+  of each round now runs the grouped gate's whole lightweight group (every
+  test outside the eval, primitives, compat_runtime, tty and batch
+  prefixes, the anti-cheat audits among them; about 40 seconds), which
+  the per-change filters missed. Validation (gate profile,
+  `--test-threads=1`): the lightweight group's 598 tests pass (with a new
+  one for native `length` of a string and the two-fixnum `min` and
+  `max`), and 197 `format`, `length`, interning, `string-match`,
+  message, `prin1`, obarray and `max` tests; clippy `-D warnings` and
+  rustfmt pass.
 - **Profile-guided wall time on `6242417`, against `ba9f640` on the
   same host.** The container came back from a restart on a host whose
   timings differ from the earlier tables' (an Intel Xeon at 2.10 GHz with
@@ -2356,7 +2398,10 @@ passed (run 39118270646), frozen passed on its first attempt (run
 39118272517). **On `6242417`** (strings read in place, a native
 funcall's target from its cell): full Rust gate passed (run
 39128542991), frozen passed on its first attempt (run 39128544870).
-Locally,
+**On `81fda48`** (C-variable stores, `eq` by the word): both runs failed
+on the anti-cheat audit of native fast paths (runs 39138334869 and
+39138337192; the next round's bullet has the cause and the fix); the
+Rust gate's other groups passed. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -2640,8 +2685,8 @@ and failures are still recorded.
    interpreted-to-native 1.01 and cons allocation 1.01 against 1.15 and
    1.13 on the earlier host (its one in-sample collection, see "Cons
    allocation's gap is its one collection"); compare builds only on one
-   host. By instructions on the line-table build: undo about 1.16 (after
-   the C-variable stores and `eq` by the word), interpreted-to-native 1.28, bytecode-to-native 1.26,
+   host. By instructions on the line-table build: undo about 1.15 (after
+   the name lookups by one multiply), interpreted-to-native 1.28, bytecode-to-native 1.26,
    native-to-bytecode 1.24, bytecode calls 1.11, native-execution 0.90. Where each case's instructions go is under
    "Where the byte-code call and return go" and the native call bullets.
    (Older wall figures, before these rounds: bytecode-to-native 1.54,

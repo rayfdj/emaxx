@@ -2010,6 +2010,8 @@ enum DirectSubr {
     MakeClosure,
     SymbolFunction,
     Fboundp,
+    Min,
+    Max,
 }
 
 impl DirectSubr {
@@ -2053,6 +2055,8 @@ impl DirectSubr {
             "make-closure" => Self::MakeClosure,
             "symbol-function" => Self::SymbolFunction,
             "fboundp" => Self::Fboundp,
+            "min" => Self::Min,
+            "max" => Self::Max,
             _ => Self::Other,
         }
     }
@@ -2178,6 +2182,25 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             };
             if let Some(result) = result {
                 return native_boolean(result);
+            }
+            // data.c:minmax_driver returns the winning argument itself; of
+            // two equal fixnums, either word.
+            match kind {
+                DirectSubr::Min => {
+                    return if right < left {
+                        arguments[1]
+                    } else {
+                        arguments[0]
+                    };
+                }
+                DirectSubr::Max => {
+                    return if right > left {
+                        arguments[1]
+                    } else {
+                        arguments[0]
+                    };
+                }
+                _ => {}
             }
             // data.c:arith_driver keeps integer addition/subtraction in its
             // machine accumulator. Two fixnums cannot overflow i64; return
@@ -3392,6 +3415,19 @@ fn invoke_native_nreverse(active: &mut ActiveCall, sequence: NativeWord) -> Opti
 fn invoke_native_length(active: &ActiveCall, sequence: NativeWord) -> Option<NativeWord> {
     if sequence == 0 {
         return Some(TAG_FIXNUM_LOW);
+    }
+    if sequence & TAG_MASK == TAG_STRING {
+        // fns.c:Flength's SCHARS, read in place.
+        // SAFETY: the caller's argument word is live.
+        let Kind::StringObject(state) = unsafe { Value::from_word(sequence) }.kind() else {
+            return None;
+        };
+        let length = state.borrow().len();
+        return Some(
+            length
+                .wrapping_shl(FIXNUM_BITS)
+                .wrapping_add(TAG_FIXNUM_LOW),
+        );
     }
     if !native_consp(sequence) {
         return None;
@@ -5793,7 +5829,7 @@ mod tests {
             );
         }
         assert_eq!(DirectSubr::of_index(subrs.len()), DirectSubr::Other);
-        // Each of the 38 kinds names exactly one subr of the ABI, so no
+        // Each of the 40 kinds names exactly one subr of the ABI, so no
         // direct path is left unreachable by a name the table lacks.
         let mut kinds: Vec<u8> = subrs
             .iter()
@@ -5804,7 +5840,7 @@ mod tests {
         let named = kinds.len();
         kinds.sort_unstable();
         kinds.dedup();
-        assert_eq!((named, kinds.len()), (38, 38));
+        assert_eq!((named, kinds.len()), (40, 40));
     }
 
     #[test]
@@ -12259,6 +12295,49 @@ mod tests {
         let (t, nil) = (Value::T.word(), Value::Nil.word());
         let car = Value::symbol("car").word();
         assert_eq!(words, [t, nil, nil, t, car, nil, t, nil, nil]);
+    }
+
+    #[test]
+    fn native_string_length_and_fixnum_extrema_answer_as_their_subrs() {
+        // `length' of a string reads its character count in place, and
+        // `min' and `max' of two fixnums return the winning argument;
+        // a float takes the general entry.
+        fn subr(name: &str) -> usize {
+            super::super::abi::native_subrs()
+                .iter()
+                .position(|subroutine| subroutine.name == name)
+                .expect("the subr belongs to the configured GNU ABI")
+        }
+        unsafe extern "C" fn probe(ascii: NativeWord, multibyte: NativeWord) -> NativeWord {
+            let fixnum = |value: i64| Value::Integer(value).word();
+            let (min, max) = (subr("min"), subr("max"));
+            let results = [
+                direct_native_length(ascii),
+                direct_native_length(multibyte),
+                invoke_subr(min, &[fixnum(3), fixnum(2)]),
+                invoke_subr(max, &[fixnum(3), fixnum(2)]),
+                invoke_subr(max, &[fixnum(-1), fixnum(-4)]),
+                invoke_subr(min, &[fixnum(2), Value::float(2.5).word()]),
+            ];
+            invoke_subr(subr("list"), &results)
+        }
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let returned = runtime
+            .invoke(
+                &mut interpreter,
+                &mut environment,
+                probe as *const c_void,
+                NativeCallingConvention::Fixed,
+                &[Value::string("undo"), Value::string("ünd…")],
+            )
+            .expect("native length and extrema");
+        assert_eq!(
+            returned.to_vec().expect("a proper list"),
+            [4, 4, 2, 3, -1, 2].map(Value::Integer)
+        );
     }
 
     #[test]
