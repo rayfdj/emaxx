@@ -1974,6 +1974,31 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   notifies while registered, not after its removal, and again once
   re-added (GNU answers the same); clippy `-D warnings` and rustfmt
   pass.
+- **The undo list's Lisp view kept across marker adjustments.**
+  `buffer-undo-list` reads a cached Lisp list that each new record is
+  consed onto. A deletion that moves markers splices their adjustments in
+  below it, and that splice dropped the cache, as did enabling undo
+  (`buffer-enable-undo` in a temporary buffer) and clearing the history;
+  the next read rebuilt the whole list from the native records: 8
+  rebuilds a unit in undo, about 110 records converted (tracing each
+  drop showed 7 a unit at the splice and 6 at `disable_undo`, which only
+  matters once undo is enabled again). The splice now gives the cache a
+  new head over the adjustments and its old tail (no Lisp has read the
+  newest record between the deletion and the splice; the list after
+  marker-moving deletions is GNU's, adjustments and their order
+  included), and an emptied or newly enabled history starts with the
+  cache nil, which the records then extend. Undo: 1,408,804 → 1,401,532
+  (rebuilds 8 → 4 a unit). A fresh buffer's cache is still made at its
+  first read: making it at its first record left one rebuild a unit but
+  measured 1,407,168, the records' Lisp forms made for lists never read
+  costing what the rebuilds saved (and glibc's `malloc_consolidate`
+  moving by 6,297), so it is not kept. Neither is native `symbolp`
+  answering a vectorlike argument other than a symbol with position
+  before the general entry (192 instructions a unit). Bytecode calls and
+  bytecode-to-native run no undo records and were not re-measured.
+  Validation (gate profile, `--test-threads=1`): the lightweight group's
+  598 tests and 48 undo, marker, `delete-region` and amalgamation tests
+  pass; clippy `-D warnings` and rustfmt pass.
 - **Profile-guided wall time on `6242417`, against `ba9f640` on the
   same host.** The container came back from a restart on a host whose
   timings differ from the earlier tables' (an Intel Xeon at 2.10 GHz with
@@ -2477,7 +2502,11 @@ multiply, `format`'s copies, the fast-path inventory): full Rust gate
 passed (run 39142224150). Frozen matched 7,927 of 7,928 (run
 39142226322): the oracle failed `eglot-test-rust-completion-exit-function`
 again (a `jsonrpc-error` on the GNU side; Emaxx passed it); its failed
-job was re-run once (attempt 2), its result to be recorded with the next
+job, re-run once (attempt 2), passed. **On `e5852af`** (one handler
+search a signal): full Rust gate passed (run 39146151002), frozen passed
+on its first attempt (run 39146153666). **On `f50ce28`** (watched and
+buffer-local variables by flags): full Rust gate passed (run
+39149792527); frozen (run 39149794338) to be recorded with the next
 round. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
@@ -2762,8 +2791,8 @@ and failures are still recorded.
    interpreted-to-native 1.01 and cons allocation 1.01 against 1.15 and
    1.13 on the earlier host (its one in-sample collection, see "Cons
    allocation's gap is its one collection"); compare builds only on one
-   host. By instructions on the line-table build: undo about 1.13 (after
-   watched and buffer-local variables by flags on the symbol), interpreted-to-native 1.28, bytecode-to-native 1.26,
+   host. By instructions on the line-table build: undo about 1.12 (after
+   the undo list's view kept across marker adjustments), interpreted-to-native 1.28, bytecode-to-native 1.26,
    native-to-bytecode 1.24, bytecode calls 1.11, native-execution 0.90. Where each case's instructions go is under
    "Where the byte-code call and return go" and the native call bullets.
    (Older wall figures, before these rounds: bytecode-to-native 1.54,
