@@ -53,6 +53,7 @@ impl ThreadExecutionContext {
             dispatched_signal,
             suspend_condition_case_count
         );
+        interpreter.handler_generation += 1;
     }
 }
 

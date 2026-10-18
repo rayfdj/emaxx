@@ -349,6 +349,8 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "suspend_condition_case_count",
         "the running signal dispatch",
     ),
+    ("handler_generation", "the running signal dispatch"),
+    ("handler_search_memo", "the running signal dispatch"),
     (
         "window_margins",
         "window state re-created with the initial frame",

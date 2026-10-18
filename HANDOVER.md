@@ -1903,6 +1903,47 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   `max`), and 197 `format`, `length`, interning, `string-match`,
   message, `prin1`, obarray and `max` tests; clippy `-D warnings` and
   rustfmt pass.
+- **Slow ops: an opaque call and a family dispatch, measured and left
+  out.** Undo leaves the verified loop 768 times a unit for
+  `op_in_place`, about 103 instructions of its own each (decode, the
+  combined function's prologue and epilogue, the match and the stack's
+  bookkeeping) besides the op's work, some 60,000 a unit. Relative to
+  `7cee893`'s build (bytecode calls 518.5, bytecode-to-native 486.9):
+  A, `run_verified` calling `op_in_place` through `black_box`'s function
+  pointer (so that nothing inferred of its body reaches the loop): 520.5
+  and 488.5, undo unchanged (1,441,625). B, A plus the reference,
+  binding and unbinding families dispatched by their byte at the head of
+  `op_in_place` to small functions of their own, the rest in an
+  out-of-line `op_in_place_general`: 522.4 and 487.8, undo 1,462,669
+  (+21,000): the dispatcher alone cost 47 instructions an op (its
+  frame, and the general body's `FastExit` returned through memory), and
+  the general body 96 for the other 526. Neither is kept; a cheaper
+  slow op needs the ops' arms reached without a second function's frame
+  (an arm in `run_verified` itself moves its register allocation, see
+  the eight variants above).
+- **One handler search a signal.** An error unwinding through frames
+  is asked at each frame boundary whether a `handler-bind` handler runs
+  for it (`dispatch_handler_bindings`) and whether a `condition-case`
+  catches it (`capture_batch_error_backtrace` then takes no backtrace
+  copy), and each question recomputed the condition's `error-conditions`
+  and every handler entry's match: 52 searches a unit in undo for four
+  signals, about 20,000 instructions. GNU's `signal_or_quit` searches
+  once, at the signal. The search (`HandlerSearch`: the innermost module
+  boundary or matching entry, and the innermost matching `condition-case`)
+  is kept for the error's box and condition symbol under a count of the
+  pushes onto the handler stack and of the thread switches that exchange
+  it, and the collection epoch; while those hold the stack has only lost
+  entries, so the answer stands unless an entry it stopped at is gone.
+  Undo: 1,442,069 → 1,430,253 instructions a unit (the same profile's
+  `7cee893` reading; `error_condition_names_of` 59 → 11 calls a unit);
+  bytecode calls 518.4, bytecode-to-native 486.6. Validation (gate
+  profile, `--test-threads=1`): the lightweight group's 598 tests and
+  172 handler, `condition-case`, signal, backtrace, thread, debug,
+  unwind, `catch` and `throw` tests pass, with a new one: the same
+  condition signaled again under the same handlers after the inner
+  `condition-case` that caught the first exits reaches the
+  `handler-bind` (GNU answers the same); clippy `-D warnings` and
+  rustfmt pass.
 - **Profile-guided wall time on `6242417`, against `ba9f640` on the
   same host.** The container came back from a restart on a host whose
   timings differ from the earlier tables' (an Intel Xeon at 2.10 GHz with
@@ -2401,7 +2442,13 @@ funcall's target from its cell): full Rust gate passed (run
 **On `81fda48`** (C-variable stores, `eq` by the word): both runs failed
 on the anti-cheat audit of native fast paths (runs 39138334869 and
 39138337192; the next round's bullet has the cause and the fix); the
-Rust gate's other groups passed. Locally,
+Rust gate's other groups passed. **On `7cee893`** (name lookups by one
+multiply, `format`'s copies, the fast-path inventory): full Rust gate
+passed (run 39142224150). Frozen matched 7,927 of 7,928 (run
+39142226322): the oracle failed `eglot-test-rust-completion-exit-function`
+again (a `jsonrpc-error` on the GNU side; Emaxx passed it); its failed
+job was re-run once (attempt 2), its result to be recorded with the next
+round. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -2686,7 +2733,7 @@ and failures are still recorded.
    1.13 on the earlier host (its one in-sample collection, see "Cons
    allocation's gap is its one collection"); compare builds only on one
    host. By instructions on the line-table build: undo about 1.15 (after
-   the name lookups by one multiply), interpreted-to-native 1.28, bytecode-to-native 1.26,
+   one handler search a signal), interpreted-to-native 1.28, bytecode-to-native 1.26,
    native-to-bytecode 1.24, bytecode calls 1.11, native-execution 0.90. Where each case's instructions go is under
    "Where the byte-code call and return go" and the native call bullets.
    (Older wall figures, before these rounds: bytecode-to-native 1.54,

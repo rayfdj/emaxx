@@ -2995,6 +2995,7 @@ impl Interpreter {
 
     pub fn push_handler_bindings(&mut self, bindings: &[(Vec<String>, Value)]) -> usize {
         let start = self.active_handlers.len();
+        self.handler_generation += 1;
         self.active_handlers
             .extend(bindings.iter().map(|(conditions, handler)| {
                 ActiveHandler::Bind(conditions.as_slice().into(), *handler)
@@ -3004,12 +3005,14 @@ impl Interpreter {
 
     pub(crate) fn push_condition_case_handler(&mut self, heads: Vec<Value>) -> usize {
         let start = self.active_handlers.len();
+        self.handler_generation += 1;
         self.active_handlers.push(ActiveHandler::Case(heads.into()));
         start
     }
 
     pub(crate) fn push_module_handler(&mut self) -> usize {
         let start = self.active_handlers.len();
+        self.handler_generation += 1;
         self.active_handlers.push(ActiveHandler::Module);
         start
     }
@@ -3148,15 +3151,63 @@ impl Interpreter {
         {
             return false;
         }
+        self.handler_search(error).catching_case.is_some()
+    }
+
+    /// ERROR's search of the active handlers (see `HandlerSearch'): the
+    /// error's condition names and each entry's match, once per signal.
+    fn handler_search(&mut self, error: &LispError) -> HandlerSearch {
         let error_symbol = error.condition_symbol();
+        let identity = error.identity();
+        let condition = error_symbol.identity_ptr();
+        let epoch = crate::lisp::types::current_mark_epoch();
+        let depth = self.active_handlers.len();
+        if let Some(memo) = self.handler_search_memo
+            && memo.error == identity
+            && memo.condition == condition
+            && memo.generation == self.handler_generation
+            && memo.epoch == epoch
+            && memo.decisive.is_none_or(|index| index < depth)
+        {
+            return memo;
+        }
         let error_type = error_symbol.as_str();
         let condition_list = self.error_condition_names_of(&error_symbol);
-        self.active_handlers.iter().any(|handler| match handler {
-            ActiveHandler::Case(heads) => heads
-                .iter()
-                .any(|head| Self::clause_head_matches(head, error_type, &condition_list)),
-            ActiveHandler::Module | ActiveHandler::Bind(..) => false,
-        })
+        let mut decisive = None;
+        let mut catching_case = None;
+        for (index, entry) in self.active_handlers.iter().enumerate().rev() {
+            let matches = match entry {
+                ActiveHandler::Module => true,
+                ActiveHandler::Case(heads) => {
+                    let catches = heads
+                        .iter()
+                        .any(|head| Self::clause_head_matches(head, error_type, &condition_list));
+                    if catches {
+                        catching_case = Some(index);
+                    }
+                    catches
+                }
+                ActiveHandler::Bind(conditions, _) => conditions.iter().any(|symbol| {
+                    Self::condition_symbol_matches(symbol, error_type, &condition_list)
+                }),
+            };
+            if matches && decisive.is_none() {
+                decisive = Some(index);
+            }
+            if catching_case.is_some() {
+                break;
+            }
+        }
+        let search = HandlerSearch {
+            error: identity,
+            condition,
+            generation: self.handler_generation,
+            epoch,
+            decisive,
+            catching_case,
+        };
+        self.handler_search_memo = Some(search);
+        search
     }
 
     pub(crate) fn dispatch_handler_bindings(
@@ -3193,37 +3244,20 @@ impl Interpreter {
         {
             return Err(error);
         }
+        // The search up to the first handler it would call, in place and
+        // once per signal: most signals meet their `condition-case' first,
+        // and then neither the stack's copy nor the handlers' argument is
+        // made.
+        let Some(innermost) = self
+            .handler_search(&error)
+            .decisive
+            .filter(|&index| matches!(self.active_handlers[index], ActiveHandler::Bind(..)))
+        else {
+            return Err(error);
+        };
         let error_symbol = error.condition_symbol();
         let error_type = error_symbol.as_str();
         let condition_list = self.error_condition_names_of(&error_symbol);
-        // The search below up to the first handler it would call, in place:
-        // most signals meet their `condition-case' first, and then neither
-        // the stack's copy nor the handlers' argument is made.
-        let mut innermost = None;
-        for (index, entry) in self.active_handlers.iter().enumerate().rev() {
-            match entry {
-                ActiveHandler::Module => break,
-                ActiveHandler::Case(heads) => {
-                    if heads
-                        .iter()
-                        .any(|head| Self::clause_head_matches(head, error_type, &condition_list))
-                    {
-                        break;
-                    }
-                }
-                ActiveHandler::Bind(conditions, _) => {
-                    if conditions.iter().any(|condition| {
-                        Self::condition_symbol_matches(condition, error_type, &condition_list)
-                    }) {
-                        innermost = Some(index);
-                        break;
-                    }
-                }
-            }
-        }
-        let Some(innermost) = innermost else {
-            return Err(error);
-        };
         let error_value = error_condition_value(&error);
         let mut handled = false;
         self.handler_dispatch_depth += 1;

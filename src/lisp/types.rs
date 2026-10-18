@@ -3136,6 +3136,12 @@ impl LispError {
         self.0.condition_symbol()
     }
 
+    /// This error's box, which it keeps while it propagates.
+    #[inline]
+    pub(crate) fn identity(&self) -> usize {
+        &*self.0 as *const LispErrorKind as usize
+    }
+
     pub fn TypeError(a0: String, a1: String) -> Self {
         Self(Box::new(LispErrorKind::TypeError(a0, a1)))
     }

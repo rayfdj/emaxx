@@ -4588,6 +4588,7 @@ impl Interpreter {
         clone.finalizers = crate::lisp::alloc::FinalizerList::default();
         clone.doomed_finalizers = crate::lisp::alloc::FinalizerList::default();
         clone.record_owner = next_record_owner();
+        clone.handler_search_memo = None;
         let mut copier = ImageGraphCopier::new(clone.record_owner);
         {
             let c = &mut copier;
@@ -5485,6 +5486,10 @@ pub struct InterpreterState {
     /// again as the same error unwinds through the outer frames.
     dispatched_signal: Option<Value>,
     suspend_condition_case_count: usize,
+    /// Counts the pushes onto `active_handlers' and the thread switches
+    /// that exchange it: while it holds, the stack has only lost entries.
+    handler_generation: u64,
+    handler_search_memo: Option<HandlerSearch>,
     window_margins: Vec<(u64, Option<i64>, Option<i64>)>,
     /// Live terminal color count published by the tty frontend; batch
     /// sessions keep GNU's dumb-terminal zero.
@@ -5500,6 +5505,23 @@ pub struct InterpreterState {
 /// `signal' walks this innermost-first: a matching `condition-case' clause
 /// stops the search before any outer `handler-bind' functions run, while
 /// matching `handler-bind' functions run at the signal point (pre-unwind).
+/// One signal's search of `active_handlers' from the innermost entry.
+/// signal_or_quit searches once per signal; Emaxx asks at every frame
+/// boundary the error unwinds through, so the answer is kept while the
+/// same error (its box and condition) meets the same stack, or one that
+/// lost only entries inside the ones the search stopped at.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HandlerSearch {
+    error: usize,
+    condition: usize,
+    generation: u64,
+    epoch: u32,
+    /// The innermost module boundary or matching entry.
+    pub(crate) decisive: Option<usize>,
+    /// The innermost matching `condition-case'.
+    pub(crate) catching_case: Option<usize>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum ActiveHandler {
     /// The GNU module API catches every signal and throw at its boundary.
@@ -6176,6 +6198,8 @@ impl Interpreter {
             handler_dispatch_depth: 0,
             dispatched_signal: None,
             suspend_condition_case_count: 0,
+            handler_generation: 0,
+            handler_search_memo: None,
             window_margins: Vec::new(),
             face_change_count: 0,
         };

@@ -999,6 +999,43 @@ fn handler_bind_preserves_error_object_identity_for_condition_case() {
 }
 
 #[test]
+fn handler_bind_runs_for_a_second_signal_after_its_inner_condition_case_exits() {
+    // Each signal's handler search is kept while it unwinds; the second
+    // signal of the same condition under the same handlers, the inner
+    // `condition-case' gone, reaches the `handler-bind'.
+    let mut interp = gnu_early_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let forms = Reader::new(
+        r#"
+            (let ((log nil))
+              (list
+               (condition-case nil
+                   (handler-bind ((wrong-type-argument
+                                   (lambda (err) (push (cdr err) log))))
+                     (condition-case nil
+                         (car 'first)
+                       (wrong-type-argument nil))
+                     (car 'second))
+                 (wrong-type-argument 'outer))
+               log))
+            "#,
+    )
+    .read_all()
+    .unwrap();
+    let result = interp.eval(&forms[0], &mut env).unwrap();
+    assert_eq!(
+        result,
+        Value::list([
+            Value::Symbol("outer".into()),
+            Value::list([Value::list([
+                Value::Symbol("listp".into()),
+                Value::Symbol("second".into()),
+            ])]),
+        ])
+    );
+}
+
+#[test]
 fn aref_out_of_range_signals_args_out_of_range_condition() {
     assert_eq!(
         eval_str(
