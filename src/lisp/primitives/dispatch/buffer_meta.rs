@@ -501,7 +501,8 @@ define_dispatch!(
                     None
                 };
                 if !interp.has_buffer(&base) || ignore.as_deref() == Some(base.as_str()) {
-                    Ok(Value::String(base.into()))
+                    // buffer.c returns NAME itself, not a copy.
+                    Ok(args[0])
                 } else {
                     let mut n = 2;
                     loop {

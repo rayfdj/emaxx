@@ -1466,6 +1466,34 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   samples, the minimum, GNU's in parentheses): native execution 0.3572 →
   0.2958 s (0.3397; 1.05 → 0.87), undo 0.1616 → 0.1583 (0.1126), sort
   0.2001 → 0.1991 (0.1822), bindat 0.0910 → 0.0913 (0.0965).
+- **Temporary buffers and `format`.** Undo's native-compiled Lisp
+  functions run GNU's own `.eln` code in both editors, so each `F…`
+  function's own instructions are the same and its inclusive cost
+  measures the runtime it calls: against GNU's, a unit spends +63,000 in
+  `cconv-make-interpreted-closure`, +18,000 in `generate-new-buffer`
+  (`with-temp-buffer`), +9,500 in `error` and +7,000 in `user-error`
+  (`format-message` and `signal` under them), +6,300 in
+  `substitute-command-keys` and +3,700 in `menu-bar-update-yank-menu`
+  (scratch script `fincl.py`). `generate-new-buffer-name` returns its
+  argument when no buffer has that name, as buffer.c returns NAME itself,
+  where it allocated a copy; a new buffer reads `default-directory` and
+  sets its two locals by their held symbols, where it looked up the
+  directory by name through an empty environment and the locals through
+  the interned-name cache. `format`'s loop keeps the result's length in
+  characters as it grows, where it counted the whole result again for
+  every literal character and every conversion (quadratic in the
+  message), and skips the format string's text properties when it has
+  none. A `with-temp-buffer` 12,235 → 10,623 instructions (GNU 17,991), an
+  `error` and a `user-error` caught by `condition-case` 26,494 → 23,808
+  (GNU 22,509); undo 1,654,414 → 1,645,316 a unit at twenty and forty
+  units (1.311 of GNU's), the other fifteen within their noise
+  (interpreted-to-native's +1.3% is a hash table's one rehash falling in
+  the larger run). The signal itself still computes the condition's
+  names about six times an error (handler-bind dispatch, the batch
+  backtrace's catch test, the VM's handler search, the native error
+  record), where signal_or_quit reads them once; a cache across those
+  layers would have to see every change to the symbol's plist, which
+  `plist-put` on the list itself makes without `put`.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1673,7 +1701,10 @@ catch, signal, thread and buffer-local tests; the regenerated x86_64
 subr table differs from the generator's output only by the four direct
 targets (the aarch64 table, which needs that host's GNU build to
 regenerate, has the same four entries changed by hand); clippy `-D
-warnings` and rustfmt clean.
+warnings` and rustfmt clean. For temporary buffers and `format`: 775 of
+the 776 format, buffer, directory, read-only, message, error, signal,
+condition and string tests pass in four parallel parts, the other the
+as-root save-buffer test; clippy `-D warnings` and rustfmt clean.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
@@ -1912,7 +1943,9 @@ attempt (run 39075365786). **On `ba696b3`** (the scan's bounds and the
 per-kind lists): full Rust gate passed (run 39078342040), frozen passed on
 its first attempt (run 39078343825). **On `b206a4a`** (undo's window
 configurations, message log and native `set`): full Rust gate passed (run
-39080606435), frozen passed on its first attempt (run 39080608068). Locally,
+39080606435), frozen passed on its first attempt (run 39080608068). **On
+`df06b81`** (the change hooks, native funcall and bindings by id): full
+Rust gate (run 39085349381) and frozen (run 39085350916) pending. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -2007,7 +2040,14 @@ and byte-code calls on the Rust 1.99.1 round's final build, the rest on
   1.07, mapcar 1.06, native-to-bytecode 1.02, dynamic 1.00,
   native-to-interpreted 0.97, sort 0.96, list traversal 0.95, explicit-gc
   0.93, bindat 0.76, native execution 0.74, calls 0.70, lexical 0.66: six
-  of the sixteen above the bound. Collections cost Emaxx more time than GNU at fewer
+  of the sixteen above the bound. On `df06b81` with the profile, the same
+  way: undo 1.24, bytecode-to-native 1.24, cons allocation 1.18,
+  interpreted-to-native 1.16, mapcar 1.11 (1.09 in eight rounds of five
+  against `b206a4a`'s profile build, the same, 0.0683 and 0.0685 s
+  against GNU's 0.0627), bytecode calls 1.08, native-to-bytecode 1.02,
+  dynamic 1.00, list traversal 0.94, explicit-gc 0.94, native-to-interpreted
+  0.94, sort 0.95, bindat 0.76, calls 0.66, lexical 0.66, native execution
+  0.63: six above the bound. Collections cost Emaxx more time than GNU at fewer
   instructions: 19 to 22 ms each in the workloads against GNU's 12 to 16,
   an otherwise empty one 15.0 ms against 9.8 (11.5 after the compaction
   change), though marking a long list costs less a cell (6.6 ns against

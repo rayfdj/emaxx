@@ -386,8 +386,15 @@ define_dispatch!(
                     return Ok(*arg);
                 }
                 let mut result = String::new();
+                // The result's length in characters, kept as it grows (a
+                // count of the whole result at each piece was quadratic).
+                let mut result_chars = 0usize;
                 let mut result_props = Vec::new();
                 let mut result_multibyte = string_like(fmt_value).is_some_and(|s| s.multibyte);
+                // Only a format string with text properties lends them to
+                // the result.
+                let fmt_has_props = matches!(fmt_value.kind(),
+                    Kind::StringObject(state) if !state.borrow().props.is_empty());
                 let mut arg_idx = 1;
                 let chars: Vec<char> = fmt.chars().collect();
                 let quoting_style =
@@ -395,7 +402,7 @@ define_dispatch!(
                 let mut i = 0;
                 while i < chars.len() {
                     if chars[i] != '%' || i + 1 >= chars.len() {
-                        let start = result.chars().count();
+                        let start = result_chars;
                         let literal = match (quoting_style, chars[i]) {
                             (Some("curve"), '`') => '‘',
                             (Some("curve"), '\'') => '’',
@@ -403,7 +410,10 @@ define_dispatch!(
                             _ => chars[i],
                         };
                         result.push(literal);
-                        if let Some(props) = format_source_props(fmt_value, i, i + 1) {
+                        result_chars += 1;
+                        if fmt_has_props
+                            && let Some(props) = format_source_props(fmt_value, i, i + 1)
+                        {
                             result_props.push(TextPropertySpan {
                                 start,
                                 end: start + 1,
@@ -417,9 +427,12 @@ define_dispatch!(
                     i += 1; // skip '%'
 
                     if chars[i] == '%' {
-                        let start = result.chars().count();
+                        let start = result_chars;
                         result.push('%');
-                        if let Some(props) = format_source_props(fmt_value, spec_start, i + 1) {
+                        result_chars += 1;
+                        if fmt_has_props
+                            && let Some(props) = format_source_props(fmt_value, spec_start, i + 1)
+                        {
                             result_props.push(TextPropertySpan {
                                 start,
                                 end: start + 1,
@@ -618,15 +631,19 @@ define_dispatch!(
                             formatted_props = shift_string_props(&formatted_props, padding);
                         }
                     }
-                    if let Some(props) = format_source_props(fmt_value, spec_start, i) {
+                    let formatted_chars = formatted.chars().count();
+                    if fmt_has_props
+                        && let Some(props) = format_source_props(fmt_value, spec_start, i)
+                    {
                         formatted_props.push(TextPropertySpan {
                             start: 0,
-                            end: formatted.chars().count(),
+                            end: formatted_chars,
                             props,
                         });
                     }
-                    let start = result.chars().count();
+                    let start = result_chars;
                     result.push_str(&formatted);
+                    result_chars += formatted_chars;
                     result_props.extend(shift_string_props(
                         &crate::lisp::primitives::strings::flatten_overlapping_string_props(
                             formatted_props,

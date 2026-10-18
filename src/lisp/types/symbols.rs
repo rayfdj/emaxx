@@ -110,6 +110,7 @@ const KEY_NAMES: &[&str] = &[
     "invalid-read-syntax",
     "messages-buffer-name",
     "message-log-max",
+    "default-directory",
 ];
 
 struct Symbols {

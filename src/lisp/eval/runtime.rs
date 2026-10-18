@@ -355,7 +355,7 @@ impl Interpreter {
         // current buffer, while other per-buffer state such as read-only is
         // reset.  Materialize that inherited value on the new buffer instead
         // of making unrelated dynamic per-buffer bindings leak at lookup.
-        let inherited_directory = self.lookup_var("default-directory", &Env::new());
+        let inherited_directory = self.symbol_value_key(cached_symbol!("default-directory"));
         let id = self.alloc_buffer_id();
         let mut buffer = crate::buffer::Buffer::new(name);
         buffer.text_conversion_style = self.native_text_conversion_style_default();
@@ -363,22 +363,16 @@ impl Interpreter {
             .push((id, crate::lisp::types::BufferRef::new(id, buffer)));
         self.buffer_list.push((id, name.to_string()));
         // The two locals by their symbols (`set_buffer_local_value_symbol'),
-        // found through the address-keyed cache, not by hashing the names
-        // for each buffer.
-        let set_local = |this: &mut Self, name: &'static str, value: Value| {
-            if let Some(symbol) = SymbolName::interned_cached(name) {
-                this.set_buffer_local_value_symbol(id, &symbol, value);
-            } else {
-                this.set_buffer_local_value(id, name, value);
-            }
-        };
+        // held interned, not found by their names for each buffer.
         if let Some(directory) = inherited_directory {
-            set_local(self, "default-directory", directory);
+            let symbol = cached_symbol!("default-directory").with(Clone::clone);
+            self.set_buffer_local_value_symbol(id, &symbol, directory);
         }
         // GNU reset_buffer materializes buffer-read-only as a local nil in
         // every new buffer.  This keeps a process-wide dynamic binding in
         // the creating buffer from making a fresh temporary buffer read-only.
-        set_local(self, "buffer-read-only", Value::Nil);
+        let symbol = cached_symbol!("buffer-read-only").with(Clone::clone);
+        self.set_buffer_local_value_symbol(id, &symbol, Value::Nil);
         (id, name.to_string())
     }
 
