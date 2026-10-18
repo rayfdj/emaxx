@@ -20,7 +20,7 @@ records the GNU counter contract.
 | --- | --- |
 | **Main** `94295d0a` | Source324: one-word values, 16-byte cons payloads, shared object work, and symbol value/function/plist/flags on the allocated symbols. |
 | **[PR87](https://github.com/rayfdj/emaxx/pull/87)** `35c6cd9b` (`runtime-char-tables`) | Object-state draft17: membership, constants, aliases, same-name replacement, image restoration and native `nil`/`t` identity. 584 runtime inputs. |
-| **Task branch** `runtime-performance` (pushed as `claude/awesome-newton-yk6sae` through `c48c5a2`; PR #88 took it into main up to `ba696b3`) | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
+| **Task branch** `runtime-performance` (pushed as `claude/awesome-newton-yk6sae` through `c48c5a2`; PR #88 took it into main up to `ba696b3`, PR #89 up to `6242417`) | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
 
 **PR87 evidence in this repository:** strict checks with zero warnings, 407
 affected controls in each of gate and release, and 44 ordinary GNU comparisons /
@@ -1818,6 +1818,206 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   in `list` and `&rest` lists, the unibyte conversion against GNU's
   answer); clippy `-D warnings` and
   rustfmt pass.
+- **Stores to C variables without a name check, `eq` by the word, and
+  three subrs from native code without the general entry.** `specbind`
+  and its unbind store a special variable's global value through
+  `set_global_binding_resolved`. For a variable with a C slot (most of
+  those undo's macro expansion binds, such as
+  `inhibit-modification-hooks`), that compared the name against the
+  evaluator's own cells, `text-conversion-style`, the terminal's KBOARD
+  variables and `features`, and hashed it into the detached-variable
+  table, though only ten of them do more than store the cell. A
+  `STORE_EFFECT` bit, set with the C slot by name
+  (`STORE_EFFECT_VARIABLES`), says which; any other C variable's store is
+  the cell's alone. The detached-variable table, empty unless a forwarded
+  variable was `makunbound`, is asked whether it is empty before the
+  name is hashed (`forwarded_variable_detached`). `eq` (in `memq`,
+  `delq`, hash-table lookups, `eq` itself and the byte-code op) classified
+  both objects before comparing them, 38 and 29 instructions a call in
+  `values_eq_plain` and `values_eq_in_env`; it compares the words first,
+  and only two vectorlike words (a symbol with position, or a kind
+  compared by id) go on to the kinds, as `lisp.h`'s `EQ` needs nothing
+  more for the rest. Native code's `symbolp`, `symbol-function` and
+  `fboundp` went through `invoke_subr`'s handler sync and kind dispatch
+  (82, 169 and 172 instructions a call against GNU's 6, 6 and 9); a word
+  that is not vectorlike answers `symbolp` by its tag, and a symbol
+  cell's word answers the other two from its function cell, before the
+  general entry. Each new buffer looked up `text-conversion-style` by
+  name; it reads the symbol held interned. The byte-code `list` ops
+  (`Blist1` to `Blist4`, `BlistN`) built their result through
+  `Value::list`, which turns a list headed by `vector-literal` into a
+  vector, as `list` and `&rest` did before the last round; they cons
+  their operands from the stack. Undo: 1,504,349 → 1,470,853 for the
+  stores, → 1,444,629 instructions a unit with the rest (GNU 1,248,561:
+  1.20 → 1.16); bytecode calls 522.0 → 518.8 and bytecode-to-native
+  490.6 → 487.2 an iteration, interpreted-to-native (3,044.4, 3,042.1),
+  native-execution (415.3 million) and mapcar (27.84 million) unchanged.
+  Validation (gate profile, `--test-threads=1`): the 443 variable,
+  binding, keyboard, feature, quit, watcher, buffer-local, undo and
+  special-variable tests pass (the KBOARD input contract test alone, as
+  it takes 98 seconds on this build and the previous one), and the 370
+  `eq`, member, `delete`, hash-table, byte-code and native-runtime tests,
+  among them two new ones: the byte-code list ops, which `6242417`'s
+  build answers with vectors (`([1] [1])`), and native code's `symbolp`,
+  `symbol-function` and `fboundp` on each kind of word; clippy
+  `-D warnings` and rustfmt pass.
+- **Name lookups by one multiply, `format`'s copies, native `length`
+  of a string, `min` and `max` of two fixnums.** `lookup_var` by name
+  (61 a unit in undo: `print_options` reads eight variables a print,
+  `message` four) finds the symbol through an address-keyed cache, whose
+  FNV hash of the text's address and length ran a byte at a time over 16
+  bytes (about 120 of 175 instructions a lookup). The key is now one word
+  (the address, the length in the 16 bits a user-space address leaves
+  clear) under `IdentityHasher`'s multiply; the text check after the hit
+  still rejects any colliding entry. `format` collected its format string
+  into a heap vector of characters, grew its result from empty, counted
+  each conversion's characters twice and scanned an ASCII result for
+  multibyte characters; the characters are on the stack up to 64 (an
+  ASCII format string's by its bytes), the result starts at the format
+  string's length, and an ASCII result skips the scan. Native code's
+  `length` of a string took `invoke_subr`'s general entry (decode, call
+  by name, encode); it reads the character count as `Flength`'s `SCHARS`
+  does. `min` and `max` of two fixnums return the winning argument, as
+  `minmax_driver` does. Undo: 1,444,629 → 1,437,808 instructions a unit
+  (a second build with the `format` change finished at 1,442,070, of
+  which a collection that fell inside the measured range is 5,198);
+  bytecode calls 518.5, bytecode-to-native 486.9, interpreted-to-native
+  3,054.1 (the change from 3,042.1 is glibc's `malloc_consolidate` and
+  `unlink_chunk`, not the interpreter's functions).
+  **`81fda48`'s CI failed on the anti-cheat audit**
+  `native_comp_fast_paths_are_audited_against_gnu_c`: each primitive with
+  a native fast path must be in `EXACT_NATIVE_C_FAST_PATHS` (its GNU
+  owner and contract test) or an approved deviation, and `symbol-function`
+  and `fboundp` were not (the frozen run enforces the same gates first
+  and stopped there). Every other group of the Rust gate passed (run
+  39138334869: eval_01 to eval_05 1,626 tests, primitives 728,
+  compat_runtime 86, tty 62, batch 50; lightweight 596 of 597). This
+  round lists the four new paths (`fboundp`, `symbol-function`, `min`,
+  `max`) with their GNU owners and contract tests. The local validation
+  of each round now runs the grouped gate's whole lightweight group (every
+  test outside the eval, primitives, compat_runtime, tty and batch
+  prefixes, the anti-cheat audits among them; about 40 seconds), which
+  the per-change filters missed. Validation (gate profile,
+  `--test-threads=1`): the lightweight group's 598 tests pass (with a new
+  one for native `length` of a string and the two-fixnum `min` and
+  `max`), and 197 `format`, `length`, interning, `string-match`,
+  message, `prin1`, obarray and `max` tests; clippy `-D warnings` and
+  rustfmt pass.
+- **Slow ops: an opaque call and a family dispatch, measured and left
+  out.** Undo leaves the verified loop 768 times a unit for
+  `op_in_place`, about 103 instructions of its own each (decode, the
+  combined function's prologue and epilogue, the match and the stack's
+  bookkeeping) besides the op's work, some 60,000 a unit. Relative to
+  `7cee893`'s build (bytecode calls 518.5, bytecode-to-native 486.9):
+  A, `run_verified` calling `op_in_place` through `black_box`'s function
+  pointer (so that nothing inferred of its body reaches the loop): 520.5
+  and 488.5, undo unchanged (1,441,625). B, A plus the reference,
+  binding and unbinding families dispatched by their byte at the head of
+  `op_in_place` to small functions of their own, the rest in an
+  out-of-line `op_in_place_general`: 522.4 and 487.8, undo 1,462,669
+  (+21,000): the dispatcher alone cost 47 instructions an op (its
+  frame, and the general body's `FastExit` returned through memory), and
+  the general body 96 for the other 526. Neither is kept; a cheaper
+  slow op needs the ops' arms reached without a second function's frame
+  (an arm in `run_verified` itself moves its register allocation, see
+  the eight variants above).
+- **One handler search a signal.** An error unwinding through frames
+  is asked at each frame boundary whether a `handler-bind` handler runs
+  for it (`dispatch_handler_bindings`) and whether a `condition-case`
+  catches it (`capture_batch_error_backtrace` then takes no backtrace
+  copy), and each question recomputed the condition's `error-conditions`
+  and every handler entry's match: 52 searches a unit in undo for four
+  signals, about 20,000 instructions. GNU's `signal_or_quit` searches
+  once, at the signal. The search (`HandlerSearch`: the innermost module
+  boundary or matching entry, and the innermost matching `condition-case`)
+  is kept for the error's box and condition symbol under a count of the
+  pushes onto the handler stack and of the thread switches that exchange
+  it, and the collection epoch; while those hold the stack has only lost
+  entries, so the answer stands unless an entry it stopped at is gone.
+  Undo: 1,442,069 → 1,430,253 instructions a unit (the same profile's
+  `7cee893` reading; `error_condition_names_of` 59 → 11 calls a unit);
+  bytecode calls 518.4, bytecode-to-native 486.6. Validation (gate
+  profile, `--test-threads=1`): the lightweight group's 598 tests and
+  172 handler, `condition-case`, signal, backtrace, thread, debug,
+  unwind, `catch` and `throw` tests pass, with a new one: the same
+  condition signaled again under the same handlers after the inner
+  `condition-case` that caught the first exits reaches the
+  `handler-bind` (GNU answers the same); clippy `-D warnings` and
+  rustfmt pass.
+- **Watched and buffer-local variables by flags on the symbol.** Every store and
+  binding outside the plain-symbol fast path asked whether a variable
+  watcher is registered by scanning the watcher list (21 entries after
+  startup, the display variables `frame.el` watches with xdisp.c's
+  `set-buffer-redisplay`) for the symbol; in undo that is 49 `specbind`s, their 120
+  restores and the stores a unit, a loop of 22 compares each. GNU reads
+  `trapped_write` on the symbol. The cell's state now carries
+  `TRAPPED_WRITE`, set wherever a watcher entry is made (adding a
+  watcher, the image's watchers, the image copier) and cleared when the
+  symbol's entry goes; the list is searched only for a flagged symbol.
+  Undo: 1,430,254 → 1,411,986 instructions a unit
+  (`specbind_symbol_record` 136.8 → 91.9 a call, `apply_special_restore`
+  96.8 → 51.3, `memcmp` 5,355 fewer). A variable read or binding outside
+  the fast paths also looked the symbol up in the current buffer's local
+  cells (two hash probes, 76 instructions, 139 times a unit) whatever
+  the symbol; every buffer-local cell is made after its symbol is flagged
+  `LOCALIZED` (as `make-local-variable` makes it `SYMBOL_LOCALIZED`), so
+  a symbol without the flag answers no local at once: 1,411,986 →
+  1,408,804. Bytecode calls 519.0 (`run_verified` 518 a call, as
+  before), bytecode-to-native 486.4, interpreted-to-native 3,044.1.
+  Validation (gate profile, `--test-threads=1`): the lightweight group's
+  598 tests, 166 of 167 watcher, image, dump, clone, alias and
+  uninterned-symbol tests (the one failure is this container's
+  `batch_startup_image_round_trip_or_explicit_native_image_limit`, the
+  restored image's first native function in `mapatoms` order, as on
+  `4008098`), and 98 buffer-local, `kill-all-local-variables`,
+  `make-variable-buffer-local` and watcher tests, with a new test: a variable's watcher
+  notifies while registered, not after its removal, and again once
+  re-added (GNU answers the same); clippy `-D warnings` and rustfmt
+  pass.
+- **The undo list's Lisp view kept across marker adjustments.**
+  `buffer-undo-list` reads a cached Lisp list that each new record is
+  consed onto. A deletion that moves markers splices their adjustments in
+  below it, and that splice dropped the cache, as did enabling undo
+  (`buffer-enable-undo` in a temporary buffer) and clearing the history;
+  the next read rebuilt the whole list from the native records: 8
+  rebuilds a unit in undo, about 110 records converted (tracing each
+  drop showed 7 a unit at the splice and 6 at `disable_undo`, which only
+  matters once undo is enabled again). The splice now gives the cache a
+  new head over the adjustments and its old tail (no Lisp has read the
+  newest record between the deletion and the splice; the list after
+  marker-moving deletions is GNU's, adjustments and their order
+  included), and an emptied or newly enabled history starts with the
+  cache nil, which the records then extend. Undo: 1,408,804 → 1,401,532
+  (rebuilds 8 → 4 a unit). A fresh buffer's cache is still made at its
+  first read: making it at its first record left one rebuild a unit but
+  measured 1,407,168, the records' Lisp forms made for lists never read
+  costing what the rebuilds saved (and glibc's `malloc_consolidate`
+  moving by 6,297), so it is not kept. Neither is native `symbolp`
+  answering a vectorlike argument other than a symbol with position
+  before the general entry (192 instructions a unit). Bytecode calls and
+  bytecode-to-native run no undo records and were not re-measured.
+  Validation (gate profile, `--test-threads=1`): the lightweight group's
+  598 tests and 48 undo, marker, `delete-region` and amalgamation tests
+  pass; clippy `-D warnings` and rustfmt pass.
+- **Profile-guided wall time on `6242417`, against `ba9f640` on the
+  same host.** The container came back from a restart on a host whose
+  timings differ from the earlier tables' (an Intel Xeon at 2.10 GHz with
+  a 260 MB last-level cache; GNU and `ba9f640`'s build both moved, by up
+  to 30% on the collector's cases, and medians here lie further above
+  minimums), so only the two builds side by side compare. Pilot sizes,
+  five rounds of five samples, minimum and median ratio to GNU,
+  `ba9f640` in parentheses: undo 1.111 and 1.151 (1.216, 1.307),
+  bytecode-to-native 1.069 and 0.973 (1.065, 0.971), bytecode calls
+  1.038 and 1.062 (1.063, 1.054), interpreted-to-native 1.007 and 1.019
+  (1.009, 0.979), cons allocation 0.997 and 0.972 (1.005, 1.000), mapcar
+  0.959 and 0.932 (0.907, 0.881; its instructions are unchanged, 27.95
+  million on both builds), native execution 0.444 and 0.462 (0.497,
+  0.530), and the other nine at or below 0.85 by minimum. The first
+  attempt at this build failed: every training process crashed at exit
+  merging into the shared raw profile, which an earlier process had left
+  unreadable (`llvm-profdata`: "too much profile data"); the same
+  processes ran cleanly on a fresh file, and the build run again
+  succeeded.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2291,7 +2491,23 @@ newline search): full Rust gate passed (run 39115079701), frozen passed
 on its first attempt (run 39115081583). **On `c48c5a2`** (activation
 vectors kept, the operandless table at compile time): full Rust gate
 passed (run 39118270646), frozen passed on its first attempt (run
-39118272517). Locally,
+39118272517). **On `6242417`** (strings read in place, a native
+funcall's target from its cell): full Rust gate passed (run
+39128542991), frozen passed on its first attempt (run 39128544870).
+**On `81fda48`** (C-variable stores, `eq` by the word): both runs failed
+on the anti-cheat audit of native fast paths (runs 39138334869 and
+39138337192; the next round's bullet has the cause and the fix); the
+Rust gate's other groups passed. **On `7cee893`** (name lookups by one
+multiply, `format`'s copies, the fast-path inventory): full Rust gate
+passed (run 39142224150). Frozen matched 7,927 of 7,928 (run
+39142226322): the oracle failed `eglot-test-rust-completion-exit-function`
+again (a `jsonrpc-error` on the GNU side; Emaxx passed it); its failed
+job, re-run once (attempt 2), passed. **On `e5852af`** (one handler
+search a signal): full Rust gate passed (run 39146151002), frozen passed
+on its first attempt (run 39146153666). **On `f50ce28`** (watched and
+buffer-local variables by flags): full Rust gate passed (run
+39149792527); frozen (run 39149794338) to be recorded with the next
+round. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -2565,15 +2781,18 @@ and failures are still recorded.
 
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
-2. **Performance, worst ratios first.** By wall time on `ba9f640`'s
+2. **Performance, worst ratios first.** By wall time on `6242417`'s
    profile-guided build (pilot sizes, minimum ratio; the bullet "Profile-
-   guided wall time on `ba9f640`" has the medians): undo 1.21,
-   bytecode-to-native 1.21, interpreted-to-native 1.15, cons allocation
-   1.13 (its one in-sample collection, see "Cons allocation's gap is its
-   one collection"), bytecode calls 1.05 to 1.07, and the other eleven
-   below 1.0 (mapcar 0.96 since the mark phase's change). By instructions
-   on the line-table build: undo about 1.20 (after the in-place string
-   reads), interpreted-to-native 1.28, bytecode-to-native 1.26,
+   guided wall time on `6242417`" has the medians and `ba9f640` beside
+   it on the same host): undo 1.11, bytecode-to-native 1.07, bytecode
+   calls 1.04, interpreted-to-native 1.01, cons allocation 1.00, and the
+   other eleven below 1.0. That table ran on the host the container came
+   back on after a restart, where `ba9f640` itself measures
+   interpreted-to-native 1.01 and cons allocation 1.01 against 1.15 and
+   1.13 on the earlier host (its one in-sample collection, see "Cons
+   allocation's gap is its one collection"); compare builds only on one
+   host. By instructions on the line-table build: undo about 1.12 (after
+   the undo list's view kept across marker adjustments), interpreted-to-native 1.28, bytecode-to-native 1.26,
    native-to-bytecode 1.24, bytecode calls 1.11, native-execution 0.90. Where each case's instructions go is under
    "Where the byte-code call and return go" and the native call bullets.
    (Older wall figures, before these rounds: bytecode-to-native 1.54,

@@ -167,10 +167,16 @@ impl Interpreter {
     /// The C default survives disconnection of its Lisp symbol. The existing
     /// detached-slot storage then owns that default, not a buffer field copy.
     pub(crate) fn native_text_conversion_style_default(&self) -> Value {
-        self.detached_forwarded_variables
+        if let Some(value) = self
+            .detached_forwarded_variables
             .get("text-conversion-style")
-            .copied()
-            .or_else(|| self.global_binding_value("text-conversion-style"))
+        {
+            return *value;
+        }
+        // Not a KBOARD variable: the global cell, by the symbol held
+        // interned (each new buffer reads it).
+        cached_symbol!("text-conversion-style")
+            .with(|symbol| self.globals.value(symbol))
             .unwrap_or(Value::Nil)
     }
 
@@ -244,6 +250,12 @@ impl Interpreter {
                     .text_conversion_style_is_local
                     .then_some(Some(buffer.text_conversion_style))
             });
+        }
+        // Each buffer-local cell is made after its symbol is flagged
+        // LOCALIZED (make-local-variable's SYMBOL_LOCALIZED), so a symbol
+        // without the flag has none in any buffer.
+        if !self.globals.has_flag(symbol, LOCALIZED) {
+            return None;
         }
         self.buffer_locals
             .get(&buffer_id)
@@ -955,11 +967,27 @@ impl Interpreter {
     }
 
     /// data.c's SYMBOL_TRAPPED_WRITE test for the symbol in hand: whether
-    /// any watcher is registered under its object identity.
+    /// any watcher is registered under its object identity.  The symbol's
+    /// flag is set whenever one is, so an unwatched symbol answers by it.
     fn variable_is_watched(&self, symbol: &SymbolName) -> bool {
-        self.variable_watchers
+        symbol.cell().is_trapped_write()
+            && self
+                .variable_watchers
+                .iter()
+                .any(|(watched, _)| watched == symbol)
+    }
+
+    /// The watchers' entry at INDEX is gone: its symbol's stores stop
+    /// notifying unless another entry names it.
+    pub(super) fn remove_variable_watcher_entry(&mut self, index: usize) {
+        let (symbol, _) = self.variable_watchers.remove(index);
+        if !self
+            .variable_watchers
             .iter()
-            .any(|(watched, _)| watched == symbol)
+            .any(|(watched, _)| *watched == symbol)
+        {
+            symbol.cell().set_trapped_write(false);
+        }
     }
 
     pub fn variable_watchers(&self, name: &str) -> Vec<Value> {
@@ -974,6 +1002,10 @@ impl Interpreter {
     pub fn add_variable_watcher(&mut self, name: &str, watcher: Value) -> Result<Value, LispError> {
         let resolved = self.resolve_variable_name(name)?;
         if let Some(index) = self.variable_watcher_index(&resolved) {
+            self.variable_watchers[index]
+                .0
+                .cell()
+                .set_trapped_write(true);
             if !self.variable_watchers[index]
                 .1
                 .iter()
@@ -987,8 +1019,9 @@ impl Interpreter {
         }
         // data.c:Fadd_variable_watcher sets SYMBOL_TRAPPED_WRITE: the
         // symbol's stores notify from now on.
-        self.globals
-            .set_plain_store(&SymbolName::intern_str(&resolved), false);
+        let symbol = SymbolName::intern_str(&resolved);
+        symbol.cell().set_trapped_write(true);
+        self.globals.set_plain_store(&symbol, false);
         Ok(watcher)
     }
 
@@ -1003,7 +1036,7 @@ impl Interpreter {
                 .1
                 .retain(|existing| existing != watcher);
             if self.variable_watchers[index].1.is_empty() {
-                self.variable_watchers.remove(index);
+                self.remove_variable_watcher_entry(index);
             }
         }
         Ok(*watcher)
@@ -1011,7 +1044,7 @@ impl Interpreter {
 
     pub fn clear_variable_watchers(&mut self, name: &str) {
         if let Some(index) = self.variable_watcher_index(name) {
-            self.variable_watchers.remove(index);
+            self.remove_variable_watcher_entry(index);
         }
     }
 
@@ -1307,7 +1340,7 @@ impl Interpreter {
             // lread.c:defvar_bool exposes only t or nil from the forwarded
             // C bool even when Lisp stores an arbitrary non-nil object.
             "debug-on-next-call" | "symbols-with-pos-enabled"
-                if !self.detached_forwarded_variables.contains_key(name) =>
+                if !self.forwarded_variable_detached(name) =>
             {
                 if value.is_nil() {
                     Value::Nil
@@ -1317,7 +1350,7 @@ impl Interpreter {
             }
             // data.c:store_symval_forwarding stores an intmax_t and
             // do_symval_forwarding recreates the corresponding Lisp integer.
-            "max-lisp-eval-depth" if !self.detached_forwarded_variables.contains_key(name) => value
+            "max-lisp-eval-depth" if !self.forwarded_variable_detached(name) => value
                 .as_integer()
                 .map(crate::lisp::primitives::normalize_integer_value)
                 .unwrap_or(value),
@@ -1328,7 +1361,7 @@ impl Interpreter {
     pub(super) fn update_forwarded_eval_cell(&mut self, name: &str, value: &Value) {
         // data.c:set_internal turns a voided forwarded symbol into a plain
         // symbol. Later stores cannot reconnect it to the C variable.
-        if self.detached_forwarded_variables.contains_key(name) {
+        if self.forwarded_variable_detached(name) {
             return;
         }
         match name {
@@ -1485,6 +1518,14 @@ impl Interpreter {
     pub(crate) fn set_global_binding_resolved(&mut self, symbol: &SymbolName, value: Value) {
         if !symbol.cell().has_c_slot() {
             self.globals.insert(symbol, value);
+            return;
+        }
+        // A C variable whose value lives in its cell alone (most of them,
+        // such as inhibit-modification-hooks): no name decides more.
+        if !symbol.cell().has_store_effect() {
+            if !self.globals.replace_bound_value(symbol, value) {
+                self.globals.insert(symbol, value);
+            }
             return;
         }
         let name = symbol.as_str();
@@ -1877,7 +1918,7 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         // CHECK_SYMBOL/constant checks still apply, but the symbol no longer
         // forwards through a typed C slot after data.c:set_internal voids it.
-        if self.detached_forwarded_variables.contains_key(name) {
+        if self.forwarded_variable_detached(name) {
             return Ok(value);
         }
         // data.c:store_symval_forwarding by the slot's kind.  Lisp_Fwd_Int:
@@ -1973,7 +2014,7 @@ impl Interpreter {
                     | FWD_INT,
             )
             && self.variable_watcher_index(name).is_none()
-            && !self.detached_forwarded_variables.contains_key(name)
+            && !self.forwarded_variable_detached(name)
             && !symbol.cell().is_constant()
             && !symbol.cell().has_c_slot();
         self.globals.set_plain_store(symbol, plain);
@@ -2730,6 +2771,15 @@ impl Interpreter {
 /// already holds the state (the byte-code VM's call and return) pays
 /// the shell's parked test once.
 impl InterpreterState {
+    /// Whether NAME is a forwarded variable `makunbound' detached from its
+    /// C slot (data.c:set_internal).  The table is empty unless one was, so
+    /// a store asks that first instead of hashing the name.
+    #[inline(always)]
+    pub(crate) fn forwarded_variable_detached(&self, name: &str) -> bool {
+        !self.detached_forwarded_variables.is_empty()
+            && self.detached_forwarded_variables.contains_key(name)
+    }
+
     /// record_in_backtrace and Ffuncall's depth for a call that does
     /// nothing else on its way in (see `plain_bcall_entry'). Returns
     /// the frame depth `leave_plain_funcall' restores.
@@ -2972,6 +3022,7 @@ impl Interpreter {
 
     pub fn push_handler_bindings(&mut self, bindings: &[(Vec<String>, Value)]) -> usize {
         let start = self.active_handlers.len();
+        self.handler_generation += 1;
         self.active_handlers
             .extend(bindings.iter().map(|(conditions, handler)| {
                 ActiveHandler::Bind(conditions.as_slice().into(), *handler)
@@ -2981,12 +3032,14 @@ impl Interpreter {
 
     pub(crate) fn push_condition_case_handler(&mut self, heads: Vec<Value>) -> usize {
         let start = self.active_handlers.len();
+        self.handler_generation += 1;
         self.active_handlers.push(ActiveHandler::Case(heads.into()));
         start
     }
 
     pub(crate) fn push_module_handler(&mut self) -> usize {
         let start = self.active_handlers.len();
+        self.handler_generation += 1;
         self.active_handlers.push(ActiveHandler::Module);
         start
     }
@@ -3125,15 +3178,63 @@ impl Interpreter {
         {
             return false;
         }
+        self.handler_search(error).catching_case.is_some()
+    }
+
+    /// ERROR's search of the active handlers (see `HandlerSearch'): the
+    /// error's condition names and each entry's match, once per signal.
+    fn handler_search(&mut self, error: &LispError) -> HandlerSearch {
         let error_symbol = error.condition_symbol();
+        let identity = error.identity();
+        let condition = error_symbol.identity_ptr();
+        let epoch = crate::lisp::types::current_mark_epoch();
+        let depth = self.active_handlers.len();
+        if let Some(memo) = self.handler_search_memo
+            && memo.error == identity
+            && memo.condition == condition
+            && memo.generation == self.handler_generation
+            && memo.epoch == epoch
+            && memo.decisive.is_none_or(|index| index < depth)
+        {
+            return memo;
+        }
         let error_type = error_symbol.as_str();
         let condition_list = self.error_condition_names_of(&error_symbol);
-        self.active_handlers.iter().any(|handler| match handler {
-            ActiveHandler::Case(heads) => heads
-                .iter()
-                .any(|head| Self::clause_head_matches(head, error_type, &condition_list)),
-            ActiveHandler::Module | ActiveHandler::Bind(..) => false,
-        })
+        let mut decisive = None;
+        let mut catching_case = None;
+        for (index, entry) in self.active_handlers.iter().enumerate().rev() {
+            let matches = match entry {
+                ActiveHandler::Module => true,
+                ActiveHandler::Case(heads) => {
+                    let catches = heads
+                        .iter()
+                        .any(|head| Self::clause_head_matches(head, error_type, &condition_list));
+                    if catches {
+                        catching_case = Some(index);
+                    }
+                    catches
+                }
+                ActiveHandler::Bind(conditions, _) => conditions.iter().any(|symbol| {
+                    Self::condition_symbol_matches(symbol, error_type, &condition_list)
+                }),
+            };
+            if matches && decisive.is_none() {
+                decisive = Some(index);
+            }
+            if catching_case.is_some() {
+                break;
+            }
+        }
+        let search = HandlerSearch {
+            error: identity,
+            condition,
+            generation: self.handler_generation,
+            epoch,
+            decisive,
+            catching_case,
+        };
+        self.handler_search_memo = Some(search);
+        search
     }
 
     pub(crate) fn dispatch_handler_bindings(
@@ -3170,37 +3271,20 @@ impl Interpreter {
         {
             return Err(error);
         }
+        // The search up to the first handler it would call, in place and
+        // once per signal: most signals meet their `condition-case' first,
+        // and then neither the stack's copy nor the handlers' argument is
+        // made.
+        let Some(innermost) = self
+            .handler_search(&error)
+            .decisive
+            .filter(|&index| matches!(self.active_handlers[index], ActiveHandler::Bind(..)))
+        else {
+            return Err(error);
+        };
         let error_symbol = error.condition_symbol();
         let error_type = error_symbol.as_str();
         let condition_list = self.error_condition_names_of(&error_symbol);
-        // The search below up to the first handler it would call, in place:
-        // most signals meet their `condition-case' first, and then neither
-        // the stack's copy nor the handlers' argument is made.
-        let mut innermost = None;
-        for (index, entry) in self.active_handlers.iter().enumerate().rev() {
-            match entry {
-                ActiveHandler::Module => break,
-                ActiveHandler::Case(heads) => {
-                    if heads
-                        .iter()
-                        .any(|head| Self::clause_head_matches(head, error_type, &condition_list))
-                    {
-                        break;
-                    }
-                }
-                ActiveHandler::Bind(conditions, _) => {
-                    if conditions.iter().any(|condition| {
-                        Self::condition_symbol_matches(condition, error_type, &condition_list)
-                    }) {
-                        innermost = Some(index);
-                        break;
-                    }
-                }
-            }
-        }
-        let Some(innermost) = innermost else {
-            return Err(error);
-        };
         let error_value = error_condition_value(&error);
         let mut handled = false;
         self.handler_dispatch_depth += 1;

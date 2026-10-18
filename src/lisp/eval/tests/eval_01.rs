@@ -999,6 +999,43 @@ fn handler_bind_preserves_error_object_identity_for_condition_case() {
 }
 
 #[test]
+fn handler_bind_runs_for_a_second_signal_after_its_inner_condition_case_exits() {
+    // Each signal's handler search is kept while it unwinds; the second
+    // signal of the same condition under the same handlers, the inner
+    // `condition-case' gone, reaches the `handler-bind'.
+    let mut interp = gnu_early_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let forms = Reader::new(
+        r#"
+            (let ((log nil))
+              (list
+               (condition-case nil
+                   (handler-bind ((wrong-type-argument
+                                   (lambda (err) (push (cdr err) log))))
+                     (condition-case nil
+                         (car 'first)
+                       (wrong-type-argument nil))
+                     (car 'second))
+                 (wrong-type-argument 'outer))
+               log))
+            "#,
+    )
+    .read_all()
+    .unwrap();
+    let result = interp.eval(&forms[0], &mut env).unwrap();
+    assert_eq!(
+        result,
+        Value::list([
+            Value::Symbol("outer".into()),
+            Value::list([Value::list([
+                Value::Symbol("listp".into()),
+                Value::Symbol("second".into()),
+            ])]),
+        ])
+    );
+}
+
+#[test]
 fn aref_out_of_range_signals_args_out_of_range_condition() {
     assert_eq!(
         eval_str(
@@ -4253,6 +4290,32 @@ fn syntax_property_encoding_follows_edits_without_encoding_again() {
         matched(3),
         3,
         5,
+    );
+}
+
+#[test]
+fn removing_a_variables_last_watcher_stops_its_notifications() {
+    // data.c's trapped_write: set by the first watcher, cleared with the
+    // last, set again by the next; the binding and the stores in between
+    // notify no one.  The oracle's values.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(progn (defvar zz-tw 1)
+               (let* ((log nil)
+                      (w (lambda (sym new op _where) (push (list sym new op) log))))
+                 (add-variable-watcher 'zz-tw w)
+                 (let ((zz-tw 2)) (setq zz-tw 3))
+                 (remove-variable-watcher 'zz-tw w)
+                 (setq zz-tw 4)
+                 (let ((zz-tw 5)) (set 'zz-tw 6))
+                 (add-variable-watcher 'zz-tw w)
+                 (setq zz-tw 7)
+                 (list zz-tw (length (get-variable-watchers 'zz-tw)) (nreverse log))))",
+        )
+        .to_string(),
+        "(7 1 ((zz-tw 2 let) (zz-tw 3 set) (zz-tw 1 unlet) (zz-tw 7 set)))"
     );
 }
 

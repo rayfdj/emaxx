@@ -489,6 +489,11 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         contract_test: "direct_word_subrs_use_the_gnu_c_fast_and_error_paths",
     },
     NativeCFastPathContract {
+        primitive: "fboundp",
+        owner: "data.c:Ffboundp",
+        contract_test: "native_symbol_tests_and_function_cell_reads_answer_as_their_subrs",
+    },
+    NativeCFastPathContract {
         primitive: "funcall",
         owner: "eval.c:Ffuncall",
         contract_test: "native_funcall_dispatches_builtin_on_the_word_abi",
@@ -534,9 +539,19 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         contract_test: "native_maphash_calls_each_live_slot_through_funcall",
     },
     NativeCFastPathContract {
+        primitive: "max",
+        owner: "data.c:Fmax",
+        contract_test: "native_string_length_and_fixnum_extrema_answer_as_their_subrs",
+    },
+    NativeCFastPathContract {
         primitive: "memq",
         owner: "fns.c:Fmemq",
         contract_test: "native_memq_uses_the_fns_c_cons_walk",
+    },
+    NativeCFastPathContract {
+        primitive: "min",
+        owner: "data.c:Fmin",
+        contract_test: "native_string_length_and_fixnum_extrema_answer_as_their_subrs",
     },
     NativeCFastPathContract {
         primitive: "nlistp",
@@ -557,6 +572,11 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         primitive: "plist-member",
         owner: "fns.c:Fplist_member",
         contract_test: "native_plist_member_follows_fns_c_pair_traversal",
+    },
+    NativeCFastPathContract {
+        primitive: "symbol-function",
+        owner: "data.c:Fsymbol_function",
+        contract_test: "native_symbol_tests_and_function_cell_reads_answer_as_their_subrs",
     },
     NativeCFastPathContract {
         primitive: "symbol-value",

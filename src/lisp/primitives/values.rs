@@ -426,7 +426,26 @@ pub(crate) fn values_eql_in_env(
     }
 }
 
+#[inline]
 pub(crate) fn values_eq_in_env(
+    interp: &Interpreter,
+    left: &Value,
+    right: &Value,
+    env: &Env,
+) -> bool {
+    // lisp.h:EQ: one word is one object.  A symbol with position, the one
+    // object eq to a word other than its own, is vectorlike.
+    if left.word() == right.word() {
+        return true;
+    }
+    if !left.is_vectorlike() && !right.is_vectorlike() {
+        return false;
+    }
+    values_eq_vectorlike_in_env(interp, left, right, env)
+}
+
+#[inline(never)]
+fn values_eq_vectorlike_in_env(
     interp: &Interpreter,
     left: &Value,
     right: &Value,
@@ -445,8 +464,21 @@ pub(crate) fn values_eq_in_env(
 
 /// data.c:Feq on two objects neither of which is a symbol with position:
 /// word identity, with the object kinds Emaxx addresses by id compared by
-/// id.
+/// id.  Those are vectorlike, so a word that is not is the only word for
+/// its object.
+#[inline]
 pub(crate) fn values_eq_plain(left: &Value, right: &Value) -> bool {
+    if left.word() == right.word() {
+        return true;
+    }
+    if !left.is_vectorlike() || !right.is_vectorlike() {
+        return false;
+    }
+    values_eq_by_kind(left, right)
+}
+
+#[inline(never)]
+fn values_eq_by_kind(left: &Value, right: &Value) -> bool {
     match (left.kind(), right.kind()) {
         (Kind::Nil, Kind::Nil) | (Kind::T, Kind::T) => true,
         (Kind::Integer(a), Kind::Integer(b)) => a == b,

@@ -308,13 +308,18 @@ impl Interpreter {
     fn install_watchers(&mut self, name: &str, watchers: &[Value]) {
         if let Some(index) = self.variable_watcher_index(name) {
             if watchers.is_empty() {
-                self.variable_watchers.remove(index);
+                self.remove_variable_watcher_entry(index);
             } else {
+                self.variable_watchers[index]
+                    .0
+                    .cell()
+                    .set_trapped_write(true);
                 self.variable_watchers[index].1 = watchers.to_vec();
             }
         } else if !watchers.is_empty() {
-            self.variable_watchers
-                .push((SymbolName::intern_str(name), watchers.to_vec()));
+            let symbol = SymbolName::intern_str(name);
+            symbol.cell().set_trapped_write(true);
+            self.variable_watchers.push((symbol, watchers.to_vec()));
         }
     }
 

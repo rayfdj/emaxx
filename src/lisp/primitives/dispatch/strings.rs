@@ -374,9 +374,19 @@ define_dispatch!(
                 }
                 let fmt_value = &args[0];
                 // The format string is read in place: its characters are
-                // what the conversion loop walks.
-                let chars: Vec<char> = with_string_text(fmt_value, |fmt| fmt.chars().collect())
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *fmt_value))?;
+                // what the conversion loop walks (on the stack when short,
+                // an ASCII text's by its bytes), and its length in bytes the
+                // result's first capacity.
+                let mut chars = smallvec::SmallVec::<[char; 64]>::new();
+                let fmt_bytes = with_string_text(fmt_value, |fmt| {
+                    if fmt.is_ascii() {
+                        chars.extend(fmt.bytes().map(char::from));
+                    } else {
+                        chars.extend(fmt.chars());
+                    }
+                    fmt.len()
+                })
+                .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *fmt_value))?;
                 // Only a format string with text properties lends them to
                 // the result.
                 let fmt_has_props = !string_without_properties(fmt_value);
@@ -384,14 +394,14 @@ define_dispatch!(
                 // "%s" without text properties returns a string argument
                 // itself (`(eq s (format "%s" s))' is t in the oracle), so
                 // the argument's properties come through untouched.
-                if chars == ['%', 's']
+                if chars[..] == ['%', 's']
                     && !fmt_has_props
                     && let Some(arg) = args.get(1)
                     && matches!(arg.kind(), Kind::StringObject(_))
                 {
                     return Ok(*arg);
                 }
-                let mut result = String::new();
+                let mut result = String::with_capacity(fmt_bytes + 16);
                 // The result's length in characters, kept as it grows (a
                 // count of the whole result at each piece was quadratic).
                 let mut result_chars = 0usize;
@@ -632,7 +642,8 @@ define_dispatch!(
                             formatted_props = shift_string_props(&formatted_props, padding);
                         }
                     }
-                    let formatted_chars = formatted.chars().count();
+                    // Each padding adds its count of one-byte characters.
+                    let formatted_chars = formatted_len.max(width);
                     if fmt_has_props
                         && let Some(props) = format_source_props(fmt_value, spec_start, i)
                     {
@@ -652,9 +663,10 @@ define_dispatch!(
                         start,
                     ));
                 }
-                result_multibyte |= result
-                    .chars()
-                    .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
+                result_multibyte |= !result.is_ascii()
+                    && result
+                        .chars()
+                        .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
                 Ok(string_like_value_with_multibyte(
                     result,
                     merge_string_props(result_props),

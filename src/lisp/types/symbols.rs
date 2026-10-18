@@ -14,7 +14,10 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 type Names = HashSet<NameEntry, FnvBuildHasher>;
-type AddressNames = HashMap<(usize, usize), SymbolName, FnvBuildHasher>;
+/// Host text's address with its length in the high bits a user-space
+/// address leaves clear (`SymbolName::interned_cached'), hashed by one
+/// multiply.
+type AddressNames = HashMap<usize, SymbolName, super::IdentityBuildHasher>;
 
 /// Lookup compares immutable host text; Lisp symbol equality compares the
 /// allocated object. Keep the lookup key's equality separate so two editor
@@ -111,6 +114,7 @@ const KEY_NAMES: &[&str] = &[
     "messages-buffer-name",
     "message-log-max",
     "default-directory",
+    "text-conversion-style",
 ];
 
 struct Symbols {

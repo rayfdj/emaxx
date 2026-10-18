@@ -1406,8 +1406,10 @@ fn run_fast(
             // Beq.
             FastOp::Eq => {
                 let len = ops.len();
-                if matches!(ops[len - 1].kind(), Kind::SymbolWithPos(_))
-                    || matches!(ops[len - 2].kind(), Kind::SymbolWithPos(_))
+                // A symbol with position is vectorlike.
+                if (ops[len - 1].is_vectorlike() || ops[len - 2].is_vectorlike())
+                    && (matches!(ops[len - 1].kind(), Kind::SymbolWithPos(_))
+                        || matches!(ops[len - 2].kind(), Kind::SymbolWithPos(_)))
                 {
                     slow!();
                 }
@@ -2115,8 +2117,10 @@ fn run_verified(
                 // Beq.
                 0o075 => {
                     let (left, right) = (*slot!(1), *slot!(0));
-                    if matches!(left.kind(), Kind::SymbolWithPos(_))
-                        || matches!(right.kind(), Kind::SymbolWithPos(_))
+                    // A symbol with position is vectorlike.
+                    if (left.is_vectorlike() || right.is_vectorlike())
+                        && (matches!(left.kind(), Kind::SymbolWithPos(_))
+                            || matches!(right.kind(), Kind::SymbolWithPos(_)))
                     {
                         slow!();
                     }
@@ -2872,10 +2876,13 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
                 *pc = dest as usize;
             }
         }
+        // bytecode.c:Blist and BlistN: the operands consed from the stack,
+        // as Flist does (a leading `vector-literal' stays a symbol).
         Op::ListN(n) => {
             let start = interp.bc_stack.len() - n as usize;
-            let items: Vec<Value> = interp.bc_stack.drain_from(start).collect();
-            push!(Value::list(items));
+            let list = Value::list_of(&interp.bc_stack[start..]);
+            interp.bc_stack.truncate(start);
+            push!(list);
         }
         Op::ConcatN(n) => {
             let start = interp.bc_stack.len() - n as usize;
@@ -2891,8 +2898,9 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
                 _ => 4,
             };
             let start = interp.bc_stack.len() - n;
-            let items: Vec<Value> = interp.bc_stack.drain_from(start).collect();
-            push!(Value::list(items));
+            let list = Value::list_of(&interp.bc_stack[start..]);
+            interp.bc_stack.truncate(start);
+            push!(list);
         }
         Op::Not => {
             let value = pop!();

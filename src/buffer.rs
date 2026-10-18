@@ -2191,7 +2191,11 @@ impl Buffer {
 
     pub fn enable_undo(&mut self) {
         if self.undo_disabled {
-            self.invalidate_undo_list_view();
+            if self.undo_list.is_empty() {
+                self.empty_undo_list_view();
+            } else {
+                self.invalidate_undo_list_view();
+            }
         }
         self.undo_disabled = false;
     }
@@ -2210,7 +2214,17 @@ impl Buffer {
     /// GNU's `(setq buffer-undo-list nil)'.
     pub fn clear_undo(&mut self) {
         self.undo_list.clear();
-        self.invalidate_undo_list_view();
+        self.empty_undo_list_view();
+    }
+
+    /// An empty history's list is nil itself, which the records pushed
+    /// next extend as GNU's record_* functions push onto the list; a view
+    /// left unset was instead rebuilt whole at the next read.
+    fn empty_undo_list_view(&self) {
+        *self.undo_list_view.0.borrow_mut() = Some(UndoListView {
+            value: Value::Nil,
+            undo_len: 0,
+        });
     }
 
     pub fn undo_entries(&self) -> &[UndoEntry] {
@@ -2361,9 +2375,27 @@ impl Buffer {
         if entries.is_empty() || self.undo_disabled {
             return;
         }
+        // No Lisp has read the newest record yet: the view keeps its tail
+        // and takes a new head over the spliced entries.  A view of another
+        // length is rebuilt whole when next read.
+        let mut view = self.undo_list_view.0.borrow_mut();
+        let spliced = view
+            .as_ref()
+            .filter(|cached| cached.undo_len == self.undo_list.len())
+            .and_then(|cached| cached.value.cons_values())
+            .map(|(newest, rest)| {
+                let tail = entries.iter().fold(rest, |tail, entry| {
+                    Value::cons(undo_entry_lisp_value(entry), tail)
+                });
+                Value::cons(newest, tail)
+            });
+        *view = spliced.map(|value| UndoListView {
+            value,
+            undo_len: self.undo_list.len() + entries.len(),
+        });
+        drop(view);
         let at = self.undo_list.len().saturating_sub(1);
         self.undo_list.splice(at..at, entries);
-        self.invalidate_undo_list_view();
     }
 
     pub fn attach_markers_to_last_delete(&mut self, markers: Vec<UndoMarker>) {
@@ -2419,7 +2451,7 @@ impl Buffer {
 
     pub fn clear_undo_history(&mut self) {
         self.undo_list.clear();
-        self.invalidate_undo_list_view();
+        self.empty_undo_list_view();
     }
 
     /// Release editing storage when the buffer dies, even if Lisp still
