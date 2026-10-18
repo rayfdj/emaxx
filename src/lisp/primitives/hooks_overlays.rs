@@ -20,13 +20,16 @@ pub(crate) fn run_change_hooks(
     if interp.change_hooks_are_running() {
         return Ok(());
     }
+    // The hook named once, for the tests below and the hook's symbol.
+    let before = hook_name == "before-change-functions";
+    let after = !before && hook_name == "after-change-functions";
     // insdel.c's run_undoable_change: every prepare-to-modify of a buffer
     // with undo enabled calls the Lisp `undo-auto--undoable-change' (which
     // registers the buffer in undo-auto--undoably-changed-buffers and arms
     // the auto-boundary timer), independent of any change hooks being
     // registered.  The function itself never modifies buffer text, so the
     // reentrancy guard above cannot be tripped by it.
-    if hook_name == "before-change-functions" && !interp.buffer.borrow().undo_recording_disabled() {
+    if before && !interp.buffer.borrow().undo_recording_disabled() {
         let symbol = cached_symbol!("undo-auto--undoable-change").with(Clone::clone);
         if interp.has_lisp_function_symbol(&symbol) {
             // The callee names its own frame (a name given here was
@@ -34,19 +37,33 @@ pub(crate) fn run_change_hooks(
             let _ = interp.call_function_value(Value::Symbol(symbol), None, &[], env);
         }
     }
-    let hooks = hook_values(interp, hook_name, env, Some(interp.current_buffer_id()));
+    let symbol = if before {
+        Some(cached_symbol!("before-change-functions").with(Clone::clone))
+    } else if after {
+        Some(cached_symbol!("after-change-functions").with(Clone::clone))
+    } else {
+        crate::lisp::types::SymbolName::interned_cached(hook_name)
+    };
+    let hooks = hook_values_of(
+        interp,
+        symbol.as_ref(),
+        hook_name,
+        env,
+        Some(interp.current_buffer_id()),
+    );
     let combining = interp
         .symbol_value_key(cached_symbol!("combine-after-change-calls"))
         .is_some_and(|value| value.is_truthy());
-    if hook_name == "before-change-functions" {
+    if before {
         if hooks.is_empty() && combining {
             return Ok(());
         }
         flush_combined_after_change(interp, env)?;
-    } else if hook_name == "after-change-functions" {
+    } else if after {
         let can_defer = combining && interp.buffer.borrow().overlays.is_empty() && {
-            hook_values(
+            hook_values_of(
                 interp,
+                Some(&cached_symbol!("before-change-functions").with(Clone::clone)),
                 "before-change-functions",
                 env,
                 Some(interp.current_buffer_id()),
@@ -99,12 +116,7 @@ pub(crate) fn run_change_hooks(
         }
     }
     interp.leave_change_hooks();
-    if result.is_err()
-        && matches!(
-            hook_name,
-            "before-change-functions" | "after-change-functions"
-        )
-    {
+    if result.is_err() && (before || after) {
         let local_buffer_id = interp.assignment_buffer_id(hook_name);
         interp.set_variable(hook_name, Value::Nil, env);
         if let Some(buffer_id) = local_buffer_id {
@@ -166,17 +178,6 @@ pub(crate) fn hook_values(
     env: &crate::lisp::types::Env,
     buffer_id: Option<u64>,
 ) -> Vec<Value> {
-    let value_hooks = |value: Option<Value>| {
-        value
-            .map(|value| {
-                if value.is_nil() {
-                    Vec::new()
-                } else {
-                    value.to_vec().unwrap_or_else(|_| vec![value])
-                }
-            })
-            .unwrap_or_default()
-    };
     // The hook's symbol once (no name hash per hook run): the value and
     // the buffer's binding are read by it when the name is interned.  The
     // two change hooks, run per edit, are held interned.
@@ -189,11 +190,40 @@ pub(crate) fn hook_values(
         }
         _ => crate::lisp::types::SymbolName::interned_cached(hook_name),
     };
+    hook_values_of(interp, symbol.as_ref(), hook_name, env, buffer_id)
+}
+
+/// `hook_values' of the hook HOOK_NAME, whose symbol is SYMBOL when the
+/// name is interned.
+fn hook_values_of(
+    interp: &Interpreter,
+    symbol: Option<&crate::lisp::types::SymbolName>,
+    hook_name: &str,
+    env: &crate::lisp::types::Env,
+    buffer_id: Option<u64>,
+) -> Vec<Value> {
+    let value_hooks = |value: Option<Value>| {
+        value
+            .map(|value| {
+                if value.is_nil() {
+                    Vec::new()
+                } else {
+                    value.to_vec().unwrap_or_else(|_| vec![value])
+                }
+            })
+            .unwrap_or_default()
+    };
     // run_hook_with_args reads the hook with find_symbol_value.
-    let current = match &symbol {
+    let current = match symbol {
         Some(symbol) => interp.symbol_value_symbol(symbol),
         None => interp.lookup_var(hook_name, env),
     };
+    // A void or nil hook runs nothing, whatever the buffer's own binding
+    // (the functions run are the current value's, a local `t' splicing
+    // the default in): signal_before_change's NILP test.
+    if current.is_none_or(|value| value.is_nil()) {
+        return Vec::new();
+    }
     let local = buffer_id.is_some_and(|id| {
         let has_local_value = match &symbol {
             Some(symbol) => interp
@@ -482,6 +512,20 @@ pub(crate) fn overlay_change_hook_calls(
     // buffer.c:report_overlay_modification searches only intersecting
     // intervals and stores the actual function lists, without copying or
     // filtering their elements. Lisp may mutate those lists while they run.
+    let before = [Value::Integer(from as i64), Value::Integer(to as i64)];
+    let after = [
+        Value::Integer(from as i64),
+        Value::Integer(new_end as i64),
+        Value::Integer(to.saturating_sub(from) as i64),
+    ];
+    // A buffer with no overlays has none to search.
+    if buffer.overlays.is_empty() {
+        return OverlayHookCalls {
+            calls,
+            before,
+            after,
+        };
+    }
     for overlay in buffer.overlays.intersecting(
         from as isize - isize::from(insertion),
         to as isize + isize::from(insertion),
@@ -500,12 +544,8 @@ pub(crate) fn overlay_change_hook_calls(
     }
     OverlayHookCalls {
         calls,
-        before: [Value::Integer(from as i64), Value::Integer(to as i64)],
-        after: [
-            Value::Integer(from as i64),
-            Value::Integer(new_end as i64),
-            Value::Integer(to.saturating_sub(from) as i64),
-        ],
+        before,
+        after,
     }
 }
 

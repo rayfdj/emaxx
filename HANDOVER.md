@@ -1430,6 +1430,42 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   The other fifteen are within their noise against the round's base:
   bindat's +6,400 a unit is a collection's stack scan and the verifier's
   address-keyed caches falling differently between the two sizes.
+- **Undo's edits and native code's calls.** Two micro-benchmarks (each
+  callgrinded at two sizes on both editors) isolate undo's largest gaps:
+  an insert and a `delete-region` with undo enabled, 13,207 instructions
+  an iteration against GNU's 7,417, and an interpreted closure over a
+  non-empty environment, whose creation runs
+  `cconv-make-interpreted-closure` and its `macroexpand-all` in native
+  code, 68,843 against 34,432. For the edits: a change hook whose current
+  value is void or nil runs nothing, whatever the buffer's own binding, so
+  `hook_values` answers at once (signal_before_change's NILP test) where it
+  read the buffer-local binding and the local-hook mirror by name;
+  `run_change_hooks` compares the hook's name once; `related_buffer_ids`
+  answers the buffer alone, in a SmallVec, while no buffer is indirect; a
+  buffer without overlays skips the overlay search; and Bpoint,
+  Bpoint_max, Bpoint_min and Bcurrent_buffer push their values in
+  `exec_op`, where they called the primitives by name. For native code:
+  `funcall`, `list`, `memq` and `assq` are direct targets of the generated
+  subr table (`tools/generate_native_subrs.rs`, as `car-safe` and `get`
+  were), so their calls skip `invoke_subr`'s dispatch on the subr's kind;
+  a funcall's target is classified by the tag and the header (SUBRP,
+  CLOSUREP), not by the whole `Kind` twice; and native code's specbind,
+  like the VM's Bvarbind of a symbol, leaves its record on the
+  interpreter's binding stack alone and unbinds it by its id, where both
+  cloned the record into their unwind lists and searched for it again on
+  the way out (the interpreter's record was already the canonical one,
+  and collection already skipped the copies). The unwind lists box their
+  rare records, so each entry stays a few words. The edits 13,207 →
+  12,139 an iteration, the closure 68,843 → 62,664; undo 1,711,192 →
+  1,657,377 instructions a unit (1.363 → 1.320 of GNU's), native
+  execution 524.3 → 482.9 million (1.133 → 1.043; its recursive calls go
+  through `funcall`), bindat −2.4%, sort −1.9%, native-to-interpreted
+  −1.0%, the rest within their noise (mapcar's +0.4% is the allocator's
+  consolidation and a stack scan falling between the two sizes). Wall time
+  on the line-table release builds against `b206a4a` (five rounds of five
+  samples, the minimum, GNU's in parentheses): native execution 0.3572 →
+  0.2958 s (0.3397; 1.05 → 0.87), undo 0.1616 → 0.1583 (0.1126), sort
+  0.2001 → 0.1991 (0.1822), bindat 0.0910 → 0.0913 (0.0965).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1627,7 +1663,17 @@ alone (2 of 2); clippy and rustfmt clean. For undo's window configurations,
 message log and native `set`: 870 of the 871 window, configuration,
 message, undo, native, subr, `set`, `setq`, buffer and hook tests pass in
 four parallel parts, the other being the as-root save-buffer test; clippy
-`-D warnings` and rustfmt clean.
+`-D warnings` and rustfmt clean. For undo's edits and native code's calls:
+1,392 of the 1,393 hook, change, overlay, insert, delete, undo, buffer,
+window, native, funcall, binding, list, closure, byte-code, thread,
+continuation, unwind, catch, condition and signal tests pass in four
+parallel parts (the other the as-root save-buffer test), and with the
+VM's bindings by id 487 of 487 byte-code, binding, unwind, handler,
+catch, signal, thread and buffer-local tests; the regenerated x86_64
+subr table differs from the generator's output only by the four direct
+targets (the aarch64 table, which needs that host's GNU build to
+regenerate, has the same four entries changed by hand); clippy `-D
+warnings` and rustfmt clean.
 CI's full gate and frozen runs are the merge evidence.
 
 Instruction ratios (Emaxx/GNU per unit) at the start of this round and now:
@@ -1863,8 +1909,10 @@ Rust gate passed (run 39074166122; 3,140 tests), frozen passed on its
 first attempt (run 39074167800). **On `3e1cced`** (the image's string
 data): full Rust gate passed (run 39075363648), frozen passed on its first
 attempt (run 39075365786). **On `ba696b3`** (the scan's bounds and the
-per-kind lists): full Rust gate passed (run 39078342040); frozen (run
-39078343825) pending. Locally,
+per-kind lists): full Rust gate passed (run 39078342040), frozen passed on
+its first attempt (run 39078343825). **On `b206a4a`** (undo's window
+configurations, message log and native `set`): full Rust gate passed (run
+39080606435), frozen passed on its first attempt (run 39080608068). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the

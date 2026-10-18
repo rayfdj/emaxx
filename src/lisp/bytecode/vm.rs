@@ -854,7 +854,13 @@ fn leave_frame_unwinding(
 /// One specpdl-style entry the VM must undo on Bunbind or error unwind.
 #[derive(Clone, Debug)]
 pub(crate) enum UnwindEntry {
-    Binding(super::super::eval::SpecialBindingRestore),
+    /// A binding with its restore record in hand (the rare bindings of a
+    /// name that is not a symbol constant): boxed, so the common entries
+    /// stay a few words.
+    Binding(Box<super::super::eval::SpecialBindingRestore>),
+    /// Bvarbind of a symbol: the record stays on the interpreter's binding
+    /// stack alone, unbound by its id (`Interpreter::unbind_special_id').
+    BindingId(u64),
     /// Bsave_excursion: restore buffer and (marker-tracked) point.
     Excursion {
         buffer_id: u64,
@@ -862,9 +868,7 @@ pub(crate) enum UnwindEntry {
         saved_pt: usize,
     },
     /// Bsave_current_buffer: restore the current buffer only.
-    CurrentBuffer {
-        buffer_id: u64,
-    },
+    CurrentBuffer { buffer_id: u64 },
     /// Bsave_restriction on a wide buffer: re-widen on exit.
     RestrictionWide {
         buffer_id: u64,
@@ -888,7 +892,7 @@ impl TraceLispRoots for UnwindEntry {
         match self {
             // These are restore tokens, not an alternate binding stack.
             // A thread switch updates the canonical interpreter specpdl.
-            Self::Binding(_) | Self::CurrentBuffer { .. } => {}
+            Self::Binding(_) | Self::BindingId(_) | Self::CurrentBuffer { .. } => {}
             Self::Excursion { marker_id, .. } => marker.value(&Value::Marker(*marker_id)),
             Self::RestrictionWide { labeled, .. } | Self::Restriction { labeled, .. } => {
                 if let Self::Restriction { beg_id, end_id, .. } = self {
@@ -911,7 +915,8 @@ fn unwind_one(
     env: &mut Env,
 ) -> Result<(), LispError> {
     match entry {
-        UnwindEntry::Binding(restore) => interp.restore_special_binding(restore, env),
+        UnwindEntry::Binding(restore) => interp.restore_special_binding(*restore, env),
+        UnwindEntry::BindingId(binding_id) => interp.unbind_special_id(binding_id, env),
         UnwindEntry::Excursion {
             buffer_id,
             marker_id,
@@ -2485,16 +2490,18 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
             // Bvarref and Bvarset read and set it, uninterned or not.
             let name = program.constant(index);
             let value = pop!();
-            let restore = match name.kind() {
-                Kind::Symbol(symbol) => interp.bind_special_symbol(&symbol, value, env)?,
-                _ => {
+            let entry = match name.symbol_cell() {
+                Some(symbol) => {
+                    UnwindEntry::BindingId(interp.specbind_symbol_id(&symbol, value, env)?)
+                }
+                None => {
                     let name = name.as_symbol().map_err(|_| {
                         LispError::Signal("varbind constant must be a symbol".into())
                     })?;
-                    interp.bind_special_variable(name, value, env)?
+                    UnwindEntry::Binding(Box::new(interp.bind_special_variable(name, value, env)?))
                 }
             };
-            interp.bc_unwinds.push(UnwindEntry::Binding(restore));
+            interp.bc_unwinds.push(entry);
         }
         Op::Unbind(count) => {
             for _ in 0..count {
@@ -2626,7 +2633,9 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
             prim(interp, "erase-buffer", [], env)?;
             let _ = interp.set_current_buffer_id(saved);
             let restore = interp.bind_special_variable("standard-output", buffer, env)?;
-            interp.bc_unwinds.push(UnwindEntry::Binding(restore));
+            interp
+                .bc_unwinds
+                .push(UnwindEntry::Binding(Box::new(restore)));
             push!(buffer);
         }
         Op::TempOutputBufferShow => {
@@ -2664,22 +2673,34 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
             push!(value);
         }
         // Zero-argument push ops.
-        Op::Point
-        | Op::PointMax
-        | Op::PointMin
-        | Op::FollowingChar
+        // Bpoint, Bpoint_max, Bpoint_min and Bcurrent_buffer push the
+        // buffer's PT, ZV, BEGV and the buffer itself, as the primitives
+        // answer, without looking them up by name.
+        Op::Point => {
+            let point = interp.buffer.borrow().point();
+            push!(Value::Integer(point as i64));
+        }
+        Op::PointMax => {
+            let zv = interp.buffer.borrow().point_max();
+            push!(Value::Integer(zv as i64));
+        }
+        Op::PointMin => {
+            let begv = interp.buffer.borrow().point_min();
+            push!(Value::Integer(begv as i64));
+        }
+        Op::CurrentBuffer => {
+            let buffer = interp.buffer;
+            push!(Value::Buffer(buffer));
+        }
+        Op::FollowingChar
         | Op::PrecedingChar
         | Op::CurrentColumn
         | Op::Eolp
         | Op::Eobp
         | Op::Bolp
         | Op::Bobp
-        | Op::CurrentBuffer
         | Op::Widen => {
             let name = match op {
-                Op::Point => "point",
-                Op::PointMax => "point-max",
-                Op::PointMin => "point-min",
                 Op::FollowingChar => "following-char",
                 Op::PrecedingChar => "preceding-char",
                 Op::CurrentColumn => "current-column",
@@ -2687,7 +2708,6 @@ fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispErro
                 Op::Eobp => "eobp",
                 Op::Bolp => "bolp",
                 Op::Bobp => "bobp",
-                Op::CurrentBuffer => "current-buffer",
                 _ => "widen",
             };
             let value = prim(interp, name, [], env)?;
@@ -3514,7 +3534,9 @@ fn run_frames(
                     index += 1;
                 }
                 let restore = interp.bind_special_variable(&name, value, env)?;
-                interp.bc_unwinds.push(UnwindEntry::Binding(restore));
+                interp
+                    .bc_unwinds
+                    .push(UnwindEntry::Binding(Box::new(restore)));
                 if rest {
                     break;
                 }

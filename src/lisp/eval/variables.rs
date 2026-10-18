@@ -2031,6 +2031,47 @@ impl Interpreter {
     /// `specbind_symbol' with a copy of the record handed back, for the
     /// callers outside the evaluator that keep it (the VM's unwind list,
     /// the native runtime, the loaders).
+    /// eval.c's specbind for a caller that unbinds by the record's id
+    /// (`unbind_special_id'): the record stays on the binding stack alone,
+    /// where `bind_special_symbol' hands back a copy as well.
+    #[inline]
+    pub(crate) fn specbind_symbol_id(
+        &mut self,
+        symbol: &SymbolName,
+        value: Value,
+        env: &mut Env,
+    ) -> Result<u64, LispError> {
+        self.specbind_symbol_record(symbol, value, env)
+    }
+
+    /// The unbind of the record `specbind_symbol_id' answered BINDING_ID
+    /// for: taken off the binding stack (the last record nearly always, as
+    /// eval.c's specpdl pops) and restored.  A record no longer there was
+    /// restored already, by an unbind_to below it, as GNU's specpdl entry
+    /// is popped once.
+    pub(crate) fn unbind_special_id(
+        &mut self,
+        binding_id: u64,
+        env: &mut Env,
+    ) -> Result<(), LispError> {
+        let restore = if self
+            .active_special_restores
+            .last()
+            .is_some_and(|active| active.binding_id == binding_id)
+        {
+            self.active_special_restores.pop().expect("checked last")
+        } else if let Some(index) = self
+            .active_special_restores
+            .iter()
+            .rposition(|active| active.binding_id == binding_id)
+        {
+            self.active_special_restores.remove(index)
+        } else {
+            return Ok(());
+        };
+        self.apply_special_restore(restore, env)
+    }
+
     pub(crate) fn bind_special_symbol(
         &mut self,
         symbol: &SymbolName,
