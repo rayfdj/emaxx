@@ -1075,9 +1075,28 @@ pub(crate) fn call_fixed_function(
     native: NativeFunctionRef,
     arguments: &[Value],
 ) -> Option<Result<Value, LispError>> {
+    let count = arguments.len();
+    // A call nested in the active call of this interpreter runs in that
+    // call's activation (`invoke_nested_fixed', as a Bcall's does): the
+    // thread is activated and the heap's depth counted already.  The
+    // caller made maybe_gc's test (eval_sub's, Ffuncall's).  The register
+    // counts hold `descriptor' and `check_arity's tests for this case.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if count <= 6
+        && native.register_counts() & (1 << count) != 0
+        && let Some(nested) = super::runtime::NestedCall::of(interpreter)
+    {
+        let target = native.target();
+        // SAFETY: the active call lends its runtime for this synchronous
+        // call, as `current_runtime' does; NESTED is its call, and TARGET
+        // takes at most six arguments, among them ARGUMENTS.
+        let runtime = unsafe { &mut *nested.runtime() };
+        return Some(unsafe {
+            runtime.invoke_nested_fixed(nested, interpreter, environment, target, arguments)
+        });
+    }
     // `descriptor' and `check_arity' for this case.
     let maximum = native.max_args_word();
-    let count = arguments.len();
     if native.is_dynamic()
         || !(0..=8).contains(&maximum)
         || count > maximum as usize
@@ -1088,22 +1107,6 @@ pub(crate) fn call_fixed_function(
     let target = native.target();
     if target.is_null() {
         return None;
-    }
-    // A call nested in the active call of this interpreter runs in that
-    // call's activation (`invoke_nested_fixed', as a Bcall's does): the
-    // thread is activated and the heap's depth counted already.  The
-    // caller made maybe_gc's test (eval_sub's, Ffuncall's).
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    if maximum <= 6
-        && let Some(nested) = super::runtime::NestedCall::of(interpreter)
-    {
-        // SAFETY: the active call lends its runtime for this synchronous
-        // call, as `current_runtime' does; NESTED is its call, and TARGET
-        // takes at most six arguments, among them ARGUMENTS.
-        let runtime = unsafe { &mut *nested.runtime() };
-        return Some(unsafe {
-            runtime.invoke_nested_fixed(nested, interpreter, environment, target, arguments)
-        });
     }
     let runtime = super::runtime::current_runtime();
     if runtime.is_null() {

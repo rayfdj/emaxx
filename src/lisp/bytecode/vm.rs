@@ -402,6 +402,12 @@ struct BcFrame {
     unwinds_len: usize,
     backtrace_depth: usize,
     op_error_frames: usize,
+    /// `code_changes' when the verified loop called from the frame, which
+    /// verification found the call's successor in with the operands the
+    /// return leaves: while it is the same, the caller's code and its
+    /// verification still hold and the return resumes without testing
+    /// them.  `usize::MAX' for a call made anywhere else.
+    code_changes: usize,
 }
 
 /// What a frame switch in the dispatch loop changes: the thread's state
@@ -503,6 +509,7 @@ fn bytecode_call(
                 unwinds_len: interp.bc_unwinds.len(),
                 backtrace_depth,
                 op_error_frames: std::mem::take(*op_error_frames),
+                code_changes: usize::MAX,
             });
             // setup_frame: the callee's frame starts above the caller's
             // top; the arguments are copied into it (`PUSH (*args)'), the
@@ -591,7 +598,7 @@ fn enter_bytecode_frame(vm: &mut VmFrames<'_>, return_pc: usize, argc: usize) ->
     let top = vm.interp.bc_stack.top;
     let func = vm.interp.bc_stack[vm.interp.bc_stack.len() - argc - 1];
     callee_function(func).closure_ref().is_some_and(|closure| {
-        enter_closure_frame(vm, top, return_pc, argc, func, closure).is_some()
+        enter_closure_frame(vm, top, return_pc, argc, func, closure, false).is_some()
     })
 }
 
@@ -628,17 +635,14 @@ fn call_native_nested(
     if vm.trace_errors {
         return None;
     }
-    // `call_fixed_function's tests, for at most six arguments.  Read
-    // unsigned, MANY and UNEVALLED (negative) exceed six, and a negative
-    // minimum, which no fixed arity has, admits no count: the general
-    // path takes both.
-    let maximum = usize::from(native.max_args_word() as u16);
-    let minimum = usize::from(native.min_args() as u16);
-    if maximum > 6 || argc > maximum || argc < minimum || native.is_dynamic() {
+    // `call_fixed_function's tests, for at most six arguments, in the
+    // function's register counts (a target, lexical binding, the arity):
+    // the general path takes any other call.
+    if argc > 6 || native.register_counts() & (1 << argc) == 0 {
         return None;
     }
     let target = native.target();
-    if target.is_null() || !state.plain_bcall_entry(func.symbol_cell()) {
+    if !state.plain_bcall_entry(func.symbol_cell()) {
         return None;
     }
     let nested = crate::lisp::native_comp::NestedCall::of(vm.interp)?;
@@ -723,6 +727,7 @@ fn enter_closure_frame(
     argc: usize,
     func: Value,
     closure: crate::lisp::types::ClosureRef,
+    verified_return: bool,
 ) -> Option<(usize, usize)> {
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.bc_stack.top = top;
@@ -775,6 +780,11 @@ fn enter_closure_frame(
         unwinds_len: state.bc_unwinds.len(),
         backtrace_depth,
         op_error_frames: std::mem::take(vm.op_error_frames),
+        code_changes: if verified_return {
+            crate::lisp::alloc::code_changes()
+        } else {
+            usize::MAX
+        },
     });
     *vm.program = callee.clone();
     // setup_frame's `PUSH (*args)' and the optionals' nils.
@@ -785,14 +795,15 @@ fn enter_closure_frame(
 /// Breturn into a byte-code caller when the callee left no specpdl
 /// entries above its watermark: the frame and its backtrace record are
 /// popped and the caller gets VALUE; the answer is the pc it resumes at,
-/// the stack's top and the frame's depth.  Otherwise the full return path runs the
+/// the stack's top, the frame's depth and whether the verified loop's
+/// call is still current (`BcFrame::code_changes').  Otherwise the full return path runs the
 /// unwinding; nothing changes but the stack's TOP, which is stored.
 #[inline(always)]
 fn return_to_bytecode_frame(
     vm: &mut VmFrames<'_>,
     top: usize,
     value: Value,
-) -> Option<(usize, usize, usize)> {
+) -> Option<(usize, usize, usize, bool)> {
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.bc_stack.top = top;
     let unwinds = state.bc_unwinds.len();
@@ -810,8 +821,9 @@ fn return_to_bytecode_frame(
     *vm.program = frame.program.clone();
     *vm.op_error_frames = frame.op_error_frames;
     vm.handlers.truncate(frame.handlers_len);
+    let unchanged = frame.code_changes == crate::lisp::alloc::code_changes();
     vm.frames.truncate(vm.frames.len() - 1);
-    Some((resume, state.bc_stack.top, state.bc_stack.len()))
+    Some((resume, state.bc_stack.top, state.bc_stack.len(), unchanged))
 }
 
 // A frame's slot is released by the length alone.
@@ -1655,7 +1667,7 @@ fn run_verified(
                     let function = callee_function(func);
                     if let Some(closure) = function.closure_ref() {
                         if let Some((top, _)) =
-                            enter_closure_frame(vm, top, next, argc, func, closure)
+                            enter_closure_frame(vm, top, next, argc, func, closure, true)
                         {
                             // The callee's frame runs on from pc 0, for which
                             // `entry_program' found its code current and
@@ -2050,18 +2062,22 @@ fn run_verified(
                     if !vm.frames.is_empty() {
                         // SAFETY: sp lies within the active frame.
                         let top = unsafe { sp.offset_from(words) as usize } + 1;
-                        if let Some((resume, top, depth)) = return_to_bytecode_frame(vm, top, value)
+                        if let Some((resume, top, depth, unchanged)) =
+                            return_to_bytecode_frame(vm, top, value)
                         {
                             // The caller's frame runs on here if its code is
                             // still the bytes verified and verification found
-                            // the call's successor with these operands.
+                            // the call's successor with these operands: as
+                            // the verified loop's call found them, when no
+                            // verified code has changed since.
                             // SAFETY: as the outer loop's slice.
                             let (bytes, current) = unsafe { vm.program.code.bytes_unguarded() };
-                            if current
-                                && vm
-                                    .program
-                                    .verified
-                                    .is_some_and(|verified| verified.admits(resume, depth))
+                            if unchanged
+                                || current
+                                    && vm
+                                        .program
+                                        .verified
+                                        .is_some_and(|verified| verified.admits(resume, depth))
                             {
                                 code = bytes;
                                 constants = vm.program.constants;

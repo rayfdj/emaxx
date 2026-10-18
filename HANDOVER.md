@@ -1633,6 +1633,37 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   collection tests, 145 mapping, length, snapshot, keymap and syntax
   tests, 180 native-runtime tests and the evaluation suite's 389
   tests pass.
+- **Profile-guided wall time on `3c034cc`** (`tools/pgo-build.sh` afresh;
+  pilot sizes, five rounds of five samples, the minimum and median ratio
+  to GNU, `df06b81`'s build alongside in parentheses): bytecode calls
+  1.046 and 1.052 (1.084, 1.086), mapcar 1.061 and 1.011 (1.100, 1.050),
+  cons allocation 1.152 and 1.111 (1.192, 1.202), undo 1.235 and 1.217
+  (1.260, 1.309), interpreted-to-native 1.176 and 1.184 (1.169, 1.214),
+  bytecode-to-native 1.233 and 1.302 (1.219, 1.231); the other ten at or
+  below 1.0 (native-to-bytecode 0.996 and 1.017, dynamic 0.951 and
+  0.961). A first run of the script lost its profile: one training
+  process died writing the merged `.profraw` (a test past its 300-second
+  limit while a build loaded the machine), leaving it truncated, and
+  `llvm-profdata` merged nothing; with the machine otherwise idle the
+  rerun was clean. Run the script alone.
+- **The register calls by a mask, and a verified return by the code
+  count.** A native function keeps the argument counts a call may pass
+  in registers alone (a target, lexical binding, the count within an
+  arity of at most six) as a bit each, in `Lisp_Subr`'s padding after the
+  arity (offset 12, which no C or generated code reads), refreshed by
+  every setter of those fields; `call_native_nested` and
+  `call_fixed_function` test the bit where they tested the arity's two
+  words, the lambda list and the target. A frame the verified loop
+  enters records `code_changes`, and its Breturn resumes without testing
+  the caller's code string and verification while the count is the
+  same (`usize::MAX` for frames entered elsewhere). Instructions:
+  interpreted-to-native `call_function` 156 → 143 a call,
+  `call_native_nested` 222 → 220, bytecode calls 521.9 → 519.8.
+  Validation (gate profile, `--test-threads=1`): the 201 native
+  compilation tests, the 132 byte-code, verifier and closure tests and
+  445 of the 446 funcall, native and subr tests pass (the other the
+  image round-trip test below, which fails locally since `4008098` and
+  passes in CI); clippy `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2090,7 +2121,13 @@ failed in the oracle with `jsonrpc-error` while Emaxx passed, the
 rust-analyzer timing recorded above; its failed job, re-run once (attempt
 2), passed. **On `f001516`** (buffer names and `format`'s count): full
 Rust gate passed (run 39087539788), frozen passed on its first attempt
-(run 39087541542). Locally,
+(run 39087541542). **On `3c034cc`** (with `093899a` beneath it: lazy cons
+serials, the entry cache by identity): full Rust gate passed (run
+39102085132). Frozen matched 7,927 of 7,928 (run 39102086693): GNU's
+`eglot-test-rust-completion-exit-function` failed in the oracle with
+`jsonrpc-error` again while Emaxx passed (0 unexpected outcomes for
+Emaxx, 1 for the oracle); its failed job is re-run once (attempt 2).
+Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -2364,17 +2401,20 @@ and failures are still recorded.
 
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
-2. **Performance, worst ratios first** (instruction ratios in the section
-   above; worst now undo 1.41, interpreted-to-native 1.29,
-   bytecode-to-native 1.27, native-to-bytecode 1.27, mapcar 1.23,
-   native-to-interpreted 1.18, bytecode calls 1.17, sort 1.14,
-   interpreted dynamic 1.12; by
-   wall time, with the profile-guided build (`tools/pgo-build.sh`, the
-   PGO bullet above): bytecode-to-native 1.54, undo 1.35, mapcar 1.29,
-   cons allocation 1.22 (an in-sample collection, see above),
-   interpreted-to-native 1.19, bytecode calls 1.10, explicit-gc 1.09,
-   native-to-bytecode 1.06; native-to-interpreted 1.03, dynamic 1.02,
-   sort 1.01 and the rest below. The profile helps the interpreter and
+2. **Performance, worst ratios first.** By wall time on `3c034cc`'s
+   profile-guided build (pilot sizes, minimum ratio; the bullet "Profile-
+   guided wall time on `3c034cc`" has the medians): bytecode-to-native
+   1.23, undo 1.24, interpreted-to-native 1.18, cons allocation 1.15
+   (GNU's start-of-sample collection keeps the previous list, see "Cons
+   allocation's collection, measured again"), mapcar 1.06, bytecode calls
+   1.05, and the other ten at or below 1.0. By instructions on the
+   line-table build: undo about 1.30, interpreted-to-native 1.29,
+   bytecode-to-native 1.26, native-to-bytecode 1.24, mapcar 1.19,
+   bytecode calls 1.11. Where each case's instructions go is under
+   "Where the byte-code call and return go" and the native call bullets.
+   (Older wall figures, before these rounds: bytecode-to-native 1.54,
+   undo 1.35, mapcar 1.29, cons allocation 1.22, interpreted-to-native
+   1.19, bytecode calls 1.10, explicit-gc 1.09.) The profile helps the interpreter and
    the native callbacks most and the byte-code loop and the collector
    least, so those (and undo's in-place ops) are where code changes now
    count most. A wall ratio

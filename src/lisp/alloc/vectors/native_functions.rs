@@ -13,6 +13,10 @@ pub struct NativeFunctionState {
     target: Cell<*const c_void>,
     min_args: Cell<i16>,
     max_args: Cell<i16>,
+    /// The argument counts a call can pass in registers alone, a bit each
+    /// (`register_counts'): kept in Lisp_Subr's padding after the arity,
+    /// which no C or generated code reads.
+    register_counts: Cell<u8>,
     symbol_name: Cell<*mut c_char>,
     interactive: Cell<Value>,
     command_modes: Cell<Value>,
@@ -41,6 +45,7 @@ const _: () = {
     assert!(std::mem::offset_of!(NativeFunctionState, target) == 0);
     assert!(std::mem::offset_of!(NativeFunctionState, min_args) == 8);
     assert!(std::mem::offset_of!(NativeFunctionState, max_args) == 10);
+    assert!(std::mem::offset_of!(NativeFunctionState, register_counts) == 12);
     assert!(std::mem::offset_of!(NativeFunctionState, symbol_name) == 16);
     assert!(std::mem::offset_of!(NativeFunctionState, interactive) == 24);
     assert!(std::mem::offset_of!(NativeFunctionState, command_modes) == 32);
@@ -59,10 +64,11 @@ impl Vectorlike for NativeFunctionState {
 impl NativeFunctionRef {
     pub(crate) fn new(spec: NativeFunctionSpec) -> Self {
         crate::lisp::native_comp::note_lisp_allocation(88);
-        Self::allocate(NativeFunctionState {
+        let function = Self::allocate(NativeFunctionState {
             target: Cell::new(spec.target),
             min_args: Cell::new(spec.min_args),
             max_args: Cell::new(spec.max_args),
+            register_counts: Cell::new(0),
             symbol_name: Cell::new(spec.name.into_raw()),
             interactive: Cell::new(spec.fields[0]),
             command_modes: Cell::new(spec.fields[1]),
@@ -71,7 +77,9 @@ impl NativeFunctionRef {
             c_name: Cell::new(spec.c_name.into_raw()),
             lambda_list: Cell::new(spec.fields[3]),
             native_type: Cell::new(spec.fields[4]),
-        })
+        });
+        function.refresh_register_counts();
+        function
     }
 
     pub(crate) fn blank() -> Self {
@@ -94,6 +102,7 @@ impl NativeFunctionState {
     }
     pub(crate) fn set_target(&self, target: *const c_void) {
         self.target.set(target);
+        self.refresh_register_counts();
     }
     #[inline]
     pub(crate) fn min_args(&self) -> i16 {
@@ -106,6 +115,34 @@ impl NativeFunctionState {
     pub(crate) fn set_arity(&self, minimum: i16, maximum: i16) {
         self.min_args.set(minimum);
         self.max_args.set(maximum);
+        self.refresh_register_counts();
+    }
+
+    /// Bit N set when a call with N arguments may go straight to the
+    /// target in registers: a target, lexical binding (no lambda list to
+    /// bind), and N within an arity of at most six.  The callers' arity
+    /// tests in one: `call_native_nested' and `call_fixed_function'.
+    #[inline(always)]
+    pub(crate) fn register_counts(&self) -> u8 {
+        self.register_counts.get()
+    }
+
+    fn refresh_register_counts(&self) {
+        let minimum = self.min_args.get();
+        let maximum = self.max_args.get();
+        let mut counts = 0u8;
+        // MANY and UNEVALLED (negative) take no register call, and a
+        // negative minimum, which no fixed arity has, admits no count.
+        if !self.target.get().is_null()
+            && !self.is_dynamic()
+            && (0..=6).contains(&maximum)
+            && minimum >= 0
+        {
+            for count in minimum..=maximum {
+                counts |= 1 << count;
+            }
+        }
+        self.register_counts.set(counts);
     }
     pub(crate) fn doc_index(&self) -> isize {
         self.doc.get()
@@ -180,6 +217,7 @@ impl NativeFunctionState {
         self.unit.set(fields[2]);
         self.lambda_list.set(fields[3]);
         self.native_type.set(fields[4]);
+        self.refresh_register_counts();
     }
 }
 
