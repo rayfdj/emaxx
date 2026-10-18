@@ -20,7 +20,7 @@ records the GNU counter contract.
 | --- | --- |
 | **Main** `94295d0a` | Source324: one-word values, 16-byte cons payloads, shared object work, and symbol value/function/plist/flags on the allocated symbols. |
 | **[PR87](https://github.com/rayfdj/emaxx/pull/87)** `35c6cd9b` (`runtime-char-tables`) | Object-state draft17: membership, constants, aliases, same-name replacement, image restoration and native `nil`/`t` identity. 584 runtime inputs. |
-| **Task branch** `runtime-performance` (pushed as `claude/awesome-newton-yk6sae` through `c48c5a2`; PR #88 took it into main up to `ba696b3`, PR #89 up to `6242417`) | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
+| **Task branch** `runtime-performance` (pushed as `claude/awesome-newton-yk6sae` through `c48c5a2`; PR #88 took it into main up to `ba696b3`, PR #89 up to `6242417`, PR #90 up to `8aaccaa`) | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
 
 **PR87 evidence in this repository:** strict checks with zero warnings, 407
 affected controls in each of gate and release, and 44 ordinary GNU comparisons /
@@ -1999,6 +1999,56 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   Validation (gate profile, `--test-threads=1`): the lightweight group's
   598 tests and 48 undo, marker, `delete-region` and amalgamation tests
   pass; clippy `-D warnings` and rustfmt pass.
+- **A store's watchers looked for by the flag first.** `set_internal`'s
+  notification found the store's buffer (`assignment_scope_symbol`, a
+  buffer-local probe) before asking whether the symbol has a watcher;
+  data.c notifies only a `SYMBOL_TRAPPED_WRITE` symbol, and the flag now
+  answers first. Undo: 1,401,532 → 1,401,728 instructions a unit, the
+  saving (`assignment_scope_symbol` 2,274 and `notify_assignment_symbol`
+  371 fewer) under a collection that fell into the measured range on
+  this build (`collect_below_stack_top` +2,724) and longer `memcmp`s
+  (+4,018, 20 more calls a unit from the same callers). The binding
+  paths, measured against GNU: Emaxx makes about 120 dynamic bindings a
+  unit (51 from native code at 54 instructions a `runtime_specbind`
+  plus 121 in `specbind_symbol_record`), GNU 399 at 64 each, its
+  `unbind_to` 404 at 74; the binding stack is not where undo's gap is.
+  Validation (gate profile, `--test-threads=1`): the lightweight group's
+  598 tests and 28 watcher, `setq`, `set-default`, forwarded-variable and
+  `text-conversion-style` tests pass; clippy `-D warnings` and rustfmt
+  pass.
+- **Print, message and word-boundary variables by their symbols.**
+  `lookup_var` by name was called 61 times a unit in undo, each finding
+  the symbol through the address cache and a text compare (about 120
+  instructions before the read): `print_options` reads eight `print-*`
+  variables a print, `message` reads `noninteractive`,
+  `inhibit-message`, `set-message-function` and
+  `clear-message-function`, word motion
+  `find-word-boundary-function-table`. These now read their symbols
+  through `cached_symbol!` (the thirteen names joined `KEY_NAMES`). Undo:
+  1,401,728 → 1,394,287 instructions a unit (`interned_cached` 65 → 23
+  calls a unit). Validation (gate profile, `--test-threads=1`): the
+  lightweight group's 598 tests and 155 of 156 print, `message`,
+  `prin1`, word-motion and `noninteractive` tests pass (the other is this
+  container's `print_prunes_charset_properties_like_print_prune_string_charset`,
+  whose GNU build disagrees with the expected text, as recorded below);
+  clippy `-D warnings` and rustfmt pass.
+- **Profile-guided wall time on `a2494c7`, against `6242417` on the
+  same host.** `tools/pgo-build.sh` afresh (its training and merge clean),
+  pilot sizes, five rounds of five samples, minimum and median ratio to
+  GNU, `6242417` in parentheses; the first full table, then the closest
+  six again: undo 0.900 and 0.845 (1.079, 1.054), again 0.938 and 0.919
+  (1.115, 1.068); bytecode-to-native 1.090 and 1.134 (1.070, 1.130),
+  again 1.049 and 0.979 (1.069, 1.033); bytecode calls 1.047 and 1.311
+  (1.006, 1.030), again 1.039 and 1.026 (1.008, 1.024); cons allocation
+  1.010 and 0.951 (1.015, 1.004), again 1.005 and 1.014; interpreted-to-
+  native 0.989 and 1.005 (0.971, 0.995), again 1.005 and 1.014;
+  native-to-bytecode 0.799 (0.770); the other ten at or below 0.86 by
+  minimum. Undo is now below GNU; bytecode-to-native and bytecode calls
+  are the two above the bound. Native execution is 0.512 and 0.517 by
+  minimum against `6242417`'s 0.453 and 0.445 (0.2014 and 0.2029 seconds
+  against 0.1780 and 0.1746, both runs): slower by about 14% while its
+  instructions fell, not yet explained (the build's layout, or the
+  rounds since; still about half of GNU's time).
 - **Profile-guided wall time on `6242417`, against `ba9f640` on the
   same host.** The container came back from a restart on a host whose
   timings differ from the earlier tables' (an Intel Xeon at 2.10 GHz with
@@ -2018,6 +2068,104 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   unreadable (`llvm-profdata`: "too much profile data"); the same
   processes ran cleanly on a fresh file, and the build run again
   succeeded.
+- **Native execution's slower wall time on `a2494c7` is its layout.**
+  Plain release builds of `6242417` and `5658349` (line tables, no
+  profile) run native execution in 415,311,498 and 415,302,186
+  instructions a unit, and in 0.2355 and 0.2541 seconds by minimum (again
+  0.2368 and 0.2483; GNU 0.38): the same work, laid out differently, as
+  in the profile-guided pair. Bytecode-to-native, the other workload
+  through the native call boundary, measures the same on both (0.1169 and
+  0.1186 at 4,000,000), so nothing in the rounds since slowed native
+  calls; native execution stays near half of GNU's time.
+- **A Bcall into native code by its count, inline in the loop.** The
+  nested native call (`call_native_nested`, a Bcall of a native function
+  inside an active native call) spent 220 instructions a call against
+  GNU's Bcall arm and `funcall_subr` (about 40 for the call itself). It is
+  now one copy per count for Bcall0 to Bcall3, whose count is a constant
+  in its arm (the registers are the arguments' loads and zeros with no
+  jump table on the count; Bcall4 and up keep one copy taking the count),
+  inline in `run_verified`'s arm; the arguments are read below the
+  loop's top without the frame's base; the native frame records the
+  Ffuncall depth and backtrace count `enter_plain_funcall_at` just set
+  instead of reading them back; and the callee's environment is written
+  into the active call's record for the call (`ActiveCall::environment`
+  is a `Cell`, the helpers' `with_active` handing out a shared reference)
+  instead of a new record swapped into the thread-local and back.
+  Bytecode-to-native: 486 → 444 instructions an iteration (the call path
+  220 → 202 by the count, 198 with the arguments and the environment;
+  inlining took 17 more, the depths 2); bytecode calls 520 → 512 (the
+  loop's registers moved); interpreted-to-native unchanged (3,038 and
+  3,039, its native calls go through `call_fixed_function`). Wall time,
+  plain line-table builds, pilot sizes, five rounds of five samples,
+  minimum ratio to GNU, the same changes without the inlining in
+  parentheses: bytecode-to-native 1.019 and 0.996 in two runs (1.080,
+  1.060; `5658349` measured 1.10), bytecode calls 1.022 and 1.034 (1.032,
+  1.041); at the full 16,000,000, three rounds of five, 1.032 (1.058).
+  What is left of the call: the escape record (nine stores) and the
+  native frame's push and pop with its balance checks (about 40), the
+  handler list's reconciliation before and after (about 14), the entry
+  tests, and the loop's check that its code is still current after the
+  call (about 16). GNU's `exec_byte_code` runs 339 instructions an
+  iteration of this loop, Emaxx's loop without the call about 160.
+  Validation (gate profile, `--test-threads=1`): the lightweight group's
+  598 tests, including the native runtime's and the byte-code VM's, and
+  the seven Bcall, funcall and verified-code tests among them
+  `bytecode_calls_native_functions_nested_in_native_calls_like_funcall_subr`
+  (a signal and a throw out of a nested native callee) pass; clippy
+  `-D warnings` and rustfmt pass. Of the 286 evaluator and primitive
+  tests whose names mention native code, byte code, funcall, signals or
+  backtraces (finished after the commit), 284 pass and the other two are
+  this container's known failures (the as-root
+  `byte_compile_file_reports_an_unwritable_target_like_gnu` and
+  `batch_startup_image_round_trip_or_explicit_native_image_limit`).
+- **Profile-guided wall time on `a0034c1`, against `a2494c7` on the
+  same host.** Pilot sizes, five rounds of five samples, minimum ratio to
+  GNU, `a2494c7` in parentheses: bytecode calls 1.023 (1.021),
+  bytecode-to-native 1.019 (1.081), cons allocation 1.006 (1.006),
+  interpreted-to-native 0.989 (1.010), undo 0.934 (0.990), mapcar 0.841
+  (0.815), list traversal 0.838 (0.837), native-to-bytecode 0.793
+  (0.783), sort 0.762 (0.759), interpreted-dynamic 0.753 (0.752),
+  native-to-interpreted 0.699 (0.719), explicit-gc 0.684 (0.689),
+  bindat 0.671 (0.652), interpreted-calls 0.576 (0.555),
+  interpreted-lexical 0.573 (0.569), native execution 0.474 (0.513).
+  Medians on this host lie up to a quarter above minimums
+  (interpreted-to-native 1.28 by median against 0.99 by minimum), so the
+  four near 1.0 are short of the contract's bound: its median-of-three
+  per process, nine paired rounds and bootstrapped upper 95% at most 1.03
+  leave room for about 0.98 at most. The first attempt at this build
+  failed as `6242417`'s first had: from the nineteenth training process
+  on every merge into the raw profile reported it invalid; the training
+  and the final build run again on the same instrumented build succeeded.
+- **maybe_gc's test on a mirror of the active call's trigger.** An
+  evaluated form (`eval_sub`), a byte-code frame's entry and a plain
+  Bcall each asked whether a collection could be due through the active
+  call's record: the thread-local, its runtime, the runtime's shared
+  heap, the trigger, about eight instructions where lisp.h's maybe_gc
+  reads one global. The trigger of the active call's collector is now
+  mirrored in a thread-local (`ACTIVE_GC_TRIGGER`, 0 with no active call,
+  which takes the full test), set with the active call by
+  `with_active_call` and the suspension, re-read from its collector when
+  the call it was saved for resumes, and written by `publish_trigger`
+  (the trigger's one setter) when its collector is the active one; below
+  it a collection cannot be due, as the active runtime's own test
+  answers. `eval_call_compiled` tests a native callee before a closure
+  and makes the usual native call inline (`call_function_inline`), and
+  `eval_sub` compares the depth with `max-lisp-eval-depth` without a
+  saturating conversion. Instructions a unit: cons allocation 5,623 →
+  5,494 (5,542 by the mirror alone), interpreted-to-native 3,038 → 2,957
+  (2,998 by the mirror, 2,977 with the inline call), bytecode calls 512
+  → 504, bytecode-to-native 444 → 445 (its nested call reads its
+  runtime's trigger directly already). GNU runs cons allocation's unit in
+  5,215 and interpreted-to-native's in 2,385. Validation (gate profile,
+  `--test-threads=1`): the lightweight group's 598 tests and 240 of 242
+  evaluator and primitive tests whose names mention collection,
+  thresholds, threads, suspension or native code pass; the other two are
+  `batch_startup_image_round_trip_or_explicit_native_image_limit` (this
+  container's) and
+  `process_tls_state_survives_collection_before_and_after_async_handshake`,
+  whose GNU oracle answered `connect` for the asynchronous handshake while
+  four test processes shared the machine and which passes run alone;
+  clippy `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2506,8 +2654,13 @@ job, re-run once (attempt 2), passed. **On `e5852af`** (one handler
 search a signal): full Rust gate passed (run 39146151002), frozen passed
 on its first attempt (run 39146153666). **On `f50ce28`** (watched and
 buffer-local variables by flags): full Rust gate passed (run
-39149792527); frozen (run 39149794338) to be recorded with the next
-round. Locally,
+39149792527), frozen passed on its first attempt (run 39149794338).
+**On `8aaccaa`** (the undo list's view kept across marker adjustments):
+full Rust gate passed (run 39153644820), frozen passed on its first
+attempt (run 39153646470); PR #90 merged it into main. **On `5658349`**
+(with `a2494c7`: the print, message and word-boundary variables by their
+symbols, the watcher flag first): full Rust gate passed (run
+39158088826), frozen passed on its first attempt (run 39158090668). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -2781,18 +2934,20 @@ and failures are still recorded.
 
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
-2. **Performance, worst ratios first.** By wall time on `6242417`'s
+2. **Performance, worst ratios first.** By wall time on `a2494c7`'s
    profile-guided build (pilot sizes, minimum ratio; the bullet "Profile-
-   guided wall time on `6242417`" has the medians and `ba9f640` beside
-   it on the same host): undo 1.11, bytecode-to-native 1.07, bytecode
-   calls 1.04, interpreted-to-native 1.01, cons allocation 1.00, and the
-   other eleven below 1.0. That table ran on the host the container came
+   guided wall time on `a2494c7`" has the medians and `6242417` beside
+   it on the same host): bytecode-to-native 1.05 to 1.09, bytecode calls
+   1.04 to 1.05, cons allocation and interpreted-to-native about 1.01,
+   undo 0.90 to 0.94, and the other eleven below 0.9. Earlier, on
+   `6242417`: undo 1.11, bytecode-to-native 1.07, bytecode calls 1.04,
+   interpreted-to-native 1.01, cons allocation 1.00. That table ran on the host the container came
    back on after a restart, where `ba9f640` itself measures
    interpreted-to-native 1.01 and cons allocation 1.01 against 1.15 and
    1.13 on the earlier host (its one in-sample collection, see "Cons
    allocation's gap is its one collection"); compare builds only on one
    host. By instructions on the line-table build: undo about 1.12 (after
-   the undo list's view kept across marker adjustments), interpreted-to-native 1.28, bytecode-to-native 1.26,
+   the print and message variables by their symbols), interpreted-to-native 1.28, bytecode-to-native 1.26,
    native-to-bytecode 1.24, bytecode calls 1.11, native-execution 0.90. Where each case's instructions go is under
    "Where the byte-code call and return go" and the native call bullets.
    (Older wall figures, before these rounds: bytecode-to-native 1.54,

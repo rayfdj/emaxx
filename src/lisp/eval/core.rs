@@ -325,7 +325,9 @@ impl Interpreter {
         crate::lisp::native_comp::maybe_gc(self, env);
         let state: &mut InterpreterState = self;
         state.lisp_eval_depth += 1;
-        if i64::try_from(state.lisp_eval_depth).unwrap_or(i64::MAX) > state.max_lisp_eval_depth
+        // The depth counts frames on this stack, far below i64::MAX: the
+        // compare is GNU's intmax_t one without a saturating conversion.
+        if state.lisp_eval_depth as i64 > state.max_lisp_eval_depth
             && self.lisp_eval_depth_exceeded()
         {
             let reached = self.lisp_eval_depth;
@@ -967,10 +969,14 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         self.set_backtrace_args(Value::symbol_of_cell(*name), args);
         self.capture_current_backtrace_context(Some(name.as_str()), env, None);
-        let result = match (func.native_function_ref(), func.closure_ref()) {
-            (Some(native), _) => crate::lisp::native_comp::call_function(self, env, native, args),
-            (None, Some(closure)) => self.execute_bytecode_funcall_body(closure, args, env),
-            (None, None) => unreachable!("a native-compiled or byte-code function"),
+        // A native callee is tested first: the closure's test is not made
+        // for it, and its usual call is made here.
+        let result = if let Some(native) = func.native_function_ref() {
+            crate::lisp::native_comp::call_function_inline(self, env, native, args)
+        } else if let Some(closure) = func.closure_ref() {
+            self.execute_bytecode_funcall_body(closure, args, env)
+        } else {
+            unreachable!("a native-compiled or byte-code function")
         };
         let result = self.settle_frame_result(result, env);
         self.truncate_backtrace_frames(depth);

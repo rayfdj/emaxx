@@ -115,6 +115,19 @@ const KEY_NAMES: &[&str] = &[
     "message-log-max",
     "default-directory",
     "text-conversion-style",
+    "print-circle",
+    "print-continuous-numbering",
+    "print-gensym",
+    "print-integers-as-characters",
+    "print-symbols-bare",
+    "print-length",
+    "print-level",
+    "print-quoted",
+    "noninteractive",
+    "clear-message-function",
+    "set-message-function",
+    "inhibit-message",
+    "find-word-boundary-function-table",
 ];
 
 struct Symbols {
