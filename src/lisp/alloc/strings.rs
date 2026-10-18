@@ -138,6 +138,19 @@ impl StringObjectRef {
         unsafe { (*cell.state.get()).bytes_unbounded() }
     }
 
+    /// Whether the string holds text properties, read with no guard
+    /// counted: for the collector's trace, which runs while no guard is
+    /// alive (a collection does not start while one is).
+    #[inline(always)]
+    pub(crate) fn has_properties_unguarded(&self) -> bool {
+        let cell = self.cell();
+        debug_assert!(cell.borrows.get() >= 0, "string mutably borrowed");
+        // SAFETY: with no mutable guard alive, nothing changes the state
+        // while this shared reference to it is read.
+        let state = unsafe { &*cell.state.get() };
+        !state.props.is_empty()
+    }
+
     pub fn borrow(&self) -> StringBorrow<'_> {
         let cell = self.cell();
         let count = cell.borrows.get();

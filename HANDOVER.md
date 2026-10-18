@@ -1664,6 +1664,40 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   445 of the 446 funcall, native and subr tests pass (the other the
   image round-trip test below, which fails locally since `4008098` and
   passes in CI); clippy `-D warnings` and rustfmt pass.
+- **The mark phase marks as it queues.** `LispReachability` pushed every
+  field that was not an immediate and tested the mark when it popped
+  the object (about 825,000 pops a collection, of which about 256,000
+  were symbols already marked), each pop dispatching on the kind twice.
+  An object is now marked as it is queued (alloc.c's `mark_object` tests
+  the mark before it looks inside); a float, a bignum, a marker and a
+  string without text properties are marked alone and never queued
+  (`has_properties_unguarded`: no guard is alive during a collection);
+  the drain traces each popped object inline (`trace_fields` had become
+  a call with a six-register prologue for each of about 346,000 objects
+  a collection). `trace_pending` still answers whether anything new was
+  reached, for the weak tables' fixed point: the enqueues record it.
+  Explicit collections on the line-table build: 49.0 → 39.8 million
+  instructions each (GNU's `Fgarbage_collect` about 66 million); a
+  collection of a heap of 600,000 cells with 100,000 live (`gcper2`):
+  10.9 → 10.1 ms. A ring of eight prefetched objects between the mark
+  stack and the trace was slower (11.2 ms) and is not kept. Validation:
+  the 220 collection, weak-table, finalizer, reachability, mark, sweep
+  and trace tests pass.
+- **Cons allocation's gap is its one collection.** GNU's census at a
+  sample's start holds 517,547 conses, the previous sample's list kept
+  by a stale slot of its interpreted `let*` frame in the C stack, so
+  its threshold (`gc-cons-percentage` 1.0 of about 9 MB) is above a
+  sample's 8 MB of consing; Emaxx's census holds 15,790 and its
+  threshold about 1.45 MB, so one collection runs in each sample.
+  Keeping that list alive would be keeping garbage. The rest is already
+  ahead: the timed loop alone (`core-perf-conses`, no collection) runs
+  2,321 instructions an iteration against GNU's 2,101 and its wall time
+  without the collection is below GNU's sample (0.071 against 0.079 s on
+  `3c034cc`'s profile build). The in-sample collection takes 14.5 ms
+  where back-to-back collections of a like heap take 9.6 (GNU 11.3):
+  the caches are cold after the loop, and the trace walks the image's
+  objects every time, as GNU's walks its dump. The case reaches the
+  bound when that collection costs about 11 ms.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
