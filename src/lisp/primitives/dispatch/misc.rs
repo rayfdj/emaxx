@@ -531,14 +531,10 @@ define_dispatch!(
                 }
                 let condition = args[0];
                 let data = args.get(1).cloned().unwrap_or(Value::Nil);
-                let value = if let Ok(items) = data.to_vec() {
-                    Value::cons(condition, Value::list(items))
-                } else {
-                    // GNU keeps non-list DATA as the cdr: (signal 'foo 4)
-                    // is caught as the dotted pair (foo . 4).
-                    Value::cons(condition, data)
-                };
-                Err(LispError::SignalValue(value))
+                // eval.c:signal_or_quit conses the error symbol onto DATA
+                // itself, a list or not: (signal 'foo 4) is caught as the
+                // dotted pair (foo . 4), and a list's cells are shared.
+                Err(LispError::SignalValue(Value::cons(condition, data)))
             }
             "throw" => {
                 if args.len() != 2 {

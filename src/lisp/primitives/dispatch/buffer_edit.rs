@@ -30,11 +30,12 @@ fn word_boundary_function(
     else {
         return None;
     };
-    let function_name = interp
-        .char_table_get(table_id, character as u32)?
-        .as_symbol()
-        .ok()?
-        .to_owned();
+    let entry = interp.char_table_get(table_id, character as u32)?;
+    // A nil entry names no function: nil's function cell is always void.
+    if entry.is_nil() {
+        return None;
+    }
+    let function_name = entry.as_symbol().ok()?.to_owned();
     let function = interp.lookup_function(&function_name, env).ok()?;
     Some((function, function_name))
 }
@@ -300,14 +301,17 @@ fn utf8_sequence_width(first: u8) -> usize {
 }
 
 fn unibyte_text_bytes(text: &str) -> Vec<u8> {
-    text.chars()
-        .flat_map(|character| {
-            raw_byte_from_regex_char(character)
-                .map(|byte| vec![byte])
-                .or_else(|| u8::try_from(character as u32).ok().map(|byte| vec![byte]))
-                .unwrap_or_else(|| character.to_string().into_bytes())
-        })
-        .collect()
+    let mut bytes = Vec::with_capacity(text.len());
+    for character in text.chars() {
+        match raw_byte_from_regex_char(character).or_else(|| u8::try_from(character as u32).ok()) {
+            Some(byte) => bytes.push(byte),
+            None => {
+                let mut encoded = [0; 4];
+                bytes.extend_from_slice(character.encode_utf8(&mut encoded).as_bytes());
+            }
+        }
+    }
+    bytes
 }
 
 fn multibyte_buffer_text(text: &str, preserve_utf8_sequences: bool) -> (String, Vec<usize>) {
@@ -347,15 +351,24 @@ fn multibyte_buffer_text(text: &str, preserve_utf8_sequences: bool) -> (String, 
 }
 
 fn unibyte_buffer_text(text: &str) -> (String, Vec<usize>) {
-    let mut converted = String::new();
+    let mut converted = String::with_capacity(text.len());
     let mut position_map = Vec::with_capacity(text.chars().count() + 1);
     position_map.push(1);
+    // Each byte of a character's encoding becomes one unibyte character;
+    // the map records the count after each source character.
+    let mut count = 0;
     for character in text.chars() {
-        let bytes = raw_byte_from_regex_char(character)
-            .map(|byte| vec![byte])
-            .unwrap_or_else(|| character.to_string().into_bytes());
-        converted.extend(bytes.into_iter().map(char::from));
-        position_map.push(converted.chars().count() + 1);
+        if let Some(byte) = raw_byte_from_regex_char(character) {
+            converted.push(char::from(byte));
+            count += 1;
+        } else {
+            let mut encoded = [0; 4];
+            for &byte in character.encode_utf8(&mut encoded).as_bytes() {
+                converted.push(char::from(byte));
+                count += 1;
+            }
+        }
+        position_map.push(count + 1);
     }
     (converted, position_map)
 }

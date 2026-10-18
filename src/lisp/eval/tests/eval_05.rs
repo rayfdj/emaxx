@@ -8658,3 +8658,59 @@ fn killing_a_noncurrent_buffer_does_not_retarget_the_selected_window() {
         Value::T
     );
 }
+
+#[test]
+fn signal_conses_the_error_symbol_onto_its_data_itself() {
+    // eval.c:signal_or_quit: the error object is (cons ERROR-SYMBOL DATA),
+    // DATA's own cells when it is a list and DATA as it is otherwise.
+    assert_eq!(
+        eval_str(
+            "(let ((data (list 1 2)))
+               (list (eq (cdr (condition-case err (signal 'foo data) (t err))) data)
+                     (vectorp (cdr (condition-case err (signal 'foo [1 2]) (t err))))))"
+        ),
+        Value::list([Value::T, Value::T])
+    );
+}
+
+#[test]
+fn list_and_rest_arguments_keep_a_leading_vector_literal_symbol() {
+    // alloc.c:Flist and a &rest parameter cons their arguments; a
+    // leading `vector-literal' is an element like any other.
+    assert_eq!(
+        eval_str(
+            "(list (consp (list 'vector-literal 1))
+                   (consp ((lambda (&rest r) r) 'vector-literal 1))
+                   (funcall #[128 \"\\207\" [] 2] 'vector-literal 1))"
+        ),
+        Value::list([
+            Value::T,
+            Value::T,
+            // Built by cons: `Value::list' reads a `vector-literal' head
+            // as the reader's vector marker.
+            Value::cons(
+                Value::symbol("vector-literal"),
+                Value::cons(Value::Integer(1), Value::Nil),
+            ),
+        ])
+    );
+}
+
+#[test]
+fn unibyte_conversion_keeps_each_byte_and_maps_point() {
+    // buffer.c:Fset_buffer_multibyte with nil: each character's internal
+    // bytes become characters, a raw byte its one byte (GNU's answer).
+    assert_eq!(
+        eval_str(
+            "(with-temp-buffer
+               (insert \"a\" (string #xe9) (string-to-multibyte (unibyte-string 233)))
+               (set-buffer-multibyte nil)
+               (list (buffer-size) (append (buffer-string) nil) (point)))"
+        ),
+        Value::list([
+            Value::Integer(4),
+            Value::list([97, 195, 169, 233].map(Value::Integer)),
+            Value::Integer(5),
+        ])
+    );
+}

@@ -2777,8 +2777,8 @@ define_dispatch!(
                     && !args.first().is_some_and(Value::is_nil)
                     && args
                         .first()
-                        .and_then(string_like)
-                        .is_none_or(|string| !string.text.is_empty());
+                        .and_then(|format| with_string_text(format, |text| !text.is_empty()))
+                        .unwrap_or(true);
                 if capturable {
                     log_message_text(interp, &text, env);
                     interp.append_message_capture(&text, true, env);

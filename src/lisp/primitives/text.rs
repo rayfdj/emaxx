@@ -302,6 +302,13 @@ pub(crate) fn format_s_conversion(
     precision: Option<usize>,
     env: &mut crate::lisp::types::Env,
 ) -> Result<(String, Vec<TextPropertySpan>), LispError> {
+    // A whole string without properties is its text, copied once.
+    if precision.is_none()
+        && string_without_properties(arg)
+        && let Some(text) = with_string_text(arg, str::to_owned)
+    {
+        return Ok((text, Vec::new()));
+    }
     if let Some(string) = string_like(arg) {
         let end = precision
             .unwrap_or_else(|| string.text.chars().count())

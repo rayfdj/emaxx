@@ -537,7 +537,7 @@ fn bytecode_call(
                 interp.bc_stack.push_within_frame(*argument);
             }
             if argc > nonrest {
-                let rest_list = Value::list(call_args[nonrest..].iter().cloned());
+                let rest_list = Value::list_of(&call_args[nonrest..]);
                 interp.bc_stack.push_within_frame(rest_list);
             } else {
                 for _ in argc..nonrest {
@@ -3521,9 +3521,7 @@ fn run_frames(
                 interp.bc_stack.push(*value)?;
             }
             if args.len() > nonrest {
-                interp
-                    .bc_stack
-                    .push(Value::list(args[nonrest..].iter().cloned()))?;
+                interp.bc_stack.push(Value::list_of(&args[nonrest..]))?;
             } else {
                 for _ in args.len()..nonrest {
                     interp.bc_stack.push(Value::Nil)?;
@@ -3561,7 +3559,7 @@ fn run_frames(
                     continue;
                 }
                 let value = if rest {
-                    Value::list(args[index.min(args.len())..].iter().cloned())
+                    Value::list_of(&args[index.min(args.len())..])
                 } else if index < args.len() {
                     args[index]
                 } else if optional {

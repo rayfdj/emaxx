@@ -71,6 +71,14 @@ impl Interpreter {
         self.buffer_list.iter().find(|(_, n)| n == name).cloned()
     }
 
+    /// The id of the live buffer named NAME, without a copy of the name.
+    pub(crate) fn find_buffer_id(&self, name: &str) -> Option<u64> {
+        self.buffer_list
+            .iter()
+            .find(|(_, n)| n == name)
+            .map(|(id, _)| *id)
+    }
+
     /// Return the current buffer ID.
     pub fn current_buffer_id(&self) -> u64 {
         self.current_buffer_id

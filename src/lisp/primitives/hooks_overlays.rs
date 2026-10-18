@@ -619,7 +619,11 @@ pub(crate) fn delete_region_with_hooks(
         run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
         let has_before_hooks = interp
             .symbol_value_key(cached_symbol!("before-change-functions"))
-            .map(|value| !value.to_vec().unwrap_or_default().is_empty())
+            .map(|value| match value.kind() {
+                // A proper list is nonempty; walking it copies nothing.
+                Kind::Cons(_) => value.visit_list_elements(|_| Ok(())).is_ok(),
+                _ => !value.to_vec().unwrap_or_default().is_empty(),
+            })
             .or_else(|| {
                 interp
                     .buffer_local_hook(interp.current_buffer_id(), "before-change-functions")

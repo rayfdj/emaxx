@@ -20,7 +20,7 @@ records the GNU counter contract.
 | --- | --- |
 | **Main** `94295d0a` | Source324: one-word values, 16-byte cons payloads, shared object work, and symbol value/function/plist/flags on the allocated symbols. |
 | **[PR87](https://github.com/rayfdj/emaxx/pull/87)** `35c6cd9b` (`runtime-char-tables`) | Object-state draft17: membership, constants, aliases, same-name replacement, image restoration and native `nil`/`t` identity. 584 runtime inputs. |
-| **Task branch** `claude/awesome-newton-yk6sae` | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
+| **Task branch** `runtime-performance` (pushed as `claude/awesome-newton-yk6sae` through `c48c5a2`; PR #88 took it into main up to `ba696b3`) | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
 
 **PR87 evidence in this repository:** strict checks with zero warnings, 407
 affected controls in each of gate and release, and 44 ordinary GNU comparisons /
@@ -1760,6 +1760,64 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   the 97 byte-code, decoder and VM tests and the 93 condition-case,
   catch, unwind, handler, recursion, nesting, depth and throw tests pass;
   clippy `-D warnings` and rustfmt pass.
+- **Strings read in place, and a native funcall's target from its cell.**
+  Per unit undo made about 1,015 Rust allocations and as many frees (17
+  instructions each in the host allocator, besides the copies). GNU's
+  undo makes almost none outside its Lisp heap. Most were copies made to
+  read something. `format` copied its format string three times and
+  each `%s` argument once, to learn whether it was multibyte; `get-buffer`
+  copied the name, and `find_buffer` cloned the buffer's own;
+  `combine_insert_args` copied a sole string twice; a Lisp string made
+  from Rust text was copied into a `String`, then by `encode_text` into a
+  byte vector, then into its data. `with_string_text` now reads a
+  string's text in place: its stored bytes are that text when they are
+  ASCII, or valid UTF-8 in a multibyte string; only raw bytes and
+  characters beyond Unicode are decoded. `string_is_multibyte` and
+  `string_without_properties` read the flags. ASCII text goes straight
+  into string data (`from_text`, `from_host_str`). `apply`, `list`,
+  `&rest` parameters (byte-code and interpreted), `signal` and the
+  interpreted `condition-case`'s clause heads no longer copy a list into
+  a vector first. `Value::list` collected into a vector and turned a list
+  headed by `vector-literal` into a vector, so `(list 'vector-literal 1)`
+  and such a `&rest` list came back as vectors; they now cons as
+  `Flist` does. `signal` copied a proper DATA (and listed a vector's
+  elements after `vector-literal`); it now conses the error symbol onto
+  DATA itself, as `signal_or_quit` does. `set-buffer-multibyte nil`
+  allocated a vector for each character and recounted its result's
+  characters after each; `text_range_string` (the deleted text undo
+  records) converts no indexes for an ASCII text; the word-boundary
+  lookup behind `forward-word` looked up the function `nil` (and
+  allocated the void-function error it discarded) for each empty
+  char-table entry. In the native call
+  layer, `cconv-make-interpreted-closure` (the closure each interpreted
+  `lambda` makes) cost 128,000 instructions a unit against GNU's 67,000.
+  Each funcall from native code ran about 250 instructions in
+  `direct_native_funcall`, `invoke_native_funcall`, `direct_funcall_target`
+  and `call_word_target` (GNU's `Ffuncall`, `funcall_general` and
+  `funcall_subr` about 70). A function cell holding a native function
+  whose register counts admit the argument count is now called from the
+  cell (`RegisteredNative`, nil for omitted optionals), and a byte-code
+  callee's class is read from the same read of the cell.
+  `mapcar` called `invoke_subr`'s whole dispatch for each element; it now
+  syncs the handlers and calls `invoke_native_funcall`, and its result
+  vector is on the stack up to 32 elements. A native funcall's arguments
+  reaching a byte-code or interpreted callee were checked word by word
+  through `mem_find` (220 to 730 instructions for a vector-like word,
+  depending on the heap's layout); they are the caller's live words, read
+  as `XUNTAG` reads them (`invoke_subr`'s general path already did).
+  Undo: 1,556,807 → 1,504,349 instructions a unit (GNU 1,248,561: 1.25 →
+  1.20), host allocations 1,015 → about 820 a unit; native-execution
+  483.2 → 415.1 million instructions (0.90 of GNU's);
+  native-to-interpreted 4,758 → 4,725 and bytecode-to-native 493.0 →
+  489.4 an iteration; native-to-bytecode, interpreted-to-native, mapcar
+  and bytecode calls unchanged. Validation (gate profile,
+  `--test-threads=1`): the 539 `format`, buffer-name, `apply`, `signal`, `condition-case`,
+  message, insertion, multibyte, undo, `delete-region`, funcall, `mapcar`,
+  `&rest`, native-runtime, byte-code, word and text-property tests pass,
+  among them three new ones (`signal`'s DATA, a leading `vector-literal`
+  in `list` and `&rest` lists, the unibyte conversion against GNU's
+  answer); clippy `-D warnings` and
+  rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2229,8 +2287,11 @@ and the verified return, the mark phase): full Rust gate passed (run
 oracle failure of `eglot-test-rust-completion-exit-function` (third run
 in a row, each time on the GNU side only); its failed job, re-run once
 (attempt 2), passed. **On `d7b02ff`** (undo's slow ops, the ASCII
-newline search): full Rust gate passed (run 39115079701); frozen run
-39115081583 is pending at this commit. Locally,
+newline search): full Rust gate passed (run 39115079701), frozen passed
+on its first attempt (run 39115081583). **On `c48c5a2`** (activation
+vectors kept, the operandless table at compile time): full Rust gate
+passed (run 39118270646), frozen passed on its first attempt (run
+39118272517). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -2511,9 +2572,9 @@ and failures are still recorded.
    1.13 (its one in-sample collection, see "Cons allocation's gap is its
    one collection"), bytecode calls 1.05 to 1.07, and the other eleven
    below 1.0 (mapcar 0.96 since the mark phase's change). By instructions
-   on the line-table build: undo about 1.25 (after the slow ops' rounds),
-   interpreted-to-native 1.29, bytecode-to-native 1.26,
-   native-to-bytecode 1.24, bytecode calls 1.09. Where each case's instructions go is under
+   on the line-table build: undo about 1.20 (after the in-place string
+   reads), interpreted-to-native 1.28, bytecode-to-native 1.26,
+   native-to-bytecode 1.24, bytecode calls 1.11, native-execution 0.90. Where each case's instructions go is under
    "Where the byte-code call and return go" and the native call bullets.
    (Older wall figures, before these rounds: bytecode-to-native 1.54,
    undo 1.35, mapcar 1.29, cons allocation 1.22, interpreted-to-native

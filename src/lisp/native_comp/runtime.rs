@@ -2703,12 +2703,10 @@ impl DirectFuncallTarget {
         if let Self::ByteCode { closure } = self {
             let mut decoded = smallvec::SmallVec::<[Value; 8]>::new();
             for word in arguments {
-                decoded.push(
-                    unsafe { &mut *active.runtime }
-                        .heap
-                        .decode(*word)
-                        .map_err(|error| super::lisp::native_ice(&error))?,
-                );
+                // SAFETY: Ffuncall's argument vector belongs to the native
+                // caller, which keeps each Lisp_Object live, as XUNTAG
+                // reads it without a reverse map.
+                decoded.push(unsafe { Value::from_word(*word) });
             }
             let result = unsafe { &mut *active.interpreter }.execute_bytecode_funcall_body(
                 closure,
@@ -2792,6 +2790,13 @@ fn direct_funcall_target(
             .ok()?,
         None => *function,
     };
+    funcall_target_of(resolved)
+}
+
+/// The class of a resolved funcall target (SUBRP, a native function,
+/// CLOSUREP), by the tag and the header.
+#[inline(always)]
+fn funcall_target_of(resolved: Value) -> Option<DirectFuncallTarget> {
     if let Some(subr) = resolved.builtin_ref() {
         return Some(DirectFuncallTarget::Builtin(subr));
     }
@@ -2803,6 +2808,56 @@ fn direct_funcall_target(
         .closure_ref()
         .filter(|closure| closure.is_bytecode())
         .map(|closure| DirectFuncallTarget::ByteCode { closure })
+}
+
+/// A native function a funcall resolved to.  Its register counts
+/// (`refresh_register_counts') admit the call when its target is not
+/// dynamic and takes at most six fixed arguments, the count among them;
+/// it is then called as funcall_subr calls it.
+#[derive(Clone, Copy)]
+struct RegisteredNative(crate::lisp::types::NativeFunctionRef);
+
+impl RegisteredNative {
+    /// funcall_subr's arity test: COUNT lies in the function's range.
+    #[inline(always)]
+    fn admits(self, count: usize) -> bool {
+        count <= 6 && self.0.register_counts() & (1 << count) != 0
+    }
+
+    /// The target called with ARGUMENTS and nil for each omitted optional
+    /// argument, as funcall_subr pads them.
+    ///
+    /// # Safety
+    /// `admits' holds for the number of ARGUMENTS.
+    #[inline(always)]
+    unsafe fn call(self, arguments: &[NativeWord]) -> NativeWord {
+        let target = self.0.target();
+        let maximum = self.0.max_args_word() as usize;
+        if arguments.len() == maximum {
+            // SAFETY: as the caller's: a fixed target of MAXIMUM arguments.
+            return unsafe { call_word_target(target, NativeCallingConvention::Fixed, arguments) };
+        }
+        let mut padded = [0; 6];
+        padded[..arguments.len()].copy_from_slice(arguments);
+        // SAFETY: as above, with the omitted arguments nil.
+        unsafe { call_word_target(target, NativeCallingConvention::Fixed, &padded[..maximum]) }
+    }
+}
+
+/// funcall_general's first step in one read: FUNCTION itself, or a
+/// symbol's function cell.  A cell that is a symbol (an alias) is the
+/// start of the chain `direct_funcall_target' walks; `None' for a void
+/// cell.
+#[inline(always)]
+fn funcall_function_cell(
+    interpreter: &Interpreter,
+    environment: &Env,
+    function: Value,
+) -> Option<Value> {
+    match function.symbol_cell() {
+        Some(name) => interpreter.raw_function_binding_symbol(&name, environment),
+        None => Some(function),
+    }
 }
 
 /// eval.c:Ffuncall -> funcall_general -> funcall_subr for targets whose
@@ -2844,29 +2899,44 @@ fn invoke_native_funcall(active: &mut ActiveCall, arguments: &[NativeWord]) -> O
         // The collection's hooks/finalizers may replace the function cell.
         // Resolve it only after collection, including changes of callable
         // kind. The fallback reuses this same Ffuncall frame and depth.
-        let result = match direct_funcall_target(interpreter, environment, &original_function) {
-            Some(target) => target.invoke(active, call_arguments),
-            None => {
-                let decoded = call_arguments
-                    .iter()
-                    .map(|word| {
-                        runtime
-                            .heap
-                            .decode(*word)
-                            .map_err(|error| super::lisp::native_ice(&error))
-                    })
-                    .collect::<Result<smallvec::SmallVec<[Value; 8]>, _>>();
-                decoded
-                    .and_then(|args| {
-                        interpreter.funcall_body(original_function, &args, environment)
-                    })
-                    .and_then(|value| {
-                        runtime
-                            .heap
-                            .encode(&value)
-                            .map_err(|error| super::lisp::native_ice(&error))
-                    })
-            }
+        // A native function is never a symbol: the cell is tested for one
+        // before it is tested for an alias.
+        let cell = funcall_function_cell(interpreter, environment, original_function);
+        let registered = cell
+            .and_then(Value::native_function_ref)
+            .map(RegisteredNative)
+            .filter(|native| native.admits(call_arguments.len()));
+        let target = || match cell.filter(|cell| cell.symbol_cell().is_none()) {
+            Some(resolved) => funcall_target_of(resolved),
+            None => direct_funcall_target(interpreter, environment, &original_function),
+        };
+        let result = match registered {
+            // SAFETY: the register counts admit this many arguments for
+            // the native function's fixed-arity target.
+            Some(native) => Ok(unsafe { native.call(call_arguments) }),
+            None => match target() {
+                Some(target) => target.invoke(active, call_arguments),
+                None => {
+                    // SAFETY: as the byte-code case's: the caller's live words.
+                    let decoded = call_arguments
+                        .iter()
+                        .map(|word| {
+                            unsafe { runtime.heap.decode_live(*word) }
+                                .map_err(|error| super::lisp::native_ice(&error))
+                        })
+                        .collect::<Result<smallvec::SmallVec<[Value; 8]>, _>>();
+                    decoded
+                        .and_then(|args| {
+                            interpreter.funcall_body(original_function, &args, environment)
+                        })
+                        .and_then(|value| {
+                            runtime
+                                .heap
+                                .encode(&value)
+                                .map_err(|error| super::lisp::native_ice(&error))
+                        })
+                }
+            },
         };
         let result = match result.map_err(LispError::into_kind) {
             Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
@@ -2947,10 +3017,8 @@ fn invoke_native_apply(active: &mut ActiveCall, arguments: &[NativeWord]) -> Opt
     }
 
     if spread_length > 1 {
-        let function = unsafe { &mut *active.runtime }
-            .heap
-            .decode(funcall_arguments[0])
-            .ok()?;
+        // SAFETY: the caller's function word, live in its activation.
+        let function = unsafe { Value::from_word(funcall_arguments[0]) };
         let target = direct_funcall_target(
             unsafe { &*active.interpreter },
             unsafe { &*active.environment },
@@ -2992,13 +3060,29 @@ fn invoke_native_mapcar(active: &mut ActiveCall, arguments: &[NativeWord]) -> Op
             .position(|subroutine| subroutine.name == "funcall")
             .expect("funcall belongs to the native ABI")
     });
-    let mut mapped = vec![0; length];
+    // Up to 32 results on the stack; MAPPED stays where it is while its
+    // range is a root.
+    let mut mapped = smallvec::SmallVec::<[NativeWord; 32]>::from_elem(0, length);
     unsafe { &mut *active.runtime }.push_ephemeral_root_range(mapped.as_ptr(), mapped.len());
     let mut tail = *sequence;
     let mut mapped_count = 0;
     while mapped_count < length && native_consp(tail) {
         let item = unsafe { native_car(tail) };
-        mapped[mapped_count] = invoke_subr(funcall, &[*function, item]);
+        // mapcar1's Ffuncall, as `invoke_subr' reaches it for funcall: the
+        // handlers brought to the ABI's state, then the direct path.
+        let words = [*function, item];
+        mapped[mapped_count] = match unsafe { &mut *active.runtime }
+            .sync_handlers(unsafe { &mut *active.interpreter })
+        {
+            Err(error) => {
+                remember_helper_error(active, error);
+                0
+            }
+            Ok(()) => match invoke_native_funcall(active, &words) {
+                Some(result) => result,
+                None => invoke_subr(funcall, &words),
+            },
+        };
         if native_call_has_pending_error(active) {
             unsafe { &mut *active.runtime }.pop_ephemeral_root_range(mapped.len());
             return Some(0);

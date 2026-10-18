@@ -163,11 +163,7 @@ impl Interpreter {
         // can see this frame, like GNU's handlerlist.
         let mut clause_heads = Vec::new();
         for handler in list_forms(&handlers) {
-            let Some(head) = handler
-                .to_vec()
-                .ok()
-                .and_then(|parts| parts.first().cloned())
-            else {
+            let Some(head) = clause_first(&handler).ok().flatten() else {
                 continue;
             };
             if !matches!(head.kind(), Kind::Symbol(symbol) if symbol == ":success") {
@@ -186,11 +182,11 @@ impl Interpreter {
         match body_result {
             Ok(val) => {
                 for handler in list_forms(&handlers) {
-                    let parts = handler.to_vec()?;
-                    if !matches!(parts.first().map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == ":success")
+                    if !matches!(clause_first(&handler)?.map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == ":success")
                     {
                         continue;
                     }
+                    let parts = handler.to_vec()?;
                     return self.eval_condition_case_handler(var.as_ref(), val, &parts[1..], env);
                 }
                 Ok(val)
@@ -215,13 +211,13 @@ impl Interpreter {
                 let condition_list = self.error_condition_names_of(&symbol);
                 // Try to find a matching handler
                 for handler in list_forms(&handlers) {
+                    let Some(head) = clause_first(&handler)? else {
+                        continue;
+                    };
+                    if !Self::clause_head_matches(&head, condition, &condition_list) {
+                        continue;
+                    }
                     let parts = handler.to_vec()?;
-                    if parts.is_empty() {
-                        continue;
-                    }
-                    if !Self::clause_head_matches(&parts[0], condition, &condition_list) {
-                        continue;
-                    }
                     self.clear_batch_error_backtrace();
                     return self.eval_condition_case_handler(
                         var.as_ref(),
@@ -314,4 +310,18 @@ impl Interpreter {
     // (cl-macrolet ((name (args) body...) ...) body...)
 
     // ── Backquote ──
+}
+
+/// The first element of a `condition-case' handler clause, checked as
+/// `Value::to_vec' checks the clause (a proper list), without copying it.
+fn clause_first(handler: &Value) -> Result<Option<Value>, LispError> {
+    if !matches!(handler.kind(), Kind::Cons(_)) {
+        return Ok(handler.to_vec()?.first().copied());
+    }
+    let mut first = None;
+    handler.visit_list_elements(|value| {
+        first.get_or_insert(value);
+        Ok(())
+    })?;
+    Ok(first)
 }

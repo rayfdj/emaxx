@@ -281,7 +281,7 @@ impl From<String> for SharedText {
 
 impl From<&str> for SharedText {
     fn from(text: &str) -> Self {
-        Self::new(text.to_owned())
+        Self::from_host_str(text)
     }
 }
 

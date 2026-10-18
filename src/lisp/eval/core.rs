@@ -1862,7 +1862,7 @@ impl Interpreter {
                     optional = true;
                 } else {
                     let argument = if rest {
-                        let remaining = Value::list(args[index..].iter().copied());
+                        let remaining = Value::list_of(&args[index..]);
                         index = args.len();
                         remaining
                     } else if let Some(argument) = args.get(index) {
