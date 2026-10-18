@@ -20,7 +20,7 @@ records the GNU counter contract.
 | --- | --- |
 | **Main** `94295d0a` | Source324: one-word values, 16-byte cons payloads, shared object work, and symbol value/function/plist/flags on the allocated symbols. |
 | **[PR87](https://github.com/rayfdj/emaxx/pull/87)** `35c6cd9b` (`runtime-char-tables`) | Object-state draft17: membership, constants, aliases, same-name replacement, image restoration and native `nil`/`t` identity. 584 runtime inputs. |
-| **Task branch** `runtime-performance` (pushed as `claude/awesome-newton-yk6sae` through `c48c5a2`; PR #88 took it into main up to `ba696b3`) | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
+| **Task branch** `runtime-performance` (pushed as `claude/awesome-newton-yk6sae` through `c48c5a2`; PR #88 took it into main up to `ba696b3`, PR #89 up to `6242417`) | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
 
 **PR87 evidence in this repository:** strict checks with zero warnings, 407
 affected controls in each of gate and release, and 44 ordinary GNU comparisons /
@@ -1818,6 +1818,68 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   in `list` and `&rest` lists, the unibyte conversion against GNU's
   answer); clippy `-D warnings` and
   rustfmt pass.
+- **Stores to C variables without a name check, `eq` by the word, and
+  three subrs from native code without the general entry.** `specbind`
+  and its unbind store a special variable's global value through
+  `set_global_binding_resolved`. For a variable with a C slot (most of
+  those undo's macro expansion binds, such as
+  `inhibit-modification-hooks`), that compared the name against the
+  evaluator's own cells, `text-conversion-style`, the terminal's KBOARD
+  variables and `features`, and hashed it into the detached-variable
+  table, though only ten of them do more than store the cell. A
+  `STORE_EFFECT` bit, set with the C slot by name
+  (`STORE_EFFECT_VARIABLES`), says which; any other C variable's store is
+  the cell's alone. The detached-variable table, empty unless a forwarded
+  variable was `makunbound`, is asked whether it is empty before the
+  name is hashed (`forwarded_variable_detached`). `eq` (in `memq`,
+  `delq`, hash-table lookups, `eq` itself and the byte-code op) classified
+  both objects before comparing them, 38 and 29 instructions a call in
+  `values_eq_plain` and `values_eq_in_env`; it compares the words first,
+  and only two vectorlike words (a symbol with position, or a kind
+  compared by id) go on to the kinds, as `lisp.h`'s `EQ` needs nothing
+  more for the rest. Native code's `symbolp`, `symbol-function` and
+  `fboundp` went through `invoke_subr`'s handler sync and kind dispatch
+  (82, 169 and 172 instructions a call against GNU's 6, 6 and 9); a word
+  that is not vectorlike answers `symbolp` by its tag, and a symbol
+  cell's word answers the other two from its function cell, before the
+  general entry. Each new buffer looked up `text-conversion-style` by
+  name; it reads the symbol held interned. The byte-code `list` ops
+  (`Blist1` to `Blist4`, `BlistN`) built their result through
+  `Value::list`, which turns a list headed by `vector-literal` into a
+  vector, as `list` and `&rest` did before the last round; they cons
+  their operands from the stack. Undo: 1,504,349 → 1,470,853 for the
+  stores, → 1,444,629 instructions a unit with the rest (GNU 1,248,561:
+  1.20 → 1.16); bytecode calls 522.0 → 518.8 and bytecode-to-native
+  490.6 → 487.2 an iteration, interpreted-to-native (3,044.4, 3,042.1),
+  native-execution (415.3 million) and mapcar (27.84 million) unchanged.
+  Validation (gate profile, `--test-threads=1`): the 443 variable,
+  binding, keyboard, feature, quit, watcher, buffer-local, undo and
+  special-variable tests pass (the KBOARD input contract test alone, as
+  it takes 98 seconds on this build and the previous one), and the 370
+  `eq`, member, `delete`, hash-table, byte-code and native-runtime tests,
+  among them two new ones: the byte-code list ops, which `6242417`'s
+  build answers with vectors (`([1] [1])`), and native code's `symbolp`,
+  `symbol-function` and `fboundp` on each kind of word; clippy
+  `-D warnings` and rustfmt pass.
+- **Profile-guided wall time on `6242417`, against `ba9f640` on the
+  same host.** The container came back from a restart on a host whose
+  timings differ from the earlier tables' (an Intel Xeon at 2.10 GHz with
+  a 260 MB last-level cache; GNU and `ba9f640`'s build both moved, by up
+  to 30% on the collector's cases, and medians here lie further above
+  minimums), so only the two builds side by side compare. Pilot sizes,
+  five rounds of five samples, minimum and median ratio to GNU,
+  `ba9f640` in parentheses: undo 1.111 and 1.151 (1.216, 1.307),
+  bytecode-to-native 1.069 and 0.973 (1.065, 0.971), bytecode calls
+  1.038 and 1.062 (1.063, 1.054), interpreted-to-native 1.007 and 1.019
+  (1.009, 0.979), cons allocation 0.997 and 0.972 (1.005, 1.000), mapcar
+  0.959 and 0.932 (0.907, 0.881; its instructions are unchanged, 27.95
+  million on both builds), native execution 0.444 and 0.462 (0.497,
+  0.530), and the other nine at or below 0.85 by minimum. The first
+  attempt at this build failed: every training process crashed at exit
+  merging into the shared raw profile, which an earlier process had left
+  unreadable (`llvm-profdata`: "too much profile data"); the same
+  processes ran cleanly on a fresh file, and the build run again
+  succeeded.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2291,7 +2353,10 @@ newline search): full Rust gate passed (run 39115079701), frozen passed
 on its first attempt (run 39115081583). **On `c48c5a2`** (activation
 vectors kept, the operandless table at compile time): full Rust gate
 passed (run 39118270646), frozen passed on its first attempt (run
-39118272517). Locally,
+39118272517). **On `6242417`** (strings read in place, a native
+funcall's target from its cell): full Rust gate passed (run
+39128542991), frozen passed on its first attempt (run 39128544870).
+Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -2565,15 +2630,18 @@ and failures are still recorded.
 
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
-2. **Performance, worst ratios first.** By wall time on `ba9f640`'s
+2. **Performance, worst ratios first.** By wall time on `6242417`'s
    profile-guided build (pilot sizes, minimum ratio; the bullet "Profile-
-   guided wall time on `ba9f640`" has the medians): undo 1.21,
-   bytecode-to-native 1.21, interpreted-to-native 1.15, cons allocation
-   1.13 (its one in-sample collection, see "Cons allocation's gap is its
-   one collection"), bytecode calls 1.05 to 1.07, and the other eleven
-   below 1.0 (mapcar 0.96 since the mark phase's change). By instructions
-   on the line-table build: undo about 1.20 (after the in-place string
-   reads), interpreted-to-native 1.28, bytecode-to-native 1.26,
+   guided wall time on `6242417`" has the medians and `ba9f640` beside
+   it on the same host): undo 1.11, bytecode-to-native 1.07, bytecode
+   calls 1.04, interpreted-to-native 1.01, cons allocation 1.00, and the
+   other eleven below 1.0. That table ran on the host the container came
+   back on after a restart, where `ba9f640` itself measures
+   interpreted-to-native 1.01 and cons allocation 1.01 against 1.15 and
+   1.13 on the earlier host (its one in-sample collection, see "Cons
+   allocation's gap is its one collection"); compare builds only on one
+   host. By instructions on the line-table build: undo about 1.16 (after
+   the C-variable stores and `eq` by the word), interpreted-to-native 1.28, bytecode-to-native 1.26,
    native-to-bytecode 1.24, bytecode calls 1.11, native-execution 0.90. Where each case's instructions go is under
    "Where the byte-code call and return go" and the native call bullets.
    (Older wall figures, before these rounds: bytecode-to-native 1.54,

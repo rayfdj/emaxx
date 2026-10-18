@@ -111,6 +111,7 @@ const KEY_NAMES: &[&str] = &[
     "messages-buffer-name",
     "message-log-max",
     "default-directory",
+    "text-conversion-style",
 ];
 
 struct Symbols {

@@ -71,6 +71,26 @@ const INT_FORWARD: u16 = 512;
 // C_SLOT on the variables whose values live in each terminal's KBOARD, so
 // other forwarded variables are known not to be one without a name check.
 const KBOARD_FORWARD: u16 = 1024;
+// Set with C_SLOT on the C variables whose store also reaches interpreter
+// state beyond the cell (`STORE_EFFECT_VARIABLES'), so a store to any other
+// forwarded variable is known to be the cell's alone without a name check.
+const STORE_EFFECT: u16 = 2048;
+
+/// The forwarded variables `Interpreter::set_global_binding_resolved' does
+/// more for than store the cell: the evaluator's own C cells, the buffers'
+/// text conversion style and the feature list.
+pub(crate) const STORE_EFFECT_VARIABLES: [&str; 10] = [
+    "quit-flag",
+    "inhibit-quit",
+    "throw-on-input",
+    "overriding-plist-environment",
+    "load-path",
+    "max-lisp-eval-depth",
+    "debug-on-next-call",
+    "symbols-with-pos-enabled",
+    "text-conversion-style",
+    "features",
+];
 
 #[derive(Clone, Copy)]
 pub(crate) union SymbolPayload {
@@ -306,22 +326,34 @@ impl SymbolCell {
     }
 
     pub(crate) fn set_c_slot(&self, present: bool) {
-        let kboard =
-            if crate::lisp::types::symbols::KEYBOARD_VARIABLES.contains(&self.internal.as_str()) {
-                KBOARD_FORWARD
-            } else {
-                0
-            };
-        self.state.set(if present {
-            (self.state.get() | C_SLOT | kboard) & !PLAIN_STORE
+        let name = self.internal.as_str();
+        let kboard = if crate::lisp::types::symbols::KEYBOARD_VARIABLES.contains(&name) {
+            KBOARD_FORWARD
         } else {
-            self.state.get() & !(C_SLOT | KBOARD_FORWARD)
+            0
+        };
+        let effect = if STORE_EFFECT_VARIABLES.contains(&name) {
+            STORE_EFFECT
+        } else {
+            0
+        };
+        self.state.set(if present {
+            (self.state.get() | C_SLOT | kboard | effect) & !PLAIN_STORE
+        } else {
+            self.state.get() & !(C_SLOT | KBOARD_FORWARD | STORE_EFFECT)
         });
     }
 
     /// Whether this C variable is one of a terminal's KBOARD variables.
     pub(crate) fn is_kboard_forwarded(&self) -> bool {
         self.state.get() & KBOARD_FORWARD != 0
+    }
+
+    /// Whether a store to this C variable does more than store its cell
+    /// (`STORE_EFFECT_VARIABLES') or reaches a terminal's KBOARD.
+    #[inline(always)]
+    pub(crate) fn has_store_effect(&self) -> bool {
+        self.state.get() & (STORE_EFFECT | KBOARD_FORWARD) != 0
     }
 
     pub(crate) fn is_constant(&self) -> bool {

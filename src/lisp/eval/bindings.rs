@@ -303,7 +303,7 @@ impl Interpreter {
     pub(crate) fn builtin_var_value(&self, name: &str) -> Option<Value> {
         // A symbol `makunbound' detached from its C slot stays void until
         // something stores into it again (data.c set_internal).
-        if self.detached_forwarded_variables.contains_key(name) {
+        if self.forwarded_variable_detached(name) {
             return None;
         }
         match name {

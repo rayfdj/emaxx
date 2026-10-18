@@ -8697,6 +8697,24 @@ fn list_and_rest_arguments_keep_a_leading_vector_literal_symbol() {
 }
 
 #[test]
+fn byte_code_list_ops_keep_a_leading_vector_literal_symbol() {
+    // bytecode.c:Blist2 and BlistN cons their operands as Flist does.
+    let list = || {
+        Value::cons(
+            Value::symbol("vector-literal"),
+            Value::cons(Value::Integer(1), Value::Nil),
+        )
+    };
+    assert_eq!(
+        eval_str(
+            "(list (funcall #[514 \"\\001\\001D\\207\" [] 4] 'vector-literal 1)
+                   (funcall #[514 \"\\001\\001\\257\\002\\207\" [] 4] 'vector-literal 1))"
+        ),
+        Value::list([list(), list()])
+    );
+}
+
+#[test]
 fn unibyte_conversion_keeps_each_byte_and_maps_point() {
     // buffer.c:Fset_buffer_multibyte with nil: each character's internal
     // bytes become characters, a raw byte its one byte (GNU's answer).

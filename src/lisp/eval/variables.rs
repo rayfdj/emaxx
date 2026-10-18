@@ -167,10 +167,16 @@ impl Interpreter {
     /// The C default survives disconnection of its Lisp symbol. The existing
     /// detached-slot storage then owns that default, not a buffer field copy.
     pub(crate) fn native_text_conversion_style_default(&self) -> Value {
-        self.detached_forwarded_variables
+        if let Some(value) = self
+            .detached_forwarded_variables
             .get("text-conversion-style")
-            .copied()
-            .or_else(|| self.global_binding_value("text-conversion-style"))
+        {
+            return *value;
+        }
+        // Not a KBOARD variable: the global cell, by the symbol held
+        // interned (each new buffer reads it).
+        cached_symbol!("text-conversion-style")
+            .with(|symbol| self.globals.value(symbol))
             .unwrap_or(Value::Nil)
     }
 
@@ -1307,7 +1313,7 @@ impl Interpreter {
             // lread.c:defvar_bool exposes only t or nil from the forwarded
             // C bool even when Lisp stores an arbitrary non-nil object.
             "debug-on-next-call" | "symbols-with-pos-enabled"
-                if !self.detached_forwarded_variables.contains_key(name) =>
+                if !self.forwarded_variable_detached(name) =>
             {
                 if value.is_nil() {
                     Value::Nil
@@ -1317,7 +1323,7 @@ impl Interpreter {
             }
             // data.c:store_symval_forwarding stores an intmax_t and
             // do_symval_forwarding recreates the corresponding Lisp integer.
-            "max-lisp-eval-depth" if !self.detached_forwarded_variables.contains_key(name) => value
+            "max-lisp-eval-depth" if !self.forwarded_variable_detached(name) => value
                 .as_integer()
                 .map(crate::lisp::primitives::normalize_integer_value)
                 .unwrap_or(value),
@@ -1328,7 +1334,7 @@ impl Interpreter {
     pub(super) fn update_forwarded_eval_cell(&mut self, name: &str, value: &Value) {
         // data.c:set_internal turns a voided forwarded symbol into a plain
         // symbol. Later stores cannot reconnect it to the C variable.
-        if self.detached_forwarded_variables.contains_key(name) {
+        if self.forwarded_variable_detached(name) {
             return;
         }
         match name {
@@ -1485,6 +1491,14 @@ impl Interpreter {
     pub(crate) fn set_global_binding_resolved(&mut self, symbol: &SymbolName, value: Value) {
         if !symbol.cell().has_c_slot() {
             self.globals.insert(symbol, value);
+            return;
+        }
+        // A C variable whose value lives in its cell alone (most of them,
+        // such as inhibit-modification-hooks): no name decides more.
+        if !symbol.cell().has_store_effect() {
+            if !self.globals.replace_bound_value(symbol, value) {
+                self.globals.insert(symbol, value);
+            }
             return;
         }
         let name = symbol.as_str();
@@ -1877,7 +1891,7 @@ impl Interpreter {
     ) -> Result<Value, LispError> {
         // CHECK_SYMBOL/constant checks still apply, but the symbol no longer
         // forwards through a typed C slot after data.c:set_internal voids it.
-        if self.detached_forwarded_variables.contains_key(name) {
+        if self.forwarded_variable_detached(name) {
             return Ok(value);
         }
         // data.c:store_symval_forwarding by the slot's kind.  Lisp_Fwd_Int:
@@ -1973,7 +1987,7 @@ impl Interpreter {
                     | FWD_INT,
             )
             && self.variable_watcher_index(name).is_none()
-            && !self.detached_forwarded_variables.contains_key(name)
+            && !self.forwarded_variable_detached(name)
             && !symbol.cell().is_constant()
             && !symbol.cell().has_c_slot();
         self.globals.set_plain_store(symbol, plain);
@@ -2730,6 +2744,15 @@ impl Interpreter {
 /// already holds the state (the byte-code VM's call and return) pays
 /// the shell's parked test once.
 impl InterpreterState {
+    /// Whether NAME is a forwarded variable `makunbound' detached from its
+    /// C slot (data.c:set_internal).  The table is empty unless one was, so
+    /// a store asks that first instead of hashing the name.
+    #[inline(always)]
+    pub(crate) fn forwarded_variable_detached(&self, name: &str) -> bool {
+        !self.detached_forwarded_variables.is_empty()
+            && self.detached_forwarded_variables.contains_key(name)
+    }
+
     /// record_in_backtrace and Ffuncall's depth for a call that does
     /// nothing else on its way in (see `plain_bcall_entry'). Returns
     /// the frame depth `leave_plain_funcall' restores.
