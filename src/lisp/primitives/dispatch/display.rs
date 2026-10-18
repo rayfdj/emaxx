@@ -2458,7 +2458,7 @@ fn window_non_body_height(interp: &Interpreter, buffer_id: u64, env: &Env) -> i6
 /// has no realized window tree, so it retains the published/dumb-frame model.
 fn selected_command_text_height(interp: &Interpreter, env: &Env) -> usize {
     if interp
-        .lookup_var("noninteractive", env)
+        .lookup_var_key(cached_symbol!("noninteractive"), env)
         .is_some_and(|value| value.is_truthy())
     {
         return selected_window_text_height().max(1);
@@ -2787,7 +2787,7 @@ define_dispatch!(
                 // (an empty or nil MESSAGE clears it, GNU's documented way
                 // to wipe the echo line).
                 if interp
-                    .lookup_var("noninteractive", env)
+                    .lookup_var_key(cached_symbol!("noninteractive"), env)
                     .is_none_or(|value| value.is_nil())
                 {
                     if text.is_empty() {
@@ -2796,7 +2796,7 @@ define_dispatch!(
                         // transient overlay); `dont-clear-message' keeps
                         // the echo area untouched.
                         let kept = interp
-                            .lookup_var("clear-message-function", env)
+                            .lookup_var_key(cached_symbol!("clear-message-function"), env)
                             .filter(|function| !function.is_nil())
                             .and_then(|function| {
                                 interp.call_function_value(function, None, &[], env).ok()
@@ -2815,7 +2815,7 @@ define_dispatch!(
                         // active minibuffer instead of the echo area).
                         let mut display = formatted;
                         if let Some(function) = interp
-                            .lookup_var("set-message-function", env)
+                            .lookup_var_key(cached_symbol!("set-message-function"), env)
                             .filter(|function| !function.is_nil())
                         {
                             let string =
@@ -2843,10 +2843,10 @@ define_dispatch!(
                 // Message capture remains independent of `inhibit-message',
                 // matching the advice used by ERT.
                 if interp
-                    .lookup_var("noninteractive", env)
+                    .lookup_var_key(cached_symbol!("noninteractive"), env)
                     .is_some_and(|value| value.is_truthy())
                     && interp
-                        .lookup_var("inhibit-message", env)
+                        .lookup_var_key(cached_symbol!("inhibit-message"), env)
                         .is_none_or(|value| value.is_nil())
                 {
                     let separator = if interp.batch_stdout_need_newline {
@@ -2877,7 +2877,7 @@ define_dispatch!(
                 need_args(name, args, 0)?;
                 // GNU batch mode has no echo area; `current-message' is nil.
                 if interp
-                    .lookup_var("noninteractive", env)
+                    .lookup_var_key(cached_symbol!("noninteractive"), env)
                     .is_some_and(|value| value.is_truthy())
                 {
                     return Ok(Value::Nil);
@@ -3003,7 +3003,7 @@ define_dispatch!(
                 let message = super::call(interp, "error-message-string", &[args[0]], env)?;
                 let rendered = string_text(&message).unwrap_or_default();
                 if interp
-                    .lookup_var("noninteractive", env)
+                    .lookup_var_key(cached_symbol!("noninteractive"), env)
                     .is_some_and(|value| value.is_truthy())
                 {
                     use std::io::Write;
@@ -3193,7 +3193,7 @@ define_dispatch!(
                         ])));
                     }
                     let noninteractive_stdout = interp
-                        .lookup_var("noninteractive", env)
+                        .lookup_var_key(cached_symbol!("noninteractive"), env)
                         .is_some_and(|value| value.is_truthy())
                         && stream
                             .as_ref()
@@ -3862,7 +3862,7 @@ define_dispatch!(
             "pos-visible-in-window-p" => {
                 need_arg_range(name, args, 0, 3)?;
                 if interp
-                    .lookup_var("noninteractive", env)
+                    .lookup_var_key(cached_symbol!("noninteractive"), env)
                     .is_some_and(|value| !value.is_nil())
                 {
                     return Ok(Value::Nil);

@@ -26,7 +26,7 @@ fn word_boundary_function(
     character: char,
 ) -> Option<(Value, String)> {
     let Kind::CharTable(table_id) =
-        (interp.lookup_var("find-word-boundary-function-table", env)?).kind()
+        (interp.lookup_var_key(cached_symbol!("find-word-boundary-function-table"), env)?).kind()
     else {
         return None;
     };
@@ -2950,7 +2950,7 @@ fn visual_vertical_motion(
     } else {
         let mut target = starts[index];
         let interactive = interp
-            .lookup_var("noninteractive", env)
+            .lookup_var_key(cached_symbol!("noninteractive"), env)
             .is_some_and(|value| value.is_nil());
         if let Some(goal) = goal_col.filter(|&goal| goal > 0 && interactive) {
             let seg_end = starts.get(index + 1).copied().unwrap_or(eol);

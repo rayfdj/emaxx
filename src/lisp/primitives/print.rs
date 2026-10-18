@@ -227,30 +227,30 @@ pub(crate) fn print_options(interp: &Interpreter, env: &Env) -> PrintOptions {
     PrintOptions {
         escape: true,
         circle: interp
-            .lookup_var("print-circle", env)
+            .lookup_var_key(cached_symbol!("print-circle"), env)
             .is_some_and(|value| value.is_truthy()),
         continuous_numbering: interp
-            .lookup_var("print-continuous-numbering", env)
+            .lookup_var_key(cached_symbol!("print-continuous-numbering"), env)
             .is_some_and(|value| value.is_truthy()),
         gensym: interp
-            .lookup_var("print-gensym", env)
+            .lookup_var_key(cached_symbol!("print-gensym"), env)
             .is_some_and(|value| value.is_truthy()),
         integers_as_characters: interp
-            .lookup_var("print-integers-as-characters", env)
+            .lookup_var_key(cached_symbol!("print-integers-as-characters"), env)
             .is_some_and(|value| value.is_truthy()),
         symbols_bare: interp
-            .lookup_var("print-symbols-bare", env)
+            .lookup_var_key(cached_symbol!("print-symbols-bare"), env)
             .is_some_and(|value| value.is_truthy()),
         length: interp
-            .lookup_var("print-length", env)
+            .lookup_var_key(cached_symbol!("print-length"), env)
             .and_then(|value| value.integer_value())
             .and_then(|value| usize::try_from(value).ok()),
         level: interp
-            .lookup_var("print-level", env)
+            .lookup_var_key(cached_symbol!("print-level"), env)
             .and_then(|value| value.integer_value())
             .and_then(|value| usize::try_from(value).ok()),
         quoted: interp
-            .lookup_var("print-quoted", env)
+            .lookup_var_key(cached_symbol!("print-quoted"), env)
             .is_some_and(|value| value.is_truthy()),
         output_is_function: false,
     }
@@ -506,7 +506,7 @@ pub(crate) fn print_preprocess(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     if !interp
-        .lookup_var("print-circle", env)
+        .lookup_var_key(cached_symbol!("print-circle"), env)
         .is_some_and(|value| value.is_truthy())
     {
         return Ok(Value::Nil);
