@@ -2,6 +2,8 @@ use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
+/// Ffuncall of FUNCTION, unnamed: a forwarder, inline at every caller.
+#[inline(always)]
 pub(crate) fn call_function_value(
     interp: &mut Interpreter,
     function: &Value,

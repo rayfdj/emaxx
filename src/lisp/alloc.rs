@@ -53,14 +53,14 @@ pub(crate) use vectors::{
 /// with the C sizes (`BLOCK_ALIGN' 1 << 15 without unexec, `BLOCK_BYTES'
 /// = BLOCK_ALIGN - sizeof (struct ablocks *), `MALLOC_SIZE_NEAR (1024)'
 /// = 1016 under glibc's 16-byte alignment). Conses and floats have GNU's
-/// 16-/8-byte payloads in 32 KiB blocks. Weak-reference serials and a second
-/// bitmap reduce the cons slots per block; floats only need the extra bitmap.
+/// 16-/8-byte payloads in 32 KiB blocks. Weak-reference serials and two more
+/// bitmaps reduce the cons slots per block; floats only need one extra bitmap.
 const C_BLOCK_BYTES: usize = (1 << 15) - 8;
 const CELL_SIZE: usize = std::mem::size_of::<ConsCell>();
-/// Space for each 16-byte cons, an eight-byte weak-reference serial and two
+/// Space for each 16-byte cons, an eight-byte weak-reference serial and three
 /// bitmap bits, plus the block epoch and alignment padding. GNU needs only
 /// its mark bit. Ordinary reads and stores never access this extra metadata.
-pub(crate) const CELLS_PER_BLOCK: usize = (((1 << 15) - 8) * 8) / (16 * 8 + 64 + 2);
+pub(crate) const CELLS_PER_BLOCK: usize = (((1 << 15) - 8) * 8) / (16 * 8 + 64 + 3);
 /// Eight-byte float payloads and two bits per slot: the collection mark,
 /// and allocation state for checked native-word decoding. GNU has one mark
 /// bit; the allocation bit replaces this runtime's in-object FREE_MARK.
@@ -295,7 +295,7 @@ static FREE_CONSES: AtomicUsize = AtomicUsize::new(0);
 static FREE_LIST: AtomicPtr<ConsCell> = AtomicPtr::new(std::ptr::null_mut());
 static BUMP_NEXT: AtomicUsize = AtomicUsize::new(0);
 static BUMP_END: AtomicUsize = AtomicUsize::new(0);
-/// The allocation count, a serial for `WeakConsRef'.
+/// The last serial given a cons for `WeakConsRef' (see `ConsMark::serial').
 static SERIAL: AtomicU64 = AtomicU64::new(0);
 
 /// alloc.c's `float_block', `float_free_list' and `float_block_index'.
@@ -767,8 +767,14 @@ impl<T> RootedVec<T> {
 
     pub fn push(&mut self, value: T) {
         // Within the capacity the buffer stays where it was registered.
-        if self.inner.len() < self.inner.capacity() {
-            self.inner.push(value);
+        let len = self.inner.len();
+        if len < self.inner.capacity() {
+            // SAFETY: the slot at LEN is within the capacity just tested
+            // (`Vec::push' would test it again).
+            unsafe {
+                self.inner.as_mut_ptr().add(len).write(value);
+                self.inner.set_len(len + 1);
+            }
             return;
         }
         self.inner.push(value);
@@ -1262,11 +1268,16 @@ struct ConsMetadata {
     epoch: Cell<u32>,
     allocated: [Cell<usize>; CONS_BITMAP_WORDS],
     marked: [Cell<usize>; CONS_BITMAP_WORDS],
+    /// The cells whose serial slot holds this allocation's serial: set when
+    /// a weak reference first asks for it, cleared when the sweep frees the
+    /// cell, so a cell is allocated with its bit clear.
+    serial_given: [Cell<usize>; CONS_BITMAP_WORDS],
     // A reused address must not revive a WeakConsRef. GNU's raw Lisp values
     // need no serial; Rust's weak host cache references do. Ordinary car/cdr
     // and stores never read these serials or the bitmaps. A cell's serial
-    // is written when the cell is allocated and read only while it is, so
-    // a free cell's may be uninitialized.
+    // is written when a weak reference first asks for it, as Fcons writes
+    // nothing beside the cell, and read only while its `serial_given' bit
+    // is set, so any other slot may be uninitialized.
     serials: [Cell<std::mem::MaybeUninit<u64>>; CELLS_PER_BLOCK],
 }
 
@@ -1284,6 +1295,8 @@ impl ConsMetadata {
             std::ptr::addr_of_mut!((*metadata).allocated)
                 .write([const { Cell::new(0) }; CONS_BITMAP_WORDS]);
             std::ptr::addr_of_mut!((*metadata).marked)
+                .write([const { Cell::new(0) }; CONS_BITMAP_WORDS]);
+            std::ptr::addr_of_mut!((*metadata).serial_given)
                 .write([const { Cell::new(0) }; CONS_BITMAP_WORDS]);
         }
     }
@@ -1338,19 +1351,21 @@ impl ConsMark<'_> {
     }
 
     #[inline(always)]
-    fn allocate(&self, epoch: u32, serial: u64) {
+    fn allocate(&self, epoch: u32) {
         let (word, mask) = self.bit();
         debug_assert!(self.index < CELLS_PER_BLOCK);
+        debug_assert!(
+            self.block.serial_given[word].get() & mask == 0,
+            "a free cons with a serial"
+        );
         // SAFETY: `cons_mark' made this mark for a payload slot: its index
         // is below CELLS_PER_BLOCK, and its word below CONS_BITMAP_WORDS.
-        let (serial_slot, allocated, marked) = unsafe {
+        let (allocated, marked) = unsafe {
             (
-                self.block.serials.get_unchecked(self.index),
                 self.block.allocated.get_unchecked(word),
                 self.block.marked.get_unchecked(word),
             )
         };
-        serial_slot.set(std::mem::MaybeUninit::new(serial));
         allocated.set(allocated.get() | mask);
         if self.block.epoch.get() != epoch {
             self.clear_marks(epoch);
@@ -1368,12 +1383,30 @@ impl ConsMark<'_> {
         self.block.epoch.set(epoch);
     }
 
+    /// This allocation's serial, given now if no weak reference asked for
+    /// it before: one more than the last given, so no earlier allocation
+    /// of the cell had it.  Callers ask only for allocated cells (a live
+    /// ConsRef, or one `mem_find' found allocated).
     fn serial(&self) -> u64 {
         debug_assert!(self.allocated(), "the serial of a free cons");
-        // SAFETY: an allocated cell's serial was written when it was
-        // allocated; callers ask only for allocated cells (a live ConsRef,
-        // or one `mem_find' found allocated).
-        unsafe { self.block.serials[self.index].get().assume_init() }
+        if let Some(serial) = self.given_serial() {
+            return serial;
+        }
+        let (word, mask) = self.bit();
+        let serial = SERIAL.load(Ordering::Relaxed) + 1;
+        SERIAL.store(serial, Ordering::Relaxed);
+        self.block.serials[self.index].set(std::mem::MaybeUninit::new(serial));
+        let given = &self.block.serial_given[word];
+        given.set(given.get() | mask);
+        serial
+    }
+
+    /// The serial given this allocation, if a weak reference asked for one.
+    fn given_serial(&self) -> Option<u64> {
+        let (word, mask) = self.bit();
+        // SAFETY: a set bit means the slot was written for this allocation.
+        (self.block.serial_given[word].get() & mask != 0)
+            .then(|| unsafe { self.block.serials[self.index].get().assume_init() })
     }
 }
 
@@ -1513,7 +1546,8 @@ impl WeakConsRef {
             return None;
         }
         // SAFETY: mem_find answered an allocated cell and block.
-        (unsafe { cons_mark(live) }.serial() == self.serial).then_some(ConsRef(self.cell))
+        (unsafe { cons_mark(live) }.given_serial() == Some(self.serial))
+            .then_some(ConsRef(self.cell))
     }
 }
 
@@ -1561,8 +1595,6 @@ fn allocate_cons_in_new_block(cell: ConsCell) -> ConsRef {
 /// free list or the bump region.
 #[inline(always)]
 unsafe fn fill_cons(slot: *mut ConsCell, cell: ConsCell) -> ConsRef {
-    let serial = SERIAL.load(Ordering::Relaxed) + 1;
-    SERIAL.store(serial, Ordering::Relaxed);
     LIVE_CONSES.store(LIVE_CONSES.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
     counters::tally(&counters::CONS_CELLS_CONSED, 1);
     // SAFETY: the caller's contract; every field is written before a
@@ -1573,7 +1605,7 @@ unsafe fn fill_cons(slot: *mut ConsCell, cell: ConsCell) -> ConsRef {
         // between the mark and the sweep) carries the collection's epoch
         // and survives its sweep; born outside one, it carries the last
         // epoch, which the next collection does not reuse.
-        cons_mark(slot).allocate(super::types::current_mark_epoch(), serial);
+        cons_mark(slot).allocate(super::types::current_mark_epoch());
         ConsRef(NonNull::new_unchecked(slot))
     }
 }
@@ -1814,6 +1846,8 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
             if dead != 0 {
                 metadata.allocated[word].set(allocated & !dead);
                 metadata.marked[word].set(marked & !dead);
+                let given = &metadata.serial_given[word];
+                given.set(given.get() & !dead);
                 if cfg!(debug_assertions) {
                     let mut bits = dead;
                     while bits != 0 {

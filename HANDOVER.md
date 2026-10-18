@@ -1494,6 +1494,111 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   record), where signal_or_quit reads them once; a cache across those
   layers would have to see every change to the symbol's plist, which
   `plist-put` on the list itself makes without `put`.
+- **Where undo's wall time goes beyond its instructions** (measured, no
+  change kept). The profile-guided build runs undo in 1,473,768
+  instructions a unit, 1.18 of GNU's, where its wall time is 1.24 of
+  GNU's. Callgrind's cache and branch simulation (`--cache-sim=yes
+  --branch-sim=yes`, a 32 KB L1i and a 1 MB last level as this host's L2)
+  gives per unit: instruction-cache misses 47,000 against GNU's 21,000,
+  L1 data misses 20,700 against 11,300, mispredicted conditional branches
+  21,700 against 13,400, indirect ones about the same (9,700 against
+  9,400). At ten to fifteen cycles each the instruction-cache misses
+  weigh more than the extra instructions; they are spread over the large
+  hot functions (`run_verified` 4,900 and 800 a unit, its code 33 KB, the
+  size of the L1i; `exec_op`, `eval_sub`, `eval_native_form` and
+  `call_function_value` about 1,500 to 2,200 each), where GNU's
+  `exec_byte_code` takes 1,500 and `eval_sub` 600. Two layout
+  experiments on `df06b81`'s profile: LLVM's machine function splitting
+  (`-Cllvm-args=-enable-split-machine-functions`, 3,296 cold parts split
+  off) left the simulated misses (472,700 against 470,500 per ten units)
+  and the wall time as they were; ext-TSP block placement
+  (`-Cllvm-args=-enable-ext-tsp-block-placement`, ten rounds of five
+  samples against the default layout, the same binary otherwise) gave
+  undo 1.242 → 1.207 (median ratio) but bytecode calls 1.072 → 1.083,
+  mapcar 1.096 → 1.113 and cons allocation 1.159 → 1.171, so neither is
+  kept. The hot code itself is larger than GNU's: fewer misses need
+  smaller hot functions, not a different order of the same ones.
+- **The six cases at the contract's size**, on `df06b81`'s profile build
+  (five rounds of three samples, minimum and median ratio): mapcar 1.015
+  and 1.057, bytecode calls 1.058 and 1.070, undo 1.154 and 1.119, cons
+  allocation 1.112 and 1.154, interpreted-to-native 1.186 and 1.183,
+  bytecode-to-native 1.195 and 1.240. In GNU's bytecode calls (468
+  instructions an iteration) a call and return cost about 110 (the frame
+  set up in the byte-code stack 40, the arguments pushed 25, the
+  backtrace record 12, the depth 8, the return 25) and the ops about what
+  Emaxx's cost; Emaxx's call and return are about twice that (the entry
+  cache's four-word test and the code string's state, about 33; the
+  program object copied into and out of the frame record). The entry
+  cache's word test guards a closure address reused after a collection,
+  in tables kept per thread; dropping it would need an epoch shared by
+  all threads, for about 8 instructions a call.
+- **A cons's weak-reference serial is given when a weak reference asks
+  for it.** Fcons wrote an 8-byte serial into the block's metadata for
+  every cell, a write stream beside the cell's own that GNU's Fcons does
+  not have (at sixteen mapcar units a sample with a 1 MB last level,
+  12,600 of Emaxx's 83,700 last-level write misses a unit, against GNU's
+  67,500 in all). A cell's serial is now given at its first `downgrade`
+  (the keymap and syntax views' `ConsMutationSnapshot` and tests are the
+  only askers) and marked in a third bitmap of the block, which the sweep
+  clears with the cell's other bits: an allocation finds its bit clear,
+  so a reference to an earlier allocation of the slot answers nothing,
+  and the slot's next serial is a new one. Three bits a cell leave 1,344
+  cells a 32 KB block (1,350 before). The funcall forwarder mapcar's loop
+  called (`hooks_overlays::call_function_value`, 7 instructions an
+  element of its own) is inline, and `RootedVec::push` tests the capacity
+  once. Mapcar's last-level write misses 83,700 → 69,900 a unit (GNU
+  67,500), its level-one write misses 96,800 → 84,300. Instructions a
+  unit against the build the full-size table used (`df06b81` with part of
+  `f001516`): mapcar 28.60 → 28.22 million (1.230 → 1.214 of GNU's), undo
+  1,668,563 → 1,595,058 (1.335 → 1.276, with `f001516`'s `format` count),
+  cons allocation 5,674 → 5,654, sort 220.9 → 220.1 million, the other
+  measured cases within 0.4%. Wall time, profile-use builds of `f001516`
+  and of this round with `df06b81`'s profile (eight rounds of three
+  samples, minimum and median, GNU's in parentheses): mapcar 0.0682 and
+  0.0717 → 0.0668 and 0.0707 s (0.0614, 0.0661), cons allocation 0.0865
+  and 0.0892 → 0.0851 and 0.0918 (0.0731, 0.0764), undo 0.1381 and 0.1437
+  → 0.1292 and 0.1449 (0.1124, 0.1243), list traversal 0.1274 and 0.1341 →
+  0.1280 and 0.1330 (0.1362, 0.1435). The experiment without any serial
+  (the collection-overheads bullet above) gave mapcar about 1.6%; this
+  keeps weak references exact for about that. A test takes a swept cell's
+  slot again (`garbage-collect`'s own value is consed from the head of the
+  free list, often the cell just swept) and checks that the earlier
+  reference answers nothing and the new cell has a serial of its own.
+  Validation (gate profile, one test thread and CI's 128 MB stack): the
+  43 weak-reference, allocation, verifier, mapping and collection tests
+  and the new one pass; clippy `-D warnings` and rustfmt pass. With more
+  than one test thread the native runtime's tests corrupt the shared
+  heap (a free-list word of 0x1, then a segfault), on the binary before
+  this round too: the allocator presumes one Lisp thread, as CI runs it.
+- **Cons allocation's collection, measured again.** Every timed sample
+  runs no collection in GNU and one in Emaxx (0.0145 s of its 0.0885 on
+  the `df06b81` profile build), so the case's whole gap is that
+  collection: GNU's start-of-sample `garbage-collect` keeps the previous
+  sample's list (the conservative stack scan), which at
+  `gc-cons-percentage` 1.0 puts its threshold above one sample's consing.
+  Emaxx's threshold follows `bump_consing_until_gc` from its census, as
+  GNU's does; matching GNU's count would mean keeping garbage alive.
+- **Where the byte-code call and return go, by instruction** (callgrind
+  `--dump-instr=yes`, bytecode calls on `df06b81`'s line-table build):
+  Emaxx's Bcall arm, frame entry and Breturn run about 98, 131 and 123
+  instructions an iteration, about 350 against GNU's 195 or so (its
+  Bcall about 80 with the backtrace record and maybe_gc, the frame set up
+  in the byte-code stack with the argument copy about 75, the return
+  about 40); Emaxx's ops are the cheaper by about 75, so the net is the
+  80 an iteration of the table. The pieces: the callee's cell and kind
+  tests, `plain_bcall_entry` and the entry cache's lookup (its hash, the
+  four closure words and two state flags, about 45) in the arm; the
+  entry's program tests, the byte-code stack's frame header, the
+  backtrace record, the 48-byte program swapped into `vm.program` through
+  a temporary and the 88-byte `BcFrame` pushed in the entry; the frame's
+  pop, the program copied back (about 25) and the caller's code and
+  verification tested again (`bytes_unguarded`'s state and
+  `VerifiedCode::admits`, about 25) on the return. For bytecode-to-native
+  the same profile gives `call_native_nested` about 210 a call: the
+  prologue and epilogue 16, the entry tests about 50, the backtrace
+  record 18, the handler reconciliation twice about 16, the native call
+  frame's push and pop about 45, the active call 8, the argument by the
+  count 13 and the escape record's call 18.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -1945,7 +2050,13 @@ its first attempt (run 39078343825). **On `b206a4a`** (undo's window
 configurations, message log and native `set`): full Rust gate passed (run
 39080606435), frozen passed on its first attempt (run 39080608068). **On
 `df06b81`** (the change hooks, native funcall and bindings by id): full
-Rust gate (run 39085349381) and frozen (run 39085350916) pending. Locally,
+Rust gate passed (run 39085349381). Frozen matched 7,927 of 7,928 across
+519 files (run 39085350916): GNU's `eglot-test-rust-completion-exit-function`
+failed in the oracle with `jsonrpc-error` while Emaxx passed, the
+rust-analyzer timing recorded above; its failed job, re-run once (attempt
+2), passed. **On `f001516`** (buffer names and `format`'s count): full
+Rust gate passed (run 39087539788), frozen passed on its first attempt
+(run 39087541542). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
