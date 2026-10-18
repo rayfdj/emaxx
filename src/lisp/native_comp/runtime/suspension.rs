@@ -192,12 +192,14 @@ impl TraceLispRoots for NativeLispRoots<'_> {
 
 struct SuspendedTlsGuard {
     active: *mut ActiveCall,
+    gc: ActiveGc,
     heap: Option<*mut NativeHeap>,
 }
 
 impl Drop for SuspendedTlsGuard {
     fn drop(&mut self) {
         ACTIVE_CALL.set(self.active);
+        self.gc.restore();
         if let Some(heap) = self.heap {
             ACTIVE_NATIVE_HEAP.store(heap, Ordering::Relaxed);
         }
@@ -267,6 +269,7 @@ pub(crate) fn with_thread_suspended<R>(
 
             let tls = SuspendedTlsGuard {
                 active: ACTIVE_CALL.replace(std::ptr::null_mut()),
+                gc: ActiveGc::replace(std::ptr::null()),
                 // A loader/compiler-only callback does not own the native
                 // execution lock. In that case the process-global pointer
                 // can belong to an unrelated OS thread: never change it.

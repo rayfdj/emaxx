@@ -2112,12 +2112,60 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   the seven Bcall, funcall and verified-code tests among them
   `bytecode_calls_native_functions_nested_in_native_calls_like_funcall_subr`
   (a signal and a throw out of a nested native callee) pass; clippy
-  `-D warnings` and rustfmt pass. The 286 evaluator and primitive tests
-  whose names mention native code, byte code, funcall, signals or
-  backtraces were still running at the commit, the two failures among
-  them so far this container's known ones (the as-root
+  `-D warnings` and rustfmt pass. Of the 286 evaluator and primitive
+  tests whose names mention native code, byte code, funcall, signals or
+  backtraces (finished after the commit), 284 pass and the other two are
+  this container's known failures (the as-root
   `byte_compile_file_reports_an_unwritable_target_like_gnu` and
   `batch_startup_image_round_trip_or_explicit_native_image_limit`).
+- **Profile-guided wall time on `a0034c1`, against `a2494c7` on the
+  same host.** Pilot sizes, five rounds of five samples, minimum ratio to
+  GNU, `a2494c7` in parentheses: bytecode calls 1.023 (1.021),
+  bytecode-to-native 1.019 (1.081), cons allocation 1.006 (1.006),
+  interpreted-to-native 0.989 (1.010), undo 0.934 (0.990), mapcar 0.841
+  (0.815), list traversal 0.838 (0.837), native-to-bytecode 0.793
+  (0.783), sort 0.762 (0.759), interpreted-dynamic 0.753 (0.752),
+  native-to-interpreted 0.699 (0.719), explicit-gc 0.684 (0.689),
+  bindat 0.671 (0.652), interpreted-calls 0.576 (0.555),
+  interpreted-lexical 0.573 (0.569), native execution 0.474 (0.513).
+  Medians on this host lie up to a quarter above minimums
+  (interpreted-to-native 1.28 by median against 0.99 by minimum), so the
+  four near 1.0 are short of the contract's bound: its median-of-three
+  per process, nine paired rounds and bootstrapped upper 95% at most 1.03
+  leave room for about 0.98 at most. The first attempt at this build
+  failed as `6242417`'s first had: from the nineteenth training process
+  on every merge into the raw profile reported it invalid; the training
+  and the final build run again on the same instrumented build succeeded.
+- **maybe_gc's test on a mirror of the active call's trigger.** An
+  evaluated form (`eval_sub`), a byte-code frame's entry and a plain
+  Bcall each asked whether a collection could be due through the active
+  call's record: the thread-local, its runtime, the runtime's shared
+  heap, the trigger, about eight instructions where lisp.h's maybe_gc
+  reads one global. The trigger of the active call's collector is now
+  mirrored in a thread-local (`ACTIVE_GC_TRIGGER`, 0 with no active call,
+  which takes the full test), set with the active call by
+  `with_active_call` and the suspension, re-read from its collector when
+  the call it was saved for resumes, and written by `publish_trigger`
+  (the trigger's one setter) when its collector is the active one; below
+  it a collection cannot be due, as the active runtime's own test
+  answers. `eval_call_compiled` tests a native callee before a closure
+  and makes the usual native call inline (`call_function_inline`), and
+  `eval_sub` compares the depth with `max-lisp-eval-depth` without a
+  saturating conversion. Instructions a unit: cons allocation 5,623 →
+  5,494 (5,542 by the mirror alone), interpreted-to-native 3,038 → 2,957
+  (2,998 by the mirror, 2,977 with the inline call), bytecode calls 512
+  → 504, bytecode-to-native 444 → 445 (its nested call reads its
+  runtime's trigger directly already). GNU runs cons allocation's unit in
+  5,215 and interpreted-to-native's in 2,385. Validation (gate profile,
+  `--test-threads=1`): the lightweight group's 598 tests and 240 of 242
+  evaluator and primitive tests whose names mention collection,
+  thresholds, threads, suspension or native code pass; the other two are
+  `batch_startup_image_round_trip_or_explicit_native_image_limit` (this
+  container's) and
+  `process_tls_state_survives_collection_before_and_after_async_handshake`,
+  whose GNU oracle answered `connect` for the asynchronous handshake while
+  four test processes shared the machine and which passes run alone;
+  clippy `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,

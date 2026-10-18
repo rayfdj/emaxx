@@ -149,6 +149,18 @@ pub(crate) fn call_function(
     function: crate::lisp::types::NativeFunctionRef,
     arguments: &[Value],
 ) -> Result<Value, LispError> {
+    call_function_inline(interpreter, environment, function, arguments)
+}
+
+/// `call_function', inline in its caller: the usual callee's call made
+/// there (`call_fixed_function'), the general entry out of line.
+#[inline(always)]
+pub(crate) fn call_function_inline(
+    interpreter: &mut Interpreter,
+    environment: &mut Env,
+    function: crate::lisp::types::NativeFunctionRef,
+    arguments: &[Value],
+) -> Result<Value, LispError> {
     if let Some(result) = loader::call_fixed_function(interpreter, environment, function, arguments)
     {
         return result;

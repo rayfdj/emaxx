@@ -579,6 +579,48 @@ fn current_native_stack_bottom() -> *const NativeWord {
 
 thread_local! {
     static ACTIVE_CALL: Cell<*mut ActiveCall> = const { Cell::new(std::ptr::null_mut()) };
+    /// The active call's collector (its runtime's heap's), or null: the one
+    /// whose trigger `ACTIVE_GC_TRIGGER' holds.
+    static ACTIVE_GC: Cell<*const NativeGcState> = const { Cell::new(std::ptr::null()) };
+    /// `trigger_allocated_bytes' of `ACTIVE_GC', for lisp.h:maybe_gc's one
+    /// compare where the active call's runtime would be read through its
+    /// record; 0 with no active call, which sends the test its full way.
+    static ACTIVE_GC_TRIGGER: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The collector `ACTIVE_GC' names while a call is active, as
+/// `ActiveCallGuard' and the suspension save and restore it with the call.
+#[derive(Clone, Copy)]
+struct ActiveGc(*const NativeGcState);
+
+impl ActiveGc {
+    /// Make GC the active collector, answering the one it replaces.
+    #[inline(always)]
+    fn replace(gc: *const NativeGcState) -> Self {
+        // SAFETY: a collector named here is its heap's, live while its
+        // call is active (the callers' contract).
+        let trigger = if gc.is_null() {
+            0
+        } else {
+            unsafe { (*gc).trigger_allocated_bytes }
+        };
+        ACTIVE_GC_TRIGGER.set(trigger);
+        Self(ACTIVE_GC.replace(gc))
+    }
+
+    /// Make this the active collector again, its trigger as it stands now.
+    #[inline(always)]
+    fn restore(self) {
+        Self::replace(self.0);
+    }
+}
+
+/// maybe_gc's test on the active call's counters: true when a collection
+/// cannot be due.  False with no active call, or past the trigger, where
+/// the callers' full tests decide.
+#[inline(always)]
+fn active_collection_cannot_be_due() -> bool {
+    lisp_allocated_bytes() < ACTIVE_GC_TRIGGER.get()
 }
 
 // A Lisp interpreter is single-threaded, as reflected by its Rc-owned values.
@@ -647,6 +689,7 @@ impl Drop for NativeExecutionGuard {
 
 struct ActiveCallGuard {
     previous: *mut ActiveCall,
+    previous_gc: ActiveGc,
     previous_heap: *mut NativeHeap,
     heap: *mut NativeHeap,
     previous_stack_bottom: *const NativeWord,
@@ -658,6 +701,7 @@ impl Drop for ActiveCallGuard {
         // its scope exits. Restore the physical stack, not another fiber's.
         unsafe { (*self.heap).native_stack_bottom = self.previous_stack_bottom };
         ACTIVE_CALL.set(self.previous);
+        self.previous_gc.restore();
         ACTIVE_NATIVE_HEAP.store(self.previous_heap, Ordering::Relaxed);
     }
 }
@@ -677,6 +721,7 @@ pub(crate) fn with_active_call<R>(
         runtime,
     };
     let previous = ACTIVE_CALL.replace(&mut active);
+    let previous_gc = ActiveGc::replace(std::ptr::from_mut(&mut runtime.heap.gc));
     // Every store to the heap pointer is made under the execution lock,
     // held from the guard above, so a load and a store exchange it: a
     // swap is a locked `xchg' on x86, about 20 cycles on each native call.
@@ -688,6 +733,7 @@ pub(crate) fn with_active_call<R>(
     }
     let _guard = ActiveCallGuard {
         previous,
+        previous_gc,
         previous_heap,
         heap: std::ptr::from_mut(&mut runtime.heap),
         previous_stack_bottom,
@@ -825,6 +871,9 @@ pub(crate) fn current_runtime() -> *mut NativeRuntime {
 /// spills callee-saved registers before the conservative collector scans the
 /// stack, exactly as the generated native call path does.
 pub(crate) fn maybe_gc_active() {
+    if active_collection_cannot_be_due() {
+        return;
+    }
     let active = ACTIVE_CALL.with(Cell::get);
     if active.is_null() {
         return;
@@ -855,6 +904,9 @@ pub(crate) fn maybe_gc_active() {
 /// collection possible takes the path that runs maybe_gc itself.
 #[inline]
 pub(crate) fn collection_cannot_be_due(interpreter: &crate::lisp::eval::InterpreterState) -> bool {
+    if active_collection_cannot_be_due() {
+        return true;
+    }
     let active = ACTIVE_CALL.with(Cell::get);
     if !active.is_null() {
         // SAFETY: as maybe_gc_active's read of the active runtime.
@@ -910,6 +962,9 @@ pub(crate) fn gc_tuning(interpreter: &Interpreter, environment: &Env) -> (i64, O
 /// collection itself out of line.
 #[inline(always)]
 pub(crate) fn maybe_gc(interpreter: &mut Interpreter, environment: &mut Env) {
+    if active_collection_cannot_be_due() {
+        return;
+    }
     if !ACTIVE_CALL.with(|active| active.get().is_null()) {
         maybe_gc_active();
         return;
@@ -4610,6 +4665,9 @@ impl NativeGcState {
             self.observed_allocated_bytes
                 .saturating_add(self.consing_until_gc as u64)
         };
+        if std::ptr::eq(ACTIVE_GC.get(), self) {
+            ACTIVE_GC_TRIGGER.set(self.trigger_allocated_bytes);
+        }
     }
 
     fn synchronize_allocations(&mut self) {
