@@ -1073,6 +1073,11 @@ impl Interpreter {
         value: Value,
         env: &mut Env,
     ) -> Result<(), LispError> {
+        // data.c:set_internal notifies only a SYMBOL_TRAPPED_WRITE symbol;
+        // the store's buffer is found for its watchers alone.
+        if !symbol.cell().is_trapped_write() {
+            return Ok(());
+        }
         let buffer_id = if self.has_native_text_conversion_style(symbol.as_str()) {
             Some(self.current_buffer_id())
         } else {

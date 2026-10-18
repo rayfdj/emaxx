@@ -1999,6 +1999,23 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   Validation (gate profile, `--test-threads=1`): the lightweight group's
   598 tests and 48 undo, marker, `delete-region` and amalgamation tests
   pass; clippy `-D warnings` and rustfmt pass.
+- **A store's watchers looked for by the flag first.** `set_internal`'s
+  notification found the store's buffer (`assignment_scope_symbol`, a
+  buffer-local probe) before asking whether the symbol has a watcher;
+  data.c notifies only a `SYMBOL_TRAPPED_WRITE` symbol, and the flag now
+  answers first. Undo: 1,401,532 → 1,401,728 instructions a unit, the
+  saving (`assignment_scope_symbol` 2,274 and `notify_assignment_symbol`
+  371 fewer) under a collection that fell into the measured range on
+  this build (`collect_below_stack_top` +2,724) and longer `memcmp`s
+  (+4,018, 20 more calls a unit from the same callers). The binding
+  paths, measured against GNU: Emaxx makes about 120 dynamic bindings a
+  unit (51 from native code at 54 instructions a `runtime_specbind`
+  plus 121 in `specbind_symbol_record`), GNU 399 at 64 each, its
+  `unbind_to` 404 at 74; the binding stack is not where undo's gap is.
+  Validation (gate profile, `--test-threads=1`): the lightweight group's
+  598 tests and 28 watcher, `setq`, `set-default`, forwarded-variable and
+  `text-conversion-style` tests pass; clippy `-D warnings` and rustfmt
+  pass.
 - **Profile-guided wall time on `6242417`, against `ba9f640` on the
   same host.** The container came back from a restart on a host whose
   timings differ from the earlier tables' (an Intel Xeon at 2.10 GHz with
