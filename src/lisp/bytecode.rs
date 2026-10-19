@@ -685,6 +685,19 @@ impl CodeBytes {
         // and unchanged, and no guard on them is live in the loops.
         (unsafe { string.bytes_unguarded() }, current)
     }
+
+    /// The bytes, read again after a call that changed no code string
+    /// (`code_changes' as before it) while they were current and
+    /// verified: still those bytes and that result, maybe moved by a
+    /// collection's compaction.
+    ///
+    /// # Safety
+    /// As `bytes_unguarded's, and the bytes were current before the call.
+    #[inline(always)]
+    pub(crate) unsafe fn bytes_unchanged<'a>(&self) -> &'a [u8] {
+        // SAFETY: the caller's contract.
+        unsafe { self.string().code_bytes_unchanged() }
+    }
 }
 
 /// Entry fields read from the shared closure. The VM uses this same value;

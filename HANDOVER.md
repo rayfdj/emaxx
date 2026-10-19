@@ -2325,6 +2325,41 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   group's 598 tests and 325 of the 326 byte-code, native-call, evaluator
   and argument tests of this round and the last (the as-root one fails
   as before); clippy `-D warnings` and rustfmt pass.
+- **A nested native call's frame popped by its length.** The call op of
+  bytecode-to-native traced again on `152e76f`: 263 instructions around
+  the callee's 10. Five of its steps are shorter now. The callee's subr
+  test is one masked compare of the header (`vectors::is_subr`, which
+  `native_function_ref` and `builtin_ref` share) where the tag's decoding
+  branched on the flag first. After a call into native code or a subr
+  the loop goes on in its bytes when `code_changes` reads what it read
+  before the call (taking a mutable guard on current code counts a
+  change), and tests the string's state and the verification's currency
+  only otherwise. A nested call's native frame is popped by the length
+  when the callee left everything as it found it (`finish_nested_frame`:
+  `sync_handlers` would change nothing, no handler, unwind entry or root
+  range lies above the frame's, no error is pending); `finish_frame`
+  does the whole of it otherwise. The escape's resume label lies out of
+  line (a `.pushsection` stub) and leaves the call's word as tag 1, which
+  no Lisp object has, so an ordinary return goes on from the call with
+  no flag of its own. `leave_plain_funcall` decrements Ffuncall's depth
+  without the checked subtraction that `end_funcall` makes. Bytecode-to-
+  native 409.7 → 393.0 instructions an iteration (GNU 388; the call op
+  245 around the callee), bytecode calls 438.8 → 435.7 (the byte-code
+  return's decrement), undo 1,348,880 → 1,330,595 a unit (the resumption
+  after a subr's call), interpreted-to-native 2,711 → 2,699, cons
+  allocation unchanged at 5,414. Two further changes measured worse and
+  were not kept, both for the register allocation of the loop around
+  them: the native call's signal settled out of line with the resumption's
+  slow test behind `std::hint::cold_path` (394.3, two taken branches
+  fewer but seven stack accesses more, and 1% more cycles in
+  `llvm-mca`'s model), and the cold test alone with the frame's whole
+  finish out of line (397.7).
+  Validation (gate profile, `--test-threads=1`): the lightweight group's
+  598 tests and 777 of the 778 byte-code, native, backtrace, funcall,
+  signal, condition, unwind, subr and verification tests with the last
+  round's (the as-root one fails as before, and
+  `bytecode_code_mutation_during_active_call_matches_gnu` takes the
+  resumption's other way); clippy `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2836,7 +2871,12 @@ identifiers, among them the `CARGO_BIN_EXE_make-fingerprint` that
 which passes the environment on, and the seven integration targets'
 42 tests pass locally with it. Frozen matched 7,927 of 7,928 with the
 one mismatch GNU's (run 39175585643, "oracle: 1 unexpected"); its
-re-run was pending at the next commit. Locally,
+re-run passed (attempt 2). **On `3e749c3`** (the MANY subr path and the
+Python wrapper): full Rust gate passed, the integration targets with it
+(run 39180683216), frozen passed on its first attempt (run 39180685580).
+**On `152e76f`** (a nested native call's tests): full Rust gate passed
+(run 39185224902), frozen passed on its first attempt (run 39185226944);
+PR #92 merged it into main (`cbe5eed`). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -3125,9 +3165,12 @@ and failures are still recorded.
    build's register allocation, with more spills, is what makes it slower
    there than the plain build; bytecode-to-native's whole excess is its
    call op, 275 instructions against GNU's 115 (its other ops take half
-   of GNU's). Undo runs 1,348,880 instructions a unit against GNU's
-   1,252,071, spread over the evaluator, the slow byte ops (767 a unit),
-   the allocator and 73 entry-cache misses (closures made afresh).
+   of GNU's). Since then bytecode-to-native is 393.0 instructions an
+   iteration against GNU's 388 (its call op 245 around the callee, bullet
+   "A nested native call's frame popped by its length"). Undo runs
+   1,330,595 instructions a unit against GNU's 1,252,071, spread over the
+   evaluator, the slow byte ops (767 a unit), the allocator and 73
+   entry-cache misses (closures made afresh).
    (Older wall figures, before these rounds: bytecode-to-native 1.54,
    undo 1.35, mapcar 1.29, cons allocation 1.22, interpreted-to-native
    1.19, bytecode calls 1.10, explicit-gc 1.09.) The profile helps the interpreter and

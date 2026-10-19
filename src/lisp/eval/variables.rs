@@ -2817,7 +2817,9 @@ impl InterpreterState {
     #[inline(always)]
     pub(crate) fn leave_plain_funcall(&mut self, backtrace_depth: usize) {
         self.truncate_backtrace_frames(backtrace_depth);
-        self.end_funcall();
+        // Ffuncall's `lisp_eval_depth--': `enter_plain_funcall' counted
+        // this call, and an exit through it restores the count it left.
+        self.lisp_eval_depth -= 1;
     }
 
     /// Pop frames down to LEN.  The bytecode VM records a signaling byte

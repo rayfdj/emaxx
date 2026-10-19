@@ -1788,9 +1788,22 @@ fn run_verified(
                         // the call stored into the string, and verification
                         // found the call's successor with the operands it
                         // left.
+                        // A store into a code string counts a change: an
+                        // unchanged count after the call leaves these bytes
+                        // and their verification current.
+                        let changes = crate::lisp::alloc::code_changes();
                         macro_rules! resume_after_call {
                             ($top:expr, $depth:expr) => {{
                                 let top = $top;
+                                if crate::lisp::alloc::code_changes() == changes {
+                                    // SAFETY: as the outer loop's slice; the
+                                    // bytes were current before the call.
+                                    code = unsafe { vm.program.code.bytes_unchanged() };
+                                    // SAFETY: TOP lies within the frame.
+                                    sp = unsafe { words.add(top - 1) };
+                                    at = next;
+                                    continue 'run;
+                                }
                                 // SAFETY: as the outer loop's slice.
                                 let (bytes, current) = unsafe { vm.program.code.bytes_unguarded() };
                                 if current
