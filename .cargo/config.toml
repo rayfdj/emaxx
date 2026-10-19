@@ -30,4 +30,4 @@ rustflags = [
 # a position-dependent executable on x86-64 Linux, where a jump table's
 # entries are absolute addresses: see the wrapper. An explicit
 # RUSTC_WORKSPACE_WRAPPER (clippy's driver, say) replaces it.
-rustc-workspace-wrapper = "tools/rustc-workspace-wrapper.sh"
+rustc-workspace-wrapper = "tools/rustc-workspace-wrapper.py"

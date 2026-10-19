@@ -2209,8 +2209,10 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   `-D warnings` and rustfmt pass.
 - **A position-dependent executable, and a frame entry's counts in one
   bit.** On x86-64 Linux the package's own crates compile with
-  `-C relocation-model=static` (`tools/rustc-workspace-wrapper.sh`,
-  Cargo's workspace wrapper in `.cargo/config.toml`; dependencies keep
+  `-C relocation-model=static` (`tools/rustc-workspace-wrapper.py`,
+  Cargo's workspace wrapper in `.cargo/config.toml`, a Python script
+  since a POSIX shell drops `CARGO_BIN_EXE_make-fingerprint` from the
+  environment of the integration tests' compiles; dependencies keep
   the default, since the procedural macros among them are shared objects
   such code cannot be linked into, and Cargo has no stable per-package or
   host flags). A jump table in position-independent code holds 32-bit
@@ -2244,6 +2246,49 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   interpreter holds mutably borrowed, "cannot collect while a string is
   mutably borrowed", or the C heap's own abort): the string heap is the
   process's, and the gate runs them one at a time.
+- **The contract's comparison on all sixteen, on `3f7bff2`'s
+  profile-guided build** (the script above: full sizes, nine rounds, one
+  warmup and three samples a process, alternating order, the locked
+  bootstrap), median and 95% interval of the paired ratios:
+  interpreted-lexical 0.602 [0.532, 0.682], interpreted-dynamic 0.768
+  [0.737, 0.844], interpreted-calls 0.562 [0.484, 0.611], bytecode calls
+  0.943 [0.910, 1.049], native execution 0.507 [0.463, 0.540],
+  interpreted-to-native 0.942 [0.910, 1.026], bytecode-to-native 1.023
+  [0.968, 1.064], native-to-interpreted 0.708 [0.602, 0.843],
+  native-to-bytecode 0.760 [0.703, 0.924], cons allocation 0.929 [0.871,
+  1.043], list traversal 0.813 [0.747, 0.833], mapcar 0.812 [0.755,
+  0.883], explicit GC 0.688 [0.638, 0.732], sort 0.845 [0.754, 0.943],
+  undo 0.991 [0.944, 1.109], bindat 0.673 [0.623, 0.734]. Twelve meet
+  the 1.03 bound; bytecode-to-native, undo, bytecode calls and cons
+  allocation do not. A round's ratio ranges over about ±10% on this
+  machine (undo's from 0.819 to 1.153), so the interval's upper end lies
+  well above the median. `tools/pgo-build.sh`'s training now writes a
+  profile a process and merges the ones that read: the one file the
+  default name merges every process into came out unreadable ("too much
+  profile data") on both attempts for this build and on `a0034c1`'s
+  first, losing the whole profile, while each process's own file reads
+  (one of this build's was unreadable and is skipped).
+- **A form whose head holds a MANY subr evaluates its arguments
+  without the general call.** eval_sub's direct path took a C primitive
+  of at most eight fixed arguments and a special form, while `<`, `+`
+  and the other subrs of any number of arguments went through
+  `eval_call`'s resolution loop and full classification of the function
+  cell. `eval_many_subr` takes them as eval_sub's MANY branch does: the
+  frame recorded with the unevaluated form, the count and the minimum
+  checked, each argument's Fcdr taken before its evaluation (a list an
+  earlier argument cut short ends the arguments there), and more than
+  eight left to the rooted general call. Instructions a unit against
+  `3f7bff2`, plain builds: interpreted-to-native 2,934 → 2,711 (GNU
+  2,387), interpreted-calls 3,441 → 3,205, interpreted-lexical 3,867 →
+  3,650, list traversal 286,523 → 273,865, cons allocation 5,460 →
+  5,411. GNU and Emaxx print the same for nine edge forms (more than
+  eight arguments, `(<)`, an argument that signals, an improper argument
+  list, a list an argument's evaluation shortens, a `throw` out of an
+  argument, `(max)`). Validation (gate profile, `--test-threads=1`): the
+  lightweight group's 598 tests, 196 evaluator and primitive tests whose
+  names mention arity, arguments, backtraces, signals, `setq`, `apply`,
+  `funcall`, list lengths or subrs, and the seven integration targets'
+  42 tests pass; clippy `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2745,8 +2790,17 @@ passed (run 39164077964), frozen passed on its first attempt (run
 full Rust gate passed (run 39167951029), frozen passed on its first
 attempt (run 39167952851); PR #91 merged it into main (`bafedf4`). **On
 `c1ae4e3`** (a running frame's program in three words): full Rust gate
-passed (run 39172012232); frozen (run 39172014125) was still running
-when the next commit was made. Locally,
+passed (run 39172012232), frozen passed on its first attempt (run
+39172014125). **On `3f7bff2`** (the position-dependent executable): the
+Rust gate's library groups and binaries passed, but its integration
+targets did not build (run 39175583455): the wrapper was a `/bin/sh`
+script, and dash drops the environment variables whose names are no
+identifiers, among them the `CARGO_BIN_EXE_make-fingerprint` that
+`tests/cli.rs` reads. It is a Python script since (the next commit),
+which passes the environment on, and the seven integration targets'
+42 tests pass locally with it. Frozen matched 7,927 of 7,928 with the
+one mismatch GNU's (run 39175585643, "oracle: 1 unexpected"); its
+re-run was pending at the next commit. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the

@@ -560,6 +560,9 @@ impl Interpreter {
                         return self.eval_special_form(expr, head, subr, native_form, tail, env);
                     }
                 }
+                -2 => {
+                    return self.eval_many_subr(expr, head, name, subr, tail, args_cell, env);
+                }
                 _ => {}
             }
         }
@@ -640,6 +643,69 @@ impl Interpreter {
             &argvals[..maximum],
             env,
         );
+        let result = self.settle_frame_result(result, env);
+        self.truncate_backtrace_frames(depth);
+        result
+    }
+
+    /// `eval_call' for a form whose head NAME holds SUBR, a C primitive
+    /// that takes any number of arguments (MANY): the frame recorded with
+    /// the unevaluated form, the arguments counted and the minimum checked,
+    /// and at most eight evaluated in order into eight slots (Fcdr before
+    /// each evaluation, as eval_sub does, so a list an earlier argument's
+    /// evaluation cut short ends the arguments there), and the subr called
+    /// through its facts with those evaluated.  More arguments take the
+    /// general call's rooted slots.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn eval_many_subr(
+        &mut self,
+        source_form: &Value,
+        original_function: Value,
+        name: SymbolName,
+        subr: crate::lisp::types::BuiltinRef,
+        original_args: Value,
+        args_list: Option<SharedCons>,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let depth = self.backtrace_frames.len();
+        self.push_unevaluated_backtrace_frame(source_form);
+        let nargs = match self.short_list_length(original_args, env) {
+            Ok(count) => count,
+            Err(error) => return self.eval_call_argument_error(depth, true, error, env),
+        };
+        if nargs < usize::from(subr.descriptor().min_args) {
+            let error = LispError::SignalValue(Value::list([
+                Value::symbol("wrong-number-of-arguments"),
+                original_function,
+                Value::Integer(nargs as i64),
+            ]));
+            return self.eval_call_argument_error(depth, true, error, env);
+        }
+        if nargs > 8 {
+            let prepared = FunctionResolution::DirectBuiltin(subr);
+            return self.eval_call_rooted(depth, Some(name), prepared, args_list, nargs, env);
+        }
+        let mut argvals = [Value::Nil; 8];
+        let mut args_left = original_args;
+        let mut argnum = 0;
+        for slot in &mut argvals[..nargs] {
+            let Some(cell) = args_left.cons_ref() else {
+                break;
+            };
+            args_left = cell.cdr.get();
+            *slot = match self.eval(&cell.car.get(), env) {
+                Ok(value) => value,
+                Err(error) => return self.eval_call_argument_error(depth, true, error, env),
+            };
+            argnum += 1;
+        }
+        let args = &argvals[..argnum];
+        // The callee's symbol has a function, so it is no built-in nil or t.
+        self.set_backtrace_args(Value::symbol_of_cell(name), args);
+        self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+        let result =
+            primitives::call_with_facts_arity_checked(self, subr.as_str(), subr.facts(), args, env);
         let result = self.settle_frame_result(result, env);
         self.truncate_backtrace_frames(depth);
         result
