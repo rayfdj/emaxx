@@ -2623,6 +2623,117 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
     counts with that in mind.
   On cores without the erratum (the earlier Emerald Rapids host, AMD)
   the padding only costs the code it adds.
+- **The other eleven workloads on the padded profile-guided build**
+  (`contractlike.py`, this host, the same binary as the bullet above):
+  interpreted-lexical 0.688 [0.541, 0.822], interpreted-calls 0.627
+  [0.595, 0.722], native execution 0.635 [0.518, 0.700],
+  native-to-interpreted 0.810 [0.709, 0.903], native-to-bytecode 0.781
+  [0.714, 0.937], list traversal 0.822 [0.683, 0.970], mapcar 0.865
+  [0.716, 1.001], explicit GC 0.721 [0.698, 0.776], sort 0.867 [0.724,
+  0.962] and bindat 0.715 [0.682, 0.771] pass; interpreted-dynamic
+  0.881 [0.813, 1.037] is over through one round (1.256), with both
+  programs' own rounds ranging from 0.41 to 0.75 s. Over the bound:
+  undo, bytecode-to-native, bytecode calls, interpreted-dynamic.
+  Instructions a unit of this build (callgrind, two sizes), the
+  baseline for later profile-guided comparisons: undo 1,225,870,
+  bytecode calls 453.8, bytecode-to-native 390.4, native-to-bytecode
+  3,831.5, interpreted-lexical 3,349.8, interpreted-dynamic 3,094.8,
+  interpreted-calls 3,170.6, interpreted-to-native 2,453.6, cons
+  allocation 5,153.8, list traversal 258,100, mapcar 28,327,564, sort
+  216,160,065, bindat 819,220, native-to-interpreted 3,908.8, native
+  execution 371,239,340, explicit GC 33,232,400.
+- **Undo's time, split.** The harness's own report gives each sample's
+  collections. GNU collects 4 times a sample (0.11 to 0.17 s of a 0.42
+  to 0.66 s sample), Emaxx 3 times (0.08 to 0.11 s). So Emaxx's
+  collector costs less, and the rest of the sample is where it loses:
+  GNU 0.30 to 0.50 s, Emaxx 0.37 to 0.60 s, medians 1.15 to 1.4 times
+  GNU's over three processes of nine samples. Callgrind's per-unit
+  counts (10 against 20 units) fall between collections and so measure
+  that rest alone: the profile-guided build runs 1,225,870 instructions
+  a unit against GNU's 1,259,204. The difference is per instruction.
+  - Footprint: the instructions run at least once a unit are 55,352 in
+    4,932 64-byte lines (308 KB) over 381 4-KB pages, against GNU's
+    27,838 in 2,853 lines (178 KB) over 216 pages. Each distinct
+    instruction runs about 22 times a unit against GNU's 45.
+  - A cycle model on cachegrind's counts (Ir/3 + 10 I1mr + 10 D1mr +
+    5 D1mw + 15 Bcm + 15 Bim) gives 1,345K against 1,098K, 1.22, the
+    measured ratio. The byte-code VM is over half of the excess:
+    `run_verified` 257K against `exec_byte_code`'s 210K, `op_in_place`
+    80K (no counterpart), `call_plain` 36K, `run_entered` 20K.
+  - Inlined standard-library code is 28% of the hot instructions in the
+    plain build: `Vec`/`RawVec` 3,436 (most in the primitives, the text
+    property spans and `run_verified`), pointers, slice iterators,
+    `Option`, `RefCell` borrows. `lisp/types.rs`'s value helpers are
+    another 4,250.
+  - The ops that leave the verified loop for `op_in_place`, 622 a unit:
+    Bvarref of a variable that is not plain 98, Bunbind 77, Bvarbind 65,
+    Bmemq of an element neither fixnum nor symbol 39, Bgoto_char 38,
+    Bswitch 31, Bget 26, Bsave_current_buffer 24, Bset_buffer 24, Baset
+    24, then Bunwind_protect, Bdelete_region and Baref 16 each.
+  - Tried, none kept (the patch of the second is in the scratch
+    history only):
+    - One arm for Bcall0 to Bcall5 (one copy of the call sequence):
+      undo -4,400 instructions and -98 hot lines, but bytecode calls
+      +20.2 and bytecode-to-native +8.9 an iteration (plain build).
+    - Arms in `run_verified` calling the full arms' code out of line,
+      resuming as after a call, for Bvarref and Bvarset of other
+      variables, Bvarbind, Bunbind, Bget, Bgoto_char, Bset_buffer and
+      Bsave_current_buffer. Plain build: undo -26,700, bytecode calls
+      +11.9; with only the bind ops and primitives, undo -8,200 and
+      bytecode calls +18.3. Profile-guided (trained afresh): undo
+      1,225,870 -> 1,196,343, bytecode calls +4.8, bytecode-to-native
+      +1.8, native-to-bytecode +5.8, but 88 more hot lines
+      (`run_verified` 276 -> 324) and 770 more instruction-cache misses
+      there: the model's cycles came to 1,343K against 1,333K. Fewer
+      instructions bought with more code do not pay here.
+    - Compiler options on the same profile: `-hot-callsite-threshold=600`
+      changed nothing; `-pgso-lwss-only=false` cut the text by 3% and
+      undo's hot lines by 3%; `-inline-threshold=100` with
+      `-inlinehint-threshold=150` cut the text by 5% but not undo's hot
+      lines (+1% instructions; bytecode calls 453.8 -> 444.0,
+      bytecode-to-native 390.4 -> 385.8, and of the other twelve
+      interpreted-calls +1.5%, native-to-interpreted +1.7%, native
+      execution +2.6%, mapcar -1.1%, sort +1.1%, the rest within 1%);
+      linking with
+      `-z keep-text-section-prefix` gave a 2.75 MB `.text.hot`, but undo's
+      working set straddles it and `.text` (the training is GNU's tests),
+      397 pages against 381.
+    - The text's 2-MB-aligned interior on anonymous huge pages (a test
+      preload, not the build): undo's medians without collections
+      0.411, 0.454 and 0.422 s against 0.418, 0.502 and 0.444: the
+      instruction TLB is a few percent at most.
+    - A profile that also trained on undo itself (a diagnostic only:
+      the timed workloads stay out of the real training): hot lines
+      4,932 -> 4,832, pages 381 -> 360, instruction-cache misses 40,354
+      -> 39,170. Layout is worth 3% of the misses at most.
+    - Each heavier special form out of line (`#[inline(never)]` on
+      `let`, `let*`, `catch`, `unwind-protect`, `condition-case`, the
+      `save-` forms, `defvar`, `defconst`): `eval_native_form`'s frame
+      448 -> 144 bytes in the plain build, but 0.1 to 1.4% more
+      instructions in the interpreted workloads and no gain in undo's
+      misses that the run-to-run variation (one-off regex compilations
+      and symbol-cache work landing in one measured range) does not
+      cover.
+  - The frames are larger than GNU's throughout (profile-guided build,
+    bytes including saved registers): `eval_sub` 400 (GNU 192),
+    `eval_native_form` 576 (`Flet` 112), `eval_cons_call` 464,
+    `run_verified` and `run_entered` 464 each (`exec_byte_code` 160),
+    `op_in_place` 1,152, `call_function_value` 496, `bytecode_call` 432,
+    `run_loop` 608. A Lisp call level stacks about 2.3 KB against GNU's
+    0.5 KB, which deep recursion (`cconv`, `macroexpand-all`) carries
+    past the 32 KB data cache; undo's L1 data misses are 13,895 reads
+    and 4,140 writes a unit against 9,799 and 1,702.
+  - Closure conversion: `cconv-make-interpreted-closure`, the same
+    native code in both, takes 107,141 instructions a unit inclusive
+    against GNU's 66,879. The difference is the runtime entries its
+    code calls: `invoke_native_funcall` 157 calls at 173 instructions of
+    its own (GNU's `Ffuncall` and `funcall_subr` about 100 together),
+    `invoke_subr` 146 at 95 (`symbolp` 49 of them, `symbol-function`
+    10, `delq` 9), `mapcar` 18 at 480, `list` 43 at 200 (about 35 a
+    cons). No single step dominates any of them.
+  Undo's excess is the amount of distinct code an iteration runs, spread
+  over the VM, the evaluator and the primitives. Measure changes for it
+  by the hot-line count and the model, not by instructions alone.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3153,8 +3264,11 @@ full Rust gate passed (run 39246860015), frozen passed on its first
 attempt (run 39246863841). **On `e053900`** (native arity errors naming
 the function): full Rust gate passed (run 39253369363); frozen matched
 7,927 of 7,928 with the one mismatch GNU's ("oracle: 1 unexpected",
-Emaxx none), and its failed jobs were re-run (run 39253372487, attempt
-2; the result goes in with the next commit). Locally,
+Emaxx none), and its re-run passed (run 39253372487, attempt 2). **On
+`e571f20`** (the jump padding): full Rust gate passed (run
+39262083083); frozen matched 7,927 of 7,928, the one mismatch again
+GNU's, and its re-run passed (run 39262088787, attempt 2); PR #94
+merged it into main (`c769d5b`). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -3441,9 +3555,14 @@ and failures are still recorded.
    2,429 (2,387), undo 1,300,268 (1,252,071), cons allocation 5,056
    (5,215), bytecode-to-native 391.6 an iteration (388), bytecode calls
    437.8 (468). With the padding they are 2,477, 1,341,618, 5,158, 406.5
-   and 449.9. Undo is now the worst, and its excess is most plausibly
-   code footprint (bullet "Where the profile-guided build stands").
-   Undo's next step is its slow byte ops' way out of the verified loop:
+   and 449.9. Undo is now the worst, and its excess is code footprint
+   (bullets "Where the profile-guided build stands" and "Undo's time,
+   split": the same instructions as GNU, twice the distinct code, a cycle
+   model that matches the wall). Shrinking the distinct code an
+   iteration runs is the lever; arms that save instructions by adding
+   code to `run_verified` did not pay. Interpreted-dynamic (0.881) is
+   over on the host's noise alone. Earlier, undo's next step was its
+   slow byte ops' way out of the verified loop:
    767 a unit through `op_in_place`
    at 120 instructions each (a second decode and dispatch, a large
    prologue, the frame's `admits` test on the way back), where GNU runs
