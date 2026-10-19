@@ -33,12 +33,25 @@ RUST_MIN_STACK = { value = "134217728", force = false }
 # interpreted-to-native 0.927 against 1.033 of GNU's time, cons allocation
 # 0.821 against 1.072, bytecode calls 0.928 against 0.982,
 # bytecode-to-native 0.953 against 1.010, undo within its noise (1.042,
-# 1.021), for 2% more code. The option is the x86 backend's; rustc's LLVM
-# carries every backend, so it is accepted, and inert, for other targets.
+# 1.021), for 2% more code.
+#
+# The erratum covers every kind of jump, the indirect ones (the byte-code
+# dispatch, whose head ended on a boundary), calls and returns among them,
+# where LLVM's option alone pads conditional and direct jumps; and the
+# padding is prefixes on the instructions before the jump wherever they
+# take them (as GNU as pads), not executed no-ops. The comparison of the
+# two profile-guided builds on that host over fifteen rounds: bytecode-to-
+# native 0.910 against 0.984 of GNU's time, bytecode calls 0.916 against
+# 0.948, interpreted-to-native 0.891 against 0.924, cons allocation 0.823
+# against 0.872, undo 1.110 against 1.113; instructions 1 to 2.6% fewer.
+# The options are the x86 backend's; rustc's LLVM carries every backend,
+# so other architectures accept them and ignore them.
 rustflags = [
     "-C", "llvm-args=-tail-dup-pred-size=1024",
     "-C", "llvm-args=-tail-dup-succ-size=1024",
     "-C", "llvm-args=-x86-branches-within-32B-boundaries",
+    "-C", "llvm-args=-x86-align-branch=fused+jcc+jmp+indirect+call+ret",
+    "-C", "llvm-args=-x86-pad-max-prefix-size=5",
 ]
 # This package's own crates, the byte-code loop's among them, compile for
 # a position-dependent executable on x86-64 Linux, where a jump table's

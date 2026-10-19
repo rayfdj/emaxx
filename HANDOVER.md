@@ -2734,6 +2734,73 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   Undo's excess is the amount of distinct code an iteration runs, spread
   over the VM, the evaluator and the primitives. Measure changes for it
   by the hot-line count and the model, not by instructions alone.
+- **Round 26: every kind of jump padded, with prefixes.** Round 25's
+  `-x86-branches-within-32B-boundaries` pads conditional and direct
+  jumps and fused compare-and-jumps. The erratum covers indirect jumps,
+  calls and returns too, and the byte-code dispatch's indirect jump at
+  the head of the loop ended on a boundary. The padding was also NOP
+  instructions in front of a jump, which execute; GNU's assembler pads
+  by adding prefixes to the instructions before it.
+  `-x86-align-branch=fused+jcc+jmp+indirect+call+ret` adds the other
+  kinds and `-x86-pad-max-prefix-size=5` lets the assembler pad with up
+  to five prefixes on an instruction. Profile-guided builds of round
+  25's source and profile, against round 25's padded one:
+  - Instructions a unit (callgrind): bytecode calls 453.8 -> 443.3,
+    bytecode-to-native 390.4 -> 389.1, interpreted-to-native 2,453.6
+    -> 2,435.0, cons allocation 5,153.8 -> 5,086.5, undo 1,225,870 ->
+    1,206,561. With the prefixes alone (the jump kinds as before):
+    444.7, 387.7, 2,403.5, 5,060.8 and 1,194,007.
+  - Wall (`pilot3.py`: each round's median of three samples a process,
+    the paired median over fifteen rounds and the range of the rounds'
+    ratios): bytecode-to-native 0.910 [0.789, 1.031] against 0.984
+    [0.863, 1.283], bytecode calls 0.916 [0.762, 1.077] against 0.948
+    [0.816, 1.129], undo 1.110 [0.815, 1.275] against 1.113 [0.926,
+    1.432] (the prefixes alone: 0.930, 0.930, 1.107); fifteen more
+    rounds of the other two: interpreted-to-native 0.891 [0.786, 1.102]
+    against 0.924 [0.776, 1.107], cons allocation 0.823 [0.702, 1.427]
+    against 0.872 [0.786, 1.354]. A three-round pilot before them had
+    cons allocation the other way (0.837 against 0.774).
+  - The plain build's undo: 1,341,618 -> 1,335,042 a unit.
+  The options are the x86 backend's: aarch64 Linux and Darwin objects
+  (and x86-64 Windows ones) build with them (a `no_core` crate, Rust
+  1.99.1). Validation (gate profile, `--test-threads=1`): the 618
+  native, arity, funcall, apply, alias, subr, lambda, closure and call
+  tests of round 24 pass but the known container-only image round
+  trip, and the lightweight group's 598 pass; clippy `-D warnings` and
+  rustfmt pass.
+- **What undo's comparable work costs.** By the inclusive costs of the
+  natively compiled Lisp both run (`fincl2.py`, profile-guided build),
+  GNU spends about 150,000 instructions a unit in window-size Lisp that
+  Emaxx does not run: `frame-windows-min-size` 100,452 (under
+  `set-window-configuration`'s frame resize), `window-size-fixed-p`
+  28,588, `replace-buffer-in-windows` 18,288 (under `kill-buffer`),
+  and smaller ones. GNU's `Fset_window_configuration` is 140,244
+  inclusive against Emaxx's `restore_window_configuration` 5,680, its
+  `Fkill_buffer` 66,726 against `kill_buffer_id` 12,453. Without them
+  Emaxx runs about 14% more instructions than GNU for the same work,
+  where the totals read 0.96. A more faithful window layer would add
+  that work back. Where the rest goes (self costs a unit, calls and
+  instructions a call):
+  - The byte-code VM and the native runtime's glue: `run_verified`
+    177,500 (123 entries, 1,443 each; GNU's `exec_byte_code` 198,462 in
+    128 at 1,550), `op_in_place` 87,178 (622 at 140, the ops GNU runs
+    inline), `call_plain` 59,214 (318 at 186), `invoke_subr` 32,574 (79
+    at 412, the profile inlines callees into it; plain build 146 at 95,
+    where GNU's compiled code calls the C function), `run_entered`
+    21,628, `direct_native_funcall` 11,169: about 125,000 over GNU's
+    `exec_byte_code`, `funcall_subr`, `Ffuncall` and `funcall_general`.
+  - The evaluator: `eval_sub` 575 calls at 198 against GNU's 862 at
+    104, `eval_native_form` 277 at 182, `call_function_value` 85 at
+    245, `eval_cons_call` 50 at 328, variable lookups
+    (`lookup_symbol_plain`, `symbol_value_key`, `lookup_var_key`) 73
+    to 125 a call against `find_symbol_value`'s 17.5. GNU's buffer-local
+    swapping (`set_buffer_internal_2`, `store_symval_forwarding`,
+    `swap_in_symval_forwarding`, `reset_buffer_local_variables`) and
+    `assq` on the lexical environment cost it more than Emaxx's
+    counterparts, so the evaluator as a whole is not the excess.
+  - `delete-region` 4,211 a call against GNU's 2,825 (18 a unit):
+    the change hooks 894 a call each way, `Buffer::delete_region` 1,691
+    against `del_range_2`'s 1,083.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3555,7 +3622,16 @@ and failures are still recorded.
    2,429 (2,387), undo 1,300,268 (1,252,071), cons allocation 5,056
    (5,215), bytecode-to-native 391.6 an iteration (388), bytecode calls
    437.8 (468). With the padding they are 2,477, 1,341,618, 5,158, 406.5
-   and 449.9. Undo is now the worst, and its excess is code footprint
+   and 449.9. Round 26 pads every kind of jump with prefixes (bullet
+   "Round 26"): a fifteen-round pilot of the profile-guided build reads
+   bytecode-to-native 0.910, bytecode calls 0.916, interpreted-to-native
+   0.891, cons allocation 0.823 and undo 1.110. Undo is now the worst
+   by far. For the work both editors do, Emaxx runs about 14% more
+   instructions than GNU (GNU's totals include 150,000 a unit of
+   window-size Lisp Emaxx does not run), most of it in the byte-code
+   VM's slow ops (`op_in_place`, 140 a slow op) and the native runtime's
+   calls into subrs (bullet "What undo's comparable work costs"); its
+   excess is also code footprint
    (bullets "Where the profile-guided build stands" and "Undo's time,
    split": the same instructions as GNU, twice the distinct code, a cycle
    model that matches the wall). Shrinking the distinct code an
