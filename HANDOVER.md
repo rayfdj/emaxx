@@ -2415,6 +2415,27 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   (a first sample from a fresh start: Emaxx 2 collections in 0.049 to
   0.073 s, GNU 3 in 0.074 to 0.086). Emulating the stale-slot retention
   is no fix; the margin has to come from the evaluator.
+- **Round 22: the buffer-position ops in the verified loop.** `Bpoint`,
+  `Bpoint_max`, `Bpoint_min` and `Bcurrent_buffer` (0o140, 0o144, 0o145,
+  0o160) left `run_verified` as slow ops, through `op_in_place` (about
+  120 instructions each, with a second decode and dispatch). They are
+  arms of the loop now, pushing the current buffer's PT, ZV or BEGV, or
+  the buffer, through its `RefCell` borrow; nothing there runs Lisp.
+  Instructions: undo 1,325,896 -> 1,300,268 a unit; bytecode-to-native
+  393.0 -> 391.6 an iteration and bytecode calls 435.7 -> 437.8, inside
+  the ±2 an iteration that bytecode calls moves between runs of one
+  build (undo's unit moves about ±5K). Two variants measured worse:
+  reading the buffer with no borrow-flag test (undo 1,305,620, bytecode
+  calls 438.6), and `Bvarref` of a variable that is not plain
+  (buffer-local, forwarded, aliased) resolved by `find_symbol_value` out
+  of line instead of through `op_in_place`, with its `void-variable`
+  raised as the full arm's (undo 1,296,236, 4K below the round, but
+  bytecode-to-native 395.9 and bytecode calls 439.4 and 441.1 in two
+  builds: `run_verified`'s register allocation again; patch
+  `docs/handover/2026-10-15-performance-round/rejected-varref-in-place.patch`).
+  Validation (gate profile, `--test-threads=1`): 195 tests naming
+  point, narrowing, `current-buffer` or byte code and the lightweight
+  group's 598 pass; clippy `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2935,7 +2956,9 @@ PR #92 merged it into main (`cbe5eed`). **On `aa68c68`** (a nested
 native call's frame popped by its length): full Rust gate passed (run
 39191231079); frozen matched 7,927 of 7,928 with the one mismatch GNU's
 ("oracle: 1 unexpected", Emaxx none), and its re-run passed (run
-39191232834, attempt 2). Locally,
+39191232834, attempt 2). **On `286c624`** (the evaluator's subr calls):
+full Rust gate passed (run 39217028701), frozen passed on its first
+attempt (run 39217031778). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -3215,9 +3238,9 @@ and failures are still recorded.
    bytecode-to-native 1.02 and bytecode calls 1.00, with GNU's own rounds
    ranging over ±25%, so instruction counts are the guide and a count
    well below GNU's is what passes there. Instructions a unit now:
-   interpreted-to-native 2,541 (GNU 2,387), undo 1,325,896 (1,252,071),
-   cons allocation 5,047 (5,215), bytecode-to-native 393.0 an iteration
-   (388), bytecode calls 435.7 (468). Undo's next step is its slow byte
+   interpreted-to-native 2,541 (GNU 2,387), undo 1,300,268 (1,252,071),
+   cons allocation 5,047 (5,215), bytecode-to-native 391.6 an iteration
+   (388), bytecode calls 437.8 (468). Undo's next step is its slow byte
    ops' way out of the verified loop: 767 a unit through `op_in_place`
    at 120 instructions each (a second decode and dispatch, a large
    prologue, the frame's `admits` test on the way back), where GNU runs

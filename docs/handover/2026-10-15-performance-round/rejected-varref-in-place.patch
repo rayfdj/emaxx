@@ -1,0 +1,116 @@
+--- a/src/lisp/bytecode/vm.rs
++++ b/src/lisp/bytecode/vm.rs
+@@ -1888,15 +1888,36 @@
+             // Bvarref's SYMBOL_PLAINVAL case; any other variable, or a void
+             // one, takes the full arm.
+             macro_rules! varref {
+-                ($index:expr) => {{
+-                    let index = usize::from($index);
++                ($index:expr, $len:expr) => {{
++                    let index = $index;
+                     // SAFETY: verified against this vector's length.
+-                    let symbol = unsafe { constants.get_unchecked(index) };
++                    let symbol = unsafe { constants.get_unchecked(usize::from(index)) };
+                     let Kind::Symbol(name) = symbol.kind() else {
+                         slow!()
+                     };
+-                    let Some(value) = name.cell().plain_value() else {
+-                        slow!()
++                    let value = match name.cell().plain_value() {
++                        Some(value) => value,
++                        // A value that is not plain (a buffer-local,
++                        // forwarded or aliased variable): the full arm's
++                        // find_symbol_value out of line, which runs no Lisp,
++                        // and its signal raised as the full arm's.
++                        None => match varref_in_place(vm.interp, name, symbol) {
++                            Ok(value) => value,
++                            Err(error) => {
++                                // SAFETY: sp lies within the active frame.
++                                vm.interp.bc_stack.top =
++                                    unsafe { sp.offset_from(words) as usize } + 1;
++                                *pc = offset + $len;
++                                break 'run FastExit::Raised(
++                                    super::Instr {
++                                        offset,
++                                        len: $len,
++                                        op: Op::VarRef(index),
++                                    },
++                                    error,
++                                );
++                            }
++                        },
+                     };
+                     push!(value);
+                 }};
+@@ -2406,35 +2427,35 @@
+                 0o240 => set_car_cdr!(true),
+                 0o241 => set_car_cdr!(false),
+                 0o010 => {
+-                    varref!(0u16);
++                    varref!(0u16, 1);
+                     at += 1;
+                 }
+                 0o011 => {
+-                    varref!(1u16);
++                    varref!(1u16, 1);
+                     at += 1;
+                 }
+                 0o012 => {
+-                    varref!(2u16);
++                    varref!(2u16, 1);
+                     at += 1;
+                 }
+                 0o013 => {
+-                    varref!(3u16);
++                    varref!(3u16, 1);
+                     at += 1;
+                 }
+                 0o014 => {
+-                    varref!(4u16);
++                    varref!(4u16, 1);
+                     at += 1;
+                 }
+                 0o015 => {
+-                    varref!(5u16);
++                    varref!(5u16, 1);
+                     at += 1;
+                 }
+                 0o016 => {
+-                    varref!(fetch!());
++                    varref!(fetch!(), 2);
+                     at += 2;
+                 }
+                 0o017 => {
+-                    varref!(fetch2!());
++                    varref!(fetch2!(), 3);
+                     at += 3;
+                 }
+                 0o020 => {
+@@ -2516,6 +2537,27 @@
+     }
+ }
+ 
++/// Bvarref's full arm for SYMBOL, NAME's cell, whose value is not plain:
++/// find_symbol_value (`symbol_value_cell_symbol'), which runs no Lisp,
++/// and void-variable with NAME itself.
++#[inline(never)]
++fn varref_in_place(
++    interp: &mut Interpreter,
++    symbol: crate::lisp::types::SymbolName,
++    name: Value,
++) -> Result<Value, LispError> {
++    match interp.symbol_value_cell_symbol(&symbol) {
++        Ok(value) => Ok(value),
++        Err(error) if matches!(error.kind(), LispErrorKind::Void(_)) => {
++            Err(LispError::SignalValue(Value::list([
++                Value::symbol("void-variable"),
++                name,
++            ])))
++        }
++        Err(error) => Err(error),
++    }
++}
++
+ /// The verified loop's way to an op it has no arm for (or whose operands
+ /// its arm does not take): `exec_op' runs the op at OFFSET in place, on
+ /// the stack below TOP, as exec_byte_code runs every op in one loop. The
