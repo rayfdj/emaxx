@@ -80,18 +80,25 @@ for file in subr-tests.el simple-tests.el files-tests.el replace-tests.el \
         files="$files $source/test/lisp/$file"
     fi
 done
+# Each training process writes its own profile.  The default name merges
+# every process of the binary into one file in place, and that file has
+# come out unreadable ("too much profile data") on several builds, the
+# whole profile lost, where each process's own file reads; the merge
+# below skips a file it cannot read.
 index=0
 for file in $files; do
     index=$((index + 1))
     # A test's outcome does not matter here, only the code it runs.
     (cd "$work" && HOME=$work/home LANG=C LC_ALL=C TZ=UTC \
         EMACS_TEST_DIRECTORY=$source/test \
+        LLVM_PROFILE_FILE=$raw/train-%p.profraw \
         timeout 300 "$target/instrumented/release/emaxx" -Q --batch \
         --eval "(setq native-comp-jit-compilation nil load-no-native t)" \
         -L "$source/test" -l ert -l "$file" -f ert-run-tests-batch-and-exit \
         >"$work/$index.log" 2>&1) || true
 done
 
-"$profdata" merge -o "$target/emaxx.profdata" "$raw"/*.profraw
+"$profdata" merge --failure-mode=all -o "$target/emaxx.profdata" "$raw"/*.profraw
+rm -f "$raw"/*.profraw
 build "-Cprofile-use=$target/emaxx.profdata" "$target"
 echo "pgo-build: $target/release/emaxx"

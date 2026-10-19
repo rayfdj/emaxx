@@ -403,11 +403,53 @@ fn legacy_arity_error(function: &Value, nargs: usize) -> LispError {
     }
 }
 
+/// What a running frame reads of its program, as bytecode.c re-reads
+/// `bytestr_data' and `vectorp' from the function at a return: the code,
+/// the constants and the verifier's result.  The argument template and
+/// the stack depth are read once, at the frame's entry, from the whole
+/// program (`ByteCodeObject').  Three words: a call saves the caller's
+/// and installs the callee's, a return restores the caller's.
+#[derive(Clone, Copy)]
+struct Running {
+    code: super::CodeBytes,
+    constants: crate::lisp::types::VectorRef,
+    verified: Option<&'static super::verify::VerifiedCode>,
+}
+
+impl Running {
+    #[inline(always)]
+    fn of(program: &ByteCodeObject) -> Self {
+        Self {
+            code: program.code,
+            constants: program.constants,
+            verified: program.verified,
+        }
+    }
+
+    #[inline(always)]
+    fn entered(program: &super::verify::EntryProgram) -> Self {
+        Self {
+            code: program.code,
+            constants: program.constants,
+            verified: Some(program.verified),
+        }
+    }
+
+    #[inline]
+    fn constant(&self, index: u16) -> Value {
+        // bytecode.c reads vectorp[index] at the instruction, not a copy
+        // captured during decoding. End the borrow before Lisp can run.
+        self.constants
+            .get(usize::from(index))
+            .expect("validated constant index")
+    }
+}
+
 /// One suspended byte-code frame of this activation (bytecode.c's
 /// `bc_frame': the caller's program and pc, its stack top, and the
 /// watermarks the callee's return or error restores).
 struct BcFrame {
-    program: ByteCodeObject,
+    program: Running,
     /// The caller's slot holding the callee (Bcall's TOP after DISCARD):
     /// the callee's arguments and frame lie above it, and the return
     /// value replaces it.
@@ -431,7 +473,7 @@ struct BcFrame {
 struct VmFrames<'a> {
     interp: &'a mut Interpreter,
     env: &'a mut Env,
-    program: &'a mut ByteCodeObject,
+    program: &'a mut Running,
     frames: &'a mut Vec<BcFrame>,
     handlers: &'a mut Vec<Handler>,
     op_error_frames: &'a mut usize,
@@ -519,7 +561,7 @@ fn bytecode_call(
             push_pooled(
                 frames,
                 BcFrame {
-                    program: std::mem::replace(*program, callee),
+                    program: std::mem::replace(*program, Running::of(&callee)),
                     base: args_start - 1,
                     handlers_len: handlers.len(),
                     unwinds_len: interp.bc_unwinds.len(),
@@ -537,7 +579,7 @@ fn bytecode_call(
                 mandatory,
                 nonrest,
                 rest,
-            } = program.argspec
+            } = callee.argspec
             else {
                 unreachable!("bytecode_callee selects packed argument lists")
             };
@@ -561,7 +603,7 @@ fn bytecode_call(
                     interp.bc_stack.push_within_frame(Value::Nil);
                 }
             }
-            program.verified = super::verify::verified_code(program, nonrest + usize::from(rest));
+            program.verified = super::verify::verified_code(&callee, nonrest + usize::from(rest));
             return Ok(CallOutcome::Entered(
                 interp.bc_stack.top,
                 interp.bc_stack.len(),
@@ -647,8 +689,11 @@ fn call_native_nested(
     func: Value,
     native: crate::lisp::types::NativeFunctionRef,
 ) -> Option<Result<Value, LispError>> {
-    let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
-    state.bc_stack.top = top;
+    // The interpreter and environment held here, not read again through
+    // the loop's record after each step the call's stores may change.
+    let interp: &mut Interpreter = vm.interp;
+    let env: &mut Env = vm.env;
+    interp.bc_stack.top = top;
     if vm.trace_errors {
         return None;
     }
@@ -659,29 +704,29 @@ fn call_native_nested(
         return None;
     }
     let target = native.target();
-    if !state.plain_bcall_entry(func.symbol_cell()) {
+    if !interp.plain_bcall_entry(func.symbol_cell()) {
         return None;
     }
-    let nested = crate::lisp::native_comp::NestedCall::of(vm.interp)?;
+    let nested = crate::lisp::native_comp::NestedCall::of(interp)?;
+    // The active call's runtime is NESTED's: maybe_gc's test on the
+    // active call's trigger first.
+    if !crate::lisp::native_comp::collection_cannot_be_due(interp) {
+        return None;
+    }
     // SAFETY: the active call lends its runtime for this synchronous
     // call, as `current_runtime' does.
     let runtime = unsafe { &mut *nested.runtime() };
-    if !runtime.collection_cannot_be_due() {
-        return None;
-    }
-    let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     // SAFETY: as the Call arm's: the arguments stay on the caller's stack
     // until the call returns, and verification found them there.
-    let call_args = unsafe { state.bc_stack.below_top_unchecked(top, argc) };
-    let (backtrace_depth, lisp_eval_depth) = state.enter_plain_funcall_at(func, call_args);
+    let call_args = unsafe { interp.bc_stack.below_top_unchecked(top, argc) };
+    let (backtrace_depth, lisp_eval_depth) = interp.enter_plain_funcall_at(func, call_args);
     let depths = (lisp_eval_depth, backtrace_depth + 1);
     // SAFETY: NESTED is the active call of this runtime and interpreter,
     // and TARGET takes at most six arguments, among them CALL_ARGS.
-    let result = unsafe {
-        runtime.invoke_nested_fixed(nested, vm.interp, vm.env, target, call_args, depths)
-    };
-    let result = vm.interp.settle_frame_result(result, vm.env);
-    vm.interp.leave_plain_funcall(backtrace_depth);
+    let result =
+        unsafe { runtime.invoke_nested_fixed(nested, interp, env, target, call_args, depths) };
+    let result = interp.settle_frame_result(result, env);
+    interp.leave_plain_funcall(backtrace_depth);
     Some(result)
 }
 
@@ -806,23 +851,10 @@ fn enter_closure_frame(
     // SAFETY: nothing below enters a closure or collects a string before
     // the program is copied into the frame.
     let callee = unsafe { super::verify::entry_program(closure)?.as_ref() };
-    let ArgSpec::Packed {
-        mandatory,
-        nonrest,
-        rest,
-    } = callee.argspec
-    else {
-        unreachable!("bytecode_callee selects packed argument lists")
-    };
-    let nonrest = usize::from(nonrest);
-    let entry_depth = nonrest + usize::from(rest);
-    if argc < usize::from(mandatory)
-        || argc > nonrest
-        || entry_depth > callee.stack_depth
-        || !crate::lisp::native_comp::collection_cannot_be_due(state)
-    {
+    if !callee.takes(argc) || !crate::lisp::native_comp::collection_cannot_be_due(state) {
         return None;
     }
+    let entry_depth = callee.entry_depth;
     // SAFETY: as the Call arm's: the caller's argument slots stay as they
     // are below the callee's frame until it returns or unwinds. Both
     // callers found the function and the arguments on the stack: verified
@@ -841,7 +873,7 @@ fn enter_closure_frame(
     push_pooled(
         vm.frames,
         BcFrame {
-            program: vm.program.clone(),
+            program: *vm.program,
             base: args_start - 1,
             handlers_len: vm.handlers.len(),
             unwinds_len: state.bc_unwinds.len(),
@@ -854,7 +886,7 @@ fn enter_closure_frame(
             },
         },
     );
-    *vm.program = callee.clone();
+    *vm.program = Running::entered(callee);
     // setup_frame's `PUSH (*args)' and the optionals' nils.
     state.bc_stack.push_arguments(call_args, entry_depth);
     Some((state.bc_stack.top, entry_depth))
@@ -886,7 +918,7 @@ fn return_to_bytecode_frame(
     state.leave_plain_funcall(frame.backtrace_depth);
     let resume = state.bc_stack.leave_frame();
     state.bc_stack.replace_call(frame.base, value);
-    *vm.program = frame.program.clone();
+    *vm.program = frame.program;
     *vm.op_error_frames = frame.op_error_frames;
     vm.handlers.truncate(frame.handlers_len);
     let unchanged = frame.code_changes == crate::lisp::alloc::code_changes();
@@ -1271,7 +1303,7 @@ const FAST_OPS: [FastOp; 256] = {
 /// another kind) is left untouched at PC for the full dispatch.
 #[inline(always)]
 fn run_fast(
-    object: &ByteCodeObject,
+    object: &Running,
     code: &[u8],
     ops: &mut BcStack,
     pc: &mut usize,
@@ -1688,7 +1720,7 @@ fn run_verified(
                 () => {{
                     // SAFETY: sp lies within the active frame.
                     let top = unsafe { sp.offset_from(words) as usize } + 1;
-                    break 'run op_in_place(vm, code, offset, constants.len(), top, pc);
+                    break 'run op_in_place(vm, offset, top, pc);
                 }};
             }
             // A jump op is three bytes; one to before its end is backward.
@@ -2455,14 +2487,13 @@ fn run_verified(
 /// call, since the op may have run Lisp; or its signal. An op that does
 /// not decode leaves the loop with the stack as it was.
 #[inline(never)]
-fn op_in_place(
-    vm: &mut VmFrames<'_>,
-    code: &[u8],
-    offset: usize,
-    constants: usize,
-    top: usize,
-    pc: &mut usize,
-) -> FastExit {
+fn op_in_place(vm: &mut VmFrames<'_>, offset: usize, top: usize, pc: &mut usize) -> FastExit {
+    // The frame's code, which the loop reads only by its verified offsets
+    // and so holds without its length.
+    // SAFETY: as the verified loop's: nothing runs Lisp, collects or
+    // stores into a string before the instruction is decoded.
+    let code = unsafe { vm.program.code.bytes_unguarded() }.0;
+    let constants = vm.program.constants.len();
     // SAFETY: a verified instruction lies within the code.
     let byte = unsafe { *code.get_unchecked(offset) };
     let instr = match super::operandless_op(byte) {
@@ -2534,7 +2565,7 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
     } = vm;
     let interp: &mut Interpreter = interp;
     let env: &mut Env = env;
-    let program: &mut ByteCodeObject = program;
+    let program: &mut Running = program;
     let handlers: &mut Vec<Handler> = handlers;
     let op_error_frames: &mut usize = op_error_frames;
     macro_rules! pop {
@@ -3282,6 +3313,7 @@ impl TraceLispRoots for ByteCodeObject {
     }
 }
 
+#[cfg(test)]
 impl ByteCodeObject {
     #[inline]
     fn constant(&self, index: u16) -> Value {
@@ -3319,15 +3351,8 @@ pub fn execute_closure(
     if let Some(program) = super::verify::entry_program(closure) {
         // SAFETY: nothing runs Lisp or collects before the copy below.
         let program = unsafe { program.as_ref() };
-        if let ArgSpec::Packed {
-            mandatory,
-            nonrest,
-            rest,
-        } = program.argspec
-            && (usize::from(mandatory)..=usize::from(nonrest)).contains(&args.len())
-            && usize::from(nonrest) + usize::from(rest) <= program.stack_depth
-        {
-            return run_entered(interp, program.clone(), Value::Closure(closure), args, env);
+        if program.takes(args.len()) {
+            return run_entered(interp, *program, Value::Closure(closure), args, env);
         }
     }
     let program = closure_program(closure)?;
@@ -3394,15 +3419,12 @@ fn run(
 #[inline(never)]
 fn run_entered(
     interp: &mut Interpreter,
-    program: ByteCodeObject,
+    program: super::verify::EntryProgram,
     function: Value,
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let ArgSpec::Packed { nonrest, rest, .. } = program.argspec else {
-        unreachable!("the entry cache holds packed argument lists")
-    };
-    let entry_depth = usize::from(nonrest) + usize::from(rest);
+    let entry_depth = program.entry_depth;
     interp.bc_stack.ensure_allocated();
     let stack_at_entry = (
         interp.bc_stack.frame,
@@ -3421,7 +3443,7 @@ fn run_entered(
         // The caller checked the count against the list and the list's
         // slots against the frame's depth.
         interp.bc_stack.push_arguments(args, entry_depth);
-        let mut program = program;
+        let mut program = Running::entered(&program);
         let mut frames = Pooled::new();
         let mut handlers = Pooled::new();
         let mut op_error_frames = 0;
@@ -3663,7 +3685,7 @@ fn run_frames(
         ArgSpec::Legacy(_) => 0,
     };
     program.verified = super::verify::verified_code(&program, entry_depth);
-    run_loop(interp, env, Activation::new(program), None)
+    run_loop(interp, env, Activation::new(Running::of(&program)), None)
 }
 
 thread_local! {
@@ -3779,7 +3801,7 @@ impl<T: Spare> std::ops::DerefMut for Pooled<T> {
 
 /// An activation's loop state, handed from its entry to `run_loop'.
 struct Activation {
-    program: ByteCodeObject,
+    program: Running,
     pc: usize,
     frames: Pooled<BcFrame>,
     handlers: Pooled<Handler>,
@@ -3794,7 +3816,7 @@ struct Activation {
 }
 
 impl Activation {
-    fn new(program: ByteCodeObject) -> Self {
+    fn new(program: Running) -> Self {
         Self {
             program,
             pc: 0,

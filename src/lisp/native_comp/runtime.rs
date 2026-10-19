@@ -902,11 +902,15 @@ pub(crate) fn maybe_gc_active() {
 /// maybe_gc's tests, reading only: true when maybe_gc would return
 /// without collecting or touching the counters.  A caller that finds a
 /// collection possible takes the path that runs maybe_gc itself.
-#[inline]
+#[inline(always)]
 pub(crate) fn collection_cannot_be_due(interpreter: &crate::lisp::eval::InterpreterState) -> bool {
-    if active_collection_cannot_be_due() {
-        return true;
-    }
+    active_collection_cannot_be_due() || collection_cannot_be_due_slow(interpreter)
+}
+
+/// `collection_cannot_be_due' once the active call's trigger is reached
+/// or no call is active.
+#[inline(never)]
+fn collection_cannot_be_due_slow(interpreter: &crate::lisp::eval::InterpreterState) -> bool {
     let active = ACTIVE_CALL.with(Cell::get);
     if !active.is_null() {
         // SAFETY: as maybe_gc_active's read of the active runtime.
@@ -1661,14 +1665,6 @@ impl NativeRuntime {
         let result = unsafe { Value::from_word(word) };
         self.finish_frame(interpreter, false)?;
         Ok(result)
-    }
-
-    /// maybe_gc's tests on this runtime's counters (see
-    /// `collection_cannot_be_due').
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    #[inline(always)]
-    pub(crate) fn collection_cannot_be_due(&self) -> bool {
-        self.heap.collection_cannot_be_due()
     }
 
     /// The rest of `invoke' once the call frame is pushed: the

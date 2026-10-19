@@ -26,3 +26,8 @@ rustflags = [
     "-C", "llvm-args=-tail-dup-pred-size=1024",
     "-C", "llvm-args=-tail-dup-succ-size=1024",
 ]
+# This package's own crates, the byte-code loop's among them, compile for
+# a position-dependent executable on x86-64 Linux, where a jump table's
+# entries are absolute addresses: see the wrapper. An explicit
+# RUSTC_WORKSPACE_WRAPPER (clippy's driver, say) replaces it.
+rustc-workspace-wrapper = "tools/rustc-workspace-wrapper.py"

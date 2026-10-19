@@ -20,7 +20,7 @@ records the GNU counter contract.
 | --- | --- |
 | **Main** `94295d0a` | Source324: one-word values, 16-byte cons payloads, shared object work, and symbol value/function/plist/flags on the allocated symbols. |
 | **[PR87](https://github.com/rayfdj/emaxx/pull/87)** `35c6cd9b` (`runtime-char-tables`) | Object-state draft17: membership, constants, aliases, same-name replacement, image restoration and native `nil`/`t` identity. 584 runtime inputs. |
-| **Task branch** `runtime-performance` (pushed as `claude/awesome-newton-yk6sae` through `c48c5a2`; PR #88 took it into main up to `ba696b3`, PR #89 up to `6242417`, PR #90 up to `8aaccaa`) | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
+| **Task branch** `runtime-performance` (pushed as `claude/awesome-newton-yk6sae` through `c48c5a2`; PR #88 took it into main up to `ba696b3`, PR #89 up to `6242417`, PR #90 up to `8aaccaa`, PR #91 up to `aa0c63f`) | Stacked on PR87: allocation counters and forwarded counter variables, actual header charges, image objects outside the GC census, char-table store counts for regexp caches, and a performance round on undo, sorting and the call path (below). |
 
 **PR87 evidence in this repository:** strict checks with zero warnings, 407
 affected controls in each of gate and release, and 44 ordinary GNU comparisons /
@@ -2166,6 +2166,165 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   whose GNU oracle answered `connect` for the asynchronous handshake while
   four test processes shared the machine and which passes run alone;
   clippy `-D warnings` and rustfmt pass.
+- **The contract's comparison, not the pilot minimum, on four cases.**
+  A script following the contract (`compat/core_runtime_perf.json`: full
+  sizes, nine rounds, one warmup and three samples a process, the
+  editors' order alternating, the median within each process, paired
+  round ratios and the bootstrapped 95% interval of their median with
+  the locked seed) on the profile-guided builds: on `a0034c1` bytecode
+  calls 1.043 [1.019, 1.153], bytecode-to-native 1.044 [1.009, 1.106],
+  cons allocation 0.964 [0.926, 1.025], interpreted-to-native 0.954
+  [0.919, 1.002]; on `aa0c63f` 1.045 [0.984, 1.120], 1.036 [0.979,
+  1.079], 0.940 [0.882, 1.001] and 0.996 [0.898, 1.097]. So the pilot
+  minimums (about 1.02 for the two byte-code cases) understate them:
+  bytecode calls runs 0.45 to 0.51 seconds a process against GNU's 0.42
+  to 0.46 at 12,000,000 (ten processes each), with address randomization
+  or without it, about 5 to 9% slower by median. Interpreted-to-native's
+  processes spread from 0.319 to 0.388 (one at 0.55) against GNU's 0.351
+  to 0.421; with randomization off (`setarch -R`) Emaxx's fall within
+  0.327 to 0.362, the median the same: part of that case's interval is
+  the address layout, which the contract does not fix for either
+  editor. The memory of a byte-code run does not grow with its size (88
+  MB at 3, 12 and 24 million calls).
+- **A running frame's program in three words.** A byte-code call saved
+  the caller's whole program (`ByteCodeObject`, six words, two of them
+  the argument template) in its frame, copied the callee's into the
+  loop's, and a return copied the caller's back. A running frame reads
+  only its code, constants and verifier result (bytecode.c re-reads
+  `bytestr_data` and `vectorp` from the function at a return), so frames,
+  the loops and the activation now hold those three (`Running`); the
+  argument template and stack depth are read at the entry from the whole
+  program, as before. The frames were never collector roots (their
+  functions on the byte-code stack are, and `run` roots a program run
+  without one). Bytecode calls: 504 → 491 instructions an iteration;
+  bytecode-to-native 445, native-to-bytecode 4,584 → 4,582, sort and
+  mapcar unchanged. Writing the frame record into its slot after the
+  capacity test (so the caller's program is not held across the growth
+  call) made the loop's registers worse instead (504 → 550) and is not
+  kept. Validation (gate profile, `--test-threads=1`): the lightweight
+  group's 598 tests and 168 of 169 evaluator and primitive tests whose
+  names mention byte code, compilation, funcall, signals, closures,
+  verification, unwinding or handlers pass (the other is the as-root
+  `byte_compile_file_reports_an_unwritable_target_like_gnu`); clippy
+  `-D warnings` and rustfmt pass.
+- **A position-dependent executable, and a frame entry's counts in one
+  bit.** On x86-64 Linux the package's own crates compile with
+  `-C relocation-model=static` (`tools/rustc-workspace-wrapper.py`,
+  Cargo's workspace wrapper in `.cargo/config.toml`, a Python script
+  since a POSIX shell drops `CARGO_BIN_EXE_make-fingerprint` from the
+  environment of the integration tests' compiles; dependencies keep
+  the default, since the procedural macros among them are shared objects
+  such code cannot be linked into, and Cargo has no stable per-package or
+  host flags). A jump table in position-independent code holds 32-bit
+  offsets from the table, so each byte-code dispatch was the opcode's
+  load, the offset's load, an add of the table's address (which held a
+  register through the loop) and the jump; with absolute entries it is
+  the load and `jmp *TABLE(,%rax,8)`, where GNU's computed goto (its
+  build is a PIE) takes four or five. The frame-entry cache
+  (`verify::EntryProgram`) now holds the callee's code, constants,
+  verified code, depth and first slots with the argument counts a plain
+  entry takes as a 64-bit mask, so setup_frame's count test and the
+  frame's room are one bit test, and the verified loop holds its code
+  without the length (the slow op reads its own). Instructions a unit
+  at a four-hundredth of the contract sizes against `c1ae4e3`, plain
+  builds: bytecode calls 495.5 → 439.2 (GNU 468), bytecode-to-native
+  450.0 → 411.8 (GNU 388), explicit GC −10.1%, interpreted-dynamic −3.1%,
+  native execution −1.5%, the others −0.03 to −1.5% but native-to-bytecode
+  (+0.05%), and undo 1,384,033 → 1,347,374 at 10 and 20 units (its
+  +1.4% at 2 and 4 is collection noise). The mask and the code without
+  its length alone, still position-independent: bytecode calls 491 → 481
+  at pilot size. Plain-build wall time at pilot sizes (seven rounds of
+  five samples, minimum and median against GNU's): bytecode calls 0.910
+  and 0.901 (`c1ae4e3` 1.005 and 0.972), bytecode-to-native 0.983 and
+  1.061 (1.028 and 1.057). Validation (gate profile,
+  `--test-threads=1`): the lightweight group's 598 tests (197 of them
+  native-code tests, 30 image and 33 dump tests), the 168 of 169 byte-code,
+  compilation, funcall, signal and closure tests as above (the as-root
+  one) and the 50 batch tests pass; clippy `-D warnings` and rustfmt
+  pass. The batch tests run two at a time in one process abort on
+  `c1ae4e3` as well (a collection meets a string another test's
+  interpreter holds mutably borrowed, "cannot collect while a string is
+  mutably borrowed", or the C heap's own abort): the string heap is the
+  process's, and the gate runs them one at a time.
+- **The contract's comparison on all sixteen, on `3f7bff2`'s
+  profile-guided build** (the script above: full sizes, nine rounds, one
+  warmup and three samples a process, alternating order, the locked
+  bootstrap), median and 95% interval of the paired ratios:
+  interpreted-lexical 0.602 [0.532, 0.682], interpreted-dynamic 0.768
+  [0.737, 0.844], interpreted-calls 0.562 [0.484, 0.611], bytecode calls
+  0.943 [0.910, 1.049], native execution 0.507 [0.463, 0.540],
+  interpreted-to-native 0.942 [0.910, 1.026], bytecode-to-native 1.023
+  [0.968, 1.064], native-to-interpreted 0.708 [0.602, 0.843],
+  native-to-bytecode 0.760 [0.703, 0.924], cons allocation 0.929 [0.871,
+  1.043], list traversal 0.813 [0.747, 0.833], mapcar 0.812 [0.755,
+  0.883], explicit GC 0.688 [0.638, 0.732], sort 0.845 [0.754, 0.943],
+  undo 0.991 [0.944, 1.109], bindat 0.673 [0.623, 0.734]. Twelve meet
+  the 1.03 bound; bytecode-to-native, undo, bytecode calls and cons
+  allocation do not. A round's ratio ranges over about ±10% on this
+  machine (undo's from 0.819 to 1.153), so the interval's upper end lies
+  well above the median. `tools/pgo-build.sh`'s training now writes a
+  profile a process and merges the ones that read: the one file the
+  default name merges every process into came out unreadable ("too much
+  profile data") on both attempts for this build and on `a0034c1`'s
+  first, losing the whole profile, while each process's own file reads
+  (one of this build's was unreadable and is skipped).
+- **A form whose head holds a MANY subr evaluates its arguments
+  without the general call.** eval_sub's direct path took a C primitive
+  of at most eight fixed arguments and a special form, while `<`, `+`
+  and the other subrs of any number of arguments went through
+  `eval_call`'s resolution loop and full classification of the function
+  cell. `eval_many_subr` takes them as eval_sub's MANY branch does: the
+  frame recorded with the unevaluated form, the count and the minimum
+  checked, each argument's Fcdr taken before its evaluation (a list an
+  earlier argument cut short ends the arguments there), and more than
+  eight left to the rooted general call. Instructions a unit against
+  `3f7bff2`, plain builds: interpreted-to-native 2,934 → 2,711 (GNU
+  2,387), interpreted-calls 3,441 → 3,205, interpreted-lexical 3,867 →
+  3,650, list traversal 286,523 → 273,865, cons allocation 5,460 →
+  5,411. GNU and Emaxx print the same for nine edge forms (more than
+  eight arguments, `(<)`, an argument that signals, an improper argument
+  list, a list an argument's evaluation shortens, a `throw` out of an
+  argument, `(max)`). Validation (gate profile, `--test-threads=1`): the
+  lightweight group's 598 tests, 196 evaluator and primitive tests whose
+  names mention arity, arguments, backtraces, signals, `setq`, `apply`,
+  `funcall`, list lengths or subrs, and the seven integration targets'
+  42 tests pass; clippy `-D warnings` and rustfmt pass.
+- **Where a byte-code iteration's time goes.** One iteration of each
+  editor's loop, traced instruction by instruction (gdb attached to a
+  running workload, stepping from an instruction the loop runs once
+  around to it) and given to `llvm-mca -mcpu=sapphirerapids` (this host
+  is an Emerald Rapids Xeon, model 207): bytecode calls is 442
+  instructions, 487 µops, 28 taken branches and 26 stack-slot accesses
+  on Emaxx's plain build against GNU's 468, 481, 40 and 68, and the
+  model puts Emaxx at 5.8 µops a cycle against a dispatch width of 6
+  (bound by µops issued) and GNU at 4.4 (bound by dependencies). On the
+  profile-guided build the same loop is 441 instructions but 497 µops,
+  19 taken branches and 35 stack-slot accesses: its layout takes fewer
+  branches, its register allocation spills more, and it times slower
+  than the plain build of the same source (bytecode calls, minimum and
+  median against GNU's at pilot size: plain 0.91 and 0.94, profile-guided
+  0.93 and 0.99; bytecode-to-native 1.01 and 1.03 against 1.02 and 1.05).
+  A µop removed is worth a sixth of a cycle there, spills included.
+  Bytecode-to-native: 411 instructions and 464 µops against GNU's 388
+  and 392, 58 stores against 44; split at the dispatch jumps, its call op
+  is 275 instructions against GNU's 115, its other 13 ops 136 against
+  GNU's 273. The call op's parts: the callee's type tests (about 41),
+  `plain_bcall_entry` (about 20), Ffuncall's depth and backtrace record
+  (about 20, 9 stores), the native frame's push and pop with the two
+  handler syncs (about 40), the escape buffer and the call (about 26, 9
+  stores), and the settling, the record's pop and the loop's resumption
+  (about 35), with 12 spills. Taking the fixed-count native call out of
+  line made it 7.5 instructions longer and 10.6 loads lighter for the
+  same wall time (not kept). Holding the interpreter and environment in
+  locals for the call, testing a collection on the active call's trigger
+  mirror first (`collection_cannot_be_due`'s fast test is now inline,
+  its rest out of line), comparing the depth in `plain_bcall_entry`
+  without a saturating conversion and building the entry's count mask
+  without a loop: bytecode calls 442.8 → 438.8, bytecode-to-native 411.0
+  → 409.7. Validation (gate profile, `--test-threads=1`): the lightweight
+  group's 598 tests and 325 of the 326 byte-code, native-call, evaluator
+  and argument tests of this round and the last (the as-root one fails
+  as before); clippy `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2660,7 +2819,24 @@ full Rust gate passed (run 39153644820), frozen passed on its first
 attempt (run 39153646470); PR #90 merged it into main. **On `5658349`**
 (with `a2494c7`: the print, message and word-boundary variables by their
 symbols, the watcher flag first): full Rust gate passed (run
-39158088826), frozen passed on its first attempt (run 39158090668). Locally,
+39158088826), frozen passed on its first attempt (run 39158090668).
+**On `a0034c1`** (a Bcall into native code by its count): full Rust gate
+passed (run 39164077964), frozen passed on its first attempt (run
+39164080135). **On `aa0c63f`** (maybe_gc on a mirror of the trigger):
+full Rust gate passed (run 39167951029), frozen passed on its first
+attempt (run 39167952851); PR #91 merged it into main (`bafedf4`). **On
+`c1ae4e3`** (a running frame's program in three words): full Rust gate
+passed (run 39172012232), frozen passed on its first attempt (run
+39172014125). **On `3f7bff2`** (the position-dependent executable): the
+Rust gate's library groups and binaries passed, but its integration
+targets did not build (run 39175583455): the wrapper was a `/bin/sh`
+script, and dash drops the environment variables whose names are no
+identifiers, among them the `CARGO_BIN_EXE_make-fingerprint` that
+`tests/cli.rs` reads. It is a Python script since (the next commit),
+which passes the environment on, and the seven integration targets'
+42 tests pass locally with it. Frozen matched 7,927 of 7,928 with the
+one mismatch GNU's (run 39175585643, "oracle: 1 unexpected"); its
+re-run was pending at the next commit. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -2934,22 +3110,24 @@ and failures are still recorded.
 
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
-2. **Performance, worst ratios first.** By wall time on `a2494c7`'s
-   profile-guided build (pilot sizes, minimum ratio; the bullet "Profile-
-   guided wall time on `a2494c7`" has the medians and `6242417` beside
-   it on the same host): bytecode-to-native 1.05 to 1.09, bytecode calls
-   1.04 to 1.05, cons allocation and interpreted-to-native about 1.01,
-   undo 0.90 to 0.94, and the other eleven below 0.9. Earlier, on
-   `6242417`: undo 1.11, bytecode-to-native 1.07, bytecode calls 1.04,
-   interpreted-to-native 1.01, cons allocation 1.00. That table ran on the host the container came
-   back on after a restart, where `ba9f640` itself measures
-   interpreted-to-native 1.01 and cons allocation 1.01 against 1.15 and
-   1.13 on the earlier host (its one in-sample collection, see "Cons
-   allocation's gap is its one collection"); compare builds only on one
-   host. By instructions on the line-table build: undo about 1.12 (after
-   the print and message variables by their symbols), interpreted-to-native 1.28, bytecode-to-native 1.26,
-   native-to-bytecode 1.24, bytecode calls 1.11, native-execution 0.90. Where each case's instructions go is under
-   "Where the byte-code call and return go" and the native call bullets.
+2. **Performance, worst ratios first.** By the contract's comparison on
+   `3f7bff2`'s profile-guided build (the bullet "The contract's comparison
+   on all sixteen"): bytecode-to-native 1.023 [0.968, 1.064], undo 0.991
+   [0.944, 1.109], bytecode calls 0.943 [0.910, 1.049], interpreted-to-
+   native 0.942 [0.910, 1.026], cons allocation 0.929 [0.871, 1.043], the
+   other eleven at most 0.85. A round's ratio ranges over about ±10% on
+   this host, so a median near 0.92 or below is what brings the
+   interval's upper end to 1.03. Since then the MANY subr path took
+   interpreted-to-native from 2,934 to 2,711 instructions a unit (GNU
+   2,387). The byte-code loop is µop-bound (bullet "Where a byte-code
+   iteration's time goes"): bytecode calls runs fewer instructions, taken
+   branches and stack accesses than GNU's loop, and the profile-guided
+   build's register allocation, with more spills, is what makes it slower
+   there than the plain build; bytecode-to-native's whole excess is its
+   call op, 275 instructions against GNU's 115 (its other ops take half
+   of GNU's). Undo runs 1,348,880 instructions a unit against GNU's
+   1,252,071, spread over the evaluator, the slow byte ops (767 a unit),
+   the allocator and 73 entry-cache misses (closures made afresh).
    (Older wall figures, before these rounds: bytecode-to-native 1.54,
    undo 1.35, mapcar 1.29, cons allocation 1.22, interpreted-to-native
    1.19, bytecode calls 1.10, explicit-gc 1.09.) The profile helps the interpreter and
