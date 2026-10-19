@@ -2436,6 +2436,193 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   Validation (gate profile, `--test-threads=1`): 195 tests naming
   point, narrowing, `current-buffer` or byte code and the lightweight
   group's 598 pass; clippy `-D warnings` and rustfmt pass.
+- **Round 23: a native-compiled function of fixed arity is eval_sub's
+  subr.** A form whose head's function cell holds a native-compiled
+  function of at most six arguments in registers (`register_counts`,
+  lexical binding) is called as eval_sub's SUBRP branch calls one:
+  - the arity is checked before any argument is evaluated, the error
+    naming the form's symbol;
+  - the positions up to the maximum are evaluated into slots (a missing
+    optional is nil);
+  - the frame shows the arguments given;
+  - the call is `call_function_inline`'s.
+  It took `eval_call`'s general way before, which resolved the cell again
+  and evaluated the arguments first. It also signaled `(wrong-number-of-arguments
+  native-compiled-function N)`, two differences from GNU that the new
+  oracle test pins (`source_calls_of_fixed_native_functions_are_eval_sub_subr_calls`).
+  The path, with `eval_call` for every other head that is no C primitive,
+  lies in `eval_cons_call`, out of eval_sub. Two placements inside
+  eval_sub (the native test after the subr arms, then sharing their
+  function-cell load) cost cons allocation 84 to 112 instructions a unit
+  through eval_sub's register allocation, all of it in eval_sub (2.2 to
+  5.5 a call). With the profiler (`EMAXX_PROFILE`) on, the call goes the
+  general way as before. A pending-termination test before the call,
+  which `call_function_value_named` makes, cost 8 a unit and was dropped:
+  termination comes due only inside an argument's evaluation, which then
+  returns its error, and the C-primitive path has no such test either.
+  Instructions a unit against round 22's build (interpreted-to-native
+  and cons allocation on the final code, the rest on the variant without
+  the profiler test): interpreted-to-native
+  2,542.6 -> 2,428.9 (GNU 2,387), native-to-interpreted 4,223.9 ->
+  4,097.2, cons allocation 5,046.1 -> 5,055.7, undo 1,306,776 ->
+  1,301,605 (inside its noise). The general call is one function further
+  away, so: interpreted calls 3,074 -> 3,161, interpreted-lexical 3,460 ->
+  3,480, -dynamic 3,147 -> 3,172, list traversal 255,581 -> 256,101,
+  bindat 871,879 -> 891,245 (+2.2%). All of these run at 0.56 to 0.81
+  of GNU's wall time. Validation (gate profile, `--test-threads=1`):
+  2,053 tests (all 1,677 of `lisp::eval::`, and every test naming
+  native, backtrace, funcall, arity, lambda or closure) pass but the two
+  known container-only failures below
+  (`byte_compile_file_reports_an_unwritable_target_like_gnu` as root,
+  `batch_startup_image_round_trip_or_explicit_native_image_limit`), and
+  the lightweight group's 598 pass. Clippy `-D warnings` and rustfmt
+  pass.
+- **Simulated branch mispredictions (cachegrind `--branch-sim=yes`, a
+  per-address two-bit predictor with no global history; no PMU on this
+  host).** Per unit, against GNU:
+  - interpreted-to-native: instructions 2,350 (PGO) and 2,420 (plain),
+    GNU 2,422; mispredictions 17.4 (PGO) and 9.8 (plain), GNU 9.0.
+  - cons allocation: instructions 4,926 (PGO) and 5,059 (plain), GNU
+    5,295; mispredictions 36.9 (PGO) and 28.9 (plain), GNU 24.0.
+  Fewer loads and stores than GNU in both. In the model:
+  - The variable lookup (`lookup_symbol_plain`, the alist walk GNU's
+    `Fassq` makes too) misses 5 times a unit in the plain build and 14
+    in the PGO build.
+  - eval_cons's subr dispatch (`maximum @ 0..=8`) misses about 10 times
+    in 16, because the loop body alternates fixed-arity subrs and
+    special forms.
+  A predictor with global history may learn both, so the model may
+  overstate them. The wall comparison of the two builds is what decides.
+- **Round 24: native arity errors as GNU signals them.** The loader's
+  arity test (`check_arity`) and the binding of a dynamic-binding native's
+  lambda list signaled `(wrong-number-of-arguments native-compiled-function
+  N)`. GNU's funcall_subr and funcall_lambda signal with the function
+  object, `#<subr NAME>`, and the loader does too now
+  (`wrong_number_of_arguments`). A form whose head reaches a lexical
+  native other than through the round 23 path (through an alias, with
+  more than six arguments, a MANY native, or the profiler on) had its
+  arguments evaluated before that test. `eval_call` now checks the
+  arity first, as for a C primitive (MANY's minimum included), naming the
+  form's symbol. A dynamic-binding native stays apply_lambda's: arguments
+  first, then the subr in the error. The new oracle test
+  `native_arity_errors_name_the_callee_as_gnu_does` covers funcall,
+  apply, an alias, MANY and a dynamic native, and the loader's own test
+  now expects the function object. Instructions a unit: interpreted
+  calls 3,162.8 -> 3,173.8 (`eval_call`'s native test for every closure
+  call); interpreted-to-native 2,420.5, bytecode-to-native 392.3 and
+  native-to-interpreted 4,093.2, unchanged within their noise.
+  Validation (gate profile, `--test-threads=1`): 618 tests naming
+  native, arity, funcall, apply, alias, subr, lambda, closure or calls
+  (the loader's and the native runtime's among them) pass but the
+  known container-only image round trip, and the lightweight group's
+  598 pass. Clippy `-D warnings` and rustfmt pass.
+- **Wall pilots of the build kinds on this host: too noisy to rank
+  them.** Three pilots of the five tight workloads (`pilot3.py`-style:
+  the contract's sizes, one warmup and three samples a process, five or
+  seven rounds, order rotating), on rounds 23 and 24's source, compared:
+  - the profile-guided build;
+  - the same build with `run_verified` dropped from the profile
+    (`llvm-profdata merge --no-function=2vm12run_verified`, so the
+    byte-code loop is compiled as in the plain build);
+  - the plain build.
+  Median ratio to GNU, pilot by pilot:
+  - interpreted-to-native: PGO 0.970, 0.946, 1.121; plain 1.014, 1.065,
+    1.090.
+  - cons allocation: PGO 1.011, 0.943, 1.074; plain 1.103, 1.115, 1.119.
+  - undo: PGO 1.005, 1.141, 1.072; plain 1.217, 1.193, 1.231.
+  - bytecode-to-native: PGO 1.085, 1.050, 0.989; plain 1.014, 0.887,
+    0.981.
+  - bytecode calls: PGO 0.997, 0.954, 1.043; plain 0.942, 1.015, 0.973.
+  - without `run_verified`'s profile (second and third pilots):
+    bytecode-to-native 0.921 and 0.996, bytecode calls 0.952 and 1.007,
+    interpreted-to-native 0.774 and 1.121, cons allocation 1.132 and
+    1.093, undo 1.089 and 1.073.
+  Single rounds ranged from 0.66 to 1.54, and GNU's own medians moved by
+  up to 40% between pilots (interpreted-to-native 0.50 to 0.70 s).
+  Each process's CPU time (`getrusage`, the third pilot) varied about as
+  much, so the variance comes from the host, not from stolen time
+  (steal is about 3% over the uptime). The profile-guided build is
+  consistently ahead on undo and cons allocation, the plain one roughly
+  even or ahead on the two byte-code workloads. Dropping
+  `run_verified`'s profile showed no consistent gain, and
+  `tools/pgo-build.sh` is unchanged. On this host a few percent between
+  builds needs far more rounds than a pilot. Instruction counts remain
+  the guide.
+- **Where the profile-guided build stands, by cachegrind's
+  simulation** (rounds 23 and 24's source; per unit, against GNU).
+  - Instructions: undo 1,185,265 (GNU 1,259,204, 0.94),
+    bytecode-to-native 382.6 (388.0), bytecode calls 437.9 (468.0),
+    interpreted-to-native 2,350 (2,422), cons allocation 4,926 (5,295).
+    The timed build runs fewer instructions than GNU in all five.
+  - Undo's L1 instruction-cache misses: 39,711 against GNU's 21,140
+    (the plain build 59,810). Its data misses are 13,451 reads and 3,911
+    writes against 9,799 and 1,702, and its conditional mispredictions
+    17,146 against 13,389.
+  - The byte-code VM's functions alone miss about 8,170 times a unit
+    against GNU's `exec_byte_code`'s 1,669: `run_verified` 4,712,
+    `op_in_place` 1,985, the rest in `run_entered`, `call_plain`,
+    `bytecode_call` and `run_loop`. `run_verified` is 46 KB in the plain
+    build (49 KB profile-guided) where `exec_byte_code` is 12 KB. About
+    18 KB of it is the inlined native-call path (`invoke_nested_fixed`
+    and the frame record around it, once per argument-count
+    specialization), which undo never runs; the profile places it cold.
+    eval_sub is 14 KB, plus `eval_cons_call` 15 KB, against GNU's
+    2.8 KB.
+  - Machine function splitting (`-Cllvm-args=-enable-split-machine-functions`
+    on the same profile, 3,295 functions split) left undo's misses at
+    38,989. They come from the breadth of hot code undo executes, not
+    from cold blocks inside it.
+  Undo's remaining wall excess is most plausibly this footprint, the
+  amount of distinct code an iteration touches. Narrowing the hot paths
+  of the VM and the evaluator is the lever, not the instruction count.
+- **The contract's comparison of the five tight workloads on
+  `e053900`'s profile-guided build** (this host, `contractlike.py`:
+  full sizes, nine rounds, the locked bootstrap), median and 95% interval
+  of the paired ratios, with `aa68c68`'s on the same host in
+  parentheses:
+  - interpreted-to-native 1.033 [0.954, 1.201] (1.219);
+  - cons allocation 1.072 [0.987, 1.105] (1.096);
+  - undo 1.021 [1.008, 1.053] (1.108);
+  - bytecode-to-native 1.010 [0.912, 1.148] (1.018);
+  - bytecode calls 0.982 [0.958, 1.059] (0.998).
+  All five are still over the 1.03 bound. With this host's spread a
+  median near 0.93 is what passes. About 8 points of cons allocation's
+  excess are its two collections a sample (bullet "Cons allocation's
+  timed samples collect in Emaxx and not in GNU").
+- **Round 25: jumps padded clear of 32-byte boundaries.** This host's
+  cores (Intel model 85, Cascade Lake) carry Intel's jump conditional
+  code erratum: with its microcode fix, a jump (or a fused compare and
+  jump) that ends on or crosses a 32-byte boundary keeps those 32 bytes
+  out of the decoded-instruction cache, so the front end decodes them
+  again each time. That fits what was left unexplained above: the
+  profile-guided build ran fewer instructions, loads and stores than GNU
+  and the core's model put it at 0.88 of GNU's cycles, yet the wall
+  stood above. `.cargo/config.toml`'s `build.rustflags` now adds LLVM's
+  padding for it, `-x86-branches-within-32B-boundaries`. It goes there
+  rather than in the workspace wrapper because Cargo fingerprints those
+  flags and not the wrapper's (a wrapper change rebuilt nothing,
+  locally or in CI's cached targets). A target-specific table would
+  replace `build.rustflags`, the profile-guided script's among them.
+  The option is the x86 backend's, and rustc's LLVM carries every
+  backend: aarch64 Linux and Darwin objects build with it.
+  - The contract's comparison of the profile-guided build with the
+    padding, the same source and profile as the bullet above:
+    interpreted-to-native 0.927 [0.866, 0.998] and cons allocation 0.821
+    [0.735, 0.946] pass the bound; bytecode calls 0.928 [0.819, 1.062]
+    and bytecode-to-native 0.953 [0.898, 1.108] are over only by their
+    spread; undo 1.042 [0.876, 1.110] is unchanged within it.
+  - A pilot the same day: padded over unpadded CPU time 0.934, 0.843,
+    1.006, 0.939 and 0.975 for those five in the same order.
+  - The binary grows by 2% (15.56 MB against 15.25). The padding is
+    segment-override prefixes and NOPs in front of jumps, so instruction
+    counts from here on include the executed padding. The plain build's
+    per unit against the round before: interpreted-to-native 2,420.5 ->
+    2,477.4, cons allocation 5,056 -> 5,158, bytecode-to-native 392.3 ->
+    406.5, bytecode calls 437.8 -> 449.9, undo 1,301,605 -> 1,341,618
+    (2 to 3.6% more). Compare later rounds against these, and GNU's
+    counts with that in mind.
+  On cores without the erratum (the earlier Emerald Rapids host, AMD)
+  the padding only costs the code it adds.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2958,7 +3145,16 @@ native call's frame popped by its length): full Rust gate passed (run
 ("oracle: 1 unexpected", Emaxx none), and its re-run passed (run
 39191232834, attempt 2). **On `286c624`** (the evaluator's subr calls):
 full Rust gate passed (run 39217028701), frozen passed on its first
-attempt (run 39217031778). Locally,
+attempt (run 39217031778). **On `1e3f78e`** (the buffer-position ops in
+the verified loop): full Rust gate passed (run 39222288525), frozen
+passed on its first attempt (run 39222299548); PR #93 merged it into
+main (`769bd10`). **On `3f71b54`** (the evaluator's native subr path):
+full Rust gate passed (run 39246860015), frozen passed on its first
+attempt (run 39246863841). **On `e053900`** (native arity errors naming
+the function): full Rust gate passed (run 39253369363); frozen matched
+7,927 of 7,928 with the one mismatch GNU's ("oracle: 1 unexpected",
+Emaxx none), and its failed jobs were re-run (run 39253372487, attempt
+2; the result goes in with the next commit). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -3233,15 +3429,22 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first.** The host is a different machine
-   since `aa68c68` (bullet "The host changed under the session"); on it
-   interpreted-to-native reads 1.22, undo 1.11, cons allocation 1.10,
-   bytecode-to-native 1.02 and bytecode calls 1.00, with GNU's own rounds
-   ranging over ±25%, so instruction counts are the guide and a count
-   well below GNU's is what passes there. Instructions a unit now:
-   interpreted-to-native 2,541 (GNU 2,387), undo 1,300,268 (1,252,071),
-   cons allocation 5,047 (5,215), bytecode-to-native 391.6 an iteration
-   (388), bytecode calls 437.8 (468). Undo's next step is its slow byte
-   ops' way out of the verified loop: 767 a unit through `op_in_place`
+   since `aa68c68` (bullet "The host changed under the session"). On it,
+   with round 25's jump padding, the contract's comparison of the
+   profile-guided build reads: undo 1.042 [0.876, 1.110],
+   bytecode-to-native 0.953 [0.898, 1.108], bytecode calls 0.928
+   [0.819, 1.062], interpreted-to-native 0.927 [0.866, 0.998] and cons
+   allocation 0.821 [0.735, 0.946], the last two passing (bullet "Round
+   25"). GNU's own rounds range over ±25%, so the medians have to come
+   to about 0.90 for the intervals to clear 1.03. Instructions a unit in
+   the plain build before the padding, against GNU: interpreted-to-native
+   2,429 (2,387), undo 1,300,268 (1,252,071), cons allocation 5,056
+   (5,215), bytecode-to-native 391.6 an iteration (388), bytecode calls
+   437.8 (468). With the padding they are 2,477, 1,341,618, 5,158, 406.5
+   and 449.9. Undo is now the worst, and its excess is most plausibly
+   code footprint (bullet "Where the profile-guided build stands").
+   Undo's next step is its slow byte ops' way out of the verified loop:
+   767 a unit through `op_in_place`
    at 120 instructions each (a second decode and dispatch, a large
    prologue, the frame's `admits` test on the way back), where GNU runs
    them inline. On the earlier host, by the contract's comparison on

@@ -1134,7 +1134,7 @@ pub(crate) fn call_active_function(
 ) -> Option<Result<Value, LispError>> {
     let function = descriptor(native);
     super::runtime::with_current_runtime(|runtime| {
-        check_arity(function, arguments.len())?;
+        check_arity(native, function, arguments.len())?;
         invoke_function(
             function,
             native,
@@ -1155,7 +1155,7 @@ pub(crate) fn call_function(
     arguments: &[Value],
 ) -> Result<Value, LispError> {
     let function = descriptor(native);
-    check_arity(function, arguments.len())?;
+    check_arity(native, function, arguments.len())?;
     with_native_state(compiler, runtime, |runtime| {
         invoke_function(
             function,
@@ -1255,10 +1255,7 @@ fn invoke_dynamic_function(
                     } else if optional {
                         Value::Nil
                     } else {
-                        return Err(LispError::WrongNumberOfArgs(
-                            "native-compiled-function".into(),
-                            arguments.len(),
-                        ));
+                        return Err(wrong_number_of_arguments(native, arguments.len()));
                     };
                     restores.push(interpreter.bind_special_dynamic(name, value, environment)?);
                     previous_rest = false;
@@ -1269,10 +1266,7 @@ fn invoke_dynamic_function(
             return Err(invalid_function(Value::NativeFunction(native)));
         }
         if argument_index < arguments.len() {
-            return Err(LispError::WrongNumberOfArgs(
-                "native-compiled-function".into(),
-                arguments.len(),
-            ));
+            return Err(wrong_number_of_arguments(native, arguments.len()));
         }
         Ok(())
     })();
@@ -1305,14 +1299,27 @@ fn invalid_function(function: Value) -> LispError {
     LispError::SignalValue(Value::list([Value::symbol("invalid-function"), function]))
 }
 
-fn check_arity(function: NativeFunction, count: usize) -> Result<(), LispError> {
+fn check_arity(
+    native: NativeFunctionRef,
+    function: NativeFunction,
+    count: usize,
+) -> Result<(), LispError> {
     if count < function.min_args || function.max_args.is_some_and(|maximum| count > maximum) {
-        return Err(LispError::WrongNumberOfArgs(
-            "native-compiled-function".into(),
-            count,
-        ));
+        return Err(wrong_number_of_arguments(native, count));
     }
     Ok(())
+}
+
+/// funcall_subr's and funcall_lambda's signal for NATIVE called with
+/// COUNT arguments: the function object itself, `#<subr NAME>'.
+#[cold]
+#[inline(never)]
+fn wrong_number_of_arguments(native: NativeFunctionRef, count: usize) -> LispError {
+    LispError::SignalValue(Value::list([
+        Value::symbol("wrong-number-of-arguments"),
+        Value::NativeFunction(native),
+        Value::Integer(count as i64),
+    ]))
 }
 
 fn descriptor(function: NativeFunctionRef) -> NativeFunction {
@@ -1867,17 +1874,24 @@ mod tests {
             );
         }
         native.set_arity(2, 2);
-        assert!(matches!(
-            call_function(
-                &compiler,
-                &mut runtime,
-                &mut interpreter,
-                &mut environment,
-                native,
-                &arguments[..1]
-            ),
-            Err(error) if matches!(error.kind(), crate::lisp::types::LispErrorKind::WrongNumberOfArgs(_, 1))
-        ));
+        let error = call_function(
+            &compiler,
+            &mut runtime,
+            &mut interpreter,
+            &mut environment,
+            native,
+            &arguments[..1],
+        )
+        .expect_err("one argument of two must signal");
+        assert_eq!(
+            crate::lisp::eval::error_condition_value(&error),
+            Value::list([
+                Value::symbol("wrong-number-of-arguments"),
+                Value::NativeFunction(native),
+                Value::Integer(1),
+            ]),
+            "funcall_subr reports the native function object"
+        );
         assert_eq!(
             direct_function(native)
                 .expect("non-dynamic native descriptor")
