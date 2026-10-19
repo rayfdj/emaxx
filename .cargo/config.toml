@@ -22,9 +22,23 @@ RUST_MIN_STACK = { value = "134217728", force = false }
 # code), so the branch predictor sees each opcode's successor apart, for
 # the same instruction count (bytecode-to-native wall time about 14%
 # less). An explicit RUSTFLAGS replaces these flags.
+#
+# Every jump is also assembled so that it neither ends on nor crosses a
+# 32-byte boundary (LLVM's padding for Intel's jump conditional code
+# erratum). On the Skylake-derived cores the erratum's microcode fix
+# covers, Cascade Lake among them, such a jump keeps its 32 bytes out of
+# the decoded-instruction cache, and the evaluator's and the byte-code
+# loop's dense branches meet that often. The contract's comparison of the
+# profile-guided build on a Cascade Lake host, padded against not:
+# interpreted-to-native 0.927 against 1.033 of GNU's time, cons allocation
+# 0.821 against 1.072, bytecode calls 0.928 against 0.982,
+# bytecode-to-native 0.953 against 1.010, undo within its noise (1.042,
+# 1.021), for 2% more code. The option is the x86 backend's; rustc's LLVM
+# carries every backend, so it is accepted, and inert, for other targets.
 rustflags = [
     "-C", "llvm-args=-tail-dup-pred-size=1024",
     "-C", "llvm-args=-tail-dup-succ-size=1024",
+    "-C", "llvm-args=-x86-branches-within-32B-boundaries",
 ]
 # This package's own crates, the byte-code loop's among them, compile for
 # a position-dependent executable on x86-64 Linux, where a jump table's

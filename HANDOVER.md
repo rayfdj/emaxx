@@ -2575,6 +2575,54 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   Undo's remaining wall excess is most plausibly this footprint, the
   amount of distinct code an iteration touches. Narrowing the hot paths
   of the VM and the evaluator is the lever, not the instruction count.
+- **The contract's comparison of the five tight workloads on
+  `e053900`'s profile-guided build** (this host, `contractlike.py`:
+  full sizes, nine rounds, the locked bootstrap), median and 95% interval
+  of the paired ratios, with `aa68c68`'s on the same host in
+  parentheses:
+  - interpreted-to-native 1.033 [0.954, 1.201] (1.219);
+  - cons allocation 1.072 [0.987, 1.105] (1.096);
+  - undo 1.021 [1.008, 1.053] (1.108);
+  - bytecode-to-native 1.010 [0.912, 1.148] (1.018);
+  - bytecode calls 0.982 [0.958, 1.059] (0.998).
+  All five are still over the 1.03 bound. With this host's spread a
+  median near 0.93 is what passes. About 8 points of cons allocation's
+  excess are its two collections a sample (bullet "Cons allocation's
+  timed samples collect in Emaxx and not in GNU").
+- **Round 25: jumps padded clear of 32-byte boundaries.** This host's
+  cores (Intel model 85, Cascade Lake) carry Intel's jump conditional
+  code erratum: with its microcode fix, a jump (or a fused compare and
+  jump) that ends on or crosses a 32-byte boundary keeps those 32 bytes
+  out of the decoded-instruction cache, so the front end decodes them
+  again each time. That fits what was left unexplained above: the
+  profile-guided build ran fewer instructions, loads and stores than GNU
+  and the core's model put it at 0.88 of GNU's cycles, yet the wall
+  stood above. `.cargo/config.toml`'s `build.rustflags` now adds LLVM's
+  padding for it, `-x86-branches-within-32B-boundaries`. It goes there
+  rather than in the workspace wrapper because Cargo fingerprints those
+  flags and not the wrapper's (a wrapper change rebuilt nothing,
+  locally or in CI's cached targets). A target-specific table would
+  replace `build.rustflags`, the profile-guided script's among them.
+  The option is the x86 backend's, and rustc's LLVM carries every
+  backend: aarch64 Linux and Darwin objects build with it.
+  - The contract's comparison of the profile-guided build with the
+    padding, the same source and profile as the bullet above:
+    interpreted-to-native 0.927 [0.866, 0.998] and cons allocation 0.821
+    [0.735, 0.946] pass the bound; bytecode calls 0.928 [0.819, 1.062]
+    and bytecode-to-native 0.953 [0.898, 1.108] are over only by their
+    spread; undo 1.042 [0.876, 1.110] is unchanged within it.
+  - A pilot the same day: padded over unpadded CPU time 0.934, 0.843,
+    1.006, 0.939 and 0.975 for those five in the same order.
+  - The binary grows by 2% (15.56 MB against 15.25). The padding is
+    segment-override prefixes and NOPs in front of jumps, so instruction
+    counts from here on include the executed padding. The plain build's
+    per unit against the round before: interpreted-to-native 2,420.5 ->
+    2,477.4, cons allocation 5,056 -> 5,158, bytecode-to-native 392.3 ->
+    406.5, bytecode calls 437.8 -> 449.9, undo 1,301,605 -> 1,341,618
+    (2 to 3.6% more). Compare later rounds against these, and GNU's
+    counts with that in mind.
+  On cores without the erratum (the earlier Emerald Rapids host, AMD)
+  the padding only costs the code it adds.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3102,7 +3150,11 @@ the verified loop): full Rust gate passed (run 39222288525), frozen
 passed on its first attempt (run 39222299548); PR #93 merged it into
 main (`769bd10`). **On `3f71b54`** (the evaluator's native subr path):
 full Rust gate passed (run 39246860015), frozen passed on its first
-attempt (run 39246863841). Locally,
+attempt (run 39246863841). **On `e053900`** (native arity errors naming
+the function): full Rust gate passed (run 39253369363); frozen matched
+7,927 of 7,928 with the one mismatch GNU's ("oracle: 1 unexpected",
+Emaxx none), and its failed jobs were re-run (run 39253372487, attempt
+2; the result goes in with the next commit). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -3377,15 +3429,22 @@ and failures are still recorded.
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
 2. **Performance, worst ratios first.** The host is a different machine
-   since `aa68c68` (bullet "The host changed under the session"); on it
-   interpreted-to-native reads 1.22, undo 1.11, cons allocation 1.10,
-   bytecode-to-native 1.02 and bytecode calls 1.00, with GNU's own rounds
-   ranging over ±25%, so instruction counts are the guide and a count
-   well below GNU's is what passes there. Instructions a unit now:
-   interpreted-to-native 2,429 (GNU 2,387), undo 1,300,268 (1,252,071),
-   cons allocation 5,056 (5,215), bytecode-to-native 391.6 an iteration
-   (388), bytecode calls 437.8 (468). Undo's next step is its slow byte
-   ops' way out of the verified loop: 767 a unit through `op_in_place`
+   since `aa68c68` (bullet "The host changed under the session"). On it,
+   with round 25's jump padding, the contract's comparison of the
+   profile-guided build reads: undo 1.042 [0.876, 1.110],
+   bytecode-to-native 0.953 [0.898, 1.108], bytecode calls 0.928
+   [0.819, 1.062], interpreted-to-native 0.927 [0.866, 0.998] and cons
+   allocation 0.821 [0.735, 0.946], the last two passing (bullet "Round
+   25"). GNU's own rounds range over ±25%, so the medians have to come
+   to about 0.90 for the intervals to clear 1.03. Instructions a unit in
+   the plain build before the padding, against GNU: interpreted-to-native
+   2,429 (2,387), undo 1,300,268 (1,252,071), cons allocation 5,056
+   (5,215), bytecode-to-native 391.6 an iteration (388), bytecode calls
+   437.8 (468). With the padding they are 2,477, 1,341,618, 5,158, 406.5
+   and 449.9. Undo is now the worst, and its excess is most plausibly
+   code footprint (bullet "Where the profile-guided build stands").
+   Undo's next step is its slow byte ops' way out of the verified loop:
+   767 a unit through `op_in_place`
    at 120 instructions each (a second decode and dispatch, a large
    prologue, the frame's `admits` test on the way back), where GNU runs
    them inline. On the earlier host, by the contract's comparison on
