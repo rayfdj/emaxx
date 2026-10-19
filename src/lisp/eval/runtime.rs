@@ -2210,14 +2210,19 @@ impl Interpreter {
                 .to_vec()
                 .is_ok_and(|features| features.iter().any(named));
         }
-        let mut found = false;
-        features
-            .visit_list_elements(|value| {
-                found = found || named(&value);
-                Ok(())
-            })
-            .is_ok()
-            && found
+        // Fmemq's walk, stopping at the first match.
+        let mut tail = features;
+        let mut seen = crate::lisp::types::CycleGuard::new();
+        while let Some(cell) = tail.cons_ref() {
+            if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+                return false;
+            }
+            if named(&cell.car.get()) {
+                return true;
+            }
+            tail = cell.cdr.get();
+        }
+        false
     }
 
     pub(super) fn features_value(&self) -> Value {

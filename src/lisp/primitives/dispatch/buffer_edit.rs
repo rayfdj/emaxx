@@ -841,8 +841,10 @@ define_dispatch!(
                         .buffer
                         .borrow_mut()
                         .push_undo_entry(crate::buffer::UndoEntry::Opaque(Value::list([
-                            Value::Symbol("apply".into()),
-                            Value::Symbol("set-buffer-multibyte".into()),
+                            Value::Symbol(cached_symbol!("apply").with(Clone::clone)),
+                            Value::Symbol(
+                                cached_symbol!("set-buffer-multibyte").with(Clone::clone),
+                            ),
                             if enabled { Value::Nil } else { Value::T },
                         ])));
                 }

@@ -128,6 +128,8 @@ const KEY_NAMES: &[&str] = &[
     "set-message-function",
     "inhibit-message",
     "find-word-boundary-function-table",
+    "apply",
+    "set-buffer-multibyte",
 ];
 
 struct Symbols {
@@ -345,6 +347,11 @@ impl SymbolKey {
     pub(crate) fn with<R>(self, body: impl FnOnce(&SymbolName) -> R) -> R {
         let symbol = with_current(|symbols| self.get(symbols));
         body(&symbol)
+    }
+
+    /// The name the key's symbol has.
+    pub(crate) const fn name(self) -> &'static str {
+        KEY_NAMES[self.0]
     }
 }
 

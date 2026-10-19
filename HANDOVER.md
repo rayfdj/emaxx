@@ -2623,6 +2623,255 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
     counts with that in mind.
   On cores without the erratum (the earlier Emerald Rapids host, AMD)
   the padding only costs the code it adds.
+- **The other eleven workloads on the padded profile-guided build**
+  (`contractlike.py`, this host, the same binary as the bullet above):
+  interpreted-lexical 0.688 [0.541, 0.822], interpreted-calls 0.627
+  [0.595, 0.722], native execution 0.635 [0.518, 0.700],
+  native-to-interpreted 0.810 [0.709, 0.903], native-to-bytecode 0.781
+  [0.714, 0.937], list traversal 0.822 [0.683, 0.970], mapcar 0.865
+  [0.716, 1.001], explicit GC 0.721 [0.698, 0.776], sort 0.867 [0.724,
+  0.962] and bindat 0.715 [0.682, 0.771] pass; interpreted-dynamic
+  0.881 [0.813, 1.037] is over through one round (1.256), with both
+  programs' own rounds ranging from 0.41 to 0.75 s. Over the bound:
+  undo, bytecode-to-native, bytecode calls, interpreted-dynamic.
+  Instructions a unit of this build (callgrind, two sizes), the
+  baseline for later profile-guided comparisons: undo 1,225,870,
+  bytecode calls 453.8, bytecode-to-native 390.4, native-to-bytecode
+  3,831.5, interpreted-lexical 3,349.8, interpreted-dynamic 3,094.8,
+  interpreted-calls 3,170.6, interpreted-to-native 2,453.6, cons
+  allocation 5,153.8, list traversal 258,100, mapcar 28,327,564, sort
+  216,160,065, bindat 819,220, native-to-interpreted 3,908.8, native
+  execution 371,239,340, explicit GC 33,232,400.
+- **Undo's time, split.** The harness's own report gives each sample's
+  collections. GNU collects 4 times a sample (0.11 to 0.17 s of a 0.42
+  to 0.66 s sample), Emaxx 3 times (0.08 to 0.11 s). So Emaxx's
+  collector costs less, and the rest of the sample is where it loses:
+  GNU 0.30 to 0.50 s, Emaxx 0.37 to 0.60 s, medians 1.15 to 1.4 times
+  GNU's over three processes of nine samples. Callgrind's per-unit
+  counts (10 against 20 units) fall between collections and so measure
+  that rest alone: the profile-guided build runs 1,225,870 instructions
+  a unit against GNU's 1,259,204. The difference is per instruction.
+  - Footprint: the instructions run at least once a unit are 55,352 in
+    4,932 64-byte lines (308 KB) over 381 4-KB pages, against GNU's
+    27,838 in 2,853 lines (178 KB) over 216 pages. Each distinct
+    instruction runs about 22 times a unit against GNU's 45.
+  - A cycle model on cachegrind's counts (Ir/3 + 10 I1mr + 10 D1mr +
+    5 D1mw + 15 Bcm + 15 Bim) gives 1,345K against 1,098K, 1.22, the
+    measured ratio. The byte-code VM is over half of the excess:
+    `run_verified` 257K against `exec_byte_code`'s 210K, `op_in_place`
+    80K (no counterpart), `call_plain` 36K, `run_entered` 20K.
+  - Inlined standard-library code is 28% of the hot instructions in the
+    plain build: `Vec`/`RawVec` 3,436 (most in the primitives, the text
+    property spans and `run_verified`), pointers, slice iterators,
+    `Option`, `RefCell` borrows. `lisp/types.rs`'s value helpers are
+    another 4,250.
+  - The ops that leave the verified loop for `op_in_place`, 622 a unit:
+    Bvarref of a variable that is not plain 98, Bunbind 77, Bvarbind 65,
+    Bmemq of an element neither fixnum nor symbol 39, Bgoto_char 38,
+    Bswitch 31, Bget 26, Bsave_current_buffer 24, Bset_buffer 24, Baset
+    24, then Bunwind_protect, Bdelete_region and Baref 16 each.
+  - Tried, none kept (the patch of the second is in the scratch
+    history only):
+    - One arm for Bcall0 to Bcall5 (one copy of the call sequence):
+      undo -4,400 instructions and -98 hot lines, but bytecode calls
+      +20.2 and bytecode-to-native +8.9 an iteration (plain build).
+    - Arms in `run_verified` calling the full arms' code out of line,
+      resuming as after a call, for Bvarref and Bvarset of other
+      variables, Bvarbind, Bunbind, Bget, Bgoto_char, Bset_buffer and
+      Bsave_current_buffer. Plain build: undo -26,700, bytecode calls
+      +11.9; with only the bind ops and primitives, undo -8,200 and
+      bytecode calls +18.3. Profile-guided (trained afresh): undo
+      1,225,870 -> 1,196,343, bytecode calls +4.8, bytecode-to-native
+      +1.8, native-to-bytecode +5.8, but 88 more hot lines
+      (`run_verified` 276 -> 324) and 770 more instruction-cache misses
+      there: the model's cycles came to 1,343K against 1,333K. Fewer
+      instructions bought with more code do not pay here.
+    - Compiler options on the same profile: `-hot-callsite-threshold=600`
+      changed nothing; `-pgso-lwss-only=false` cut the text by 3% and
+      undo's hot lines by 3%; `-inline-threshold=100` with
+      `-inlinehint-threshold=150` cut the text by 5% but not undo's hot
+      lines (+1% instructions; bytecode calls 453.8 -> 444.0,
+      bytecode-to-native 390.4 -> 385.8, and of the other twelve
+      interpreted-calls +1.5%, native-to-interpreted +1.7%, native
+      execution +2.6%, mapcar -1.1%, sort +1.1%, the rest within 1%);
+      linking with
+      `-z keep-text-section-prefix` gave a 2.75 MB `.text.hot`, but undo's
+      working set straddles it and `.text` (the training is GNU's tests),
+      397 pages against 381.
+    - The text's 2-MB-aligned interior on anonymous huge pages (a test
+      preload, not the build): undo's medians without collections
+      0.411, 0.454 and 0.422 s against 0.418, 0.502 and 0.444: the
+      instruction TLB is a few percent at most.
+    - A profile that also trained on undo itself (a diagnostic only:
+      the timed workloads stay out of the real training): hot lines
+      4,932 -> 4,832, pages 381 -> 360, instruction-cache misses 40,354
+      -> 39,170. Layout is worth 3% of the misses at most.
+    - Each heavier special form out of line (`#[inline(never)]` on
+      `let`, `let*`, `catch`, `unwind-protect`, `condition-case`, the
+      `save-` forms, `defvar`, `defconst`): `eval_native_form`'s frame
+      448 -> 144 bytes in the plain build, but 0.1 to 1.4% more
+      instructions in the interpreted workloads and no gain in undo's
+      misses that the run-to-run variation (one-off regex compilations
+      and symbol-cache work landing in one measured range) does not
+      cover.
+  - The frames are larger than GNU's throughout (profile-guided build,
+    bytes including saved registers): `eval_sub` 400 (GNU 192),
+    `eval_native_form` 576 (`Flet` 112), `eval_cons_call` 464,
+    `run_verified` and `run_entered` 464 each (`exec_byte_code` 160),
+    `op_in_place` 1,152, `call_function_value` 496, `bytecode_call` 432,
+    `run_loop` 608. A Lisp call level stacks about 2.3 KB against GNU's
+    0.5 KB, which deep recursion (`cconv`, `macroexpand-all`) carries
+    past the 32 KB data cache; undo's L1 data misses are 13,895 reads
+    and 4,140 writes a unit against 9,799 and 1,702.
+  - Closure conversion: `cconv-make-interpreted-closure`, the same
+    native code in both, takes 107,141 instructions a unit inclusive
+    against GNU's 66,879. The difference is the runtime entries its
+    code calls: `invoke_native_funcall` 157 calls at 173 instructions of
+    its own (GNU's `Ffuncall` and `funcall_subr` about 100 together),
+    `invoke_subr` 146 at 95 (`symbolp` 49 of them, `symbol-function`
+    10, `delq` 9), `mapcar` 18 at 480, `list` 43 at 200 (about 35 a
+    cons). No single step dominates any of them.
+  Undo's excess is the amount of distinct code an iteration runs, spread
+  over the VM, the evaluator and the primitives. Measure changes for it
+  by the hot-line count and the model, not by instructions alone.
+- **Round 26: every kind of jump padded, with prefixes.** Round 25's
+  `-x86-branches-within-32B-boundaries` pads conditional and direct
+  jumps and fused compare-and-jumps. The erratum covers indirect jumps,
+  calls and returns too, and the byte-code dispatch's indirect jump at
+  the head of the loop ended on a boundary. The padding was also NOP
+  instructions in front of a jump, which execute; GNU's assembler pads
+  by adding prefixes to the instructions before it.
+  `-x86-align-branch=fused+jcc+jmp+indirect+call+ret` adds the other
+  kinds and `-x86-pad-max-prefix-size=5` lets the assembler pad with up
+  to five prefixes on an instruction. Profile-guided builds of round
+  25's source and profile, against round 25's padded one:
+  - Instructions a unit (callgrind): bytecode calls 453.8 -> 443.3,
+    bytecode-to-native 390.4 -> 389.1, interpreted-to-native 2,453.6
+    -> 2,435.0, cons allocation 5,153.8 -> 5,086.5, undo 1,225,870 ->
+    1,206,561. With the prefixes alone (the jump kinds as before):
+    444.7, 387.7, 2,403.5, 5,060.8 and 1,194,007.
+  - Wall (`pilot3.py`: each round's median of three samples a process,
+    the paired median over fifteen rounds and the range of the rounds'
+    ratios): bytecode-to-native 0.910 [0.789, 1.031] against 0.984
+    [0.863, 1.283], bytecode calls 0.916 [0.762, 1.077] against 0.948
+    [0.816, 1.129], undo 1.110 [0.815, 1.275] against 1.113 [0.926,
+    1.432] (the prefixes alone: 0.930, 0.930, 1.107); fifteen more
+    rounds of the other two: interpreted-to-native 0.891 [0.786, 1.102]
+    against 0.924 [0.776, 1.107], cons allocation 0.823 [0.702, 1.427]
+    against 0.872 [0.786, 1.354]. A three-round pilot before them had
+    cons allocation the other way (0.837 against 0.774).
+  - The plain build's undo: 1,341,618 -> 1,335,042 a unit.
+  The options are the x86 backend's: aarch64 Linux and Darwin objects
+  (and x86-64 Windows ones) build with them (a `no_core` crate, Rust
+  1.99.1). Validation (gate profile, `--test-threads=1`): the 618
+  native, arity, funcall, apply, alias, subr, lambda, closure and call
+  tests of round 24 pass but the known container-only image round
+  trip, and the lightweight group's 598 pass; clippy `-D warnings` and
+  rustfmt pass.
+- **What undo's comparable work costs.** By the inclusive costs of the
+  natively compiled Lisp both run (`fincl2.py`, profile-guided build),
+  GNU spends about 150,000 instructions a unit in window-size Lisp that
+  Emaxx does not run: `frame-windows-min-size` 100,452 (under
+  `set-window-configuration`'s frame resize), `window-size-fixed-p`
+  28,588, `replace-buffer-in-windows` 18,288 (under `kill-buffer`),
+  and smaller ones. GNU's `Fset_window_configuration` is 140,244
+  inclusive against Emaxx's `restore_window_configuration` 5,680, its
+  `Fkill_buffer` 66,726 against `kill_buffer_id` 12,453. Without them
+  Emaxx runs about 14% more instructions than GNU for the same work,
+  where the totals read 0.96. A more faithful window layer would add
+  that work back. Where the rest goes (self costs a unit, calls and
+  instructions a call):
+  - The byte-code VM and the native runtime's glue: `run_verified`
+    177,500 (123 entries, 1,443 each; GNU's `exec_byte_code` 198,462 in
+    128 at 1,550), `op_in_place` 87,178 (622 at 140, the ops GNU runs
+    inline), `call_plain` 59,214 (318 at 186), `invoke_subr` 32,574 (79
+    at 412, the profile inlines callees into it; plain build 146 at 95,
+    where GNU's compiled code calls the C function), `run_entered`
+    21,628, `direct_native_funcall` 11,169: about 125,000 over GNU's
+    `exec_byte_code`, `funcall_subr`, `Ffuncall` and `funcall_general`.
+  - The evaluator: `eval_sub` 575 calls at 198 against GNU's 862 at
+    104, `eval_native_form` 277 at 182, `call_function_value` 85 at
+    245, `eval_cons_call` 50 at 328, variable lookups
+    (`lookup_symbol_plain`, `symbol_value_key`, `lookup_var_key`) 73
+    to 125 a call against `find_symbol_value`'s 17.5. GNU's buffer-local
+    swapping (`set_buffer_internal_2`, `store_symval_forwarding`,
+    `swap_in_symval_forwarding`, `reset_buffer_local_variables`) and
+    `assq` on the lexical environment cost it more than Emaxx's
+    counterparts, so the evaluator as a whole is not the excess.
+  - `delete-region` 4,211 a call against GNU's 2,825 (18 a unit):
+    the change hooks 894 a call each way, `Buffer::delete_region` 1,691
+    against `del_range_2`'s 1,083.
+- **Round 27: undo's slow ops resume in the loop, and by-name lookups
+  trimmed.** Instructions a unit in the plain build (round 26's in
+  parentheses): undo 1,298,608 (1,335,042), bytecode calls 451.9 (450.1),
+  bytecode-to-native 403.4 (401.5), interpreted-to-native 2,455.8
+  (2,474.8), native-to-bytecode 4,098.8 (4,117.0).
+  - An op `run_verified` leaves to `op_in_place` (622 a unit in undo)
+    that goes on to the next instruction and stored into no code string
+    now answers `FastExit::Continued`, and the loop resumes at it with
+    the bytes read again, as after a call (`code_changes` unchanged),
+    instead of through the frame-switch exit and its verification check:
+    undo -10,100. Resuming inside each slow arm instead (the `slow!`
+    sites continuing the loop themselves) saved 14,300 but cost bytecode
+    calls 5.0 and bytecode-to-native 2.5 an iteration (the stack base
+    lost its register); returning the stack pointer from `op_in_place`
+    made that worse (8.4 and 5.6). The exit-path form costs bytecode
+    calls 1.8 and bytecode-to-native 0.8, register allocation alone.
+  - Bmemq runs in the loop for any element but a symbol with position
+    (strings, floats and conses compare by the word, as `eq` does). Undo's
+    39 slow Bmemqs a unit are not of that kind: its count did not move.
+  - Bvarref of a buffer-local or forwarded variable
+    (`symbol_value_cell_symbol`, 55 a unit) reads
+    `find_symbol_value_resolved` directly instead of a lexical lookup in
+    an empty environment; `has_feature` (`featurep`, `require`) stops at
+    the first match, where it compared every element's name (5,214 a call
+    to about 2,200); `buffer-string` and `buffer-substring` copy a small
+    text's bytes directly, where a rope slice of them counted their chars
+    and lines first (327 a call, 17 a unit); `is_forwarded_eval_cell`
+    (16 a unit, 237 a call, under `set_buffer_local_value_symbol`)
+    compares the names before reading the editor's key table;
+    `set-buffer-multibyte`'s undo entry names its two symbols through
+    the key table. Together about undo -20,000.
+  - Comparing `featurep`'s symbol by its word failed
+    `startup_features_own_their_capability_metadata_in_one_manifest`:
+    the `features` list can hold another symbol object of the name
+    `SymbolName::find` returns, so names are compared still.
+  Validation (gate profile, `--test-threads=1`): 851 tests: round 26's 618
+  and every test naming byte code, `memq`, features, `require`,
+  `buffer-substring`, `buffer-string`, `symbol-value`, undo or Bvarref
+  pass but the known container-only image round trip and the as-root
+  `byte_compile_file_reports_an_unwritable_target_like_gnu`; the 52
+  feature, `memq`, forwarded-variable and buffer-text tests again after
+  the name comparison, with the new oracle test for `featurep` of an
+  uninterned symbol; the lightweight group's 598. Clippy `-D warnings`
+  and rustfmt pass.
+- **Round 28: round 27's Bmemq arm undone.** Round 27's profile-guided
+  build ran bytecode-to-native slower than round 26's with about the same
+  instructions (389.0 an iteration against 387.6): two twelve-round
+  pilots read 1.068 and 1.104 of GNU's time against round 26's 0.855
+  and 0.923, and the contract-like comparison 1.075 [0.946, 1.159].
+  Cachegrind's branch model finds one more conditional mispredict an
+  iteration in `run_verified`, at the empty-handler test of
+  `finish_nested_frame` (inlined into it), a branch taken every time.
+  Round 27 with only the Bmemq arm's element test put back (a fixnum or a
+  symbol in the loop, anything else to the full arm, instead of anything
+  but a symbol with position) reads 0.954 in the same pilot, 386.4
+  instructions and no extra mispredict: the arm's change moved the
+  profile's layout of the loop, not its work. Bmemq takes fixnums and
+  symbols in the loop again; undo's slow Bmemqs had not moved with the
+  change (bullet "Round 27"), and the memq test's cons found by identity
+  now goes through the full arm. Plain build, instructions a unit
+  (round 27's in parentheses): undo 1,312,240 (1,298,608; its rounds
+  vary by about 1% with where collections fall), bytecode calls 448.7
+  (451.9), bytecode-to-native 403.7 (403.4); interpreted-to-native
+  2,477.8 and native-to-bytecode 4,108.0 have round 27's costs function
+  by function.
+  Validation (gate profile, `--test-threads=1`, `RUST_MIN_STACK` at
+  128 MiB as the config sets it for cargo): the tests naming `memq`,
+  byte code, features, `buffer-substring`, `buffer-string`,
+  `symbol-value` or undo (142 runs; a test can match two of the names),
+  and the lightweight group's 598. Clippy `-D warnings` and rustfmt
+  pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3153,8 +3402,15 @@ full Rust gate passed (run 39246860015), frozen passed on its first
 attempt (run 39246863841). **On `e053900`** (native arity errors naming
 the function): full Rust gate passed (run 39253369363); frozen matched
 7,927 of 7,928 with the one mismatch GNU's ("oracle: 1 unexpected",
-Emaxx none), and its failed jobs were re-run (run 39253372487, attempt
-2; the result goes in with the next commit). Locally,
+Emaxx none), and its re-run passed (run 39253372487, attempt 2). **On
+`e571f20`** (the jump padding): full Rust gate passed (run
+39262083083); frozen matched 7,927 of 7,928, the one mismatch again
+GNU's, and its re-run passed (run 39262088787, attempt 2); PR #94
+merged it into main (`c769d5b`). **On `65ed19b`** (every kind of jump
+padded, with prefixes): full Rust gate passed (run 39295048045), frozen
+passed on its first attempt (run 39295051895). **On `07b0947`** (undo's
+slow ops resumed in the loop): full Rust gate passed (run 39307717277),
+frozen passed on its first attempt (run 39307721612). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -3170,6 +3426,16 @@ this container's GNU build itself disagrees with the expected text (under
 `unicode`).
 
 **Findings recorded, not fixed:**
+- `features`, `values` and `top-level` are special variables in Emaxx
+  (`special-variable-p` answers t) where GNU unmarks them after their
+  DEFVARs (`Fmake_var_non_special (Qfeatures)` in fns.c, `values` in
+  lread.c, `top-level` in keyboard.c: "Let people use lexically scoped
+  vars named `features'"). So a lexical `(let ((values ...)) ...)` binds
+  dynamically in Emaxx and lexically in GNU, and
+  `(let ((features '(foo))) (featurep 'foo))` is t in Emaxx, nil in GNU
+  under lexical binding. `GNU_LREAD_SPECIAL_VARIABLES` in eval.rs lists
+  `values` with the specials; the fix is GNU's unmarking after
+  definition, checked with the image.
 - A condition symbol with no `error-conditions` (never `define-error`ed):
   GNU's handlers do not catch it except through `t`, so
   `(condition-case e (signal 'my-err '(3)) (my-err ...))` leaves it
@@ -3441,9 +3707,26 @@ and failures are still recorded.
    2,429 (2,387), undo 1,300,268 (1,252,071), cons allocation 5,056
    (5,215), bytecode-to-native 391.6 an iteration (388), bytecode calls
    437.8 (468). With the padding they are 2,477, 1,341,618, 5,158, 406.5
-   and 449.9. Undo is now the worst, and its excess is most plausibly
-   code footprint (bullet "Where the profile-guided build stands").
-   Undo's next step is its slow byte ops' way out of the verified loop:
+   and 449.9. Round 26 pads every kind of jump with prefixes (bullet
+   "Round 26"): a fifteen-round pilot of the profile-guided build reads
+   bytecode-to-native 0.910, bytecode calls 0.916, interpreted-to-native
+   0.891, cons allocation 0.823 and undo 1.110. Undo is now the worst
+   by far. Round 27 took undo's plain-build count to 1,298,608 a unit
+   (bullet "Round 27"); round 28 undid its Bmemq arm, which had moved the
+   profile-guided layout of the loop and cost bytecode-to-native about
+   15% (bullet "Round 28"). For the work both editors do, Emaxx runs about 14% more
+   instructions than GNU (GNU's totals include 150,000 a unit of
+   window-size Lisp Emaxx does not run), most of it in the byte-code
+   VM's slow ops (`op_in_place`, 140 a slow op) and the native runtime's
+   calls into subrs (bullet "What undo's comparable work costs"); its
+   excess is also code footprint
+   (bullets "Where the profile-guided build stands" and "Undo's time,
+   split": the same instructions as GNU, twice the distinct code, a cycle
+   model that matches the wall). Shrinking the distinct code an
+   iteration runs is the lever; arms that save instructions by adding
+   code to `run_verified` did not pay. Interpreted-dynamic (0.881) is
+   over on the host's noise alone. Earlier, undo's next step was its
+   slow byte ops' way out of the verified loop:
    767 a unit through `op_in_place`
    at 120 instructions each (a second decode and dispatch, a large
    prologue, the frame's `admits` test on the way back), where GNU runs

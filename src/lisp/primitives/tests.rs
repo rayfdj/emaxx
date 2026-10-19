@@ -28204,9 +28204,10 @@ fn evaluator_tag_tests_keep_gnus_list_and_symbol_errors() {
 fn byte_code_predicates_memq_and_full_arms_run_in_the_loop_like_gnu() {
     // The verified byte-code loop runs Bsymbolp, Bstringp, Blistp,
     // Bnumberp, Bintegerp, Bmemq, Bsetcar and Bsetcdr itself; an operand it
-    // does not take (a string or float to memq, a long, improper or
-    // circular list, a symbol with position, a non-cons) and ops without
-    // an arm there (Bnth, Bget, Blength) run their full arms in place.
+    // does not take (a string, float or cons to memq, found by identity, a
+    // long, improper or circular list, a symbol with position, a non-cons)
+    // and ops without an arm there (Bnth, Bget, Blength) run their full
+    // arms in place.
     let program = r#"(let* ((f (byte-compile
            (lambda (x l)
              (list (symbolp x) (stringp x) (listp x) (numberp x) (integerp x)
@@ -28224,6 +28225,7 @@ fn byte_code_predicates_memq_and_full_arms_run_in_the_loop_like_gnu() {
         (funcall f (expt 2 70) nil)
         (funcall f 99 long)
         (funcall f 7 '(1 2 3))
+        (let ((c (list 1))) (funcall f c (list 'a (list 1) c)))
         (condition-case e (funcall f 'z '(a b . c)) (error e))
         (condition-case e (funcall f 'z circ) (error (car e)))
         (list (funcall g (cons 1 2)) (condition-case e (funcall g 5) (error e)))
@@ -28235,8 +28237,27 @@ fn byte_code_predicates_memq_and_full_arms_run_in_the_loop_like_gnu() {
                 (length (nth 5 (funcall f 'b (list 'a p))))))))"#;
     assert_oracle_contract_matches_interpreter(
         program,
-        "((t nil nil nil nil (b c)) (nil t nil nil nil nil) (t nil t nil nil (nil 2)) (nil nil nil t nil nil) (nil nil nil t t nil) (nil nil nil t t (99 100)) (nil nil nil t t nil) (wrong-type-argument listp (a b . c)) circular-list ((x . y) (wrong-type-argument consp 5)) (5 nil 3) (nil nil nil nil nil) ((t nil nil nil nil) 2 1))",
+        "((t nil nil nil nil (b c)) (nil t nil nil nil nil) (t nil t nil nil (nil 2)) (nil nil nil t nil nil) (nil nil nil t t nil) (nil nil nil t t (99 100)) (nil nil nil t t nil) (nil nil t nil nil ((1))) (wrong-type-argument listp (a b . c)) circular-list ((x . y) (wrong-type-argument consp 5)) (5 nil 3) (nil nil nil nil nil) ((t nil nil nil nil) 2 1))",
         "byte-code predicates and memq",
+    );
+}
+
+#[test]
+fn featurep_finds_the_feature_symbol_by_identity_like_gnu() {
+    // fns.c:Ffeaturep is Fmemq of the symbol in `features': an uninterned
+    // symbol of a feature's name is another feature. (`features' is no
+    // special variable, so a lexical `let' would not reach it.)
+    let program = r#"(let ((u (make-symbol "zz-feat-u")) (saved features))
+  (unwind-protect
+      (progn
+        (setq features (append (list u 'zz-feat-i) features))
+        (list (featurep u) (featurep 'zz-feat-u) (featurep 'zz-feat-i)
+              (featurep (make-symbol "zz-feat-i")) (featurep 'zz-feat-absent)))
+    (setq features saved)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(t nil t nil nil)",
+        "featurep by identity",
     );
 }
 
