@@ -2060,8 +2060,9 @@ impl InterpreterState {
         self.quit_flag.is_nil()
             && self.pending_termination.is_none()
             && !self.globals.edebug_is_special()
-            && i64::try_from(self.lisp_eval_depth + 1)
-                .is_ok_and(|depth| depth <= self.max_lisp_eval_depth)
+            // The depth counts frames on this stack, far below i64::MAX
+            // (as eval_sub's compare).
+            && (self.lisp_eval_depth as i64) < self.max_lisp_eval_depth
             && !profiling()
             && name.is_none_or(|name| !is_backtrace_eval_name(name.as_str()))
     }

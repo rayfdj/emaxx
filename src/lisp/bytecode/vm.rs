@@ -689,8 +689,11 @@ fn call_native_nested(
     func: Value,
     native: crate::lisp::types::NativeFunctionRef,
 ) -> Option<Result<Value, LispError>> {
-    let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
-    state.bc_stack.top = top;
+    // The interpreter and environment held here, not read again through
+    // the loop's record after each step the call's stores may change.
+    let interp: &mut Interpreter = vm.interp;
+    let env: &mut Env = vm.env;
+    interp.bc_stack.top = top;
     if vm.trace_errors {
         return None;
     }
@@ -701,29 +704,29 @@ fn call_native_nested(
         return None;
     }
     let target = native.target();
-    if !state.plain_bcall_entry(func.symbol_cell()) {
+    if !interp.plain_bcall_entry(func.symbol_cell()) {
         return None;
     }
-    let nested = crate::lisp::native_comp::NestedCall::of(vm.interp)?;
+    let nested = crate::lisp::native_comp::NestedCall::of(interp)?;
+    // The active call's runtime is NESTED's: maybe_gc's test on the
+    // active call's trigger first.
+    if !crate::lisp::native_comp::collection_cannot_be_due(interp) {
+        return None;
+    }
     // SAFETY: the active call lends its runtime for this synchronous
     // call, as `current_runtime' does.
     let runtime = unsafe { &mut *nested.runtime() };
-    if !runtime.collection_cannot_be_due() {
-        return None;
-    }
-    let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     // SAFETY: as the Call arm's: the arguments stay on the caller's stack
     // until the call returns, and verification found them there.
-    let call_args = unsafe { state.bc_stack.below_top_unchecked(top, argc) };
-    let (backtrace_depth, lisp_eval_depth) = state.enter_plain_funcall_at(func, call_args);
+    let call_args = unsafe { interp.bc_stack.below_top_unchecked(top, argc) };
+    let (backtrace_depth, lisp_eval_depth) = interp.enter_plain_funcall_at(func, call_args);
     let depths = (lisp_eval_depth, backtrace_depth + 1);
     // SAFETY: NESTED is the active call of this runtime and interpreter,
     // and TARGET takes at most six arguments, among them CALL_ARGS.
-    let result = unsafe {
-        runtime.invoke_nested_fixed(nested, vm.interp, vm.env, target, call_args, depths)
-    };
-    let result = vm.interp.settle_frame_result(result, vm.env);
-    vm.interp.leave_plain_funcall(backtrace_depth);
+    let result =
+        unsafe { runtime.invoke_nested_fixed(nested, interp, env, target, call_args, depths) };
+    let result = interp.settle_frame_result(result, env);
+    interp.leave_plain_funcall(backtrace_depth);
     Some(result)
 }
 

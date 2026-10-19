@@ -2289,6 +2289,42 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   names mention arity, arguments, backtraces, signals, `setq`, `apply`,
   `funcall`, list lengths or subrs, and the seven integration targets'
   42 tests pass; clippy `-D warnings` and rustfmt pass.
+- **Where a byte-code iteration's time goes.** One iteration of each
+  editor's loop, traced instruction by instruction (gdb attached to a
+  running workload, stepping from an instruction the loop runs once
+  around to it) and given to `llvm-mca -mcpu=sapphirerapids` (this host
+  is an Emerald Rapids Xeon, model 207): bytecode calls is 442
+  instructions, 487 µops, 28 taken branches and 26 stack-slot accesses
+  on Emaxx's plain build against GNU's 468, 481, 40 and 68, and the
+  model puts Emaxx at 5.8 µops a cycle against a dispatch width of 6
+  (bound by µops issued) and GNU at 4.4 (bound by dependencies). On the
+  profile-guided build the same loop is 441 instructions but 497 µops,
+  19 taken branches and 35 stack-slot accesses: its layout takes fewer
+  branches, its register allocation spills more, and it times slower
+  than the plain build of the same source (bytecode calls, minimum and
+  median against GNU's at pilot size: plain 0.91 and 0.94, profile-guided
+  0.93 and 0.99; bytecode-to-native 1.01 and 1.03 against 1.02 and 1.05).
+  A µop removed is worth a sixth of a cycle there, spills included.
+  Bytecode-to-native: 411 instructions and 464 µops against GNU's 388
+  and 392, 58 stores against 44; split at the dispatch jumps, its call op
+  is 275 instructions against GNU's 115, its other 13 ops 136 against
+  GNU's 273. The call op's parts: the callee's type tests (about 41),
+  `plain_bcall_entry` (about 20), Ffuncall's depth and backtrace record
+  (about 20, 9 stores), the native frame's push and pop with the two
+  handler syncs (about 40), the escape buffer and the call (about 26, 9
+  stores), and the settling, the record's pop and the loop's resumption
+  (about 35), with 12 spills. Taking the fixed-count native call out of
+  line made it 7.5 instructions longer and 10.6 loads lighter for the
+  same wall time (not kept). Holding the interpreter and environment in
+  locals for the call, testing a collection on the active call's trigger
+  mirror first (`collection_cannot_be_due`'s fast test is now inline,
+  its rest out of line), comparing the depth in `plain_bcall_entry`
+  without a saturating conversion and building the entry's count mask
+  without a loop: bytecode calls 442.8 → 438.8, bytecode-to-native 411.0
+  → 409.7. Validation (gate profile, `--test-threads=1`): the lightweight
+  group's 598 tests and 325 of the 326 byte-code, native-call, evaluator
+  and argument tests of this round and the last (the as-root one fails
+  as before); clippy `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3074,22 +3110,24 @@ and failures are still recorded.
 
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
-2. **Performance, worst ratios first.** By wall time on `a2494c7`'s
-   profile-guided build (pilot sizes, minimum ratio; the bullet "Profile-
-   guided wall time on `a2494c7`" has the medians and `6242417` beside
-   it on the same host): bytecode-to-native 1.05 to 1.09, bytecode calls
-   1.04 to 1.05, cons allocation and interpreted-to-native about 1.01,
-   undo 0.90 to 0.94, and the other eleven below 0.9. Earlier, on
-   `6242417`: undo 1.11, bytecode-to-native 1.07, bytecode calls 1.04,
-   interpreted-to-native 1.01, cons allocation 1.00. That table ran on the host the container came
-   back on after a restart, where `ba9f640` itself measures
-   interpreted-to-native 1.01 and cons allocation 1.01 against 1.15 and
-   1.13 on the earlier host (its one in-sample collection, see "Cons
-   allocation's gap is its one collection"); compare builds only on one
-   host. By instructions on the line-table build: undo about 1.12 (after
-   the print and message variables by their symbols), interpreted-to-native 1.28, bytecode-to-native 1.26,
-   native-to-bytecode 1.24, bytecode calls 1.11, native-execution 0.90. Where each case's instructions go is under
-   "Where the byte-code call and return go" and the native call bullets.
+2. **Performance, worst ratios first.** By the contract's comparison on
+   `3f7bff2`'s profile-guided build (the bullet "The contract's comparison
+   on all sixteen"): bytecode-to-native 1.023 [0.968, 1.064], undo 0.991
+   [0.944, 1.109], bytecode calls 0.943 [0.910, 1.049], interpreted-to-
+   native 0.942 [0.910, 1.026], cons allocation 0.929 [0.871, 1.043], the
+   other eleven at most 0.85. A round's ratio ranges over about ±10% on
+   this host, so a median near 0.92 or below is what brings the
+   interval's upper end to 1.03. Since then the MANY subr path took
+   interpreted-to-native from 2,934 to 2,711 instructions a unit (GNU
+   2,387). The byte-code loop is µop-bound (bullet "Where a byte-code
+   iteration's time goes"): bytecode calls runs fewer instructions, taken
+   branches and stack accesses than GNU's loop, and the profile-guided
+   build's register allocation, with more spills, is what makes it slower
+   there than the plain build; bytecode-to-native's whole excess is its
+   call op, 275 instructions against GNU's 115 (its other ops take half
+   of GNU's). Undo runs 1,348,880 instructions a unit against GNU's
+   1,252,071, spread over the evaluator, the slow byte ops (767 a unit),
+   the allocator and 73 entry-cache misses (closures made afresh).
    (Older wall figures, before these rounds: bytecode-to-native 1.54,
    undo 1.35, mapcar 1.29, cons allocation 1.22, interpreted-to-native
    1.19, bytecode calls 1.10, explicit-gc 1.09.) The profile helps the interpreter and

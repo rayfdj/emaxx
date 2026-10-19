@@ -330,8 +330,9 @@ fn entry_program_slow(closure: ClosureRef, identity: usize) -> Option<NonNull<En
     };
     let entry_depth = usize::from(nonrest) + usize::from(rest);
     let verified = verified_code(&program, entry_depth)?;
-    let counts = if entry_depth <= program.stack_depth {
-        (mandatory..=nonrest.min(63)).fold(0, |counts, argc| counts | 1u64 << argc)
+    // Bits MANDATORY to NONREST, as far as 63.
+    let counts = if entry_depth <= program.stack_depth && mandatory <= nonrest.min(63) {
+        (u64::MAX >> (63 - nonrest.min(63))) & (u64::MAX << mandatory)
     } else {
         0
     };
