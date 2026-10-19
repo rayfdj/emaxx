@@ -2436,6 +2436,63 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   Validation (gate profile, `--test-threads=1`): 195 tests naming
   point, narrowing, `current-buffer` or byte code and the lightweight
   group's 598 pass; clippy `-D warnings` and rustfmt pass.
+- **Round 23: a native-compiled function of fixed arity is eval_sub's
+  subr.** A form whose head's function cell holds a native-compiled
+  function of at most six arguments in registers (`register_counts`,
+  lexical binding) is called as eval_sub's SUBRP branch calls one:
+  - the arity is checked before any argument is evaluated, the error
+    naming the form's symbol;
+  - the positions up to the maximum are evaluated into slots (a missing
+    optional is nil);
+  - the frame shows the arguments given;
+  - the call is `call_function_inline`'s.
+  It took `eval_call`'s general way before, which resolved the cell again
+  and evaluated the arguments first. It also signaled `(wrong-number-of-arguments
+  native-compiled-function N)`, two differences from GNU that the new
+  oracle test pins (`source_calls_of_fixed_native_functions_are_eval_sub_subr_calls`).
+  The path, with `eval_call` for every other head that is no C primitive,
+  lies in `eval_cons_call`, out of eval_sub. Two placements inside
+  eval_sub (the native test after the subr arms, then sharing their
+  function-cell load) cost cons allocation 84 to 112 instructions a unit
+  through eval_sub's register allocation, all of it in eval_sub (2.2 to
+  5.5 a call). With the profiler (`EMAXX_PROFILE`) on, the call goes the
+  general way as before. A pending-termination test before the call,
+  which `call_function_value_named` makes, cost 8 a unit and was dropped:
+  termination comes due only inside an argument's evaluation, which then
+  returns its error, and the C-primitive path has no such test either.
+  Instructions a unit against round 22's build (interpreted-to-native
+  and cons allocation on the final code, the rest on the variant without
+  the profiler test): interpreted-to-native
+  2,542.6 -> 2,428.9 (GNU 2,387), native-to-interpreted 4,223.9 ->
+  4,097.2, cons allocation 5,046.1 -> 5,055.7, undo 1,306,776 ->
+  1,301,605 (inside its noise). The general call is one function further
+  away, so: interpreted calls 3,074 -> 3,161, interpreted-lexical 3,460 ->
+  3,480, -dynamic 3,147 -> 3,172, list traversal 255,581 -> 256,101,
+  bindat 871,879 -> 891,245 (+2.2%). All of these run at 0.56 to 0.81
+  of GNU's wall time. Validation (gate profile, `--test-threads=1`):
+  2,053 tests (all 1,677 of `lisp::eval::`, and every test naming
+  native, backtrace, funcall, arity, lambda or closure) pass but the two
+  known container-only failures below
+  (`byte_compile_file_reports_an_unwritable_target_like_gnu` as root,
+  `batch_startup_image_round_trip_or_explicit_native_image_limit`), and
+  the lightweight group's 598 pass. Clippy `-D warnings` and rustfmt
+  pass.
+- **Simulated branch mispredictions (cachegrind `--branch-sim=yes`, a
+  per-address two-bit predictor with no global history; no PMU on this
+  host).** Per unit, against GNU:
+  - interpreted-to-native: instructions 2,350 (PGO) and 2,420 (plain),
+    GNU 2,422; mispredictions 17.4 (PGO) and 9.8 (plain), GNU 9.0.
+  - cons allocation: instructions 4,926 (PGO) and 5,059 (plain), GNU
+    5,295; mispredictions 36.9 (PGO) and 28.9 (plain), GNU 24.0.
+  Fewer loads and stores than GNU in both. In the model:
+  - The variable lookup (`lookup_symbol_plain`, the alist walk GNU's
+    `Fassq` makes too) misses 5 times a unit in the plain build and 14
+    in the PGO build.
+  - eval_cons's subr dispatch (`maximum @ 0..=8`) misses about 10 times
+    in 16, because the loop body alternates fixed-arity subrs and
+    special forms.
+  A predictor with global history may learn both, so the model may
+  overstate them. The wall comparison of the two builds is what decides.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2958,7 +3015,10 @@ native call's frame popped by its length): full Rust gate passed (run
 ("oracle: 1 unexpected", Emaxx none), and its re-run passed (run
 39191232834, attempt 2). **On `286c624`** (the evaluator's subr calls):
 full Rust gate passed (run 39217028701), frozen passed on its first
-attempt (run 39217031778). Locally,
+attempt (run 39217031778). **On `1e3f78e`** (the buffer-position ops in
+the verified loop): full Rust gate passed (run 39222288525), frozen
+passed on its first attempt (run 39222299548); PR #93 merged it into
+main (`769bd10`). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -3238,8 +3298,8 @@ and failures are still recorded.
    bytecode-to-native 1.02 and bytecode calls 1.00, with GNU's own rounds
    ranging over ±25%, so instruction counts are the guide and a count
    well below GNU's is what passes there. Instructions a unit now:
-   interpreted-to-native 2,541 (GNU 2,387), undo 1,300,268 (1,252,071),
-   cons allocation 5,047 (5,215), bytecode-to-native 391.6 an iteration
+   interpreted-to-native 2,429 (GNU 2,387), undo 1,300,268 (1,252,071),
+   cons allocation 5,056 (5,215), bytecode-to-native 391.6 an iteration
    (388), bytecode calls 437.8 (468). Undo's next step is its slow byte
    ops' way out of the verified loop: 767 a unit through `op_in_place`
    at 120 instructions each (a second decode and dispatch, a large

@@ -166,6 +166,51 @@ fn native_loader_interns_symbols_inside_relocation_vectors() {
 }
 
 #[test]
+fn source_calls_of_fixed_native_functions_are_eval_sub_subr_calls() {
+    // eval_sub's SUBRP branch for a native-compiled function of fixed
+    // arity: the arity checked before any argument is evaluated, the
+    // error naming the form's symbol, the arguments in order, a missing
+    // optional nil, and the frame showing the arguments given.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+            (require 'comp)
+            (let* ((source (make-temp-file "native-eval-call-" nil ".el"))
+                   (output (make-temp-file "native-eval-output-" t))
+                   (comp-no-spawn nil)
+                   (comp-running-batch-compilation t)
+                   (native-comp-jit-compilation nil)
+                   (order nil))
+              (unwind-protect
+                  (progn
+                    (with-temp-file source
+                      (insert ";;; -*- lexical-binding: t -*-\n"
+                              "(defun native-eval-pair (a &optional b) (list a b))\n"
+                              "(defun native-eval-frame (a &optional b)\n"
+                              "  (list a b (backtrace-frame 0 'native-eval-frame)))\n"))
+                    (native-elisp-load
+                     (native-compile source (expand-file-name "call.eln" output)))
+                    (list (native-comp-function-p (symbol-function 'native-eval-pair))
+                          (native-eval-pair 1)
+                          (native-eval-pair 1 2)
+                          (condition-case e (native-eval-pair) (error e))
+                          (condition-case e
+                              (native-eval-pair (push 'evaluated order) 2 3)
+                            (error (list e order)))
+                          (native-eval-pair (progn (push 'a order) 1)
+                                            (progn (push 'b order) 2))
+                          order
+                          (native-eval-frame 5)
+                          (native-eval-frame 5 6)))
+                (delete-file source)
+                (delete-directory output t))))"#,
+        "(t (1 nil) (1 2) (wrong-number-of-arguments native-eval-pair 0) \
+         ((wrong-number-of-arguments native-eval-pair 3) nil) (1 2) (b a) \
+         (5 nil (t native-eval-frame 5)) (5 6 (t native-eval-frame 5 6)))",
+        "source calls of native functions check arity first and record the given arguments",
+    );
+}
+
+#[test]
 fn native_subr_c_names_follow_gnu_nul_termination_without_changing_symbols() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/native-subr-c-names.el"),

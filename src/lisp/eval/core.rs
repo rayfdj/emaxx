@@ -574,8 +574,36 @@ impl Interpreter {
                 _ => {}
             }
         }
-        // The head as a value of its own when it is no symbol, made here
-        // rather than held across the subr arms above.
+        self.eval_cons_call(expr, head, args_cell, env)
+    }
+
+    /// eval_cons past the C primitives: a native-compiled function of
+    /// fixed arity, or the general call. Out of line, so that eval_sub's
+    /// register allocation is the subr arms' alone.
+    #[inline(never)]
+    fn eval_cons_call(
+        &mut self,
+        expr: &Value,
+        head: Value,
+        args_cell: Option<SharedCons>,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        let head_symbol = head.symbol_cell();
+        // A native-compiled function of fixed arity is a subr to eval_sub
+        // too (SUBRP, not SUBR_NATIVE_COMPILED_DYNP), when the profiler,
+        // which times calls by name, is off (see `finish_eval_call').
+        if let Some(name) = head_symbol
+            && let Some(native) = self
+                .globals
+                .function(&name)
+                .and_then(Value::native_function_ref)
+            && native.register_counts() != 0
+            && !profiling()
+        {
+            let tail = args_cell.map_or(Value::Nil, Value::Cons);
+            return self.eval_fixed_native(expr, head, name, native, tail, env);
+        }
+        // The head as a value of its own when it is no symbol.
         let head_value = if head_symbol.is_some() {
             None
         } else {
@@ -669,6 +697,70 @@ impl Interpreter {
                 env,
             ),
         };
+        let result = self.settle_frame_result(result, env);
+        self.truncate_backtrace_frames(depth);
+        result
+    }
+
+    /// `eval_fixed_subr' for NATIVE, a native-compiled function in NAME's
+    /// cell that takes its at most six fixed arguments in registers
+    /// (`register_counts'): eval_sub's SUBRP branch, which checks the
+    /// arity before any argument is evaluated, evaluates the maximum's
+    /// positions into the slots and calls the function with them all (a
+    /// missing optional nil, as funcall_subr pads it), the frame showing
+    /// the arguments given. Inline in `eval_cons_call', out of eval_sub.
+    #[inline(always)]
+    fn eval_fixed_native(
+        &mut self,
+        source_form: &Value,
+        original_function: Value,
+        name: SymbolName,
+        native: crate::lisp::types::NativeFunctionRef,
+        original_args: Value,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        // `register_counts' admits only an arity of zero to six.
+        let maximum = native.max_args_word() as usize;
+        let depth = self.backtrace_frames.len();
+        self.push_unevaluated_backtrace_frame(source_form);
+        let nargs = match self.short_list_length(original_args, env) {
+            Ok(count) => count,
+            Err(error) => return self.eval_call_argument_error(depth, true, error, env),
+        };
+        if nargs < native.min_args() as usize || maximum < nargs {
+            let error = LispError::SignalValue(Value::list([
+                Value::symbol("wrong-number-of-arguments"),
+                original_function,
+                Value::Integer(nargs as i64),
+            ]));
+            return self.eval_call_argument_error(depth, true, error, env);
+        }
+        // As `eval_fixed_subr's slots.
+        let mut argvals = [std::mem::MaybeUninit::<Value>::uninit(); 8];
+        let mut args_left = original_args;
+        for slot in &mut argvals[..maximum] {
+            let cell = args_left.cons_ref();
+            let form = match cell {
+                Some(cell) => cell.car.get(),
+                None if args_left.is_nil() => Value::Nil,
+                None => {
+                    let error = LispError::WrongTypeArgument("listp".into(), args_left);
+                    return self.eval_call_argument_error(depth, true, error, env);
+                }
+            };
+            slot.write(match self.eval_nested(&form, env) {
+                Ok(value) => value,
+                Err(error) => return self.eval_call_argument_error(depth, true, error, env),
+            });
+            args_left = cell.map_or(Value::Nil, |cell| cell.cdr.get());
+        }
+        // SAFETY: the loop wrote the first MAXIMUM slots.
+        let argvals: &[Value] =
+            unsafe { std::slice::from_raw_parts(argvals.as_ptr().cast::<Value>(), maximum) };
+        // The callee's symbol has a function, so it is no built-in nil or t.
+        self.set_backtrace_args(Value::symbol_of_cell(name), &argvals[..nargs]);
+        self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+        let result = crate::lisp::native_comp::call_function_inline(self, env, native, argvals);
         let result = self.settle_frame_result(result, env);
         self.truncate_backtrace_frames(depth);
         result
