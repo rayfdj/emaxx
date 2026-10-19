@@ -366,6 +366,18 @@ impl BufferText {
         }
     }
 
+    /// The text of RANGE (char indices) as a String. A small store's bytes
+    /// are copied as they are: a slice of them counts their chars and lines
+    /// first.
+    fn string(&self, range: std::ops::Range<usize>) -> String {
+        match &self.store {
+            TextStore::Small(text) => text
+                [self.small_byte(text, range.start)..self.small_byte(text, range.end)]
+                .to_owned(),
+            TextStore::Rope(rope) => String::from(rope.slice(range)),
+        }
+    }
+
     fn chars(&self) -> ropey::iter::Chars<'_> {
         match &self.store {
             TextStore::Small(text) => ropey::RopeSlice::from(text.as_str()).chars(),
@@ -1408,7 +1420,7 @@ impl Buffer {
     pub fn buffer_string(&self) -> String {
         let start = self.begv - 1;
         let end = self.zv - 1;
-        String::from(self.text.slice(start..end))
+        self.text.string(start..end)
     }
 
     /// A shared handle on the text as it is now: ropey's rope clones in
@@ -1518,7 +1530,7 @@ impl Buffer {
         if from > to {
             return Err(BufferError::InvalidPosition(from));
         }
-        Ok(String::from(self.text.slice((from - 1)..(to - 1))))
+        Ok(self.text.string((from - 1)..(to - 1)))
     }
 
     pub fn substring_property_spans(&self, from: usize, to: usize) -> Vec<TextPropertySpan> {

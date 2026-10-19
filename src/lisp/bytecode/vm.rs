@@ -1223,6 +1223,10 @@ enum FastExit {
     /// or a call ran Lisp, which may have changed the frame's code; the
     /// stack's top and the frame's depth.
     Switched(usize, usize),
+    /// Inside the verified loop only: an op run in place went on to the
+    /// next instruction and stored into no code string (`op_in_place');
+    /// the stack's top.
+    Continued(usize),
     /// The instruction's signal, raised after its own work (a Bcall's).
     Raised(super::Instr, LispError),
 }
@@ -2363,16 +2367,18 @@ fn run_verified(
                     *slot!(0) = if integerp { Value::T } else { Value::Nil };
                     at += 1;
                 }
-                // Bmemq on a fixnum or a symbol, whose words are eq exactly
-                // when they are the same word, unless an element might be a
-                // symbol with position. FOR_EACH_TAIL's first quit check
-                // comes after the second element: nothing here can set
-                // `quit-flag', so one test there stands for every later
-                // one. A long or improper list takes the full arm, which
-                // checks for cycles and the list's end.
+                // Bmemq: two objects are eq exactly when they are the same
+                // word, unless one is a symbol with position, which is eq
+                // to its bare symbol (and to another of that symbol): the
+                // full arm takes such an element, and a symbol meeting a
+                // vectorlike element of the list. FOR_EACH_TAIL's first
+                // quit check comes after the second element: nothing here
+                // can set `quit-flag', so one test there stands for every
+                // later one. A long or improper list takes the full arm,
+                // which checks for cycles and the list's end.
                 0o076 => {
                     let element = *slot!(1);
-                    if element.fixnum().is_none() && !element.is_symbol() {
+                    if element.is_vectorlike() && matches!(element.kind(), Kind::SymbolWithPos(_)) {
                         slow!();
                     }
                     let mut tail = *slot!(0);
@@ -2489,6 +2495,15 @@ fn run_verified(
                 | 0o274 | 0o275 | 0o276 | 0o277 => slow!(),
             }
         };
+        if let FastExit::Continued(new_top) = exit {
+            // The frame goes on at the op's successor, which verification
+            // found with the operands the op left.
+            // SAFETY: as the caller's slice; the bytes were current before
+            // the op and it stored into no code string.
+            code = unsafe { vm.program.code.bytes_unchanged() };
+            top = new_top;
+            continue;
+        }
         if let FastExit::Raised(..) = exit {
             // The call left the stack as its signal found it.
             return (exit, None);
@@ -2518,12 +2533,16 @@ fn run_verified(
 
 /// The verified loop's way to an op it has no arm for (or whose operands
 /// its arm does not take): `exec_op' runs the op at OFFSET in place, on
-/// the stack below TOP, as exec_byte_code runs every op in one loop. The
-/// answer is the stack's top and the frame's depth after it, as after a
-/// call, since the op may have run Lisp; or its signal. An op that does
+/// the stack below TOP, as exec_byte_code runs every op in one loop. An op
+/// that goes on to the next instruction and stored into no code string
+/// answers the stack's top (`Continued'), and the loop resumes there as
+/// after a call. After a jump or a store into a code string the answer is
+/// the stack's top and the frame's depth, as after a frame switch, since
+/// the op may have run Lisp; after a signal, the signal. An op that does
 /// not decode leaves the loop with the stack as it was.
 #[inline(never)]
 fn op_in_place(vm: &mut VmFrames<'_>, offset: usize, top: usize, pc: &mut usize) -> FastExit {
+    let changes = crate::lisp::alloc::code_changes();
     // The frame's code, which the loop reads only by its verified offsets
     // and so holds without its length.
     // SAFETY: as the verified loop's: nothing runs Lisp, collects or
@@ -2566,10 +2585,20 @@ fn op_in_place(vm: &mut VmFrames<'_>, offset: usize, top: usize, pc: &mut usize)
     ));
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.bc_stack.top = top;
-    *pc = offset + instr.len;
+    let next = offset + instr.len;
+    *pc = next;
     match exec_op_inline(vm, instr.op, pc) {
         Ok(()) => {
             let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
+            if *pc == next && crate::lisp::alloc::code_changes() == changes {
+                debug_assert!(
+                    vm.program
+                        .verified
+                        .is_some_and(|verified| verified.admits(next, state.bc_stack.len())),
+                    "an op left other operands than verification found"
+                );
+                return FastExit::Continued(state.bc_stack.top);
+            }
             FastExit::Switched(state.bc_stack.top, state.bc_stack.len())
         }
         Err(error) => FastExit::Raised(instr, error),
@@ -4048,7 +4077,7 @@ fn run_loop(
                     last_instruction = Some(instr);
                     return Err(error);
                 }
-                FastExit::Resume | FastExit::Switched(..) => {
+                FastExit::Resume | FastExit::Switched(..) | FastExit::Continued(_) => {
                     unreachable!("a frame switch resumes above")
                 }
             };

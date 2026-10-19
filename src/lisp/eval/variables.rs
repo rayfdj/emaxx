@@ -21,9 +21,12 @@ const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 8] = [
 /// Whether SYMBOL is one of the variables whose evaluator cells hold the
 /// current buffer's value.
 pub(super) fn is_forwarded_eval_cell(symbol: &SymbolName) -> bool {
+    // The names first: a symbol named like none of them is none of them,
+    // and the editor's key table is read only for one that is.
+    let name = symbol.as_str();
     FORWARDED_EVAL_CELLS
         .iter()
-        .any(|key| key.with(|cell| cell == symbol))
+        .any(|key| key.name() == name && key.with(|cell| cell == symbol))
 }
 
 #[derive(Default)]

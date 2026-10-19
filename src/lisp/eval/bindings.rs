@@ -265,13 +265,9 @@ impl Interpreter {
                 .or_else(|| self.builtin_symbol_value(resolved))
                 .ok_or_else(|| LispError::Void(resolved.as_str().to_owned()));
         }
-        self.lookup_var_with_resolved_name(
-            resolved.as_str(),
-            resolved.as_str(),
-            &Env::new(),
-            Some(resolved),
-        )?
-        .ok_or_else(|| LispError::Void(resolved.as_str().to_owned()))
+        // No lexical environment: the dynamic value, as Fsymbol_value.
+        self.find_symbol_value_resolved(resolved.as_str(), Some(resolved))
+            .ok_or_else(|| LispError::Void(resolved.as_str().to_owned()))
     }
 
     /// C readers keep using the C slot even after `makunbound' disconnects

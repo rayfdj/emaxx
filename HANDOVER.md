@@ -2801,6 +2801,50 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   - `delete-region` 4,211 a call against GNU's 2,825 (18 a unit):
     the change hooks 894 a call each way, `Buffer::delete_region` 1,691
     against `del_range_2`'s 1,083.
+- **Round 27: undo's slow ops resume in the loop, and by-name lookups
+  trimmed.** Instructions a unit in the plain build (round 26's in
+  parentheses): undo 1,298,608 (1,335,042), bytecode calls 451.9 (450.1),
+  bytecode-to-native 403.4 (401.5), interpreted-to-native 2,455.8
+  (2,474.8), native-to-bytecode 4,098.8 (4,117.0).
+  - An op `run_verified` leaves to `op_in_place` (622 a unit in undo)
+    that goes on to the next instruction and stored into no code string
+    now answers `FastExit::Continued`, and the loop resumes at it with
+    the bytes read again, as after a call (`code_changes` unchanged),
+    instead of through the frame-switch exit and its verification check:
+    undo -10,100. Resuming inside each slow arm instead (the `slow!`
+    sites continuing the loop themselves) saved 14,300 but cost bytecode
+    calls 5.0 and bytecode-to-native 2.5 an iteration (the stack base
+    lost its register); returning the stack pointer from `op_in_place`
+    made that worse (8.4 and 5.6). The exit-path form costs bytecode
+    calls 1.8 and bytecode-to-native 0.8, register allocation alone.
+  - Bmemq runs in the loop for any element but a symbol with position
+    (strings, floats and conses compare by the word, as `eq` does). Undo's
+    39 slow Bmemqs a unit are not of that kind: its count did not move.
+  - Bvarref of a buffer-local or forwarded variable
+    (`symbol_value_cell_symbol`, 55 a unit) reads
+    `find_symbol_value_resolved` directly instead of a lexical lookup in
+    an empty environment; `has_feature` (`featurep`, `require`) stops at
+    the first match, where it compared every element's name (5,214 a call
+    to about 2,200); `buffer-string` and `buffer-substring` copy a small
+    text's bytes directly, where a rope slice of them counted their chars
+    and lines first (327 a call, 17 a unit); `is_forwarded_eval_cell`
+    (16 a unit, 237 a call, under `set_buffer_local_value_symbol`)
+    compares the names before reading the editor's key table;
+    `set-buffer-multibyte`'s undo entry names its two symbols through
+    the key table. Together about undo -20,000.
+  - Comparing `featurep`'s symbol by its word failed
+    `startup_features_own_their_capability_metadata_in_one_manifest`:
+    the `features` list can hold another symbol object of the name
+    `SymbolName::find` returns, so names are compared still.
+  Validation (gate profile, `--test-threads=1`): 851 tests: round 26's 618
+  and every test naming byte code, `memq`, features, `require`,
+  `buffer-substring`, `buffer-string`, `symbol-value`, undo or Bvarref
+  pass but the known container-only image round trip and the as-root
+  `byte_compile_file_reports_an_unwritable_target_like_gnu`; the 52
+  feature, `memq`, forwarded-variable and buffer-text tests again after
+  the name comparison, with the new oracle test for `featurep` of an
+  uninterned symbol; the lightweight group's 598. Clippy `-D warnings`
+  and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3335,7 +3379,9 @@ Emaxx none), and its re-run passed (run 39253372487, attempt 2). **On
 `e571f20`** (the jump padding): full Rust gate passed (run
 39262083083); frozen matched 7,927 of 7,928, the one mismatch again
 GNU's, and its re-run passed (run 39262088787, attempt 2); PR #94
-merged it into main (`c769d5b`). Locally,
+merged it into main (`c769d5b`). **On `65ed19b`** (every kind of jump
+padded, with prefixes): full Rust gate passed (run 39295048045), frozen
+passed on its first attempt (run 39295051895). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -3351,6 +3397,16 @@ this container's GNU build itself disagrees with the expected text (under
 `unicode`).
 
 **Findings recorded, not fixed:**
+- `features`, `values` and `top-level` are special variables in Emaxx
+  (`special-variable-p` answers t) where GNU unmarks them after their
+  DEFVARs (`Fmake_var_non_special (Qfeatures)` in fns.c, `values` in
+  lread.c, `top-level` in keyboard.c: "Let people use lexically scoped
+  vars named `features'"). So a lexical `(let ((values ...)) ...)` binds
+  dynamically in Emaxx and lexically in GNU, and
+  `(let ((features '(foo))) (featurep 'foo))` is t in Emaxx, nil in GNU
+  under lexical binding. `GNU_LREAD_SPECIAL_VARIABLES` in eval.rs lists
+  `values` with the specials; the fix is GNU's unmarking after
+  definition, checked with the image.
 - A condition symbol with no `error-conditions` (never `define-error`ed):
   GNU's handlers do not catch it except through `t`, so
   `(condition-case e (signal 'my-err '(3)) (my-err ...))` leaves it
@@ -3626,7 +3682,8 @@ and failures are still recorded.
    "Round 26"): a fifteen-round pilot of the profile-guided build reads
    bytecode-to-native 0.910, bytecode calls 0.916, interpreted-to-native
    0.891, cons allocation 0.823 and undo 1.110. Undo is now the worst
-   by far. For the work both editors do, Emaxx runs about 14% more
+   by far. Round 27 took undo's plain-build count to 1,298,608 a unit
+   (bullet "Round 27"). For the work both editors do, Emaxx runs about 14% more
    instructions than GNU (GNU's totals include 150,000 a unit of
    window-size Lisp Emaxx does not run), most of it in the byte-code
    VM's slow ops (`op_in_place`, 140 a slow op) and the native runtime's
