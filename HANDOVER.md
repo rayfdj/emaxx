@@ -2493,6 +2493,88 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
     special forms.
   A predictor with global history may learn both, so the model may
   overstate them. The wall comparison of the two builds is what decides.
+- **Round 24: native arity errors as GNU signals them.** The loader's
+  arity test (`check_arity`) and the binding of a dynamic-binding native's
+  lambda list signaled `(wrong-number-of-arguments native-compiled-function
+  N)`. GNU's funcall_subr and funcall_lambda signal with the function
+  object, `#<subr NAME>`, and the loader does too now
+  (`wrong_number_of_arguments`). A form whose head reaches a lexical
+  native other than through the round 23 path (through an alias, with
+  more than six arguments, a MANY native, or the profiler on) had its
+  arguments evaluated before that test. `eval_call` now checks the
+  arity first, as for a C primitive (MANY's minimum included), naming the
+  form's symbol. A dynamic-binding native stays apply_lambda's: arguments
+  first, then the subr in the error. The new oracle test
+  `native_arity_errors_name_the_callee_as_gnu_does` covers funcall,
+  apply, an alias, MANY and a dynamic native, and the loader's own test
+  now expects the function object. Instructions a unit: interpreted
+  calls 3,162.8 -> 3,173.8 (`eval_call`'s native test for every closure
+  call); interpreted-to-native 2,420.5, bytecode-to-native 392.3 and
+  native-to-interpreted 4,093.2, unchanged within their noise.
+  Validation (gate profile, `--test-threads=1`): 618 tests naming
+  native, arity, funcall, apply, alias, subr, lambda, closure or calls
+  (the loader's and the native runtime's among them) pass but the
+  known container-only image round trip, and the lightweight group's
+  598 pass. Clippy `-D warnings` and rustfmt pass.
+- **Wall pilots of the build kinds on this host: too noisy to rank
+  them.** Three pilots of the five tight workloads (`pilot3.py`-style:
+  the contract's sizes, one warmup and three samples a process, five or
+  seven rounds, order rotating), on rounds 23 and 24's source, compared:
+  - the profile-guided build;
+  - the same build with `run_verified` dropped from the profile
+    (`llvm-profdata merge --no-function=2vm12run_verified`, so the
+    byte-code loop is compiled as in the plain build);
+  - the plain build.
+  Median ratio to GNU, pilot by pilot:
+  - interpreted-to-native: PGO 0.970, 0.946, 1.121; plain 1.014, 1.065,
+    1.090.
+  - cons allocation: PGO 1.011, 0.943, 1.074; plain 1.103, 1.115, 1.119.
+  - undo: PGO 1.005, 1.141, 1.072; plain 1.217, 1.193, 1.231.
+  - bytecode-to-native: PGO 1.085, 1.050, 0.989; plain 1.014, 0.887,
+    0.981.
+  - bytecode calls: PGO 0.997, 0.954, 1.043; plain 0.942, 1.015, 0.973.
+  - without `run_verified`'s profile (second and third pilots):
+    bytecode-to-native 0.921 and 0.996, bytecode calls 0.952 and 1.007,
+    interpreted-to-native 0.774 and 1.121, cons allocation 1.132 and
+    1.093, undo 1.089 and 1.073.
+  Single rounds ranged from 0.66 to 1.54, and GNU's own medians moved by
+  up to 40% between pilots (interpreted-to-native 0.50 to 0.70 s).
+  Each process's CPU time (`getrusage`, the third pilot) varied about as
+  much, so the variance comes from the host, not from stolen time
+  (steal is about 3% over the uptime). The profile-guided build is
+  consistently ahead on undo and cons allocation, the plain one roughly
+  even or ahead on the two byte-code workloads. Dropping
+  `run_verified`'s profile showed no consistent gain, and
+  `tools/pgo-build.sh` is unchanged. On this host a few percent between
+  builds needs far more rounds than a pilot. Instruction counts remain
+  the guide.
+- **Where the profile-guided build stands, by cachegrind's
+  simulation** (rounds 23 and 24's source; per unit, against GNU).
+  - Instructions: undo 1,185,265 (GNU 1,259,204, 0.94),
+    bytecode-to-native 382.6 (388.0), bytecode calls 437.9 (468.0),
+    interpreted-to-native 2,350 (2,422), cons allocation 4,926 (5,295).
+    The timed build runs fewer instructions than GNU in all five.
+  - Undo's L1 instruction-cache misses: 39,711 against GNU's 21,140
+    (the plain build 59,810). Its data misses are 13,451 reads and 3,911
+    writes against 9,799 and 1,702, and its conditional mispredictions
+    17,146 against 13,389.
+  - The byte-code VM's functions alone miss about 8,170 times a unit
+    against GNU's `exec_byte_code`'s 1,669: `run_verified` 4,712,
+    `op_in_place` 1,985, the rest in `run_entered`, `call_plain`,
+    `bytecode_call` and `run_loop`. `run_verified` is 46 KB in the plain
+    build (49 KB profile-guided) where `exec_byte_code` is 12 KB. About
+    18 KB of it is the inlined native-call path (`invoke_nested_fixed`
+    and the frame record around it, once per argument-count
+    specialization), which undo never runs; the profile places it cold.
+    eval_sub is 14 KB, plus `eval_cons_call` 15 KB, against GNU's
+    2.8 KB.
+  - Machine function splitting (`-Cllvm-args=-enable-split-machine-functions`
+    on the same profile, 3,295 functions split) left undo's misses at
+    38,989. They come from the breadth of hot code undo executes, not
+    from cold blocks inside it.
+  Undo's remaining wall excess is most plausibly this footprint, the
+  amount of distinct code an iteration touches. Narrowing the hot paths
+  of the VM and the evaluator is the lever, not the instruction count.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3018,7 +3100,9 @@ full Rust gate passed (run 39217028701), frozen passed on its first
 attempt (run 39217031778). **On `1e3f78e`** (the buffer-position ops in
 the verified loop): full Rust gate passed (run 39222288525), frozen
 passed on its first attempt (run 39222299548); PR #93 merged it into
-main (`769bd10`). Locally,
+main (`769bd10`). **On `3f71b54`** (the evaluator's native subr path):
+full Rust gate passed (run 39246860015), frozen passed on its first
+attempt (run 39246863841). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the

@@ -1097,6 +1097,25 @@ impl Interpreter {
                 self.truncate_backtrace_frames(depth);
                 return result;
             }
+        } else if let FunctionResolution::Resolved(function) = &prepared
+            && let Some(native) = function.native_function_ref()
+            && !native.is_dynamic()
+        {
+            // A native-compiled function is a subr there too (SUBRP), with
+            // a negative maximum for MANY; one compiled with dynamic
+            // binding (SUBR_NATIVE_COMPILED_DYNP) is apply_lambda's, which
+            // checks after the arguments.
+            let maximum = native.max_args_word();
+            if (nargs as i64) < i64::from(native.min_args())
+                || (maximum >= 0 && i64::from(maximum) < nargs as i64)
+            {
+                let error = LispError::SignalValue(Value::list([
+                    Value::symbol("wrong-number-of-arguments"),
+                    original_function,
+                    Value::Integer(nargs as i64),
+                ]));
+                return self.eval_call_argument_error(depth, unevald_frame, error, env);
+            }
         }
         let fixed_max = subr.and_then(|subr| match subr.descriptor().max_args() {
             NativeMaxArgs::Fixed(maximum) if maximum <= 8 => Some(maximum),

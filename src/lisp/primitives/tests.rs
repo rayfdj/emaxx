@@ -211,6 +211,65 @@ fn source_calls_of_fixed_native_functions_are_eval_sub_subr_calls() {
 }
 
 #[test]
+fn native_arity_errors_name_the_callee_as_gnu_does() {
+    // funcall_subr and funcall_lambda signal with the function object;
+    // eval_sub checks a lexical native's arity (MANY's minimum included)
+    // before evaluating any argument and names the form's symbol, an alias
+    // too; a dynamic-binding native is apply_lambda's, which evaluates the
+    // arguments first.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+            (require 'comp)
+            (let* ((source (make-temp-file "native-arity-" nil ".el"))
+                   (dynamic (make-temp-file "native-arity-dynamic-" nil ".el"))
+                   (output (make-temp-file "native-arity-output-" t))
+                   (comp-no-spawn nil)
+                   (comp-running-batch-compilation t)
+                   (native-comp-jit-compilation nil)
+                   (order nil))
+              (unwind-protect
+                  (progn
+                    (with-temp-file source
+                      (insert ";;; -*- lexical-binding: t -*-\n"
+                              "(defun native-arity-pair (a &optional b) (list a b))\n"
+                              "(defun native-arity-rest (a &rest r) (cons a r))\n"))
+                    (with-temp-file dynamic
+                      (insert ";;; -*- lexical-binding: nil -*-\n"
+                              "(defun native-arity-dynamic (a &optional b) (list a b))\n"))
+                    (native-elisp-load
+                     (native-compile source (expand-file-name "arity.eln" output)))
+                    (native-elisp-load
+                     (native-compile dynamic (expand-file-name "dynamic.eln" output)))
+                    (defalias 'native-arity-alias 'native-arity-pair)
+                    (let ((report (lambda (e) (list (car e) (cadr e) (caddr e)))))
+                      (list (condition-case e (funcall 'native-arity-pair)
+                              (error (funcall report e)))
+                            (condition-case e (apply #'native-arity-pair '(1 2 3))
+                              (error (funcall report e)))
+                            (condition-case e (native-arity-alias (push 'alias order) 2 3)
+                              (error (list e order)))
+                            (condition-case e (native-arity-rest) (error e))
+                            (condition-case e (native-arity-rest (push 'rest order)) (error e))
+                            (condition-case e
+                                (native-arity-dynamic (push 'dynamic order) 2 3)
+                              (error (list (funcall report e) order)))
+                            (condition-case e (funcall 'native-arity-dynamic)
+                              (error (funcall report e)))
+                            (native-arity-alias 1))))
+                (delete-file source)
+                (delete-file dynamic)
+                (delete-directory output t))))"#,
+        "((wrong-number-of-arguments #<subr native-arity-pair> 0) \
+         (wrong-number-of-arguments #<subr native-arity-pair> 3) \
+         ((wrong-number-of-arguments native-arity-alias 3) nil) \
+         (wrong-number-of-arguments native-arity-rest 0) ((rest)) \
+         ((wrong-number-of-arguments #<subr native-arity-dynamic> 3) (dynamic rest)) \
+         (wrong-number-of-arguments #<subr native-arity-dynamic> 0) (1 nil))",
+        "native arity errors carry the subr from funcall and the form's symbol from eval",
+    );
+}
+
+#[test]
 fn native_subr_c_names_follow_gnu_nul_termination_without_changing_symbols() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/native-subr-c-names.el"),
