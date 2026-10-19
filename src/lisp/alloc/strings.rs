@@ -138,6 +138,19 @@ impl StringObjectRef {
         unsafe { (*cell.state.get()).bytes_unbounded() }
     }
 
+    /// `bytes_unguarded' for code bytes that were current when
+    /// `code_changes' last read what it reads now: no mutable guard on
+    /// them has been taken since (taking one counts a change), and none
+    /// was alive then (the bytes would not have been current).
+    ///
+    /// # Safety
+    /// As `bytes_unguarded's, and the bytes are code as above.
+    #[inline(always)]
+    pub(crate) unsafe fn code_bytes_unchanged<'a>(&self) -> &'a [u8] {
+        // SAFETY: as the caller's contract.
+        unsafe { (*self.cell().state.get()).bytes_unbounded() }
+    }
+
     /// Whether the string holds text properties, read with no guard
     /// counted: for the collector's trace, which runs while no guard is
     /// alive (a collection does not start while one is).

@@ -417,6 +417,11 @@ unsafe extern "C" {
     fn emaxx_native_longjmp(buffer: *mut c_void) -> !;
 }
 
+/// The word `call_fixed_registers' answers for a call that escaped: tag
+/// 1, lisp.h's `Lisp_Type_Unused0', which no Lisp object has.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const ESCAPED_WORD: NativeWord = 1;
+
 /// The escape record of a call made by `call_fixed_registers': the
 /// trampoline's jump buffer, in the calling frame.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -430,7 +435,9 @@ struct EscapeBuffer(MaybeUninit<[u8; 72]>);
 /// at the second label) without the trampoline's frame and the
 /// invocation record it reads the registers from.  A register past
 /// ARGUMENTS holds 0, nil, as funcall_subr pads a missing optional.  The
-/// answer is the callee's word and whether it escaped.
+/// answer is the callee's word and whether it escaped: the resume label
+/// (2) lies out of line and leaves `ESCAPED_WORD' as the word, so that an
+/// ordinary return goes on from the call with no flag of its own.
 ///
 /// # Safety
 ///
@@ -455,7 +462,6 @@ unsafe fn call_fixed_registers(
         _ => (word(0), word(1), word(2), word(3), word(4), word(5)),
     };
     let result: NativeWord;
-    let escaped: usize;
     // SAFETY: the stack pointer is aligned for a call at an asm block
     // without `nostack'.  On an ordinary return the callee preserved the
     // callee-saved registers; on an escape `emaxx_native_longjmp' restores
@@ -474,25 +480,27 @@ unsafe fn call_fixed_registers(
             "mov [r10 + 56], rax",
             "mov dword ptr [r10 + 64], {marker}",
             "call r11",
-            "xor ecx, ecx",
-            "jmp 3f",
-            "2:",
-            "mov ecx, 1",
             "3:",
+            ".pushsection .text.unlikely.emaxx_native_escape, \"ax\", @progbits",
+            "2:",
+            "mov eax, {escaped}",
+            "jmp 3b",
+            ".popsection",
             marker = const NATIVE_ESCAPE_MARKER,
+            escaped = const ESCAPED_WORD,
             in("r10") buffer,
             in("r11") target,
             in("rdi") a0,
             in("rsi") a1,
             in("rdx") a2,
-            inout("rcx") a3 => escaped,
+            in("rcx") a3,
             in("r8") a4,
             in("r9") a5,
             lateout("rax") result,
             clobber_abi("C"),
         );
     }
-    (result, escaped != 0)
+    (result, result == ESCAPED_WORD)
 }
 
 // System V counterpart of alloc.c:flush_stack_call_func.  The generated
@@ -1663,8 +1671,35 @@ impl NativeRuntime {
         // SAFETY: as `decode_result's: the returned word still belongs to
         // the protected activation.
         let result = unsafe { Value::from_word(word) };
-        self.finish_frame(interpreter, false)?;
+        self.finish_nested_frame(interpreter)?;
         Ok(result)
+    }
+
+    /// `finish_frame' of a nested call's frame (no heap call) after an
+    /// ordinary return: when the callee left the frame as it found it
+    /// (`sync_handlers' would change nothing, no handler, unwind entry or
+    /// root range above the frame's, no pending error) the pop is the
+    /// length alone; otherwise `finish_frame' does the whole of it.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[inline(always)]
+    fn finish_nested_frame(&mut self, interpreter: &mut Interpreter) -> Result<(), LispError> {
+        let current = self.thread.handler();
+        if let Some(frame) = self.calls.last()
+            && frame.pending_error.is_none()
+            && frame.handler_depth == self.handlers.len()
+            && frame.unwind_depth == self.unwind.len()
+            && frame.ephemeral_root_depth == self.ephemeral_root_ranges.len()
+            && self
+                .handlers
+                .last()
+                .map_or(current.is_null(), |entry| entry.address() == current)
+        {
+            // SAFETY: the frame is the vector's last and needs no drop
+            // (its pending error is None).
+            unsafe { self.calls.set_len(self.calls.len() - 1) };
+            return Ok(());
+        }
+        self.finish_frame(interpreter, false)
     }
 
     /// The rest of `invoke' once the call frame is pushed: the

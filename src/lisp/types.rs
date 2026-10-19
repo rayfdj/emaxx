@@ -2387,7 +2387,7 @@ impl Value {
         let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
         // SAFETY: as `kind's vectorlike arm.
         unsafe {
-            (crate::lisp::alloc::vectors::header_tag(header) == crate::lisp::alloc::VectorTag::Subr
+            (crate::lisp::alloc::vectors::is_subr(header)
                 && !crate::lisp::alloc::vectors::subr_is_allocated(header))
             .then(|| BuiltinRef::from_raw(header as usize))
         }
@@ -2430,7 +2430,7 @@ impl Value {
         let header = (self.0 & !TAG_MASK) as *mut crate::lisp::alloc::VectorHeader;
         // SAFETY: as `kind's vectorlike arm.
         unsafe {
-            (crate::lisp::alloc::vectors::header_tag(header) == crate::lisp::alloc::VectorTag::Subr
+            (crate::lisp::alloc::vectors::is_subr(header)
                 && crate::lisp::alloc::vectors::subr_is_allocated(header))
             .then(|| NativeFunctionRef::from_raw(header))
         }

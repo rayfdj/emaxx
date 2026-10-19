@@ -1511,6 +1511,19 @@ pub(crate) unsafe fn subr_is_allocated(header: *mut VectorHeader) -> bool {
     unsafe { (*header).size & ((1 << PSEUDOVECTOR_AREA_BITS) - 1) != 0 }
 }
 
+/// `header_tag(HEADER) == VectorTag::Subr' by one masked compare of the
+/// size word, where the tag's decoding branches on the flag first.
+///
+/// # Safety
+/// HEADER is an allocated vector.
+#[inline(always)]
+pub(crate) unsafe fn is_subr(header: *mut VectorHeader) -> bool {
+    const KIND: usize = PSEUDOVECTOR_FLAG | (0x3f << PSEUDOVECTOR_AREA_BITS);
+    const SUBR: usize = PSEUDOVECTOR_FLAG | ((VectorTag::Subr as usize) << PSEUDOVECTOR_AREA_BITS);
+    // SAFETY: the caller's contract.
+    unsafe { (*header).size & KIND == SUBR }
+}
+
 /// The value naming an allocated vector (for the conservative scan).
 ///
 /// # Safety

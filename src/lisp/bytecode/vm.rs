@@ -1788,9 +1788,22 @@ fn run_verified(
                         // the call stored into the string, and verification
                         // found the call's successor with the operands it
                         // left.
+                        // A store into a code string counts a change: an
+                        // unchanged count after the call leaves these bytes
+                        // and their verification current.
+                        let changes = crate::lisp::alloc::code_changes();
                         macro_rules! resume_after_call {
                             ($top:expr, $depth:expr) => {{
                                 let top = $top;
+                                if crate::lisp::alloc::code_changes() == changes {
+                                    // SAFETY: as the outer loop's slice; the
+                                    // bytes were current before the call.
+                                    code = unsafe { vm.program.code.bytes_unchanged() };
+                                    // SAFETY: TOP lies within the frame.
+                                    sp = unsafe { words.add(top - 1) };
+                                    at = next;
+                                    continue 'run;
+                                }
                                 // SAFETY: as the outer loop's slice.
                                 let (bytes, current) = unsafe { vm.program.code.bytes_unguarded() };
                                 if current
@@ -2067,6 +2080,29 @@ fn run_verified(
                 // Bdiscard.
                 0o210 => {
                     drop_values!(1);
+                    at += 1;
+                }
+                // Bpoint, Bpoint_max, Bpoint_min and Bcurrent_buffer: the
+                // current buffer's PT, ZV and BEGV and the buffer itself,
+                // as `exec_op's arms push them, with no call out of the
+                // loop (nothing here runs Lisp).
+                0o140 => {
+                    let point = vm.interp.buffer.borrow().point();
+                    push!(Value::Integer(point as i64));
+                    at += 1;
+                }
+                0o144 => {
+                    let zv = vm.interp.buffer.borrow().point_max();
+                    push!(Value::Integer(zv as i64));
+                    at += 1;
+                }
+                0o145 => {
+                    let begv = vm.interp.buffer.borrow().point_min();
+                    push!(Value::Integer(begv as i64));
+                    at += 1;
+                }
+                0o160 => {
+                    push!(Value::Buffer(vm.interp.buffer));
                     at += 1;
                 }
                 super::B_DISCARDN => {
@@ -2443,14 +2479,14 @@ fn run_verified(
                 | 0o051 | 0o052 | 0o053 | 0o054 | 0o055 | 0o056 | 0o057 | 0o060 | 0o061 | 0o062
                 | 0o063 | 0o064 | 0o065 | 0o066 | 0o067 | 0o070 | 0o103 | 0o104 | 0o105 | 0o106
                 | 0o107 | 0o112 | 0o113 | 0o114 | 0o115 | 0o116 | 0o117 | 0o120 | 0o121 | 0o122
-                | 0o135 | 0o136 | 0o140 | 0o141 | 0o142 | 0o143 | 0o144 | 0o145 | 0o146 | 0o147
-                | 0o150 | 0o151 | 0o152 | 0o153 | 0o154 | 0o155 | 0o156 | 0o157 | 0o160 | 0o161
-                | 0o162 | 0o163 | 0o164 | 0o165 | 0o166 | 0o167 | 0o170 | 0o171 | 0o172 | 0o173
-                | 0o174 | 0o175 | 0o176 | 0o177 | 0o200 | 0o212 | 0o213 | 0o214 | 0o215 | 0o216
-                | 0o217 | 0o220 | 0o221 | 0o222 | 0o223 | 0o224 | 0o225 | 0o226 | 0o227 | 0o230
-                | 0o231 | 0o232 | 0o233 | 0o234 | 0o235 | 0o236 | 0o237 | 0o244 | 0o251 | 0o252
-                | 0o253 | 0o254 | 0o255 | 0o256 | 0o257 | 0o260 | 0o261 | 0o264 | 0o265 | 0o267
-                | 0o270 | 0o271 | 0o272 | 0o273 | 0o274 | 0o275 | 0o276 | 0o277 => slow!(),
+                | 0o135 | 0o136 | 0o141 | 0o142 | 0o143 | 0o146 | 0o147 | 0o150 | 0o151 | 0o152
+                | 0o153 | 0o154 | 0o155 | 0o156 | 0o157 | 0o161 | 0o162 | 0o163 | 0o164 | 0o165
+                | 0o166 | 0o167 | 0o170 | 0o171 | 0o172 | 0o173 | 0o174 | 0o175 | 0o176 | 0o177
+                | 0o200 | 0o212 | 0o213 | 0o214 | 0o215 | 0o216 | 0o217 | 0o220 | 0o221 | 0o222
+                | 0o223 | 0o224 | 0o225 | 0o226 | 0o227 | 0o230 | 0o231 | 0o232 | 0o233 | 0o234
+                | 0o235 | 0o236 | 0o237 | 0o244 | 0o251 | 0o252 | 0o253 | 0o254 | 0o255 | 0o256
+                | 0o257 | 0o260 | 0o261 | 0o264 | 0o265 | 0o267 | 0o270 | 0o271 | 0o272 | 0o273
+                | 0o274 | 0o275 | 0o276 | 0o277 => slow!(),
             }
         };
         if let FastExit::Raised(..) = exit {

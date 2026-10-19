@@ -162,6 +162,14 @@ pub(crate) struct NameFacts {
     pub(crate) native_form: Option<crate::lisp::eval::NativeForm>,
 }
 
+impl NameFacts {
+    /// The body `call_with_facts_arity_checked' calls straight away: the
+    /// direct entry of a builtin that is no special form.
+    pub(crate) fn ordinary_direct(&self) -> Option<DirectPrimitive> {
+        self.direct.filter(|_| self.builtin && !self.special_form)
+    }
+}
+
 macro_rules! define_dispatch_modules {
     (
         call($interp:ident, $name:ident, $args:ident, $env:ident);
