@@ -290,8 +290,19 @@ impl Interpreter {
     /// takes the out-of-line path.
     #[inline(always)]
     pub fn eval(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
+        if self.lisp_eval_depth != 0 {
+            return self.eval_nested(expr, env);
+        }
+        self.eval_sub(expr, env)
+    }
+
+    /// `eval' below the outermost evaluation (a form's argument, whose
+    /// form counted the depth): a form goes to eval_sub with no other
+    /// test, and a symbol or immediate takes its fast way.
+    #[inline(always)]
+    fn eval_nested(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
         let state: &InterpreterState = self;
-        if state.lisp_eval_depth != 0 && state.pending_termination.is_none() {
+        if !expr.is_cons() && state.pending_termination.is_none() {
             if let Some(name) = expr.symbol_cell() {
                 if let Some(result) = state.lookup_symbol_plain(&name, env) {
                     return result;
@@ -525,10 +536,7 @@ impl Interpreter {
         // when it is something else), XCDR (form) held by its
         // cell, CHECK_LIST (original_args).
         let head = cell.car.get();
-        let (head_symbol, head_value) = match head.symbol_cell() {
-            Some(name) => (Some(name), None),
-            None => (None, Some(head)),
-        };
+        let head_symbol = head.symbol_cell();
         let tail = cell.cdr.get();
         let args_cell: Option<SharedCons> = if tail.is_nil() {
             None
@@ -566,6 +574,13 @@ impl Interpreter {
                 _ => {}
             }
         }
+        // The head as a value of its own when it is no symbol, made here
+        // rather than held across the subr arms above.
+        let head_value = if head_symbol.is_some() {
+            None
+        } else {
+            Some(head)
+        };
         let callable_name = match head_value.as_ref() {
             None => head_symbol,
             Some(value) => self.callable_symbol_name(value, env),
@@ -615,7 +630,11 @@ impl Interpreter {
             ]));
             return self.eval_call_argument_error(depth, true, error, env);
         }
-        let mut argvals = [Value::Nil; 8];
+        // eval_sub's `Lisp_Object argvals[8]': the slots past MAXIMUM are
+        // never read, and each of the first MAXIMUM is written before the
+        // arguments are read (the stack's scan, conservative, reads any
+        // word).
+        let mut argvals = [std::mem::MaybeUninit::<Value>::uninit(); 8];
         let mut args_left = original_args;
         for slot in &mut argvals[..maximum] {
             let cell = args_left.cons_ref();
@@ -627,22 +646,29 @@ impl Interpreter {
                     return self.eval_call_argument_error(depth, true, error, env);
                 }
             };
-            *slot = match self.eval(&form, env) {
+            slot.write(match self.eval_nested(&form, env) {
                 Ok(value) => value,
                 Err(error) => return self.eval_call_argument_error(depth, true, error, env),
-            };
+            });
             args_left = cell.map_or(Value::Nil, |cell| cell.cdr.get());
         }
+        // SAFETY: the loop wrote the first MAXIMUM slots.
+        let argvals: &[Value] =
+            unsafe { std::slice::from_raw_parts(argvals.as_ptr().cast::<Value>(), maximum) };
         // The callee's symbol has a function, so it is no built-in nil or t.
         self.set_backtrace_args(Value::symbol_of_cell(name), &argvals[..nargs]);
         self.capture_current_backtrace_context(Some(name.as_str()), env, None);
-        let result = primitives::call_with_facts_arity_checked(
-            self,
-            subr.as_str(),
-            subr.facts(),
-            &argvals[..maximum],
-            env,
-        );
+        let args = argvals;
+        let result = match subr.descriptor().direct_entry() {
+            Some(direct) => direct(self, args, env),
+            None => primitives::call_with_facts_arity_checked(
+                self,
+                subr.as_str(),
+                subr.facts(),
+                args,
+                env,
+            ),
+        };
         let result = self.settle_frame_result(result, env);
         self.truncate_backtrace_frames(depth);
         result
@@ -686,7 +712,8 @@ impl Interpreter {
             let prepared = FunctionResolution::DirectBuiltin(subr);
             return self.eval_call_rooted(depth, Some(name), prepared, args_list, nargs, env);
         }
-        let mut argvals = [Value::Nil; 8];
+        // As `eval_fixed_subr's: only the slots evaluated are read.
+        let mut argvals = [std::mem::MaybeUninit::<Value>::uninit(); 8];
         let mut args_left = original_args;
         let mut argnum = 0;
         for slot in &mut argvals[..nargs] {
@@ -694,18 +721,28 @@ impl Interpreter {
                 break;
             };
             args_left = cell.cdr.get();
-            *slot = match self.eval(&cell.car.get(), env) {
+            slot.write(match self.eval_nested(&cell.car.get(), env) {
                 Ok(value) => value,
                 Err(error) => return self.eval_call_argument_error(depth, true, error, env),
-            };
+            });
             argnum += 1;
         }
-        let args = &argvals[..argnum];
+        // SAFETY: the loop wrote the first ARGNUM slots.
+        let args: &[Value] =
+            unsafe { std::slice::from_raw_parts(argvals.as_ptr().cast::<Value>(), argnum) };
         // The callee's symbol has a function, so it is no built-in nil or t.
         self.set_backtrace_args(Value::symbol_of_cell(name), args);
         self.capture_current_backtrace_context(Some(name.as_str()), env, None);
-        let result =
-            primitives::call_with_facts_arity_checked(self, subr.as_str(), subr.facts(), args, env);
+        let result = match subr.descriptor().direct_entry() {
+            Some(direct) => direct(self, args, env),
+            None => primitives::call_with_facts_arity_checked(
+                self,
+                subr.as_str(),
+                subr.facts(),
+                args,
+                env,
+            ),
+        };
         let result = self.settle_frame_result(result, env);
         self.truncate_backtrace_frames(depth);
         result

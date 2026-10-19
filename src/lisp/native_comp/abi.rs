@@ -35,6 +35,9 @@ pub(crate) struct NativeSubr {
     pub(crate) name: &'static str,
     index: u32,
     facts: std::sync::OnceLock<crate::lisp::primitives::NameFacts>,
+    /// `direct_entry's answer once its facts are known: 0 before, 1 for
+    /// none, otherwise the function pointer.
+    direct: std::sync::atomic::AtomicUsize,
 }
 
 // lisp.h:struct Lisp_Subr on both supported HAVE_NATIVE_COMP targets.
@@ -102,6 +105,7 @@ impl NativeSubr {
             name: name_text,
             index,
             facts: std::sync::OnceLock::new(),
+            direct: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -123,6 +127,33 @@ impl NativeSubr {
     pub(crate) fn facts(&'static self) -> &'static crate::lisp::primitives::NameFacts {
         self.facts
             .get_or_init(|| crate::lisp::primitives::compute_name_facts(self.name))
+    }
+
+    /// The function `call_with_facts_arity_checked' calls for this subr
+    /// straight away (its facts' direct entry, for a builtin that is no
+    /// special form), read from one word once the facts are known.
+    #[inline(always)]
+    pub(crate) fn direct_entry(&'static self) -> Option<crate::lisp::primitives::DirectPrimitive> {
+        match self.direct.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => self.direct_entry_slow(),
+            1 => None,
+            // SAFETY: a word past 1 was stored from a function pointer of
+            // this type below.
+            word => Some(unsafe {
+                std::mem::transmute::<usize, crate::lisp::primitives::DirectPrimitive>(word)
+            }),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn direct_entry_slow(&'static self) -> Option<crate::lisp::primitives::DirectPrimitive> {
+        let direct = self.facts().ordinary_direct();
+        self.direct.store(
+            direct.map_or(1, |direct| direct as usize),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        direct
     }
 }
 

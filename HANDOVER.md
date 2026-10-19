@@ -2360,6 +2360,61 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   round's (the as-root one fails as before, and
   `bytecode_code_mutation_during_active_call_matches_gnu` takes the
   resumption's other way); clippy `-D warnings` and rustfmt pass.
+- **The evaluator's forms and subr calls.** `eval` tests the depth and
+  goes to `eval_nested`, which sends a cons straight to `eval_sub` and
+  gives a symbol or an immediate its fast way; before, every form went
+  through the symbol and immediate tests first. A subr's arguments
+  (`eval_fixed_subr`, `eval_many_subr`) are evaluated with
+  `eval_nested`, the depth being counted by the form, into slots left
+  uninitialized past those written (eval_sub's own `argvals[8]` is
+  uninitialized; the stack's scan is conservative), and the subr is
+  called through `NativeSubr::direct_entry`, its facts' direct entry
+  kept in one word once known (0 before, 1 for none), where
+  `call_with_facts_arity_checked` read the facts' `OnceLock` and three
+  of their fields on every call. `eval_cons` makes the head's value (a
+  head that is no symbol) only on the general call's way, where it was
+  made and spilled before the subr arms. Instructions a unit against
+  `152e76f`'s plain build: cons allocation 5,422 → 5,047 (GNU 5,215),
+  interpreted-to-native 2,711 → 2,541 (GNU 2,387), interpreted-lexical
+  3,657 → 3,459, -dynamic 3,353 → 3,195, -calls 3,219 → 3,104,
+  list-traversal 273,926 → 258,882, native-to-interpreted 4,396 →
+  4,216, native-to-bytecode 4,333 → 4,161, bindat 908,788 → 880,580,
+  sort 227.6M → 219.6M; undo 1,330,595 → 1,325,896 against the last
+  round. Validation (gate profile, `--test-threads=1`): all 1,677 of
+  the evaluator's tests (`lisp::eval::`) with the last round's 104
+  primitive tests, 1,781 in all, and the lightweight group's 598 pass;
+  clippy `-D warnings` and rustfmt pass.
+- **The host changed under the session (wall ratios before and after
+  are not comparable).** The container restarted on an Intel Xeon of
+  model 85 (Skylake/Cascade Lake, 2.8 GHz, four cores) where the earlier
+  figures came from an Emerald Rapids (model 207). On it, the contract's
+  comparison of `aa68c68`'s profile-guided build, the host otherwise
+  idle: bytecode-to-native 1.018 [0.995, 1.109], undo 1.108 [1.043,
+  1.205], bytecode calls 0.998 [0.968, 1.071], cons allocation 1.096
+  [1.048, 1.237], interpreted-to-native 1.219 [1.122, 1.298]; `152e76f`'s
+  build on the same host, interpreted-to-native 1.250 and cons 1.107, so
+  it is the host and not the round. GNU's own rounds range over ±25%
+  there. `llvm-mca -mcpu=cascadelake` on one traced cons-allocation
+  iteration puts Emaxx at 0.88 of GNU's cycles (0.83 for Sapphire
+  Rapids), against the wall's 1.10: the excess is outside the core's
+  model (Emaxx's iteration touches 88 code lines to GNU's 58, and fewer
+  stack slots and calls than GNU's). Instruction counts are what carry
+  over between hosts; on this one a workload needs its count well below
+  GNU's to pass.
+- **Cons allocation's timed samples collect in Emaxx and not in GNU.**
+  `core-perf-run` calls `garbage-collect` before each sample. GNU's
+  collection there still finds the previous sample's 2,000,000-cons
+  list (`heap_before` reports 2,017,551 conses; its `Flet` evaluates the
+  first binding, `(garbage-collect)`, with the next bindings' stack
+  slots still holding the last iteration's values, and the stack scan is
+  conservative), so with `gc-cons-percentage` 1.0 its next threshold is
+  about 32 MB and the 32 MB sample never collects. Emaxx's collection
+  frees the list (15,806 live conses), its threshold is small, and each
+  sample collects twice, about 0.04 s of 0.5 (8%). The rest of the
+  sample is at parity on this host; the collector itself is no slower
+  (a first sample from a fresh start: Emaxx 2 collections in 0.049 to
+  0.073 s, GNU 3 in 0.074 to 0.086). Emulating the stale-slot retention
+  is no fix; the margin has to come from the evaluator.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -2876,7 +2931,11 @@ Python wrapper): full Rust gate passed, the integration targets with it
 (run 39180683216), frozen passed on its first attempt (run 39180685580).
 **On `152e76f`** (a nested native call's tests): full Rust gate passed
 (run 39185224902), frozen passed on its first attempt (run 39185226944);
-PR #92 merged it into main (`cbe5eed`). Locally,
+PR #92 merged it into main (`cbe5eed`). **On `aa68c68`** (a nested
+native call's frame popped by its length): full Rust gate passed (run
+39191231079); frozen matched 7,927 of 7,928 with the one mismatch GNU's
+("oracle: 1 unexpected", Emaxx none), and its re-run passed (run
+39191232834, attempt 2). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -3150,7 +3209,19 @@ and failures are still recorded.
 
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
-2. **Performance, worst ratios first.** By the contract's comparison on
+2. **Performance, worst ratios first.** The host is a different machine
+   since `aa68c68` (bullet "The host changed under the session"); on it
+   interpreted-to-native reads 1.22, undo 1.11, cons allocation 1.10,
+   bytecode-to-native 1.02 and bytecode calls 1.00, with GNU's own rounds
+   ranging over ±25%, so instruction counts are the guide and a count
+   well below GNU's is what passes there. Instructions a unit now:
+   interpreted-to-native 2,541 (GNU 2,387), undo 1,325,896 (1,252,071),
+   cons allocation 5,047 (5,215), bytecode-to-native 393.0 an iteration
+   (388), bytecode calls 435.7 (468). Undo's next step is its slow byte
+   ops' way out of the verified loop: 767 a unit through `op_in_place`
+   at 120 instructions each (a second decode and dispatch, a large
+   prologue, the frame's `admits` test on the way back), where GNU runs
+   them inline. On the earlier host, by the contract's comparison on
    `3f7bff2`'s profile-guided build (the bullet "The contract's comparison
    on all sixteen"): bytecode-to-native 1.023 [0.968, 1.064], undo 0.991
    [0.944, 1.109], bytecode calls 0.943 [0.910, 1.049], interpreted-to-
