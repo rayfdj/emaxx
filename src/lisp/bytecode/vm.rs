@@ -2367,18 +2367,16 @@ fn run_verified(
                     *slot!(0) = if integerp { Value::T } else { Value::Nil };
                     at += 1;
                 }
-                // Bmemq: two objects are eq exactly when they are the same
-                // word, unless one is a symbol with position, which is eq
-                // to its bare symbol (and to another of that symbol): the
-                // full arm takes such an element, and a symbol meeting a
-                // vectorlike element of the list. FOR_EACH_TAIL's first
-                // quit check comes after the second element: nothing here
-                // can set `quit-flag', so one test there stands for every
-                // later one. A long or improper list takes the full arm,
-                // which checks for cycles and the list's end.
+                // Bmemq on a fixnum or a symbol, whose words are eq exactly
+                // when they are the same word, unless an element might be a
+                // symbol with position. FOR_EACH_TAIL's first quit check
+                // comes after the second element: nothing here can set
+                // `quit-flag', so one test there stands for every later
+                // one. A long or improper list takes the full arm, which
+                // checks for cycles and the list's end.
                 0o076 => {
                     let element = *slot!(1);
-                    if element.is_vectorlike() && matches!(element.kind(), Kind::SymbolWithPos(_)) {
+                    if element.fixnum().is_none() && !element.is_symbol() {
                         slow!();
                     }
                     let mut tail = *slot!(0);

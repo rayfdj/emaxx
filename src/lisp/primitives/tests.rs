@@ -28203,11 +28203,11 @@ fn evaluator_tag_tests_keep_gnus_list_and_symbol_errors() {
 #[test]
 fn byte_code_predicates_memq_and_full_arms_run_in_the_loop_like_gnu() {
     // The verified byte-code loop runs Bsymbolp, Bstringp, Blistp,
-    // Bnumberp, Bintegerp, Bmemq (of any element but a symbol with
-    // position: strings, floats and conses by identity), Bsetcar and
-    // Bsetcdr itself; an operand it does not take (a long, improper or
-    // circular list, a symbol with position, a non-cons) and ops without
-    // an arm there (Bnth, Bget, Blength) run their full arms in place.
+    // Bnumberp, Bintegerp, Bmemq, Bsetcar and Bsetcdr itself; an operand it
+    // does not take (a string, float or cons to memq, found by identity, a
+    // long, improper or circular list, a symbol with position, a non-cons)
+    // and ops without an arm there (Bnth, Bget, Blength) run their full
+    // arms in place.
     let program = r#"(let* ((f (byte-compile
            (lambda (x l)
              (list (symbolp x) (stringp x) (listp x) (numberp x) (integerp x)

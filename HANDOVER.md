@@ -2845,6 +2845,33 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   the name comparison, with the new oracle test for `featurep` of an
   uninterned symbol; the lightweight group's 598. Clippy `-D warnings`
   and rustfmt pass.
+- **Round 28: round 27's Bmemq arm undone.** Round 27's profile-guided
+  build ran bytecode-to-native slower than round 26's with about the same
+  instructions (389.0 an iteration against 387.6): two twelve-round
+  pilots read 1.068 and 1.104 of GNU's time against round 26's 0.855
+  and 0.923, and the contract-like comparison 1.075 [0.946, 1.159].
+  Cachegrind's branch model finds one more conditional mispredict an
+  iteration in `run_verified`, at the empty-handler test of
+  `finish_nested_frame` (inlined into it), a branch taken every time.
+  Round 27 with only the Bmemq arm's element test put back (a fixnum or a
+  symbol in the loop, anything else to the full arm, instead of anything
+  but a symbol with position) reads 0.954 in the same pilot, 386.4
+  instructions and no extra mispredict: the arm's change moved the
+  profile's layout of the loop, not its work. Bmemq takes fixnums and
+  symbols in the loop again; undo's slow Bmemqs had not moved with the
+  change (bullet "Round 27"), and the memq test's cons found by identity
+  now goes through the full arm. Plain build, instructions a unit
+  (round 27's in parentheses): undo 1,312,240 (1,298,608; its rounds
+  vary by about 1% with where collections fall), bytecode calls 448.7
+  (451.9), bytecode-to-native 403.7 (403.4); interpreted-to-native
+  2,477.8 and native-to-bytecode 4,108.0 have round 27's costs function
+  by function.
+  Validation (gate profile, `--test-threads=1`, `RUST_MIN_STACK` at
+  128 MiB as the config sets it for cargo): the tests naming `memq`,
+  byte code, features, `buffer-substring`, `buffer-string`,
+  `symbol-value` or undo (142 runs; a test can match two of the names),
+  and the lightweight group's 598. Clippy `-D warnings` and rustfmt
+  pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3381,7 +3408,9 @@ Emaxx none), and its re-run passed (run 39253372487, attempt 2). **On
 GNU's, and its re-run passed (run 39262088787, attempt 2); PR #94
 merged it into main (`c769d5b`). **On `65ed19b`** (every kind of jump
 padded, with prefixes): full Rust gate passed (run 39295048045), frozen
-passed on its first attempt (run 39295051895). Locally,
+passed on its first attempt (run 39295051895). **On `07b0947`** (undo's
+slow ops resumed in the loop): full Rust gate passed (run 39307717277),
+frozen passed on its first attempt (run 39307721612). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -3683,7 +3712,9 @@ and failures are still recorded.
    bytecode-to-native 0.910, bytecode calls 0.916, interpreted-to-native
    0.891, cons allocation 0.823 and undo 1.110. Undo is now the worst
    by far. Round 27 took undo's plain-build count to 1,298,608 a unit
-   (bullet "Round 27"). For the work both editors do, Emaxx runs about 14% more
+   (bullet "Round 27"); round 28 undid its Bmemq arm, which had moved the
+   profile-guided layout of the loop and cost bytecode-to-native about
+   15% (bullet "Round 28"). For the work both editors do, Emaxx runs about 14% more
    instructions than GNU (GNU's totals include 150,000 a unit of
    window-size Lisp Emaxx does not run), most of it in the byte-code
    VM's slow ops (`op_in_place`, 140 a slow op) and the native runtime's
