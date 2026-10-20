@@ -164,6 +164,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "the forwarded C slot of max-lisp-eval-depth, refilled from the symbol's value on install",
     ),
     (
+        "call_depth_gate",
+        "a word derived from the quit flag, the pending termination and max-lisp-eval-depth, refreshed as each is installed",
+    ),
+    (
         "debug_on_next_call",
         "the forwarded C slot of debug-on-next-call, refilled likewise",
     ),
