@@ -2084,14 +2084,26 @@ fn run_verified(
                     stack_ref!(usize::from(fetch2!()));
                     at += 3;
                 }
+                // Bcall, Bcall1 and Bcall2, the common counts, each with its
+                // own copy of the call's path, the count a constant in it.
                 0o040 => call!(0u16, 1),
                 0o041 => call!(1u16, 1),
                 0o042 => call!(2u16, 1),
-                0o043 => call!(3u16, 1),
-                0o044 => call!(4u16, 1),
-                0o045 => call!(5u16, 1),
-                0o046 => call!(fetch!(), 2),
-                0o047 => call!(fetch2!(), 3),
+                // Bcall3 to Bcall7 in one arm, as exec_byte_code's
+                // `dofuncall': the count is read here, from the byte or its
+                // operand, so that the call's path is one copy of code for
+                // these counts. Each count's own copy was 2 to 6 KB of this
+                // loop, and a workload calling with several counts kept
+                // several of them in the instruction cache; a constant
+                // count saves about twenty instructions a call.
+                0o043 | 0o044 | 0o045 | 0o046 | 0o047 => {
+                    let (count, len) = match byte {
+                        0o046 => (fetch!(), 2),
+                        0o047 => (fetch2!(), 3),
+                        _ => (u16::from(byte - 0o040), 1),
+                    };
+                    call!(count, len)
+                }
                 super::B_STACK_SET => {
                     stack_set!(fetch!());
                     at += 2;
@@ -5101,6 +5113,68 @@ mod phase_c_tests {
             concat!(
                 "(vm-rec 2 x x [y b] [y b] (#s(vm-rec x [y b]) 3) ",
                 "(#s(vm-rec x [y b]) 3) (#s(vm-rec x [y b]) -1) b y [y b])"
+            )
+        );
+    }
+
+    #[test]
+    fn verified_loop_calls_with_three_to_seven_arguments_share_one_arm() {
+        // GNU 30.2's byte code for (with lexical-binding)
+        //   (defun vm-call-3 (a b c) (list 'three a b c))
+        //   (defun vm-call-5 (a b c d &optional e) (list 'five a b c d e))
+        //   (defun vm-call-rest (a &rest more) (list 'rest a more))
+        //   (defun vm-call-many (a b c d e f g)
+        //     (list (vm-call-3 a b c) (vm-call-5 a b c d) (vm-call-5 a b c d e)
+        //           (vm-call-rest a b c d e f) (vm-call-rest a b c d e f g)
+        //           (vector a b c) (vector a b c d e f g)
+        //           (condition-case err (vm-call-3 a b c d)
+        //             (wrong-number-of-arguments (car err)))
+        //           (funcall (lambda (x y z) (list x y z)) e f g)))
+        // whose calls are Bcall3, Bcall4, Bcall5 and Bcall6 with 6 and 7,
+        // into byte code (optional and rest arguments, an arity error)
+        // and a subr; and Bcall7 with 300 arguments. GNU answers the
+        // list below.
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let vm_call_3 = r#"#[771 "\300\3\3\3F\207" [three] 7 "\n\n(fn A B C)"]"#;
+        let vm_call_5 = concat!(
+            r#"#[1284 "\300\5\5\5\5\5\257\6\207" [five] 11 "\n\n(fn A B C D &optional E"#,
+            r#")"]"#,
+        );
+        let vm_call_rest = r#"#[385 "\300\2\2E\207" [rest] 5 "\n\n(fn A &rest MORE)"]"#;
+        let vm_call_many = concat!(
+            r#"#[1799 "\300\6\7\6\7\6\7#\301\6\10\6\10\6\10\6\10$\301\6\11\6\11\6\11\6\"#,
+            r#"11\6\11%\302\6\n\6\n\6\n\6\n\6\n\6\n&\6\302\6\13\6\13\6\13\6\13\6\13\6\1"#,
+            r#"3\6\13&\7\303\6\f\6\f\6\f#\303\6\15\6\15\6\15\6\15\6\15\6\15\6\15&\7\304"#,
+            r#"1i\0\300\6\16\6\16\6\16\6\16$0\202j\0@\6\n\6\n\6\nE\257\11\207" [vm-call"#,
+            r#"-3 vm-call-5 vm-call-rest vector (wrong-number-of-arguments)] 21 "\n\n(f"#,
+            r#"n A B C D E F G)"]"#,
+        );
+        let source = format!(
+            r#"(progn
+                 (fset 'vm-call-3 {vm_call_3})
+                 (fset 'vm-call-5 {vm_call_5})
+                 (fset 'vm-call-rest {vm_call_rest})
+                 (fset 'vm-call-many {vm_call_many})
+                 (prin1-to-string
+                  (list (vm-call-many 1 2 3 4 5 6 7)
+                        (let* ((code (apply #'unibyte-string
+                                            (append '(192) (make-list 300 193)
+                                                    '(39 44 1 135))))
+                               (f (make-byte-code 0 code [list x] 301)))
+                          (list (length (funcall f)) (car (funcall f))))))))"#
+        );
+        let form = super::super::super::reader::Reader::new(&source)
+            .read()
+            .expect("read form")
+            .expect("a form");
+        let value = interp.eval(&form, &mut env).expect("calls");
+        assert_eq!(
+            value.as_string().expect("printed"),
+            concat!(
+                "(((three 1 2 3) (five 1 2 3 4 nil) (five 1 2 3 4 5) (rest 1 (2 3 4 5 6)) ",
+                "(rest 1 (2 3 4 5 6 7)) [1 2 3] [1 2 3 4 5 6 7] wrong-number-of-arguments ",
+                "(5 6 7)) (300 x))"
             )
         );
     }
