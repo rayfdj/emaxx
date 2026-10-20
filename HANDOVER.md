@@ -3165,6 +3165,75 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   this container's known failures; the lightweight group's 598 pass both
   times; clippy `-D warnings` and rustfmt pass.
 
+- **Round 35: a key's symbol without the table's borrow, and a C
+  variable's `let`, `set` and byte-code read from its cell.**
+  `SymbolKey::with` (every `cached_symbol!` use) borrowed the thread's
+  `ACTIVE` table (`RefCell<Option<Rc<Symbols>>>`: the borrow count, the
+  Option, the Rc) to read one key slot, 24 instructions a call standalone
+  and as much again inlined into `symbol_value_key` and `lookup_var_key`.
+  A thread-local pointer to the selected table's key slots
+  (`ACTIVE_KEYS`) is now stored with `ACTIVE` at each of its four stores
+  and cleared by a table's Drop, so a non-null pointer always names a
+  live table; a key already resolved is read through it, the borrow kept
+  for the first resolution and the host table. `symbol_value_symbol` is
+  inline with round 34's fast path in front of the alias check
+  (`unlocalized_value` excludes an alias) and its rest out of line
+  (`symbol_value_redirected`, 49 of its 300 calls a unit).
+  Round 34's test of the two names whose value the buffer holds by their
+  lengths (16 and 21 characters) is a cell bit now, `BUFFER_SLOT`, set
+  with `C_SLOT` on `buffer-undo-list` and `text-conversion-style` (as
+  `KBOARD_FORWARD` and `STORE_EFFECT` are on theirs), and a second bit,
+  `STORE_CONVERTS`, marks the three C variables whose store converts the
+  value beyond its slot kind's conversion (`display-hourglass`,
+  `scroll-up-aggressively`, `vertical-scroll-bar`). With them
+  `SymbolCell::is_plain_c_slot` names a C variable whose value is its
+  cell's and whose store changes nothing else: eval.c:specbind's
+  SYMBOL_FORWARDED let of it is SPECPDL_LET, a store into the slot and
+  its restore, which `specbind_symbol_record`, `apply_special_restore` and
+  `assign_plain_global` now take as they take a plain symbol's (a
+  DEFVAR_BOOL's value stored as t or nil, and none of it while a C
+  variable is detached from its slot). Undo's 120 `let`s a unit of them
+  went the full specbind (`set_global_binding_resolved`, the forwarded
+  checks and the restore record by name). Bvarref answers from
+  `unlocalized_value` too, a C variable whose cell holds its value
+  included, where it answered a plain symbol's alone.
+  Undo a unit: `symbol_value_key` 6,380 and `symbol_value_symbol` 8,352
+  -> 5,675 and 1,073, `SymbolKey::with` 3,480 -> 1,885, `lookup_var_key`
+  2,376 -> 1,518, `specbind_symbol_record` 11,318 -> 8,279,
+  `apply_special_restore` 6,202 -> 5,610, the slow byte ops 622 -> 600
+  calls; the total 1,281,123 -> 1,269,473. Bytecode calls 443.1 ->
+  434.3 and bytecode-to-native 405.6 -> 402.1 an iteration, both from
+  `run_verified`'s register allocation (neither reads a C variable in its
+  loop); native-to-bytecode 4,015.0 -> 4,017.7.
+  Round 34's profile-guided build against round 32's, ten rotated rounds
+  (median ratio to GNU and range): undo 0.893 [0.809, 1.063] against
+  0.979 [0.818, 1.079], bytecode calls 0.978 [0.851, 1.406] against 0.987
+  [0.889, 1.142], bytecode-to-native 0.982 [0.820, 1.132] against 1.001
+  [0.858, 1.112]. The contract's comparison of it over all sixteen, on a
+  noisier hour of the host (single rounds 0.78 to 1.40 for
+  bytecode-to-native): thirteen pass, bytecode calls 1.024 [0.895,
+  1.097], bytecode-to-native 1.019 [0.905, 1.334] and undo 1.005 [0.803,
+  1.038] over.
+  Validation (gate profile, `--test-threads=1`, 128 MiB stacks):
+  the tests naming `symbol` (193), `intern` (78), `obarray` (21), `editor`
+  (6), `scope` (14), `thread` (17), `nested` (55), `variable` (93),
+  `special` (54), `alias` (55), `forward` (51), `local` (92), `default`
+  (129), `bind` (157), `unbound` (9), `boundp` (4), `keyboard` (26),
+  `terminal` (26), `conversion` (21), `watch` (13), `undo` (17),
+  `constant` (18), `bool` (10), `print_overrides` (1), `byte_code` (11)
+  and `bytecode` (84) pass, and `image`'s 41 but
+  `batch_startup_image_round_trip_or_explicit_native_image_limit`, this
+  container's known failure; the lightweight group's 598 pass; clippy
+  `-D warnings` and rustfmt pass. One run of the `symbol` group failed
+  `symbol_alias_redirects_preserve_handover_fields_and_reclaim_replaced_targets`
+  (two collections left one of three replaced values and one of three
+  old alias targets in their weak tables, `((1 1 3 3) ...)` against
+  `((0 0 3 3) ...)`); the same binary passed the group's 193 on the next
+  run and the test alone, and round 34's passed it once: a conservative
+  root that comes and goes between runs, as the test's own note on the
+  stack's old argument slots allows for its last check but not for this
+  one.
+
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
 25 sorting/case-folding/substring tests plus the comparison tests, and 95
@@ -3721,7 +3790,10 @@ printer's setup): full Rust gate passed (run 39377514989); frozen failed
 (run 39377517895), 7,926 of 7,928 matching, Emaxx 2 unexpected: print-tests.el's
 `test-prin1-overrides` and `test-prin1-to-string-overrides`, the
 overrides bound in an environment copy the C-style reads miss (fixed in
-round 34, bullet "Round 34"). Locally,
+round 34, bullet "Round 34"). **On `0378010`** (a C variable's read from
+its cell, the overrides bound dynamically): full Rust gate passed (run
+39389072258), frozen passed on its first attempt (run 39389075289), the
+two print-tests overrides tests with it. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the

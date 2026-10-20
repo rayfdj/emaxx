@@ -168,8 +168,33 @@ impl Default for Symbols {
 // process owner. Editor entry points always install a separate owner below.
 static HOST_SYMBOLS: ProcessTable<Rc<Symbols>> = ProcessTable::new();
 
+type KeySlots = [Cell<Option<SymbolName>>; KEY_NAMES.len()];
+
 thread_local! {
     static ACTIVE: RefCell<Option<Rc<Symbols>>> = const { RefCell::new(None) };
+    /// ACTIVE's key slots, or null when no editor is selected: a key is read
+    /// through it without borrowing ACTIVE.  Every store into ACTIVE stores
+    /// this too (`set_active_keys'), and a table being dropped clears it, so
+    /// a non-null pointer always names a live table.
+    static ACTIVE_KEYS: Cell<*const KeySlots> = const { Cell::new(std::ptr::null()) };
+}
+
+/// Record ACTIVE's key slots after a store into ACTIVE.
+fn set_active_keys(active: &Option<Rc<Symbols>>) {
+    ACTIVE_KEYS.set(
+        active
+            .as_ref()
+            .map_or(std::ptr::null(), |symbols| &symbols.keys),
+    );
+}
+
+impl Drop for Symbols {
+    fn drop(&mut self) {
+        let keys: *const KeySlots = &self.keys;
+        if ACTIVE_KEYS.get() == keys {
+            ACTIVE_KEYS.set(std::ptr::null());
+        }
+    }
 }
 
 fn with_current<R>(body: impl FnOnce(&Symbols) -> R) -> R {
@@ -207,13 +232,20 @@ impl SymbolOwner {
 
     #[cfg(test)]
     pub(crate) fn enter(&self) -> EditorSymbolScope {
-        EditorSymbolScope(ACTIVE.with_borrow_mut(|active| active.replace(Rc::clone(&self.0))))
+        EditorSymbolScope(ACTIVE.with_borrow_mut(|active| {
+            let previous = active.replace(Rc::clone(&self.0));
+            set_active_keys(active);
+            previous
+        }))
     }
 
     /// Select at editor construction or a complete host fixture boundary.
     /// Public entries retain an enclosing scope that restores their caller.
     pub(crate) fn select(&self) {
-        ACTIVE.with_borrow_mut(|active| *active = Some(Rc::clone(&self.0)));
+        ACTIVE.with_borrow_mut(|active| {
+            *active = Some(Rc::clone(&self.0));
+            set_active_keys(active);
+        });
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -256,13 +288,20 @@ pub(crate) struct EditorSymbolScope(Option<Rc<Symbols>>);
 
 impl EditorSymbolScope {
     pub(crate) fn enter() -> Self {
-        Self(ACTIVE.with_borrow_mut(|active| active.replace(Rc::default())))
+        Self(ACTIVE.with_borrow_mut(|active| {
+            let previous = active.replace(Rc::default());
+            set_active_keys(active);
+            previous
+        }))
     }
 }
 
 impl Drop for EditorSymbolScope {
     fn drop(&mut self) {
-        ACTIVE.with_borrow_mut(|active| *active = self.0.take());
+        ACTIVE.with_borrow_mut(|active| {
+            *active = self.0.take();
+            set_active_keys(active);
+        });
     }
 }
 
@@ -357,6 +396,12 @@ impl SymbolKey {
     }
 
     pub(crate) fn with<R>(self, body: impl FnOnce(&SymbolName) -> R) -> R {
+        let keys = ACTIVE_KEYS.get();
+        // SAFETY: a non-null pointer names the selected table's key slots,
+        // which live as long as that table (its Drop clears the pointer).
+        if let Some(symbol) = unsafe { keys.as_ref() }.and_then(|keys| keys[self.0].get()) {
+            return body(&symbol);
+        }
         let symbol = with_current(|symbols| self.get(symbols));
         body(&symbol)
     }

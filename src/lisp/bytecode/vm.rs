@@ -1889,8 +1889,10 @@ fn run_verified(
                     }
                 }};
             }
-            // Bvarref's SYMBOL_PLAINVAL case; any other variable, or a void
-            // one, takes the full arm.
+            // Bvarref of a variable whose cell holds its value: the
+            // SYMBOL_PLAINVAL case, and SYMBOL_FORWARDED to an object slot
+            // (`unlocalized_value'); any other variable, or a void one,
+            // takes the full arm.
             macro_rules! varref {
                 ($index:expr) => {{
                     let index = usize::from($index);
@@ -1899,7 +1901,7 @@ fn run_verified(
                     let Kind::Symbol(name) = symbol.kind() else {
                         slow!()
                     };
-                    let Some(value) = name.cell().plain_value() else {
+                    let Some(value) = name.cell().unlocalized_value() else {
                         slow!()
                     };
                     push!(value);

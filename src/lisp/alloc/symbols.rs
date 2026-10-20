@@ -79,6 +79,25 @@ const STORE_EFFECT: u16 = 2048;
 // registered under this object (`Interpreter::variable_watchers' holds
 // them), so a store notifies; without it none is.
 const TRAPPED_WRITE: u16 = 4096;
+// Set with C_SLOT on the C variables whose value the current buffer holds
+// rather than the cell (`BUFFER_SLOT_VARIABLES'): the reads and stores that
+// answer from the cell alone leave them to the full paths.
+const BUFFER_SLOT: u16 = 8192;
+// Set with C_SLOT on the C variables whose store converts the value beyond
+// its slot kind's conversion (`STORE_CONVERTING_VARIABLES').
+const STORE_CONVERTS: u16 = 16384;
+
+/// `buffer-undo-list' (the buffer's history) and `text-conversion-style'
+/// (its field): C variables whose value the current buffer holds.
+pub(crate) const BUFFER_SLOT_VARIABLES: [&str; 2] = ["buffer-undo-list", "text-conversion-style"];
+
+/// The C variables whose store converts the value as their own C code
+/// does (`prepare_variable_assignment_with').
+pub(crate) const STORE_CONVERTING_VARIABLES: [&str; 3] = [
+    "display-hourglass",
+    "scroll-up-aggressively",
+    "vertical-scroll-bar",
+];
 
 /// The forwarded variables `Interpreter::set_global_binding_resolved' does
 /// more for than store the cell: the evaluator's own C cells, the buffers'
@@ -156,13 +175,16 @@ impl SymbolCell {
         (state & INT_FORWARD != 0).then(|| self.forwarded_value())
     }
 
-    /// data.c:find_symbol_value's SYMBOL_PLAINVAL case: the value of a
-    /// bound symbol that is no alias, no C variable and not localized in
-    /// any buffer.  Any other symbol, or a void one, answers None.
+    /// data.c:find_symbol_value of a bound symbol that is no alias and not
+    /// localized in any buffer, whose value is the one its cell holds: a
+    /// plain symbol, or a C variable forwarded to an object slot (a KBOARD
+    /// variable's, a counter's or a buffer-held variable's value is
+    /// elsewhere).  Any other symbol, or a void one, answers None.
     #[inline(always)]
-    pub(crate) fn plain_value(&self) -> Option<Value> {
+    pub(crate) fn unlocalized_value(&self) -> Option<Value> {
         use crate::lisp::eval::symbol_cell_flags::LOCALIZED;
-        if self.state.get() & (VALUE_PRESENT | ALIAS | C_SLOT | INT_FORWARD) == VALUE_PRESENT
+        if self.state.get() & (VALUE_PRESENT | ALIAS | INT_FORWARD | KBOARD_FORWARD | BUFFER_SLOT)
+            == VALUE_PRESENT
             && self.flags.get() & LOCALIZED == 0
         {
             // SAFETY: VALUE_PRESENT without INT_FORWARD selects the value member.
@@ -171,22 +193,32 @@ impl SymbolCell {
         None
     }
 
-    /// data.c:find_symbol_value of a bound symbol that is no alias and not
-    /// localized in any buffer, whose value is the one its cell holds: a
-    /// plain symbol, or a C variable forwarded to an object slot (a KBOARD
-    /// variable's or a counter's value is elsewhere).  Any other symbol, or
-    /// a void one, answers None.
+    /// A bound C variable whose value is its cell's and whose store changes
+    /// nothing else (`set_global_binding_resolved's cell-only case): no
+    /// alias, counter, KBOARD, store-effect or buffer-held slot, no value
+    /// conversion of its own, no watcher, not constant, and neither
+    /// localized, local if set, per-buffer nor always local.
+    /// eval.c:specbind's SYMBOL_FORWARDED let of it is SPECPDL_LET, a store
+    /// into the slot (after the slot kind's conversion) and its restore.
     #[inline(always)]
-    pub(crate) fn unlocalized_value(&self) -> Option<Value> {
-        use crate::lisp::eval::symbol_cell_flags::LOCALIZED;
-        if self.state.get() & (VALUE_PRESENT | ALIAS | INT_FORWARD | KBOARD_FORWARD)
-            == VALUE_PRESENT
-            && self.flags.get() & LOCALIZED == 0
-        {
-            // SAFETY: VALUE_PRESENT without INT_FORWARD selects the value member.
-            return Some(unsafe { self.payload.get().value });
-        }
-        None
+    pub(crate) fn is_plain_c_slot(&self) -> bool {
+        use crate::lisp::eval::symbol_cell_flags::{
+            ALWAYS_LOCAL, FWD_INT, LOCAL_IF_SET, LOCALIZED, PER_BUFFER,
+        };
+        self.state.get()
+            & (VALUE_PRESENT
+                | ALIAS
+                | C_SLOT
+                | INT_FORWARD
+                | KBOARD_FORWARD
+                | STORE_EFFECT
+                | TRAPPED_WRITE
+                | CONSTANT
+                | BUFFER_SLOT
+                | STORE_CONVERTS)
+            == VALUE_PRESENT | C_SLOT
+            && self.flags.get() & (LOCALIZED | LOCAL_IF_SET | PER_BUFFER | ALWAYS_LOCAL | FWD_INT)
+                == 0
     }
 
     /// data.c:do_symval_forwarding: `make_int (*intvar)'.
@@ -359,10 +391,21 @@ impl SymbolCell {
         } else {
             0
         };
-        self.state.set(if present {
-            (self.state.get() | C_SLOT | kboard | effect) & !PLAIN_STORE
+        let buffer_slot = if BUFFER_SLOT_VARIABLES.contains(&name) {
+            BUFFER_SLOT
         } else {
-            self.state.get() & !(C_SLOT | KBOARD_FORWARD | STORE_EFFECT)
+            0
+        };
+        let converts = if STORE_CONVERTING_VARIABLES.contains(&name) {
+            STORE_CONVERTS
+        } else {
+            0
+        };
+        self.state.set(if present {
+            (self.state.get() | C_SLOT | kboard | effect | buffer_slot | converts) & !PLAIN_STORE
+        } else {
+            self.state.get()
+                & !(C_SLOT | KBOARD_FORWARD | STORE_EFFECT | BUFFER_SLOT | STORE_CONVERTS)
         });
     }
 

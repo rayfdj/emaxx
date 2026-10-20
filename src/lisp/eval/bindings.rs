@@ -103,8 +103,19 @@ impl Interpreter {
     /// data.c:find_symbol_value as C code reads a variable (a DEFVAR's
     /// variable, a hook run by name): the alias chain followed, then the
     /// buffer-local, dynamic or global value. C never sees a lexical
-    /// binding, so the evaluator's environment is not searched.
+    /// binding, so the evaluator's environment is not searched.  A symbol
+    /// that is no alias and whose cell holds its value is answered inline,
+    /// as in `find_symbol_value_resolved'.
+    #[inline]
     pub(crate) fn symbol_value_symbol(&self, symbol: &SymbolName) -> Option<Value> {
+        if let Some(value) = symbol.cell().unlocalized_value() {
+            return Some(value);
+        }
+        self.symbol_value_redirected(symbol)
+    }
+
+    #[inline(never)]
+    fn symbol_value_redirected(&self, symbol: &SymbolName) -> Option<Value> {
         let resolved_owned;
         let resolved = if self.globals.alias(symbol).is_none() {
             symbol
@@ -166,9 +177,9 @@ impl Interpreter {
     /// resolved: the redirect switch over the dedicated, forwarded,
     /// buffer-local and plain cells.  Most reads are of a variable whose
     /// cell holds its value (SYMBOL_PLAINVAL, or SYMBOL_FORWARDED to an
-    /// object slot), answered here; `text-conversion-style' and
-    /// `buffer-undo-list', whose values the buffer holds, are kept out by
-    /// their names' lengths, as is every other case.
+    /// object slot), answered here from the cell; every other case,
+    /// `text-conversion-style' and `buffer-undo-list' (whose values the
+    /// buffer holds) among them, takes the full switch.
     #[inline(always)]
     fn find_symbol_value_resolved(
         &self,
@@ -176,7 +187,6 @@ impl Interpreter {
         resolved_symbol: Option<&SymbolName>,
     ) -> Option<Value> {
         if let Some(symbol) = resolved_symbol
-            && !matches!(resolved.len(), 16 | 21)
             && let Some(value) = symbol.cell().unlocalized_value()
         {
             return Some(value);
