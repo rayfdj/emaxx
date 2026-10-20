@@ -3072,6 +3072,44 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   `print_prunes_charset_properties_like_print_prune_string_charset` (in
   `propert`), this container's two known failures; the lightweight
   group's 598 pass; clippy `-D warnings` and rustfmt pass.
+- **Round 33: the printer's setup as print.c's.** `format`'s `%S`
+  conversion (twice a unit in undo) cost 7,229 instructions a call
+  before the object was printed, most of it setup: the nine
+  `print_options` variables, the four string-escape flags and the
+  escape binding of `print_prepare` were read through the evaluator's
+  environment, three of them by name (`lookup_var`, interning each);
+  `print` stored nil into `print-number-table` through `set_variable`
+  by name (1,050 instructions) when it was nil already; and the
+  objects being printed were kept in a SipHash map, inserted and
+  removed around every list (780 a call). print.c reads these as C
+  variables and stores the table's nil directly, which runs no
+  watcher, and its `being_printed' is an array scanned from the
+  outermost. Now the flags and options are read as `symbol_value_key`
+  reads by the symbols interned once (all of them special in both
+  editors, so no lexical binding can shadow them), the nil store is
+  made only when the table is not nil, and the objects being printed
+  are a stack. `effective_text_quoting_style` reads
+  `internal--text-quoting-flag` and `standard-display-table` the same
+  way. Undo a unit: the `%S` path 14,458 -> 10,243 instructions, the
+  quoting style 1,773 -> 1,392, about 4,600 fewer; the total 1,294,897
+  against round 32's 1,296,530, inside the run-to-run variation.
+  bytecode-to-native's steady state is unchanged (`run_verified` 393
+  and the callee 10 an iteration in both rounds; the per-unit totals,
+  401.5 to 415.8 over four runs, differ in one-time costs).
+  Round 32's profile-guided build, the contract's comparison over all
+  sixteen twice (median ratio to GNU and interval): bytecode calls
+  1.019 [0.995, 1.105] and 1.004 [0.943, 1.051], bytecode-to-native
+  0.983 [0.935, 1.063] and 1.030 [1.009, 1.050], undo 0.961 [0.910,
+  1.053] and 0.978 [0.897, 1.056], cons allocation 0.871 [0.816, 0.993]
+  and 0.876 [0.786, 1.054]; the other twelve pass both times, at most
+  0.90 (mapcar 0.898, 0.893). Undo's median is below round 28's 1.034.
+  Validation (gate profile, `--test-threads=1`, 128 MiB stacks):
+  the tests naming `print` (41),
+  `prin1` (16), `format` (33), `quot` (70), `escape` (30), `circle` (5),
+  `numbering` (2), `preprocess` (5) and `string` (241) pass but
+  `print_prunes_charset_properties_like_print_prune_string_charset` (in
+  `print` and `string`), this container's known failure; the
+  lightweight group's 598 pass; clippy `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3620,8 +3658,11 @@ rounds 26 to 28 into main (`40c3eb0`). **On `c4b94cf`** (one-argument
 full Rust gate passed (run 39357843966), frozen passed on its first
 attempt (run 39357846766). **On `8c32f50`** (no undo in a buffer named with a
 space): full Rust gate passed (run 39368532824); frozen matched 7,927 of
-7,928, the one mismatch GNU's (oracle 1 unexpected, Emaxx none), its
-re-run pending (run 39368535177, attempt 2). Locally,
+7,928, the one mismatch GNU's (oracle 1 unexpected, Emaxx none), and
+its re-run passed (run 39368535177, attempt 2). **On `55cf084`** (three
+compares by name off undo's paths): full Rust gate passed (run
+39372480369), frozen passed on its first attempt (run 39372482254); PR
+#96 merged rounds 29 to 32 into main (`327ecf4`). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the

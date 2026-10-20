@@ -66,6 +66,7 @@ const KEY_NAMES: &[&str] = &[
     "operations",
     "lexical-binding",
     "print-escape-nonascii",
+    "print-escape-multibyte",
     "print-number-table",
     "print-charset-text-property",
     "print-escape-newlines",
@@ -139,6 +140,8 @@ const KEY_NAMES: &[&str] = &[
     "set-buffer-multibyte",
     "features",
     "current-load-list",
+    "internal--text-quoting-flag",
+    "standard-display-table",
 ];
 
 struct Symbols {
