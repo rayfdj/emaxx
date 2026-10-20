@@ -1946,6 +1946,11 @@ impl Interpreter {
         if has_flag(FWD_BOOL) {
             return Ok(if value.is_nil() { Value::Nil } else { Value::T });
         }
+        // Three names convert their value here; another's is stored as it
+        // is, its text not compared with theirs.
+        if !matches!(name.as_bytes().first(), Some(b'd' | b's' | b'v')) {
+            return Ok(value);
+        }
         match name {
             "display-hourglass" => Ok(if value.is_nil() { Value::Nil } else { Value::T }),
             "scroll-up-aggressively" => match value.kind() {
@@ -1963,7 +1968,6 @@ impl Interpreter {
                 }
                 other => Err(wrong_type_argument("symbolp", other.value())),
             },
-            "overwrite-mode" => Ok(value),
             _ => Ok(value),
         }
     }

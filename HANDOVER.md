@@ -3047,6 +3047,31 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   (in `propert`), this container's two known failures (see the local
   failures with the CI record); the lightweight group's 598 pass;
   clippy `-D warnings` and rustfmt pass.
+- **Round 32: three compares by name off undo's paths.**
+  `run_change_hooks`, run on every insertion and deletion (78 times a
+  unit), compared its hook's name with `before-change-functions` by
+  text; its callers' literals are the same constants in the release
+  build (fat LTO, one codegen unit), so the pointer is tested first and
+  the text only otherwise. The store into a forwarded variable compared
+  the variable's name with the three whose value it converts
+  (`display-hourglass`, `scroll-up-aggressively`,
+  `vertical-scroll-bar`) whenever the lengths matched
+  (`inhibit-read-only` is `display-hourglass`'s length); their first
+  letters are tested first. An undo record of a property change interned
+  the property's name through the obarray's table each time; the
+  address-keyed cache finds it. Undo a unit: memcmp 311.2 -> 207.2
+  calls, `intern_str`'s table path 16 -> 9, about 2,500 instructions
+  fewer net (the hooks' pointer test adds 12 a call); the total
+  1,296,530 against round 31's 1,311,931, inside the run-to-run
+  variation.
+  Validation (gate profile, `--test-threads=1`, 128 MiB stacks):
+  the tests naming `hook` (49), `change`
+  (44), `undo` (17), `propert` (126), `forward` (51), `scroll` (10),
+  `overwrite` (2) and `assign` (7) pass but
+  `save_buffer_skips_unmodified_and_unchanged_files` (in `change`) and
+  `print_prunes_charset_properties_like_print_prune_string_charset` (in
+  `propert`), this container's two known failures; the lightweight
+  group's 598 pass; clippy `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3593,7 +3618,10 @@ rounds 26 to 28 into main (`40c3eb0`). **On `c4b94cf`** (one-argument
 39350248947), frozen passed on its first attempt (run 39350251689).
 **On `b614c70`** (`features` by the symbol, the window index in place):
 full Rust gate passed (run 39357843966), frozen passed on its first
-attempt (run 39357846766). Locally,
+attempt (run 39357846766). **On `8c32f50`** (no undo in a buffer named with a
+space): full Rust gate passed (run 39368532824); frozen matched 7,927 of
+7,928, the one mismatch GNU's (oracle 1 unexpected, Emaxx none), its
+re-run pending (run 39368535177, attempt 2). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -3907,8 +3935,8 @@ and failures are still recorded.
    (`run_verified` and `op_in_place`), the evaluator and the native
    code's calls into subrs, the rest spread over the primitives (bullet
    "Where undo's wall time goes"). Compiler settings do not move it;
-   each of those paths has to touch less code. Rounds 29 and 30 took
-   about 16,000 instructions a unit out of undo's warm paths (special
+   each of those paths has to touch less code. Rounds 29 to 32 took
+   about 18,500 instructions a unit out of undo's warm paths (special
    forms' frames, lookups and string compares by name, a copied window
    index). A compatibility difference found in round 30 is open: GNU's
    `features` is not special (fns.c's `Fmake_var_non_special`), Emaxx's
