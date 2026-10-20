@@ -10,7 +10,7 @@
 use super::super::eval::roots::{LispRootMarker, TraceLispRoots};
 use super::super::eval::{Interpreter, LabeledRestriction};
 use super::super::primitives;
-use super::super::types::{Env, LispError, Value};
+use super::super::types::{Env, LispError, SymbolName, Value};
 use super::{ArgSpec, ByteCodeObject, Op};
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
@@ -1891,8 +1891,8 @@ fn run_verified(
             }
             // Bvarref of a variable whose cell holds its value: the
             // SYMBOL_PLAINVAL case, and SYMBOL_FORWARDED to an object slot
-            // (`unlocalized_value'); any other variable, or a void one,
-            // takes the full arm.
+            // (`unlocalized_value'); any other variable's read in
+            // `varref_redirected', and a void one's signal in the full arm.
             macro_rules! varref {
                 ($index:expr) => {{
                     let index = usize::from($index);
@@ -1901,13 +1901,18 @@ fn run_verified(
                     let Kind::Symbol(name) = symbol.kind() else {
                         slow!()
                     };
-                    let Some(value) = name.cell().unlocalized_value() else {
-                        slow!()
+                    let value = match name.cell().unlocalized_value() {
+                        Some(value) => value,
+                        None => match varref_redirected(vm.interp, &name) {
+                            Some(value) => value,
+                            None => slow!(),
+                        },
                     };
                     push!(value);
                 }};
             }
-            // Bvarset's SYMBOL_PLAINVAL, untrapped case: the store alone.
+            // Bvarset's SYMBOL_PLAINVAL, untrapped case: the store alone;
+            // a C variable whose cell holds its value in `assign_plain_global'.
             macro_rules! varset {
                 ($index:expr) => {{
                     let index = usize::from($index);
@@ -1916,7 +1921,25 @@ fn run_verified(
                     let Kind::Symbol(name) = symbol.kind() else {
                         slow!()
                     };
-                    if !name.cell().store_plain_value(*slot!(0)) {
+                    if !name.cell().store_plain_value(*slot!(0))
+                        && !varset_plain(vm.interp, &name, *slot!(0))
+                    {
+                        slow!();
+                    }
+                    drop_values!(1);
+                }};
+            }
+            // Bvarbind of a symbol whose let is a plain store
+            // (`varbind_plain'); any other, in the full arm.
+            macro_rules! varbind {
+                ($index:expr) => {{
+                    let index = usize::from($index);
+                    // SAFETY: verified against this vector's length.
+                    let symbol = unsafe { constants.get_unchecked(index) };
+                    let Kind::Symbol(name) = symbol.kind() else {
+                        slow!()
+                    };
+                    if !varbind_plain(vm.interp, &name, *slot!(0)) {
                         slow!();
                     }
                     drop_values!(1);
@@ -2369,18 +2392,19 @@ fn run_verified(
                     *slot!(0) = if integerp { Value::T } else { Value::Nil };
                     at += 1;
                 }
-                // Bmemq on a fixnum or a symbol, whose words are eq exactly
-                // when they are the same word, unless an element might be a
-                // symbol with position. FOR_EACH_TAIL's first quit check
-                // comes after the second element: nothing here can set
-                // `quit-flag', so one test there stands for every later
-                // one. A long or improper list takes the full arm, which
-                // checks for cycles and the list's end.
+                // Bmemq: each element compared by lisp.h:EQ, which is
+                // BASE_EQ (`values_eq_plain') while `symbols-with-pos-enabled'
+                // is nil; the full arm takes the variable's other value.
+                // FOR_EACH_TAIL's first quit check comes after the second
+                // element: nothing here can set `quit-flag', so one test
+                // there stands for every later one. A long or improper list
+                // takes the full arm, which checks for cycles and the list's
+                // end.
                 0o076 => {
-                    let element = *slot!(1);
-                    if element.fixnum().is_none() && !element.is_symbol() {
+                    if vm.interp.symbols_with_positions_enabled() {
                         slow!();
                     }
+                    let element = *slot!(1);
                     let mut tail = *slot!(0);
                     let mut steps = 0u32;
                     let found = loop {
@@ -2390,15 +2414,11 @@ fn run_verified(
                             }
                             slow!()
                         };
-                        let item = cell.car.get();
-                        if item.word() == element.word() {
+                        if crate::lisp::primitives::values_eq_plain(&cell.car.get(), &element) {
                             break tail;
                         }
                         steps += 1;
-                        if (item.is_vectorlike() && element.is_symbol())
-                            || steps == 64
-                            || (steps == 2 && !vm.interp.quit_flag_is_nil())
-                        {
+                        if steps == 64 || (steps == 2 && !vm.interp.quit_flag_is_nil()) {
                             slow!();
                         }
                         tail = cell.cdr.get();
@@ -2406,6 +2426,92 @@ fn run_verified(
                     *slot!(1) = found;
                     drop_values!(1);
                     at += 1;
+                }
+                // Bget of two bare symbols (`get_plain').
+                0o116 => {
+                    let Some(value) = get_plain(vm.interp, *slot!(1), *slot!(0)) else {
+                        slow!()
+                    };
+                    *slot!(1) = value;
+                    drop_values!(1);
+                    at += 1;
+                }
+                // Blist1 to Blist4: the operands consed as the full arm
+                // conses them.
+                0o103 => {
+                    *slot!(0) = Value::list_of(&[*slot!(0)]);
+                    at += 1;
+                }
+                0o104 => {
+                    let list = Value::list_of(&[*slot!(1), *slot!(0)]);
+                    drop_values!(1);
+                    *slot!(0) = list;
+                    at += 1;
+                }
+                0o105 => {
+                    let list = Value::list_of(&[*slot!(2), *slot!(1), *slot!(0)]);
+                    drop_values!(2);
+                    *slot!(0) = list;
+                    at += 1;
+                }
+                0o106 => {
+                    let list = Value::list_of(&[*slot!(3), *slot!(2), *slot!(1), *slot!(0)]);
+                    drop_values!(3);
+                    *slot!(0) = list;
+                    at += 1;
+                }
+                // Bunbind 1 of an entry whose undoing runs nothing
+                // (`unbind_plain').
+                0o051 => {
+                    if !unbind_plain(vm.interp) {
+                        slow!();
+                    }
+                    at += 1;
+                }
+                // Bsave_current_buffer (and its obsolete opcode): the
+                // current buffer on the unwind list.
+                0o162 | 0o141 => {
+                    save_current_buffer(vm.interp);
+                    at += 1;
+                }
+                // Bset_buffer of a live buffer object (`set_buffer_object').
+                0o161 => {
+                    let Some(buffer) = set_buffer_object(vm.interp, *slot!(0)) else {
+                        slow!()
+                    };
+                    *slot!(0) = buffer;
+                    at += 1;
+                }
+                // Bgoto_char to a fixnum position; GNU's Fgoto_char returns
+                // its argument.
+                0o142 => {
+                    let Some(position) = slot!(0).fixnum() else {
+                        slow!()
+                    };
+                    goto_char_fixnum(vm.interp, position);
+                    at += 1;
+                }
+                // Bswitch on a table with a standard test
+                // (`switch_destination'): a hit jumps, through the frame
+                // switch's admission test, since the table, not the
+                // verifier, names the destination; a miss goes on.
+                0o267 => {
+                    let Some(destination) =
+                        switch_destination(vm.interp, vm.env, *slot!(0), *slot!(1))
+                    else {
+                        slow!()
+                    };
+                    drop_values!(2);
+                    match destination {
+                        Some(destination) => {
+                            *pc = destination;
+                            // SAFETY: sp lies within the active frame.
+                            let top = unsafe { sp.offset_from(words) as usize } + 1;
+                            vm.interp.bc_stack.top = top;
+                            break 'run FastExit::Switched(top, vm.interp.bc_stack.len());
+                        }
+                        None => at += 1,
+                    }
                 }
                 // Bsetcar and Bsetcdr on a cons; anything else signals in the
                 // full arm.
@@ -2475,24 +2581,54 @@ fn run_verified(
                     varset!(fetch2!());
                     at += 3;
                 }
+                0o030 => {
+                    varbind!(0u16);
+                    at += 1;
+                }
+                0o031 => {
+                    varbind!(1u16);
+                    at += 1;
+                }
+                0o032 => {
+                    varbind!(2u16);
+                    at += 1;
+                }
+                0o033 => {
+                    varbind!(3u16);
+                    at += 1;
+                }
+                0o034 => {
+                    varbind!(4u16);
+                    at += 1;
+                }
+                0o035 => {
+                    varbind!(5u16);
+                    at += 1;
+                }
+                0o036 => {
+                    varbind!(fetch!());
+                    at += 2;
+                }
+                0o037 => {
+                    varbind!(fetch2!());
+                    at += 3;
+                }
                 // Every other opcode, named so that the match covers all 256
                 // bytes and its jump table needs no range check.  Each byte
                 // in this match is its own case: rustc tests a range
                 // pattern with comparisons ahead of the switch, which
                 // brought back the range check and sent constants and
                 // calls through branches before the table.
-                0o000 | 0o030 | 0o031 | 0o032 | 0o033 | 0o034 | 0o035 | 0o036 | 0o037 | 0o050
-                | 0o051 | 0o052 | 0o053 | 0o054 | 0o055 | 0o056 | 0o057 | 0o060 | 0o061 | 0o062
-                | 0o063 | 0o064 | 0o065 | 0o066 | 0o067 | 0o070 | 0o103 | 0o104 | 0o105 | 0o106
-                | 0o107 | 0o112 | 0o113 | 0o114 | 0o115 | 0o116 | 0o117 | 0o120 | 0o121 | 0o122
-                | 0o135 | 0o136 | 0o141 | 0o142 | 0o143 | 0o146 | 0o147 | 0o150 | 0o151 | 0o152
-                | 0o153 | 0o154 | 0o155 | 0o156 | 0o157 | 0o161 | 0o162 | 0o163 | 0o164 | 0o165
-                | 0o166 | 0o167 | 0o170 | 0o171 | 0o172 | 0o173 | 0o174 | 0o175 | 0o176 | 0o177
-                | 0o200 | 0o212 | 0o213 | 0o214 | 0o215 | 0o216 | 0o217 | 0o220 | 0o221 | 0o222
-                | 0o223 | 0o224 | 0o225 | 0o226 | 0o227 | 0o230 | 0o231 | 0o232 | 0o233 | 0o234
-                | 0o235 | 0o236 | 0o237 | 0o244 | 0o251 | 0o252 | 0o253 | 0o254 | 0o255 | 0o256
-                | 0o257 | 0o260 | 0o261 | 0o264 | 0o265 | 0o267 | 0o270 | 0o271 | 0o272 | 0o273
-                | 0o274 | 0o275 | 0o276 | 0o277 => slow!(),
+                0o000 | 0o050 | 0o052 | 0o053 | 0o054 | 0o055 | 0o056 | 0o057 | 0o060 | 0o061
+                | 0o062 | 0o063 | 0o064 | 0o065 | 0o066 | 0o067 | 0o070 | 0o107 | 0o112 | 0o113
+                | 0o114 | 0o115 | 0o117 | 0o120 | 0o121 | 0o122 | 0o135 | 0o136 | 0o143 | 0o146
+                | 0o147 | 0o150 | 0o151 | 0o152 | 0o153 | 0o154 | 0o155 | 0o156 | 0o157 | 0o163
+                | 0o164 | 0o165 | 0o166 | 0o167 | 0o170 | 0o171 | 0o172 | 0o173 | 0o174 | 0o175
+                | 0o176 | 0o177 | 0o200 | 0o212 | 0o213 | 0o214 | 0o215 | 0o216 | 0o217 | 0o220
+                | 0o221 | 0o222 | 0o223 | 0o224 | 0o225 | 0o226 | 0o227 | 0o230 | 0o231 | 0o232
+                | 0o233 | 0o234 | 0o235 | 0o236 | 0o237 | 0o244 | 0o251 | 0o252 | 0o253 | 0o254
+                | 0o255 | 0o256 | 0o257 | 0o260 | 0o261 | 0o264 | 0o265 | 0o270 | 0o271 | 0o272
+                | 0o273 | 0o274 | 0o275 | 0o276 | 0o277 => slow!(),
             }
         };
         if let FastExit::Continued(new_top) = exit {
@@ -2529,6 +2665,136 @@ fn run_verified(
         // SAFETY: sp stayed within the active frame.
         return (exit, Some(unsafe { sp.offset_from(words) as usize } + 1));
     }
+}
+
+// The verified loop's helpers for ops whose usual case reads or changes
+// the interpreter's state but runs no Lisp, collects nothing and stores
+// into no string, so that the loop goes on after them with its bytes: each
+// does nothing and answers false (or None) for any other case, which the
+// op's full arm in `op_in_place' takes from the start, its signals
+// included.
+
+/// Bvarref of a variable whose cell does not hold its value (localized,
+/// held by the buffer, a counter or a KBOARD variable, an alias): the
+/// rest of data.c:find_symbol_value, which reads and runs nothing else.
+/// None for a void variable.
+#[inline(never)]
+fn varref_redirected(interp: &Interpreter, symbol: &SymbolName) -> Option<Value> {
+    interp.symbol_value_cell_symbol(symbol).ok()
+}
+
+/// Bvarset of a C variable whose cell holds its value
+/// (`assign_plain_global').
+#[inline(never)]
+fn varset_plain(interp: &mut Interpreter, symbol: &SymbolName, value: Value) -> bool {
+    interp.assign_plain_global(symbol, value)
+}
+
+/// Bvarbind of a symbol whose let is a plain store
+/// (`Interpreter::specbind_plain'), its record on the unwind list.
+#[inline(never)]
+fn varbind_plain(interp: &mut Interpreter, symbol: &SymbolName, value: Value) -> bool {
+    let Some(binding_id) = interp.specbind_plain(symbol, value) else {
+        return false;
+    };
+    interp.bc_unwinds.push(UnwindEntry::BindingId(binding_id));
+    true
+}
+
+/// Bunbind 1 of the unwind list's last entry when undoing it runs nothing:
+/// a plain binding's restore (`Interpreter::unbind_plain_special_id') or a
+/// saved current buffer's (`unwind_one's).
+#[inline(never)]
+fn unbind_plain(interp: &mut Interpreter) -> bool {
+    match interp.bc_unwinds.last() {
+        Some(&UnwindEntry::BindingId(binding_id)) => {
+            if !interp.unbind_plain_special_id(binding_id) {
+                return false;
+            }
+        }
+        Some(&UnwindEntry::CurrentBuffer { buffer_id }) => {
+            if interp.has_buffer_id(buffer_id) {
+                let _ = interp.set_current_buffer_id(buffer_id);
+            }
+        }
+        _ => return false,
+    }
+    interp.bc_unwinds.pop();
+    true
+}
+
+/// Bsave_current_buffer: the current buffer on the unwind list.
+#[inline(never)]
+fn save_current_buffer(interp: &mut Interpreter) {
+    let buffer_id = interp.current_buffer_id();
+    interp
+        .bc_unwinds
+        .push(UnwindEntry::CurrentBuffer { buffer_id });
+}
+
+/// Bset_buffer of a live buffer object: buffer.c:Fset_buffer's
+/// set_buffer_internal, the buffer its value.  None for a name or a
+/// killed buffer.
+#[inline(never)]
+fn set_buffer_object(interp: &mut Interpreter, buffer: Value) -> Option<Value> {
+    if !matches!(buffer.kind(), Kind::Buffer(_)) {
+        return None;
+    }
+    let id = interp.resolve_buffer_id(&buffer).ok()?;
+    interp.set_current_buffer_id(id).ok()?;
+    interp.buffer_value(id)
+}
+
+/// Bgoto_char to POSITION, clamped as `position_from_value' and the
+/// buffer's motion clamp it.
+#[inline(never)]
+fn goto_char_fixnum(interp: &mut Interpreter, position: i64) {
+    interp
+        .buffer
+        .borrow_mut()
+        .goto_char(position.max(0) as usize);
+}
+
+/// Bget of two bare symbols with no overriding plist environment: fns.c:
+/// Fget's plist_get on the symbol's plist (`direct_get's first case).
+#[inline(never)]
+fn get_plain(interp: &Interpreter, symbol: Value, property: Value) -> Option<Value> {
+    let (Kind::Symbol(symbol), Kind::Symbol(property)) = (symbol.kind(), property.kind()) else {
+        return None;
+    };
+    if !interp.overriding_plist_environment_is_nil() {
+        return None;
+    }
+    Some(
+        interp
+            .get_symbol_property_of(&symbol, &property)
+            .unwrap_or(Value::Nil),
+    )
+}
+
+/// Bswitch's lookup of VALUE in TABLE, a hash table with a standard test
+/// (eq, eql or equal, whose hashing and comparison run no Lisp): the
+/// destination an entry's fixnum names, Some(None) for no entry or
+/// another value, as the full arm's `gethash' and its fixnum test.
+#[inline(never)]
+fn switch_destination(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    table: Value,
+    value: Value,
+) -> Option<Option<usize>> {
+    let Kind::HashTable(table) = table.kind() else {
+        return None;
+    };
+    table.test().standard_test()?;
+    let (_, slot) = crate::lisp::primitives::hash_table_lookup(interp, table, &value, env).ok()?;
+    Some(
+        slot.and_then(|slot| table.entry(slot))
+            .and_then(|(_, destination)| match destination.kind() {
+                Kind::Integer(destination) => Some(destination as usize),
+                _ => None,
+            }),
+    )
 }
 
 /// The verified loop's way to an op it has no arm for (or whose operands
@@ -4694,6 +4960,149 @@ mod phase_c_tests {
             .unwrap_or_else(|| panic!("fixture {name} missing"));
         interp.materialize_read_object_literals(Value::Vector(object.constants), &mut env)?;
         execute(&mut interp, &object, args, &mut env)
+    }
+
+    #[test]
+    fn verified_loop_ops_without_lisp_match_their_full_arms() {
+        // GNU 30.2's byte code for (with lexical-binding)
+        //   (defun vm-light (buffer key a b)
+        //     (list
+        //      (let ((vm-light-plain a))
+        //        (list vm-light-plain (setq vm-light-plain b)
+        //              vm-light-plain))
+        //      vm-light-plain
+        //      (let ((vm-light-watched a))
+        //        (list vm-light-watched (setq vm-light-watched b)))
+        //      vm-light-watched
+        //      (let ((print-length a)) (setq print-length b) (list print-length))
+        //      print-length
+        //      (with-current-buffer buffer
+        //        (list vm-light-local (goto-char 3) (point) (goto-char -5)
+        //              (point)
+        //              (let ((vm-light-local key)) (list vm-light-local))
+        //              vm-light-local))
+        //      vm-light-local
+        //      (save-current-buffer (set-buffer (buffer-name buffer))
+        //        (goto-char (point-max-marker)) (point))
+        //      (condition-case nil vm-light-void (void-variable 'void))
+        //      (list (memq key '(x y c)) (memq b '(1 2 3)) (memq key '(p q)))
+        //      (list (get 'vm-light-plain 'vm-light-prop)
+        //            (get key 'vm-light-prop))
+        //      (list (list a) (list a b) (list a b key) (list a b key a))
+        //      (cond ((eq key 'x) 'is-x) ((eq key 'c) 'is-c) ((eq key 'z) 'is-z)
+        //            (t 'other))
+        //      (cond ((equal a "s") 's) ((equal a 1) 'one) ((equal a 2) 'two)
+        //            (t 'none))
+        //      (cond ((eq b 'x) 'is-x) ((eq b 'c) 'is-c) ((eq b 'z) 'is-z)
+        //            (t 'other))))
+        // The verified loop's arms run each op's usual case (a plain
+        // special's and a C variable's let, set and unbind, a buffer-local
+        // read, save-current-buffer and set-buffer of a buffer, goto-char
+        // of a fixnum, memq, get, list1 to list4, switch's hits and misses
+        // on eq and equal tables) and leave the others to the full arms (a
+        // watched variable's let, set and unlet, a buffer-local let,
+        // set-buffer of a name, goto-char of a marker, a void variable).
+        // GNU answers the list asserted below.
+        let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+        let mut env = Env::new();
+        let object = concat!(
+            r#"#[1028 "\1\211\30\1\211\20)\211E\10\3\211\31\3\211\21)D\11\5\32\4\211\22"#,
+            r#")C\nr\6\11q\210\13\305b`\306b`\6\15C\13)\257\7\13r\307\6\f!q\210\310 b\2"#,
+            r#"10`)\3111E\0\f0\202G\0\210\312\6\f\313>\6\13\314>\6\16\315>E\300\316N\6\"#,
+            r#"16\316ND\6\15C\6\16\6\16D\6\17\6\17\6\22E\6\20\6\20\6\23\6\23FF\6\17\317"#,
+            r#"\267\202\210\0\320\202\211\0\321\202\211\0\322\202\211\0\323\6\17\324\26"#,
+            r#"7\202\234\0\325\202\235\0\326\202\235\0\327\202\235\0\330\6\17\331\267\2"#,
+            r#"02\260\0\320\202\261\0\321\202\261\0\322\202\261\0\323\257\20\207" [vm-l"#,
+            r#"ight-plain vm-light-watched print-length vm-light-local vm-light-void 3 "#,
+            r#"-5 buffer-name point-max-marker (void-variable) void (x y c) (1 2 3) (p "#,
+            r#"q) vm-light-prop #s(hash-table test eq purecopy t data (x 124 c 128 z 13"#,
+            r#"2)) is-x is-c is-z other #s(hash-table test equal purecopy t data ("s" 1"#,
+            r#"44 1 148 2 152)) s one two none #s(hash-table test eq purecopy t data (x"#,
+            r#" 164 c 168 z 172))] 24 "\n\n(fn BUFFER KEY A B)"]"#,
+        );
+        let source = format!(
+            r#"(progn
+                 (defvar vm-light-plain 0)
+                 (defvar vm-light-watched 0)
+                 (defvar vm-light-local 'default)
+                 (defvar vm-light-void)
+                 (defvar vm-light-log nil)
+                 (fset 'vm-light {object})
+                 (put 'vm-light-plain 'vm-light-prop 'plain-prop)
+                 (add-variable-watcher
+                  'vm-light-watched
+                  (lambda (s n o w)
+                    (setq vm-light-log
+                          (cons (list s n o w) vm-light-log))))
+                 (let ((buffer (get-buffer-create "light-buffer")))
+                   (with-current-buffer buffer
+                     (insert "hello world")
+                     (goto-char 5)
+                     (set (make-local-variable 'vm-light-local) 'local))
+                   (list (vm-light buffer 'c 1 2)
+                         (vm-light buffer 'q 2 'z)
+                         (reverse vm-light-log)
+                         vm-light-plain
+                         (with-current-buffer buffer (point)))))"#
+        );
+        let form = super::super::super::reader::Reader::new(&source)
+            .read()
+            .expect("read form")
+            .expect("a form");
+        let value = interp.eval(&form, &mut env).expect("calls");
+        assert_eq!(
+            format!("{value}"),
+            concat!(
+                "(((1 2 2) 0 (1 2) 0 (2) nil (local 3 3 -5 1 (c) local) default 12 void ",
+                "((c) (2 3) nil) (plain-prop nil) ((1) (1 2) (1 2 c) (1 2 c 1)) is-c one ",
+                "other) ((2 z z) 0 (2 z) 0 (z) nil (local 3 3 -5 1 (q) local) default 12 ",
+                "void (nil nil (q)) (plain-prop nil) ((2) (2 z) (2 z q) (2 z q 2)) other ",
+                "two is-z) ((vm-light-watched 1 let nil) (vm-light-watched 2 set ",
+                "nil) (vm-light-watched 0 unlet nil) (vm-light-watched 2 let nil) ",
+                "(vm-light-watched z set nil) (vm-light-watched 0 unlet nil)) 0 12)"
+            )
+        );
+    }
+
+    #[test]
+    fn verified_loop_aref_and_aset_take_records_as_vectors() {
+        // GNU 30.2's byte code for (with lexical-binding)
+        //   (defun vm-record-slots (r v i)
+        //     (list (aref r 0) (aref r 2) (aset r 1 'x) (aref r 1)
+        //           (aset r i v) (aref r i)
+        //           (condition-case e (aref r 3) (args-out-of-range (cdr e)))
+        //           (condition-case e (aset r 3 0) (args-out-of-range (cdr e)))
+        //           (condition-case e (aref r -1) (args-out-of-range (cdr e)))
+        //           (aref v 1) (aset v 0 'y) v))
+        // bytecode.c's Baref and Baset take a record's slots (its type
+        // in slot zero) as a vector's; an index past them, or a negative
+        // one, signals from the full arms. GNU answers the list below.
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let object = concat!(
+            r#"#[771 "\2\300H\3\301H\4\302\303I\5\302H\6\6\5\6\7I\6\7\6\6H\3041$\0\6\10"#,
+            r#"\305H0\202%\0A\30612\0\6\11\305\300I0\2023\0A\3071?\0\6\n\310H0\202@\0A\"#,
+            r#"6\n\302H\6\13\300\311I\6\f\257\f\207" [0 2 1 x (args-out-of-range) 3 (ar"#,
+            r#"gs-out-of-range) (args-out-of-range) -1 y] 16 "\n\n(fn R V I)"]"#,
+        );
+        let source = format!(
+            r#"(progn
+                 (fset 'vm-record-slots {object})
+                 (prin1-to-string
+                  (vm-record-slots (record 'vm-rec 1 2) (vector 'a 'b) 2)))"#
+        );
+        let form = super::super::super::reader::Reader::new(&source)
+            .read()
+            .expect("read form")
+            .expect("a form");
+        let value = interp.eval(&form, &mut env).expect("calls");
+        assert_eq!(
+            value.as_string().expect("printed"),
+            concat!(
+                "(vm-rec 2 x x [y b] [y b] (#s(vm-rec x [y b]) 3) ",
+                "(#s(vm-rec x [y b]) 3) (#s(vm-rec x [y b]) -1) b y [y b])"
+            )
+        );
     }
 
     #[test]

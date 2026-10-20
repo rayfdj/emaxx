@@ -423,27 +423,33 @@ pub(crate) fn is_bool_vector_value(interp: &Interpreter, value: &Value) -> bool 
         .is_some_and(|record| record.kind == crate::lisp::eval::RecordKind::BoolVector)
 }
 
-/// O(1) element read for the VM's Baref.  Strings, char-tables, records,
-/// closures, and out-of-range accesses return None so the caller takes the
-/// full `aref' path and preserves GNU's exact error behavior.
+/// O(1) element read for the VM's Baref: bytecode.c's fast case, a vector
+/// or a record (its type in slot zero, as PVSIZE counts it).  Strings,
+/// char-tables, closures, and out-of-range accesses return None so the
+/// caller takes the full `aref' path and preserves GNU's exact error
+/// behavior.
 pub(crate) fn vector_aref_fast(value: &Value, index: usize) -> Option<Value> {
-    let Kind::Vector(vector) = value.kind() else {
-        return None;
-    };
-    vector.get(index)
+    match value.kind() {
+        Kind::Vector(vector) => vector.get(index),
+        Kind::LispRecord(record) => record.get(index),
+        _ => None,
+    }
 }
 
 /// O(1) element write for the VM's Baset, same contract as
 /// [`vector_aref_fast`].
 pub(crate) fn vector_aset_fast(value: &Value, index: usize, new_value: &Value) -> Option<()> {
-    let Kind::Vector(vector) = value.kind() else {
-        return None;
-    };
-    if index >= vector.len() {
-        return None;
+    match value.kind() {
+        Kind::Vector(vector) => {
+            if index >= vector.len() {
+                return None;
+            }
+            vector.set(index, *new_value);
+            Some(())
+        }
+        Kind::LispRecord(record) => record.set(index, *new_value).then_some(()),
+        _ => None,
     }
-    vector.set(index, *new_value);
-    Some(())
 }
 
 pub(crate) fn vector_slot_value(value: &Value, index: usize) -> Result<Value, LispError> {

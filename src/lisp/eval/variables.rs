@@ -2128,6 +2128,48 @@ impl Interpreter {
         self.apply_special_restore(restore, env)
     }
 
+    /// `unbind_special_id' of BINDING_ID's record when it is the innermost
+    /// one and its restore is a plain store (`is_plain_restore'), which
+    /// notifies no watcher and runs nothing: true when done, false with
+    /// nothing done otherwise.
+    #[inline]
+    pub(crate) fn unbind_plain_special_id(&mut self, binding_id: u64) -> bool {
+        if !self.active_special_restores.last().is_some_and(|restore| {
+            restore.binding_id == binding_id && self.is_plain_restore(restore)
+        }) {
+            return false;
+        }
+        let restore = self.active_special_restores.pop().expect("checked last");
+        self.store_plain_restore(restore);
+        true
+    }
+
+    /// Whether RESTORE undoes a plain symbol's SPECPDL_LET: the saved value
+    /// back into the cell (a watcher added since cleared the bit).  A plain
+    /// C variable's restore is the same store: its saved value is one its
+    /// slot holds, and it has no watcher to hear `unlet'.
+    #[inline]
+    fn is_plain_restore(&self, restore: &SpecialBindingRestore) -> bool {
+        restore.scope == SpecialBindingScope::Global
+            && restore.previous_undo_state.is_none()
+            && restore.keyboard_terminal_id.is_none()
+            && (self.globals.plain_store(&restore.name)
+                || (restore.previous.is_some() && restore.name.cell().is_plain_c_slot()))
+    }
+
+    /// The store of a restore `is_plain_restore' accepts.
+    #[inline]
+    fn store_plain_restore(&mut self, restore: SpecialBindingRestore) {
+        match restore.previous {
+            Some(value) => {
+                if !self.globals.replace_bound_value(&restore.name, value) {
+                    self.globals.insert(&restore.name, value);
+                }
+            }
+            None => self.remove_global_binding_symbol(&restore.name),
+        }
+    }
+
     pub(crate) fn bind_special_symbol(
         &mut self,
         symbol: &SymbolName,
@@ -2161,6 +2203,38 @@ impl Interpreter {
         })
     }
 
+    /// SPECPDL_LET on a plain symbol, or on a C variable whose cell holds
+    /// its value (the value as its slot stores it): the cell saved in the
+    /// binding stack's record, the value stored, nothing notified or run.
+    /// None, with nothing done, for any other symbol, which
+    /// `specbind_symbol_record' binds.
+    #[inline]
+    pub(crate) fn specbind_plain(&mut self, symbol: &SymbolName, value: Value) -> Option<u64> {
+        let value = if self.globals.plain_store(symbol) {
+            value
+        } else {
+            self.plain_c_slot_value(symbol, value)?
+        };
+        let binding_id = self.next_special_binding_id;
+        self.next_special_binding_id += 1;
+        let previous = self.globals.value(symbol);
+        if !self.globals.replace_bound_value(symbol, value) {
+            self.globals.insert(symbol, value);
+        }
+        self.active_special_restores.push(SpecialBindingRestore {
+            binding_id,
+            name: *symbol,
+            scope: SpecialBindingScope::Global,
+            binding_buffer_id: None,
+            keyboard_terminal_id: None,
+            previous,
+            previous_undo_state: None,
+            let_default: false,
+            local_binding_killed: false,
+        });
+        Some(binding_id)
+    }
+
     /// eval.c:specbind for the symbol in hand: the alias chain, the
     /// forwarding flags, the buffer-local cell and the global cell are
     /// read and written by id; the record, holding the symbol, is pushed
@@ -2171,34 +2245,7 @@ impl Interpreter {
         value: Value,
         env: &mut Env,
     ) -> Result<u64, LispError> {
-        // SPECPDL_LET on a plain symbol, or on a C variable whose cell
-        // holds its value (the value as its slot stores it): save the cell,
-        // store the value.
-        let plain = if self.globals.plain_store(symbol) {
-            Some(value)
-        } else {
-            self.plain_c_slot_value(symbol, value)
-        };
-        if let Some(value) = plain {
-            let binding_id = self.next_special_binding_id;
-            self.next_special_binding_id += 1;
-            let previous = self.globals.value(symbol);
-
-            if !self.globals.replace_bound_value(symbol, value) {
-                self.globals.insert(symbol, value);
-            }
-            let restore = SpecialBindingRestore {
-                binding_id,
-                name: *symbol,
-                scope: SpecialBindingScope::Global,
-                binding_buffer_id: None,
-                keyboard_terminal_id: None,
-                previous,
-                previous_undo_state: None,
-                let_default: false,
-                local_binding_killed: false,
-            };
-            self.active_special_restores.push(restore);
+        if let Some(binding_id) = self.specbind_plain(symbol, value) {
             return Ok(binding_id);
         }
         let resolved = self.resolve_variable_symbol(symbol)?;
@@ -2467,24 +2514,8 @@ impl Interpreter {
         restore: SpecialBindingRestore,
         env: &mut Env,
     ) -> Result<(), LispError> {
-        // The unbind of a plain symbol's SPECPDL_LET: the saved value back
-        // into the cell (a watcher added since cleared the bit).
-        // A plain C variable's restore is the same store: its saved value
-        // is one its slot holds, and it has no watcher to hear `unlet'.
-        if restore.scope == SpecialBindingScope::Global
-            && restore.previous_undo_state.is_none()
-            && restore.keyboard_terminal_id.is_none()
-            && (self.globals.plain_store(&restore.name)
-                || (restore.previous.is_some() && restore.name.cell().is_plain_c_slot()))
-        {
-            match restore.previous {
-                Some(value) => {
-                    if !self.globals.replace_bound_value(&restore.name, value) {
-                        self.globals.insert(&restore.name, value);
-                    }
-                }
-                None => self.remove_global_binding_symbol(&restore.name),
-            }
+        if self.is_plain_restore(&restore) {
+            self.store_plain_restore(restore);
             return Ok(());
         }
         if restore.name == "text-conversion-style"
