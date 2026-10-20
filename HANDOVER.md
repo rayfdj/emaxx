@@ -3274,9 +3274,16 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   call balanced at its recorded depth.
   Per iteration: bytecode-to-native 402.1 -> 343.3 (GNU 388),
   interpreted-to-native 2,472.2 -> 2,436.0, native-to-interpreted 4,101.0
-  -> 4,087.4, native-to-bytecode 4,017.7 -> 4,015.0, undo 1,269,473 ->
-  1,255,812 a unit (GNU 1,252,071); bytecode calls' loop is unchanged
-  (`run_verified` 448 and 449 an iteration). Validation (gate profile,
+  -> 4,087.4, native-to-bytecode 4,017.7 -> 4,015.0; bytecode calls'
+  loop is unchanged (`run_verified` 448 and 449 an iteration). Undo read
+  1,269,473 -> 1,255,812 a unit (GNU 1,252,071), but that is the spread
+  of one build's runs, not the round: round 35 rebuilt and run beside
+  round 36 reads 1,254,268 against 1,253,825, and runs of one build
+  differ by up to 15,000 a unit (the allocator's `malloc_consolidate`
+  and `unlink_chunk` and the `memcmp`s of hash probes follow each
+  process's hash seeds), so the round's effect on undo is under 1,000;
+  compare undo's builds by the functions a change touches, or by several
+  runs each. Validation (gate profile,
   `--test-threads=1`, 128 MiB stacks): the tests naming `native` (405), `handler` (34),
   `escape` (30), `signal` (40), `condition` (30), `unwind` (17), `gc`
   (58), `collect` (46), `callback` (33), `suspen` (9), `continuation`
@@ -3285,6 +3292,166 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   `batch_startup_image_round_trip_or_explicit_native_image_limit`, this
   container's known failure; the lightweight group's 599 pass; clippy
   `-D warnings` and rustfmt pass.
+  Round 36's profile-guided build against round 34's, nine rotated
+  rounds (median ratio to GNU): bytecode calls 0.914 against 1.014,
+  bytecode-to-native 0.920 against 0.972, undo 1.001 against 0.931. Undo
+  ran 27,000 fewer instructions a unit in round 36's build; its swing the
+  other way is the build's layout and the host.
+- **A byte-code call's saved state in the stack's frame footer, measured
+  and left out.** A call the verified loop makes pushes a `BcFrame` (88
+  bytes: the caller's program, pc, depth and watermarks) on a vector of
+  its own; bytecode.c keeps that state in the frame's `bc_frame` on the
+  byte-code stack. Folding it into the frame's footer on Emaxx's byte-code
+  stack (the footer written at the call, read in place at the return and
+  on an error) took bytecode calls from 449 to 441 instructions an
+  iteration. The footer grows from GNU's four words to thirteen, and the
+  stack's capacity is GNU's in words: the oracle test
+  `bytecode-stack-layout` signals at GNU's depth, which thirteen-word
+  footers reach sooner. Charging a frame GNU's four words against the
+  limit while it occupies thirteen cost about the eight instructions it
+  saved, so the fold is not kept.
+- **Round 37: undo's slow byte ops that run no Lisp, in the verified
+  loop.** Undo left `run_verified` 600 times a unit for `op_in_place`,
+  about 87 instructions each of decode, frame and bookkeeping besides the
+  op's work. A census of the ops it ran (the byte at `op_in_place`'s
+  entry, counted at ten and twenty units) puts 430 of them in ops whose
+  usual case reads or changes the interpreter's state but runs no Lisp,
+  collects nothing and stores into no string: Bvarref of a variable whose
+  cell does not hold its value (buffer-local or an alias, 78), Bvarset of
+  a C variable (21), Bvarbind (66) and Bunbind 1 (67), Bmemq (39), Bget
+  (26), Blist1 to Blist4 (15), Bsave_current_buffer (24), Bset_buffer
+  (24), Bgoto_char (38) and Bswitch (31). Each now has an arm in the loop
+  that calls a small out-of-line helper for that case and goes on with
+  the next byte, the other cases left to the op's full arm from its
+  start, signals included: `varref_redirected` (data.c's
+  find_symbol_value past the cell), `varset_plain` (`assign_plain_global`,
+  the C variable whose store is its cell's), `varbind_plain`
+  (`Interpreter::specbind_plain`, the plain store `specbind_symbol_record`
+  starts with, and its record on the unwind list), `unbind_plain` (a plain
+  restore, `is_plain_restore`, or a saved current buffer), `get_plain`
+  (Fget of two bare symbols with no overriding plist environment),
+  `set_buffer_object` (a live buffer object), `goto_char_fixnum` and
+  `switch_destination` (a table with eq, eql or equal, whose hashing
+  runs no Lisp; a hit leaves through the frame-switch exit, which admits
+  the destination). Bmemq compares each element as lisp.h:EQ does while
+  `symbols-with-pos-enabled` is nil (`values_eq_plain`), where it took
+  only a fixnum or a symbol and stopped at a vectorlike element; Blist1
+  to Blist4 cons in the loop. That left 190 slow ops a unit, 40 of them
+  Baref and Baset, every one on a record (ERT's `cl-defstruct` objects:
+  `ert-test`, `ert--test-execution-info`, `ert-test-passed`), which
+  bytecode.c's fast case takes as it takes a vector (RECORDP, PVSIZE
+  counting the type slot) and Emaxx's (`vector_aref_fast`,
+  `vector_aset_fast`) did not; they take a record's slots now. Undo's
+  slow ops 600 -> 150 a unit (`op_in_place`'s calls, its own
+  instructions 85,262 -> 22,772); what is left is mostly Bunwind_protect,
+  Bdelete_region, Bset_marker, Binsert and the handler ops. Instructions a
+  unit in undo, plain build: 1,253,825 -> 1,193,255 and 1,205,555 (two
+  runs of one build) without the records, 1,169,473 with them (one run)
+  (`op_in_place` 28,172 -> 22,772, `aref` and `aset` 7,978 -> 3,074,
+  `prim` 4,018 -> 1,418); profile-guided, without the records: 1,151,371
+  -> 1,090,242 (GNU 1,252,071).
+  In the plain build the new arms move `run_verified`'s register
+  allocation (the code pointer and two other values stored at the loop's
+  head, reloaded after calls): bytecode calls 449.3 -> 462.3 and
+  bytecode-to-native 344.3 -> 350.3 an iteration in `run_verified`,
+  native-to-bytecode 80.0 -> 83.0. The profile-guided build places those
+  spills off the hot paths: `run_verified` 442.2 -> 443.2 in bytecode
+  calls, 338.2 -> 341.2 in bytecode-to-native; the records' case leaves
+  both workloads' `run_verified` as it was. New tests: GNU 30.2's byte
+  code for Baref and Baset of a record's slots, its type and an index
+  past it, and for a function running each of the other ops' usual and
+  other cases (a watched variable's let, set and unlet, a buffer-local let,
+  set-buffer of a name, goto-char of a marker, a void variable, switch
+  hits and misses on eq and equal tables), with GNU's answer and its
+  watcher's log. Validation (gate profile, `--test-threads=1`, 128 MiB
+  stacks): the tests naming
+  `bytecode` (84), `special` (54), `switch` (13), `memq` (5), `unbind`
+  (1), `handler` (34), `unwind` (17), `list` (157), `set_buffer` (3),
+  `goto` (1), `symbols_with_pos` (1), `variable` (93), `local` (92),
+  `bind` (157), `watch` (13), `default` (129), `undo` (17) and `forward`
+  (51) pass, and `buffer`'s 325, `get`'s 51 and `alias`'s 55 but one
+  each: the as-root `save_buffer_skips_unmodified_and_unchanged_files`
+  and `byte_compile_file_reports_an_unwritable_target_like_gnu`, this
+  container's known failures, and
+  `symbol_alias_redirects_preserve_handover_fields_and_reclaim_replaced_targets`,
+  round 35's intermittent one (`((1 1 3 3) ...)`), which passed alone
+  three times after. With the records' case: `aref` (7), `aset` (9),
+  `record` (98), `vector` (86), `struct` (63), `bytecode` (86, the two
+  new tests among them) and `anti_cheat` (24) pass, and the lightweight
+  group's 601; clippy `-D warnings` (all targets and features), rustfmt
+  and `git diff --check` pass. The lightweight group caught the first
+  draft's tests naming their Lisp symbols in the project-private
+  `emaxx--` namespace, which the anti-cheat gate forbids in any runtime
+  source; they are `vm-light-...` and `vm-record-slots` now.
+  Round 37's profile-guided build against round 36's, nine rotated rounds
+  (median ratio to GNU and range): undo 0.931 [0.762, 1.011] against
+  1.030 [0.843, 1.082], bytecode-to-native 0.866 [0.712, 1.129] against
+  0.883 [0.754, 1.188], bytecode calls 1.037 [0.893, 1.295] against 0.986
+  [0.873, 1.309]; bytecode calls again, 21 rounds, 0.883 against 0.850
+  and then 0.997 against 1.011, the same instructions in both builds
+  (`run_verified` 442.2 and 443.2 an iteration): the host's noise. The
+  contract's comparison of round 37's profile-guided build over all
+  sixteen: thirteen pass; over are bytecode calls 0.954 [0.873, 1.097],
+  bytecode-to-native 0.914 [0.740, 1.266] and undo 0.994 [0.907, 1.044],
+  the other thirteen at most 0.92 (interpreted ones 0.60 to 0.69,
+  native-execution 0.548, mapcar 0.920 [0.726, 0.972]).
+- **Where undo's cycles go now, and round 39: one Bcall arm for counts
+  three to seven.** With round 37 undo runs fewer instructions than GNU
+  and as much wall time. Cachegrind on the profile-guided build, a unit
+  (GNU's in parentheses): 1,068,944 instructions (1,259,024), 37,692
+  first-level instruction-cache misses (21,209), 9,482 data read misses
+  (7,484) and 3,174 write misses (1,400), 15,375 mispredicted conditional
+  branches (13,448) and 8,320 indirect ones (9,361). The instruction-cache
+  misses are the difference: the code a unit runs at least once a unit
+  spans 4,944 distinct 64-byte lines, 309 KB (GNU 3,142, 196 KB), against
+  a 32 KB first-level cache. The byte-code VM's functions miss about
+  8,100 times a unit (`run_verified` 5,263 over its 314 hot lines,
+  `op_in_place` 883, `run_entered` 655, `call_plain`, `bytecode_call`,
+  `run_loop`) against `exec_byte_code`'s 1,672 (143 hot lines) and `funcall_subr`'s
+  175; the evaluator's (`eval_native_form` 1,584,
+  `eval_sub` 1,254, `call_function_value` 1,084, `eval_cons_call` 851)
+  about 4,800 against GNU's `eval_sub`, `funcall_lambda`, `Flet` and
+  `apply_lambda`'s 1,300, and those functions are 28, 16, 23 and 15 KB of
+  code against GNU's 2.8 KB `eval_sub` and 1.3 KB `funcall_lambda`; the
+  primitives' dispatch functions (`buffer_edit`'s 153 hot lines,
+  `strings`' 140) come next. One part of that was the call op itself:
+  each of Bcall to Bcall7 had its own copy of the call's path, the count a
+  constant in it, eight copies making 25 KB of `run_verified`'s 47 KB in
+  the profile-guided build (Bcall6 6.4 KB, Bcall7 6.1 KB, Bcall and Bcall3
+  3.5 KB each), and undo calls with every count from none to six (151,
+  197, 93, 27, 18, 12 and 4 calls a unit). One arm for all eight counts,
+  as exec_byte_code's `dofuncall`, the count read at run time, halved the
+  function (46,317 to 23,098 bytes in the plain build) but cost 20 to 22
+  instructions a call (the count's selection, the arguments' copy by a
+  run-time length, the arity mask), bytecode calls 462.3 -> 484.3 an
+  iteration in `run_verified`. Bcall, Bcall1 and Bcall2 (441 of undo's
+  502 calls a unit, and the only counts the locked call workloads use)
+  keep their constant copies; Bcall3 to Bcall7 share one arm. The plain
+  build's `run_verified` is 32,826 bytes; instructions are unchanged
+  (bytecode calls 460.3, bytecode-to-native 348.3 an iteration in
+  `run_verified`, undo within its noise). Profile-guided, against round
+  37's build with line tables (two builds of one source differ by about
+  ten instructions an iteration here, the training's counts not being
+  identical): undo's instruction-cache misses 37,694 -> 36,943 a unit and
+  `run_verified`'s hot lines 314 -> 295, bytecode calls 454.2 -> 444.2
+  and bytecode-to-native 345.2 -> 340.2 an iteration. New test: GNU
+  30.2's byte code calling byte code (optional and rest arguments, an
+  arity error) and a subr with three to seven arguments, through Bcall3
+  to Bcall5 and Bcall6's operand, and a Bcall7 of 300 arguments, against
+  GNU's answers. A nine-round pilot of the three profile-guided builds
+  on a noisy hour of the host (single rounds 0.71 to 1.57 of GNU's time)
+  reads undo 1.094, 0.899 and 0.947 for rounds 36, 37 (with line tables)
+  and 39, bytecode calls 0.902, 0.964 and 0.848, bytecode-to-native 0.843,
+  1.004 and 0.985: within its noise, so the round stands on the counts
+  above. Validation (gate profile, `--test-threads=1`, 128 MiB stacks):
+  the tests naming `bytecode` (86), `byte_code` (11), `call` (229),
+  `funcall` (26), `arity` (16), `optional` (16), `rest` (67), `apply`
+  (10) and `anti_cheat` (24) pass, the three `verified_loop_` tests among
+  them, and `native`'s 406 but
+  `batch_startup_image_round_trip_or_explicit_native_image_limit`, this
+  container's known failure; the lightweight group's 601 pass; clippy
+  `-D warnings` (all targets and features), rustfmt and `git diff
+  --check` pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3846,8 +4013,14 @@ round 34, bullet "Round 34"). **On `0378010`** (a C variable's read from
 its cell, the overrides bound dynamically): full Rust gate passed (run
 39389072258), frozen passed on its first attempt (run 39389075289), the
 two print-tests overrides tests with it. **On `bdba9fa`** (round 35):
-full Rust gate run 39401137778 and frozen run 39401142276 dispatched;
-their results go in the next round's record. Locally,
+full Rust gate passed (run 39401137778), frozen passed on its first
+attempt (run 39401142276). **On `4a46555`** (round 36): full Rust gate
+passed (run 39402406056), frozen passed on its first attempt (run
+39402409500); PR #97 merged rounds 33 to 36 into main (`87e8d32`).
+**On `e6fb00c`** (round 37): full Rust gate passed (run 39420951276);
+frozen passed on its first attempt (run 39420955510). **On round 39's commit**: the full Rust
+gate and frozen runs are dispatched with it; their results go in the
+next round's record. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -4176,7 +4349,10 @@ and failures are still recorded.
    split": the same instructions as GNU, twice the distinct code, a cycle
    model that matches the wall). Shrinking the distinct code an
    iteration runs is the lever; arms that save instructions by adding
-   code to `run_verified` did not pay. Interpreted-dynamic (0.881) is
+   code to `run_verified` did not pay in the plain build's counts, but
+   judge them in the profile-guided build too, which places their spills
+   off the hot paths (round 37's cost bytecode calls 13 instructions an
+   iteration in the plain build and 1 in the profile-guided one). Interpreted-dynamic (0.881) is
    over on the host's noise alone. Earlier, undo's next step was its
    slow byte ops' way out of the verified loop:
    767 a unit through `op_in_place`
@@ -4202,7 +4378,13 @@ and failures are still recorded.
    "A nested native call's frame popped by its length"). Undo runs
    1,330,595 instructions a unit against GNU's 1,252,071, spread over the
    evaluator, the slow byte ops (767 a unit), the allocator and 73
-   entry-cache misses (closures made afresh).
+   entry-cache misses (closures made afresh). Round 37 runs undo's slow ops
+   that run no Lisp in the loop (bullet "Round 37"): 150 a unit leave it
+   now, and undo runs about 1,170,000 instructions a unit in the plain
+   build, below GNU's. What is left of its time is the instruction
+   cache: 309 KB of code run each unit against GNU's 196 KB, and 78% more
+   first-level misses (bullet "Where undo's cycles go now"), most of them
+   in the VM's and the evaluator's large functions.
    (Older wall figures, before these rounds: bytecode-to-native 1.54,
    undo 1.35, mapcar 1.29, cons allocation 1.22, interpreted-to-native
    1.19, bytecode calls 1.10, explicit-gc 1.09.) The profile helps the interpreter and
