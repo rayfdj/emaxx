@@ -3146,23 +3146,10 @@ define_dispatch!(
             }
             "prin1" => {
                 need_arg_range(name, args, 1, 3)?;
-                if matches!(args.get(2).map(|v| v.kind()), None | Some(Kind::Nil)) {
+                with_print_overrides(interp, env, args.get(2), |interp, env| {
                     let stream = printer_stream_value(interp, env, args.get(1));
                     print_object_to_stream(interp, &args[0], stream, env, true, false)
-                } else {
-                    let mut print_env = printer_env_with_overrides(env, args.get(2))?;
-                    let stream = printer_stream_value(interp, &print_env, args.get(1));
-                    let result = print_object_to_stream(
-                        interp,
-                        &args[0],
-                        stream,
-                        &mut print_env,
-                        true,
-                        false,
-                    );
-                    sync_print_number_table(env, args.get(2), &print_env);
-                    result
-                }
+                })
             }
             "princ" => {
                 if args.is_empty() {
@@ -3213,20 +3200,19 @@ define_dispatch!(
             }
             "prin1-to-string" => {
                 need_arg_range(name, args, 1, 3)?;
-                // NOESCAPE non-nil prints like `princ' (no quoting).
-                if args.get(1).is_some_and(|value| value.is_truthy()) {
-                    let rendered =
+                // NOESCAPE non-nil prints like `princ' (no quoting); the
+                // OVERRIDES are bound either way, as Fprin1_to_string binds
+                // them before printing.
+                let noescape = args.get(1).is_some_and(|value| value.is_truthy());
+                let rendered = with_print_overrides(interp, env, args.get(2), |interp, env| {
+                    if noescape {
                         with_printer_buffer_escape(interp, env, Some(true), |interp, env| {
                             render_printer_output(interp, &args[0], env, false, false)
-                        })?;
-                    return rendered.into_value(interp, env);
-                }
-                if matches!(args.get(2).map(|v| v.kind()), None | Some(Kind::Nil)) {
-                    return render_prin1_output(interp, &args[0], env)?.into_value(interp, env);
-                }
-                let mut print_env = printer_env_with_overrides(env, args.get(2))?;
-                let rendered = render_prin1_output(interp, &args[0], &mut print_env)?;
-                sync_print_number_table(env, args.get(2), &print_env);
+                        })
+                    } else {
+                        render_prin1_output(interp, &args[0], env)
+                    }
+                })?;
                 rendered.into_value(interp, env)
             }
             "write-char" => {

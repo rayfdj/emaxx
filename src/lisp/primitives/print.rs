@@ -8,17 +8,18 @@ use crate::lisp::types::LispErrorKind;
 pub(crate) fn render_prin1_string(
     interp: &Interpreter,
     state: &crate::lisp::types::SharedStringState,
-    env: &Env,
 ) -> PrintOutput {
-    let enabled = |name| {
+    // print.c reads its DEFVAR_BOOLs: the variables' dynamic values, no
+    // lexical binding of a special variable to search for.
+    let enabled = |key| {
         interp
-            .lookup_var(name, env)
+            .symbol_value_key(key)
             .is_some_and(|value| value.is_truthy())
     };
-    let escape_multibyte = enabled("print-escape-multibyte");
-    let escape_newlines = enabled("print-escape-newlines");
-    let escape_control = enabled("print-escape-control-characters");
-    let escape_nonascii = enabled("print-escape-nonascii");
+    let escape_multibyte = enabled(cached_symbol!("print-escape-multibyte"));
+    let escape_newlines = enabled(cached_symbol!("print-escape-newlines"));
+    let escape_control = enabled(cached_symbol!("print-escape-control-characters"));
+    let escape_nonascii = enabled(cached_symbol!("print-escape-nonascii"));
     let multibyte = state.is_multibyte();
     let mut rendered = PrintOutput::with_capacity(state.bytes().len() + 2);
     rendered.push('"');
@@ -159,7 +160,10 @@ pub(crate) struct PrintContext {
     counts: HashMap<PrintRefKey, usize>,
     labels: HashMap<PrintRefKey, PrintLabel>,
     next_label: usize,
-    active: HashMap<PrintRefKey, usize>,
+    /// print.c's `being_printed': the objects whose printing is under
+    /// way, outermost first, each with its print depth.  Nesting pushes
+    /// and pops it; a lookup scans it from the outermost, as print.c does.
+    active: Vec<(PrintRefKey, usize)>,
     number_table: Option<Value>,
     /// print.c's `new_backquote_output': the backquote nesting the comma
     /// shorthand `,X' is printed within; outside one, `(\, X)' is a list.
@@ -174,14 +178,9 @@ struct PrintLabel {
 }
 
 impl PrintContext {
-    fn new(
-        interp: &Interpreter,
-        value: &Value,
-        env: &Env,
-        options: PrintOptions,
-    ) -> Result<Self, LispError> {
+    fn new(interp: &Interpreter, value: &Value, options: PrintOptions) -> Result<Self, LispError> {
         let number_table = interp
-            .lookup_var_key(cached_symbol!("print-number-table"), env)
+            .symbol_value_key(cached_symbol!("print-number-table"))
             .filter(|value| json::is_hash_table(interp, value));
         let mut labels = if options.circle && options.continuous_numbering {
             parse_print_number_table(interp, number_table.as_ref(), options)
@@ -216,41 +215,43 @@ impl PrintContext {
             counts,
             labels,
             next_label,
-            active: HashMap::new(),
+            active: Vec::new(),
             number_table,
             backquote_output: 0,
         })
     }
 }
 
-pub(crate) fn print_options(interp: &Interpreter, env: &Env) -> PrintOptions {
+/// print.c reads the printer's DEFVARs as C variables: their dynamic
+/// values, never a lexical binding.
+pub(crate) fn print_options(interp: &Interpreter) -> PrintOptions {
     PrintOptions {
         escape: true,
         circle: interp
-            .lookup_var_key(cached_symbol!("print-circle"), env)
+            .symbol_value_key(cached_symbol!("print-circle"))
             .is_some_and(|value| value.is_truthy()),
         continuous_numbering: interp
-            .lookup_var_key(cached_symbol!("print-continuous-numbering"), env)
+            .symbol_value_key(cached_symbol!("print-continuous-numbering"))
             .is_some_and(|value| value.is_truthy()),
         gensym: interp
-            .lookup_var_key(cached_symbol!("print-gensym"), env)
+            .symbol_value_key(cached_symbol!("print-gensym"))
             .is_some_and(|value| value.is_truthy()),
         integers_as_characters: interp
-            .lookup_var_key(cached_symbol!("print-integers-as-characters"), env)
+            .symbol_value_key(cached_symbol!("print-integers-as-characters"))
             .is_some_and(|value| value.is_truthy()),
         symbols_bare: interp
-            .lookup_var_key(cached_symbol!("print-symbols-bare"), env)
+            .symbol_value_key(cached_symbol!("print-symbols-bare"))
             .is_some_and(|value| value.is_truthy()),
         length: interp
-            .lookup_var_key(cached_symbol!("print-length"), env)
+            .symbol_value_key(cached_symbol!("print-length"))
             .and_then(|value| value.integer_value())
             .and_then(|value| usize::try_from(value).ok()),
         level: interp
-            .lookup_var_key(cached_symbol!("print-level"), env)
+            .symbol_value_key(cached_symbol!("print-level"))
             .and_then(|value| value.integer_value())
             .and_then(|value| usize::try_from(value).ok()),
         quoted: interp
-            .lookup_var_key(cached_symbol!("print-quoted"), env)
+            .symbol_value_key(cached_symbol!("print-quoted"))
             .is_some_and(|value| value.is_truthy()),
         output_is_function: false,
     }
@@ -355,39 +356,6 @@ fn parse_print_number_table(
     }
 
     labels
-}
-
-/// A binding of NAME in a private printing environment: assigned in
-/// place when bound there, consed onto the environment otherwise.
-pub(crate) fn set_env_binding(env: &mut Env, name: &str, value: Value) {
-    if let Some(environment) = crate::lisp::types::current_environment(env)
-        && let Ok(Some(binding)) = crate::lisp::types::assq_binding_named(environment, name)
-    {
-        binding.cdr.set(value);
-        return;
-    }
-    Interpreter::push_bindings(env, vec![(name.into(), value)]);
-}
-
-pub(crate) fn sync_print_number_table(
-    target_env: &mut Env,
-    overrides: Option<&Value>,
-    source_env: &Env,
-) {
-    if !matches!(overrides.map(|v| v.kind()), None | Some(Kind::Nil)) {
-        return;
-    }
-    let Some(value) = crate::lisp::types::current_environment(source_env)
-        .and_then(|environment| {
-            crate::lisp::types::assq_binding_named(environment, "print-number-table")
-                .ok()
-                .flatten()
-        })
-        .map(|binding| binding.cdr.get())
-    else {
-        return;
-    };
-    set_env_binding(target_env, "print-number-table", value);
 }
 
 pub(crate) fn collect_print_counts(
@@ -525,7 +493,7 @@ pub(crate) fn print_preprocess(
     // primitive.
     interp.set_variable("print-number-table", table, env);
 
-    let options = print_options(interp, env);
+    let options = print_options(interp);
     let mut entries = json::hash_table_entries(interp, &table)
         .map(|(_, entries)| entries)
         .unwrap_or_default();
@@ -709,9 +677,9 @@ pub(crate) fn render_prin1_with_context(
                     return Ok(format!("#{number}#").into());
                 }
                 label.printed = true;
-                context.active.insert(key.clone(), depth);
+                context.active.push((key, depth));
                 let rendered = render_prin1_body(interp, value, env, context, depth);
-                context.active.remove(&key);
+                context.active.pop();
                 return rendered.map(|body| body.enclosed(&format!("#{number}="), ""));
             }
             let number = context.next_label;
@@ -724,12 +692,12 @@ pub(crate) fn render_prin1_with_context(
                     object: *value,
                 },
             );
-            context.active.insert(key.clone(), depth);
+            context.active.push((key, depth));
             let rendered = render_prin1_body(interp, value, env, context, depth);
-            context.active.remove(&key);
+            context.active.pop();
             return rendered.map(|body| body.enclosed(&format!("#{number}="), ""));
         }
-        if let Some(outer_depth) = context.active.get(&key).copied() {
+        if let Some(&(_, outer_depth)) = context.active.iter().find(|(active, _)| *active == key) {
             return Ok(print_ref_placeholder(outer_depth).into());
         }
         // print.c:2249: printing without `print-circle' gives up past
@@ -741,9 +709,9 @@ pub(crate) fn render_prin1_with_context(
                 "Apparently circular structure being printed".into(),
             ));
         }
-        context.active.insert(key.clone(), depth);
+        context.active.push((key, depth));
         let rendered = render_prin1_body(interp, value, env, context, depth);
-        context.active.remove(&key);
+        context.active.pop();
         return rendered;
     }
 
@@ -1159,7 +1127,7 @@ pub(crate) fn render_prin1_body(
         Kind::StringObject(state) => {
             let (literal, props, keep_charset) = {
                 let state = state.borrow();
-                let literal = render_prin1_string(interp, &state, env);
+                let literal = render_prin1_string(interp, &state);
                 let props = state.props.to_vec();
                 let keep_charset = props
                     .iter()
@@ -1508,14 +1476,15 @@ pub(crate) fn finish_print_number_table(
 fn prepare_print_numbering(interp: &mut Interpreter, env: &mut Env, options: PrintOptions) {
     // print.c resets both pieces of state unless continuous numbering has a
     // live public table.  A nil table therefore starts numbering over even
-    // when `print-continuous-numbering' itself is non-nil.
-    if !options.continuous_numbering
-        || interp
-            .lookup_var_key(cached_symbol!("print-number-table"), env)
-            .is_none_or(|value| value.is_nil())
-    {
+    // when `print-continuous-numbering' itself is non-nil.  The reset is a
+    // store into the C variable, which runs no watcher: a table already
+    // nil is left as it is.
+    let table = interp.symbol_value_key(cached_symbol!("print-number-table"));
+    if !options.continuous_numbering || table.is_none_or(|value| value.is_nil()) {
         interp.print_number_index = 0;
-        interp.set_variable("print-number-table", Value::Nil, env);
+        if table.is_none_or(|value| !value.is_nil()) {
+            interp.set_variable("print-number-table", Value::Nil, env);
+        }
     }
 }
 
@@ -1550,18 +1519,20 @@ pub(crate) fn with_printer_buffer_escape<T>(
     let Some(multibyte) = multibyte else {
         return body(interp, env);
     };
-    let name = if multibyte {
-        "print-escape-nonascii"
+    // `! print_escape_nonascii': the C variable, by the symbol interned
+    // once, not its name.
+    let key = if multibyte {
+        cached_symbol!("print-escape-nonascii")
     } else {
-        "print-escape-multibyte"
+        cached_symbol!("print-escape-multibyte")
     };
     if interp
-        .lookup_var(name, env)
+        .symbol_value_key(key)
         .is_some_and(|value| value.is_truthy())
     {
         return body(interp, env);
     }
-    let restore = interp.bind_special_dynamic(name, Value::T, env)?;
+    let restore = key.with(|symbol| interp.bind_special_symbol(symbol, Value::T, env))?;
     let result = body(interp, env);
     let restored = interp.restore_special_dynamic(restore, env);
     restored.and(result)
@@ -1585,11 +1556,11 @@ pub(crate) fn render_printer_output(
     escape: bool,
     output_is_function: bool,
 ) -> Result<PrintOutput, LispError> {
-    let mut options = print_options(interp, env);
+    let mut options = print_options(interp);
     options.escape = escape;
     options.output_is_function = output_is_function;
     prepare_print_numbering(interp, env, options);
-    let mut context = PrintContext::new(interp, value, env, options)?;
+    let mut context = PrintContext::new(interp, value, options)?;
     let rendered = render_prin1_with_context(interp, value, env, &mut context, 0)?;
     finish_print_number_table(interp, env, &context)?;
     Ok(rendered)

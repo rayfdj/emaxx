@@ -2033,15 +2033,18 @@ impl Interpreter {
     }
 
     /// data.c:set_internal's SYMBOL_PLAINVAL store for a symbol known to be
-    /// plain: the value into the cell, nothing else read or notified.
-    /// False when the symbol is not known plain or is void (the full path
-    /// creates the binding and learns).
+    /// plain, or its SYMBOL_FORWARDED store into a C variable whose cell
+    /// holds its value (`plain_c_slot_value'): the value (as the slot stores
+    /// it) into the cell, nothing else read or notified.  False when the
+    /// symbol is neither or is void (the full path creates the binding and
+    /// learns).
     #[inline]
     pub(crate) fn assign_plain_global(&mut self, symbol: &SymbolName, value: Value) -> bool {
-        if !self.globals.plain_store(symbol) {
-            return false;
+        if self.globals.plain_store(symbol) {
+            return self.globals.replace_bound_value(symbol, value);
         }
-        self.globals.replace_bound_value(symbol, value)
+        self.plain_c_slot_value(symbol, value)
+            .is_some_and(|stored| self.globals.replace_bound_value(symbol, stored))
     }
 
     /// eval.c's SPECPDL_INDEX: the depth of the binding stack, for
@@ -2139,6 +2142,25 @@ impl Interpreter {
             .expect("the record just pushed"))
     }
 
+    /// The value a `let' or `set' of SYMBOL stores, when SYMBOL is a C
+    /// variable whose cell holds its value (`SymbolCell::is_plain_c_slot'),
+    /// its store converting nothing but a DEFVAR_BOOL's to t or nil, and no
+    /// C variable is detached from its slot; None for any other symbol.
+    #[inline(always)]
+    fn plain_c_slot_value(&self, symbol: &SymbolName, value: Value) -> Option<Value> {
+        let cell = symbol.cell();
+        if !cell.is_plain_c_slot() || !self.detached_forwarded_variables.is_empty() {
+            return None;
+        }
+        Some(if cell.flags.get() & FWD_BOOL == 0 {
+            value
+        } else if value.is_nil() {
+            Value::Nil
+        } else {
+            Value::T
+        })
+    }
+
     /// eval.c:specbind for the symbol in hand: the alias chain, the
     /// forwarding flags, the buffer-local cell and the global cell are
     /// read and written by id; the record, holding the symbol, is pushed
@@ -2149,8 +2171,15 @@ impl Interpreter {
         value: Value,
         env: &mut Env,
     ) -> Result<u64, LispError> {
-        // SPECPDL_LET on a plain symbol: save the cell, store the value.
-        if self.globals.plain_store(symbol) {
+        // SPECPDL_LET on a plain symbol, or on a C variable whose cell
+        // holds its value (the value as its slot stores it): save the cell,
+        // store the value.
+        let plain = if self.globals.plain_store(symbol) {
+            Some(value)
+        } else {
+            self.plain_c_slot_value(symbol, value)
+        };
+        if let Some(value) = plain {
             let binding_id = self.next_special_binding_id;
             self.next_special_binding_id += 1;
             let previous = self.globals.value(symbol);
@@ -2440,10 +2469,13 @@ impl Interpreter {
     ) -> Result<(), LispError> {
         // The unbind of a plain symbol's SPECPDL_LET: the saved value back
         // into the cell (a watcher added since cleared the bit).
+        // A plain C variable's restore is the same store: its saved value
+        // is one its slot holds, and it has no watcher to hear `unlet'.
         if restore.scope == SpecialBindingScope::Global
             && restore.previous_undo_state.is_none()
             && restore.keyboard_terminal_id.is_none()
-            && self.globals.plain_store(&restore.name)
+            && (self.globals.plain_store(&restore.name)
+                || (restore.previous.is_some() && restore.name.cell().is_plain_c_slot()))
         {
             match restore.previous {
                 Some(value) => {

@@ -1211,80 +1211,142 @@ pub(crate) fn printer_stream_value(
     }
 }
 
-pub(crate) fn printer_env_with_overrides(
-    env: &Env,
+/// print.c:print_bind_overrides around BODY: each of OVERRIDES' settings
+/// `specbind's its print variable, and the bindings are undone when BODY
+/// returns (`unbind_to'), so the printer and any Lisp it runs read them
+/// as the variables' dynamic values.
+pub(crate) fn with_print_overrides<T>(
+    interp: &mut Interpreter,
+    env: &mut Env,
     overrides: Option<&Value>,
-) -> Result<Env, LispError> {
-    let Some(overrides) = overrides else {
-        return Ok(env.clone());
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
+) -> Result<T, LispError> {
+    let Some(overrides) = overrides.filter(|overrides| !overrides.is_nil()) else {
+        return body(interp, env);
     };
-    if overrides.is_nil() {
-        return Ok(env.clone());
+    let bindings = print_override_bindings(overrides)?;
+    let mut restores = Vec::with_capacity(bindings.len());
+    let mut bound = Ok(());
+    for (variable, value) in bindings {
+        match interp.bind_special_dynamic(variable, value, env) {
+            Ok(restore) => restores.push(restore),
+            Err(error) => {
+                bound = Err(error);
+                break;
+            }
+        }
     }
+    let result = bound.and_then(|()| body(interp, env));
+    let mut restored = Ok(());
+    for restore in restores.into_iter().rev() {
+        let outcome = interp.restore_special_dynamic(restore, env);
+        if restored.is_ok() {
+            restored = outcome;
+        }
+    }
+    restored.and(result)
+}
 
-    let mut adjusted = env.clone();
+/// print.c's `print--variable-mapping' (`print_create_variable_mapping'):
+/// each OVERRIDES key, the variable it binds and the default a `t' setting
+/// binds it to (`print-quoted' t, the others nil).  GNU spells the
+/// `print-unreadable-function' key `unreadeable-function'.
+const PRINT_VARIABLE_MAPPING: [(&str, &str, bool); 15] = [
+    ("length", "print-length", false),
+    ("level", "print-level", false),
+    ("circle", "print-circle", false),
+    ("quoted", "print-quoted", true),
+    ("escape-newlines", "print-escape-newlines", false),
+    (
+        "escape-control-characters",
+        "print-escape-control-characters",
+        false,
+    ),
+    ("escape-nonascii", "print-escape-nonascii", false),
+    ("escape-multibyte", "print-escape-multibyte", false),
+    (
+        "charset-text-property",
+        "print-charset-text-property",
+        false,
+    ),
+    ("unreadeable-function", "print-unreadable-function", false),
+    ("gensym", "print-gensym", false),
+    ("continuous-numbering", "print-continuous-numbering", false),
+    ("number-table", "print-number-table", false),
+    ("float-format", "float-output-format", false),
+    (
+        "integers-as-characters",
+        "print-integers-as-characters",
+        false,
+    ),
+];
+
+/// print.c:print_bind_overrides' walk of OVERRIDES, as the variables it
+/// binds and their values, in order: `t' (alone or as a setting) binds
+/// every variable to its default (`print_bind_all_defaults'), a setting
+/// (KEY . VALUE) binds KEY's variable to VALUE.  A non-list or a setting
+/// that is no cons signals `(wrong-type-argument . consp)', an unknown key
+/// `(wrong-type-argument symbolp nil)' (the failed lookup's nil).
+fn print_override_bindings(overrides: &Value) -> Result<Vec<(&'static str, Value)>, LispError> {
+    fn bind_all_defaults(bindings: &mut Vec<(&'static str, Value)>) {
+        bindings.extend(
+            PRINT_VARIABLE_MAPPING
+                .iter()
+                .map(|&(_, variable, default)| {
+                    (variable, if default { Value::T } else { Value::Nil })
+                }),
+        );
+    }
+    let not_consp = || {
+        LispError::SignalValue(Value::cons(
+            Value::Symbol("wrong-type-argument".into()),
+            Value::Symbol("consp".into()),
+        ))
+    };
     let mut bindings = Vec::new();
-
-    match overrides.kind() {
-        Kind::T => {
-            bindings.push(("print-length".into(), Value::Nil));
-            bindings.push(("print-level".into(), Value::Nil));
-        }
-        Kind::Cons(_) => {
-            let items = overrides
-                .to_vec()
-                .map_err(|_| LispError::Signal("invalid print overrides".into()))?;
-            let mut start = 0usize;
-            if matches!(items.first().map(|v| v.kind()), Some(Kind::T)) {
-                bindings.push(("print-length".into(), Value::Nil));
-                bindings.push(("print-level".into(), Value::Nil));
-                start = 1;
-            }
-            for item in &items[start..] {
-                let (name, value) = if let Ok(spec) = item.to_vec() {
-                    let kinds = spec.iter().map(|v| v.kind()).collect::<Vec<_>>();
-                    let [Kind::Symbol(name), value] = kinds.as_slice() else {
-                        return Err(LispError::Signal("invalid print overrides".into()));
-                    };
-                    (*name, value.value())
-                } else if let Some((car, cdr)) = item.cons_values() {
-                    let Kind::Symbol(name) = car.kind() else {
-                        return Err(LispError::Signal("invalid print overrides".into()));
-                    };
-                    if matches!(cdr.kind(), Kind::Nil | Kind::Cons(_)) {
-                        return Err(LispError::Signal("invalid print overrides".into()));
-                    }
-                    (name, cdr)
-                } else {
-                    return Err(LispError::Signal("invalid print overrides".into()));
-                };
-                // GNU print.c's full OVERRIDES key set (print_bind_overrides).
-                let variable = match name.as_str() {
-                    "length" => "print-length",
-                    "level" => "print-level",
-                    "circle" => "print-circle",
-                    "quoted" => "print-quoted",
-                    "escape-newlines" => "print-escape-newlines",
-                    "escape-control-characters" => "print-escape-control-characters",
-                    "escape-nonascii" => "print-escape-nonascii",
-                    "escape-multibyte" => "print-escape-multibyte",
-                    "charset-text-property" => "print-charset-text-property",
-                    "unreadable-function" => "print-unreadable-function",
-                    "gensym" => "print-gensym",
-                    "continuous-numbering" => "print-continuous-numbering",
-                    "number-table" => "print-number-table",
-                    "float-format" => "float-output-format",
-                    "integers-as-characters" => "print-integers-as-characters",
-                    _ => return Err(LispError::Signal("invalid print overrides".into())),
-                };
-                bindings.push((variable.into(), value));
-            }
-        }
-        _ => return Err(LispError::Signal("invalid print overrides".into())),
+    if matches!(overrides.kind(), Kind::T) {
+        bind_all_defaults(&mut bindings);
+        return Ok(bindings);
     }
-
-    Interpreter::push_bindings(&mut adjusted, bindings);
-    Ok(adjusted)
+    let Some(mut cell) = overrides.cons_ref() else {
+        return Err(not_consp());
+    };
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    loop {
+        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::Symbol("circular-list".into()),
+                *overrides,
+            ])));
+        }
+        let setting = cell.car.get();
+        if matches!(setting.kind(), Kind::T) {
+            bind_all_defaults(&mut bindings);
+        } else {
+            let Some((key, value)) = setting.cons_values() else {
+                return Err(not_consp());
+            };
+            let variable = match key.kind() {
+                Kind::Symbol(key) => PRINT_VARIABLE_MAPPING
+                    .iter()
+                    .find(|(name, _, _)| key == *name)
+                    .map(|&(_, variable, _)| variable),
+                _ => None,
+            };
+            let Some(variable) = variable else {
+                return Err(LispError::WrongTypeArgument("symbolp".into(), Value::Nil));
+            };
+            bindings.push((variable, value));
+        }
+        let next = cell.cdr.get();
+        if next.is_nil() {
+            return Ok(bindings);
+        }
+        let Some(next) = next.cons_ref() else {
+            return Err(not_consp());
+        };
+        cell = next;
+    }
 }
 
 pub(crate) fn printer_stream_at_line_start(

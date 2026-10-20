@@ -435,12 +435,17 @@ fn emit_unhandled_batch_error(
         _ => prin1(interpreter, &mut render_env, &condition),
     };
     eprintln!("\nError: {rendered_condition}");
+    // Dynamic bindings, as debug-early-backtrace's `let' of these special
+    // variables makes them: the printer reads them as C reads its DEFVARs.
+    let mut restores = Vec::new();
     for name in [
         "print-escape-newlines",
         "print-escape-control-characters",
         "print-escape-nonascii",
     ] {
-        lisp::primitives::print::set_env_binding(&mut render_env, name, Value::T);
+        if let Ok(restore) = interpreter.bind_special_dynamic(name, Value::T, &mut render_env) {
+            restores.push(restore);
+        }
     }
     for (evald, function, args, _) in backtrace.frames {
         let function = prin1(interpreter, &mut render_env, &function);
@@ -465,6 +470,9 @@ fn emit_unhandled_batch_error(
         eprintln!("  {function}({args})");
     }
     eprintln!("  normal-top-level()");
+    for restore in restores.into_iter().rev() {
+        let _ = interpreter.restore_special_dynamic(restore, &mut render_env);
+    }
 }
 
 /// In the test build every interpreter these constructors hand out is an

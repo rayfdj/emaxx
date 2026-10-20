@@ -28279,6 +28279,33 @@ fn buffers_named_with_a_space_keep_no_undo_until_enabled_like_gnu() {
 }
 
 #[test]
+fn print_overrides_bind_the_print_variables_like_gnu() {
+    // print.c:print_bind_overrides `specbind's each setting's variable
+    // (`print--variable-mapping', whose key for `print-unreadable-function'
+    // is spelled `unreadeable-function') to the setting's cdr, `t' binds
+    // every one to its default, and Fprin1_to_string binds them with
+    // NOESCAPE too; a non-list or a setting that is no cons signals
+    // (wrong-type-argument . consp), an unknown key (wrong-type-argument
+    // symbolp nil).  The printer reads the bindings as C variables.
+    let program = r#"(list (prin1-to-string '(1 2 3 4) nil '((length . 2)))
+      (prin1-to-string '(1 2 3) t '((length . 1)))
+      (prin1-to-string "a\nb" nil '((escape-newlines . t)))
+      (prin1-to-string '(a (b (c))) nil '((level . 1)))
+      (let ((print-length 1)) (prin1-to-string '(1 2 3) nil t))
+      (let ((s nil)) (prin1 '(a b c) (lambda (c) (push c s)) '((length . 1))) (concat (nreverse s)))
+      (let ((print-length 1)) (prin1-to-string '(x y) nil '((length . 5))))
+      (prin1-to-string '(1 2 3) nil '((length 2)))
+      (list print-length print-level print-escape-newlines)
+      (mapcar (lambda (o) (condition-case e (prin1-to-string 1 nil o) (error e)))
+              '(((no-such . 1)) (5) 5 ((length . 1) . 5) ((t . 1)) ((unreadable-function . 1)))))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"("(1 2 ...)" "(1 ...)" "\"a\\nb\"" "(a ...)" "(1 2 3)" "(a ...)" "(x y)" "(1 2 3)" (nil nil nil) ((wrong-type-argument symbolp nil) (wrong-type-argument . consp) (wrong-type-argument . consp) (wrong-type-argument . consp) (wrong-type-argument symbolp nil) (wrong-type-argument symbolp nil)))"#,
+        "print overrides",
+    );
+}
+
+#[test]
 fn byte_code_predicates_memq_and_full_arms_run_in_the_loop_like_gnu() {
     // The verified byte-code loop runs Bsymbolp, Bstringp, Blistp,
     // Bnumberp, Bintegerp, Bmemq, Bsetcar and Bsetcdr itself; an operand it

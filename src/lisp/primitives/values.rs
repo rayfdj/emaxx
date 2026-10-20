@@ -4561,8 +4561,9 @@ pub(crate) fn effective_text_quoting_style(interp: &Interpreter, env: &Env) -> &
         // treated as `curve'").  Routing unmatched values through the flag
         // made a bogus style answer grave in a non-UTF-8 locale.
         Some(Kind::Nil) | None => {
+            // The two C variables, by the symbols interned once.
             let utf8 = interp
-                .lookup_var("internal--text-quoting-flag", env)
+                .symbol_value_key(cached_symbol!("internal--text-quoting-flag"))
                 .map_or_else(locale_uses_utf8, |flag| flag.is_truthy());
             if !utf8 {
                 return "grave";
@@ -4572,7 +4573,7 @@ pub(crate) fn effective_text_quoting_style(interp: &Interpreter, env: &Env) -> &
             // one-element vector [?`] means grave even in a UTF-8 locale.
             // It is a plain variable read, observable in batch.
             if let Some(Kind::CharTable(id)) = interp
-                .lookup_var("standard-display-table", env)
+                .symbol_value_key(cached_symbol!("standard-display-table"))
                 .map(|v| v.kind())
                 && id.has_purpose("display-table")
                 && let Some(entry) = interp.char_table_get(id, 0x2018)

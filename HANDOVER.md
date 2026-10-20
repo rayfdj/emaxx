@@ -3072,6 +3072,219 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   `print_prunes_charset_properties_like_print_prune_string_charset` (in
   `propert`), this container's two known failures; the lightweight
   group's 598 pass; clippy `-D warnings` and rustfmt pass.
+- **Round 33: the printer's setup as print.c's.** `format`'s `%S`
+  conversion (twice a unit in undo) cost 7,229 instructions a call
+  before the object was printed, most of it setup: the nine
+  `print_options` variables, the four string-escape flags and the
+  escape binding of `print_prepare` were read through the evaluator's
+  environment, three of them by name (`lookup_var`, interning each);
+  `print` stored nil into `print-number-table` through `set_variable`
+  by name (1,050 instructions) when it was nil already; and the
+  objects being printed were kept in a SipHash map, inserted and
+  removed around every list (780 a call). print.c reads these as C
+  variables and stores the table's nil directly, which runs no
+  watcher, and its `being_printed' is an array scanned from the
+  outermost. Now the flags and options are read as `symbol_value_key`
+  reads by the symbols interned once (all of them special in both
+  editors, so no lexical binding can shadow them), the nil store is
+  made only when the table is not nil, and the objects being printed
+  are a stack. `effective_text_quoting_style` reads
+  `internal--text-quoting-flag` and `standard-display-table` the same
+  way. Undo a unit: the `%S` path 14,458 -> 10,243 instructions, the
+  quoting style 1,773 -> 1,392, about 4,600 fewer; the total 1,294,897
+  against round 32's 1,296,530, inside the run-to-run variation.
+  bytecode-to-native's steady state is unchanged (`run_verified` 393
+  and the callee 10 an iteration in both rounds; the per-unit totals,
+  401.5 to 415.8 over four runs, differ in one-time costs).
+  Round 32's profile-guided build, the contract's comparison over all
+  sixteen twice (median ratio to GNU and interval): bytecode calls
+  1.019 [0.995, 1.105] and 1.004 [0.943, 1.051], bytecode-to-native
+  0.983 [0.935, 1.063] and 1.030 [1.009, 1.050], undo 0.961 [0.910,
+  1.053] and 0.978 [0.897, 1.056], cons allocation 0.871 [0.816, 0.993]
+  and 0.876 [0.786, 1.054]; the other twelve pass both times, at most
+  0.90 (mapcar 0.898, 0.893). Undo's median is below round 28's 1.034.
+  Validation (gate profile, `--test-threads=1`, 128 MiB stacks):
+  the tests naming `print` (41),
+  `prin1` (16), `format` (33), `quot` (70), `escape` (30), `circle` (5),
+  `numbering` (2), `preprocess` (5) and `string` (241) pass but
+  `print_prunes_charset_properties_like_print_prune_string_charset` (in
+  `print` and `string`), this container's known failure; the
+  lightweight group's 598 pass; clippy `-D warnings` and rustfmt pass.
+- **Round 34: a C variable's read answered from its cell.** Undo reads
+  variables as C reads them (`symbol_value_key`, `lookup_var_symbol`'s
+  global half, `symbol_value_cell_symbol`) 453 times a unit, all through
+  `find_symbol_value_resolved` at 48 instructions a call: its prologue
+  saved six registers, then the C-slot test, the names
+  `text-conversion-style` and `buffer-undo-list` compared, the localized
+  flag and the KBOARD test, before the cell's value. 427 of the 453 are of
+  C variables, 312 of them neither localized nor one of those two, so
+  their value is the cell's, as GNU's `find_symbol_value` finds it under
+  SYMBOL_FORWARDED to an object slot. `find_symbol_value_resolved` now
+  answers from the cell inline when the symbol is no alias, not
+  localized, no counter or KBOARD variable and its name is not 16 or 21
+  characters long (the two names' lengths), and calls the full redirect
+  switch (`find_symbol_value_redirected`, out of line) otherwise: 251 of
+  `symbol_value_symbol`'s 300 calls a unit end there. Undo 1,294,897 ->
+  1,281,123 instructions a unit (the reads and their callers about 8,700
+  fewer, `memcmp` 2,000), bytecode calls 447.3 -> 443.1;
+  bytecode-to-native (405.6), native-to-bytecode (4,017.2 -> 4,015.0) and
+  interpreted-to-native (steady state 2,474 an iteration in both builds)
+  do not move.
+  Round 33's frozen run failed on it: `test-prin1-overrides` and
+  `test-prin1-to-string-overrides` (print-tests.el) failed in Emaxx,
+  because `prin1`'s and `prin1-to-string`'s OVERRIDES were bound in a
+  copy of the evaluator's environment, which the printer's C-style reads
+  no longer see. print.c:print_bind_overrides `specbind's them; now
+  `with_print_overrides` binds each setting's variable dynamically for
+  the print and undoes the bindings after it, as `unbind_to` does, and
+  the walk follows GNU's: `print--variable-mapping`'s keys (GNU spells
+  the `print-unreadable-function` key `unreadeable-function`), the value
+  a setting's cdr (`(length 2)` binds `print-length` to `(2)`), `t`
+  binding all fifteen variables to their defaults (`print-quoted` t, the
+  rest nil; Emaxx had reset only the length and level), and GNU's errors
+  (`(wrong-type-argument . consp)` for a non-list or a setting that is no
+  cons, `(wrong-type-argument symbolp nil)` for an unknown key, where
+  Emaxx signalled "invalid print overrides"). `prin1-to-string` binds
+  them with NOESCAPE too, as Fprin1_to_string does (Emaxx ignored them
+  there: `(prin1-to-string '(1 2 3) t '((length . 1)))` gave `"(1 2 3)"`
+  where GNU's is `"(1 ...)"`). The batch error backtrace's three escape
+  variables (debug-early-backtrace's `let`) are dynamic bindings now for
+  the same reason. GNU's print-tests.el passes 46 of 46 in Emaxx, as do
+  cl-print-tests, pp-tests, backtrace-tests, ert-tests and fns-tests as
+  in GNU. New oracle test: the overrides, their errors and NOESCAPE.
+  Validation (gate profile, `--test-threads=1`, 128 MiB stacks):
+  the tests naming `variable` (92),
+  `local` (92), `special` (54), `bind` (156), `alias` (55), `forward` (51),
+  `default` (129), `unbound` (9), `boundp` (4), `symbol_value` (5),
+  `keyboard` (26), `kboard` (1), `terminal` (26), `conversion` (21), `undo`
+  (17) and `watch` (13) pass on the reads' change; with the overrides',
+  `print_overrides` (1), `print` (42), `prin1` (16), `format` (33),
+  `escape` (30), `backtrace` (16), `batch` (105) and `unhandled` (1) pass
+  but `print_prunes_charset_properties_like_print_prune_string_charset`
+  and `batch_startup_image_round_trip_or_explicit_native_image_limit`,
+  this container's known failures; the lightweight group's 598 pass both
+  times; clippy `-D warnings` and rustfmt pass.
+
+- **Round 35: a key's symbol without the table's borrow, and a C
+  variable's `let`, `set` and byte-code read from its cell.**
+  `SymbolKey::with` (every `cached_symbol!` use) borrowed the thread's
+  `ACTIVE` table (`RefCell<Option<Rc<Symbols>>>`: the borrow count, the
+  Option, the Rc) to read one key slot, 24 instructions a call standalone
+  and as much again inlined into `symbol_value_key` and `lookup_var_key`.
+  A thread-local pointer to the selected table's key slots
+  (`ACTIVE_KEYS`) is now stored with `ACTIVE` at each of its four stores
+  and cleared by a table's Drop, so a non-null pointer always names a
+  live table; a key already resolved is read through it, the borrow kept
+  for the first resolution and the host table. `symbol_value_symbol` is
+  inline with round 34's fast path in front of the alias check
+  (`unlocalized_value` excludes an alias) and its rest out of line
+  (`symbol_value_redirected`, 49 of its 300 calls a unit).
+  Round 34's test of the two names whose value the buffer holds by their
+  lengths (16 and 21 characters) is a cell bit now, `BUFFER_SLOT`, set
+  with `C_SLOT` on `buffer-undo-list` and `text-conversion-style` (as
+  `KBOARD_FORWARD` and `STORE_EFFECT` are on theirs), and a second bit,
+  `STORE_CONVERTS`, marks the three C variables whose store converts the
+  value beyond its slot kind's conversion (`display-hourglass`,
+  `scroll-up-aggressively`, `vertical-scroll-bar`). With them
+  `SymbolCell::is_plain_c_slot` names a C variable whose value is its
+  cell's and whose store changes nothing else: eval.c:specbind's
+  SYMBOL_FORWARDED let of it is SPECPDL_LET, a store into the slot and
+  its restore, which `specbind_symbol_record`, `apply_special_restore` and
+  `assign_plain_global` now take as they take a plain symbol's (a
+  DEFVAR_BOOL's value stored as t or nil, and none of it while a C
+  variable is detached from its slot). Undo's 120 `let`s a unit of them
+  went the full specbind (`set_global_binding_resolved`, the forwarded
+  checks and the restore record by name). Bvarref answers from
+  `unlocalized_value` too, a C variable whose cell holds its value
+  included, where it answered a plain symbol's alone.
+  Undo a unit: `symbol_value_key` 6,380 and `symbol_value_symbol` 8,352
+  -> 5,675 and 1,073, `SymbolKey::with` 3,480 -> 1,885, `lookup_var_key`
+  2,376 -> 1,518, `specbind_symbol_record` 11,318 -> 8,279,
+  `apply_special_restore` 6,202 -> 5,610, the slow byte ops 622 -> 600
+  calls; the total 1,281,123 -> 1,269,473. Bytecode calls 443.1 ->
+  434.3 and bytecode-to-native 405.6 -> 402.1 an iteration, both from
+  `run_verified`'s register allocation (neither reads a C variable in its
+  loop); native-to-bytecode 4,015.0 -> 4,017.7.
+  Round 34's profile-guided build against round 32's, ten rotated rounds
+  (median ratio to GNU and range): undo 0.893 [0.809, 1.063] against
+  0.979 [0.818, 1.079], bytecode calls 0.978 [0.851, 1.406] against 0.987
+  [0.889, 1.142], bytecode-to-native 0.982 [0.820, 1.132] against 1.001
+  [0.858, 1.112]. The contract's comparison of it over all sixteen, on a
+  noisier hour of the host (single rounds 0.78 to 1.40 for
+  bytecode-to-native): thirteen pass, bytecode calls 1.024 [0.895,
+  1.097], bytecode-to-native 1.019 [0.905, 1.334] and undo 1.005 [0.803,
+  1.038] over.
+  Validation (gate profile, `--test-threads=1`, 128 MiB stacks):
+  the tests naming `symbol` (193), `intern` (78), `obarray` (21), `editor`
+  (6), `scope` (14), `thread` (17), `nested` (55), `variable` (93),
+  `special` (54), `alias` (55), `forward` (51), `local` (92), `default`
+  (129), `bind` (157), `unbound` (9), `boundp` (4), `keyboard` (26),
+  `terminal` (26), `conversion` (21), `watch` (13), `undo` (17),
+  `constant` (18), `bool` (10), `print_overrides` (1), `byte_code` (11)
+  and `bytecode` (84) pass, and `image`'s 41 but
+  `batch_startup_image_round_trip_or_explicit_native_image_limit`, this
+  container's known failure; the lightweight group's 598 pass; clippy
+  `-D warnings` and rustfmt pass. One run of the `symbol` group failed
+  `symbol_alias_redirects_preserve_handover_fields_and_reclaim_replaced_targets`
+  (two collections left one of three replaced values and one of three
+  old alias targets in their weak tables, `((1 1 3 3) ...)` against
+  `((0 0 3 3) ...)`); the same binary passed the group's 193 on the next
+  run and the test alone, and round 34's passed it once: a conservative
+  root that comes and goes between runs, as the test's own note on the
+  stack's old argument slots allows for its last check but not for this
+  one.
+
+- **Round 36: a native call's record in its caller's frame, its depths
+  taken at its first pushes.** Every call into generated code from Rust
+  pushed a `NativeCallFrame` of seven fields on the runtime's `calls`
+  vector (the handler, unwind and root stacks' depths, Ffuncall's depth,
+  the backtrace depth, the pending error, the escape buffer), reconciled
+  the handler registrations with the native list before the call and
+  again after it, and compared the frame's depths with the stacks' before
+  the pop: in bytecode-to-native's call op the pre-call sync, the push
+  and the pop with its tests were 61 instructions around the callee's 10
+  (round 35's build without any of them: 339.4 an iteration against
+  402.1). GNU has no such record: a C frame can be left by longjmp, and
+  each handler (its `pdlcount`, its `lisp_eval_depth`) and specpdl entry
+  carries what an exit to it restores. Generated code can be left only to
+  the Rust frame that called it, so a record stays, but it is now the
+  calling frame's own: `NativeCallFrame` lives in the Rust frame of the
+  call (`invoke`, `invoke_fixed`, `invoke_fixed_registers`,
+  `invoke_nested_fixed`), linked to the call it nests in
+  (`NativeRuntime::call`, the innermost), and a call's first push on the
+  handler, unwind or root stack records that stack's depth
+  (`note_call_push`, from `runtime_push_handler` after its own
+  reconciliation, `record_unwind` and `push_ephemeral_root_range`);
+  until then the stack is as the call found it, its own length the depth
+  (`NativeCallFrame::depth`). A state byte says which depths are
+  recorded and whether the call has a pending error, so a call that
+  pushed on none of the stacks ends by its unlinking and one test of that
+  byte (`finish_frame`), the rest out of line (`settle_call_frame`). The
+  reconciliation before a call is gone: it was there for the depth taken
+  at the call's start, and a handler's push still reconciles before it
+  records one; generated code pops only the handlers its own activation
+  pushed, so a call that pushes none leaves the native list and the
+  registrations as it found them, a popped registration of an outer call
+  included, which the next push, signal or settling removes as before.
+  The collector and a suspended thread trace the pending errors along the
+  links (`CallFrames`); the threads' stacks are corosensei's, never
+  copied, so a suspended call's record stays where it was. New test: a
+  call's handler depth below a popped registration of the call it nests
+  in, its signal caught by its handler and then escaping, and the outer
+  call balanced at its recorded depth.
+  Per iteration: bytecode-to-native 402.1 -> 343.3 (GNU 388),
+  interpreted-to-native 2,472.2 -> 2,436.0, native-to-interpreted 4,101.0
+  -> 4,087.4, native-to-bytecode 4,017.7 -> 4,015.0, undo 1,269,473 ->
+  1,255,812 a unit (GNU 1,252,071); bytecode calls' loop is unchanged
+  (`run_verified` 448 and 449 an iteration). Validation (gate profile,
+  `--test-threads=1`, 128 MiB stacks): the tests naming `native` (405), `handler` (34),
+  `escape` (30), `signal` (40), `condition` (30), `unwind` (17), `gc`
+  (58), `collect` (46), `callback` (33), `suspen` (9), `continuation`
+  (7), `nonlocal` (11), `funcall` (26), `catch` (7), `throw` (5) and
+  `weak` (14) pass but
+  `batch_startup_image_round_trip_or_explicit_native_image_limit`, this
+  container's known failure; the lightweight group's 599 pass; clippy
+  `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3620,8 +3833,21 @@ rounds 26 to 28 into main (`40c3eb0`). **On `c4b94cf`** (one-argument
 full Rust gate passed (run 39357843966), frozen passed on its first
 attempt (run 39357846766). **On `8c32f50`** (no undo in a buffer named with a
 space): full Rust gate passed (run 39368532824); frozen matched 7,927 of
-7,928, the one mismatch GNU's (oracle 1 unexpected, Emaxx none), its
-re-run pending (run 39368535177, attempt 2). Locally,
+7,928, the one mismatch GNU's (oracle 1 unexpected, Emaxx none), and
+its re-run passed (run 39368535177, attempt 2). **On `55cf084`** (three
+compares by name off undo's paths): full Rust gate passed (run
+39372480369), frozen passed on its first attempt (run 39372482254); PR
+#96 merged rounds 29 to 32 into main (`327ecf4`). **On `a29cbef`** (the
+printer's setup): full Rust gate passed (run 39377514989); frozen failed
+(run 39377517895), 7,926 of 7,928 matching, Emaxx 2 unexpected: print-tests.el's
+`test-prin1-overrides` and `test-prin1-to-string-overrides`, the
+overrides bound in an environment copy the C-style reads miss (fixed in
+round 34, bullet "Round 34"). **On `0378010`** (a C variable's read from
+its cell, the overrides bound dynamically): full Rust gate passed (run
+39389072258), frozen passed on its first attempt (run 39389075289), the
+two print-tests overrides tests with it. **On `bdba9fa`** (round 35):
+full Rust gate run 39401137778 and frozen run 39401142276 dispatched;
+their results go in the next round's record. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
