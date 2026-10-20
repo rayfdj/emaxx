@@ -157,7 +157,7 @@ impl Drop for SuspendedStackGuard {
 pub(super) struct NativeLispRoots<'a> {
     pub(super) handlers: &'a [HandlerEntry],
     pub(super) unwind: &'a [UnwindEntry],
-    pub(super) calls: &'a [NativeCallFrame],
+    pub(super) calls: CallFrames<'a>,
     pub(super) environment: Option<&'a Env>,
 }
 
@@ -180,7 +180,7 @@ impl TraceLispRoots for NativeLispRoots<'_> {
             }
         }
         for call in self.calls {
-            if let Some(error) = &call.pending_error {
+            if let Some(error) = call.pending_error() {
                 error.trace_lisp_roots(marker);
             }
         }
@@ -279,7 +279,7 @@ pub(crate) fn with_thread_suspended<R>(
             let roots = NativeLispRoots {
                 handlers: &runtime.handlers,
                 unwind: &runtime.unwind,
-                calls: &runtime.calls,
+                calls: runtime.call_frames(),
                 environment,
             };
             let result = catch_unwind(AssertUnwindSafe(|| {

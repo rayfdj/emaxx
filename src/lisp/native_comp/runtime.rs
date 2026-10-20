@@ -21,11 +21,11 @@ use crate::lisp::{
     eval::Interpreter,
     types::{Env, LispError},
 };
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::ffi::c_void;
 use std::marker::PhantomData;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-use std::mem::MaybeUninit;
+use std::mem::{ManuallyDrop, MaybeUninit};
 use std::rc::Rc;
 use std::sync::{
     Mutex, MutexGuard, OnceLock,
@@ -1181,7 +1181,8 @@ pub(crate) struct NativeRuntime {
     #[allow(clippy::vec_box)]
     spare_handlers: Vec<Box<NativeHandler>>,
     unwind: Vec<UnwindEntry>,
-    calls: Vec<NativeCallFrame>,
+    /// The innermost call's record (`NativeCallFrame'), or null.
+    call: *const NativeCallFrame,
     ephemeral_root_ranges: Vec<NativeRootRange>,
 }
 
@@ -1236,14 +1237,124 @@ impl std::ops::DerefMut for NativeRuntime {
     }
 }
 
+/// The record of a native call made from Rust, in the calling Rust frame
+/// for as long as the call lasts and linked to the call it nests in
+/// (`NativeRuntime::call').  GNU needs none: a C frame can be left by
+/// longjmp, and each handler and specpdl entry carries what an exit to it
+/// restores.  Generated code can be left only to the Rust frame that
+/// called it, through ESCAPE_BUFFER.  The call's first push on the
+/// handler, unwind or root stack records that stack's depth
+/// (`note_call_push'), and until then the stack is as the call found it,
+/// so a call that pushes nothing on any of them has nothing to settle
+/// when it returns: its STATE is 0.
 struct NativeCallFrame {
-    handler_depth: usize,
-    unwind_depth: usize,
-    ephemeral_root_depth: usize,
+    previous: *const NativeCallFrame,
+    escape_buffer: *mut c_void,
     lisp_eval_depth: usize,
     backtrace_depth: usize,
-    pending_error: Option<LispError>,
-    escape_buffer: *mut c_void,
+    /// `PUSHED_HANDLERS', `PUSHED_UNWIND' and `PUSHED_ROOTS' for the
+    /// stacks whose depths below are recorded, and `PENDING_ERROR' once
+    /// PENDING_ERROR holds the call's signal.
+    state: Cell<u8>,
+    handler_depth: Cell<usize>,
+    unwind_depth: Cell<usize>,
+    ephemeral_root_depth: Cell<usize>,
+    /// Written by `remember_error' and taken by `settle_call_frame',
+    /// which every call's end reaches while it is set: the record needs
+    /// no drop of its own.
+    pending_error: ManuallyDrop<UnsafeCell<Option<LispError>>>,
+}
+
+const PUSHED_HANDLERS: u8 = 1;
+const PUSHED_UNWIND: u8 = 2;
+const PUSHED_ROOTS: u8 = 4;
+const PENDING_ERROR: u8 = 8;
+
+impl NativeCallFrame {
+    /// The record of a call nested in PREVIOUS (null for none), left
+    /// through ESCAPE_BUFFER to a caller at the interpreter's
+    /// LISP_EVAL_DEPTH and BACKTRACE_DEPTH (its frame count).
+    #[inline(always)]
+    fn new(
+        previous: *const NativeCallFrame,
+        escape_buffer: *mut c_void,
+        lisp_eval_depth: usize,
+        backtrace_depth: usize,
+    ) -> Self {
+        Self {
+            previous,
+            escape_buffer,
+            lisp_eval_depth,
+            backtrace_depth,
+            state: Cell::new(0),
+            handler_depth: Cell::new(0),
+            unwind_depth: Cell::new(0),
+            ephemeral_root_depth: Cell::new(0),
+            pending_error: ManuallyDrop::new(UnsafeCell::new(None)),
+        }
+    }
+
+    /// The depth of the stack that KIND (a `PUSHED_' bit) names when the
+    /// call began: the one recorded at its first push there, else LEN,
+    /// the stack's own.
+    #[inline(always)]
+    fn depth(&self, kind: u8, len: usize) -> usize {
+        if self.state.get() & kind == 0 {
+            return len;
+        }
+        match kind {
+            PUSHED_HANDLERS => self.handler_depth.get(),
+            PUSHED_UNWIND => self.unwind_depth.get(),
+            _ => self.ephemeral_root_depth.get(),
+        }
+    }
+
+    fn pending_error(&self) -> Option<&LispError> {
+        if self.state.get() & PENDING_ERROR == 0 {
+            return None;
+        }
+        // SAFETY: only `remember_error' and `take_pending_error' change
+        // the slot, and neither runs while this reference is held: both
+        // are steps of the one thread that owns the call.
+        unsafe { (*self.pending_error.get()).as_ref() }
+    }
+
+    fn take_pending_error(&self) -> Option<LispError> {
+        self.state.set(self.state.get() & !PENDING_ERROR);
+        // SAFETY: as `pending_error's.
+        unsafe { (*self.pending_error.get()).take() }
+    }
+}
+
+/// The call records of a runtime from the innermost out
+/// (`NativeRuntime::call_frames').
+#[derive(Clone, Copy)]
+struct CallFrames<'a> {
+    next: *const NativeCallFrame,
+    _call: PhantomData<&'a NativeCallFrame>,
+}
+
+impl<'a> CallFrames<'a> {
+    /// The records from the innermost, HEAD (`NativeRuntime::call'),
+    /// borrowed so that none is unlinked while they are read.
+    fn of(head: &'a *const NativeCallFrame) -> Self {
+        Self {
+            next: *head,
+            _call: PhantomData,
+        }
+    }
+}
+
+impl<'a> Iterator for CallFrames<'a> {
+    type Item = &'a NativeCallFrame;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // SAFETY: a linked record stays in its caller's frame until it is
+        // unlinked (`finish_frame'), which the borrow of the head excludes.
+        let frame = unsafe { self.next.as_ref() }?;
+        self.next = frame.previous;
+        Some(frame)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1268,7 +1379,7 @@ impl Default for NativeRuntime {
             handlers: Vec::new(),
             spare_handlers: Vec::new(),
             unwind: Vec::new(),
-            calls: Vec::new(),
+            call: std::ptr::null(),
             ephemeral_root_ranges: Vec::new(),
         }
     }
@@ -1278,7 +1389,7 @@ impl NativeRuntime {
     pub(crate) fn is_pristine(&self) -> bool {
         self.handlers.is_empty()
             && self.unwind.is_empty()
-            && self.calls.is_empty()
+            && self.call.is_null()
             && !self.linked_code
             && self.ephemeral_root_ranges.is_empty()
             && self.suspended_stacks.is_empty()
@@ -1291,59 +1402,85 @@ impl NativeRuntime {
         *self.thread_pointer = thread;
     }
 
+    /// The record of a call made now from INTERPRETER, left through
+    /// ESCAPE_BUFFER, for `begin_call'.
     #[inline(always)]
-    pub(crate) fn begin_call(&mut self, escape_buffer: *mut c_void, interpreter: &Interpreter) {
-        self.activate_thread();
-        self.heap.begin_call();
-        self.push_call_frame(escape_buffer, interpreter);
-    }
-
-    /// `begin_call's frame alone, for a call nested in an active call of
-    /// this runtime (`invoke_nested_fixed').
-    #[inline(always)]
-    fn push_call_frame(&mut self, escape_buffer: *mut c_void, interpreter: &Interpreter) {
-        self.push_call_frame_at(
+    fn new_call_frame(
+        &self,
+        escape_buffer: *mut c_void,
+        interpreter: &Interpreter,
+    ) -> NativeCallFrame {
+        NativeCallFrame::new(
+            self.call,
             escape_buffer,
             interpreter.lisp_eval_depth,
             interpreter.backtrace_frames_len(),
-        );
+        )
     }
 
-    /// `push_call_frame' for a caller that holds the interpreter's
-    /// LISP_EVAL_DEPTH and BACKTRACE_DEPTH (its frame count).
+    /// The start of the call that FRAME records (`new_call_frame'), which
+    /// stays where it is until `finish_call' or `finish_escaped_call'
+    /// ends the call.
     #[inline(always)]
-    fn push_call_frame_at(
-        &mut self,
-        escape_buffer: *mut c_void,
-        lisp_eval_depth: usize,
-        backtrace_depth: usize,
-    ) {
-        let frame = NativeCallFrame {
-            handler_depth: self.handlers.len(),
-            unwind_depth: self.unwind.len(),
-            ephemeral_root_depth: self.ephemeral_root_ranges.len(),
-            lisp_eval_depth,
-            backtrace_depth,
-            pending_error: None,
-            escape_buffer,
-        };
-        // The frame written in its slot: `push' builds it on the stack and
-        // copies it in by a call that is not inlined.
-        if self.calls.len() == self.calls.capacity() {
-            self.reserve_call_frames();
-        }
-        let len = self.calls.len();
-        // SAFETY: the slot at LEN is within the capacity just ensured.
-        unsafe {
-            self.calls.as_mut_ptr().add(len).write(frame);
-            self.calls.set_len(len + 1);
-        }
+    fn begin_call(&mut self, frame: &NativeCallFrame) {
+        self.activate_thread();
+        self.heap.begin_call();
+        self.link_call_frame(frame);
     }
 
-    #[cold]
-    #[inline(never)]
-    fn reserve_call_frames(&mut self) {
-        self.calls.reserve(1);
+    /// `begin_call's link alone, for a call nested in an active call of
+    /// this runtime (`invoke_nested_fixed').
+    #[inline(always)]
+    fn link_call_frame(&mut self, frame: &NativeCallFrame) {
+        debug_assert!(std::ptr::eq(frame.previous, self.call));
+        self.call = frame;
+    }
+
+    /// The innermost call's record.
+    #[inline(always)]
+    fn current_call(&self) -> Option<&NativeCallFrame> {
+        // SAFETY: as `CallFrames::next's.
+        unsafe { self.call.as_ref() }
+    }
+
+    fn call_frames(&self) -> CallFrames<'_> {
+        CallFrames::of(&self.call)
+    }
+
+    /// The depth of the stack that KIND (a `PUSHED_' bit) names when the
+    /// innermost call began (`NativeCallFrame::depth'), or its length with
+    /// no call.
+    fn call_depth(&self, kind: u8) -> usize {
+        let len = match kind {
+            PUSHED_HANDLERS => self.handlers.len(),
+            PUSHED_UNWIND => self.unwind.len(),
+            _ => self.ephemeral_root_ranges.len(),
+        };
+        self.current_call()
+            .map_or(len, |call| call.depth(kind, len))
+    }
+
+    /// Before a push on the stack that KIND (a `PUSHED_' bit) names:
+    /// the stack's depth, if this is the innermost call's first push
+    /// there.  A handler is pushed after `sync_handlers', so that the
+    /// depth leaves out the ones generated code has popped.
+    #[inline(always)]
+    fn note_call_push(&self, kind: u8) {
+        let Some(call) = self.current_call() else {
+            return;
+        };
+        let state = call.state.get();
+        if state & kind != 0 {
+            return;
+        }
+        call.state.set(state | kind);
+        match kind {
+            PUSHED_HANDLERS => call.handler_depth.set(self.handlers.len()),
+            PUSHED_UNWIND => call.unwind_depth.set(self.unwind.len()),
+            _ => call
+                .ephemeral_root_depth
+                .set(self.ephemeral_root_ranges.len()),
+        }
     }
 
     fn collect_native_heap_now(
@@ -1369,7 +1506,7 @@ impl NativeRuntime {
         let lisp_roots = suspension::NativeLispRoots {
             handlers: &self.handlers,
             unwind: &self.unwind,
-            calls: &self.calls,
+            calls: CallFrames::of(&self.call),
             environment: None,
         };
         let heap = &mut self
@@ -1436,6 +1573,7 @@ impl NativeRuntime {
 
     pub(crate) fn push_ephemeral_root_range(&mut self, start: *const NativeWord, len: usize) {
         if len != 0 {
+            self.note_call_push(PUSHED_ROOTS);
             self.ephemeral_root_ranges
                 .push(NativeRootRange { start, len });
         }
@@ -1530,15 +1668,10 @@ impl NativeRuntime {
             return self.invoke_fixed(interpreter, environment, target, arguments);
         }
 
-        // GNU has one authoritative `thread_state.handlerlist`.  A generated
-        // caller can pop a handler and immediately enter another native
-        // function without crossing a C-subr wrapper, so reconcile the Rust
-        // registrations before snapshotting the nested call's handler depth.
-        self.sync_handlers(interpreter)?;
-
         let mut slot = MaybeUninit::uninit();
         let invocation = NativeInvocation::init(&mut slot, target, &[]);
-        self.begin_call(invocation.jump_buffer(), interpreter);
+        let frame = self.new_call_frame(invocation.jump_buffer(), interpreter);
+        self.begin_call(&frame);
 
         // MANY retains owned, writable argument storage for its pointer ABI;
         // no native pointer aliases the caller's shared Rust Value slice.
@@ -1547,7 +1680,7 @@ impl NativeRuntime {
             let word = match self.heap.encode(argument) {
                 Ok(word) => word,
                 Err(error) => {
-                    let finish = self.finish_call(interpreter);
+                    let finish = self.finish_call(interpreter, &frame);
                     finish?;
                     return Err(super::lisp::native_ice(&error));
                 }
@@ -1556,7 +1689,7 @@ impl NativeRuntime {
         }
         invocation.arguments[0] = encoded.len();
         invocation.arguments[1] = encoded.as_ptr() as NativeWord;
-        self.run_invocation(interpreter, environment, invocation)
+        self.run_invocation(interpreter, environment, invocation, &frame)
     }
 
     /// `invoke' of a fixed-arity TARGET, not null, with at most eight
@@ -1571,12 +1704,11 @@ impl NativeRuntime {
         target: *const c_void,
         arguments: &[Value],
     ) -> Result<Value, LispError> {
-        // As in `invoke'.
-        self.sync_handlers(interpreter)?;
         let mut slot = MaybeUninit::uninit();
         let invocation = NativeInvocation::init(&mut slot, target, arguments);
-        self.begin_call(invocation.jump_buffer(), interpreter);
-        self.run_invocation(interpreter, environment, invocation)
+        let frame = self.new_call_frame(invocation.jump_buffer(), interpreter);
+        self.begin_call(&frame);
+        self.run_invocation(interpreter, environment, invocation, &frame)
     }
 
     /// `invoke_fixed' of a TARGET whose arguments all travel in registers
@@ -1593,11 +1725,10 @@ impl NativeRuntime {
         target: *const c_void,
         arguments: &[Value],
     ) -> Result<Value, LispError> {
-        // As in `invoke'.
-        self.sync_handlers(interpreter)?;
         let mut escape = EscapeBuffer(MaybeUninit::uninit());
         let buffer = std::ptr::from_mut(&mut escape);
-        self.begin_call(buffer.cast(), interpreter);
+        let frame = self.new_call_frame(buffer.cast(), interpreter);
+        self.begin_call(&frame);
         let previous = ACTIVE_CALL.get();
         let (word, escaped) = if is_nested_call(previous, self, interpreter) {
             let mut active = ActiveCall {
@@ -1607,7 +1738,7 @@ impl NativeRuntime {
             };
             ACTIVE_CALL.set(&mut active);
             // SAFETY: the caller's maximum is at most six, and the frame
-            // pushed above holds BUFFER until it is popped below.
+            // linked above holds BUFFER until it is unlinked below.
             let answer = unsafe { call_fixed_registers(target, arguments, buffer) };
             ACTIVE_CALL.set(previous);
             answer
@@ -1618,20 +1749,20 @@ impl NativeRuntime {
             })
         };
         if escaped {
-            return self.finish_escaped_call(interpreter);
+            return self.finish_escaped_call(interpreter, &frame);
         }
         // SAFETY: as `decode_result's: the returned word still belongs to
         // the protected activation.
         let result = unsafe { Value::from_word(word) };
-        self.finish_call_inline(interpreter)?;
+        self.finish_call_inline(interpreter, &frame)?;
         Ok(result)
     }
 
     /// `invoke_fixed_registers' for a call NESTED in the active call of
     /// this runtime (`NestedCall::runtime'), inline in its caller: the
-    /// frame pushed, the active call's record naming ENVIRONMENT while
-    /// the callee runs, the frame popped.  The thread is activated and the
-    /// heap's depth counted by the active call already.
+    /// frame linked, the active call's record naming ENVIRONMENT while
+    /// the callee runs, the frame unlinked.  The thread is activated and
+    /// the heap's depth counted by the active call already.
     ///
     /// # Safety
     ///
@@ -1650,66 +1781,39 @@ impl NativeRuntime {
         arguments: &[Value],
         depths: (usize, usize),
     ) -> Result<Value, LispError> {
-        // As in `invoke'.
-        self.sync_handlers(interpreter)?;
         let mut escape = EscapeBuffer(MaybeUninit::uninit());
         let buffer = std::ptr::from_mut(&mut escape);
-        self.push_call_frame_at(buffer.cast(), depths.0, depths.1);
+        let frame = NativeCallFrame::new(self.call, buffer.cast(), depths.0, depths.1);
+        self.link_call_frame(&frame);
         // The active call already names this interpreter and runtime: the
         // callee's record is that one naming ENVIRONMENT, written in place
         // while the callee runs, the active call being suspended in it.
         // SAFETY: as `NestedCall::of's read.
         let slot = unsafe { &(*nested.0).environment };
         let outer = slot.replace(environment);
-        // SAFETY: as the caller's; the frame pushed above holds BUFFER
-        // until it is popped below.
+        // SAFETY: as the caller's; the frame linked above holds BUFFER
+        // until it is unlinked below.
         let (word, escaped) = unsafe { call_fixed_registers(target, arguments, buffer) };
         slot.set(outer);
         if escaped {
-            return self.finish_escaped_frame(interpreter, false);
+            return self.finish_escaped_frame(interpreter, &frame, false);
         }
         // SAFETY: as `decode_result's: the returned word still belongs to
         // the protected activation.
         let result = unsafe { Value::from_word(word) };
-        self.finish_nested_frame(interpreter)?;
+        self.finish_frame(interpreter, &frame, false)?;
         Ok(result)
     }
 
-    /// `finish_frame' of a nested call's frame (no heap call) after an
-    /// ordinary return: when the callee left the frame as it found it
-    /// (`sync_handlers' would change nothing, no handler, unwind entry or
-    /// root range above the frame's, no pending error) the pop is the
-    /// length alone; otherwise `finish_frame' does the whole of it.
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    #[inline(always)]
-    fn finish_nested_frame(&mut self, interpreter: &mut Interpreter) -> Result<(), LispError> {
-        let current = self.thread.handler();
-        if let Some(frame) = self.calls.last()
-            && frame.pending_error.is_none()
-            && frame.handler_depth == self.handlers.len()
-            && frame.unwind_depth == self.unwind.len()
-            && frame.ephemeral_root_depth == self.ephemeral_root_ranges.len()
-            && self
-                .handlers
-                .last()
-                .map_or(current.is_null(), |entry| entry.address() == current)
-        {
-            // SAFETY: the frame is the vector's last and needs no drop
-            // (its pending error is None).
-            unsafe { self.calls.set_len(self.calls.len() - 1) };
-            return Ok(());
-        }
-        self.finish_frame(interpreter, false)
-    }
-
-    /// The rest of `invoke' once the call frame is pushed: the
-    /// trampoline's call through INVOCATION and the frame's pop.
+    /// The rest of `invoke' once FRAME is linked: the trampoline's call
+    /// through INVOCATION and the frame's unlinking.
     #[inline(always)]
     fn run_invocation(
         &mut self,
         interpreter: &mut Interpreter,
         environment: &mut Env,
         invocation: &mut NativeInvocation,
+        frame: &NativeCallFrame,
     ) -> Result<Value, LispError> {
         let escaped = with_active_call(interpreter, environment, self, || unsafe {
             invoke_platform(invocation)
@@ -1717,19 +1821,19 @@ impl NativeRuntime {
         let escaped = match escaped {
             Ok(escaped) => escaped,
             Err(error) => {
-                let finish = self.finish_call(interpreter);
+                let finish = self.finish_call(interpreter, frame);
                 finish?;
                 return Err(super::lisp::native_ice(&error));
             }
         };
         if escaped {
-            return self.finish_escaped_call(interpreter);
+            return self.finish_escaped_call(interpreter, frame);
         }
         let result = self
             .heap
             .decode_result(invocation.result)
             .map_err(|error| super::lisp::native_ice(&error));
-        let finish = self.finish_call_inline(interpreter);
+        let finish = self.finish_call_inline(interpreter, frame);
         let result = result?;
         finish?;
         Ok(result)
@@ -1739,20 +1843,25 @@ impl NativeRuntime {
     /// leaves the signal in the frame's pending error.
     #[cold]
     #[inline(never)]
-    fn finish_escaped_call(&mut self, interpreter: &mut Interpreter) -> Result<Value, LispError> {
-        self.finish_escaped_frame(interpreter, true)
+    fn finish_escaped_call(
+        &mut self,
+        interpreter: &mut Interpreter,
+        frame: &NativeCallFrame,
+    ) -> Result<Value, LispError> {
+        self.finish_escaped_frame(interpreter, frame, true)
     }
 
     /// `finish_escaped_call', the heap's depth left alone unless
-    /// HEAP_CALL (`push_call_frame').
+    /// HEAP_CALL (`begin_call').
     #[cold]
     #[inline(never)]
     fn finish_escaped_frame(
         &mut self,
         interpreter: &mut Interpreter,
+        frame: &NativeCallFrame,
         heap_call: bool,
     ) -> Result<Value, LispError> {
-        match self.finish_frame(interpreter, heap_call) {
+        match self.finish_frame(interpreter, frame, heap_call) {
             Err(error) => Err(error),
             Ok(()) => Err(super::lisp::native_ice(
                 "native function escaped without a pending Lisp error",
@@ -1760,46 +1869,82 @@ impl NativeRuntime {
         }
     }
 
+    /// The end of the call that FRAME records (`begin_call').
     #[inline(never)]
-    pub(crate) fn finish_call(&mut self, interpreter: &mut Interpreter) -> Result<(), LispError> {
-        self.finish_call_inline(interpreter)
+    fn finish_call(
+        &mut self,
+        interpreter: &mut Interpreter,
+        frame: &NativeCallFrame,
+    ) -> Result<(), LispError> {
+        self.finish_call_inline(interpreter, frame)
     }
 
     /// `finish_call', inline in an ordinary return.
     #[inline(always)]
-    fn finish_call_inline(&mut self, interpreter: &mut Interpreter) -> Result<(), LispError> {
-        self.finish_frame(interpreter, true)
+    fn finish_call_inline(
+        &mut self,
+        interpreter: &mut Interpreter,
+        frame: &NativeCallFrame,
+    ) -> Result<(), LispError> {
+        self.finish_frame(interpreter, frame, true)
     }
 
     /// `finish_call', the heap's depth left alone unless HEAP_CALL
-    /// (`push_call_frame').
+    /// (`begin_call').  FRAME is unlinked; a call that pushed on none of
+    /// the stacks and has no pending error (its state 0) has left them as
+    /// it found them, the native handler list included, and the rest is
+    /// `settle_call_frame's.
     #[inline(always)]
     fn finish_frame(
         &mut self,
         interpreter: &mut Interpreter,
+        frame: &NativeCallFrame,
         heap_call: bool,
     ) -> Result<(), LispError> {
-        let sync_result = self.sync_handlers(interpreter);
-        let Some(frame) = self.calls.pop() else {
-            return Err(super::lisp::native_ice(
-                "native call stack underflow while returning from generated code",
-            ));
+        debug_assert!(
+            std::ptr::eq(self.call, frame),
+            "native call records end innermost first"
+        );
+        self.call = frame.previous;
+        let state = frame.state.get();
+        let result = if state == 0 {
+            Ok(())
+        } else {
+            self.settle_call_frame(interpreter, frame, state)
         };
-        self.ephemeral_root_ranges
-            .truncate(frame.ephemeral_root_depth);
         if heap_call {
             self.heap.end_call();
         }
+        result
+    }
+
+    /// `finish_frame' of a call whose STATE records pushes or a pending
+    /// error: the handlers reconciled with the native list, the root
+    /// ranges cut back to the call's depth, the handler and unwind stacks
+    /// checked at theirs, and the pending error answered.
+    #[inline(never)]
+    fn settle_call_frame(
+        &mut self,
+        interpreter: &mut Interpreter,
+        frame: &NativeCallFrame,
+        state: u8,
+    ) -> Result<(), LispError> {
+        let sync_result = self.sync_handlers(interpreter);
+        if state & PUSHED_ROOTS != 0 {
+            self.ephemeral_root_ranges
+                .truncate(frame.ephemeral_root_depth.get());
+        }
         sync_result?;
-        if self.handlers.len() != frame.handler_depth || self.unwind.len() != frame.unwind_depth {
+        if frame.depth(PUSHED_HANDLERS, self.handlers.len()) != self.handlers.len()
+            || frame.depth(PUSHED_UNWIND, self.unwind.len()) != self.unwind.len()
+        {
             return Err(super::lisp::native_ice(
                 "generated function returned with an unbalanced dynamic stack",
             ));
         }
-        if let Some(error) = frame.pending_error {
-            Err(error)
-        } else {
-            Ok(())
+        match frame.take_pending_error() {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 
@@ -1855,11 +2000,13 @@ impl NativeRuntime {
     }
 
     fn remember_error(&mut self, error: LispError) {
-        let Some(call) = self.calls.last_mut() else {
+        let Some(call) = self.current_call() else {
             std::process::abort();
         };
-        if call.pending_error.is_none() {
-            call.pending_error = Some(error);
+        if call.state.get() & PENDING_ERROR == 0 {
+            // SAFETY: as `NativeCallFrame::pending_error's.
+            unsafe { *call.pending_error.get() = Some(error) };
+            call.state.set(call.state.get() | PENDING_ERROR);
         }
     }
 
@@ -1881,11 +2028,7 @@ impl NativeRuntime {
         let condition = condition
             .as_ref()
             .map_or("", |condition| condition.as_str());
-        let handler_depth = self
-            .calls
-            .last()
-            .map(|call| call.handler_depth)
-            .unwrap_or(self.handlers.len());
+        let handler_depth = self.call_depth(PUSHED_HANDLERS);
         self.handlers[handler_depth..]
             .iter()
             .rposition(|handler| match handler.kind {
@@ -1916,11 +2059,9 @@ impl NativeRuntime {
         environment: &mut Env,
         mut error: LispError,
     ) -> *mut c_void {
-        let Some((handler_depth, unwind_depth, lisp_eval_depth, backtrace_depth, escape_buffer)) =
-            self.calls.last().map(|call| {
+        let Some((lisp_eval_depth, backtrace_depth, escape_buffer)) =
+            self.current_call().map(|call| {
                 (
-                    call.handler_depth,
-                    call.unwind_depth,
                     call.lisp_eval_depth,
                     call.backtrace_depth,
                     call.escape_buffer,
@@ -1935,6 +2076,9 @@ impl NativeRuntime {
             self.remember_error(sync_error);
             return escape_buffer;
         }
+        // The call's depths, the handlers' once the popped ones are gone.
+        let handler_depth = self.call_depth(PUSHED_HANDLERS);
+        let unwind_depth = self.call_depth(PUSHED_UNWIND);
         'dispatch: loop {
             let target_index = self.matching_handler(interpreter, environment, &error);
             let retained_handlers = target_index.map_or(handler_depth, |index| index + 1);
@@ -2010,6 +2154,7 @@ impl NativeRuntime {
     }
 
     fn record_unwind(&mut self, interpreter: &Interpreter, action: UnwindAction) {
+        self.note_call_push(PUSHED_UNWIND);
         self.unwind.push(UnwindEntry {
             action,
             backtrace_depth: interpreter.backtrace_frames_len(),
@@ -3553,9 +3698,8 @@ fn invoke_native_length(active: &ActiveCall, sequence: NativeWord) -> Option<Nat
 
 fn native_call_has_pending_error(active: &ActiveCall) -> bool {
     unsafe { &*active.runtime }
-        .calls
-        .last()
-        .is_some_and(|call| call.pending_error.is_some())
+        .current_call()
+        .is_some_and(|call| call.state.get() & PENDING_ERROR != 0)
 }
 
 /// fns.c:list_length, including lisp.h:FOR_EACH_TAIL's Brent cycle check and
@@ -4298,6 +4442,7 @@ extern "C" fn runtime_push_handler(match_value: NativeWord, kind: i32) -> *mut N
             storage.set_value(0);
             let address = (&mut *storage) as *mut NativeHandler;
             runtime.thread.set_handler(address);
+            runtime.note_call_push(PUSHED_HANDLERS);
             runtime.handlers.push(HandlerEntry {
                 storage,
                 kind,
@@ -7102,8 +7247,9 @@ mod tests {
         let payload = std::ptr::from_ref(&*first);
         let relocation = first.current_thread_relocation();
         let mut invocation = NativeInvocation::new(add_one_fixnum as *const c_void);
-        first.begin_call(invocation.jump_buffer(), &interpreter);
-        let first_frame = std::ptr::from_ref(&first.calls[0]);
+        let frame = first.new_call_frame(invocation.jump_buffer(), &interpreter);
+        first.begin_call(&frame);
+        let first_frame = std::ptr::from_ref(&frame);
         let first_thread = std::ptr::from_mut(&mut *first.thread);
         let second_thread = std::ptr::from_mut(&mut *second.thread);
         assert_ne!(first_thread, second_thread);
@@ -7111,11 +7257,11 @@ mod tests {
         second.shared = first.shared.take();
         assert!(first.shared.is_none());
         assert_eq!(
-            first.calls.len(),
+            first.call_frames().count(),
             1,
             "the original native frame stays local"
         );
-        assert!(second.calls.is_empty());
+        assert!(second.call.is_null());
         assert_eq!(std::ptr::from_ref(&*second), payload);
         assert_eq!(second.current_thread_relocation(), relocation);
         assert_eq!(
@@ -7131,7 +7277,7 @@ mod tests {
             Value::Integer(42),
         );
         assert_eq!(*second.thread_pointer, second_thread);
-        assert!(second.calls.is_empty());
+        assert!(second.call.is_null());
         assert_eq!(second.heap.encode(&value).expect("same object"), word);
         let decoded = second
             .heap
@@ -7148,13 +7294,16 @@ mod tests {
         first.activate_thread();
         assert_eq!(first.current_thread_relocation(), relocation);
         assert_eq!(*first.thread_pointer, first_thread);
-        assert_eq!(std::ptr::from_ref(&first.calls[0]), first_frame);
-        assert_eq!(first.calls[0].escape_buffer, invocation.jump_buffer());
+        assert_eq!(first.call, first_frame);
+        assert_eq!(
+            first.current_call().map(|call| call.escape_buffer),
+            Some(invocation.jump_buffer())
+        );
         first
-            .finish_call(&mut interpreter)
+            .finish_call(&mut interpreter, &frame)
             .expect("finish original frame");
         assert_eq!(first.heap.native_call_depth, 0);
-        assert!(first.calls.is_empty());
+        assert!(first.call.is_null());
     }
 
     #[test]
@@ -7548,7 +7697,7 @@ mod tests {
             );
             assert_eq!(interpreter.backtrace_frames_len(), 0);
             assert_eq!(interpreter.lisp_eval_depth, 0);
-            assert!(runtime.calls.is_empty());
+            assert!(runtime.call.is_null());
         }
         let invalid = Value::symbol("native-arithmetic-error");
         for name in ["+", "-"] {
@@ -7576,7 +7725,7 @@ mod tests {
                 );
                 assert_eq!(interpreter.backtrace_frames_len(), 0);
                 assert_eq!(interpreter.lisp_eval_depth, 0);
-                assert!(runtime.calls.is_empty());
+                assert!(runtime.call.is_null());
             }
         }
     }
@@ -8810,7 +8959,7 @@ mod tests {
             );
             assert_eq!(interpreter.backtrace_frames_len(), 0);
             assert_eq!(interpreter.lisp_eval_depth, 0);
-            assert!(runtime.calls.is_empty());
+            assert!(runtime.call.is_null());
         }
     }
 
@@ -8840,7 +8989,7 @@ mod tests {
         );
         assert_eq!(interpreter.backtrace_frames_len(), 0);
         assert_eq!(interpreter.lisp_eval_depth, 0);
-        assert!(runtime.calls.is_empty());
+        assert!(runtime.call.is_null());
     }
 
     #[test]
@@ -8869,7 +9018,7 @@ mod tests {
         );
         assert_eq!(interpreter.backtrace_frames_len(), 0);
         assert_eq!(interpreter.lisp_eval_depth, 0);
-        assert!(runtime.calls.is_empty());
+        assert!(runtime.call.is_null());
     }
 
     #[test]
@@ -8894,7 +9043,7 @@ mod tests {
         );
         assert_eq!(interpreter.backtrace_frames_len(), 0);
         assert_eq!(interpreter.lisp_eval_depth, 0);
-        assert!(runtime.calls.is_empty());
+        assert!(runtime.call.is_null());
     }
 
     #[test]
@@ -8932,7 +9081,7 @@ mod tests {
             );
             assert_eq!(interpreter.backtrace_frames_len(), 0);
             assert_eq!(interpreter.lisp_eval_depth, 0);
-            assert!(runtime.calls.is_empty());
+            assert!(runtime.call.is_null());
         }
     }
 
@@ -8973,7 +9122,7 @@ mod tests {
             );
             assert_eq!(interpreter.backtrace_frames_len(), 0);
             assert_eq!(interpreter.lisp_eval_depth, 0);
-            assert!(runtime.calls.is_empty());
+            assert!(runtime.call.is_null());
         }
     }
 
@@ -9009,7 +9158,7 @@ mod tests {
             );
             assert_eq!(interpreter.backtrace_frames_len(), 0);
             assert_eq!(interpreter.lisp_eval_depth, 0);
-            assert!(runtime.calls.is_empty());
+            assert!(runtime.call.is_null());
         }
     }
 
@@ -10508,7 +10657,8 @@ mod tests {
         };
         id.set_weakness(1);
         interpreter.set_global_binding("native-caught-signal-table", table);
-        runtime.begin_call(std::ptr::null_mut(), &interpreter);
+        let frame = runtime.new_call_frame(std::ptr::null_mut(), &interpreter);
+        runtime.begin_call(&frame);
         let condition = runtime
             .heap
             .encode(&Value::symbol("error"))
@@ -10543,8 +10693,76 @@ mod tests {
         );
         runtime.thread.set_handler(std::ptr::null_mut());
         runtime
-            .finish_call(&mut interpreter)
+            .finish_call(&mut interpreter, &frame)
             .expect("finish the native activation");
+    }
+
+    #[test]
+    fn native_call_depths_are_recorded_at_the_calls_first_pushes() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let condition = runtime
+            .heap
+            .encode(&Value::symbol("error"))
+            .expect("condition word");
+        let outer = runtime.new_call_frame(std::ptr::null_mut(), &interpreter);
+        runtime.begin_call(&outer);
+        let popped = with_active_call(&mut interpreter, &mut environment, &mut runtime, || {
+            runtime_push_handler(condition, 1)
+        });
+        assert!(!popped.is_null());
+        // Generated code pops a handler by storing its successor, and the
+        // registration stays until the next reconciliation.
+        runtime.thread.set_handler(std::ptr::null_mut());
+        assert_eq!(runtime.handlers.len(), 1);
+
+        let inner = runtime.new_call_frame(std::ptr::null_mut(), &interpreter);
+        runtime.link_call_frame(&inner);
+        assert_eq!(
+            runtime.call_depth(PUSHED_HANDLERS),
+            1,
+            "a call that pushed nothing has the stack's own depth"
+        );
+        let handler = with_active_call(&mut interpreter, &mut environment, &mut runtime, || {
+            runtime_push_handler(condition, 1)
+        });
+        assert_eq!(
+            runtime.handlers.len(),
+            1,
+            "the push reconciles the popped registration first"
+        );
+        assert_eq!(
+            runtime.call_depth(PUSHED_HANDLERS),
+            0,
+            "the depth below the call's first handler"
+        );
+        let caught = runtime.prepare_nonlocal_exit(
+            &mut interpreter,
+            &mut environment,
+            wrong_type_argument("stringp", Value::Nil),
+        );
+        assert_eq!(caught, unsafe {
+            handler.cast::<u8>().add(HANDLER_JMP_OFFSET).cast()
+        });
+        runtime.thread.set_handler(std::ptr::null_mut());
+        // With its handler popped, a signal leaves the call.
+        let escape = runtime.prepare_nonlocal_exit(
+            &mut interpreter,
+            &mut environment,
+            wrong_type_argument("integerp", Value::Nil),
+        );
+        assert_eq!(escape, inner.escape_buffer);
+        assert!(runtime.handlers.is_empty());
+        let error = runtime
+            .finish_frame(&mut interpreter, &inner, false)
+            .expect_err("the escaped call's signal");
+        assert_eq!(error.condition_type(), "wrong-type-argument");
+        assert!(std::ptr::eq(runtime.call, &outer));
+        runtime
+            .finish_call(&mut interpreter, &outer)
+            .expect("the outer call is balanced at its recorded depth");
+        assert!(runtime.call.is_null());
     }
 
     #[test]

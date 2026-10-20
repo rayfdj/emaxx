@@ -3234,6 +3234,58 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   stack's old argument slots allows for its last check but not for this
   one.
 
+- **Round 36: a native call's record in its caller's frame, its depths
+  taken at its first pushes.** Every call into generated code from Rust
+  pushed a `NativeCallFrame` of seven fields on the runtime's `calls`
+  vector (the handler, unwind and root stacks' depths, Ffuncall's depth,
+  the backtrace depth, the pending error, the escape buffer), reconciled
+  the handler registrations with the native list before the call and
+  again after it, and compared the frame's depths with the stacks' before
+  the pop: in bytecode-to-native's call op the pre-call sync, the push
+  and the pop with its tests were 61 instructions around the callee's 10
+  (round 35's build without any of them: 339.4 an iteration against
+  402.1). GNU has no such record: a C frame can be left by longjmp, and
+  each handler (its `pdlcount`, its `lisp_eval_depth`) and specpdl entry
+  carries what an exit to it restores. Generated code can be left only to
+  the Rust frame that called it, so a record stays, but it is now the
+  calling frame's own: `NativeCallFrame` lives in the Rust frame of the
+  call (`invoke`, `invoke_fixed`, `invoke_fixed_registers`,
+  `invoke_nested_fixed`), linked to the call it nests in
+  (`NativeRuntime::call`, the innermost), and a call's first push on the
+  handler, unwind or root stack records that stack's depth
+  (`note_call_push`, from `runtime_push_handler` after its own
+  reconciliation, `record_unwind` and `push_ephemeral_root_range`);
+  until then the stack is as the call found it, its own length the depth
+  (`NativeCallFrame::depth`). A state byte says which depths are
+  recorded and whether the call has a pending error, so a call that
+  pushed on none of the stacks ends by its unlinking and one test of that
+  byte (`finish_frame`), the rest out of line (`settle_call_frame`). The
+  reconciliation before a call is gone: it was there for the depth taken
+  at the call's start, and a handler's push still reconciles before it
+  records one; generated code pops only the handlers its own activation
+  pushed, so a call that pushes none leaves the native list and the
+  registrations as it found them, a popped registration of an outer call
+  included, which the next push, signal or settling removes as before.
+  The collector and a suspended thread trace the pending errors along the
+  links (`CallFrames`); the threads' stacks are corosensei's, never
+  copied, so a suspended call's record stays where it was. New test: a
+  call's handler depth below a popped registration of the call it nests
+  in, its signal caught by its handler and then escaping, and the outer
+  call balanced at its recorded depth.
+  Per iteration: bytecode-to-native 402.1 -> 343.3 (GNU 388),
+  interpreted-to-native 2,472.2 -> 2,436.0, native-to-interpreted 4,101.0
+  -> 4,087.4, native-to-bytecode 4,017.7 -> 4,015.0, undo 1,269,473 ->
+  1,255,812 a unit (GNU 1,252,071); bytecode calls' loop is unchanged
+  (`run_verified` 448 and 449 an iteration). Validation (gate profile,
+  `--test-threads=1`, 128 MiB stacks): the tests naming `native` (405), `handler` (34),
+  `escape` (30), `signal` (40), `condition` (30), `unwind` (17), `gc`
+  (58), `collect` (46), `callback` (33), `suspen` (9), `continuation`
+  (7), `nonlocal` (11), `funcall` (26), `catch` (7), `throw` (5) and
+  `weak` (14) pass but
+  `batch_startup_image_round_trip_or_explicit_native_image_limit`, this
+  container's known failure; the lightweight group's 599 pass; clippy
+  `-D warnings` and rustfmt pass.
+
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
 25 sorting/case-folding/substring tests plus the comparison tests, and 95
@@ -3793,7 +3845,9 @@ overrides bound in an environment copy the C-style reads miss (fixed in
 round 34, bullet "Round 34"). **On `0378010`** (a C variable's read from
 its cell, the overrides bound dynamically): full Rust gate passed (run
 39389072258), frozen passed on its first attempt (run 39389075289), the
-two print-tests overrides tests with it. Locally,
+two print-tests overrides tests with it. **On `bdba9fa`** (round 35):
+full Rust gate run 39401137778 and frozen run 39401142276 dispatched;
+their results go in the next round's record. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
