@@ -358,39 +358,6 @@ fn parse_print_number_table(
     labels
 }
 
-/// A binding of NAME in a private printing environment: assigned in
-/// place when bound there, consed onto the environment otherwise.
-pub(crate) fn set_env_binding(env: &mut Env, name: &str, value: Value) {
-    if let Some(environment) = crate::lisp::types::current_environment(env)
-        && let Ok(Some(binding)) = crate::lisp::types::assq_binding_named(environment, name)
-    {
-        binding.cdr.set(value);
-        return;
-    }
-    Interpreter::push_bindings(env, vec![(name.into(), value)]);
-}
-
-pub(crate) fn sync_print_number_table(
-    target_env: &mut Env,
-    overrides: Option<&Value>,
-    source_env: &Env,
-) {
-    if !matches!(overrides.map(|v| v.kind()), None | Some(Kind::Nil)) {
-        return;
-    }
-    let Some(value) = crate::lisp::types::current_environment(source_env)
-        .and_then(|environment| {
-            crate::lisp::types::assq_binding_named(environment, "print-number-table")
-                .ok()
-                .flatten()
-        })
-        .map(|binding| binding.cdr.get())
-    else {
-        return;
-    };
-    set_env_binding(target_env, "print-number-table", value);
-}
-
 pub(crate) fn collect_print_counts(
     interp: &Interpreter,
     value: &Value,

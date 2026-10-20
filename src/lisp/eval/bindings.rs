@@ -164,8 +164,28 @@ impl Interpreter {
 
     /// data.c:find_symbol_value for a symbol whose alias chain is
     /// resolved: the redirect switch over the dedicated, forwarded,
-    /// buffer-local and plain cells.
+    /// buffer-local and plain cells.  Most reads are of a variable whose
+    /// cell holds its value (SYMBOL_PLAINVAL, or SYMBOL_FORWARDED to an
+    /// object slot), answered here; `text-conversion-style' and
+    /// `buffer-undo-list', whose values the buffer holds, are kept out by
+    /// their names' lengths, as is every other case.
+    #[inline(always)]
     fn find_symbol_value_resolved(
+        &self,
+        resolved: &str,
+        resolved_symbol: Option<&SymbolName>,
+    ) -> Option<Value> {
+        if let Some(symbol) = resolved_symbol
+            && !matches!(resolved.len(), 16 | 21)
+            && let Some(value) = symbol.cell().unlocalized_value()
+        {
+            return Some(value);
+        }
+        self.find_symbol_value_redirected(resolved, resolved_symbol)
+    }
+
+    #[inline(never)]
+    fn find_symbol_value_redirected(
         &self,
         resolved: &str,
         resolved_symbol: Option<&SymbolName>,

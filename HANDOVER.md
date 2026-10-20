@@ -3110,6 +3110,60 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   `print_prunes_charset_properties_like_print_prune_string_charset` (in
   `print` and `string`), this container's known failure; the
   lightweight group's 598 pass; clippy `-D warnings` and rustfmt pass.
+- **Round 34: a C variable's read answered from its cell.** Undo reads
+  variables as C reads them (`symbol_value_key`, `lookup_var_symbol`'s
+  global half, `symbol_value_cell_symbol`) 453 times a unit, all through
+  `find_symbol_value_resolved` at 48 instructions a call: its prologue
+  saved six registers, then the C-slot test, the names
+  `text-conversion-style` and `buffer-undo-list` compared, the localized
+  flag and the KBOARD test, before the cell's value. 427 of the 453 are of
+  C variables, 312 of them neither localized nor one of those two, so
+  their value is the cell's, as GNU's `find_symbol_value` finds it under
+  SYMBOL_FORWARDED to an object slot. `find_symbol_value_resolved` now
+  answers from the cell inline when the symbol is no alias, not
+  localized, no counter or KBOARD variable and its name is not 16 or 21
+  characters long (the two names' lengths), and calls the full redirect
+  switch (`find_symbol_value_redirected`, out of line) otherwise: 251 of
+  `symbol_value_symbol`'s 300 calls a unit end there. Undo 1,294,897 ->
+  1,281,123 instructions a unit (the reads and their callers about 8,700
+  fewer, `memcmp` 2,000), bytecode calls 447.3 -> 443.1;
+  bytecode-to-native (405.6), native-to-bytecode (4,017.2 -> 4,015.0) and
+  interpreted-to-native (steady state 2,474 an iteration in both builds)
+  do not move.
+  Round 33's frozen run failed on it: `test-prin1-overrides` and
+  `test-prin1-to-string-overrides` (print-tests.el) failed in Emaxx,
+  because `prin1`'s and `prin1-to-string`'s OVERRIDES were bound in a
+  copy of the evaluator's environment, which the printer's C-style reads
+  no longer see. print.c:print_bind_overrides `specbind's them; now
+  `with_print_overrides` binds each setting's variable dynamically for
+  the print and undoes the bindings after it, as `unbind_to` does, and
+  the walk follows GNU's: `print--variable-mapping`'s keys (GNU spells
+  the `print-unreadable-function` key `unreadeable-function`), the value
+  a setting's cdr (`(length 2)` binds `print-length` to `(2)`), `t`
+  binding all fifteen variables to their defaults (`print-quoted` t, the
+  rest nil; Emaxx had reset only the length and level), and GNU's errors
+  (`(wrong-type-argument . consp)` for a non-list or a setting that is no
+  cons, `(wrong-type-argument symbolp nil)` for an unknown key, where
+  Emaxx signalled "invalid print overrides"). `prin1-to-string` binds
+  them with NOESCAPE too, as Fprin1_to_string does (Emaxx ignored them
+  there: `(prin1-to-string '(1 2 3) t '((length . 1)))` gave `"(1 2 3)"`
+  where GNU's is `"(1 ...)"`). The batch error backtrace's three escape
+  variables (debug-early-backtrace's `let`) are dynamic bindings now for
+  the same reason. GNU's print-tests.el passes 46 of 46 in Emaxx, as do
+  cl-print-tests, pp-tests, backtrace-tests, ert-tests and fns-tests as
+  in GNU. New oracle test: the overrides, their errors and NOESCAPE.
+  Validation (gate profile, `--test-threads=1`, 128 MiB stacks):
+  the tests naming `variable` (92),
+  `local` (92), `special` (54), `bind` (156), `alias` (55), `forward` (51),
+  `default` (129), `unbound` (9), `boundp` (4), `symbol_value` (5),
+  `keyboard` (26), `kboard` (1), `terminal` (26), `conversion` (21), `undo`
+  (17) and `watch` (13) pass on the reads' change; with the overrides',
+  `print_overrides` (1), `print` (42), `prin1` (16), `format` (33),
+  `escape` (30), `backtrace` (16), `batch` (105) and `unhandled` (1) pass
+  but `print_prunes_charset_properties_like_print_prune_string_charset`
+  and `batch_startup_image_round_trip_or_explicit_native_image_limit`,
+  this container's known failures; the lightweight group's 598 pass both
+  times; clippy `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3662,7 +3716,12 @@ space): full Rust gate passed (run 39368532824); frozen matched 7,927 of
 its re-run passed (run 39368535177, attempt 2). **On `55cf084`** (three
 compares by name off undo's paths): full Rust gate passed (run
 39372480369), frozen passed on its first attempt (run 39372482254); PR
-#96 merged rounds 29 to 32 into main (`327ecf4`). Locally,
+#96 merged rounds 29 to 32 into main (`327ecf4`). **On `a29cbef`** (the
+printer's setup): full Rust gate passed (run 39377514989); frozen failed
+(run 39377517895), 7,926 of 7,928 matching, Emaxx 2 unexpected: print-tests.el's
+`test-prin1-overrides` and `test-prin1-to-string-overrides`, the
+overrides bound in an environment copy the C-style reads miss (fixed in
+round 34, bullet "Round 34"). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the

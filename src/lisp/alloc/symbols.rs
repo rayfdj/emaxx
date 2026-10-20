@@ -171,6 +171,24 @@ impl SymbolCell {
         None
     }
 
+    /// data.c:find_symbol_value of a bound symbol that is no alias and not
+    /// localized in any buffer, whose value is the one its cell holds: a
+    /// plain symbol, or a C variable forwarded to an object slot (a KBOARD
+    /// variable's or a counter's value is elsewhere).  Any other symbol, or
+    /// a void one, answers None.
+    #[inline(always)]
+    pub(crate) fn unlocalized_value(&self) -> Option<Value> {
+        use crate::lisp::eval::symbol_cell_flags::LOCALIZED;
+        if self.state.get() & (VALUE_PRESENT | ALIAS | INT_FORWARD | KBOARD_FORWARD)
+            == VALUE_PRESENT
+            && self.flags.get() & LOCALIZED == 0
+        {
+            // SAFETY: VALUE_PRESENT without INT_FORWARD selects the value member.
+            return Some(unsafe { self.payload.get().value });
+        }
+        None
+    }
+
     /// data.c:do_symval_forwarding: `make_int (*intvar)'.
     #[cold]
     fn forwarded_value(&self) -> Value {
