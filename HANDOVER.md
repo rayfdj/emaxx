@@ -2872,6 +2872,90 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   `symbol-value` or undo (142 runs; a test can match two of the names),
   and the lightweight group's 598. Clippy `-D warnings` and rustfmt
   pass.
+- **Where undo's wall time goes, round 28's profile-guided build.** The
+  contract-like comparison (nine rounds): bytecode-to-native 0.936
+  [0.887, 0.962], interpreted-to-native 0.907 [0.816, 0.978] and cons
+  allocation 0.841 [0.760, 0.884] pass; bytecode calls 0.973 [0.893,
+  1.062] and undo 1.136 [1.028, 1.218] are over. A twelve-round pilot of
+  undo with rounds 26 to 28's builds side by side reads 1.063, 1.123 and
+  1.036, so the contract-like 1.136 is the host's drift between runs, not
+  the round. At the contract's size (n = 1000, five rounds of three
+  samples, medians) undo takes GNU 0.614 s with four collections of
+  0.124 s in all, Emaxx 0.669 s with three of 0.082 s: Emaxx's
+  collections cost less, and the excess is the code between them, 0.585 s
+  against 0.490 s (1.19), for fewer instructions (1,191,948 a unit
+  against GNU's 1,259,204 in cachegrind). Per unit, Emaxx misses the
+  instruction cache 39,616 times against GNU's 21,140, the first-level
+  data cache 14,310 and 4,157 (reads, writes) against 9,799 and 1,702,
+  and mispredicts 17,297 conditional branches against 13,389. The code
+  an undo unit runs at least once (half a time a unit or more) is 4,985
+  64-byte lines and 54,765 distinct instructions against GNU's 2,861 and
+  27,956, on 355 four-KB pages against 161: twice the distinct code, on
+  a tail of functions none of which holds more than 6% of it
+  (`run_verified` 279 lines against `exec_byte_code`'s 143, `op_in_place`
+  165, `eval_native_form` 149, then `invoke_subr`, `prin1`, the text
+  properties, `format`, `eval_cons_call`, `eval_sub`, ...). By how often
+  an instruction runs, the excess is warm code: run 2 to 100 times a
+  unit, Emaxx executes 766,000 instructions on 4,464 lines against GNU's
+  388,000 on 2,615, while GNU runs more of its work in code run a
+  hundred times or more (883,000 instructions on 243 lines against
+  458,000 on 188, its window-size Lisp among them). Of the warm lines,
+  the byte-code VM holds about 300 more than `exec_byte_code`
+  (`run_verified` 276, `op_in_place` 156), the evaluator about 210 more
+  than GNU's (`eval_native_form`, `eval_sub`, `eval_cons_call`,
+  `call_function_value` against `eval_sub`, `Flet`, `apply_lambda`,
+  `unbind_to`), and the native code's calls into subrs (`invoke_subr`,
+  `direct_native_funcall`, `runtime_specbind`, `runtime_unbind_n`) about
+  130 more than `funcall_subr`, `specbind` and `unbind_to`: Emaxx's
+  specialized paths for each kind of call and form, each taken a few
+  times a unit, where GNU's generic ones run the same instructions every
+  time and stay cached. The primitives themselves are not the excess
+  (inclusive a unit: `insert` 43,000 against `Finsert`'s 99,000,
+  `kill-buffer` 23,800 against 66,700, the message log 37,000 against
+  46,700). Code-generation options do not move it: on round 28's profile, LLVM's hot call-site
+  inlining threshold at 1,000 instead of 3,000 left the misses at 40,318
+  (text 24 KB smaller), and ext-TSP block placement at 39,107 with a
+  twelve-round pilot of undo 1.064 -> 1.044, bytecode calls 0.905 ->
+  0.924, bytecode-to-native 0.917 -> 0.874, interpreted-to-native 0.886
+  -> 0.917, cons allocation 0.862 -> 0.857 (within the host's noise both
+  ways, as on `df06b81`). Opt-level 2 (text 1.5% smaller) left them at
+  40,906 for 1.7% more instructions. Opt-level `s` (text 15% smaller)
+  loses everywhere in a ten-round pilot: undo 1.072 -> 1.276,
+  interpreted-to-native 0.884 -> 1.029, bytecode calls 0.905 -> 0.972,
+  bytecode-to-native 0.917 -> 0.931, cons allocation 0.832 -> 0.879 (its
+  string moves carry the padding's segment prefix, which valgrind cannot
+  decode, so it has no cachegrind count). The distinct code has to shrink
+  without more instructions: undo's hot paths themselves, not the
+  compiler's settings.
+- **Round 29: `quote` and `function` of one argument without their
+  frame, and the printer's variables by key.** Of the 277 special forms
+  undo evaluates a unit, 60 are `quote` and 13 `function` (10 of them of
+  a symbol), each through eval_sub's special-form path: the frame record
+  pushed and popped, the arguments counted, `eval_native_form`'s
+  prologue and match, for a body that returns its argument. Neither runs
+  anything a frame could be seen from (Fquote, and Ffunction of no lambda
+  list, return XCAR (args)), so `eval_special_form` returns the argument
+  before recording the frame; the depth, quit and collection tests of
+  eval_sub come before it as they did. `eval_native_form` 277 -> 207
+  calls a unit, `eval_sub` and it about 4,000 instructions a unit fewer.
+  The form's kind is tested first, so other special forms pay one
+  compare: interpreted-calls 3,239.5 -> 3,230.2, interpreted-lexical
+  3,553.7 -> 3,566.3, interpreted-dynamic 3,246.4 -> 3,251.4 a unit.
+  `function`'s two variables (`lexical-binding`,
+  `internal-make-interpreted-closure-function`) and six of the
+  printer's are read by symbol key instead of by name (undo's lookups by
+  name 19 -> 14 a unit). Undo's total, 1,311,122 a unit against round
+  28's 1,312,240, moves within its run-to-run variation. New oracle
+  test: one-argument `quote` and `function`, the quoted object's
+  identity, and the argument-count errors of the full path.
+  Validation (gate profile, `--test-threads=1`, 128 MiB stacks): the
+  tests naming `quote` (64), `function` (131), lexical (55), closure
+  (54), print (41), backtrace (16), debug (14) and special forms (8) pass
+  but `print_prunes_charset_properties_like_print_prune_string_charset`,
+  which fails in this container on round 28's binary as well (see the
+  local failures with the CI record); the `eval::` module's run was
+  stopped at fifty minutes. The lightweight group's 598 pass; clippy
+  `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3410,7 +3494,10 @@ merged it into main (`c769d5b`). **On `65ed19b`** (every kind of jump
 padded, with prefixes): full Rust gate passed (run 39295048045), frozen
 passed on its first attempt (run 39295051895). **On `07b0947`** (undo's
 slow ops resumed in the loop): full Rust gate passed (run 39307717277),
-frozen passed on its first attempt (run 39307721612). Locally,
+frozen passed on its first attempt (run 39307721612). **On `8085c84`**
+(round 27's Bmemq arm undone): full Rust gate passed (run 39322364977),
+frozen passed on its first attempt (run 39322368855); PR #95 merged
+rounds 26 to 28 into main (`40c3eb0`). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -3714,7 +3801,17 @@ and failures are still recorded.
    by far. Round 27 took undo's plain-build count to 1,298,608 a unit
    (bullet "Round 27"); round 28 undid its Bmemq arm, which had moved the
    profile-guided layout of the loop and cost bytecode-to-native about
-   15% (bullet "Round 28"). For the work both editors do, Emaxx runs about 14% more
+   15% (bullet "Round 28"). The contract-like comparison of round 28's
+   profile-guided build over all sixteen workloads passes thirteen; over
+   are undo 1.034 [0.966, 1.132], bytecode calls 0.975 [0.897, 1.066]
+   and interpreted-to-native 0.917 [0.860, 1.215] (two of its nine
+   rounds at 1.39 and 1.22, the host's). Undo's excess is the code
+   between collections, not the collections, and it is breadth: twice
+   GNU's distinct code a unit, a third of it in the byte-code VM
+   (`run_verified` and `op_in_place`), the evaluator and the native
+   code's calls into subrs, the rest spread over the primitives (bullet
+   "Where undo's wall time goes"). Compiler settings do not move it;
+   each of those paths has to touch less code. For the work both editors do, Emaxx runs about 14% more
    instructions than GNU (GNU's totals include 150,000 a unit of
    window-size Lisp Emaxx does not run), most of it in the byte-code
    VM's slow ops (`op_in_place`, 140 a slow op) and the native runtime's

@@ -28201,6 +28201,27 @@ fn evaluator_tag_tests_keep_gnus_list_and_symbol_errors() {
 }
 
 #[test]
+fn quote_and_function_of_one_argument_return_it_like_gnu() {
+    // eval_sub returns the one argument of `quote', and of `function'
+    // when it is no lambda list, without the special form's frame; the
+    // same quoted object each time, and the argument-count errors of the
+    // full path for any other count.
+    let program = r#"(list (quote a) '(1 . 2)
+      (let ((f (lambda () '(x y)))) (eq (funcall f) (funcall f)))
+      (function car) #'cons
+      (functionp (function (lambda (x) x)))
+      (condition-case e (eval '(quote) t) (error e))
+      (condition-case e (eval '(quote a b) t) (error e))
+      (condition-case e (eval '(function) t) (error e))
+      (condition-case e (eval '(function car cdr) t) (error e)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(a (1 . 2) t car cons t (wrong-number-of-arguments quote 0) (wrong-number-of-arguments quote 2) (wrong-number-of-arguments function 0) (wrong-number-of-arguments function 2))",
+        "quote and function of one argument",
+    );
+}
+
+#[test]
 fn byte_code_predicates_memq_and_full_arms_run_in_the_loop_like_gnu() {
     // The verified byte-code loop runs Bsymbolp, Bstringp, Blistp,
     // Bnumberp, Bintegerp, Bmemq, Bsetcar and Bsetcdr itself; an operand it

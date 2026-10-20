@@ -119,7 +119,7 @@ fn render_princ_string(
 ) -> PrintOutput {
     let escape_nonascii = !output_is_function
         && interp
-            .lookup_var("print-escape-nonascii", env)
+            .lookup_var_key(cached_symbol!("print-escape-nonascii"), env)
             .is_some_and(|value| value.is_truthy());
     let mut rendered = PrintOutput::with_capacity(state.bytes().len());
     let mut offset = 0;
@@ -181,7 +181,7 @@ impl PrintContext {
         options: PrintOptions,
     ) -> Result<Self, LispError> {
         let number_table = interp
-            .lookup_var("print-number-table", env)
+            .lookup_var_key(cached_symbol!("print-number-table"), env)
             .filter(|value| json::is_hash_table(interp, value));
         let mut labels = if options.circle && options.continuous_numbering {
             parse_print_number_table(interp, number_table.as_ref(), options)
@@ -516,7 +516,7 @@ pub(crate) fn print_preprocess(
     // independently of `print-number-table'.
     interp.print_number_index = 0;
 
-    let table = match interp.lookup_var("print-number-table", env) {
+    let table = match interp.lookup_var_key(cached_symbol!("print-number-table"), env) {
         Some(existing) if json::is_hash_table(interp, &existing) => existing,
         _ => json::make_hash_table(interp, "eq", Vec::new()),
     };
@@ -755,7 +755,7 @@ pub(crate) fn print_number_table_substitution(
     value: &Value,
     env: &Env,
 ) -> Result<Option<PrintOutput>, LispError> {
-    let Some(table) = interp.lookup_var("print-number-table", env) else {
+    let Some(table) = interp.lookup_var_key(cached_symbol!("print-number-table"), env) else {
         return Ok(None);
     };
     let Some((_, entries)) = json::hash_table_entries(interp, &table) else {
@@ -886,7 +886,7 @@ pub(crate) fn charset_text_properties_print(
     props: &[StringPropertySpan],
 ) -> bool {
     let setting = interp
-        .lookup_var("print-charset-text-property", env)
+        .lookup_var_key(cached_symbol!("print-charset-text-property"), env)
         .unwrap_or(Value::Nil);
     if setting.is_nil() {
         return false;
@@ -1014,10 +1014,10 @@ fn render_bool_vector_prin1(
     options: PrintOptions,
 ) -> String {
     let escape_newlines = interp
-        .lookup_var("print-escape-newlines", env)
+        .lookup_var_key(cached_symbol!("print-escape-newlines"), env)
         .is_some_and(|value| value.is_truthy());
     let escape_control = interp
-        .lookup_var("print-escape-control-characters", env)
+        .lookup_var_key(cached_symbol!("print-escape-control-characters"), env)
         .is_some_and(|value| value.is_truthy());
 
     let size = bits.len();
@@ -1080,7 +1080,9 @@ pub(crate) fn render_prin1_body(
                                value: &Value,
                                env: &mut crate::lisp::types::Env|
      -> Result<Option<PrintOutput>, LispError> {
-        let Some(function) = interp.lookup_var("print-unreadable-function", env) else {
+        let Some(function) =
+            interp.lookup_var_key(cached_symbol!("print-unreadable-function"), env)
+        else {
             return Ok(None);
         };
         if !function.is_truthy() {
@@ -1509,7 +1511,7 @@ fn prepare_print_numbering(interp: &mut Interpreter, env: &mut Env, options: Pri
     // when `print-continuous-numbering' itself is non-nil.
     if !options.continuous_numbering
         || interp
-            .lookup_var("print-number-table", env)
+            .lookup_var_key(cached_symbol!("print-number-table"), env)
             .is_none_or(|value| value.is_nil())
     {
         interp.print_number_index = 0;

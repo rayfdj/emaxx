@@ -206,7 +206,7 @@ impl Interpreter {
             *environment
         } else if capture_override == Some(true)
             || self
-                .lookup_var("lexical-binding", env)
+                .lookup_var_key(cached_symbol!("lexical-binding"), env)
                 .is_some_and(|value| value.is_truthy())
         {
             Value::list([Value::T])
@@ -216,7 +216,10 @@ impl Interpreter {
         // Environment filtering is owned by the unchanged GNU cconv.el.
         if !closure_env.is_nil()
             && let Some(filter) = self
-                .lookup_var("internal-make-interpreted-closure-function", env)
+                .lookup_var_key(
+                    cached_symbol!("internal-make-interpreted-closure-function"),
+                    env,
+                )
                 .filter(Value::is_truthy)
         {
             return self.call_function_value(
