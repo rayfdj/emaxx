@@ -136,8 +136,12 @@ impl Interpreter {
         let Some(environment) = current_environment(env) else {
             return Ok(None);
         };
+        // NAME is most often the symbol's own text, the same slice.
         let binding = match symbol {
-            Some(symbol) if symbol.as_str().len() == name.len() && symbol.as_str() == name => {
+            Some(symbol)
+                if std::ptr::eq(symbol.as_str(), name)
+                    || (symbol.as_str().len() == name.len() && symbol.as_str() == name) =>
+            {
                 assq_binding(environment, symbol)?
             }
             _ => assq_binding_named(environment, name)?,

@@ -22,9 +22,13 @@ pub(crate) fn run_change_hooks(
     if interp.change_hooks_are_running() {
         return Ok(());
     }
-    // The hook named once, for the tests below and the hook's symbol.
-    let before = hook_name == "before-change-functions";
-    let after = !before && hook_name == "after-change-functions";
+    // The hook named once, for the tests below and the hook's symbol: a
+    // caller's literal is the same constant as these, tested before the
+    // text.
+    const BEFORE: &str = "before-change-functions";
+    const AFTER: &str = "after-change-functions";
+    let before = std::ptr::eq(hook_name, BEFORE) || hook_name == BEFORE;
+    let after = !before && (std::ptr::eq(hook_name, AFTER) || hook_name == AFTER);
     // insdel.c's run_undoable_change: every prepare-to-modify of a buffer
     // with undo enabled calls the Lisp `undo-auto--undoable-change' (which
     // registers the buffer in undo-auto--undoably-changed-buffers and arms

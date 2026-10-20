@@ -28201,6 +28201,84 @@ fn evaluator_tag_tests_keep_gnus_list_and_symbol_errors() {
 }
 
 #[test]
+fn quote_and_function_of_one_argument_return_it_like_gnu() {
+    // eval_sub returns the one argument of `quote', and of `function'
+    // when it is no lambda list, without the special form's frame; the
+    // same quoted object each time, and the argument-count errors of the
+    // full path for any other count.
+    let program = r#"(list (quote a) '(1 . 2)
+      (let ((f (lambda () '(x y)))) (eq (funcall f) (funcall f)))
+      (function car) #'cons
+      (functionp (function (lambda (x) x)))
+      (condition-case e (eval '(quote) t) (error e))
+      (condition-case e (eval '(quote a b) t) (error e))
+      (condition-case e (eval '(function) t) (error e))
+      (condition-case e (eval '(function car cdr) t) (error e)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "(a (1 . 2) t car cons t (wrong-number-of-arguments quote 0) (wrong-number-of-arguments quote 2) (wrong-number-of-arguments function 0) (wrong-number-of-arguments function 2))",
+        "quote and function of one argument",
+    );
+}
+
+#[test]
+fn featurep_and_require_find_the_symbol_in_features_like_gnu() {
+    // Ffeaturep and Frequire look for the symbol itself in `features'
+    // (Fmemq): an uninterned symbol of a provided feature's name is not
+    // that feature, nil can be one, and `require' of a present feature
+    // returns its argument without loading.  `features' is set, not
+    // bound: fns.c makes it non-special, so a lexical `let' of it is not
+    // the list these read.
+    let program = r#"(let ((old features))
+      (unwind-protect
+          (list (featurep 'emacs)
+                (featurep (make-symbol "emacs"))
+                (eq (require 'emacs) 'emacs)
+                (progn (setq features (list 'a (make-symbol "b") nil 'c))
+                       (list (featurep 'a) (featurep 'b) (featurep 'c) (featurep 'd)
+                             (featurep nil)))
+                (let ((s (make-symbol "x")))
+                  (setq features (list s))
+                  (list (featurep s) (featurep 'x) (eq (require s) s)))
+                (condition-case e (featurep "emacs") (error e))
+                (condition-case e (require 1) (error e)))
+        (setq features old)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(t nil t (t nil t nil t) (t nil t) (wrong-type-argument symbolp "emacs") (wrong-type-argument symbolp 1))"#,
+        "featurep and require by symbol",
+    );
+}
+
+#[test]
+fn buffers_named_with_a_space_keep_no_undo_until_enabled_like_gnu() {
+    // buffer.c:Fget_buffer_create sets `buffer-undo-list' to t in a
+    // buffer whose name starts with a space; Fbuffer_enable_undo takes
+    // BUFFER through Fget_buffer (nsberror for an unknown name) and sets
+    // nil only where the list is t; `buffer-local-value' reads another
+    // buffer's own list.
+    let program = r#"(list (with-temp-buffer buffer-undo-list)
+      (let ((b (get-buffer-create " x"))) (prog1 (buffer-local-value 'buffer-undo-list b) (kill-buffer b)))
+      (let ((b (get-buffer-create "y"))) (prog1 (buffer-local-value 'buffer-undo-list b) (kill-buffer b)))
+      (let ((b (generate-new-buffer " gen"))) (prog1 (buffer-local-value 'buffer-undo-list b) (kill-buffer b)))
+      (with-temp-buffer (buffer-enable-undo) (insert "a") buffer-undo-list)
+      (let ((b (get-buffer-create " other")))
+        (prog1 (with-temp-buffer (buffer-enable-undo b)
+                 (list buffer-undo-list (buffer-local-value 'buffer-undo-list b)))
+          (kill-buffer b)))
+      (let ((b (get-buffer-create " named")))
+        (buffer-enable-undo " named")
+        (prog1 (buffer-local-value 'buffer-undo-list b) (kill-buffer b)))
+      (condition-case e (buffer-enable-undo "no-such-buf") (error e))
+      (condition-case e (buffer-enable-undo 5) (error e)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(t t nil t ((1 . 2) (t . 0)) (t nil) nil (error "No buffer named no-such-buf") (wrong-type-argument stringp 5))"#,
+        "undo in buffers named with a space",
+    );
+}
+
+#[test]
 fn byte_code_predicates_memq_and_full_arms_run_in_the_loop_like_gnu() {
     // The verified byte-code loop runs Bsymbolp, Bstringp, Blistp,
     // Bnumberp, Bintegerp, Bmemq, Bsetcar and Bsetcdr itself; an operand it

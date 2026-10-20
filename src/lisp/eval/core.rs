@@ -853,6 +853,18 @@ impl Interpreter {
         original_args: Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
+        // Fquote of its one argument, and Ffunction of one that is no
+        // lambda list, return it and run nothing: no frame of theirs can
+        // be seen, so none is recorded, and one argument needs no count.
+        if matches!(native_form, NativeForm::Quote | NativeForm::Function)
+            && let Some(args) = original_args.cons_ref()
+            && args.cdr.get().is_nil()
+        {
+            let argument = args.car.get();
+            if matches!(native_form, NativeForm::Quote) || !argument.is_cons() {
+                return Ok(argument);
+            }
+        }
         let depth = self.backtrace_frames.len();
         self.push_unevaluated_backtrace_frame(source_form);
         let nargs = match self.short_list_length(original_args, env) {

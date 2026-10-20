@@ -2938,10 +2938,13 @@ impl Buffer {
 }
 
 fn property_undo_entry(name: &str, value: Value, start: usize, end: usize) -> Value {
+    // The span's name text stays where it is, so the address-keyed cache
+    // finds its symbol after the first record.
+    let name = crate::lisp::types::SymbolName::interned_cached(name).unwrap_or_else(|| name.into());
     Value::cons(
         Value::Nil,
         Value::cons(
-            Value::Symbol(name.into()),
+            Value::Symbol(name),
             Value::cons(
                 value,
                 Value::cons(Value::Integer(start as i64), Value::Integer(end as i64)),

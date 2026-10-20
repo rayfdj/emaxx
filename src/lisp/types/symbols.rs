@@ -65,6 +65,13 @@ const KEY_NAMES: &[&str] = &[
     "float",
     "operations",
     "lexical-binding",
+    "print-escape-nonascii",
+    "print-number-table",
+    "print-charset-text-property",
+    "print-escape-newlines",
+    "print-escape-control-characters",
+    "print-unreadable-function",
+    "internal-make-interpreted-closure-function",
     "macroexp--dynvars",
     "inhibit-modification-hooks",
     "buffer-file-name",
@@ -130,6 +137,8 @@ const KEY_NAMES: &[&str] = &[
     "find-word-boundary-function-table",
     "apply",
     "set-buffer-multibyte",
+    "features",
+    "current-load-list",
 ];
 
 struct Symbols {

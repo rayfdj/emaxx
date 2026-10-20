@@ -274,17 +274,18 @@ impl Interpreter {
 
     pub(crate) fn require_feature_with_target(
         &mut self,
-        feature: &str,
+        symbol: SymbolName,
         target: Option<&str>,
         env: &mut Env,
     ) -> Result<Value, LispError> {
         // GNU records a file's dependency even when FEATURE was loaded
         // already.  `file-dependents' and `unload-feature' derive their
         // dependency graph from these entries.
-        self.record_require_in_load_history(feature);
-        if self.has_feature(feature) {
-            return Ok(Value::Symbol(feature.to_string().into()));
+        self.record_require_in_load_history(symbol);
+        if self.has_feature_symbol(symbol) {
+            return Ok(Value::Symbol(symbol));
         }
+        let feature = symbol.as_str();
         let load_target = target.unwrap_or(feature);
         let (open, close) = self.effective_quote_pair(env);
         let loaded = self.with_require_nesting(feature, (open, close), |interp| {
@@ -312,7 +313,7 @@ impl Interpreter {
         // processed with `format-message' semantics: the quotes follow the
         // effective `text-quoting-style', which is grave in a non-UTF-8
         // locale (the compatibility harness runs LANG=C).
-        if !self.has_feature(feature) {
+        if !self.has_feature_symbol(symbol) {
             // GNU fns.c:Frequire signals unconditionally when the loaded
             // file did not provide FEATURE, naming the file `load-history'
             // records last (the resolved path, not the feature), or
@@ -329,7 +330,7 @@ impl Interpreter {
                 None => format!("Required feature {open}{feature}{close} was not provided"),
             }));
         }
-        Ok(Value::Symbol(feature.to_string().into()))
+        Ok(Value::Symbol(symbol))
     }
 
     /// Resolve a Lisp string-or-buffer value to a live buffer ID.
@@ -367,6 +368,12 @@ impl Interpreter {
         let id = self.alloc_buffer_id();
         let mut buffer = crate::buffer::Buffer::new(name);
         buffer.text_conversion_style = self.native_text_conversion_style_default();
+        // buffer.c:Fget_buffer_create: `bset_undo_list (b, SREF (name, 0)
+        // != ' ' ? Qnil : Qt)', no undo kept in a buffer whose name starts
+        // with a space (`with-temp-buffer's, the printer's, `load's).
+        if name.starts_with(' ') {
+            buffer.disable_undo();
+        }
         self.inactive_buffers
             .push((id, crate::lisp::types::BufferRef::new(id, buffer)));
         self.buffer_list.push((id, name.to_string()));
@@ -2020,25 +2027,26 @@ impl Interpreter {
         self.set_global_binding("current-load-list", Value::cons(entry, current_load_list));
     }
 
-    fn record_require_in_load_history(&mut self, feature: &str) {
-        let Some(current_load_list) = self.lookup_var("current-load-list", &Env::new()) else {
+    fn record_require_in_load_history(&mut self, feature: SymbolName) {
+        // `require' only records dependencies while reading a file.  GNU
+        // recognizes that state by the final string in current-load-list,
+        // which is nil outside a load.
+        let Some(current_load_list) = self
+            .symbol_value_key(cached_symbol!("current-load-list"))
+            .filter(|list| !list.is_nil())
+        else {
             return;
         };
         let Ok(entries) = current_load_list.to_vec() else {
             return;
         };
-        // `require' only records dependencies while reading a file.  GNU
-        // recognizes that state by the final string in current-load-list.
         if !matches!(
             entries.last().map(|v| v.kind()),
             Some(Kind::StringObject(_))
         ) {
             return;
         }
-        let entry = Value::cons(
-            Value::Symbol("require".into()),
-            Value::Symbol(feature.to_string().into()),
-        );
+        let entry = Value::cons(Value::Symbol("require".into()), Value::Symbol(feature));
         if entries.iter().any(|item| item == &entry) {
             return;
         }
@@ -2198,7 +2206,8 @@ impl Interpreter {
     }
 
     /// Whether FEATURE names a symbol in `features' (read in place; a
-    /// circular or dotted list has none).
+    /// circular or dotted list has none): by name, for a caller that
+    /// holds no symbol, in whichever obarray it reads from.
     pub fn has_feature(&self, feature: &str) -> bool {
         let features = self
             .global_value("features")
@@ -2218,6 +2227,34 @@ impl Interpreter {
                 return false;
             }
             if named(&cell.car.get()) {
+                return true;
+            }
+            tail = cell.cdr.get();
+        }
+        false
+    }
+
+    /// Ffeaturep's and Frequire's `Fmemq (feature, Vfeatures)': FEATURE
+    /// by its word, read in place (a circular or dotted list has none).
+    pub(crate) fn has_feature_symbol(&self, feature: SymbolName) -> bool {
+        let features = cached_symbol!("features")
+            .with(|symbol| self.global_binding_value_symbol(symbol))
+            .unwrap_or_else(|| self.features_value());
+        let word = Value::Symbol(feature).word();
+        if matches!(features.kind(), Kind::Vector(_)) {
+            // A vector reads as `to_vec' gives it, marker first.
+            return features
+                .to_vec()
+                .is_ok_and(|features| features.iter().any(|value| value.word() == word));
+        }
+        // Fmemq's walk, stopping at the first match.
+        let mut tail = features;
+        let mut seen = crate::lisp::types::CycleGuard::new();
+        while let Some(cell) = tail.cons_ref() {
+            if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+                return false;
+            }
+            if cell.car.get().word() == word {
                 return true;
             }
             tail = cell.cdr.get();
