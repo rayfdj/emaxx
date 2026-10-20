@@ -567,13 +567,13 @@ define_dispatch!(
                 need_arg_range(name, args, 1, 3)?;
                 // Like `provide', GNU's Frequire accepts a positioned symbol
                 // through CHECK_SYMBOL and returns the original object.
-                let feature = checked_symbol_name(interp, &args[0], env)?;
+                let feature = checked_symbol_identity(interp, &args[0], env)?;
                 let target = match args.get(1) {
                     Some(value) if value.is_truthy() => Some(string_text(value)?),
                     _ => None,
                 };
                 let noerror = args.get(2).is_some_and(Value::is_truthy);
-                let result = interp.require_feature_with_target(&feature, target.as_deref(), env);
+                let result = interp.require_feature_with_target(feature, target.as_deref(), env);
                 // GNU's NOERROR only suppresses failure to locate/open the file;
                 // errors raised after a file was found still propagate.
                 if noerror

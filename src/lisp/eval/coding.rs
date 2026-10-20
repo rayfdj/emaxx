@@ -1196,17 +1196,19 @@ impl Interpreter {
             crate::lisp::primitives::WINDOW_OLD_POINT_SLOT,
             crate::lisp::primitives::WINDOW_POINT_SLOT,
         ];
-        // The ids in place, not a fresh vector: this runs on every
-        // insertion and deletion, and frames have few windows.
-        let windows: smallvec::SmallVec<[u64; 8]> = self
-            .record_ids_by_type_index
-            .get("window")
-            .map(|ids| ids.iter().copied().collect())
-            .unwrap_or_default();
+        // The window index walked in place, its ids not copied out: this
+        // runs on every insertion and deletion.
+        let Some(windows) = self.record_ids_by_type_index.get("window") else {
+            return;
+        };
         for window_id in windows {
-            let Some(record) = self.find_record_mut(window_id) else {
+            let Some(record) = self.record_ref(*window_id) else {
                 continue;
             };
+            // SAFETY: as `find_record_mut': the exclusive borrow of `self'
+            // keeps any other path to the record's state out, and the state
+            // is the record's own allocation, not the index read here.
+            let record = unsafe { &mut *record.as_ptr() };
             let shows_buffer = matches!(
                 record.slots.get(crate::lisp::primitives::WINDOW_BUFFER_SLOT).map(|v| v.kind()),
                 Some(Kind::Integer(id)) if id == buffer_id as i64

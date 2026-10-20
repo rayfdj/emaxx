@@ -2956,6 +2956,51 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   local failures with the CI record); the `eval::` module's run was
   stopped at fifty minutes. The lightweight group's 598 pass; clippy
   `-D warnings` and rustfmt pass.
+- **Round 30: `features` by the symbol, the window points without a
+  copy, and the lexical lookup without a compare.** undo-test1's
+  `(require 'facemenu)` runs once a unit. `require` and `featurep` looked
+  for the feature's name in `features` by text, a string compare an
+  element (`has_feature` 3,980 instructions, 4,790 with its callees),
+  interned the name again for the return value, and copied
+  `current-load-list` into a vector outside any load. They now take the
+  symbol (`checked_symbol_identity`) and test each element's word, as
+  Fmemq does in Ffeaturep and Frequire (2,218 instructions: the list is
+  long, and GNU walks the same one); `current-load-list` is read by key,
+  and an empty one ends the load-history record. By the word,
+  `(featurep nil)` is t when `features` holds nil, as in GNU (it was
+  nil), and an uninterned symbol of a provided feature's name is not
+  that feature. `has_feature` by name stays for the Rust callers that
+  hold no symbol: a test's `Interpreter::new()` leaves its caller's
+  obarray current, where the editor's symbols are not. Every insertion
+  and deletion adjusts the windows' point slots, and the window ids were
+  copied out of the type index into a SmallVec first (108 instructions,
+  39 times a unit); the index is walked in place. The lexical lookup of
+  a symbol under its own name compared the name with itself (36 memcmp
+  calls a unit); the same slice is tested first. Undo a unit, in the
+  functions changed: about 3,500 instructions fewer for `require`, 9,000
+  for the window points and the lexical lookup (memcmp 342.5 -> 316.4
+  calls); the total, 1,294,849 against round 29's 1,311,122, moves within
+  its variation (a timer's run lands inside one of the two measured runs
+  and not the other). Interpreted-calls and interpreted-lexical are
+  unchanged function by function (3,251.8 and 3,562.2 a unit, the
+  difference glibc's `malloc_consolidate`). An allocator experiment, small
+  blocks up to 1 KB on the per-thread lists (16 deep above 256 bytes),
+  cut libc malloc's calls 48 -> 35 a unit but raised `_int_malloc`'s 34 ->
+  38 (fewer frees reach libc's own cache): no gain, not kept. Found on
+  the way, not changed: GNU makes `features` non-special
+  (`Fmake_var_non_special (Qfeatures)` in fns.c), so under lexical
+  binding `(let ((features ...)) (featurep ...))` binds a lexical
+  variable the primitive does not read; Emaxx binds it dynamically
+  (`(let* ((s (make-symbol "x")) (features (list s))) (featurep s))` is
+  t, GNU's nil). New oracle test: `featurep` and `require` by the
+  symbol, nil as a feature, uninterned names, the wrong-type errors, with
+  `features` set and restored rather than bound.
+  Validation (gate profile, `--test-threads=1`, 128 MiB stacks):
+  the tests naming `feature` (15), `require` (26),
+  `provide` (12), `undo` (16), `marker` (35), `window` (92), lexical (55),
+  closure (54), `delete_region` (2), `insert` (42) and `load_history` (4)
+  pass; the lightweight group's 598 pass; clippy `-D warnings` and
+  rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3497,7 +3542,10 @@ slow ops resumed in the loop): full Rust gate passed (run 39307717277),
 frozen passed on its first attempt (run 39307721612). **On `8085c84`**
 (round 27's Bmemq arm undone): full Rust gate passed (run 39322364977),
 frozen passed on its first attempt (run 39322368855); PR #95 merged
-rounds 26 to 28 into main (`40c3eb0`). Locally,
+rounds 26 to 28 into main (`40c3eb0`). **On `c4b94cf`** (one-argument
+`quote` and `function` without their frame): full Rust gate passed (run
+39350248947), frozen passed on its first attempt (run 39350251689).
+Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -3811,7 +3859,12 @@ and failures are still recorded.
    (`run_verified` and `op_in_place`), the evaluator and the native
    code's calls into subrs, the rest spread over the primitives (bullet
    "Where undo's wall time goes"). Compiler settings do not move it;
-   each of those paths has to touch less code. For the work both editors do, Emaxx runs about 14% more
+   each of those paths has to touch less code. Rounds 29 and 30 took
+   about 16,000 instructions a unit out of undo's warm paths (special
+   forms' frames, lookups and string compares by name, a copied window
+   index). A compatibility difference found in round 30 is open: GNU's
+   `features` is not special (fns.c's `Fmake_var_non_special`), Emaxx's
+   is, so a lexical `let` of it changes what `featurep` reads. For the work both editors do, Emaxx runs about 14% more
    instructions than GNU (GNU's totals include 150,000 a unit of
    window-size Lisp Emaxx does not run), most of it in the byte-code
    VM's slow ops (`op_in_place`, 140 a slow op) and the native runtime's

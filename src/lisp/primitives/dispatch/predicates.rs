@@ -554,8 +554,8 @@ define_dispatch!(
             "featurep" => {
                 need_args(name, args, 1)?;
                 // GNU 30.2 fns.c:Ffeaturep uses CHECK_SYMBOL/XSYMBOL.
-                let symbol = checked_symbol_name(interp, &args[0], env)?;
-                if !interp.has_feature(&symbol) {
+                let symbol = checked_symbol_identity(interp, &args[0], env)?;
+                if !interp.has_feature_symbol(symbol) {
                     return Ok(Value::Nil);
                 }
                 // GNU: with SUBFEATURE, check (memq SUBFEATURE (get FEATURE
@@ -563,7 +563,7 @@ define_dispatch!(
                 // (:family local).
                 if let Some(subfeature) = args.get(1).filter(|value| value.is_truthy()) {
                     let subfeatures = interp
-                        .get_symbol_property(&symbol, "subfeatures")
+                        .get_symbol_property(symbol.as_str(), "subfeatures")
                         .unwrap_or(Value::Nil);
                     let found = subfeatures.to_vec().unwrap_or_default().iter().any(|item| {
                         crate::lisp::primitives::values_equal(interp, item, subfeature)

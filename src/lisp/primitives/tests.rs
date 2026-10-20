@@ -28222,6 +28222,35 @@ fn quote_and_function_of_one_argument_return_it_like_gnu() {
 }
 
 #[test]
+fn featurep_and_require_find_the_symbol_in_features_like_gnu() {
+    // Ffeaturep and Frequire look for the symbol itself in `features'
+    // (Fmemq): an uninterned symbol of a provided feature's name is not
+    // that feature, nil can be one, and `require' of a present feature
+    // returns its argument without loading.  `features' is set, not
+    // bound: fns.c makes it non-special, so a lexical `let' of it is not
+    // the list these read.
+    let program = r#"(let ((old features))
+      (unwind-protect
+          (list (featurep 'emacs)
+                (featurep (make-symbol "emacs"))
+                (eq (require 'emacs) 'emacs)
+                (progn (setq features (list 'a (make-symbol "b") nil 'c))
+                       (list (featurep 'a) (featurep 'b) (featurep 'c) (featurep 'd)
+                             (featurep nil)))
+                (let ((s (make-symbol "x")))
+                  (setq features (list s))
+                  (list (featurep s) (featurep 'x) (eq (require s) s)))
+                (condition-case e (featurep "emacs") (error e))
+                (condition-case e (require 1) (error e)))
+        (setq features old)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(t nil t (t nil t nil t) (t nil t) (wrong-type-argument symbolp "emacs") (wrong-type-argument symbolp 1))"#,
+        "featurep and require by symbol",
+    );
+}
+
+#[test]
 fn byte_code_predicates_memq_and_full_arms_run_in_the_loop_like_gnu() {
     // The verified byte-code loop runs Bsymbolp, Bstringp, Blistp,
     // Bnumberp, Bintegerp, Bmemq, Bsetcar and Bsetcdr itself; an operand it

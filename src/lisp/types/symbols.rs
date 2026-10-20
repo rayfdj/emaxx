@@ -137,6 +137,8 @@ const KEY_NAMES: &[&str] = &[
     "find-word-boundary-function-table",
     "apply",
     "set-buffer-multibyte",
+    "features",
+    "current-load-list",
 ];
 
 struct Symbols {
