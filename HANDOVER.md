@@ -3001,6 +3001,52 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   closure (54), `delete_region` (2), `insert` (42) and `load_history` (4)
   pass; the lightweight group's 598 pass; clippy `-D warnings` and
   rustfmt pass.
+- **Round 31: a buffer named with a space keeps no undo, as in GNU.**
+  buffer.c:Fget_buffer_create sets `buffer-undo-list` to t in a buffer
+  whose name starts with a space. Emaxx's were nil, so every
+  `with-temp-buffer` buffer, the printer's ` *string-output*`, `load`'s
+  ` *load*` and the coding detector's ` *auto-coding-work*` recorded undo
+  GNU does not keep, and `(with-temp-buffer buffer-undo-list)` was nil
+  where GNU's is t. `create_buffer` now disables undo for such a name.
+  `buffer-enable-undo` ignored its argument (it enabled the current
+  buffer's undo whatever BUFFER was); it takes BUFFER through
+  Fget_buffer as GNU's C does, with nsberror's "No buffer named NAME" and
+  the stringp type error. `buffer-local-value` of `buffer-undo-list` read
+  the locals' alist, not BUFFER's history (nil for a buffer keeping
+  none); it reads the buffer's own list, BVAR (b, undo_list). Found while
+  tracing undo's rebuilds of the Lisp view of the list (gdb, then a
+  temporary diagnostic build): each test's fresh temporary buffer pushed
+  its first 5 to 16 records with no view, rebuilt at the next read of
+  `buffer-undo-list`, 35 records a unit. A view made for an empty history
+  at creation moved that work into the pushes instead (undo 1,311,931 a
+  unit against round 30's 1,294,849, the difference glibc's
+  `malloc_consolidate` and the byte-code entry cache inside one of the
+  two measured runs) and would make every buffer that never reads its
+  list convert each record: not kept. Undo's instructions do not move
+  with the round, its tests' buffers enabling undo themselves. New oracle
+  test: undo in buffers named with a space, `generate-new-buffer`,
+  `buffer-enable-undo` of another buffer and by name with its two
+  errors, `buffer-local-value` of the list.
+  Round 30's profile-guided build against round 28's, ten rotated rounds
+  at the contract's sizes (median ratio to GNU and range): undo 1.050
+  [0.972, 1.196] against 1.016 [0.953, 1.180], bytecode calls 0.925
+  [0.846, 1.053] against 0.916 [0.872, 1.038], within the host's
+  variation. Undo at n = 1000, three rounds: GNU 0.580 s with four
+  collections taking 0.112 s, Emaxx 0.601 s with three taking 0.077 s;
+  the code between collections 0.524 s against 0.469 (1.12), a collection
+  26 ms against GNU's 28, 85% of it tracing (`trace_pending`). A
+  Lisp-only undo list (GNU's representation) would remove about 22,700
+  instructions and 99 of undo's 5,605 lines run at least half a time a
+  unit: not attempted for that.
+  Validation (gate profile, `--test-threads=1`, 128 MiB stacks):
+  the tests naming `undo` (17), `buffer` (325), `temp`
+  (27), `insert` (42), `delete` (28), `change` (44), `kill` (22),
+  `erase` (1), `marker` (35), `propert` (126) and `format` (33) pass but
+  `save_buffer_skips_unmodified_and_unchanged_files` (in `buffer` and
+  `change`) and `print_prunes_charset_properties_like_print_prune_string_charset`
+  (in `propert`), this container's two known failures (see the local
+  failures with the CI record); the lightweight group's 598 pass;
+  clippy `-D warnings` and rustfmt pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -3545,7 +3591,9 @@ frozen passed on its first attempt (run 39322368855); PR #95 merged
 rounds 26 to 28 into main (`40c3eb0`). **On `c4b94cf`** (one-argument
 `quote` and `function` without their frame): full Rust gate passed (run
 39350248947), frozen passed on its first attempt (run 39350251689).
-Locally,
+**On `b614c70`** (`features` by the symbol, the window index in place):
+full Rust gate passed (run 39357843966), frozen passed on its first
+attempt (run 39357846766). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the

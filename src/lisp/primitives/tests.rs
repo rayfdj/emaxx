@@ -28251,6 +28251,34 @@ fn featurep_and_require_find_the_symbol_in_features_like_gnu() {
 }
 
 #[test]
+fn buffers_named_with_a_space_keep_no_undo_until_enabled_like_gnu() {
+    // buffer.c:Fget_buffer_create sets `buffer-undo-list' to t in a
+    // buffer whose name starts with a space; Fbuffer_enable_undo takes
+    // BUFFER through Fget_buffer (nsberror for an unknown name) and sets
+    // nil only where the list is t; `buffer-local-value' reads another
+    // buffer's own list.
+    let program = r#"(list (with-temp-buffer buffer-undo-list)
+      (let ((b (get-buffer-create " x"))) (prog1 (buffer-local-value 'buffer-undo-list b) (kill-buffer b)))
+      (let ((b (get-buffer-create "y"))) (prog1 (buffer-local-value 'buffer-undo-list b) (kill-buffer b)))
+      (let ((b (generate-new-buffer " gen"))) (prog1 (buffer-local-value 'buffer-undo-list b) (kill-buffer b)))
+      (with-temp-buffer (buffer-enable-undo) (insert "a") buffer-undo-list)
+      (let ((b (get-buffer-create " other")))
+        (prog1 (with-temp-buffer (buffer-enable-undo b)
+                 (list buffer-undo-list (buffer-local-value 'buffer-undo-list b)))
+          (kill-buffer b)))
+      (let ((b (get-buffer-create " named")))
+        (buffer-enable-undo " named")
+        (prog1 (buffer-local-value 'buffer-undo-list b) (kill-buffer b)))
+      (condition-case e (buffer-enable-undo "no-such-buf") (error e))
+      (condition-case e (buffer-enable-undo 5) (error e)))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        r#"(t t nil t ((1 . 2) (t . 0)) (t nil) nil (error "No buffer named no-such-buf") (wrong-type-argument stringp 5))"#,
+        "undo in buffers named with a space",
+    );
+}
+
+#[test]
 fn byte_code_predicates_memq_and_full_arms_run_in_the_loop_like_gnu() {
     // The verified byte-code loop runs Bsymbolp, Bstringp, Blistp,
     // Bnumberp, Bintegerp, Bmemq, Bsetcar and Bsetcdr itself; an operand it

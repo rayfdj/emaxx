@@ -684,6 +684,15 @@ define_dispatch!(
                 // signals void-variable with VARIABLE as given.
                 let value = if interp.has_native_text_conversion_style(&symbol) {
                     interp.buffer_local_value(buffer_id, &symbol)
+                } else if symbol == "buffer-undo-list"
+                    && crate::lisp::types::SymbolName::find(&symbol)
+                        .is_some_and(|symbol| symbol.cell().has_c_slot())
+                {
+                    // BVAR (b, undo_list): BUFFER's own history, t while
+                    // it keeps none, held by the buffer and not its locals.
+                    interp
+                        .get_buffer_by_id(buffer_id)
+                        .map(|buffer| crate::lisp::primitives::buffer_undo_list_value(&buffer))
                 } else {
                     match interp.buffer_local_binding(buffer_id, &symbol) {
                         Some(local) => local,

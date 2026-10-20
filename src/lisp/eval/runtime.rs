@@ -368,6 +368,12 @@ impl Interpreter {
         let id = self.alloc_buffer_id();
         let mut buffer = crate::buffer::Buffer::new(name);
         buffer.text_conversion_style = self.native_text_conversion_style_default();
+        // buffer.c:Fget_buffer_create: `bset_undo_list (b, SREF (name, 0)
+        // != ' ' ? Qnil : Qt)', no undo kept in a buffer whose name starts
+        // with a space (`with-temp-buffer's, the printer's, `load's).
+        if name.starts_with(' ') {
+            buffer.disable_undo();
+        }
         self.inactive_buffers
             .push((id, crate::lisp::types::BufferRef::new(id, buffer)));
         self.buffer_list.push((id, name.to_string()));

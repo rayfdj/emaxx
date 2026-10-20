@@ -744,7 +744,33 @@ define_dispatch!(
                 Ok(Value::Integer(buffer.size_total() as i64))
             }
             "buffer-enable-undo" => {
-                interp.buffer.borrow_mut().enable_undo();
+                need_arg_range(name, args, 0, 1)?;
+                // buffer.c:Fbuffer_enable_undo: BUFFER through Fget_buffer
+                // (a name must name a live buffer, nsberror's message),
+                // whose list becomes nil where it is t.
+                let buffer = match args.first().filter(|value| !value.is_nil()) {
+                    None => Some(interp.buffer),
+                    Some(value) => match value.kind() {
+                        Kind::Buffer(buffer) => Some(buffer),
+                        _ => {
+                            let Some(found) =
+                                with_string_text(value, |text| interp.find_buffer_id(text))
+                            else {
+                                return Err(wrong_type_argument("stringp", *value));
+                            };
+                            let Some(id) = found else {
+                                return Err(LispError::Signal(format!(
+                                    "No buffer named {}",
+                                    string_text(value)?
+                                )));
+                            };
+                            interp.buffer_object(id)
+                        }
+                    },
+                };
+                if let Some(buffer) = buffer {
+                    buffer.borrow_mut().enable_undo();
+                }
                 Ok(Value::Nil)
             }
             "gap-position" => Ok(Value::Integer(interp.buffer.borrow().point() as i64)),
