@@ -3390,10 +3390,10 @@ impl Interpreter {
                     .rev()
                     .map(|frame| {
                         (
-                            frame.evald,
+                            frame.evald(),
                             frame.function_snapshot(),
                             frame.args_snapshot(),
-                            frame.debug_on_exit,
+                            frame.debug_on_exit(),
                         )
                     })
                     .collect()

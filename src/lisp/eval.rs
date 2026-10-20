@@ -1501,153 +1501,158 @@ pub(crate) struct SpecialBindingRestore {
     local_binding_killed: bool,
 }
 
-/// eval.c:record_in_backtrace stores the caller's argument vector by
-/// address (`specpdl->bt.args = args`) for the life of the frame; the frame
-/// owns no copy.
+/// eval.c's `union specbinding' backtrace member in its four words:
+/// function, args, nargs with the debug-on-exit flag, and what else a
+/// frame can carry (`detail'), so the frame of a byte-code or primitive
+/// call costs what GNU's does.
+///
+/// record_in_backtrace stores the caller's argument vector by address
+/// (`specpdl->bt.args = args`) for the life of the frame, and so does
+/// `args': the activation's Lisp values, or a native Ffuncall's machine
+/// words (decoded only if Lisp inspects the frame).  A frame that
+/// outlives its activation (one retained explicitly, or a copy of an
+/// interpreter) holds its arguments in its detail, `args' addressing them
+/// there; a frame without a detail owns nothing and leaves as a specpdl
+/// entry does, by the length moving back.
 ///
 /// Borrowed frames are private to the scoped backtrace helpers, which remove
 /// them on return and panic before the arguments expire. A parked Lisp thread
 /// keeps its whole coroutine stack alive, so its frames stay valid too.
-/// Explicitly retained frames and copies of an interpreter own their arguments.
 #[derive(Debug)]
-pub(crate) enum FrameArgs {
-    Borrowed {
-        ptr: *const Value,
-        len: usize,
-    },
-    /// Native Ffuncall's machine-word argument vector, likewise borrowed;
-    /// Values are decoded only if Lisp inspects the frame.
-    NativeWords {
-        ptr: *const usize,
-        len: usize,
-    },
-    /// A copy of native words taken outside their activation (an image
-    /// copy of the interpreter); decodable only once a runtime is active.
-    NativeOwned(Vec<usize>),
-    Owned(Vec<Value>),
+struct BacktraceFrame {
+    /// bt.function: the called function, or for eval_sub's unevaluated
+    /// frame (nargs UNEVALLED) the form itself, which the evaluating
+    /// caller holds for the frame's whole life.
+    function: Value,
+    /// bt.args: Lisp values, or machine words under FRAME_NATIVE_WORDS.
+    args: *const usize,
+    /// bt.nargs below FRAME_NARGS, the frame's flags above it.
+    shape: usize,
+    detail: Option<Box<FrameDetail>>,
 }
 
-impl FrameArgs {
-    /// Whether these are borrowed words, which own no storage.
+/// The argument words are a native Ffuncall's, not Lisp values.
+const FRAME_NATIVE_WORDS: usize = 1 << 63;
+/// eval.c's evaluated frame (nargs not UNEVALLED).
+const FRAME_EVALD: usize = 1 << 62;
+/// bt.debug_on_exit.
+const FRAME_DEBUG_ON_EXIT: usize = 1 << 61;
+/// The count below the flags: a slice of words is far shorter.
+const FRAME_NARGS: usize = FRAME_DEBUG_ON_EXIT - 1;
+
+impl BacktraceFrame {
+    /// The shape word of NARGS arguments (Lisp values, or native words if
+    /// NATIVE) in an evaluated frame if EVALD, debug-on-exit clear.
     #[inline(always)]
-    fn is_borrowed(&self) -> bool {
-        matches!(self, Self::Borrowed { .. } | Self::NativeWords { .. })
+    const fn shape(nargs: usize, native: bool, evald: bool) -> usize {
+        nargs | if native { FRAME_NATIVE_WORDS } else { 0 } | if evald { FRAME_EVALD } else { 0 }
     }
 
     #[inline(always)]
-    fn borrowed(args: &[Value]) -> Self {
-        Self::Borrowed {
-            ptr: args.as_ptr(),
-            len: args.len(),
+    fn evald(&self) -> bool {
+        self.shape & FRAME_EVALD != 0
+    }
+
+    #[inline(always)]
+    fn debug_on_exit(&self) -> bool {
+        self.shape & FRAME_DEBUG_ON_EXIT != 0
+    }
+
+    fn set_debug_on_exit(&mut self, enabled: bool) {
+        if enabled {
+            self.shape |= FRAME_DEBUG_ON_EXIT;
+        } else {
+            self.shape &= !FRAME_DEBUG_ON_EXIT;
         }
+    }
+
+    /// Whether dropping the frame releases nothing: no detail, which holds
+    /// whatever a frame owns (the frame of an ordinary call).
+    #[inline(always)]
+    fn owns_nothing(&self) -> bool {
+        self.detail.is_none()
     }
 
     /// The Lisp arguments of an evaluator frame; None for native words.
     pub(crate) fn lisp_values(&self) -> Option<&[Value]> {
-        match self {
-            // SAFETY: see the type comment: the owning activation is live
-            // for every instant this frame is on a backtrace.
-            Self::Borrowed { ptr, len } => Some(unsafe { std::slice::from_raw_parts(*ptr, *len) }),
-            Self::NativeWords { .. } | Self::NativeOwned(_) => None,
-            Self::Owned(values) => Some(values),
+        if self.shape & FRAME_NATIVE_WORDS != 0 {
+            return None;
         }
+        // SAFETY: see the type comment: the owning activation (or the
+        // frame's detail) holds the words for every instant this frame is
+        // on a backtrace, and a value is its word.
+        Some(unsafe {
+            std::slice::from_raw_parts(self.args.cast::<Value>(), self.shape & FRAME_NARGS)
+        })
     }
 
     pub(crate) fn native_words(&self) -> Option<&[usize]> {
-        match self {
-            // SAFETY: as above; native Ffuncall pops the frame before its
-            // argument vector goes away.
-            Self::NativeWords { ptr, len } => {
-                Some(unsafe { std::slice::from_raw_parts(*ptr, *len) })
-            }
-            Self::NativeOwned(words) => Some(words),
-            Self::Borrowed { .. } | Self::Owned(_) => None,
+        if self.shape & FRAME_NATIVE_WORDS == 0 {
+            return None;
         }
+        // SAFETY: as above; native Ffuncall pops the frame before its
+        // argument vector goes away.
+        Some(unsafe { std::slice::from_raw_parts(self.args, self.shape & FRAME_NARGS) })
+    }
+
+    /// The frame's arguments become VALUES, held in its detail.
+    fn own_lisp_values(&mut self, values: Vec<Value>) {
+        let flags = self.shape & (FRAME_EVALD | FRAME_DEBUG_ON_EXIT);
+        self.shape = values.len() | flags;
+        let detail = self.detail_mut();
+        detail.owned_words = Vec::new();
+        detail.owned_values = values;
+        self.args = detail.owned_values.as_ptr().cast();
+    }
+
+    /// The frame's arguments become the native WORDS, held in its detail.
+    fn own_native_words(&mut self, words: Vec<usize>) {
+        let flags = self.shape & (FRAME_EVALD | FRAME_DEBUG_ON_EXIT);
+        self.shape = words.len() | FRAME_NATIVE_WORDS | flags;
+        let detail = self.detail_mut();
+        detail.owned_values = Vec::new();
+        detail.owned_words = words;
+        self.args = detail.owned_words.as_ptr();
+    }
+
+    /// The Lisp arguments the frame's detail holds, for an interpreter's
+    /// copy to replace in place.
+    #[cfg(test)]
+    fn owned_lisp_values_mut(&mut self) -> Option<&mut [Value]> {
+        if self.shape & FRAME_NATIVE_WORDS != 0 {
+            return None;
+        }
+        let detail = self.detail.as_mut()?;
+        (detail.owned_values.as_ptr().cast() == self.args).then_some(&mut detail.owned_values[..])
     }
 }
 
-impl Clone for FrameArgs {
-    /// A copy of a frame may outlive the activation, so it owns its values.
+impl Clone for BacktraceFrame {
+    /// A copy of a frame may outlive the activation, so it owns its
+    /// arguments (native words decoded while a runtime is active).
     fn clone(&self) -> Self {
-        match self {
-            Self::NativeWords { .. } | Self::NativeOwned(_) => {
-                let words = self.native_words().unwrap_or(&[]);
-                match crate::lisp::native_comp::decode_active_backtrace_arguments(words) {
-                    Some(Ok(values)) => Self::Owned(values),
-                    _ => Self::NativeOwned(words.to_vec()),
-                }
+        let mut copy = BacktraceFrame {
+            function: self.function,
+            args: std::ptr::NonNull::dangling().as_ptr(),
+            shape: self.shape & (FRAME_EVALD | FRAME_DEBUG_ON_EXIT),
+            detail: self.detail.as_ref().map(|detail| {
+                Box::new(FrameDetail {
+                    source_form: detail.source_form,
+                    lexical_context: detail.lexical_context.clone(),
+                    owned_values: Vec::new(),
+                    owned_words: Vec::new(),
+                })
+            }),
+        };
+        if let Some(words) = self.native_words() {
+            match crate::lisp::native_comp::decode_active_backtrace_arguments(words) {
+                Some(Ok(values)) => copy.own_lisp_values(values),
+                _ => copy.own_native_words(words.to_vec()),
             }
-            other => Self::Owned(other.lisp_values().unwrap_or(&[]).to_vec()),
+        } else {
+            copy.own_lisp_values(self.lisp_values().unwrap_or(&[]).to_vec());
         }
-    }
-}
-
-/// The frame's function word.  eval.c's `bt.function' is a tagged
-/// pointer with no reference of its own: for eval_sub's unevaluated
-/// frame it is the form the evaluating caller holds for the frame's whole
-/// life, so the frame borrows that cons instead of counting a reference
-/// on every interpreted form.  Every other frame owns its word.
-#[derive(Debug)]
-pub(crate) enum FrameFunction {
-    Owned(Value),
-    Form(*const ConsCell),
-}
-
-impl FrameFunction {
-    /// The word as a value of its own (a reference taken for the caller).
-    fn value(&self) -> Value {
-        match self {
-            Self::Owned(value) => *value,
-            // SAFETY: the pointer came from a live cons the evaluating
-            // caller still holds (see the type comment); a cons handle
-            // carries no count.
-            Self::Form(cell) => unsafe {
-                Value::Cons(crate::lisp::types::SharedCons::from_raw(*cell))
-            },
-        }
-    }
-
-    /// The word read in place, without a reference taken.
-    fn with_value<R>(&self, read: impl FnOnce(&Value) -> R) -> R {
-        match self {
-            Self::Owned(value) => read(value),
-            // SAFETY: as in `value'.
-            Self::Form(cell) => {
-                let value = std::mem::ManuallyDrop::new(unsafe {
-                    Value::Cons(crate::lisp::types::SharedCons::from_raw(*cell))
-                });
-                read(&value)
-            }
-        }
-    }
-}
-
-impl Clone for FrameFunction {
-    /// A copy of a frame may outlive the activation, so it owns its word.
-    fn clone(&self) -> Self {
-        Self::Owned(self.value())
-    }
-}
-
-/// eval.c's `union specbinding' backtrace member: function, args, nargs
-/// and the debug-on-exit flag.  Everything else a frame can carry lives
-/// behind `detail', so the frame of a byte-code or primitive call costs
-/// what GNU's does.
-#[derive(Clone, Debug)]
-struct BacktraceFrame {
-    function: FrameFunction,
-    args: FrameArgs,
-    evald: bool,
-    debug_on_exit: bool,
-    detail: Option<Box<FrameDetail>>,
-}
-
-impl BacktraceFrame {
-    /// Whether dropping the frame releases nothing: no detail and no
-    /// argument vector of its own (the frame of an ordinary call).
-    #[inline(always)]
-    fn owns_nothing(&self) -> bool {
-        self.detail.is_none() && self.args.is_borrowed()
+        copy
     }
 }
 
@@ -1662,6 +1667,9 @@ struct FrameDetail {
     /// debugger is active.  Frames retain their identity stamps so
     /// `backtrace-eval' assignments can update the suspended lexical cells.
     lexical_context: Option<Env>,
+    /// The arguments of a frame that owns them, which its `args' addresses.
+    owned_values: Vec<Value>,
+    owned_words: Vec<usize>,
 }
 
 impl BacktraceFrame {
@@ -1669,14 +1677,8 @@ impl BacktraceFrame {
         // An unevaluated frame (eval_sub's, nargs UNEVALLED) holds its
         // form in the function word; the detail's copy is the older
         // representation, kept for frames built that way.
-        if !self.evald {
-            match &self.function {
-                FrameFunction::Form(_) => return Some(self.function.value()),
-                FrameFunction::Owned(value) if matches!(value.kind(), Kind::Cons(_)) => {
-                    return Some(*value);
-                }
-                FrameFunction::Owned(_) => {}
-            }
+        if !self.evald() && self.function.is_cons() {
+            return Some(self.function);
         }
         self.detail.as_ref()?.source_form
     }
@@ -1713,6 +1715,8 @@ impl Drop for BacktraceFrame {
         };
         detail.source_form = None;
         detail.lexical_context = None;
+        detail.owned_values = Vec::new();
+        detail.owned_words = Vec::new();
         let _ = FRAME_DETAIL_POOL.try_with(|pool| {
             if let Ok(mut pool) = pool.try_borrow_mut()
                 && pool.len() < FRAME_DETAIL_POOL_LIMIT
@@ -4332,8 +4336,8 @@ impl Interpreter {
             mark(&watch.callback);
         }
         for frame in &self.backtrace_frames {
-            frame.function.with_value(|function| mark(function));
-            for argument in frame.args.lisp_values().unwrap_or(&[]) {
+            mark(&frame.function);
+            for argument in frame.lisp_values().unwrap_or(&[]) {
                 mark(argument);
             }
             if let Some(form) = frame.source_form() {
@@ -4804,14 +4808,13 @@ impl Interpreter {
                 watch.callback = c.copy(&watch.callback.clone());
             }
             for frame in &mut clone.backtrace_frames {
-                frame.function = FrameFunction::Owned(c.copy(&frame.function.value()));
-                let mut args = frame.args.clone();
-                if let FrameArgs::Owned(values) = &mut args {
+                frame.function = c.copy(&frame.function);
+                // The clone's frames own their arguments (`clone').
+                if let Some(values) = frame.owned_lisp_values_mut() {
                     for arg in values {
                         *arg = c.copy(arg);
                     }
                 }
-                frame.args = args;
                 if let Some(detail) = &mut frame.detail
                     && let Some(form) = &detail.source_form
                 {
@@ -5102,6 +5105,11 @@ pub struct InterpreterState {
     throw_on_input: Value,
     overriding_plist_environment: Value,
     max_lisp_eval_depth: i64,
+    /// Ffuncall's depth bound for a call that does nothing else on its way
+    /// in (`plain_bcall_entry'): MAX_LISP_EVAL_DEPTH, or below every depth
+    /// while a quit or a termination is pending or calls are profiled.
+    /// Every store of those refreshes it (`refresh_call_depth_gate').
+    call_depth_gate: i64,
     debug_on_next_call: bool,
     /// data.c's forwarded C boolean, also read through comp.c's native
     /// relocation. The box keeps its address stable if the interpreter moves;
@@ -5568,6 +5576,7 @@ impl Default for Interpreter {
 impl Interpreter {
     pub(crate) fn request_termination(&mut self, termination: EmacsTermination) {
         self.pending_termination = Some(termination);
+        self.refresh_call_depth_gate();
     }
 
     pub(crate) fn pending_termination(&self) -> Option<&EmacsTermination> {
@@ -5575,7 +5584,9 @@ impl Interpreter {
     }
 
     pub(crate) fn take_pending_termination(&mut self) -> Option<EmacsTermination> {
-        self.pending_termination.take()
+        let termination = self.pending_termination.take();
+        self.refresh_call_depth_gate();
+        termination
     }
 
     pub fn new() -> Self {
@@ -5833,6 +5844,7 @@ impl Interpreter {
             throw_on_input: Value::Nil,
             overriding_plist_environment: Value::Nil,
             max_lisp_eval_depth: 1600,
+            call_depth_gate: if core::profiling() { i64::MIN } else { 1600 },
             debug_on_next_call: false,
             symbols_with_positions_enabled: Box::new(Cell::new(false)),
             lisp_eval_depth: 0,

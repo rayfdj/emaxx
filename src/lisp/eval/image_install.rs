@@ -328,7 +328,10 @@ impl Interpreter {
     /// are installed elsewhere.
     fn install_root_slot(&mut self, slot: RootSlot, value: &Value) {
         match slot {
-            RootSlot::QuitFlag => self.quit_flag = *value,
+            RootSlot::QuitFlag => {
+                self.quit_flag = *value;
+                self.refresh_call_depth_gate();
+            }
             RootSlot::InhibitQuit => self.inhibit_quit = *value,
             RootSlot::ThrowOnInput => self.throw_on_input = *value,
             RootSlot::OverridingPlistEnvironment => {

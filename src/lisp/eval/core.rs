@@ -31,7 +31,7 @@ fn profile_path() -> Option<&'static str> {
 static PROFILING: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 #[inline(always)]
-fn profiling() -> bool {
+pub(super) fn profiling() -> bool {
     match PROFILING.load(std::sync::atomic::Ordering::Relaxed) {
         1 => false,
         2 => true,
@@ -318,14 +318,12 @@ impl Interpreter {
 
     #[inline(never)]
     fn eval_sub(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
-        // A form below the outermost evaluation, with no termination or
-        // quit pending: the entry tests read the state through one borrow,
-        // and every other case takes the general entry.
+        // A form below the outermost evaluation and below the call gate (no
+        // termination or quit pending, the depth within its bound): the
+        // entry tests read the state through one borrow, and every other
+        // case takes the general entry.
         let state: &mut InterpreterState = self;
-        if state.lisp_eval_depth == 0
-            || state.pending_termination.is_some()
-            || !state.quit_flag.is_nil()
-        {
+        if state.lisp_eval_depth == 0 || state.lisp_eval_depth as i64 >= state.call_depth_gate {
             return self.eval_sub_general(expr, env);
         }
         let Some(cell) = expr.cons_ref() else {
@@ -353,8 +351,8 @@ impl Interpreter {
         result
     }
 
-    /// eval_sub at the outermost evaluation, with a termination or a quit
-    /// pending.
+    /// eval_sub at the outermost evaluation, at the call gate, or with a
+    /// termination or a quit pending.
     #[inline(never)]
     fn eval_sub_general(&mut self, expr: &Value, env: &mut Env) -> Result<Value, LispError> {
         // The entry tests read the state through one borrow.
@@ -447,6 +445,7 @@ impl Interpreter {
                 .contains_key("max-lisp-eval-depth")
             {
                 self.max_lisp_eval_depth = 100;
+                self.refresh_call_depth_gate();
             } else {
                 self.set_symbol_value_cell("max-lisp-eval-depth", Value::Integer(100));
             }
@@ -1546,6 +1545,7 @@ impl Interpreter {
         // Lisp binding with the same name.
         if self.detached_forwarded_variables.contains_key("quit-flag") {
             self.quit_flag = Value::Nil;
+            self.refresh_call_depth_gate();
         } else {
             self.set_symbol_value_cell("quit-flag", Value::Nil);
         }
@@ -2217,14 +2217,23 @@ impl InterpreterState {
     /// every other case from the same state.
     #[inline(always)]
     pub(crate) fn plain_bcall_entry(&self, name: Option<SymbolName>) -> bool {
-        self.quit_flag.is_nil()
-            && self.pending_termination.is_none()
+        // The depth counts frames on this stack, far below i64::MAX (as
+        // eval_sub's compare); the gate holds the quit, termination and
+        // profiler tests.
+        (self.lisp_eval_depth as i64) < self.call_depth_gate
             && !self.globals.edebug_is_special()
-            // The depth counts frames on this stack, far below i64::MAX
-            // (as eval_sub's compare).
-            && (self.lisp_eval_depth as i64) < self.max_lisp_eval_depth
-            && !profiling()
             && name.is_none_or(|name| !is_backtrace_eval_name(name.as_str()))
+    }
+
+    /// `call_depth_gate' after a store of the quit flag, a pending
+    /// termination or max-lisp-eval-depth.
+    pub(crate) fn refresh_call_depth_gate(&mut self) {
+        self.call_depth_gate =
+            if !self.quit_flag.is_nil() || self.pending_termination.is_some() || profiling() {
+                i64::MIN
+            } else {
+                self.max_lisp_eval_depth
+            };
     }
 }
 
@@ -2993,6 +3002,7 @@ mod eval_value_buffer_tests {
         // Once C clears the quit slot, no detachment snapshot may keep its
         // former object alive. The other seven independently rooted keys stay.
         interpreter.quit_flag = Value::Nil;
+        interpreter.refresh_call_depth_gate();
         crate::lisp::alloc::clobber_stack();
         check(&interpreter, &env, table_id, false);
     }

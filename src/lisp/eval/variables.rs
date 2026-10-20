@@ -39,17 +39,17 @@ impl BacktraceFrame {
     pub(super) fn function_snapshot(&self) -> Value {
         self.source_form()
             .and_then(|form| form.car_if_list())
-            .unwrap_or_else(|| self.function.value())
+            .unwrap_or(self.function)
     }
 
     pub(super) fn args_snapshot(&self) -> Vec<Value> {
-        if let Some(words) = self.args.native_words() {
+        if let Some(words) = self.native_words() {
             return crate::lisp::native_comp::decode_active_backtrace_arguments(words)
                 .expect("a native backtrace frame is inspected only during its activation")
                 .expect("a native backtrace frame contains valid Lisp words");
         }
         let Some(form) = self.source_form() else {
-            return self.args.lisp_values().unwrap_or(&[]).to_vec();
+            return self.lisp_values().unwrap_or(&[]).to_vec();
         };
         let Ok(tail) = form.cdr() else {
             return Vec::new();
@@ -1373,7 +1373,10 @@ impl Interpreter {
             return;
         }
         match name {
-            "quit-flag" => self.quit_flag = *value,
+            "quit-flag" => {
+                self.quit_flag = *value;
+                self.refresh_call_depth_gate();
+            }
             "inhibit-quit" => self.inhibit_quit = *value,
             "throw-on-input" => self.throw_on_input = *value,
             "overriding-plist-environment" => self.overriding_plist_environment = *value,
@@ -1381,6 +1384,7 @@ impl Interpreter {
             "max-lisp-eval-depth" => {
                 if let Ok(depth) = value.as_integer() {
                     self.max_lisp_eval_depth = depth;
+                    self.refresh_call_depth_gate();
                 }
             }
             "debug-on-next-call" => self.debug_on_next_call = value.is_truthy(),
@@ -2611,7 +2615,7 @@ impl Interpreter {
     /// public API may release ARGS before popping the frame.
     #[inline]
     pub fn push_backtrace_frame(&mut self, function: Value, args: &[Value]) {
-        self.push_plain_backtrace_frame(function, || FrameArgs::Owned(args.to_vec()), true);
+        self.push_owned_backtrace_frame(function, args.to_vec(), true);
     }
 
     /// eval.c:record_in_backtrace borrows the activation's arguments.
@@ -2627,18 +2631,8 @@ impl Interpreter {
         args: &[Value],
         body: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.with_backtrace_arguments(function, FrameArgs::borrowed(args), body)
-    }
-
-    #[cfg(test)]
-    fn with_backtrace_arguments<R>(
-        &mut self,
-        function: Value,
-        args: FrameArgs,
-        body: impl FnOnce(&mut Self) -> R,
-    ) -> R {
         let depth = self.backtrace_frames.len();
-        self.push_plain_backtrace_frame(function, || args, true);
+        self.push_backtrace_frame_borrowed(function, args);
         // The frame is popped on every exit, a Rust unwind included, by a
         // guard's drop rather than a catch_unwind around the body (the
         // catch cost a call of its own on every Lisp call).
@@ -2663,34 +2657,30 @@ impl Interpreter {
         result
     }
 
-    /// The four-word frame record_in_backtrace writes.
-    #[inline(always)]
-    fn push_plain_backtrace_frame(
-        &mut self,
-        function: Value,
-        args: impl FnOnce() -> FrameArgs,
-        evald: bool,
-    ) {
+    /// A frame of FUNCTION that owns its ARGS (see `BacktraceFrame').
+    fn push_owned_backtrace_frame(&mut self, function: Value, args: Vec<Value>, evald: bool) {
         Self::write_backtrace_frame(
             &mut self.backtrace_frames,
-            FrameFunction::Owned(function),
-            args,
-            evald,
+            function,
+            std::ptr::NonNull::dangling().as_ptr(),
+            BacktraceFrame::shape(0, false, evald),
         );
+        if let Some(frame) = self.backtrace_frames.last_mut() {
+            frame.own_lisp_values(args);
+        }
     }
 
-    /// record_in_backtrace's stores into `specpdl_ptr': the frame's words
-    /// written into the vector's next slot (a frame built on the stack
-    /// and copied in was a stall per interpreted call). ARGS makes the
-    /// arguments' record once the slot is reserved: one made before it,
-    /// kept across the reservation's growth call, was built on the stack
-    /// and copied in with loads that each span two of its stores.
+    /// record_in_backtrace's stores into `specpdl_ptr': the frame's four
+    /// words written into the vector's next slot (a frame built on the
+    /// stack and copied in was a stall per interpreted call): FUNCTION,
+    /// the argument words ARGS and SHAPE (`BacktraceFrame::shape'), and
+    /// no detail.
     #[inline(always)]
     fn write_backtrace_frame(
         frames: &mut Vec<BacktraceFrame>,
-        function: FrameFunction,
-        args: impl FnOnce() -> FrameArgs,
-        evald: bool,
+        function: Value,
+        args: *const usize,
+        shape: usize,
     ) {
         frames.reserve(1);
         let len = frames.len();
@@ -2700,9 +2690,8 @@ impl Interpreter {
         unsafe {
             let slot = frames.as_mut_ptr().add(len);
             std::ptr::addr_of_mut!((*slot).function).write(function);
-            std::ptr::addr_of_mut!((*slot).args).write(args());
-            std::ptr::addr_of_mut!((*slot).evald).write(evald);
-            std::ptr::addr_of_mut!((*slot).debug_on_exit).write(false);
+            std::ptr::addr_of_mut!((*slot).args).write(args);
+            std::ptr::addr_of_mut!((*slot).shape).write(shape);
             std::ptr::addr_of_mut!((*slot).detail).write(None);
             frames.set_len(len + 1);
         }
@@ -2711,13 +2700,11 @@ impl Interpreter {
     /// The frame native Ffuncall records: FUNCTION with the native words.
     #[inline(always)]
     pub(crate) fn push_native_backtrace_frame(&mut self, function: Value, args: &[usize]) {
-        self.push_plain_backtrace_frame(
+        Self::write_backtrace_frame(
+            &mut self.backtrace_frames,
             function,
-            || FrameArgs::NativeWords {
-                ptr: args.as_ptr(),
-                len: args.len(),
-            },
-            true,
+            args.as_ptr(),
+            BacktraceFrame::shape(args.len(), true, true),
         );
     }
 
@@ -2729,14 +2716,19 @@ impl Interpreter {
         args: Vec<Value>,
         evald: bool,
     ) {
-        self.push_plain_backtrace_frame(function, || FrameArgs::Owned(args), evald);
+        self.push_owned_backtrace_frame(function, args, evald);
     }
 
     /// record_in_backtrace for a byte-code call whose arguments stay on
     /// the thread's bytecode stack: the frame holds them by address.
     #[inline(always)]
     pub(crate) fn push_backtrace_frame_borrowed(&mut self, function: Value, args: &[Value]) {
-        self.push_plain_backtrace_frame(function, || FrameArgs::borrowed(args), true);
+        Self::write_backtrace_frame(
+            &mut self.backtrace_frames,
+            function,
+            args.as_ptr().cast(),
+            BacktraceFrame::shape(args.len(), false, true),
+        );
     }
 
     /// eval.c's set_backtrace_args on the frame eval_sub recorded before
@@ -2745,17 +2737,12 @@ impl Interpreter {
     #[inline(always)]
     pub(super) fn set_backtrace_args(&mut self, function: Value, args: &[Value]) {
         if let Some(frame) = self.backtrace_frames.last_mut() {
-            frame.function = FrameFunction::Owned(function);
-            let args = FrameArgs::borrowed(args);
-            if frame.args.is_borrowed() {
-                // SAFETY: borrowed words own nothing, so overwriting them
-                // without their drop leaks nothing; an assignment calls
-                // the enum's drop glue out of line first.
-                unsafe { std::ptr::write(&mut frame.args, args) };
-            } else {
-                frame.args = args;
-            }
-            frame.evald = true;
+            frame.function = function;
+            // Arguments the frame's detail held, if any, stay there unused
+            // until the frame goes.
+            frame.args = args.as_ptr().cast();
+            frame.shape = BacktraceFrame::shape(args.len(), false, true)
+                | (frame.shape & FRAME_DEBUG_ON_EXIT);
         }
     }
 
@@ -2768,15 +2755,11 @@ impl Interpreter {
         // The word is the caller's form, borrowed for the frame's life
         // as `bt.function' holds it; a non-cons form (evaluated through
         // a path that records it) is owned.
-        let function = match source_form.kind() {
-            Kind::Cons(cell) => FrameFunction::Form(cell.as_ptr()),
-            other => FrameFunction::Owned(other.value()),
-        };
         Self::write_backtrace_frame(
             &mut self.backtrace_frames,
-            function,
-            || FrameArgs::borrowed(&[]),
-            false,
+            *source_form,
+            std::ptr::NonNull::dangling().as_ptr(),
+            BacktraceFrame::shape(0, false, false),
         );
     }
 
@@ -2876,9 +2859,9 @@ impl InterpreterState {
         let depth = self.backtrace_frames.len();
         Interpreter::write_backtrace_frame(
             &mut self.backtrace_frames,
-            FrameFunction::Owned(function),
-            || FrameArgs::borrowed(args),
-            true,
+            function,
+            args.as_ptr().cast(),
+            BacktraceFrame::shape(args.len(), false, true),
         );
         (depth, lisp_eval_depth)
     }
@@ -2934,7 +2917,7 @@ impl InterpreterState {
 impl Interpreter {
     pub fn set_current_backtrace_debug(&mut self, enabled: bool) {
         if let Some(frame) = self.backtrace_frames.last_mut() {
-            frame.debug_on_exit = enabled;
+            frame.set_debug_on_exit(enabled);
         }
     }
 
@@ -2943,17 +2926,17 @@ impl Interpreter {
     pub(crate) fn current_backtrace_debug_on_exit(&self) -> bool {
         self.backtrace_frames
             .last()
-            .is_some_and(|frame| frame.debug_on_exit)
+            .is_some_and(|frame| frame.debug_on_exit())
     }
 
     #[cfg(test)]
     pub fn current_backtrace_frame(&self) -> Option<(bool, Value, Vec<Value>, bool)> {
         self.backtrace_frames.last().map(|frame| {
             (
-                frame.evald,
+                frame.evald(),
                 frame.function_snapshot(),
                 frame.args_snapshot(),
-                frame.debug_on_exit,
+                frame.debug_on_exit(),
             )
         })
     }
@@ -2964,10 +2947,10 @@ impl Interpreter {
             .rev()
             .map(|frame| {
                 (
-                    frame.evald,
+                    frame.evald(),
                     frame.function_snapshot(),
                     frame.args_snapshot(),
-                    frame.debug_on_exit,
+                    frame.debug_on_exit(),
                 )
             })
             .collect()

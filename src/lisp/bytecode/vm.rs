@@ -109,6 +109,17 @@ impl BcStack {
 
     fn leave_frame(&mut self) -> usize {
         assert_ne!(self.frame, 0, "cannot pop the dummy bytecode frame");
+        // SAFETY: the frame is no dummy, as asserted.
+        unsafe { self.leave_entered_frame() }
+    }
+
+    /// `leave_frame' of a frame `enter_frame' installed.
+    ///
+    /// # Safety
+    /// The active frame is not the dummy one.
+    #[inline(always)]
+    unsafe fn leave_entered_frame(&mut self) -> usize {
+        debug_assert_ne!(self.frame, 0, "cannot pop the dummy bytecode frame");
         let header = self.header(self.frame);
         self.frame = header.saved_frame;
         self.top = header.saved_top;
@@ -164,6 +175,21 @@ impl BcStack {
             args.len() <= entry_depth && self.top + entry_depth <= self.frame,
             "byte code exceeded its declared stack depth"
         );
+        // SAFETY: as asserted.
+        unsafe { self.push_arguments_within(args, entry_depth) }
+    }
+
+    /// `push_arguments' into a frame known to hold them.
+    ///
+    /// # Safety
+    /// ARGS are at most ENTRY_DEPTH, and ENTRY_DEPTH slots fit below the
+    /// active footer.
+    #[inline(always)]
+    unsafe fn push_arguments_within(&mut self, args: &[Value], entry_depth: usize) {
+        debug_assert!(
+            args.len() <= entry_depth && self.top + entry_depth <= self.frame,
+            "byte code exceeded its declared stack depth"
+        );
         // SAFETY: these free operand words precede the active footer; ARGS
         // lie in the caller's frame, disjoint from them.
         unsafe {
@@ -210,8 +236,22 @@ impl BcStack {
     /// frame, and the arguments above it go (`truncate' and a push).
     #[inline(always)]
     fn replace_call(&mut self, len: usize, value: Value) {
+        assert!(
+            self.base + len < self.top,
+            "a call's function lies below the top"
+        );
+        // SAFETY: as asserted.
+        unsafe { self.replace_call_below_top(len, value) }
+    }
+
+    /// `replace_call' of a function slot known to lie below the top.
+    ///
+    /// # Safety
+    /// The slot LEN operands up the frame lies below the top.
+    #[inline(always)]
+    unsafe fn replace_call_below_top(&mut self, len: usize, value: Value) {
         let slot = self.base + len;
-        assert!(slot < self.top, "a call's function lies below the top");
+        debug_assert!(slot < self.top, "a call's function lies below the top");
         // SAFETY: the slot is an initialized operand of the current frame.
         unsafe {
             self.words
@@ -888,7 +928,10 @@ fn enter_closure_frame(
     );
     *vm.program = Running::entered(callee);
     // setup_frame's `PUSH (*args)' and the optionals' nils.
-    state.bc_stack.push_arguments(call_args, entry_depth);
+    // SAFETY: the program takes ARGC arguments (`takes'), at most its entry
+    // depth, and the frame entered above holds its stack depth, at least
+    // that (`EntryProgram::counts').
+    unsafe { state.bc_stack.push_arguments_within(call_args, entry_depth) };
     Some((state.bc_stack.top, entry_depth))
 }
 
@@ -916,13 +959,19 @@ fn return_to_bytecode_frame(
         .last()
         .filter(|frame| unwinds <= frame.unwinds_len)?;
     state.leave_plain_funcall(frame.backtrace_depth);
-    let resume = state.bc_stack.leave_frame();
-    state.bc_stack.replace_call(frame.base, value);
+    // SAFETY: the frame's call entered the stack frame this leaves, and
+    // the caller's function slot lies below the top the call found.
+    let resume = unsafe {
+        let resume = state.bc_stack.leave_entered_frame();
+        state.bc_stack.replace_call_below_top(frame.base, value);
+        resume
+    };
     *vm.program = frame.program;
     *vm.op_error_frames = frame.op_error_frames;
     vm.handlers.truncate(frame.handlers_len);
     let unchanged = frame.code_changes == crate::lisp::alloc::code_changes();
-    vm.frames.truncate(vm.frames.len() - 1);
+    // SAFETY: FRAME is the last, which needs no drop.
+    unsafe { vm.frames.set_len(vm.frames.len() - 1) };
     Some((resume, state.bc_stack.top, state.bc_stack.len(), unchanged))
 }
 
@@ -2239,36 +2288,36 @@ fn run_verified(
                 0o207 => {
                     let value = *slot!(0);
                     drop_values!(1);
-                    if !vm.frames.is_empty() {
-                        // SAFETY: sp lies within the active frame.
-                        let top = unsafe { sp.offset_from(words) as usize } + 1;
-                        if let Some((resume, top, depth, unchanged)) =
-                            return_to_bytecode_frame(vm, top, value)
+                    // SAFETY: sp lies within the active frame.
+                    let top = unsafe { sp.offset_from(words) as usize } + 1;
+                    // With no caller frame here (or unwinding to do), the
+                    // return leaves the loop, the top stored as any exit's.
+                    if let Some((resume, top, depth, unchanged)) =
+                        return_to_bytecode_frame(vm, top, value)
+                    {
+                        // The caller's frame runs on here if its code is
+                        // still the bytes verified and verification found
+                        // the call's successor with these operands: as
+                        // the verified loop's call found them, when no
+                        // verified code has changed since.
+                        // SAFETY: as the outer loop's slice.
+                        let (bytes, current) = unsafe { vm.program.code.bytes_unguarded() };
+                        if unchanged
+                            || current
+                                && vm
+                                    .program
+                                    .verified
+                                    .is_some_and(|verified| verified.admits(resume, depth))
                         {
-                            // The caller's frame runs on here if its code is
-                            // still the bytes verified and verification found
-                            // the call's successor with these operands: as
-                            // the verified loop's call found them, when no
-                            // verified code has changed since.
-                            // SAFETY: as the outer loop's slice.
-                            let (bytes, current) = unsafe { vm.program.code.bytes_unguarded() };
-                            if unchanged
-                                || current
-                                    && vm
-                                        .program
-                                        .verified
-                                        .is_some_and(|verified| verified.admits(resume, depth))
-                            {
-                                code = bytes;
-                                constants = vm.program.constants;
-                                // SAFETY: TOP lies within the caller's frame.
-                                sp = unsafe { words.add(top - 1) };
-                                at = resume;
-                                continue 'run;
-                            }
-                            *pc = resume;
-                            break 'run FastExit::Switched(top, depth);
+                            code = bytes;
+                            constants = vm.program.constants;
+                            // SAFETY: TOP lies within the caller's frame.
+                            sp = unsafe { words.add(top - 1) };
+                            at = resume;
+                            continue 'run;
                         }
+                        *pc = resume;
+                        break 'run FastExit::Switched(top, depth);
                     }
                     break 'run FastExit::Return(value);
                 }
@@ -5175,6 +5224,63 @@ mod phase_c_tests {
                 "(((three 1 2 3) (five 1 2 3 4 nil) (five 1 2 3 4 5) (rest 1 (2 3 4 5 6)) ",
                 "(rest 1 (2 3 4 5 6 7)) [1 2 3] [1 2 3 4 5 6 7] wrong-number-of-arguments ",
                 "(5 6 7)) (300 x))"
+            )
+        );
+    }
+
+    #[test]
+    fn byte_code_calls_stop_at_a_lowered_depth_or_a_quit_and_resume_after() {
+        // GNU 30.2's byte code for (with lexical-binding)
+        //   (defun vm-gate-down (n) (if (> n 0) (1+ (vm-gate-down (1- n))) 0))
+        //   (defun vm-gate-probe ()
+        //     (list (vm-gate-down 500)
+        //           (condition-case err
+        //               (let ((max-lisp-eval-depth 200)) (vm-gate-down 500))
+        //             (error err))
+        //           max-lisp-eval-depth (vm-gate-down 500)
+        //           (condition-case nil (progn (setq quit-flag t) (vm-gate-down 3))
+        //             (quit 'quit))
+        //           (condition-case nil
+        //               (progn (setq quit-flag t) (string-to-number "3"))
+        //             (quit 'quit))
+        //           (condition-case nil
+        //               (eval '(progn (setq quit-flag t) (+ 1 2)) t)
+        //             (quit 'quit))
+        //           quit-flag (vm-gate-down 3) (string-to-number "3")))
+        // A binding of max-lisp-eval-depth and a store of quit-flag each
+        // stop the next call into byte code, a subr or an interpreted form
+        // (Ffuncall's and eval_sub's tests), and their end lets calls run
+        // again. GNU answers the list below.
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let vm_gate_down = concat!(
+            r#"#[257 "\211\300V\203\f\0\301\1S!T\207\300\207" [0 vm-gate-down] 3 "\n\n("#,
+            r#"fn N)"]"#,
+        );
+        let vm_gate_probe = concat!(
+            r#"#[0 "\302\303!\3041\16\0\305\30\302\303!)0\10\302\303!\3061\37\0\307\21\"#,
+            r#"302\310!0\202!\0\210\311\3121.\0\307\21\313\314!0\2020\0\210\311\3151<\0"#,
+            r#"\316\317\307\"0\202>\0\210\311\11\302\310!\313\314!\257\n\207" [max-lisp"#,
+            r#"-eval-depth quit-flag vm-gate-down 500 (error) 200 (quit) t 3 quit (quit"#,
+            r#") string-to-number "3" (quit) eval (progn (setq quit-flag t) (+ 1 2))] 1"#,
+            r#"1]"#,
+        );
+        let source = format!(
+            r#"(progn
+                 (fset 'vm-gate-down {vm_gate_down})
+                 (fset 'vm-gate-probe {vm_gate_probe})
+                 (prin1-to-string (vm-gate-probe)))"#
+        );
+        let form = super::super::super::reader::Reader::new(&source)
+            .read()
+            .expect("read form")
+            .expect("a form");
+        let value = interp.eval(&form, &mut env).expect("probe");
+        assert_eq!(
+            value.as_string().expect("printed"),
+            concat!(
+                "(500 (error \"Lisp nesting exceeds `max-lisp-eval-depth'\") 1600 500 ",
+                "quit quit quit nil 3 3)"
             )
         );
     }

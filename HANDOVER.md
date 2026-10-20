@@ -3452,6 +3452,64 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   container's known failure; the lightweight group's 601 pass; clippy
   `-D warnings` (all targets and features), rustfmt and `git diff
   --check` pass.
+- **Round 40: a four-word backtrace record, one gate for a call's entry
+  tests, and the byte-code return without its re-checks.** Every call
+  path pushes and pops a backtrace record (record_in_backtrace), and the
+  record was eight words: the function as a two-variant enum, the
+  arguments as a four-variant one whose owned variants were vectors, two
+  flags and the detail. It is four now, as GNU's specbinding: the
+  function word (eval_sub's unevaluated form in it, a cons being its own
+  word), the arguments' address, their count with the native-words,
+  evaluated and debug-on-exit flags above it, and the detail, which now
+  holds the arguments of a frame that owns them (one retained past its
+  activation, or a copy of an interpreter), the address then pointing
+  into it; a frame without a detail owns nothing. A push is four stores
+  (seven), the pop's test one compare fewer. Separately, a plain call's
+  entry (`plain_bcall_entry`: Bcall into byte code, a native function or
+  a subr) tested the quit flag, a pending termination, edebug's special
+  flag, the depth against max-lisp-eval-depth, the profiler and the
+  callee's name; eval_sub's entry tested the first two. The quit flag,
+  the termination, the profiler and the bound now make one word,
+  `call_depth_gate`: max-lisp-eval-depth, or below every depth while a
+  quit or termination is pending or calls are profiled, refreshed by
+  each store of those (the forwarded store, process_quit_flag, the
+  image's install, the termination's request and take, the bump to
+  100); a call compares its depth with it. eval_sub keeps its check after
+  the increment, as maybe_gc can run Lisp (post-gc-hook). Breturn into a
+  byte-code caller tested the frame list three times, `leave_frame` and
+  `replace_call` asserted what the call's own entry established, and the
+  frame list's truncate compared its length; one test of the last frame
+  remains, the rest are debug assertions, as is the argument copy's at a
+  verified entry (`EntryProgram::takes` and the entered frame's depth
+  imply its bounds). Plain build, `run_verified` an iteration: bytecode
+  calls 460.3 -> 430.3, bytecode-to-native 348.3 -> 333.3; undo's
+  evaluator and call paths about 10,000 instructions a unit fewer
+  (`run_verified` -3.2K, `eval_sub` -2.6K, `call_plain` -2.2K, native
+  funcall -0.9K, `eval_cons_call` -0.6K), its total within its
+  allocator noise. Profile-guided, against round 39's build: bytecode
+  calls 444.2 -> 419.2 an iteration in `run_verified` (GNU's whole loop
+  468), bytecode-to-native 340.2 -> 325.2 (with the callee's 10, GNU
+  388); undo's evaluator and call paths about 16,000 instructions a unit
+  fewer (`eval_sub` -5.9K, `call_plain` -4.7K, `run_verified` -3.9K),
+  1,088,017 -> 1,083,518 in all with the allocator's run-to-run
+  difference, and its instruction-cache misses unchanged (36,943 ->
+  36,875). New test: GNU 30.2's byte code recursing into byte
+  code under a let of max-lisp-eval-depth (GNU's Ffuncall error), and
+  stores of quit-flag before a call into byte code, a subr and an
+  interpreted form, each signalling quit, and calls running again after,
+  against GNU's answers (Emaxx's answer was GNU's before the change).
+  Validation (gate profile, one test thread a process, 128 MiB stacks):
+  the whole library suite (3,165 tests) passes but for this container's
+  known failures (the image round trip and the three as-root file tests)
+  and `char_charset_family_follows_charset_c` and
+  `print_prunes_charset_properties_like_print_prune_string_charset`,
+  whose GNU oracle answers differently in this container's locale (both
+  fail likewise on round 37's build);
+  `subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`
+  failed once among four parallel processes and passes alone, three times
+  of three. The suite's binary preceded the new test, which passes with
+  the 54 `lisp::bytecode` and 24 `anti_cheat` tests; clippy `-D warnings`
+  (all targets and features), rustfmt and `git diff --check` pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4018,9 +4076,11 @@ attempt (run 39401142276). **On `4a46555`** (round 36): full Rust gate
 passed (run 39402406056), frozen passed on its first attempt (run
 39402409500); PR #97 merged rounds 33 to 36 into main (`87e8d32`).
 **On `e6fb00c`** (round 37): full Rust gate passed (run 39420951276);
-frozen passed on its first attempt (run 39420955510). **On round 39's commit**: the full Rust
-gate and frozen runs are dispatched with it; their results go in the
-next round's record. Locally,
+frozen passed on its first attempt (run 39420955510). **On `1f69927`**
+(round 39): full Rust gate passed (run 39434615987), frozen passed on its
+first attempt (run 39434621069); PR #98 merged rounds 37 to 39 into main
+(`fe4e253`). **On round 40's commit**: the full Rust gate and frozen runs
+are dispatched with it; their results go in the next round's record. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
