@@ -3511,6 +3511,59 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   the 54 `lisp::bytecode` and 24 `anti_cheat` tests; clippy `-D warnings`
   (all targets and features), rustfmt and `git diff --check` pass.
 
+- **Round 41: a native caller's words are the subr's arguments; where
+  undo's remaining time is not.** Native code calls a C subr through its
+  generated wrapper and `invoke_subr`. For a subr with no word-level path
+  of its own there (`DirectSubr::Other`: `delq`, `equal`, `nconc`,
+  `nthcdr`, `set`, `get-buffer-create` and most others) the call went
+  through every word-level test first, copied the argument words into a
+  vector of values, and looked the name's facts up to call through them.
+  Such a subr is now called at once through `NativeSubr::call`:
+  funcall_subr's usual case read from the subr's own arity words and
+  direct entry, the facts only otherwise, with the caller's words
+  themselves as the arguments (`live_values`: a `Value` is the word, as
+  `decode_live` reads it), as funcall_subr passes C its argument vector.
+  The evaluator's and Bcall's subr calls (`call_subr`) use the same
+  reading, and native funcall's byte-code and general targets take the
+  words in place too. Bcall's plain call reads the function cell once
+  (the loop's read is passed on). Plain build, undo: `invoke_subr`
+  14,015 -> 9,798 instructions a unit, `call_plain` 53,498 -> 49,286.
+  Profile-guided, each build trained afresh (`tools/pgo-build.sh`),
+  against round 40's: undo 1,083,503 -> 1,061,700 instructions a unit
+  (GNU 1,252,071), instruction-cache misses 36,874 -> 36,479, data read
+  misses 10,538 -> 9,654; bytecode calls 418.3 -> 416.7 an iteration,
+  bytecode-to-native 337.7 -> 338.8. A build of round 41's source with
+  round 40's profile ran undo at 1,154,590 instructions and 50,849
+  misses: a function whose code changed loses its profile, so every
+  comparison takes a build trained on its own source.
+  Two measurements of undo's wall time against its instruction count
+  (about 0.93 of GNU's time for 0.85 of its instructions), neither kept:
+  (a) callgrind's branch simulation: 24.7K mispredictions a unit, GNU
+  22.8K. (b) The code's pages: undo runs code on about 375 4 KiB pages of
+  the executable (4,734 hot 64-byte lines, 300 KB), GNU on 217, since the
+  profile-guided layout spreads undo's hot functions over 6 MB of text
+  (lld's `-z keep-text-section-prefix` gathers the training's 2.6 MB hot
+  set, but undo's code is spread through it: 390 pages). Moving the text
+  segment onto transparent huge pages at startup (an anonymous copy
+  advised MADV_HUGEPAGE, moved over the file's mapping at the same
+  addresses, with a 2 MiB maximum page size at link time so that no other
+  segment shares the text's regions: six 2 MiB pages) worked on this
+  host, but the same binary with and without it, alternating over 11
+  rounds with the timing held to two CPUs: undo 0.925 against 0.932 of
+  GNU's time, bytecode calls 0.907 against 0.904, bytecode-to-native 0.813
+  against 0.823, CPU time without/with 1.005, 0.993 and 0.978. Without a
+  measurable gain it is not in the tree.
+  Validation (gate profile, one test thread a process, 128 MiB stacks,
+  four processes at a time): the whole library suite (3,166 tests) passes
+  but for this container's known failures (the image round trip, the
+  three as-root file tests, and the two charset tests whose GNU oracle
+  answers differently in this container's locale);
+  `subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`
+  and `process_tls_state_survives_collection_before_and_after_async_handshake`
+  failed among the four parallel processes and pass alone, three times of
+  three each. Clippy `-D warnings` (all targets and features), rustfmt and
+  `git diff --check` pass.
+
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
 25 sorting/case-folding/substring tests plus the comparison tests, and 95
@@ -4079,8 +4132,10 @@ passed (run 39402406056), frozen passed on its first attempt (run
 frozen passed on its first attempt (run 39420955510). **On `1f69927`**
 (round 39): full Rust gate passed (run 39434615987), frozen passed on its
 first attempt (run 39434621069); PR #98 merged rounds 37 to 39 into main
-(`fe4e253`). **On round 40's commit**: the full Rust gate and frozen runs
-are dispatched with it; their results go in the next round's record. Locally,
+(`fe4e253`). **On `680498f`** (round 40): full Rust gate passed (run 39484877632),
+frozen passed on its first attempt (run 39484880717). **On round 41's
+commit**: the full Rust gate and frozen runs are dispatched with it; their
+results go in the next round's record. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the

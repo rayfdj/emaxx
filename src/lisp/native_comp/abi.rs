@@ -145,6 +145,30 @@ impl NativeSubr {
         }
     }
 
+    /// eval.c:funcall_subr for ARGS: the direct entry when their count lies
+    /// in the subr's range, read from its own arity words; any other case
+    /// through the name's facts.
+    #[inline(always)]
+    pub(crate) fn call(
+        &'static self,
+        interp: &mut crate::lisp::eval::Interpreter,
+        args: &[crate::lisp::types::Value],
+        env: &mut crate::lisp::types::Env,
+    ) -> Result<crate::lisp::types::Value, crate::lisp::types::LispError> {
+        let maximum = self.max_args_word;
+        match self.direct_entry() {
+            Some(direct)
+                if args.len() >= usize::from(self.min_args)
+                    && (maximum < 0 || args.len() <= maximum as usize) =>
+            {
+                direct(interp, args, env)
+            }
+            _ => {
+                crate::lisp::primitives::call_with_facts(interp, self.name, self.facts(), args, env)
+            }
+        }
+    }
+
     #[cold]
     #[inline(never)]
     fn direct_entry_slow(&'static self) -> Option<crate::lisp::primitives::DirectPrimitive> {

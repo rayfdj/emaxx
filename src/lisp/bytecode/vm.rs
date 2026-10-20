@@ -831,13 +831,14 @@ fn call_plain(
     top: usize,
     argc: usize,
     func: Value,
+    function: Value,
 ) -> Option<Result<(usize, usize), LispError>> {
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.bc_stack.top = top;
     if vm.trace_errors {
         return None;
     }
-    let callee = state.plain_bcall_callee(func)?;
+    let callee = state.plain_bcall_callee(func, function)?;
     if !crate::lisp::native_comp::collection_cannot_be_due(state) {
         return None;
     }
@@ -1908,7 +1909,7 @@ fn run_verified(
                                 Err(error) => raise_from_call!(error),
                             }
                         }
-                        if let Some(result) = call_plain(vm, top, argc, func) {
+                        if let Some(result) = call_plain(vm, top, argc, func, function) {
                             match result {
                                 Ok((top, depth)) => resume_after_call!(top, depth),
                                 Err(error) => raise_from_call!(error),

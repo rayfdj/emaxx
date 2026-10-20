@@ -2414,217 +2414,220 @@ pub(crate) fn invoke_subr(index: usize, arguments: &[NativeWord]) -> NativeWord 
             remember_helper_error(active, error);
             return 0;
         }
-        // GNU native code enters Ffuncall directly. After synchronizing
-        // handlers, use the same call path before unrelated primitive checks.
-        if kind == DirectSubr::Funcall
-            && let Some(result) = invoke_native_funcall(active, arguments)
-        {
-            return result;
-        }
-        if arguments.len() == 2
-            && let (Some(left), Some(right)) =
-                (decode_fixnum(arguments[0]), decode_fixnum(arguments[1]))
-        {
-            let result = match kind {
-                DirectSubr::Less => Some(left < right),
-                DirectSubr::Greater => Some(left > right),
-                DirectSubr::LessOrEqual => Some(left <= right),
-                DirectSubr::GreaterOrEqual => Some(left >= right),
-                DirectSubr::NumberEqual => Some(left == right),
-                _ => None,
-            };
-            if let Some(result) = result {
-                return native_boolean(result);
+        // A subr with no word-level path below is called at once.
+        if kind != DirectSubr::Other {
+            // GNU native code enters Ffuncall directly. After synchronizing
+            // handlers, use the same call path before unrelated primitive checks.
+            if kind == DirectSubr::Funcall
+                && let Some(result) = invoke_native_funcall(active, arguments)
+            {
+                return result;
             }
-            // data.c:minmax_driver returns the winning argument itself; of
-            // two equal fixnums, either word.
-            match kind {
-                DirectSubr::Min => {
-                    return if right < left {
-                        arguments[1]
+            if arguments.len() == 2
+                && let (Some(left), Some(right)) =
+                    (decode_fixnum(arguments[0]), decode_fixnum(arguments[1]))
+            {
+                let result = match kind {
+                    DirectSubr::Less => Some(left < right),
+                    DirectSubr::Greater => Some(left > right),
+                    DirectSubr::LessOrEqual => Some(left <= right),
+                    DirectSubr::GreaterOrEqual => Some(left >= right),
+                    DirectSubr::NumberEqual => Some(left == right),
+                    _ => None,
+                };
+                if let Some(result) = result {
+                    return native_boolean(result);
+                }
+                // data.c:minmax_driver returns the winning argument itself; of
+                // two equal fixnums, either word.
+                match kind {
+                    DirectSubr::Min => {
+                        return if right < left {
+                            arguments[1]
+                        } else {
+                            arguments[0]
+                        };
+                    }
+                    DirectSubr::Max => {
+                        return if right > left {
+                            arguments[1]
+                        } else {
+                            arguments[0]
+                        };
+                    }
+                    _ => {}
+                }
+                // data.c:arith_driver keeps integer addition/subtraction in its
+                // machine accumulator. Two fixnums cannot overflow i64; return
+                // their immediate result without staging or decoding Values.
+                // Bignum results and every other operand use the general path.
+                let integer = match kind {
+                    DirectSubr::Plus => Some(left + right),
+                    DirectSubr::Minus => Some(left - right),
+                    _ => None,
+                };
+                if let Some(integer) = integer
+                    && (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&integer)
+                {
+                    return ((integer as NativeWord) << FIXNUM_BITS) | TAG_FIXNUM_LOW;
+                }
+            }
+            if kind == DirectSubr::Cons && arguments.len() == 2 {
+                return unsafe { &mut *active.runtime }
+                    .heap
+                    .cons(arguments[0], arguments[1]);
+            }
+            match (kind, arguments) {
+                (DirectSubr::Eq, [left, right])
+                    if left == right
+                        || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
+                {
+                    return native_boolean(left == right);
+                }
+                (DirectSubr::Null, [value]) => return native_boolean(*value == 0),
+                (DirectSubr::Consp, [value]) => return native_boolean(native_consp(*value)),
+                (DirectSubr::Atom, [value]) => return native_boolean(!native_consp(*value)),
+                (DirectSubr::BareSymbolp, [value]) => {
+                    return native_boolean(*value & TAG_MASK == TAG_SYMBOL);
+                }
+                (DirectSubr::Symbolp, [value])
+                    if *value & TAG_MASK == TAG_SYMBOL
+                        || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
+                {
+                    return native_boolean(*value & TAG_MASK == TAG_SYMBOL);
+                }
+                (DirectSubr::Car, [value]) if *value == 0 || native_consp(*value) => {
+                    return if native_consp(*value) {
+                        unsafe { native_car(*value) }
                     } else {
-                        arguments[0]
+                        0
                     };
                 }
-                DirectSubr::Max => {
-                    return if right > left {
-                        arguments[1]
+                (DirectSubr::CarSafe, [value]) => {
+                    return if native_consp(*value) {
+                        unsafe { native_car(*value) }
                     } else {
-                        arguments[0]
+                        0
                     };
+                }
+                (DirectSubr::Cdr, [value]) if *value == 0 || native_consp(*value) => {
+                    return if native_consp(*value) {
+                        unsafe { native_cdr(*value) }
+                    } else {
+                        0
+                    };
+                }
+                (DirectSubr::CdrSafe, [value]) => {
+                    return if native_consp(*value) {
+                        unsafe { native_cdr(*value) }
+                    } else {
+                        0
+                    };
+                }
+                (DirectSubr::Listp, [value]) => {
+                    return native_boolean(*value == 0 || native_consp(*value));
+                }
+                (DirectSubr::Nlistp, [value]) => {
+                    return native_boolean(*value != 0 && !native_consp(*value));
+                }
+                (DirectSubr::List, values) => {
+                    let heap = &mut unsafe { &mut *active.runtime }.heap;
+                    return values
+                        .iter()
+                        .rev()
+                        .fold(0, |tail, value| heap.cons(*value, tail));
                 }
                 _ => {}
             }
-            // data.c:arith_driver keeps integer addition/subtraction in its
-            // machine accumulator. Two fixnums cannot overflow i64; return
-            // their immediate result without staging or decoding Values.
-            // Bignum results and every other operand use the general path.
-            let integer = match kind {
-                DirectSubr::Plus => Some(left + right),
-                DirectSubr::Minus => Some(left - right),
+            // These are direct translations of the corresponding C-owned word
+            // operations in data.c and alloc.c.  Keep them at the GNU ABI instead
+            // of decoding into Emaxx's richer interpreter representation.
+            match (kind, arguments) {
+                (DirectSubr::Eq, [left, right]) => match native_eq(active, *left, *right) {
+                    Ok(equal) => return native_boolean(equal),
+                    Err(error) => {
+                        remember_helper_error(active, error);
+                        return 0;
+                    }
+                },
+                (DirectSubr::Symbolp, [value]) => match native_symbolp(active, *value) {
+                    Ok(is_symbol) => return native_boolean(is_symbol),
+                    Err(error) => {
+                        remember_helper_error(active, error);
+                        return 0;
+                    }
+                },
+                (DirectSubr::TypeOf, [value]) => {
+                    if let Some(result) = native_scalar_type_word(*value) {
+                        return result;
+                    }
+                }
+                (DirectSubr::SymbolValue, [symbol]) => {
+                    if let Some(result) = invoke_native_symbol_value(active, *symbol) {
+                        return result;
+                    }
+                }
+                _ => {}
+            }
+            // The remaining word-level subrs, by one dispatch on the kind.
+            let direct = match (kind, arguments) {
+                (DirectSubr::Assq, [key, list]) => Some(native_assq(active, *key, *list)),
+                (DirectSubr::Memq, [element, list]) => Some(native_memq(active, *element, *list)),
+                (DirectSubr::Get, [symbol, property]) => {
+                    Some(invoke_native_get(active, *symbol, *property))
+                }
+                (DirectSubr::Apply, _) => invoke_native_apply(active, arguments),
+                (DirectSubr::Mapcar, _) => invoke_native_mapcar(active, arguments),
+                (DirectSubr::Maphash, _) => invoke_native_maphash(active, arguments),
+                (DirectSubr::Nreverse, [sequence]) => invoke_native_nreverse(active, *sequence),
+                (DirectSubr::Length, [sequence]) => invoke_native_length(active, *sequence),
+                (DirectSubr::PlistMember, [plist, property]) => {
+                    Some(native_plist_member(active, *plist, *property, 0))
+                }
+                (DirectSubr::PlistMember, [plist, property, predicate]) => {
+                    Some(native_plist_member(active, *plist, *property, *predicate))
+                }
+                (DirectSubr::MakeClosure, _) => Some(invoke_native_make_closure(active, arguments)),
                 _ => None,
             };
-            if let Some(integer) = integer
-                && (MOST_NEGATIVE_FIXNUM..=MOST_POSITIVE_FIXNUM).contains(&integer)
-            {
-                return ((integer as NativeWord) << FIXNUM_BITS) | TAG_FIXNUM_LOW;
+            if let Some(result) = direct {
+                return result;
             }
         }
-        if kind == DirectSubr::Cons && arguments.len() == 2 {
-            return unsafe { &mut *active.runtime }
-                .heap
-                .cons(arguments[0], arguments[1]);
-        }
-        match (kind, arguments) {
-            (DirectSubr::Eq, [left, right])
-                if left == right
-                    || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
-            {
-                return native_boolean(left == right);
-            }
-            (DirectSubr::Null, [value]) => return native_boolean(*value == 0),
-            (DirectSubr::Consp, [value]) => return native_boolean(native_consp(*value)),
-            (DirectSubr::Atom, [value]) => return native_boolean(!native_consp(*value)),
-            (DirectSubr::BareSymbolp, [value]) => {
-                return native_boolean(*value & TAG_MASK == TAG_SYMBOL);
-            }
-            (DirectSubr::Symbolp, [value])
-                if *value & TAG_MASK == TAG_SYMBOL
-                    || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
-            {
-                return native_boolean(*value & TAG_MASK == TAG_SYMBOL);
-            }
-            (DirectSubr::Car, [value]) if *value == 0 || native_consp(*value) => {
-                return if native_consp(*value) {
-                    unsafe { native_car(*value) }
-                } else {
-                    0
-                };
-            }
-            (DirectSubr::CarSafe, [value]) => {
-                return if native_consp(*value) {
-                    unsafe { native_car(*value) }
-                } else {
-                    0
-                };
-            }
-            (DirectSubr::Cdr, [value]) if *value == 0 || native_consp(*value) => {
-                return if native_consp(*value) {
-                    unsafe { native_cdr(*value) }
-                } else {
-                    0
-                };
-            }
-            (DirectSubr::CdrSafe, [value]) => {
-                return if native_consp(*value) {
-                    unsafe { native_cdr(*value) }
-                } else {
-                    0
-                };
-            }
-            (DirectSubr::Listp, [value]) => {
-                return native_boolean(*value == 0 || native_consp(*value));
-            }
-            (DirectSubr::Nlistp, [value]) => {
-                return native_boolean(*value != 0 && !native_consp(*value));
-            }
-            (DirectSubr::List, values) => {
-                let heap = &mut unsafe { &mut *active.runtime }.heap;
-                return values
-                    .iter()
-                    .rev()
-                    .fold(0, |tail, value| heap.cons(*value, tail));
-            }
-            _ => {}
-        }
-        // These are direct translations of the corresponding C-owned word
-        // operations in data.c and alloc.c.  Keep them at the GNU ABI instead
-        // of decoding into Emaxx's richer interpreter representation.
-        match (kind, arguments) {
-            (DirectSubr::Eq, [left, right]) => match native_eq(active, *left, *right) {
-                Ok(equal) => return native_boolean(equal),
-                Err(error) => {
-                    remember_helper_error(active, error);
-                    return 0;
-                }
-            },
-            (DirectSubr::Symbolp, [value]) => match native_symbolp(active, *value) {
-                Ok(is_symbol) => return native_boolean(is_symbol),
-                Err(error) => {
-                    remember_helper_error(active, error);
-                    return 0;
-                }
-            },
-            (DirectSubr::TypeOf, [value]) => {
-                if let Some(result) = native_scalar_type_word(*value) {
-                    return result;
-                }
-            }
-            (DirectSubr::SymbolValue, [symbol]) => {
-                if let Some(result) = invoke_native_symbol_value(active, *symbol) {
-                    return result;
-                }
-            }
-            _ => {}
-        }
-        // The remaining word-level subrs, by one dispatch on the kind.
-        let direct = match (kind, arguments) {
-            (DirectSubr::Assq, [key, list]) => Some(native_assq(active, *key, *list)),
-            (DirectSubr::Memq, [element, list]) => Some(native_memq(active, *element, *list)),
-            (DirectSubr::Get, [symbol, property]) => {
-                Some(invoke_native_get(active, *symbol, *property))
-            }
-            (DirectSubr::Apply, _) => invoke_native_apply(active, arguments),
-            (DirectSubr::Mapcar, _) => invoke_native_mapcar(active, arguments),
-            (DirectSubr::Maphash, _) => invoke_native_maphash(active, arguments),
-            (DirectSubr::Nreverse, [sequence]) => invoke_native_nreverse(active, *sequence),
-            (DirectSubr::Length, [sequence]) => invoke_native_length(active, *sequence),
-            (DirectSubr::PlistMember, [plist, property]) => {
-                Some(native_plist_member(active, *plist, *property, 0))
-            }
-            (DirectSubr::PlistMember, [plist, property, predicate]) => {
-                Some(native_plist_member(active, *plist, *property, *predicate))
-            }
-            (DirectSubr::MakeClosure, _) => Some(invoke_native_make_closure(active, arguments)),
-            _ => None,
-        };
-        if let Some(result) = direct {
-            return result;
-        }
-        let mut decoded = smallvec::SmallVec::<[Value; 8]>::new();
-        for word in arguments {
-            let value = match unsafe { (&mut *active.runtime).heap.decode_live(*word) } {
-                Ok(value) => value,
-                Err(error) => {
-                    remember_helper_error(active, super::lisp::native_ice(&error));
-                    return 0;
-                }
-            };
-            decoded.push(value);
-        }
-        let result = crate::lisp::primitives::call_with_facts(
-            unsafe { &mut *active.interpreter },
-            subroutine.name,
-            subroutine.facts(),
-            &decoded,
-            unsafe { &mut *active.environment.get() },
-        );
-        match result {
-            Ok(value) => match unsafe { &mut *active.runtime }.heap.encode(&value) {
-                Ok(word) => word,
-                Err(error) => {
-                    drop(decoded);
-                    remember_helper_error(active, super::lisp::native_ice(&error));
-                    0
-                }
-            },
-            Err(error) => {
-                drop(decoded);
-                remember_helper_error(active, error);
-                0
-            }
-        }
+        invoke_subr_entry(active, subroutine, arguments)
     })
+}
+
+/// eval.c:funcall_subr for a subr native code called with ARGUMENTS: the
+/// subr's own entry, the caller's words its values.
+#[inline(always)]
+fn invoke_subr_entry(
+    active: &ActiveCall,
+    subroutine: &'static super::abi::NativeSubr,
+    arguments: &[NativeWord],
+) -> NativeWord {
+    // SAFETY: generated code passes live Lisp_Object words.
+    let values = unsafe { live_values(arguments) };
+    match subroutine.call(unsafe { &mut *active.interpreter }, values, unsafe {
+        &mut *active.environment.get()
+    }) {
+        Ok(value) => value.word(),
+        Err(error) => {
+            remember_helper_error(active, error);
+            0
+        }
+    }
+}
+
+/// The Lisp values a native caller's argument words are, as
+/// `NativeHeap::decode_live' reads each: a Value is the word itself.
+///
+/// # Safety
+/// Each word of ARGUMENTS is a live Lisp_Object.
+#[inline(always)]
+unsafe fn live_values(arguments: &[NativeWord]) -> &[Value] {
+    // SAFETY: Value is a transparent machine word; the caller's contract.
+    unsafe { std::slice::from_raw_parts(arguments.as_ptr().cast::<Value>(), arguments.len()) }
 }
 
 fn slow_unary_subr(
@@ -3001,16 +3004,13 @@ impl DirectFuncallTarget {
         arguments: &[NativeWord],
     ) -> Result<NativeWord, LispError> {
         if let Self::ByteCode { closure } = self {
-            let mut decoded = smallvec::SmallVec::<[Value; 8]>::new();
-            for word in arguments {
-                // SAFETY: Ffuncall's argument vector belongs to the native
-                // caller, which keeps each Lisp_Object live, as XUNTAG
-                // reads it without a reverse map.
-                decoded.push(unsafe { Value::from_word(*word) });
-            }
+            // SAFETY: Ffuncall's argument vector belongs to the native
+            // caller, which keeps each Lisp_Object live, as XUNTAG reads it
+            // without a reverse map.
+            let values = unsafe { live_values(arguments) };
             let result = unsafe { &mut *active.interpreter }.execute_bytecode_funcall_body(
                 closure,
-                &decoded,
+                values,
                 unsafe { &mut *active.environment.get() },
             );
 
@@ -3218,17 +3218,9 @@ fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Optio
                 Some(target) => target.invoke(active, call_arguments),
                 None => {
                     // SAFETY: as the byte-code case's: the caller's live words.
-                    let decoded = call_arguments
-                        .iter()
-                        .map(|word| {
-                            unsafe { runtime.heap.decode_live(*word) }
-                                .map_err(|error| super::lisp::native_ice(&error))
-                        })
-                        .collect::<Result<smallvec::SmallVec<[Value; 8]>, _>>();
-                    decoded
-                        .and_then(|args| {
-                            interpreter.funcall_body(original_function, &args, environment)
-                        })
+                    let values = unsafe { live_values(call_arguments) };
+                    interpreter
+                        .funcall_body(original_function, values, environment)
                         .and_then(|value| {
                             runtime
                                 .heap

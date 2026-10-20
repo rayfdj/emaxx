@@ -1665,7 +1665,8 @@ impl Interpreter {
         env: &mut Env,
         funcall: bool,
     ) -> Result<Value, LispError> {
-        primitives::call_with_facts(self, subr.as_str(), subr.facts(), args, env)
+        subr.descriptor()
+            .call(self, args, env)
             .map_err(|error| Self::builtin_call_error(subr.as_str(), args.len(), funcall, error))
     }
 
@@ -2185,15 +2186,15 @@ impl InterpreterState {
 
     /// Bcall's way to a native-compiled function or a subr that evaluates
     /// its arguments when nothing else happens on the way in
-    /// (`plain_bcall_entry'): the function in FUNC's live cell (or FUNC
-    /// itself).
+    /// (`plain_bcall_entry'): FUNCTION, the function in FUNC's live cell
+    /// (or FUNC itself), which the caller has read.
     #[inline(always)]
-    pub(crate) fn plain_bcall_callee(&self, func: Value) -> Option<super::PlainCallee> {
+    pub(crate) fn plain_bcall_callee(
+        &self,
+        func: Value,
+        function: Value,
+    ) -> Option<super::PlainCallee> {
         let name = func.symbol_cell();
-        let function = match &name {
-            Some(name) => self.globals.function(name)?,
-            None => func,
-        };
         let callee = if let Some(native) = function.native_function_ref() {
             super::PlainCallee::Native(native)
         } else {
