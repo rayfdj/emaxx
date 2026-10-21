@@ -1398,6 +1398,13 @@ where
         return Ok(false);
     }
     state.check_impure()?;
-    state.borrow_mut().props = updated.into();
+    let mut state = state.borrow_mut();
+    // Intervals stay when their properties go (textprop.c removes plist
+    // entries; only `set-text-properties' of the whole string drops them).
+    state.props = if updated.is_empty() && state.props.has_intervals() {
+        crate::lisp::types::string_data::StringProperties::empty_tree()
+    } else {
+        updated.into()
+    };
     Ok(changed)
 }

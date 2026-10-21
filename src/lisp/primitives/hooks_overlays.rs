@@ -706,6 +706,149 @@ pub(crate) fn delete_region_with_hooks(
     })
 }
 
+/// The buffer a text-property primitive's OBJECT names: the current
+/// buffer for nil (textprop.c:validate_interval_range).
+pub(crate) fn property_buffer_id(
+    interp: &Interpreter,
+    object: Option<&Value>,
+) -> Result<u64, LispError> {
+    match object {
+        Some(object) if !object.is_nil() => interp.resolve_buffer_id(object),
+        _ => Ok(interp.current_buffer_id()),
+    }
+}
+
+/// textprop.c's buffer case of a property change, when CHANGES finds that
+/// the properties of [START, END) in BUFFER_ID would change:
+/// modify_text_properties (insdel.c:prepare_to_modify_buffer_1 over the
+/// range with that buffer current: the read-only checks, the overlays'
+/// modification hooks, the undoable-change notice and
+/// `before-change-functions'), APPLY over the buffer and its indirect
+/// relatives, then signal_after_change.  Whether anything changed.
+pub(crate) fn modify_buffer_text_properties(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    start: usize,
+    end: usize,
+    changes: &dyn Fn(&crate::buffer::Buffer) -> bool,
+    apply: &dyn Fn(&mut crate::buffer::Buffer),
+    env: &mut crate::lisp::types::Env,
+) -> Result<bool, LispError> {
+    let (start, end) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    let original = interp.current_buffer_id();
+    let changing = if buffer_id == original {
+        changes(&interp.buffer.borrow())
+    } else {
+        interp
+            .get_buffer_by_id(buffer_id)
+            .is_some_and(|buffer| changes(&buffer))
+    };
+    if !changing {
+        return Ok(false);
+    }
+    // modify_text_properties makes the buffer current for
+    // prepare_to_modify_buffer_1 alone, and its signal leaves it so.
+    if buffer_id != original {
+        interp.set_current_buffer_id(buffer_id)?;
+    }
+    ensure_region_modifiable(interp, start, end)?;
+    let overlay_calls = overlay_change_hook_calls(interp, &interp.buffer.borrow(), start, end, end);
+    with_overlay_hook_roots(interp, &overlay_calls, |interp| {
+        run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
+        run_change_hooks(
+            interp,
+            "before-change-functions",
+            &[Value::Integer(start as i64), Value::Integer(end as i64)],
+            env,
+        )?;
+        let _ = maybe_lock_current_buffer_on_change(interp, env);
+        if buffer_id != original && interp.has_buffer_id(original) {
+            interp.set_current_buffer_id(original)?;
+        }
+        interp.apply_text_property_change_shared_for(buffer_id, apply);
+        run_change_hooks(
+            interp,
+            "after-change-functions",
+            &[
+                Value::Integer(start as i64),
+                Value::Integer(end as i64),
+                Value::Integer((end - start) as i64),
+            ],
+            env,
+        )?;
+        run_overlay_hook_calls(interp, &overlay_calls, true, env)
+    })?;
+    Ok(true)
+}
+
+/// Whether some interval of [FROM, TO) lacks one of PROPS with its value
+/// (EQ): textprop.c:interval_has_all_properties false somewhere, so that
+/// add_text_properties changes the text.
+pub(crate) fn properties_would_add(
+    buffer: &crate::buffer::Buffer,
+    from: usize,
+    to: usize,
+    props: &[(PropertyName, Value)],
+) -> bool {
+    let (from, to) = clamp_property_range(buffer, from, to);
+    buffer
+        .try_for_each_property_interval(from, to, |_, _, current| {
+            let has_all = props.iter().all(|(name, value)| {
+                current
+                    .iter()
+                    .any(|(key, existing)| key == name && existing.word() == value.word())
+            });
+            if has_all { Ok(()) } else { Err(()) }
+        })
+        .is_err()
+}
+
+/// Whether some interval of [FROM, TO) has one of NAMES:
+/// textprop.c:interval_has_some_properties(_list), so that removing them
+/// changes the text.
+pub(crate) fn properties_would_remove(
+    buffer: &crate::buffer::Buffer,
+    from: usize,
+    to: usize,
+    names: &[PropertyName],
+) -> bool {
+    let (from, to) = clamp_property_range(buffer, from, to);
+    buffer
+        .try_for_each_property_interval(from, to, |_, _, current| {
+            if current.iter().any(|(key, _)| names.contains(key)) {
+                Err(())
+            } else {
+                Ok(())
+            }
+        })
+        .is_err()
+}
+
+/// Whether set_text_properties modifies the buffer: a nonempty range, and
+/// either properties to set or intervals in the buffer, though every
+/// plist be empty.
+pub(crate) fn properties_would_set(
+    buffer: &crate::buffer::Buffer,
+    from: usize,
+    to: usize,
+    props: &[(PropertyName, Value)],
+) -> bool {
+    let (from, to) = clamp_property_range(buffer, from, to);
+    from < to && (!props.is_empty() || buffer.has_interval_tree())
+}
+
+fn clamp_property_range(buffer: &crate::buffer::Buffer, from: usize, to: usize) -> (usize, usize) {
+    let (from, to) = if from <= to { (from, to) } else { (to, from) };
+    (from.max(buffer.point_min()), to.min(buffer.point_max()))
+}
+
+/// insdel.c:prepare_to_modify_buffer_1's read-only checks before a change
+/// of [FROM, TO): buffer.c:Fbarf_if_buffer_read_only at FROM, then
+/// textprop.c:verify_interval_modification over the intervals.
 pub(crate) fn ensure_region_modifiable(
     interp: &Interpreter,
     from: usize,
@@ -717,59 +860,119 @@ pub(crate) fn ensure_region_modifiable(
     if from >= to {
         return Ok(());
     }
-    let inhibit_read_only = interp
-        .symbol_value_key(cached_symbol!("inhibit-read-only"))
-        .unwrap_or(Value::Nil);
-    let buffer_read_only = buffer_read_only_active(interp, &inhibit_read_only);
-    // insdel.c: with no intervals there is no read-only text to verify,
-    // and the buffer's own flag was decided above.
-    if !buffer_read_only && !interp.buffer.borrow().has_text_properties() {
+    let inhibit = inhibit_read_only_value(interp);
+    let buffer_read_only = buffer_read_only_active(interp, &inhibit);
+    let buffer = interp.buffer.borrow();
+    if buffer_read_only
+        && textget(
+            interp,
+            buffer.text_properties_at_ref(from),
+            cached_symbol!("inhibit-read-only"),
+        )
+        .is_nil()
+    {
+        return Err(buffer_read_only_signal(interp));
+    }
+    // insdel.c: with no intervals there is nothing more to verify.
+    if !buffer.has_text_properties() {
         return Ok(());
     }
-
-    for pos in from..to {
-        let read_only = interp.buffer.borrow().text_property_at(pos, "read-only");
-        let suppressor = interp
-            .buffer
-            .borrow()
-            .text_property_at(pos, "inhibit-read-only");
-        if let Some(read_only_value) = read_only {
-            if suppressor.is_some_and(|value| value.is_truthy())
-                || inhibit_read_only_matches(&inhibit_read_only, &read_only_value)
-            {
-                continue;
-            }
-            // textprop.c's text_read_only: the property's string as the
-            // datum, none for any other value.
-            let mut data = vec![Value::Symbol("text-read-only".into())];
-            if matches!(read_only_value.kind(), Kind::StringObject(_)) {
-                data.push(read_only_value);
-            }
-            return Err(LispError::SignalValue(Value::list(data)));
+    buffer.try_for_each_property_interval(from, to, |_, _, props| {
+        let read_only = textget(interp, props, cached_symbol!("read-only"));
+        // intervals.h INTERVAL_GENERALLY_WRITABLE_P and
+        // INTERVAL_EXPRESSLY_WRITABLE_P.
+        let implied = read_only.is_nil() || (!inhibit.is_nil() && !is_cons(&inhibit));
+        let express = !textget(interp, props, cached_symbol!("inhibit-read-only")).is_nil()
+            || (!read_only.is_nil()
+                && is_cons(&inhibit)
+                && memq(PropertyName::new(read_only), inhibit));
+        if !implied && !express {
+            return Err(text_read_only(read_only));
         }
-        if buffer_read_only && !suppressor.is_some_and(|value| value.is_truthy()) {
+        if !express && buffer_read_only {
             return Err(buffer_read_only_signal(interp));
+        }
+        Ok(())
+    })
+}
+
+/// insdel.c:prepare_to_modify_buffer_1's read-only checks before an
+/// insertion at point: buffer.c:Fbarf_if_buffer_read_only there, then
+/// textprop.c:verify_interval_modification's insertion case, which
+/// refuses read-only text on either side whose stickiness would extend
+/// it over the inserted text.
+pub(crate) fn ensure_insert_modifiable(interp: &Interpreter) -> Result<(), LispError> {
+    let inhibit = inhibit_read_only_value(interp);
+    let buffer = interp.buffer.borrow();
+    let point = buffer.point();
+    if buffer_read_only_active(interp, &inhibit)
+        && textget(
+            interp,
+            buffer.text_properties_at_ref(point),
+            cached_symbol!("inhibit-read-only"),
+        )
+        .is_nil()
+    {
+        return Err(buffer_read_only_signal(interp));
+    }
+    // A non-list `inhibit-read-only' lets any text be inserted into.
+    if !buffer.has_text_properties() || (!inhibit.is_nil() && !is_cons(&inhibit)) {
+        return Ok(());
+    }
+    // The intervals of the characters after and before point: none at
+    // the accessible region's edges, and the same one inside a span.
+    let after = (point < buffer.point_max()).then(|| buffer.text_properties_at_ref(point));
+    let before = (point > buffer.point_min()).then(|| buffer.text_properties_at_ref(point - 1));
+    let read_only_unless_inhibited = |props: &[(PropertyName, Value)]| {
+        let value = textget(interp, props, cached_symbol!("read-only"));
+        (!value.is_nil() && !memq(PropertyName::new(value), inhibit)).then_some(value)
+    };
+    // The read-only property sticks to text inserted after it unless it
+    // is rear-nonsticky (directly, or through `category' when the
+    // interval has no read-only property of its own), and before it when
+    // it is front-sticky.
+    let sticks_behind = |props: &[(PropertyName, Value)]| {
+        let tem = textget(interp, props, cached_symbol!("rear-nonsticky"));
+        !tmem(cached_symbol!("read-only"), tem)
+            && (!plist_get(props, cached_symbol!("read-only")).is_nil()
+                || !tmem(cached_symbol!("category"), tem))
+    };
+    let sticks_ahead = |props: &[(PropertyName, Value)]| {
+        let tem = textget(interp, props, cached_symbol!("front-sticky"));
+        tmem(cached_symbol!("read-only"), tem)
+            || (plist_get(props, cached_symbol!("read-only")).is_nil()
+                && tmem(cached_symbol!("category"), tem))
+    };
+    match (after, before) {
+        (Some(after), Some(before)) if std::ptr::eq(after, before) => {
+            if let Some(value) = read_only_unless_inhibited(after)
+                && (sticks_ahead(after) || sticks_behind(after))
+            {
+                return Err(text_read_only(value));
+            }
+        }
+        (after, before) => {
+            if let Some(after) = after
+                && let Some(value) = read_only_unless_inhibited(after)
+                && sticks_ahead(after)
+            {
+                return Err(text_read_only(value));
+            }
+            if let Some(before) = before
+                && let Some(value) = read_only_unless_inhibited(before)
+                && sticks_behind(before)
+            {
+                return Err(text_read_only(value));
+            }
         }
     }
     Ok(())
 }
 
-pub(crate) fn ensure_insert_modifiable(interp: &Interpreter) -> Result<(), LispError> {
-    let inhibit_read_only = interp
+fn inhibit_read_only_value(interp: &Interpreter) -> Value {
+    interp
         .symbol_value_key(cached_symbol!("inhibit-read-only"))
-        .unwrap_or(Value::Nil);
-    if !buffer_read_only_active(interp, &inhibit_read_only) {
-        return Ok(());
-    }
-    let point = interp.buffer.borrow().point();
-    let suppressor = interp
-        .buffer
-        .borrow()
-        .text_property_at(point, "inhibit-read-only");
-    if suppressor.is_some_and(|value| value.is_truthy()) {
-        return Ok(());
-    }
-    Err(buffer_read_only_signal(interp))
+        .unwrap_or(Value::Nil)
 }
 
 fn buffer_read_only_active(interp: &Interpreter, inhibit_read_only: &Value) -> bool {
@@ -786,23 +989,69 @@ fn buffer_read_only_signal(interp: &Interpreter) -> LispError {
     ]))
 }
 
-pub(crate) fn inhibit_read_only_matches(inhibit: &Value, property: &Value) -> bool {
-    if inhibit.is_nil() {
-        return false;
+/// textprop.c:text_read_only: the property's string as the datum, none
+/// for any other value.
+fn text_read_only(property: Value) -> LispError {
+    let mut data = vec![Value::Symbol("text-read-only".into())];
+    if matches!(property.kind(), Kind::StringObject(_)) {
+        data.push(property);
     }
-    if matches!(inhibit.kind(), Kind::T) {
-        return true;
+    LispError::SignalValue(Value::list(data))
+}
+
+/// textprop.c:textget: PROP in PLIST as lookup_char_property reads it,
+/// through the `category' symbol and `char-property-alias-alist'.
+fn textget(
+    interp: &Interpreter,
+    plist: &[(PropertyName, Value)],
+    prop: impl crate::lisp::types::PropertyKey,
+) -> Value {
+    property_from_props_with_category(interp, plist, prop).unwrap_or(Value::Nil)
+}
+
+/// fns.c:plist_get on an interval's own plist: no category.
+fn plist_get(plist: &[(PropertyName, Value)], prop: impl crate::lisp::types::PropertyKey) -> Value {
+    plist
+        .iter()
+        .find(|(name, _)| prop.names(name))
+        .map_or(Value::Nil, |(_, value)| *value)
+}
+
+/// textprop.c TMEM: SYM in SET when SET is a list, else SET non-nil.
+fn tmem(symbol: impl crate::lisp::types::PropertyKey, set: Value) -> bool {
+    if is_cons(&set) {
+        memq(symbol, set)
+    } else {
+        !set.is_nil()
     }
-    if let Ok(items) = inhibit.to_vec() {
-        return items.into_iter().any(|item| item == *property);
+}
+
+/// Fmemq: an element of LIST EQ to ELT (a circular list has none past
+/// its cycle).
+fn memq(elt: impl crate::lisp::types::PropertyKey, list: Value) -> bool {
+    let mut tail = list;
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    while let Kind::Cons(cell) = tail.kind() {
+        if elt.is(cell.car.get()) {
+            return true;
+        }
+        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            return false;
+        }
+        tail = cell.cdr.get();
     }
-    inhibit == property
+    false
+}
+
+fn is_cons(value: &Value) -> bool {
+    matches!(value.kind(), Kind::Cons(_))
 }
 
 pub(crate) fn add_face_text_property(
     interp: &mut Interpreter,
     name: &str,
     args: &[Value],
+    env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     need_arg_range(name, args, 3, 5)?;
     let face = args[2];
@@ -834,25 +1083,58 @@ pub(crate) fn add_face_text_property(
     let start = position_from_value(interp, &args[0])?;
     let end = position_from_value(interp, &args[1])?;
     let buffer_id = font_lock_target_buffer_id(interp, args.get(4))?;
-    let mut cursor = start;
-    while cursor < end {
-        let (previous, next) = font_lock_buffer_segment(interp, buffer_id, cursor, end, "face")?;
+    // add_text_properties_1 with TEXT_PROPERTY_APPEND or _PREPEND skips no
+    // interval: any nonempty range changes, and each of its intervals
+    // takes FACE combined with its own.
+    let (from, to) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    modify_buffer_text_properties(
+        interp,
+        buffer_id,
+        from,
+        to,
+        &|buffer| {
+            let (from, to) = clamp_property_range(buffer, from, to);
+            from < to
+        },
+        &|buffer| add_face_to_buffer(buffer, from, to, face, append),
+        env,
+    )?;
+    Ok(Value::Nil)
+}
+
+/// add_properties' TEXT_PROPERTY_APPEND or _PREPEND of FACE over
+/// [FROM, TO): each interval's face combined with FACE.
+pub(crate) fn add_face_to_buffer(
+    buffer: &mut crate::buffer::Buffer,
+    from: usize,
+    to: usize,
+    face: Value,
+    append: bool,
+) {
+    let face_name = PropertyName::symbol("face");
+    let (from, to) = clamp_property_range(buffer, from, to);
+    let mut cursor = from;
+    while cursor < to {
+        let previous = buffer
+            .text_property_at(cursor, face_name)
+            .unwrap_or(Value::Nil);
+        let next = font_lock_next_buffer_property_change(buffer, cursor, to, "face");
         let updated = if previous.is_nil() {
             face
         } else {
             combine_font_lock_property_value("face", previous, &face, append)
         };
-        font_lock_put_buffer_property(
-            interp,
-            buffer_id,
-            cursor,
-            next,
-            PropertyName::symbol("face"),
-            updated,
-        )?;
+        if updated.is_nil() {
+            buffer.remove_list_of_text_properties(cursor, next, &[face_name]);
+        } else {
+            buffer.put_text_property(cursor, next, face_name, updated);
+        }
         cursor = next;
     }
-    Ok(Value::Nil)
 }
 
 pub(crate) fn font_lock_target_buffer_id(
@@ -863,45 +1145,6 @@ pub(crate) fn font_lock_target_buffer_id(
         Some(value) if !value.is_nil() => interp.resolve_buffer_id(value),
         _ => Ok(interp.current_buffer_id()),
     }
-}
-
-pub(crate) fn font_lock_buffer_segment(
-    interp: &Interpreter,
-    buffer_id: u64,
-    start: usize,
-    end: usize,
-    prop: &str,
-) -> Result<(Value, usize), LispError> {
-    let buffer = interp
-        .get_buffer_by_id(buffer_id)
-        .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
-    let previous = buffer.text_property_at(start, prop).unwrap_or(Value::Nil);
-    let next = font_lock_next_buffer_property_change(&buffer, start, end, prop);
-    Ok((previous, next))
-}
-
-pub(crate) fn font_lock_put_buffer_property(
-    interp: &mut Interpreter,
-    buffer_id: u64,
-    start: usize,
-    end: usize,
-    prop: PropertyName,
-    value: Value,
-) -> Result<(), LispError> {
-    let applied = interp.apply_text_property_change_shared_for(buffer_id, &|buffer| {
-        if value.is_nil() {
-            buffer.remove_list_of_text_properties(start, end, &[prop]);
-        } else {
-            buffer.put_text_property(start, end, prop, value);
-        }
-    });
-    if !applied {
-        return Err(LispError::Signal(format!(
-            "No buffer with id {}",
-            buffer_id
-        )));
-    }
-    Ok(())
 }
 
 pub(crate) fn font_lock_next_buffer_property_change(

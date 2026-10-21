@@ -157,6 +157,13 @@ pub struct Buffer {
     /// Sparse text property spans over [start, end) buffer positions.
     text_properties: Vec<TextPropertySpan>,
 
+    /// Whether GNU's buffer_intervals would be set: true once any text
+    /// has had a property, kept while every interval's plist is empty,
+    /// and false again when a deletion takes the whole text
+    /// (adjust_intervals_for_deletion).  `set-text-properties' modifies,
+    /// so signals and counts, such a buffer even when no plist changes.
+    interval_tree: bool,
+
     /// Sparse 1-based character positions for GNU Emacs characters outside
     /// Unicode's scalar range.  The rope holds one placeholder scalar at each
     /// position; this typed sidecar is runtime representation, never a Lisp
@@ -207,6 +214,7 @@ impl Clone for Buffer {
             point_before_last_boundary: self.point_before_last_boundary,
             overlays: crate::overlay::OverlayTree::default(),
             text_properties: self.text_properties.clone(),
+            interval_tree: self.interval_tree,
             extended_chars: self.extended_chars.clone(),
             inhibit_hooks: self.inhibit_hooks,
             text_conversion_style: self.text_conversion_style,
@@ -804,6 +812,7 @@ impl Buffer {
             point_before_last_boundary: None,
             overlays: crate::overlay::OverlayTree::default(),
             text_properties: Vec::new(),
+            interval_tree: false,
             extended_chars: Vec::new(),
             inhibit_hooks: false,
             text_conversion_style: Value::Nil,
@@ -844,6 +853,7 @@ impl Buffer {
             point_before_last_boundary: None,
             overlays: crate::overlay::OverlayTree::default(),
             text_properties: Vec::new(),
+            interval_tree: false,
             extended_chars: Vec::new(),
             inhibit_hooks: false,
             text_conversion_style: Value::Nil,
@@ -1728,9 +1738,15 @@ impl Buffer {
         self.text_properties.len()
     }
 
-    /// Whether any text property is set (intervals exist, in GNU's terms).
+    /// Whether any text property is set.
     pub fn has_text_properties(&self) -> bool {
         !self.text_properties.is_empty()
+    }
+
+    /// Whether the buffer has intervals in GNU's terms, every plist of
+    /// which may be empty (`interval_tree').
+    pub fn has_interval_tree(&self) -> bool {
+        self.interval_tree || !self.text_properties.is_empty()
     }
 
     pub fn text_property_at(&self, pos: usize, prop: impl PropertyKey) -> Option<Value> {
@@ -1747,6 +1763,37 @@ impl Buffer {
         text_property_span_at(&self.text_properties, pos)
             .map(|span| span.props.as_slice())
             .unwrap_or_default()
+    }
+
+    /// F over the intervals meeting [FROM, TO) as textprop.c walks them
+    /// (find_interval, then next_interval): each span clipped to the
+    /// range with its plist, and each stretch between spans as an
+    /// interval with none.  Stops at F's first error.
+    pub(crate) fn try_for_each_property_interval<E>(
+        &self,
+        from: usize,
+        to: usize,
+        mut f: impl FnMut(usize, usize, &[(PropertyName, Value)]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let spans = &self.text_properties;
+        let mut cursor = from;
+        let lo = spans.partition_point(|span| span.end <= from);
+        for span in &spans[lo..] {
+            if span.start >= to {
+                break;
+            }
+            if cursor < span.start {
+                f(cursor, span.start, &[])?;
+                cursor = span.start;
+            }
+            let end = span.end.min(to);
+            f(cursor, end, &span.props)?;
+            cursor = end;
+        }
+        if cursor < to {
+            f(cursor, to, &[])?;
+        }
+        Ok(())
     }
 
     pub fn text_properties_at(&self, pos: usize) -> Vec<(PropertyName, Value)> {
@@ -1820,7 +1867,22 @@ impl Buffer {
         end: usize,
         props: &[(PropertyName, Value)],
     ) {
+        let tick = self.modiff;
         self.modify_text_properties(start, end, |_| props.to_vec());
+        // textprop.c set_text_properties modifies a buffer that has
+        // intervals whether or not a plist changes.
+        let (start, end) = (start.max(self.point_min()), end.min(self.point_max()));
+        if self.modiff == tick && start < end && self.has_interval_tree() {
+            self.record_first_change_for_undo();
+            self.count_text_property_change(start, end);
+        }
+    }
+
+    /// textprop.c modify_text_properties's count of a property change.
+    fn count_text_property_change(&mut self, start: usize, end: usize) {
+        modiff_incr(&mut self.modiff, 1);
+        self.log_edit(start, end, end, false);
+        self.autosaved = false;
     }
 
     pub fn remove_list_of_text_properties(
@@ -2119,6 +2181,9 @@ impl Buffer {
         // Adjust overlays and evaporate empty ones
         self.overlays.delete_gap(from, to.saturating_sub(from));
         self.adjust_text_properties_for_delete(from, to);
+        if self.text.len_chars() == 0 {
+            self.interval_tree = false;
+        }
         self.adjust_extended_chars_for_delete(from, to);
 
         // Shrink accessible region
@@ -2514,6 +2579,7 @@ impl Buffer {
         self.undo_disabled = false;
         self.point_before_last_boundary = None;
         self.text_properties = Vec::new();
+        self.interval_tree = false;
         self.text_conversion_style = Value::Nil;
         self.text_conversion_style_is_local = false;
         self.extended_chars = Vec::new();
@@ -2605,6 +2671,7 @@ impl Buffer {
             undo_disabled: parts.undo_disabled,
             point_before_last_boundary: parts.point_before_last_boundary,
             overlays: crate::overlay::OverlayTree::default(),
+            interval_tree: !parts.text_properties.is_empty(),
             text_properties: parts.text_properties,
             extended_chars: parts.extended_chars,
             inhibit_hooks: parts.inhibit_hooks,
@@ -2643,6 +2710,7 @@ impl Buffer {
         std::mem::swap(&mut self.undo_disabled, &mut other.undo_disabled);
         std::mem::swap(&mut self.overlays, &mut other.overlays);
         std::mem::swap(&mut self.text_properties, &mut other.text_properties);
+        std::mem::swap(&mut self.interval_tree, &mut other.interval_tree);
         std::mem::swap(&mut self.extended_chars, &mut other.extended_chars);
         std::mem::swap(&mut self.multibyte, &mut other.multibyte);
         match (&mut self.mark, &mut other.mark) {
@@ -2777,6 +2845,7 @@ impl Buffer {
             return;
         }
         let removed = to - from;
+        self.interval_tree |= !self.text_properties.is_empty();
         let spans = &mut self.text_properties;
         let lo = spans.partition_point(|span| span.end <= from);
         let hi = spans.partition_point(|span| span.start < to);
@@ -2870,6 +2939,7 @@ impl Buffer {
         if start >= end {
             return;
         }
+        self.interval_tree |= !self.text_properties.is_empty();
 
         // The spans are sorted by start and disjoint: only those meeting
         // [start, end), and the neighbour on either side for the merge,
@@ -2972,10 +3042,9 @@ impl Buffer {
         window.extend(self.text_properties[hi..splice_hi].iter().cloned());
         let window = merge_adjacent_spans(window);
         self.text_properties.splice(splice_lo..splice_hi, window);
+        self.interval_tree |= !self.text_properties.is_empty();
         if record {
-            modiff_incr(&mut self.modiff, 1);
-            self.log_edit(start, end, end, false);
-            self.autosaved = false;
+            self.count_text_property_change(start, end);
         }
     }
 }

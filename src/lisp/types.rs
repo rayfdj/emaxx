@@ -1430,6 +1430,19 @@ impl PropertyKey for &str {
     }
 }
 
+impl PropertyKey for symbols::SymbolKey {
+    /// The key's symbol, compared with EQ.
+    #[inline]
+    fn is(self, object: Value) -> bool {
+        self.with(|symbol| Value::Symbol(*symbol).word() == object.word())
+    }
+
+    #[inline]
+    fn is_named(self, text: &str) -> bool {
+        self.with(|symbol| symbol.as_str() == text)
+    }
+}
+
 impl PropertyKey for &String {
     #[inline]
     fn is(self, object: Value) -> bool {

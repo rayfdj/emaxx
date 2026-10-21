@@ -539,13 +539,19 @@ impl SharedStringState {
     }
 
     pub(crate) fn copy_with_properties(&self) -> StringObjectRef {
-        StringObjectRef::from_slice(
+        let copy = StringObjectRef::from_slice(
             self.bytes(),
             self.len(),
             self.is_multibyte(),
             self.props.to_vec(),
             StringAllocation::Ordinary,
-        )
+        );
+        // fns.c Fcopy_sequence copies the intervals, every plist of which
+        // may be empty.
+        if self.props.is_empty() && self.props.has_intervals() && self.len() != 0 {
+            copy.borrow_mut().props = StringProperties::empty_tree();
+        }
+        copy
     }
 
     pub(crate) fn copy_without_properties(

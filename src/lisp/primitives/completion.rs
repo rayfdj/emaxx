@@ -1251,7 +1251,6 @@ pub(crate) fn activate_minibuffer(
     // stickiness controls that keep typed text from inheriting them —
     // the prompt is front-sticky and rear-nonsticky.
     if !prompt_string.text.is_empty() {
-        let prompt_end = Value::Integer(1 + prompt_length as i64);
         if let Some(properties) = interp
             .lookup_var("minibuffer-prompt-properties", env)
             .filter(|properties| !properties.is_nil())
@@ -1260,11 +1259,16 @@ pub(crate) fn activate_minibuffer(
             for pair in properties.as_chunks::<2>().0 {
                 let name = crate::lisp::types::PropertyName::new(pair[0]);
                 if name == "face" {
-                    add_face_text_property(
-                        interp,
-                        "add-face-text-property",
-                        &[Value::Integer(1), prompt_end, pair[1], Value::T],
-                    )?;
+                    let face = pair[1];
+                    interp.apply_text_property_change_shared(&|buffer| {
+                        super::hooks_overlays::add_face_to_buffer(
+                            buffer,
+                            1,
+                            1 + prompt_length,
+                            face,
+                            true,
+                        )
+                    });
                 } else {
                     interp.buffer.borrow_mut().put_text_property(
                         1,

@@ -3609,6 +3609,58 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   `process_tls_state_survives_collection_before_and_after_async_handshake`
   failed among the four parallel processes and passes alone, three times of
   three. Clippy `-D warnings`, rustfmt and `git diff --check` pass.
+- **Round 43: read-only text and property changes as textprop.c checks and
+  signals them.** Older divergences, found by probing GNU: (a) a deletion
+  or replacement read each character's own `read-only` alone, so a nil
+  value counted as read-only, `category` was ignored, a non-list
+  `inhibit-read-only` (`5`) was not honoured and a list one matched with
+  `equal`. The check now walks the intervals as
+  verify_interval_modification does (`textget` through `category` and
+  `char-property-alias-alist`, INTERVAL_GENERALLY_WRITABLE_P and
+  INTERVAL_EXPRESSLY_WRITABLE_P, `memq` of the list), after
+  Fbarf_if_buffer_read_only's look at the first character's
+  `inhibit-read-only`. (b) An insertion checked the buffer's flag alone:
+  text went in after read-only text that is not rear-nonsticky and before
+  front-sticky read-only text. The insertion case's stickiness rules (TMEM
+  over `front-sticky` and `rear-nonsticky`, a `category`'s read-only when
+  the interval has none of its own) now refuse it. (c) The property
+  primitives on a buffer (`put-text-property`, `add-`, `set-` and
+  `remove-text-properties`, `remove-list-of-text-properties`,
+  `add-face-text-property`) checked nothing and ran no change hooks, and
+  given a buffer OBJECT they changed the current buffer. They now act as
+  modify_text_properties: only when something would change
+  (add_text_properties_1's all-properties test with EQ values, the remove
+  scans, set's intervals), with the object buffer current for the
+  read-only checks, the overlays' modification hooks, the lock and
+  `before-change-functions`, then the change and `after-change-functions`
+  in the caller's buffer, one tick counted. The minibuffer prompt's face
+  is added without hooks, as read_minibuf binds
+  `inhibit-modification-hooks`. (d) GNU's buffers and strings keep their
+  intervals when the properties go, and `set-text-properties` modifies a
+  region with intervals (returns t, signals, counts a tick and records a
+  first change) though no plist changes. A buffer now carries that state
+  (dropped when a deletion takes its whole text, exchanged by
+  `buffer-swap-text`), a string an empty interval container (copied by
+  `copy-sequence`, not by `substring` or `concat`, dropped by
+  `set-text-properties` of the whole string to nil). Still not as GNU: the
+  `modification-hooks`, `insert-in-front-hooks` and `insert-behind-hooks`
+  text properties (only the overlays' run), and a string's empty intervals
+  grafted into a buffer by its insertion.
+  `read_only_text_follows_textprop_intervals_and_stickiness`,
+  `text_property_changes_modify_the_object_buffer` and
+  `intervals_outlive_their_properties_until_the_text_goes` check them
+  against the GNU oracle. Profile-guided builds, each trained on its own
+  source: undo 1,048,999 -> 1,081,140 instructions a unit (GNU 1,252,071),
+  the property changes running the change hooks GNU runs and the read-only
+  walk's `textget` reading `char-property-alias-alist` by name (about
+  5,400 a unit); bytecode calls 418.5 -> 418.6 an iteration. Validation as
+  round 42's: the whole library suite (3,171 tests) passes but for the
+  same known failures. Clippy `-D warnings`, rustfmt and
+  `git diff --check` pass. The contract-like comparison of round 42's
+  profile-guided build, run twice: all 16 workloads within 1.03 of GNU's
+  wall time both times (the closest: bytecode calls 0.926 [0.868, 1.015]
+  and undo 0.912 [0.887, 0.992]; then undo 0.920 [0.802, 1.026], with one
+  1.229 round, and cons allocation 0.918 [0.767, 1.018]).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4182,8 +4234,10 @@ first attempt (run 39434621069); PR #98 merged rounds 37 to 39 into main
 frozen passed on its first attempt (run 39484880717). **On `fbc0ed7`**
 (round 41): full Rust gate passed (run 39512630692), frozen passed on its
 first attempt (run 39512635191); PR #99 merged rounds 40 and 41 into main
-(`df82614`). **On round 42's commit**: the full Rust gate and frozen runs
-are dispatched with it; their results go in the next round's record. Locally,
+(`df82614`). **On `4bea9e1`** (round 42): full Rust gate passed (run
+39534620573), frozen passed on its first attempt (run 39534622994).
+**On round 43's commit**: the full Rust gate and frozen runs are dispatched
+with it; their results go in the next round's record. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the

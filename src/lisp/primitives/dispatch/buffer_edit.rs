@@ -2027,36 +2027,38 @@ define_dispatch!(
                 // textprop.c:Fput_text_property stores VALUE itself. Copying
                 // a property-free string here loses identity and later edits.
                 let prop_value = args[3];
-                if let Some(object) = args.get(4) {
-                    if string_like(object).is_some() {
-                        let start = args[0].as_integer()?.max(0) as usize;
-                        let end = args[1].as_integer()?.max(0) as usize;
-                        modify_shared_string_properties(object, start, end, |mut current| {
-                            // GNU replaces an existing property in place and
-                            // conses a new one onto the plist head.
-                            if let Some((_, existing)) =
-                                current.iter_mut().find(|(key, _)| key == &prop)
-                            {
-                                *existing = prop_value;
-                            } else {
-                                current.insert(0, (prop, prop_value));
-                            }
-                            current
-                        })?;
-                    } else {
-                        let start = position_from_value(interp, &args[0])?;
-                        let end = position_from_value(interp, &args[1])?;
-                        interp.apply_text_property_change_shared(&|buffer| {
-                            buffer.put_text_property(start, end, prop, prop_value)
-                        });
-                    }
-                } else {
-                    let start = position_from_value(interp, &args[0])?;
-                    let end = position_from_value(interp, &args[1])?;
-                    interp.apply_text_property_change_shared(&|buffer| {
-                        buffer.put_text_property(start, end, prop, prop_value)
-                    });
+                if let Some(object) = args.get(4)
+                    && string_like(object).is_some()
+                {
+                    let start = args[0].as_integer()?.max(0) as usize;
+                    let end = args[1].as_integer()?.max(0) as usize;
+                    modify_shared_string_properties(object, start, end, |mut current| {
+                        // GNU replaces an existing property in place and
+                        // conses a new one onto the plist head.
+                        if let Some((_, existing)) =
+                            current.iter_mut().find(|(key, _)| key == &prop)
+                        {
+                            *existing = prop_value;
+                        } else {
+                            current.insert(0, (prop, prop_value));
+                        }
+                        current
+                    })?;
+                    return Ok(Value::Nil);
                 }
+                let buffer_id = property_buffer_id(interp, args.get(4))?;
+                let start = position_from_value(interp, &args[0])?;
+                let end = position_from_value(interp, &args[1])?;
+                let props = [(prop, prop_value)];
+                modify_buffer_text_properties(
+                    interp,
+                    buffer_id,
+                    start,
+                    end,
+                    &|buffer| properties_would_add(buffer, start, end, &props),
+                    &|buffer| buffer.put_text_property(start, end, prop, prop_value),
+                    env,
+                )?;
                 Ok(Value::Nil)
             }
             "add-text-properties" => {
@@ -2064,76 +2066,86 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let props = plist_pairs(&args[2])?;
-                if let Some(object) = args.get(3) {
-                    if string_like(object).is_some() {
-                        let start = args[0].as_integer()?.max(0) as usize;
-                        let end = args[1].as_integer()?.max(0) as usize;
-                        let changed =
-                            modify_shared_string_properties(object, start, end, |mut current| {
-                                // GNU replaces existing properties in place and
-                                // conses new ones onto the plist head.
-                                for (name, value) in &props {
-                                    if let Some((_, existing)) =
-                                        current.iter_mut().find(|(key, _)| key == name)
-                                    {
-                                        *existing = *value;
-                                    } else {
-                                        current.insert(0, (*name, *value));
-                                    }
+                if let Some(object) = args.get(3)
+                    && string_like(object).is_some()
+                {
+                    let start = args[0].as_integer()?.max(0) as usize;
+                    let end = args[1].as_integer()?.max(0) as usize;
+                    let changed =
+                        modify_shared_string_properties(object, start, end, |mut current| {
+                            // GNU replaces existing properties in place and
+                            // conses new ones onto the plist head.
+                            for (name, value) in &props {
+                                if let Some((_, existing)) =
+                                    current.iter_mut().find(|(key, _)| key == name)
+                                {
+                                    *existing = *value;
+                                } else {
+                                    current.insert(0, (*name, *value));
                                 }
-                                current
-                            })?;
-                        return Ok(if changed { Value::T } else { Value::Nil });
-                    } else {
-                        let start = position_from_value(interp, &args[0])?;
-                        let end = position_from_value(interp, &args[1])?;
-                        interp.apply_text_property_change_shared(&|buffer| {
-                            buffer.add_text_properties(start, end, &props)
-                        });
-                    }
-                } else {
-                    let start = position_from_value(interp, &args[0])?;
-                    let end = position_from_value(interp, &args[1])?;
-                    interp.apply_text_property_change_shared(&|buffer| {
-                        buffer.add_text_properties(start, end, &props)
-                    });
+                            }
+                            current
+                        })?;
+                    return Ok(if changed { Value::T } else { Value::Nil });
                 }
-                Ok(Value::T)
+                let buffer_id = property_buffer_id(interp, args.get(3))?;
+                let start = position_from_value(interp, &args[0])?;
+                let end = position_from_value(interp, &args[1])?;
+                let changed = modify_buffer_text_properties(
+                    interp,
+                    buffer_id,
+                    start,
+                    end,
+                    &|buffer| properties_would_add(buffer, start, end, &props),
+                    &|buffer| buffer.add_text_properties(start, end, &props),
+                    env,
+                )?;
+                Ok(if changed { Value::T } else { Value::Nil })
             }
             "set-text-properties" => {
                 if args.len() < 3 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let props = plist_pairs(&args[2])?;
-                if let Some(object) = args.get(3) {
-                    if string_like(object).is_some() {
-                        let start = args[0].as_integer()?.max(0) as usize;
-                        let end = args[1].as_integer()?.max(0) as usize;
-                        let had_properties = match object.kind() {
-                            Kind::StringObject(state) => !state.borrow().props.is_empty(),
-                            _ => unreachable!("string checked above"),
-                        };
-                        modify_shared_string_properties(object, start, end, |_| props.clone())?;
-                        return Ok(if start < end && (had_properties || !props.is_empty()) {
-                            Value::T
-                        } else {
-                            Value::Nil
-                        });
-                    } else {
-                        let start = position_from_value(interp, &args[0])?;
-                        let end = position_from_value(interp, &args[1])?;
-                        interp.apply_text_property_change_shared(&|buffer| {
-                            buffer.set_text_properties(start, end, &props)
-                        });
+                if let Some(object) = args.get(3)
+                    && string_like(object).is_some()
+                {
+                    let start = args[0].as_integer()?.max(0) as usize;
+                    let end = args[1].as_integer()?.max(0) as usize;
+                    let Kind::StringObject(state) = object.kind() else {
+                        unreachable!("string checked above")
+                    };
+                    let had_intervals = state.borrow().props.has_intervals();
+                    // textprop.c set_text_properties: no properties for
+                    // the whole string drop its intervals.
+                    if props.is_empty() && start == 0 && end == state.borrow().len() {
+                        if !had_intervals {
+                            return Ok(Value::Nil);
+                        }
+                        state.check_impure()?;
+                        state.borrow_mut().props = Default::default();
+                        return Ok(Value::T);
                     }
-                } else {
-                    let start = position_from_value(interp, &args[0])?;
-                    let end = position_from_value(interp, &args[1])?;
-                    interp.apply_text_property_change_shared(&|buffer| {
-                        buffer.set_text_properties(start, end, &props)
+                    modify_shared_string_properties(object, start, end, |_| props.clone())?;
+                    return Ok(if start < end && (had_intervals || !props.is_empty()) {
+                        Value::T
+                    } else {
+                        Value::Nil
                     });
                 }
-                Ok(Value::T)
+                let buffer_id = property_buffer_id(interp, args.get(3))?;
+                let start = position_from_value(interp, &args[0])?;
+                let end = position_from_value(interp, &args[1])?;
+                let changed = modify_buffer_text_properties(
+                    interp,
+                    buffer_id,
+                    start,
+                    end,
+                    &|buffer| properties_would_set(buffer, start, end, &props),
+                    &|buffer| buffer.set_text_properties(start, end, &props),
+                    env,
+                )?;
+                Ok(if changed { Value::T } else { Value::Nil })
             }
             "remove-list-of-text-properties" => {
                 if args.len() < 3 || args.len() > 4 {
@@ -2144,33 +2156,32 @@ define_dispatch!(
                     .into_iter()
                     .map(PropertyName::new)
                     .collect::<Vec<_>>();
-                if let Some(object) = args.get(3) {
-                    if string_like(object).is_some() {
-                        let start = args[0].as_integer()?.max(0) as usize;
-                        let end = args[1].as_integer()?.max(0) as usize;
-                        let changed =
-                            modify_shared_string_properties(object, start, end, |current| {
-                                current
-                                    .into_iter()
-                                    .filter(|(key, _)| !names.iter().any(|name| name == key))
-                                    .collect()
-                            })?;
-                        return Ok(if changed { Value::T } else { Value::Nil });
-                    } else {
-                        let start = position_from_value(interp, &args[0])?;
-                        let end = position_from_value(interp, &args[1])?;
-                        interp.apply_text_property_change_shared(&|buffer| {
-                            buffer.remove_list_of_text_properties(start, end, &names)
-                        });
-                    }
-                } else {
-                    let start = position_from_value(interp, &args[0])?;
-                    let end = position_from_value(interp, &args[1])?;
-                    interp.apply_text_property_change_shared(&|buffer| {
-                        buffer.remove_list_of_text_properties(start, end, &names)
-                    });
+                if let Some(object) = args.get(3)
+                    && string_like(object).is_some()
+                {
+                    let start = args[0].as_integer()?.max(0) as usize;
+                    let end = args[1].as_integer()?.max(0) as usize;
+                    let changed = modify_shared_string_properties(object, start, end, |current| {
+                        current
+                            .into_iter()
+                            .filter(|(key, _)| !names.iter().any(|name| name == key))
+                            .collect()
+                    })?;
+                    return Ok(if changed { Value::T } else { Value::Nil });
                 }
-                Ok(Value::T)
+                let buffer_id = property_buffer_id(interp, args.get(3))?;
+                let start = position_from_value(interp, &args[0])?;
+                let end = position_from_value(interp, &args[1])?;
+                let changed = modify_buffer_text_properties(
+                    interp,
+                    buffer_id,
+                    start,
+                    end,
+                    &|buffer| properties_would_remove(buffer, start, end, &names),
+                    &|buffer| buffer.remove_list_of_text_properties(start, end, &names),
+                    env,
+                )?;
+                Ok(if changed { Value::T } else { Value::Nil })
             }
             "remove-text-properties" => {
                 if args.len() < 3 || args.len() > 4 {
@@ -2180,35 +2191,34 @@ define_dispatch!(
                     .into_iter()
                     .map(|(name, _)| name)
                     .collect::<Vec<_>>();
-                if let Some(object) = args.get(3) {
-                    if string_like(object).is_some() {
-                        let start = args[0].as_integer()?.max(0) as usize;
-                        let end = args[1].as_integer()?.max(0) as usize;
-                        let changed =
-                            modify_shared_string_properties(object, start, end, |current| {
-                                current
-                                    .into_iter()
-                                    .filter(|(key, _)| !names.iter().any(|name| name == key))
-                                    .collect()
-                            })?;
-                        return Ok(if changed { Value::T } else { Value::Nil });
-                    } else {
-                        let start = position_from_value(interp, &args[0])?;
-                        let end = position_from_value(interp, &args[1])?;
-                        interp.apply_text_property_change_shared(&|buffer| {
-                            buffer.remove_list_of_text_properties(start, end, &names)
-                        });
-                    }
-                } else {
-                    let start = position_from_value(interp, &args[0])?;
-                    let end = position_from_value(interp, &args[1])?;
-                    interp.apply_text_property_change_shared(&|buffer| {
-                        buffer.remove_list_of_text_properties(start, end, &names)
-                    });
+                if let Some(object) = args.get(3)
+                    && string_like(object).is_some()
+                {
+                    let start = args[0].as_integer()?.max(0) as usize;
+                    let end = args[1].as_integer()?.max(0) as usize;
+                    let changed = modify_shared_string_properties(object, start, end, |current| {
+                        current
+                            .into_iter()
+                            .filter(|(key, _)| !names.iter().any(|name| name == key))
+                            .collect()
+                    })?;
+                    return Ok(if changed { Value::T } else { Value::Nil });
                 }
-                Ok(Value::T)
+                let buffer_id = property_buffer_id(interp, args.get(3))?;
+                let start = position_from_value(interp, &args[0])?;
+                let end = position_from_value(interp, &args[1])?;
+                let changed = modify_buffer_text_properties(
+                    interp,
+                    buffer_id,
+                    start,
+                    end,
+                    &|buffer| properties_would_remove(buffer, start, end, &names),
+                    &|buffer| buffer.remove_list_of_text_properties(start, end, &names),
+                    env,
+                )?;
+                Ok(if changed { Value::T } else { Value::Nil })
             }
-            "add-face-text-property" => add_face_text_property(interp, name, args),
+            "add-face-text-property" => add_face_text_property(interp, name, args, env),
             "put" => {
                 need_args(name, args, 3)?;
                 // GNU 30.2 fns.c:Fput shares `get's CHECK_SYMBOL/XSYMBOL

@@ -1684,6 +1684,150 @@ fn undo_records_inserted_and_deleted_text_as_insdel_does() {
 }
 
 #[test]
+fn read_only_text_follows_textprop_intervals_and_stickiness() {
+    // textprop.c verify_interval_modification: a deletion meets each
+    // interval's `read-only' (through `category' too) unless
+    // `inhibit-read-only' is a non-list or lists the value (by EQ); an
+    // insertion meets the read-only text it would inherit, by
+    // `front-sticky' and `rear-nonsticky'; a nil value is writable, and
+    // an `inhibit-read-only' property exempts its text from
+    // `buffer-read-only'.  Property changes check the same way, only
+    // when they change something.
+    assert_oracle_contract_matches_interpreter(
+        r##"(let ((try (lambda (f) (condition-case err (funcall f) (error (list 'error (car err)))))))
+          (put 'emaxx-test-read-only-category 'read-only t)
+          (list
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 1 4 'read-only t) (goto-char 4) (insert "x") (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 1 4 'read-only t) (goto-char 1) (insert "x") (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 1 4 'rear-nonsticky t) (put-text-property 1 4 'read-only t) (goto-char 4) (insert "x") (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 1 4 'front-sticky '(read-only)) (put-text-property 1 4 'read-only t) (goto-char 1) (insert "x") (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 1 4 'rear-nonsticky '(face)) (put-text-property 1 4 'read-only t) (goto-char 4) (insert "x") (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abcd") (put-text-property 1 3 'read-only t) (put-text-property 3 5 'read-only t) (goto-char 3) (insert "x") (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 1 4 'category 'emaxx-test-read-only-category) (goto-char 4) (insert "x") (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 1 4 'read-only t) (goto-char 4) (let ((inhibit-read-only t)) (insert "x")) (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 1 3 'read-only nil) (delete-region 1 3) (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 1 3 'category 'emaxx-test-read-only-category) (delete-region 1 3) (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 1 3 'read-only 'foo) (let ((inhibit-read-only 5)) (delete-region 1 3)) (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 1 3 'read-only (list 'k)) (let ((inhibit-read-only (list (list 'k)))) (delete-region 1 3)) (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 1 3 'read-only 'k) (let ((inhibit-read-only '(j k))) (delete-region 1 3)) (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 1 4 'read-only "msg") (condition-case err (delete-region 1 2) (text-read-only err)))))
+           (funcall try (lambda () (with-temp-buffer (insert "abcdef") (put-text-property 1 3 'inhibit-read-only t) (setq buffer-read-only t) (delete-region 1 5) (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abcdef") (put-text-property 1 3 'inhibit-read-only t) (setq buffer-read-only t) (delete-region 1 3) (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abcdef") (put-text-property 3 5 'inhibit-read-only t) (setq buffer-read-only t) (delete-region 3 5) (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 1 4 'read-only t) (put-text-property 1 4 'rear-nonsticky t) (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 2 3 'read-only t) (put-text-property 1 4 'face 'bold) (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 2 3 'read-only t) (let ((inhibit-read-only t)) (put-text-property 1 4 'face 'bold)) (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (setq buffer-read-only t) (put-text-property 1 4 'face 'bold) (buffer-string))))
+           (funcall try (lambda () (with-temp-buffer (insert "abc") (put-text-property 1 4 'face 'bold) (setq buffer-read-only t) (put-text-property 1 4 'face 'bold) (add-text-properties 1 4 '(face bold)) (remove-text-properties 1 4 '(q nil)) (buffer-string))))))"##,
+        r##"((error text-read-only) #("xabc" 1 4 (read-only t)) #("abcx" 0 3 (read-only t rear-nonsticky t)) (error text-read-only) (error text-read-only) (error text-read-only) (error text-read-only) #("abcx" 0 3 (read-only t)) "c" (error text-read-only) "c" (error text-read-only) "c" (text-read-only "msg") (error buffer-read-only) "cdef" "abef" (error text-read-only) (error text-read-only) #("abc" 0 1 (face bold) 1 2 (face bold read-only t) 2 3 (face bold)) (error buffer-read-only) #("abc" 0 3 (face bold)))"##,
+        "read-only text",
+    );
+}
+
+#[test]
+fn text_property_changes_modify_the_object_buffer() {
+    // textprop.c modify_text_properties: a change to a buffer OBJECT's
+    // properties edits that buffer, running its change hooks (with it
+    // current) and counting one tick, and only when something changes.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+         (with-temp-buffer
+           (let ((b (current-buffer)))
+             (insert "abc")
+             (with-temp-buffer
+               (insert "xyz")
+               (list (put-text-property 1 2 'face 'bold b)
+                     (add-text-properties 2 3 '(q 1) b)
+                     (add-text-properties 2 3 '(q 1) b)
+                     (set-text-properties 3 4 '(r 2) b)
+                     (remove-text-properties 3 4 '(s nil) b)
+                     (remove-list-of-text-properties 3 4 '(r) b)
+                     (text-properties-at 1) (text-properties-at 2)
+                     (with-current-buffer b
+                       (list (text-properties-at 1) (text-properties-at 2) (text-properties-at 3)))))))
+         (let (log)
+           (with-temp-buffer
+             (insert "abc")
+             (add-hook 'before-change-functions (lambda (b e) (push (list 'before b e (current-buffer)) log)) nil t)
+             (add-hook 'after-change-functions (lambda (b e l) (push (list 'after b e l) log)) nil t)
+             (let ((tick (buffer-modified-tick)))
+               (put-text-property 1 3 'face 'bold)
+               (put-text-property 1 3 'face 'bold)
+               (add-text-properties 1 3 '(face bold))
+               (remove-text-properties 1 3 '(face nil))
+               (remove-text-properties 1 3 '(face nil))
+               (set-text-properties 1 3 nil)
+               (set-text-properties 2 4 '(x 1))
+               (set-text-properties 2 4 '(x 1))
+               (add-face-text-property 1 2 'italic)
+               (setq log (cons (- (buffer-modified-tick) tick) log)))
+             (mapcar (lambda (e) (if (and (consp e) (bufferp (nth 3 e))) (list (car e) (nth 1 e) (nth 2 e) (eq (nth 3 e) (current-buffer))) e))
+                     (nreverse log))))
+         (let ((log nil) (b (generate-new-buffer " emaxx-test-props")))
+           (with-current-buffer b
+             (insert "abc")
+             (add-hook 'before-change-functions (lambda (_b _e) (push (buffer-name) log)) nil t))
+           (with-temp-buffer
+             (rename-buffer " emaxx-test-other" t)
+             (put-text-property 1 2 'face 'bold b)
+             (push (buffer-name) log))
+           (kill-buffer b)
+           (nreverse log)))"##,
+        r##"((nil t nil t nil t nil nil ((face bold) (q 1) nil)) ((before 1 3 t) (after 1 3 2) (before 1 3 t) (after 1 3 2) (before 1 3 t) (after 1 3 2) (before 2 4 t) (after 2 4 2) (before 2 4 t) (after 2 4 2) (before 1 2 t) (after 1 2 1) 6) (" emaxx-test-props" " emaxx-test-other"))"##,
+        "property changes",
+    );
+}
+
+#[test]
+fn intervals_outlive_their_properties_until_the_text_goes() {
+    // A buffer's or string's intervals stay when their properties are
+    // removed; `set-text-properties' then modifies (returns t, signals
+    // and counts) though no plist changes.  A deletion of the whole
+    // buffer text, or `set-text-properties' of a whole string to nil,
+    // drops them; `copy-sequence' copies them, `substring' and `concat'
+    // only the plists.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+         (let ((s (copy-sequence "abc")))
+           (put-text-property 0 1 'a 1 s)
+           (remove-text-properties 0 1 '(a nil) s)
+           (list (format "%S" s) (set-text-properties 0 1 nil (copy-sequence s))
+                 (set-text-properties 0 1 nil (substring s 0)) (set-text-properties 0 1 nil (concat s))
+                 (set-text-properties 1 2 nil s) (set-text-properties 0 3 nil s) (set-text-properties 0 3 nil s)))
+         (let ((s (copy-sequence "abc"))) (list (set-text-properties 1 2 nil s) (set-text-properties 0 3 nil s)))
+         (with-temp-buffer
+           (insert "abc")
+           (list (set-text-properties 1 2 nil)
+                 (progn (put-text-property 1 2 'a 1) (remove-text-properties 1 2 '(a nil)))
+                 (set-text-properties 2 3 nil)
+                 (progn (delete-region 1 4) (insert "xyz") (set-text-properties 1 2 nil))))
+         (with-temp-buffer
+           (insert "abc") (put-text-property 1 2 'a 1) (delete-region 1 2)
+           (list (set-text-properties 1 2 nil) (progn (erase-buffer) (insert "q") (set-text-properties 1 2 nil))))
+         (with-temp-buffer
+           (insert "abc") (put-text-property 1 2 'a 1) (set-buffer-modified-p nil)
+           (remove-text-properties 1 4 '(a nil)) (set-buffer-modified-p nil)
+           (let ((tick (buffer-modified-tick)))
+             (list (set-text-properties 1 4 nil) (buffer-modified-p) (- (buffer-modified-tick) tick)
+                   (progn (set-text-properties 1 3 '(z 1)) (set-buffer-modified-p nil) (set-text-properties 1 3 '(z 1)))
+                   (buffer-modified-p))))
+         (with-temp-buffer
+           (buffer-enable-undo) (insert "abc") (put-text-property 1 2 'a 1) (remove-text-properties 1 2 '(a nil))
+           (set-buffer-modified-p nil) (setq buffer-undo-list nil)
+           (set-text-properties 1 3 nil)
+           (mapcar (lambda (e) (if (consp e) (car e) e)) buffer-undo-list))
+         (let ((a (generate-new-buffer " emaxx-test-a")) (b (generate-new-buffer " emaxx-test-b")))
+           (with-current-buffer a (insert "abc") (put-text-property 1 2 'a 1) (remove-text-properties 1 2 '(a nil)))
+           (with-current-buffer b (insert "xyz"))
+           (with-current-buffer a (buffer-swap-text b))
+           (prog1 (list (with-current-buffer a (set-text-properties 1 2 nil)) (with-current-buffer b (set-text-properties 1 2 nil)))
+             (kill-buffer a) (kill-buffer b))))"##,
+        r##"(("\"abc\"" t nil nil t t nil) (nil nil) (nil t t nil) (t nil) (t t 1 t t) (t) (nil t))"##,
+        "intervals",
+    );
+}
+
+#[test]
 fn kill_buffer_queries_before_the_interactive_modified_prompt() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
