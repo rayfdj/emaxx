@@ -3891,6 +3891,26 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   Validation: the whole library suite (3,178 tests) passes but for the
   known failures, all 98 groups on the round's final build. Clippy
   `-D warnings`, rustfmt and `git diff --check` pass.
+- **Round 47 measured** (its profile-guided build, idle host). The
+  contract-like comparison, run twice: 15 of the 16 workloads within 1.03
+  of GNU's wall time, then all 16; the first run's bytecode calls 0.863
+  [0.748, 1.034] had two of its nine rounds at 1.034 and 1.066 while GNU's
+  own processes ranged 0.376 to 0.478 s (0.857 [0.724, 0.915] in the
+  second run), and the closest otherwise were mapcar 0.873 [0.863, 1.013]
+  and undo 0.892 [0.803, 1.010]. The locked runner itself
+  (`tools/core_runtime_perf.py` prepare, calibrate and run, all
+  `--diagnostic` because this host's GNU differs from the platform lock)
+  completed every process, and every case's upper 95% bound is at or below
+  0.996: mapcar 0.915 [0.849, 0.996], cons allocation 0.898 [0.869,
+  0.955], bytecode-to-native 0.888 [0.842, 0.953], undo 0.883 [0.774,
+  0.952], bytecode calls 0.853 [0.757, 0.933], the other medians 0.774 and
+  below with upper bounds at most 0.850 (geometric mean 0.722). Its GNU
+  self-comparison resolved only list traversal (the other intervals as
+  wide as interpreted-to-native's [0.887, 1.084]), so the run certifies
+  nothing: the criterion still needs a quiet host and the locked GNU
+  build. Mapcar's instructions a unit are Emaxx 32.9 million to GNU's 46.4
+  million; its wall ratio near 0.9 is memory traffic, 100,000 new conses a
+  unit, not instructions.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4478,9 +4498,9 @@ Rust gate passed (run 39573615433); frozen failed six erc tests with
 minibuffer GNU's read_minibuf_unwind had already erased; round 45 passes
 them. **On `626d1eb`** (round 45): full Rust gate passed (run
 39639732639), frozen passed on its first attempt (run 39639736946).
-**On round 47's commit** (rounds 46 and 47, pushed together): the full
-Rust gate and frozen runs are dispatched with it; their results go in the
-next round's record. Locally,
+**On `eb8e009`** (rounds 46 and 47, pushed together): full Rust gate
+passed (run 39682876524), frozen passed on its first attempt (run
+39682879871). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
