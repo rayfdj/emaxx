@@ -317,16 +317,32 @@ pub struct FloatCell {
 const FLOAT_BLOCK_ALIGN: usize = 1 << 15;
 const FLOAT_BITMAP_WORDS: usize = FLOATS_PER_BLOCK.div_ceil(usize::BITS as usize);
 
+/// The marks start the block and the cells follow them.  The marks are
+/// found from a cell's address by alignment, so the block's address is
+/// computed on every allocation (and every checked read): ahead of the
+/// cells, a copy of it that stays on the stack names no float, which the
+/// conservative scan would otherwise keep (GNU's floats come first: outside
+/// checking builds only its collector forms a block's address).
 #[repr(C, align(32768))]
 struct FloatBlock {
-    cells: [std::mem::MaybeUninit<FloatCell>; FLOATS_PER_BLOCK],
     marks: FloatMarks,
+    cells: [std::mem::MaybeUninit<FloatCell>; FLOATS_PER_BLOCK],
+}
+
+/// The first float's offset in its block.
+const FLOAT_CELLS: usize = std::mem::offset_of!(FloatBlock, cells);
+
+/// The float cell INDEX of the block at START.
+#[inline(always)]
+fn float_cell(start: usize, index: usize) -> *mut FloatCell {
+    (start + FLOAT_CELLS + index * FLOAT_CELL_SIZE) as *mut FloatCell
 }
 
 const _: () = {
     assert!(FLOAT_CELL_SIZE == 8);
     assert!(std::mem::size_of::<FloatBlock>() == FLOAT_BLOCK_ALIGN);
-    assert!(FLOATS_PER_BLOCK * FLOAT_CELL_SIZE < FLOAT_BLOCK_ALIGN);
+    assert!(std::mem::offset_of!(FloatBlock, marks) == 0);
+    assert!(FLOAT_CELLS != 0);
 };
 
 /// alloc.c:float_block.gcmarkbits. One epoch for the block allows the
@@ -408,7 +424,7 @@ impl FloatMark<'_> {
 unsafe fn float_mark<'a>(cell: *const FloatCell) -> FloatMark<'a> {
     let address = cell as usize;
     let base = address & !(FLOAT_BLOCK_ALIGN - 1);
-    let index = (address - base) / FLOAT_CELL_SIZE;
+    let index = (address - base - FLOAT_CELLS) / FLOAT_CELL_SIZE;
     debug_assert!(index < FLOATS_PER_BLOCK);
     // SAFETY: metadata is initialized before the block is registered, and
     // the caller keeps the block allocated for the returned borrow.
@@ -533,12 +549,13 @@ fn bump_float() -> *mut FloatCell {
         return next as *mut FloatCell;
     }
     let block = new_block(BlockKind::Float);
-    FLOAT_BUMP_NEXT.store(block + FLOAT_CELL_SIZE, Ordering::Relaxed);
+    let first = float_cell(block, 0);
+    FLOAT_BUMP_NEXT.store(first as usize + FLOAT_CELL_SIZE, Ordering::Relaxed);
     FLOAT_BUMP_END.store(
-        block + FLOATS_PER_BLOCK * FLOAT_CELL_SIZE,
+        float_cell(block, FLOATS_PER_BLOCK) as usize,
         Ordering::Relaxed,
     );
-    block as *mut FloatCell
+    first
 }
 
 /// alloc.c:sweep_floats, as `sweep_conses' below.
@@ -550,8 +567,8 @@ pub(crate) fn sweep_floats(epoch: u32) -> usize {
     let mut num_used = 0usize;
     let mut released = Vec::new();
     for (start, image_block) in sweep_blocks_of(BlockKind::Float) {
-        let lim = if bump_end == start + FLOATS_PER_BLOCK * FLOAT_CELL_SIZE {
-            (bump_next - start) / FLOAT_CELL_SIZE
+        let lim = if bump_end == float_cell(start, FLOATS_PER_BLOCK) as usize {
+            (bump_next - float_cell(start, 0) as usize) / FLOAT_CELL_SIZE
         } else {
             FLOATS_PER_BLOCK
         };
@@ -588,7 +605,7 @@ pub(crate) fn sweep_floats(epoch: u32) -> usize {
             while free != 0 {
                 let index = first + free.trailing_zeros() as usize;
                 free &= free - 1;
-                let cell = (start + index * FLOAT_CELL_SIZE) as *mut FloatCell;
+                let cell = float_cell(start, index);
                 // SAFETY: the cell is free; its one word is the free-list link.
                 unsafe { (*cell.cast::<FreeFloat>()).next = free_list };
                 free_list = cell;
@@ -1252,15 +1269,36 @@ pub(crate) fn mark_all_stacks(current_base: Option<usize>, mut mark: impl FnMut(
 
 /// `Lisp_Object' for a cons: the cell's address, copied freely, valid
 /// while the collector can reach the cell.
-/// GNU's CONS_BLOCK/CONS_INDEX arithmetic: payload slots start the aligned
-/// block; allocation, marking and weak-reference serials live after them.
+/// GNU's CONS_BLOCK/CONS_INDEX arithmetic: a cell's block is found by
+/// alignment, and its allocation, marking and weak-reference serials there.
 const CONS_BLOCK_ALIGN: usize = 1 << 15;
 const CONS_BITMAP_WORDS: usize = CELLS_PER_BLOCK.div_ceil(usize::BITS as usize);
 
+/// The metadata starts the block and the cells follow it, as in
+/// `FloatBlock': Fcons marks a new cell allocated through the block's
+/// address, so a copy of that address left on the stack must name no cons.
 #[repr(C, align(32768))]
 struct ConsBlock {
-    cells: [std::mem::MaybeUninit<ConsCell>; CELLS_PER_BLOCK],
     metadata: ConsMetadata,
+    cells: ConsCells,
+}
+
+/// The cells start on a bitmap word's span, so that a cell's bit is its
+/// slot's from the block's address, as with the cells first.
+#[repr(C, align(1024))]
+struct ConsCells([std::mem::MaybeUninit<ConsCell>; CELLS_PER_BLOCK]);
+
+/// The first cell's offset in its block.
+const CONS_CELLS: usize = std::mem::offset_of!(ConsBlock, cells);
+/// The slots, of a cell's size from the block's address, and the bitmap
+/// words that the metadata takes before the first cell.
+const CONS_FIRST_SLOT: usize = CONS_CELLS / CELL_SIZE;
+const CONS_FIRST_WORD: usize = CONS_FIRST_SLOT / usize::BITS as usize;
+
+/// The cell INDEX of the cons block at START.
+#[inline(always)]
+fn cons_cell(start: usize, index: usize) -> *mut ConsCell {
+    (start + CONS_CELLS + index * CELL_SIZE) as *mut ConsCell
 }
 
 #[repr(C)]
@@ -1307,22 +1345,31 @@ const _: () = {
     // The sweep frees a cell by its bits alone.
     assert!(!std::mem::needs_drop::<ConsCell>());
     assert!(std::mem::size_of::<ConsBlock>() == CONS_BLOCK_ALIGN);
-    assert!(std::mem::offset_of!(ConsBlock, cells) == 0);
+    assert!(std::mem::offset_of!(ConsBlock, metadata) == 0);
+    assert!(CONS_CELLS != 0);
+    assert!(CONS_FIRST_SLOT.is_multiple_of(usize::BITS as usize));
     assert!(std::mem::offset_of!(ConsCell, car) == 0);
     assert!(std::mem::offset_of!(ConsCell, cdr) == std::mem::size_of::<Value>());
 };
 
 pub(crate) struct ConsMark<'a> {
     block: &'a ConsMetadata,
-    index: usize,
+    /// The cell's slot from the block's address (`CONS_FIRST_SLOT' for
+    /// the first cell).
+    slot: usize,
 }
 
 impl ConsMark<'_> {
     #[inline]
+    fn index(&self) -> usize {
+        self.slot - CONS_FIRST_SLOT
+    }
+
+    #[inline]
     fn bit(&self) -> (usize, usize) {
         (
-            self.index / usize::BITS as usize,
-            1 << (self.index % usize::BITS as usize),
+            self.slot / usize::BITS as usize - CONS_FIRST_WORD,
+            1 << (self.slot % usize::BITS as usize),
         )
     }
 
@@ -1353,7 +1400,7 @@ impl ConsMark<'_> {
     #[inline(always)]
     fn allocate(&self, epoch: u32) {
         let (word, mask) = self.bit();
-        debug_assert!(self.index < CELLS_PER_BLOCK);
+        debug_assert!(self.index() < CELLS_PER_BLOCK);
         debug_assert!(
             self.block.serial_given[word].get() & mask == 0,
             "a free cons with a serial"
@@ -1395,7 +1442,7 @@ impl ConsMark<'_> {
         let (word, mask) = self.bit();
         let serial = SERIAL.load(Ordering::Relaxed) + 1;
         SERIAL.store(serial, Ordering::Relaxed);
-        self.block.serials[self.index].set(std::mem::MaybeUninit::new(serial));
+        self.block.serials[self.index()].set(std::mem::MaybeUninit::new(serial));
         let given = &self.block.serial_given[word];
         given.set(given.get() | mask);
         serial
@@ -1406,7 +1453,7 @@ impl ConsMark<'_> {
         let (word, mask) = self.bit();
         // SAFETY: a set bit means the slot was written for this allocation.
         (self.block.serial_given[word].get() & mask != 0)
-            .then(|| unsafe { self.block.serials[self.index].get().assume_init() })
+            .then(|| unsafe { self.block.serials[self.index()].get().assume_init() })
     }
 }
 
@@ -1418,10 +1465,10 @@ impl ConsMark<'_> {
 unsafe fn cons_mark<'a>(cell: *const ConsCell) -> ConsMark<'a> {
     let address = cell as usize;
     let base = address & !(CONS_BLOCK_ALIGN - 1);
-    let index = (address - base) / CELL_SIZE;
-    debug_assert!(index < CELLS_PER_BLOCK);
+    let slot = (address - base) / CELL_SIZE;
+    debug_assert!((CONS_FIRST_SLOT..CONS_FIRST_SLOT + CELLS_PER_BLOCK).contains(&slot));
     let block = unsafe { &*std::ptr::addr_of!((*(base as *const ConsBlock)).metadata) };
-    ConsMark { block, index }
+    ConsMark { block, slot }
 }
 
 #[repr(transparent)]
@@ -1584,10 +1631,14 @@ pub(crate) fn allocate_cons(cell: ConsCell) -> ConsRef {
 #[inline(never)]
 fn allocate_cons_in_new_block(cell: ConsCell) -> ConsRef {
     let block = new_block(BlockKind::Cons);
-    BUMP_NEXT.store(block + CELL_SIZE, Ordering::Relaxed);
-    BUMP_END.store(block + CELLS_PER_BLOCK * CELL_SIZE, Ordering::Relaxed);
+    let first = cons_cell(block, 0);
+    BUMP_NEXT.store(first as usize + CELL_SIZE, Ordering::Relaxed);
+    BUMP_END.store(
+        cons_cell(block, CELLS_PER_BLOCK) as usize,
+        Ordering::Relaxed,
+    );
     // SAFETY: the new block's first cell is free.
-    unsafe { fill_cons(block as *mut ConsCell, cell) }
+    unsafe { fill_cons(first, cell) }
 }
 
 /// # Safety
@@ -1707,21 +1758,21 @@ unsafe fn mem_find_with(
     let offset = address.checked_sub(start)?;
     match kind {
         BlockKind::Cons => {
-            let index = offset / CELL_SIZE;
+            let index = offset.checked_sub(CONS_CELLS)? / CELL_SIZE;
             if index >= CELLS_PER_BLOCK {
                 return None;
             }
-            let cell = (start + index * CELL_SIZE) as *mut ConsCell;
+            let cell = cons_cell(start, index);
             // SAFETY: inside a registered block.
             let mark = unsafe { cons_mark(cell) };
             mark.allocated().then_some(Found::Cons(cell))
         }
         BlockKind::Float => {
-            let index = offset / FLOAT_CELL_SIZE;
+            let index = offset.checked_sub(FLOAT_CELLS)? / FLOAT_CELL_SIZE;
             if index >= FLOATS_PER_BLOCK {
                 return None;
             }
-            let cell = (start + index * FLOAT_CELL_SIZE) as *mut FloatCell;
+            let cell = float_cell(start, index);
             // SAFETY: inside a registered float block.
             let mark = unsafe { float_mark(cell) };
             mark.allocated().then_some(Found::Float(cell))
@@ -1815,8 +1866,8 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
     let mut num_used = 0usize;
     let mut released = Vec::new();
     for (start, image_block) in sweep_blocks_of(BlockKind::Cons) {
-        let lim = if bump_end == start + CELLS_PER_BLOCK * CELL_SIZE {
-            (bump_next - start) / CELL_SIZE
+        let lim = if bump_end == cons_cell(start, CELLS_PER_BLOCK) as usize {
+            (bump_next - cons_cell(start, 0) as usize) / CELL_SIZE
         } else {
             CELLS_PER_BLOCK
         };
@@ -1854,7 +1905,7 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
                         let index = first + bits.trailing_zeros() as usize;
                         bits &= bits - 1;
                         // SAFETY: a cell of this block nothing reaches.
-                        unsafe { poison((start + index * CELL_SIZE) as *mut ConsCell) };
+                        unsafe { poison(cons_cell(start, index)) };
                     }
                 }
             }
@@ -1869,7 +1920,7 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
             while free != 0 {
                 let index = first + free.trailing_zeros() as usize;
                 free &= free - 1;
-                let cell = (start + index * CELL_SIZE) as *mut ConsCell;
+                let cell = cons_cell(start, index);
                 // SAFETY: a free cell's first word is the free-list link.
                 unsafe { (*cell.cast::<FreeCell>()).next = free_list };
                 free_list = cell;
@@ -1913,7 +1964,7 @@ fn verify_heap_enabled() -> bool {
 fn verify_marking(epoch: u32) {
     for start in all_blocks() {
         for index in 0..CELLS_PER_BLOCK {
-            let cell = (start + index * CELL_SIZE) as *mut ConsCell;
+            let cell = cons_cell(start, index);
             // SAFETY: a registered cons block, including its metadata.
             let mark = unsafe { cons_mark(cell) };
             if !mark.is_marked(epoch) {
@@ -1998,7 +2049,7 @@ fn describe(value: &super::types::Value) -> String {
 fn verify_heap() {
     for start in all_blocks() {
         for index in 0..CELLS_PER_BLOCK {
-            let cell = (start + index * CELL_SIZE) as *mut ConsCell;
+            let cell = cons_cell(start, index);
             // SAFETY: inside a registered block.
             if !unsafe { cons_mark(cell) }.allocated() {
                 continue;

@@ -3851,6 +3851,46 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   outlasted the background limit); the whole suite (3,177 tests) then ran
   on round 47's build, which adds only that round's allocator layout.
   Clippy `-D warnings`, rustfmt and `git diff --check` pass.
+- **Round 47: a cons or float block's address names no cell.**
+  `suspended_bytecode_retains_operand_and_unwind_roots` failed now and
+  then under load (4 in 300 runs on rounds 44 and 45, 2 in 300 on a
+  diagnostic build of round 46's source): after the worker joined, the
+  weak table's key survived the collection. A diagnostic build printing,
+  at each collection, the root that first reached the key found it held by
+  a word of a live frame of the main thread (an `eval_cons_call` frame's
+  `argvals` slot past the subr's arity, never written on the lambda path),
+  and the word was the key's cons block's address with the key the block's
+  first cell. A hardware write watchpoint on that slot (a
+  `perf_event_open` breakpoint whose signal handler logged each write's
+  instruction) showed the writer in passing runs too:
+  `funcall_interpreted_lambda`, walking its lambda list, spilled the block
+  address that `ConsRef`'s checked dereference forms (`cell & !0x7fff`) to
+  reach the block's allocation bits; the key was later allocated from the
+  same block, and the run failed when it took cell 0. Fcons and make_float
+  form a cell's block address the same way on every allocation
+  (`fill_cons`, `allocate_float`). GNU's cons and float blocks start with
+  their cells too, but outside checking builds only its collector forms a
+  block's address; in Emaxx every allocation does, so the bookkeeping
+  (epoch, bitmaps, serials) now starts each cons and float block and the
+  cells follow it (`cons_cell`, `float_cell`), and a block's address names
+  metadata, which `mem_find` rejects. The cons cells start on a bitmap
+  word's span (64 cells), so a cons's mark is still found by its slot from
+  the block's address and Fcons's bit arithmetic is unchanged (the first
+  version, indexing from the first cell, put a subtraction in every
+  allocation). Vector blocks keep GNU's layout: their allocation never
+  forms a block's address. `a_block_address_names_no_cons_or_float` checks
+  that a word equal to a block's address keeps neither its first cons nor
+  its first float. Release builds: cons allocation 5,087 -> 5,085
+  instructions an iteration, mapcar 33.68M -> 33.51M a unit; undo 1,169.2K
+  -> 1,179.0K a unit at 20 and 40 units, the difference all in collection
+  and malloc-trimming steps whose slope round 46's run measured negative
+  (the mutator's functions equal or lower). Profile-guided builds, each
+  trained on its own source: undo 1,084,787 -> 1,078,785 instructions a
+  unit (GNU 1,252,071), bytecode calls 417.7 -> 410.6 an iteration. The
+  flaky test passed 300 runs of 300 beside the gate's four test processes.
+  Validation: the whole library suite (3,178 tests) passes but for the
+  known failures, all 98 groups on the round's final build. Clippy
+  `-D warnings`, rustfmt and `git diff --check` pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4436,8 +4476,11 @@ here (eglot's with clangd installed). **On `61e3e66`** (round 44): full
 Rust gate passed (run 39573615433); frozen failed six erc tests with
 `text-read-only` (run 39573619718), `read-passwd`'s cleanup erasing the
 minibuffer GNU's read_minibuf_unwind had already erased; round 45 passes
-them. **On round 45's commit**: the full Rust gate and frozen runs are
-dispatched with it; their results go in the next round's record. Locally,
+them. **On `626d1eb`** (round 45): full Rust gate passed (run
+39639732639), frozen passed on its first attempt (run 39639736946).
+**On round 47's commit** (rounds 46 and 47, pushed together): the full
+Rust gate and frozen runs are dispatched with it; their results go in the
+next round's record. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -4450,12 +4493,13 @@ this container's GNU build itself disagrees with the expected text (under
 `default` it prints the Latin-1 string without its `charset` property);
 `char_charset_family_follows_charset_c` fails the same way on its GNU side
 (this build answers `iso-8859-1` where the expected text, CI's, has
-`unicode`). `suspended_bytecode_retains_operand_and_unwind_roots` fails
-now and then under load, 4 times in 300 runs here on round 44's source
-and on round 45's alike: the weak table's key survives the collection
-after the thread joins, held by a conservative stack word that neither
-the collector's own frames nor the thread switch's hold (scrubbing each
-changed nothing); what holds it is not yet found.
+`unicode`), and
+`process_tls_state_survives_collection_before_and_after_async_handshake`,
+whose asynchronous handshake this container's GNU leaves in `connect`
+(CI's completes it). `suspended_bytecode_retains_operand_and_unwind_roots`
+failed now and then under load until round 47: a cons block's address,
+left in a stack slot by the allocator's bookkeeping, kept the block's
+first cell, which the weak key sometimes was (see round 47).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

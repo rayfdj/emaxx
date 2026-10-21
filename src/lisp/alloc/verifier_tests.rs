@@ -38,3 +38,56 @@ fn marked_cons_edges_to_positioned_symbols_are_checked() {
     std::hint::black_box(object);
     std::hint::black_box(parent);
 }
+
+#[test]
+fn a_block_address_names_no_cons_or_float() {
+    // Fcons and make_float reach a cell's bitmaps through its block's
+    // address, and copies of that address stay in stack slots; the
+    // conservative scan must not take one for the block's first cell.
+    let bound = free_conses() + 2 * CELLS_PER_BLOCK + 1;
+    let mut conses = Vec::new();
+    let first = loop {
+        assert!(conses.len() < bound, "no cons took a block's first cell");
+        let cons = Value::cons(Value::Nil, Value::Nil);
+        conses.push(cons);
+        let Kind::Cons(cell) = cons.kind() else {
+            unreachable!();
+        };
+        let address = cell.as_ptr() as usize;
+        if address == cons_cell(address & !(CONS_BLOCK_ALIGN - 1), 0) as usize {
+            break cons;
+        }
+    };
+    let address = first.word() & !TAG_BITS;
+    assert_eq!(
+        conservative_value(first.word()).map(Value::word),
+        Some(first.word())
+    );
+    assert_eq!(
+        conservative_value(address & !(CONS_BLOCK_ALIGN - 1)).map(Value::word),
+        None
+    );
+    let mut floats = Vec::new();
+    let first = loop {
+        assert!(
+            floats.len() < FREE_FLOATS.load(Ordering::Relaxed) + 2 * FLOATS_PER_BLOCK + 1,
+            "no float took a block's first cell"
+        );
+        let float = allocate_float(0.5);
+        floats.push(float);
+        let address = float.identity_ptr();
+        if address == float_cell(address & !(FLOAT_BLOCK_ALIGN - 1), 0) as usize {
+            break float;
+        }
+    };
+    let address = first.identity_ptr();
+    assert!(matches!(
+        conservative_value(address).map(|value| value.kind()),
+        Some(Kind::Float(found)) if found.ptr_eq(&first)
+    ));
+    assert_eq!(
+        conservative_value(address & !(FLOAT_BLOCK_ALIGN - 1)).map(Value::word),
+        None
+    );
+    std::hint::black_box((conses, floats));
+}
