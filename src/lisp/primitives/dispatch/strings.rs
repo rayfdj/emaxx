@@ -714,14 +714,14 @@ define_dispatch!(
                 let start = position_from_value(interp, &args[0])?;
                 let end = position_from_value(interp, &args[1])?;
                 let no_line_break = args.get(2).is_some_and(Value::is_truthy);
-                base64_encode_region_value(interp, start, end, !no_line_break, true, false)
+                base64_encode_region_value(interp, start, end, !no_line_break, true, false, env)
             }
             "base64url-encode-region" => {
                 need_arg_range(name, args, 2, 3)?;
                 let start = position_from_value(interp, &args[0])?;
                 let end = position_from_value(interp, &args[1])?;
                 let no_pad = args.get(2).is_some_and(Value::is_truthy);
-                base64_encode_region_value(interp, start, end, false, !no_pad, true)
+                base64_encode_region_value(interp, start, end, false, !no_pad, true, env)
             }
             "base64-encode-string" => {
                 need_arg_range(name, args, 1, 2)?;
@@ -739,7 +739,7 @@ define_dispatch!(
                 let end = position_from_value(interp, &args[1])?;
                 let base64url = args.get(2).is_some_and(Value::is_truthy);
                 let ignore_invalid = args.get(3).is_some_and(Value::is_truthy);
-                base64_decode_region_value(interp, start, end, base64url, ignore_invalid)
+                base64_decode_region_value(interp, start, end, base64url, ignore_invalid, env)
             }
             "base64-decode-string" => {
                 need_arg_range(name, args, 1, 3)?;

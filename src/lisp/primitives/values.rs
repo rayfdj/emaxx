@@ -1,6 +1,7 @@
 use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
+use crate::lisp::types::PropertyName;
 
 pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
     buffer.undo_list_value()
@@ -649,8 +650,8 @@ pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Resu
 
 fn text_property_plists_equal(
     interp: &Interpreter,
-    left: &[(String, Value)],
-    right: &[(String, Value)],
+    left: &[(PropertyName, Value)],
+    right: &[(PropertyName, Value)],
     env: &Env,
 ) -> bool {
     left.len() == right.len()
@@ -706,12 +707,12 @@ pub(crate) fn values_equal_including_properties_recursive(
         // compare as sets (intervals_equal in intervals.c).
         let len = left_string.len();
         let collect_props = |spans: &[StringPropertySpan], pos: usize| {
-            let mut out: Vec<(String, Value)> = Vec::new();
+            let mut out: Vec<(PropertyName, Value)> = Vec::new();
             for span in spans {
                 if span.start <= pos && pos < span.end {
                     for (key, value) in &span.props {
                         if !out.iter().any(|(existing, _)| existing == key) {
-                            out.push((key.clone(), *value));
+                            out.push((*key, *value));
                         }
                     }
                 }
@@ -1699,7 +1700,8 @@ pub(crate) fn hash_props(
         hash_mix(state, span.end as u64);
         hash_mix(state, span.props.len() as u64);
         for (key, value) in &span.props {
-            hash_str(state, key);
+            // Property names compare with EQ (intervals_equal).
+            hash_value_eq(state, &key.value());
             hash_value_equal_at(
                 interp,
                 state,

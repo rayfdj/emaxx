@@ -1,6 +1,7 @@
 use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
+use crate::lisp::types::PropertyName;
 
 /// Ffuncall of FUNCTION, unnamed: a forwarder, inline at every caller.
 #[inline(always)]
@@ -13,129 +14,79 @@ pub(crate) fn call_function_value(
     interp.call_function_value(*function, None, args, env)
 }
 
-pub(crate) fn run_change_hooks(
+/// The two hooks insdel.c runs around a change.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChangeHook {
+    Before,
+    After,
+}
+
+impl ChangeHook {
+    fn name(self) -> &'static str {
+        match self {
+            ChangeHook::Before => "before-change-functions",
+            ChangeHook::After => "after-change-functions",
+        }
+    }
+
+    fn symbol(self) -> crate::lisp::types::SymbolName {
+        match self {
+            ChangeHook::Before => cached_symbol!("before-change-functions").with(Clone::clone),
+            ChangeHook::After => cached_symbol!("after-change-functions").with(Clone::clone),
+        }
+    }
+}
+
+/// Whether HOOK's current value is non-nil (insdel.c's NILP test before
+/// it runs the hook).
+pub(crate) fn has_change_functions(interp: &Interpreter, hook: ChangeHook) -> bool {
+    let value = match hook {
+        ChangeHook::Before => interp.symbol_value_key(cached_symbol!("before-change-functions")),
+        ChangeHook::After => interp.symbol_value_key(cached_symbol!("after-change-functions")),
+    };
+    value.is_some_and(|value| !value.is_nil())
+}
+
+/// run_hook_with_args of HOOK with ARGS in the current buffer, the hook
+/// set to nil (its local binding, when that is the one run) if a function
+/// exits nonlocally: insdel.c's reset_var_on_error, which keeps a broken
+/// hook from breaking every later change.
+pub(crate) fn run_change_functions(
     interp: &mut Interpreter,
-    hook_name: &str,
+    hook: ChangeHook,
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
-    if interp.change_hooks_are_running() {
-        return Ok(());
-    }
-    // The hook named once, for the tests below and the hook's symbol: a
-    // caller's literal is the same constant as these, tested before the
-    // text.
-    const BEFORE: &str = "before-change-functions";
-    const AFTER: &str = "after-change-functions";
-    let before = std::ptr::eq(hook_name, BEFORE) || hook_name == BEFORE;
-    let after = !before && (std::ptr::eq(hook_name, AFTER) || hook_name == AFTER);
-    // insdel.c's run_undoable_change: every prepare-to-modify of a buffer
-    // with undo enabled calls the Lisp `undo-auto--undoable-change' (which
-    // registers the buffer in undo-auto--undoably-changed-buffers and arms
-    // the auto-boundary timer), independent of any change hooks being
-    // registered.  The function itself never modifies buffer text, so the
-    // reentrancy guard above cannot be tripped by it.
-    if before && !interp.buffer.borrow().undo_recording_disabled() {
-        let symbol = cached_symbol!("undo-auto--undoable-change").with(Clone::clone);
-        if interp.has_lisp_function_symbol(&symbol) {
-            // The callee names its own frame (a name given here was
-            // interned again per call).
-            let _ = interp.call_function_value(Value::Symbol(symbol), None, &[], env);
-        }
-    }
-    let symbol = if before {
-        Some(cached_symbol!("before-change-functions").with(Clone::clone))
-    } else if after {
-        Some(cached_symbol!("after-change-functions").with(Clone::clone))
-    } else {
-        crate::lisp::types::SymbolName::interned_cached(hook_name)
-    };
+    let hook_name = hook.name();
     let hooks = hook_values_of(
         interp,
-        symbol.as_ref(),
+        Some(&hook.symbol()),
         hook_name,
         env,
         Some(interp.current_buffer_id()),
     );
-    let combining = interp
-        .symbol_value_key(cached_symbol!("combine-after-change-calls"))
-        .is_some_and(|value| value.is_truthy());
-    if before {
-        if hooks.is_empty() && combining {
-            return Ok(());
-        }
-        flush_combined_after_change(interp, env)?;
-    } else if after {
-        let can_defer = combining && interp.buffer.borrow().overlays.is_empty() && {
-            hook_values_of(
-                interp,
-                Some(&cached_symbol!("before-change-functions").with(Clone::clone)),
-                "before-change-functions",
-                env,
-                Some(interp.current_buffer_id()),
-            )
-            .is_empty()
-        };
-        if can_defer {
-            let buffer_id = interp.current_buffer_id();
-            if interp
-                .combined_after_change()
-                .is_some_and(|pending| pending.buffer_id != buffer_id)
-            {
-                flush_combined_after_change(interp, env)?;
-            }
-            let [begin, end, old_length] = args else {
-                return Err(LispError::Signal(
-                    "Invalid after-change hook arguments".into(),
-                ));
-            };
-            let begin = begin.as_integer()?;
-            let end = end.as_integer()?;
-            let old_length = old_length.as_integer()?;
-            let new_length = end - begin;
-            let unchanged_before = begin - interp.buffer.borrow().point_min() as i64;
-            let unchanged_after =
-                interp.buffer.borrow().point_max() as i64 - (begin - old_length + new_length);
-            interp.record_combined_after_change(
-                buffer_id,
-                (unchanged_before, unchanged_after, new_length - old_length),
-            );
-            return Ok(());
-        }
-        flush_combined_after_change(interp, env)?;
-    }
     if hooks.is_empty() {
         return Ok(());
     }
-    // insdel.c dynamically inhibits recursive modification hooks while the
-    // callbacks run.  Its unwind record also clears the active before/after
-    // hook variable on every nonlocal exit, preventing a broken global or
-    // local hook from poisoning subsequent edits.
-    let inhibit_restore =
-        interp.bind_special_dynamic("inhibit-modification-hooks", Value::T, env)?;
-    interp.enter_change_hooks();
-    let mut result = Ok(());
-    for hook in hooks {
-        if let Err(error) = call_function_value(interp, &hook, args, env) {
-            result = Err(error);
-            break;
+    let result = interp.with_lisp_stack_roots(&hooks, |interp| {
+        for function in &hooks {
+            call_function_value(interp, function, args, env)?;
         }
-    }
-    interp.leave_change_hooks();
-    if result.is_err() && (before || after) {
+        Ok(())
+    });
+    if result.is_err() {
         let local_buffer_id = interp.assignment_buffer_id(hook_name);
         interp.set_variable(hook_name, Value::Nil, env);
         if let Some(buffer_id) = local_buffer_id {
             interp.remove_buffer_local_hook(buffer_id, hook_name);
         }
     }
-    let restore_result = interp.restore_special_dynamic(inhibit_restore, env);
-    match (result, restore_result) {
-        (Err(error), _) | (Ok(()), Err(error)) => Err(error),
-        (Ok(()), Ok(())) => Ok(()),
-    }
+    result
 }
 
+/// insdel.c:Fcombine_after_change_execute: the changes deferred under
+/// `combine-after-change-calls', signalled in their buffer as one change
+/// over the text they span (whole-buffer offsets, as recorded).
 pub(crate) fn flush_combined_after_change(
     interp: &mut Interpreter,
     env: &mut crate::lisp::types::Env,
@@ -148,34 +99,31 @@ pub(crate) fn flush_combined_after_change(
     }
     let saved_buffer_id = interp.current_buffer_id();
     interp.switch_to_buffer_id(pending.buffer_id)?;
-    let mut unchanged_before = interp.buffer.borrow().buffer_size() as i64;
-    let mut unchanged_after = unchanged_before;
-    let mut net_change = 0_i64;
-    for (begin, end, change) in pending.changes {
-        unchanged_before = unchanged_before.min(begin);
-        unchanged_after = unchanged_after.min(end);
+    // Characters unchanged at the beginning and end of the buffer, and
+    // the net insertion.
+    let size = interp.buffer.borrow().size_total() as i64;
+    let (mut unchanged_before, mut unchanged_after, mut net_change) = (size, size, 0_i64);
+    for (before, after, change) in pending.changes {
+        unchanged_before = unchanged_before.min(before);
+        unchanged_after = unchanged_after.min(after);
         net_change += change;
     }
-    let begin = interp.buffer.borrow().point_min() as i64 + unchanged_before;
-    let end = interp.buffer.borrow().point_max() as i64 - unchanged_after;
-    let new_length = end - begin;
-    let old_length = new_length - net_change;
-    let restore = interp.bind_special_dynamic("combine-after-change-calls", Value::Nil, env)?;
-    let result = run_change_hooks(
-        interp,
-        "after-change-functions",
-        &[
-            Value::Integer(begin),
-            Value::Integer(end),
-            Value::Integer(old_length),
-        ],
-        env,
+    let begin = 1 + unchanged_before;
+    let end = (size + 1 - unchanged_after).max(begin);
+    let change = AfterChange::new(
+        begin as usize,
+        (end - begin - net_change).max(0) as usize,
+        (end - begin) as usize,
     );
-    interp.restore_special_dynamic(restore, env)?;
+    let restore = interp.bind_special_dynamic("combine-after-change-calls", Value::Nil, env)?;
+    let result = signal_after_change(interp, change, &OverlayHookCalls::none(), env);
+    let restore_result = interp.restore_special_dynamic(restore, env);
     if interp.has_buffer_id(saved_buffer_id) {
         interp.switch_to_buffer_id(saved_buffer_id)?;
     }
-    result.map(|()| Value::Nil)
+    result?;
+    restore_result?;
+    Ok(Value::Nil)
 }
 
 pub(crate) fn hook_values(
@@ -463,10 +411,20 @@ struct OverlayHookCall {
     functions: Value,
 }
 
+/// The overlays' hook functions buffer.c:report_overlay_modification
+/// found before a change, run again after it.
 pub(crate) struct OverlayHookCalls {
     calls: Vec<OverlayHookCall>,
-    before: [Value; 2],
-    after: [Value; 3],
+}
+
+impl OverlayHookCalls {
+    pub(crate) fn none() -> Self {
+        Self { calls: Vec::new() }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.calls.is_empty()
+    }
 }
 
 impl crate::lisp::eval::roots::TraceLispRoots for OverlayHookCalls {
@@ -490,23 +448,22 @@ pub(crate) fn with_overlay_hook_roots<R>(
     }
 }
 
-pub(crate) fn overlay_insert_hook_calls(
-    interp: &Interpreter,
-    buffer: &crate::buffer::Buffer,
-    pos: usize,
-    inserted_len: usize,
-) -> OverlayHookCalls {
-    overlay_change_hook_calls(interp, buffer, pos, pos, pos + inserted_len)
-}
-
+/// buffer.c:report_overlay_modification's search before a change of
+/// [FROM, TO) (FROM = TO for an insertion): the `modification-hooks' of
+/// the overlays it touches and, for an insertion, the
+/// `insert-in-front-hooks' and `insert-behind-hooks' of those starting or
+/// ending there.
 pub(crate) fn overlay_change_hook_calls(
     interp: &Interpreter,
     buffer: &crate::buffer::Buffer,
     from: usize,
     to: usize,
-    new_end: usize,
 ) -> OverlayHookCalls {
     let mut calls = Vec::new();
+    // A buffer with no overlays has none to search.
+    if buffer.overlays.is_empty() {
+        return OverlayHookCalls { calls };
+    }
     let insertion = from == to;
     let mut add = |overlay, property| {
         if let Some(functions) =
@@ -518,20 +475,6 @@ pub(crate) fn overlay_change_hook_calls(
     // buffer.c:report_overlay_modification searches only intersecting
     // intervals and stores the actual function lists, without copying or
     // filtering their elements. Lisp may mutate those lists while they run.
-    let before = [Value::Integer(from as i64), Value::Integer(to as i64)];
-    let after = [
-        Value::Integer(from as i64),
-        Value::Integer(new_end as i64),
-        Value::Integer(to.saturating_sub(from) as i64),
-    ];
-    // A buffer with no overlays has none to search.
-    if buffer.overlays.is_empty() {
-        return OverlayHookCalls {
-            calls,
-            before,
-            after,
-        };
-    }
     for overlay in buffer.overlays.intersecting(
         from as isize - isize::from(insertion),
         to as isize + isize::from(insertion),
@@ -548,25 +491,20 @@ pub(crate) fn overlay_change_hook_calls(
             add(overlay, "modification-hooks");
         }
     }
-    OverlayHookCalls {
-        calls,
-        before,
-        after,
-    }
+    OverlayHookCalls { calls }
 }
 
+/// buffer.c:report_overlay_modification's calls: each recorded function
+/// with its overlay, AFTER, and ARGS (the change's bounds before it, its
+/// bounds and replaced length after it).
 pub(crate) fn run_overlay_hook_calls(
     interp: &mut Interpreter,
     calls: &OverlayHookCalls,
     after: bool,
+    args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
-    if calls.calls.is_empty() {
-        return Ok(());
-    }
-    let restore = interp.bind_special_dynamic("inhibit-modification-hooks", Value::T, env)?;
-    let mut outcome = Ok(());
-    'outer: for call in &calls.calls {
+    for call in &calls.calls {
         // GNU skips a recorded hook when an earlier callback deleted or
         // moved its overlay, both before and after the edit.
         if !call
@@ -576,232 +514,299 @@ pub(crate) fn run_overlay_hook_calls(
         {
             continue;
         }
-        let mut args = [
-            Value::Overlay(call.overlay),
-            if after { Value::T } else { Value::Nil },
-            Value::Nil,
-            Value::Nil,
-            Value::Nil,
-        ];
-        let len = if after {
-            args[2..].copy_from_slice(&calls.after);
-            5
-        } else {
-            args[2..4].copy_from_slice(&calls.before);
-            4
-        };
+        let mut hook_args = [Value::Nil; 5];
+        hook_args[0] = Value::Overlay(call.overlay);
+        hook_args[1] = if after { Value::T } else { Value::Nil };
+        hook_args[2..2 + args.len()].copy_from_slice(args);
+        let hook_args = &hook_args[..2 + args.len()];
         let mut list = call.functions;
         while let Kind::Cons(cell) = list.kind() {
             let function = cell.car.get();
-            let result = interp.with_lisp_stack_roots(&list, |interp| {
-                call_function_value(interp, &function, &args[..len], env)
-            });
-            if let Err(error) = result {
-                outcome = Err(error);
-                break 'outer;
-            }
+            interp.with_lisp_stack_roots(&list, |interp| {
+                call_function_value(interp, &function, hook_args, env)
+            })?;
             list = cell.cdr.get();
         }
     }
-    interp.restore_special_dynamic(restore, env)?;
-    outcome
+    Ok(())
 }
 
+/// insdel.c:del_range_1 with its hooks: [FROM, TO) of the accessible
+/// text deleted, its start following the before-change hooks' changes
+/// and its length kept.  The deleted text.
 pub(crate) fn delete_region_with_hooks(
     interp: &mut Interpreter,
     from: usize,
     to: usize,
     env: &mut crate::lisp::types::Env,
 ) -> Result<String, LispError> {
+    delete_region_with_hooks_then(interp, from, to, env, |_, _, _| ()).map(|(text, ())| text)
+}
+
+/// `delete-and-extract-region': the deleted text as a string, with its
+/// properties and the buffer's multibyteness, made after the hooks ran.
+pub(crate) fn extract_region_with_hooks(
+    interp: &mut Interpreter,
+    from: usize,
+    to: usize,
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
+    // editfns.c: an empty region is the empty unibyte string, no change.
+    if from == to {
+        return Ok(bytes_to_unibyte_value(&[]));
+    }
+    let (text, (props, multibyte)) =
+        delete_region_with_hooks_then(interp, from, to, env, |interp, from, to| {
+            let buffer = interp.buffer.borrow();
+            (
+                buffer.substring_property_spans(from, to),
+                buffer.is_multibyte(),
+            )
+        })?;
+    Ok(string_like_value_with_multibyte(text, props, multibyte))
+}
+
+fn delete_region_with_hooks_then<R>(
+    interp: &mut Interpreter,
+    from: usize,
+    to: usize,
+    env: &mut crate::lisp::types::Env,
+    before_delete: impl FnOnce(&Interpreter, usize, usize) -> R,
+) -> Result<(String, R), LispError> {
     let (from, to) = if from <= to { (from, to) } else { (to, from) };
+    let (from, to) = {
+        let buffer = interp.buffer.borrow();
+        (from.max(buffer.point_min()), to.min(buffer.point_max()))
+    };
     if from >= to {
-        return Ok(String::new());
+        return Ok((String::new(), before_delete(interp, from, from)));
     }
     let range_length = to - from;
-    let overlay_calls = overlay_change_hook_calls(interp, &interp.buffer.borrow(), from, to, from);
-    with_overlay_hook_roots(interp, &overlay_calls, |interp| {
-        run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
-        let has_before_hooks = interp
-            .symbol_value_key(cached_symbol!("before-change-functions"))
-            .map(|value| match value.kind() {
-                // A proper list is nonempty; walking it copies nothing.
-                Kind::Cons(_) => value.visit_list_elements(|_| Ok(())).is_ok(),
-                _ => !value.to_vec().unwrap_or_default().is_empty(),
-            })
-            .or_else(|| {
-                interp
-                    .buffer_local_hook(interp.current_buffer_id(), "before-change-functions")
-                    .map(|hooks| !hooks.is_empty())
-            })
-            .unwrap_or(false);
-        let preserved_bounds = if has_before_hooks {
-            let Kind::Marker(preserve_id) = interp.make_marker().kind() else {
-                unreachable!("make_marker returns a marker")
-            };
-            let Kind::Marker(start_id) = interp.make_marker().kind() else {
-                unreachable!("make_marker returns a marker")
-            };
-            let Kind::Marker(end_id) = interp.make_marker().kind() else {
-                unreachable!("make_marker returns a marker")
-            };
-            let buffer_id = interp.current_buffer_id();
-            let _ = interp.set_marker(preserve_id, Some(from), Some(buffer_id));
-            let _ = interp.set_marker(start_id, Some(from), Some(buffer_id));
-            let _ = interp.set_marker(end_id, Some(to), Some(buffer_id));
-            Some((preserve_id, start_id, end_id))
-        } else {
-            None
-        };
-        // The preserved bounds are markers held here, in no Lisp object:
-        // register them as roots while the hooks run, or a collection inside
-        // a hook unchains them.
-        let held = preserved_bounds
-            .map(|(preserve_id, start_id, end_id)| {
-                vec![
-                    Value::Marker(preserve_id),
-                    Value::Marker(start_id),
-                    Value::Marker(end_id),
-                ]
-            })
-            .unwrap_or_default();
-        let hook_result = interp.with_lisp_stack_roots(&held, |interp| {
-            run_change_hooks(
-                interp,
-                "before-change-functions",
-                &[Value::Integer(from as i64), Value::Integer(to as i64)],
-                env,
-            )
-        });
-        let (from, to) = if let Some((preserve_id, start_id, end_id)) = preserved_bounds {
-            // GNU's del_range_1 preserves the start through Lisp callbacks and
-            // then reapplies the original range length.  The start/end markers
-            // belong to signal_before_change itself and must remain live while a
-            // nested edit records its undo marker riders.
-            let start = interp.marker_position(preserve_id).unwrap_or(from);
-            let end = (start + range_length).min(interp.buffer.borrow().point_max());
-            let _ = interp.set_marker(preserve_id, None, None);
-            let _ = interp.set_marker(start_id, None, None);
-            let _ = interp.set_marker(end_id, None, None);
-            (start, end)
-        } else {
-            (from, to)
-        };
-        hook_result?;
+    modify_current_buffer(interp, from, to, true, env, |interp, from, _| {
+        let to = (from + range_length)
+            .min(interp.buffer.borrow().point_max())
+            .max(from);
+        let extra = before_delete(interp, from, to);
         let deleted = interp
             .delete_region_current_buffer(from, to)
             .map_err(|e| LispError::Signal(e.to_string()))?;
-        run_change_hooks(
-            interp,
-            "after-change-functions",
-            &[
-                Value::Integer(from as i64),
-                Value::Integer(from as i64),
-                Value::Integer((to - from) as i64),
-            ],
-            env,
-        )?;
-        run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
-        Ok(deleted)
+        Ok((Some(AfterChange::new(from, to - from, 0)), (deleted, extra)))
     })
 }
 
-pub(crate) fn ensure_region_modifiable(
+/// The buffer a text-property primitive's OBJECT names: the current
+/// buffer for nil (textprop.c:validate_interval_range).
+pub(crate) fn property_buffer_id(
     interp: &Interpreter,
+    object: Option<&Value>,
+) -> Result<u64, LispError> {
+    match object {
+        Some(object) if !object.is_nil() => interp.resolve_buffer_id(object),
+        _ => Ok(interp.current_buffer_id()),
+    }
+}
+
+/// textprop.c's buffer case of a property change, when CHANGES finds that
+/// the properties of [START, END) in BUFFER_ID would change:
+/// modify_text_properties (insdel.c:prepare_to_modify_buffer_1 over the
+/// range with that buffer current: the read-only checks, the overlays'
+/// modification hooks, the undoable-change notice and
+/// `before-change-functions'), APPLY over the buffer and its indirect
+/// relatives, then signal_after_change.  Whether anything changed.
+pub(crate) fn modify_buffer_text_properties(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    start: usize,
+    end: usize,
+    changes: &dyn Fn(&crate::buffer::Buffer) -> bool,
+    apply: &dyn Fn(&mut crate::buffer::Buffer),
+    env: &mut crate::lisp::types::Env,
+) -> Result<bool, LispError> {
+    let (start, end) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    let original = interp.current_buffer_id();
+    let changing = if buffer_id == original {
+        changes(&interp.buffer.borrow())
+    } else {
+        interp
+            .get_buffer_by_id(buffer_id)
+            .is_some_and(|buffer| changes(&buffer))
+    };
+    if !changing {
+        return Ok(false);
+    }
+    // modify_text_properties makes the buffer current for
+    // prepare_to_modify_buffer_1 alone (an error leaves it current); the
+    // change and its signal_after_change come in the caller's buffer.
+    if buffer_id != original {
+        interp.set_current_buffer_id(buffer_id)?;
+    }
+    let prepared = prepare_to_modify_buffer(interp, start, end, false, env)?;
+    if buffer_id != original && interp.has_buffer_id(original) {
+        interp.set_current_buffer_id(original)?;
+    }
+    with_overlay_hook_roots(interp, &prepared.overlay_calls, |interp| {
+        interp.apply_text_property_change_shared_for(buffer_id, apply);
+        signal_after_change(
+            interp,
+            AfterChange::new(start, end - start, end - start),
+            &prepared.overlay_calls,
+            env,
+        )
+    })?;
+    Ok(true)
+}
+
+/// Whether some interval of [FROM, TO) lacks one of PROPS with its value
+/// (EQ): textprop.c:interval_has_all_properties false somewhere, so that
+/// add_text_properties changes the text.
+pub(crate) fn properties_would_add(
+    buffer: &crate::buffer::Buffer,
     from: usize,
     to: usize,
-) -> Result<(), LispError> {
+    props: &[(PropertyName, Value)],
+) -> bool {
+    let (from, to) = clamp_property_range(buffer, from, to);
+    buffer
+        .try_for_each_property_interval(from, to, |_, _, current| {
+            let has_all = props.iter().all(|(name, value)| {
+                current
+                    .iter()
+                    .any(|(key, existing)| key == name && existing.word() == value.word())
+            });
+            if has_all { Ok(()) } else { Err(()) }
+        })
+        .is_err()
+}
+
+/// Whether some interval of [FROM, TO) has one of NAMES:
+/// textprop.c:interval_has_some_properties(_list), so that removing them
+/// changes the text.
+pub(crate) fn properties_would_remove(
+    buffer: &crate::buffer::Buffer,
+    from: usize,
+    to: usize,
+    names: &[PropertyName],
+) -> bool {
+    let (from, to) = clamp_property_range(buffer, from, to);
+    buffer
+        .try_for_each_property_interval(from, to, |_, _, current| {
+            if current.iter().any(|(key, _)| names.contains(key)) {
+                Err(())
+            } else {
+                Ok(())
+            }
+        })
+        .is_err()
+}
+
+/// Whether set_text_properties modifies the buffer: a nonempty range, and
+/// either properties to set or intervals in the buffer, though every
+/// plist be empty.
+pub(crate) fn properties_would_set(
+    buffer: &crate::buffer::Buffer,
+    from: usize,
+    to: usize,
+    props: &[(PropertyName, Value)],
+) -> bool {
+    let (from, to) = clamp_property_range(buffer, from, to);
+    from < to && (!props.is_empty() || buffer.has_interval_tree())
+}
+
+fn clamp_property_range(buffer: &crate::buffer::Buffer, from: usize, to: usize) -> (usize, usize) {
     let (from, to) = if from <= to { (from, to) } else { (to, from) };
-    let from = from.max(interp.buffer.borrow().point_min());
-    let to = to.min(interp.buffer.borrow().point_max());
-    if from >= to {
-        return Ok(());
-    }
-    let inhibit_read_only = interp
-        .symbol_value_key(cached_symbol!("inhibit-read-only"))
-        .unwrap_or(Value::Nil);
-    let buffer_read_only = buffer_read_only_active(interp, &inhibit_read_only);
-    // insdel.c: with no intervals there is no read-only text to verify,
-    // and the buffer's own flag was decided above.
-    if !buffer_read_only && !interp.buffer.borrow().has_text_properties() {
-        return Ok(());
-    }
-
-    for pos in from..to {
-        let read_only = interp.buffer.borrow().text_property_at(pos, "read-only");
-        let suppressor = interp
-            .buffer
-            .borrow()
-            .text_property_at(pos, "inhibit-read-only");
-        if let Some(read_only_value) = read_only {
-            if suppressor.is_some_and(|value| value.is_truthy())
-                || inhibit_read_only_matches(&inhibit_read_only, &read_only_value)
-            {
-                continue;
-            }
-            // textprop.c's text_read_only: the property's string as the
-            // datum, none for any other value.
-            let mut data = vec![Value::Symbol("text-read-only".into())];
-            if matches!(read_only_value.kind(), Kind::StringObject(_)) {
-                data.push(read_only_value);
-            }
-            return Err(LispError::SignalValue(Value::list(data)));
-        }
-        if buffer_read_only && !suppressor.is_some_and(|value| value.is_truthy()) {
-            return Err(buffer_read_only_signal(interp));
-        }
-    }
-    Ok(())
+    (from.max(buffer.point_min()), to.min(buffer.point_max()))
 }
 
-pub(crate) fn ensure_insert_modifiable(interp: &Interpreter) -> Result<(), LispError> {
-    let inhibit_read_only = interp
+pub(crate) fn inhibit_read_only_value(interp: &Interpreter) -> Value {
+    interp
         .symbol_value_key(cached_symbol!("inhibit-read-only"))
-        .unwrap_or(Value::Nil);
-    if !buffer_read_only_active(interp, &inhibit_read_only) {
-        return Ok(());
-    }
-    let point = interp.buffer.borrow().point();
-    let suppressor = interp
-        .buffer
-        .borrow()
-        .text_property_at(point, "inhibit-read-only");
-    if suppressor.is_some_and(|value| value.is_truthy()) {
-        return Ok(());
-    }
-    Err(buffer_read_only_signal(interp))
+        .unwrap_or(Value::Nil)
 }
 
-fn buffer_read_only_active(interp: &Interpreter, inhibit_read_only: &Value) -> bool {
+pub(crate) fn buffer_read_only_active(interp: &Interpreter, inhibit_read_only: &Value) -> bool {
     interp
         .symbol_value_key(cached_symbol!("buffer-read-only"))
         .is_some_and(|value| value.is_truthy())
         && !inhibit_read_only.is_truthy()
 }
 
-fn buffer_read_only_signal(interp: &Interpreter) -> LispError {
+pub(crate) fn buffer_read_only_signal(interp: &Interpreter) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("buffer-read-only".into()),
         Value::Buffer(interp.buffer),
     ]))
 }
 
-pub(crate) fn inhibit_read_only_matches(inhibit: &Value, property: &Value) -> bool {
-    if inhibit.is_nil() {
-        return false;
+/// textprop.c:text_read_only: the property's string as the datum, none
+/// for any other value.
+pub(crate) fn text_read_only(property: Value) -> LispError {
+    let mut data = vec![Value::Symbol("text-read-only".into())];
+    if matches!(property.kind(), Kind::StringObject(_)) {
+        data.push(property);
     }
-    if matches!(inhibit.kind(), Kind::T) {
-        return true;
+    LispError::SignalValue(Value::list(data))
+}
+
+/// textprop.c:textget: PROP in PLIST as lookup_char_property reads it,
+/// through the `category' symbol and `char-property-alias-alist'.
+pub(crate) fn textget(
+    interp: &Interpreter,
+    plist: &[(PropertyName, Value)],
+    prop: impl crate::lisp::types::PropertyKey,
+) -> Value {
+    property_from_props_with_category(interp, plist, prop).unwrap_or(Value::Nil)
+}
+
+/// fns.c:plist_get on an interval's own plist: no category.
+pub(crate) fn plist_get(
+    plist: &[(PropertyName, Value)],
+    prop: impl crate::lisp::types::PropertyKey,
+) -> Value {
+    plist
+        .iter()
+        .find(|(name, _)| prop.names(name))
+        .map_or(Value::Nil, |(_, value)| *value)
+}
+
+/// textprop.c TMEM: SYM in SET when SET is a list, else SET non-nil.
+pub(crate) fn tmem(symbol: impl crate::lisp::types::PropertyKey, set: Value) -> bool {
+    if is_cons(&set) {
+        memq(symbol, set)
+    } else {
+        !set.is_nil()
     }
-    if let Ok(items) = inhibit.to_vec() {
-        return items.into_iter().any(|item| item == *property);
+}
+
+/// Fmemq: an element of LIST EQ to ELT (a circular list has none past
+/// its cycle).
+pub(crate) fn memq(elt: impl crate::lisp::types::PropertyKey, list: Value) -> bool {
+    let mut tail = list;
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    while let Kind::Cons(cell) = tail.kind() {
+        if elt.is(cell.car.get()) {
+            return true;
+        }
+        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            return false;
+        }
+        tail = cell.cdr.get();
     }
-    inhibit == property
+    false
+}
+
+pub(crate) fn is_cons(value: &Value) -> bool {
+    matches!(value.kind(), Kind::Cons(_))
 }
 
 pub(crate) fn add_face_text_property(
     interp: &mut Interpreter,
     name: &str,
     args: &[Value],
+    env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     need_arg_range(name, args, 3, 5)?;
     let face = args[2];
@@ -821,8 +826,8 @@ pub(crate) fn add_face_text_property(
                 combine_font_lock_property_value("face", previous, &face, append)
             };
             modify_shared_string_properties(object, cursor, next, |mut current| {
-                current.retain(|(key, _)| key != "face");
-                current.push(("face".into(), updated));
+                current.retain(|(key, _)| *key != "face");
+                current.push((PropertyName::symbol("face"), updated));
                 current
             })?;
             cursor = next;
@@ -833,18 +838,58 @@ pub(crate) fn add_face_text_property(
     let start = position_from_value(interp, &args[0])?;
     let end = position_from_value(interp, &args[1])?;
     let buffer_id = font_lock_target_buffer_id(interp, args.get(4))?;
-    let mut cursor = start;
-    while cursor < end {
-        let (previous, next) = font_lock_buffer_segment(interp, buffer_id, cursor, end, "face")?;
+    // add_text_properties_1 with TEXT_PROPERTY_APPEND or _PREPEND skips no
+    // interval: any nonempty range changes, and each of its intervals
+    // takes FACE combined with its own.
+    let (from, to) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    modify_buffer_text_properties(
+        interp,
+        buffer_id,
+        from,
+        to,
+        &|buffer| {
+            let (from, to) = clamp_property_range(buffer, from, to);
+            from < to
+        },
+        &|buffer| add_face_to_buffer(buffer, from, to, face, append),
+        env,
+    )?;
+    Ok(Value::Nil)
+}
+
+/// add_properties' TEXT_PROPERTY_APPEND or _PREPEND of FACE over
+/// [FROM, TO): each interval's face combined with FACE.
+pub(crate) fn add_face_to_buffer(
+    buffer: &mut crate::buffer::Buffer,
+    from: usize,
+    to: usize,
+    face: Value,
+    append: bool,
+) {
+    let face_name = PropertyName::symbol("face");
+    let (from, to) = clamp_property_range(buffer, from, to);
+    let mut cursor = from;
+    while cursor < to {
+        let previous = buffer
+            .text_property_at(cursor, face_name)
+            .unwrap_or(Value::Nil);
+        let next = font_lock_next_buffer_property_change(buffer, cursor, to, "face");
         let updated = if previous.is_nil() {
             face
         } else {
             combine_font_lock_property_value("face", previous, &face, append)
         };
-        font_lock_put_buffer_property(interp, buffer_id, cursor, next, "face", updated)?;
+        if updated.is_nil() {
+            buffer.remove_list_of_text_properties(cursor, next, &[face_name]);
+        } else {
+            buffer.put_text_property(cursor, next, face_name, updated);
+        }
         cursor = next;
     }
-    Ok(Value::Nil)
 }
 
 pub(crate) fn font_lock_target_buffer_id(
@@ -855,45 +900,6 @@ pub(crate) fn font_lock_target_buffer_id(
         Some(value) if !value.is_nil() => interp.resolve_buffer_id(value),
         _ => Ok(interp.current_buffer_id()),
     }
-}
-
-pub(crate) fn font_lock_buffer_segment(
-    interp: &Interpreter,
-    buffer_id: u64,
-    start: usize,
-    end: usize,
-    prop: &str,
-) -> Result<(Value, usize), LispError> {
-    let buffer = interp
-        .get_buffer_by_id(buffer_id)
-        .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
-    let previous = buffer.text_property_at(start, prop).unwrap_or(Value::Nil);
-    let next = font_lock_next_buffer_property_change(&buffer, start, end, prop);
-    Ok((previous, next))
-}
-
-pub(crate) fn font_lock_put_buffer_property(
-    interp: &mut Interpreter,
-    buffer_id: u64,
-    start: usize,
-    end: usize,
-    prop: &str,
-    value: Value,
-) -> Result<(), LispError> {
-    let applied = interp.apply_text_property_change_shared_for(buffer_id, &|buffer| {
-        if value.is_nil() {
-            buffer.remove_list_of_text_properties(start, end, &[prop.to_string()]);
-        } else {
-            buffer.put_text_property(start, end, prop, value);
-        }
-    });
-    if !applied {
-        return Err(LispError::Signal(format!(
-            "No buffer with id {}",
-            buffer_id
-        )));
-    }
-    Ok(())
 }
 
 pub(crate) fn font_lock_next_buffer_property_change(

@@ -904,6 +904,10 @@ fn initialize_interpreter_attempt(
             }
             Err(error) => return Err(format!("after-pdump-load-hook: {error}")),
         }
+        // emacs.c:main, just before Frecursive_edit.  The interactive
+        // caller makes the same call after its hook run.
+        crate::lisp::primitives::set_initial_minibuffer_mode(&mut interpreter)
+            .map_err(|error| format!("initial minibuffer mode: {error}"))?;
     }
     // The process CLI enters top-level with its complete argv in the caller.
     // Embedders request an initialized session without executing user actions;

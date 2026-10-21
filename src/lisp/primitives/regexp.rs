@@ -3002,9 +3002,13 @@ pub(super) fn regexp_syntax_class_render_count() -> usize {
 
 /// Whether any character of [START, END) carries a `syntax-table' text
 /// property, directly or through its `category' (syntax.c:374's textget),
-/// judged per text-property interval.
+/// judged per text-property interval.  A buffer without intervals has none
+/// (interval_of finds no interval, so not even `default-text-properties').
 fn haystack_has_syntax_property(interp: &Interpreter, start: usize, end: usize) -> bool {
     let buffer = interp.buffer.borrow();
+    if !buffer.has_interval_tree() {
+        return false;
+    }
     let mut pos = start.max(buffer.point_min());
     let end = end.min(buffer.point_max());
     while pos < end {

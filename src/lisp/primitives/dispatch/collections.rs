@@ -1114,15 +1114,15 @@ define_dispatch!(
                 let value = shared_string_copy(&args[0])?;
                 let props = args[1..]
                     .chunks(2)
-                    .map(|pair| Ok((pair[0].as_symbol()?.to_string(), pair[1])))
-                    .collect::<Result<Vec<_>, LispError>>()?;
+                    .map(|pair| (crate::lisp::types::PropertyName::new(pair[0]), pair[1]))
+                    .collect::<Vec<_>>();
                 modify_shared_string_properties(&value, 0, len, |mut current| {
                     for (name, value) in &props {
                         if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name)
                         {
                             *existing = *value;
                         } else {
-                            current.push((name.clone(), *value));
+                            current.push((*name, *value));
                         }
                     }
                     current
@@ -1546,16 +1546,16 @@ define_dispatch!(
                 need_args(name, args, 3)?;
                 let from = position_from_value(interp, &args[0])?;
                 let to = position_from_value(interp, &args[1])?;
-                let table_id = match args[2].kind() {
-                    Kind::CharTable(id) => id,
-                    _ => {
-                        return Err(LispError::WrongTypeArgument("char-table-p".into(), args[2]));
+                // editfns.c: a string, or a char-table whose purpose is
+                // `translation-table'.
+                let table = match args[2].kind() {
+                    Kind::StringObject(_) => TranslationTable::String(args[2]),
+                    Kind::CharTable(id) if id.has_purpose("translation-table") => {
+                        TranslationTable::Chars(id)
                     }
+                    _ => return Err(LispError::Signal("Not a translation table".into())),
                 };
-                if !table_id.has_purpose("translation-table") {
-                    return Err(LispError::Signal("Not a translation table".into()));
-                }
-                translate_region_with_table(interp, from, to, table_id)
+                translate_region_internal(interp, from, to, table, env)
             }
 
             "undo-boundary" => {

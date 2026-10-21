@@ -447,7 +447,14 @@ pub(crate) fn substitute_object_recurse(
             }
             let mut state = state.borrow_mut();
             for span in &mut state.props {
-                for (_, prop_value) in &mut span.props {
+                for (name, prop_value) in &mut span.props {
+                    *name = crate::lisp::types::PropertyName::new(substitute_object_recurse(
+                        interp,
+                        object,
+                        placeholder,
+                        &name.value(),
+                        seen,
+                    )?);
                     *prop_value =
                         substitute_object_recurse(interp, object, placeholder, prop_value, seen)?;
                 }
@@ -1074,11 +1081,19 @@ pub(crate) fn run_active_minibuffer<T>(
         // *Completions*).  The command loop itself starts in the minibuffer.
         if interp.has_buffer_id(minibuffer.buffer_id) {
             interp.set_current_buffer_id(minibuffer.buffer_id)?;
+            // "Don't allow the user to undo past this point."
+            let mut buffer = interp.buffer.borrow_mut();
+            buffer.enable_undo();
+            buffer.clear_undo_history();
         }
 
-        body(interp, env)
+        // read_minibuf's recursive_edit_1.
+        with_recursive_edit_bindings(interp, env, body)
     })();
-    restore_active_minibuffer(interp, minibuffer);
+    // The unwinding of every exit: `minibuffer-exit-hook' first, then
+    // read_minibuf_unwind.
+    let exit = run_exit_minibuf_hook(interp, minibuffer.buffer_id, env);
+    restore_active_minibuffer(interp, minibuffer, env);
     for (name, value) in saved_command_state {
         interp.set_variable(name, value, env);
     }
@@ -1088,7 +1103,8 @@ pub(crate) fn run_active_minibuffer<T>(
     {
         let _ = interp.restore_window_configuration(saved_windows);
     }
-    result
+    let value = result?;
+    exit.map(|()| value)
 }
 
 pub(crate) struct ActiveMinibuffer {
@@ -1172,18 +1188,13 @@ pub(crate) fn activate_minibuffer(
     let initial_length = initial_string.text.chars().count();
     let saved_windows = interp.snapshot_window_configuration();
     let depth = interp.minibuffer_depth().saturating_add(1);
-    let buffer_name = format!(" *Minibuf-{depth}*");
-    let (buffer_id, reused) = interp
-        .find_buffer(&buffer_name)
-        .map(|(id, _)| (id, true))
-        .unwrap_or_else(|| (interp.create_buffer(&buffer_name).0, false));
+    let (buffer_id, reused) = get_minibuffer(interp, depth);
     let saved_buffer_id = interp.current_buffer_id();
     let saved_selected_window_id = interp.selected_window_id();
     let saved_selected_window_buffer_id = interp.selected_window_buffer_id();
     let previous_minibuffer_selected_window_id =
         interp.replace_minibuffer_selected_window_id(Some(saved_selected_window_id));
     let default_directory = interp.lookup_var("default-directory", env);
-    interp.clear_buffer_local_state(buffer_id);
     if reused {
         // GNU get_minibuffer deletes both overlay trees before reset_buffer.
         // Reusing a minibuffer without this step leaves completion UI from
@@ -1195,10 +1206,16 @@ pub(crate) fn activate_minibuffer(
             .overlays
             .clear();
     }
+    // read_minibuf's set_minibuffer_mode: `minibuffer-mode', whose
+    // kill-all-local-variables drops what the previous read left local.
+    set_minibuffer_mode(interp, buffer_id, depth, env)?;
     if let Some(default_directory) = default_directory {
         interp.set_buffer_local_value(buffer_id, "default-directory", default_directory);
     }
     interp.set_buffer_local_value(buffer_id, "buffer-read-only", Value::Nil);
+    // "Defeat (setq-default truncate-lines t), since truncated lines do
+    // not work correctly in minibuffers."
+    interp.set_buffer_local_value(buffer_id, "truncate-lines", Value::Nil);
     // GNU reads in the minibuffer window: the minibuffer buffer becomes
     // current without displaying itself in the selected text window,
     // whose glass keeps showing its own buffer during the read.  The
@@ -1214,85 +1231,79 @@ pub(crate) fn activate_minibuffer(
         window.slots[super::WINDOW_POINT_SLOT] = Value::Integer(entry_point as i64);
     }
     interp.set_current_buffer_id(buffer_id)?;
-    let end = interp.buffer.borrow().point_max();
-    let start = interp.buffer.borrow().point_min();
-    if end > start {
-        interp
-            .buffer
-            .borrow_mut()
-            .delete_region(start, end)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
+    // "Empty out the minibuffers of all frames, except those frames where
+    // there is an active minibuffer": the level-0 one goes inactive.
+    if let Some((empty, _)) = interp.find_buffer(" *Minibuf-0*") {
+        set_minibuffer_mode(interp, empty, 0, env)?;
     }
-    interp.buffer.borrow_mut().goto_char(start);
-    // minibuf.c inserts with `inhibit-modification-hooks' bound: copy the
-    // prompt's string intervals directly rather than entering ordinary
-    // buffer-change hooks.
-    interp.buffer.borrow_mut().insert(&prompt_string.text);
-    for span in &prompt_string.props {
-        interp.buffer.borrow_mut().add_text_properties(
-            1 + span.start,
-            1 + span.end.min(prompt_length),
-            &span.props,
-        );
-    }
-    interp
-        .buffer
-        .borrow_mut()
-        .set_inserted_extended_chars(1, &prompt_string.extended_chars);
-    // read_minibuf stamps the prompt: `minibuffer-prompt-properties'
-    // (the read-only guard and the prompt face), plus the field and
-    // stickiness controls that keep typed text from inheriting them —
-    // the prompt is front-sticky and rear-nonsticky.
-    if !prompt_string.text.is_empty() {
-        let prompt_end = Value::Integer(1 + prompt_length as i64);
-        if let Some(properties) = interp
-            .lookup_var("minibuffer-prompt-properties", env)
-            .filter(|properties| !properties.is_nil())
-        {
-            let properties = properties.to_vec().unwrap_or_default();
-            for pair in properties.as_chunks::<2>().0 {
-                let name = pair[0].as_symbol()?;
-                if name == "face" {
-                    add_face_text_property(
-                        interp,
-                        "add-face-text-property",
-                        &[Value::Integer(1), prompt_end, pair[1], Value::T],
-                    )?;
-                } else {
-                    interp.buffer.borrow_mut().put_text_property(
-                        1,
-                        1 + prompt_length,
-                        name,
-                        pair[1],
-                    );
-                }
-            }
+    // read_minibuf erases the buffer and inserts the prompt with
+    // `inhibit-read-only' and `inhibit-modification-hooks' bound: the
+    // ordinary editing primitives, recording undo, then the field and
+    // stickiness controls that keep typed text from inheriting the prompt's
+    // properties (front-sticky, rear-nonsticky), then
+    // `minibuffer-prompt-properties' (the read-only guard; its face is
+    // added after the prompt's own faces).
+    with_minibuffer_edits_inhibited(interp, env, |interp, env| {
+        super::call(interp, "erase-buffer", &[], env)?;
+        super::call(interp, "insert", &[*prompt], env)?;
+        let prompt_end = Value::Integer(interp.buffer.borrow().point() as i64);
+        if prompt_length == 0 {
+            return Ok(());
         }
-        for (name, value) in [
-            ("field", Value::T),
-            ("front-sticky", Value::T),
-            ("rear-nonsticky", Value::T),
-        ] {
+        let stamp = |interp: &mut Interpreter, env: &mut Env, name: Value, value: Value| {
+            super::call(
+                interp,
+                "put-text-property",
+                &[Value::Integer(1), prompt_end, name, value],
+                env,
+            )
+            .map(drop)
+        };
+        for name in ["front-sticky", "rear-nonsticky", "field"] {
+            stamp(interp, env, Value::symbol(name), Value::T)?;
+        }
+        let properties = interp
+            .lookup_var("minibuffer-prompt-properties", env)
+            .unwrap_or(Value::Nil);
+        let mut list = properties;
+        while let Some((name, rest)) = list.cons_values() {
+            let Some((value, rest)) = rest.cons_values() else {
+                break;
+            };
+            if name.eq_value(Value::symbol("face")) {
+                super::call(
+                    interp,
+                    "add-face-text-property",
+                    &[Value::Integer(1), prompt_end, value, Value::T],
+                    env,
+                )?;
+            } else {
+                stamp(interp, env, name, value)?;
+            }
+            list = rest;
+        }
+        Ok(())
+    })?;
+    // The initial input goes in after the bindings are gone, an ordinary
+    // insertion.
+    if !initial_string.text.is_empty() {
+        if matches!(initial_input.kind(), Kind::StringObject(_)) {
+            super::call(interp, "insert", &[*initial_input], env)?;
+        } else {
+            let initial_start = interp.buffer.borrow().point();
+            interp.buffer.borrow_mut().insert(&initial_string.text);
+            for span in &initial_string.props {
+                interp.buffer.borrow_mut().graft_text_properties(
+                    initial_start + span.start,
+                    initial_start + span.end.min(initial_length),
+                    &span.props,
+                );
+            }
             interp
                 .buffer
                 .borrow_mut()
-                .put_text_property(1, 1 + prompt_length, name, value);
+                .set_inserted_extended_chars(initial_start, &initial_string.extended_chars);
         }
-    }
-    if !initial_string.text.is_empty() {
-        let initial_start = 1 + prompt_length;
-        interp.buffer.borrow_mut().insert(&initial_string.text);
-        for span in &initial_string.props {
-            interp.buffer.borrow_mut().set_text_properties(
-                initial_start + span.start,
-                initial_start + span.end.min(initial_length),
-                &span.props,
-            );
-        }
-        interp
-            .buffer
-            .borrow_mut()
-            .set_inserted_extended_chars(initial_start, &initial_string.extended_chars);
     }
     {
         let mut buffer = interp.buffer.borrow_mut();
@@ -1326,19 +1337,8 @@ pub(crate) fn activate_minibuffer(
         // clear-message-function. Run the exit hook before restoring state,
         // and restore even if that hook itself exits nonlocally.
         let saved_windows = active.saved_windows.clone();
-        let exit_result = (|| {
-            // run_exit_minibuf_hook changes buffers only if it is still live.
-            if interp.has_buffer_id(buffer_id) {
-                interp.set_current_buffer_id(buffer_id)?;
-            }
-            super::safe_run_named_hooks(
-                interp,
-                "minibuffer-exit-hook",
-                env,
-                Some(interp.current_buffer_id()),
-            )
-        })();
-        restore_active_minibuffer(interp, active);
+        let exit_result = run_exit_minibuf_hook(interp, buffer_id, env);
+        restore_active_minibuffer(interp, active, env);
         if interp
             .lookup_var("read-minibuffer-restore-windows", env)
             .is_none_or(|restore| restore.is_truthy())
@@ -1352,8 +1352,175 @@ pub(crate) fn activate_minibuffer(
     Ok(active)
 }
 
-pub(crate) fn restore_active_minibuffer(interp: &mut Interpreter, state: ActiveMinibuffer) {
+/// minibuf.c:get_minibuffer: the DEPTHth minibuffer and whether it was
+/// reused; a new one has undo enabled ("Although the buffer's name starts
+/// with a space, undo should be enabled in it").
+pub(crate) fn get_minibuffer(interp: &mut Interpreter, depth: usize) -> (u64, bool) {
+    let name = format!(" *Minibuf-{depth}*");
+    if let Some((id, _)) = interp.find_buffer(&name) {
+        return (id, true);
+    }
+    let id = interp.create_buffer(&name).0;
+    if let Some(mut buffer) = interp.get_buffer_by_id_mut(id) {
+        buffer.enable_undo();
+    }
+    (id, false)
+}
+
+/// minibuf.c:set_minibuffer_mode: in BUFFER, `minibuffer-mode' for an
+/// active DEPTH, `minibuffer-inactive-mode' for level 0 (where
+/// minibuffer.el is not loaded, kill-all-local-variables), the current
+/// buffer kept.  A runtime without minibuffer.el, which GNU never is at an
+/// active level, drops the previous read's locals instead.
+fn set_minibuffer_mode(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    depth: usize,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let mode = if depth > 0 {
+        "minibuffer-mode"
+    } else {
+        "minibuffer-inactive-mode"
+    };
+    let defined = interp.lookup_function(mode, env).is_ok();
+    if !defined && depth > 0 {
+        interp.clear_buffer_local_state(buffer_id);
+        return Ok(());
+    }
+    let saved = interp.current_buffer_id();
+    interp.set_current_buffer_id(buffer_id)?;
+    let result = if defined {
+        interp
+            .call_function_value(Value::symbol(mode), Some(mode), &[], env)
+            .map(drop)
+    } else {
+        super::call(interp, "kill-all-local-variables", &[], env).map(drop)
+    };
+    if interp.has_buffer_id(saved) {
+        interp.set_current_buffer_id(saved)?;
+    }
+    result
+}
+
+/// emacs.c's set_initial_minibuffer_mode, before the top level: the
+/// level-0 minibuffer in its inactive mode.
+pub(crate) fn set_initial_minibuffer_mode(interp: &mut Interpreter) -> Result<(), LispError> {
+    let (buffer_id, _) = get_minibuffer(interp, 0);
+    set_minibuffer_mode(interp, buffer_id, 0, &mut Env::new())
+}
+
+/// BODY with `inhibit-read-only' and `inhibit-modification-hooks' bound to
+/// t, as read_minibuf and read_minibuf_unwind edit the minibuffer.
+fn with_minibuffer_edits_inhibited<T>(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
+) -> Result<T, LispError> {
+    let read_only = interp.bind_special_dynamic("inhibit-read-only", Value::T, env)?;
+    let hooks = match interp.bind_special_dynamic("inhibit-modification-hooks", Value::T, env) {
+        Ok(restore) => restore,
+        Err(error) => {
+            interp.restore_special_dynamic(read_only, env)?;
+            return Err(error);
+        }
+    };
+    let result = body(interp, env);
+    let restored = interp
+        .restore_special_dynamic(hooks, env)
+        .and(interp.restore_special_dynamic(read_only, env));
+    let value = result?;
+    restored.map(|()| value)
+}
+
+/// keyboard.c:recursive_edit_1's bindings around BODY's command loop:
+/// `inhibit-redisplay' nil, and `undo-auto--undoably-changed-buffers' nil,
+/// "so that changes in the recursive edit will not result in undo
+/// boundaries in buffers changed before we entered there recursive edit"
+/// (Bug#23632).
+pub(crate) fn with_recursive_edit_bindings<T>(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
+) -> Result<T, LispError> {
+    let redisplay = interp.bind_special_dynamic("inhibit-redisplay", Value::Nil, env)?;
+    let changed =
+        match interp.bind_special_dynamic("undo-auto--undoably-changed-buffers", Value::Nil, env) {
+            Ok(restore) => restore,
+            Err(error) => {
+                interp.restore_special_dynamic(redisplay, env)?;
+                return Err(error);
+            }
+        };
+    let result = body(interp, env);
+    let restored = interp
+        .restore_special_dynamic(changed, env)
+        .and(interp.restore_special_dynamic(redisplay, env));
+    let value = result?;
+    restored.map(|()| value)
+}
+
+/// minibuf.c:run_exit_minibuf_hook: `minibuffer-exit-hook' in the
+/// minibuffer while it is live, the current buffer kept.
+fn run_exit_minibuf_hook(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let saved = interp.current_buffer_id();
+    if interp.has_buffer_id(buffer_id) {
+        interp.set_current_buffer_id(buffer_id)?;
+    }
+    let result = super::safe_run_named_hooks(
+        interp,
+        "minibuffer-exit-hook",
+        env,
+        Some(interp.current_buffer_id()),
+    );
+    if interp.has_buffer_id(saved) {
+        interp.set_current_buffer_id(saved)?;
+    }
+    result
+}
+
+/// read_minibuf_unwind's erasure of the expired minibuffer, which keeps
+/// `deactivate-mark' as it was ("Prevent error in erase-buffer").
+fn erase_expired_minibuffer(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
+    with_minibuffer_edits_inhibited(interp, env, |interp, env| {
+        let old_deactivate_mark = interp
+            .lookup_var("deactivate-mark", env)
+            .unwrap_or(Value::Nil);
+        let erased = super::call(interp, "erase-buffer", &[], env).map(drop);
+        interp.set_c_variable("deactivate-mark", old_deactivate_mark);
+        erased
+    })
+}
+
+pub(crate) fn restore_active_minibuffer(
+    interp: &mut Interpreter,
+    state: ActiveMinibuffer,
+    env: &mut Env,
+) {
+    // read_minibuf_unwind, in the expired minibuffer: the outer level's
+    // depth and prompt return, the buffer is erased, and it goes back to
+    // `minibuffer-inactive-mode' so no binding made for the read outlives it.
+    let expired = interp.has_buffer_id(state.buffer_id)
+        && interp.set_current_buffer_id(state.buffer_id).is_ok();
     interp.restore_minibuffer_runtime(state.previous_runtime);
+    if expired {
+        let _ = erase_expired_minibuffer(interp, env);
+        if interp
+            .lookup_function("minibuffer-inactive-mode", env)
+            .is_ok()
+        {
+            let _ = interp.call_function_value(
+                Value::symbol("minibuffer-inactive-mode"),
+                Some("minibuffer-inactive-mode"),
+                &[],
+                env,
+            );
+        }
+    }
     interp.replace_minibuffer_selected_window_id(state.previous_minibuffer_selected_window_id);
 
     interp.set_selected_window_id(state.saved_selected_window_id);
@@ -1905,11 +2072,6 @@ pub(crate) fn interactive_minibuffer_command_loop(
         ensure_history_variable_bound(interp, env, &variable);
     }
 
-    // read_minibuf saves the window configuration before the read; the
-    // teardown below puts it back (default `read-minibuffer-restore-windows'
-    // t), which is how a *Completions* pop-up vanishes on exit and the
-    // shrunk window above it gets its lines back.
-    let saved_windows = interp.snapshot_window_configuration();
     // The read is one big `catch' for the `exit' tag, GNU read_minibuf's
     // recursive-edit shape: registering the tag makes `throw' from
     // `exit-minibuffer' arrive here instead of signaling `no-catch'.
@@ -2010,27 +2172,21 @@ pub(crate) fn interactive_minibuffer_command_loop(
         }
     })(interp, env);
     interp.pop_active_catch_tag();
-    // read_minibuf_unwind: the exit hook runs in the minibuffer, then the
-    // saved window configuration returns — on every exit path, quits
-    // included.
-    crate::lisp::primitives::safe_run_named_hooks(
-        interp,
-        "minibuffer-exit-hook",
-        env,
-        Some(buffer_id),
-    )
-    .unwrap_or(());
-    if interp
-        .lookup_var("read-minibuffer-restore-windows", env)
-        .is_none_or(|restore| restore.is_truthy())
-    {
-        let _ = interp.restore_window_configuration(saved_windows);
-    }
+    // The contents are read before read_minibuf unwinds: the caller's
+    // `run_active_minibuffer' then runs the exit hook, erases the
+    // minibuffer and restores the window configuration, on every exit
+    // path, quits included.
     if let Err(error) = loop_outcome {
         super::set_echo_area_message(None);
         return Err(error);
     }
     super::set_echo_area_message(None);
+    // "Make minibuffer contents into a string": read_minibuf sets the
+    // minibuffer current first (the exiting command may have run in
+    // *Completions*).
+    if interp.has_buffer_id(buffer_id) {
+        interp.set_current_buffer_id(buffer_id)?;
+    }
     let submitted = super::call(interp, "minibuffer-contents-no-properties", &[], env).and_then(
         |contents| {
             string_like(&contents).map(|text| text.text).ok_or_else(|| {

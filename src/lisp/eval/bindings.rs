@@ -200,6 +200,16 @@ impl Interpreter {
         resolved: &str,
         resolved_symbol: Option<&SymbolName>,
     ) -> Option<Value> {
+        // data.c:find_symbol_value's SYMBOL_LOCALIZED case with the current
+        // buffer's binding loaded: its value, or the default's.
+        if let Some(symbol) = resolved_symbol
+            && let Some(loaded) = self.loaded_bindings.get(symbol, self.current_buffer_id())
+        {
+            return match loaded {
+                Some(binding) => super::local_cells::live(binding.get()),
+                None => self.localized_default_symbol(symbol),
+            };
+        }
         let c_slot = resolved_symbol
             .copied()
             .or_else(|| SymbolName::find(resolved))
@@ -247,23 +257,25 @@ impl Interpreter {
             Some(None) => return None,
             None => {}
         }
-        let active = match resolved_symbol {
-            Some(symbol) => self.active_global_special_value_symbol(symbol),
-            None => self.active_global_special_value(resolved),
-        };
-        if let Some(value) = active {
+        if let Some(symbol) = resolved_symbol {
+            debug_assert_eq!(symbol.as_str(), resolved);
+            return self.localized_default_symbol(symbol);
+        }
+        if let Some(value) = self.active_global_special_value(resolved) {
             return value.or_else(builtin);
         }
-        let global = if let Some(symbol) = resolved_symbol {
-            debug_assert_eq!(symbol.as_str(), resolved);
-            self.global_binding_value_symbol(symbol)
-        } else {
-            self.global_value(resolved)
-        };
-        if let Some(value) = global {
-            return Some(value);
+        self.global_value(resolved).or_else(builtin)
+    }
+
+    /// find_symbol_value's value of a SYMBOL_LOCALIZED SYMBOL that has no
+    /// binding in the current buffer: an always-local variable's `let' of
+    /// the default, else the default, else its C slot's.
+    fn localized_default_symbol(&self, symbol: &SymbolName) -> Option<Value> {
+        let builtin = || self.builtin_symbol_value(symbol);
+        if let Some(value) = self.active_global_special_value_symbol(symbol) {
+            return value.or_else(builtin);
         }
-        builtin()
+        self.global_binding_value_symbol(symbol).or_else(builtin)
     }
 
     pub fn symbol_value_cell(&self, name: &str) -> Result<Value, LispError> {
@@ -1185,7 +1197,7 @@ impl Interpreter {
                     self.set_global_binding_resolved(symbol, value);
                 }
                 SpecialBindingScope::BufferLocal(buffer_id) => {
-                    self.set_buffer_local_value(buffer_id, resolved, value);
+                    self.set_buffer_local_value_symbol(buffer_id, symbol, value);
                 }
             }
             return;

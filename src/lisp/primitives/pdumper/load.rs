@@ -1170,10 +1170,10 @@ impl Loader<'_> {
             at += 24;
             let mut props = Vec::with_capacity(nprops);
             for _ in 0..nprops {
-                let name = symbol_of(self.value_at(at)?, "property name")?;
+                let name = crate::lisp::types::PropertyName::new(self.value_at(at)?);
                 let value = self.value_at(at + 8)?;
                 at += 16;
-                props.push((name.as_str().to_owned(), value));
+                props.push((name, value));
             }
             spans.push(crate::lisp::types::StringPropertySpan { start, end, props });
         }

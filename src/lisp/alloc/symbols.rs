@@ -221,6 +221,44 @@ impl SymbolCell {
                 == 0
     }
 
+    /// A buffer-local variable whose bindings are values in the buffers'
+    /// cells, read as they are: localized, and no alias, counter, KBOARD
+    /// variable or buffer-held slot.  A read through the binding loaded for
+    /// the current buffer is then data.c:find_symbol_value's
+    /// SYMBOL_LOCALIZED read (per-buffer and always-local variables
+    /// included, whose default reads stay their own).
+    #[inline(always)]
+    pub(crate) fn has_local_value_cells(&self) -> bool {
+        use crate::lisp::eval::symbol_cell_flags::LOCALIZED;
+        self.state.get() & (ALIAS | INT_FORWARD | KBOARD_FORWARD | BUFFER_SLOT) == 0
+            && self.flags.get() & LOCALIZED != 0
+    }
+
+    /// A buffer-local variable whose store into a buffer's binding changes
+    /// nothing else: no alias, counter, KBOARD, store-effect or
+    /// buffer-held slot, no value conversion, no watcher, not constant, and
+    /// localized without being per-buffer, always local or a typed C slot.
+    /// data.c:set_internal's SYMBOL_LOCALIZED store into the loaded binding
+    /// (set_blv_value) is then the whole assignment.
+    #[inline(always)]
+    pub(crate) fn is_plain_localized(&self) -> bool {
+        use crate::lisp::eval::symbol_cell_flags::{
+            ALWAYS_LOCAL, FWD_BOOL, FWD_INT, LOCALIZED, PER_BUFFER,
+        };
+        self.state.get()
+            & (ALIAS
+                | INT_FORWARD
+                | KBOARD_FORWARD
+                | STORE_EFFECT
+                | TRAPPED_WRITE
+                | CONSTANT
+                | BUFFER_SLOT
+                | STORE_CONVERTS)
+            == 0
+            && self.flags.get() & (LOCALIZED | PER_BUFFER | ALWAYS_LOCAL | FWD_BOOL | FWD_INT)
+                == LOCALIZED
+    }
+
     /// data.c:do_symval_forwarding: `make_int (*intvar)'.
     #[cold]
     fn forwarded_value(&self) -> Value {

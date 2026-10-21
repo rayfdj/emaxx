@@ -3562,7 +3562,355 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   and `process_tls_state_survives_collection_before_and_after_async_handshake`
   failed among the four parallel processes and pass alone, three times of
   three each. Clippy `-D warnings` (all targets and features), rustfmt and
-  `git diff --check` pass.
+  `git diff --check` pass. The contract-like comparison of round 41's
+  profile-guided build (nine rounds, the paired median ratio's bootstrapped
+  95% interval): 15 of the 16 workloads within 1.03 of GNU's wall time;
+  mapcar's interval reaches over from two slow rounds (median 0.861,
+  [0.721, 1.088]), and undo is the tightest of the others (0.956,
+  [0.845, 0.995]).
+- **Round 42: a text property's name is the Lisp object; undo records an
+  edit as insdel.c does.** An interval's property names were Rust strings:
+  every `put-text-property`, lookup and undo record compared names as text,
+  a name that was not a symbol signalled `wrong-type-argument symbolp`
+  (`(put-text-property 1 2 1 'x)`, a string or list name kept by identity,
+  `(propertize "ab" 7 'seven)`: GNU takes any object), and an uninterned
+  symbol's name went through an encoded-name adapter. A name is now a
+  `PropertyName`, the object itself compared with EQ (textprop.c's
+  `EQ (XCAR (tail), prop)`); a Rust caller that asks for `"face"` names the
+  interned symbol (`PropertyKey`). The Lisp primitives take any object as
+  a name (`get-text-property`, `get-char-property`, `put-text-property`,
+  `add-`/`set-`/`remove-text-properties`, `remove-list-of-text-properties`,
+  `text-property-any`, the `*-property-change` scans, `propertize`, the
+  `#("ab" 0 1 (1 one))` read syntax, `overlay-get`), category and
+  `char-property-alias-alist` lookups compare with EQ, and the names are
+  traced wherever the values are: the collector, a buffer's intervals and
+  undo payload, the reader's placeholders and obarray interning, the image.
+  An undo record of a property change names the object (no symbol lookup
+  a record). Three older divergences from GNU in the same records, now as
+  insdel.c has them: (a) a deletion's record held its text alone, so
+  `primitive-undo` reinserted the text without its properties; the string
+  is now `make_buffer_string`'s, with the deleted intervals and multibyte
+  as the buffer is (`set-buffer-multibyte` keeps those already recorded).
+  (b) Inserting a propertized string recorded a property change after the
+  insertion (`(nil face nil 1 . 3)` after `(1 . 3)`), as did
+  `replace-match`, `replace-buffer-contents`, `transpose-regions`,
+  translation, decoding, the minibuffer's prompt and native undo's
+  reinsertion; the inserted text's intervals are now grafted unrecorded and
+  uncounted (graft_intervals_into_buffer), in their own order. (c) An
+  insertion, deletion or in-place replacement raised the modification tick
+  by one; it is raised as lisp.h's modiff_incr raises it, by one more than
+  the binary logarithm of the change's length. Profile-guided builds, each
+  trained on its own source: undo 1,057,434 -> 1,048,999 instructions a
+  unit (GNU 1,252,071), bytecode calls 417.7 -> 418.5 an iteration.
+  `text_property_names_are_any_object_compared_with_eq` and
+  `undo_records_inserted_and_deleted_text_as_insdel_does` check both
+  against the GNU oracle. Validation as round 41's: the whole library suite
+  (3,168 tests) passes but for the same known failures;
+  `process_tls_state_survives_collection_before_and_after_async_handshake`
+  failed among the four parallel processes and passes alone, three times of
+  three. Clippy `-D warnings`, rustfmt and `git diff --check` pass.
+- **Round 43: read-only text and property changes as textprop.c checks and
+  signals them.** Older divergences, found by probing GNU: (a) a deletion
+  or replacement read each character's own `read-only` alone, so a nil
+  value counted as read-only, `category` was ignored, a non-list
+  `inhibit-read-only` (`5`) was not honoured and a list one matched with
+  `equal`. The check now walks the intervals as
+  verify_interval_modification does (`textget` through `category` and
+  `char-property-alias-alist`, INTERVAL_GENERALLY_WRITABLE_P and
+  INTERVAL_EXPRESSLY_WRITABLE_P, `memq` of the list), after
+  Fbarf_if_buffer_read_only's look at the first character's
+  `inhibit-read-only`. (b) An insertion checked the buffer's flag alone:
+  text went in after read-only text that is not rear-nonsticky and before
+  front-sticky read-only text. The insertion case's stickiness rules (TMEM
+  over `front-sticky` and `rear-nonsticky`, a `category`'s read-only when
+  the interval has none of its own) now refuse it. (c) The property
+  primitives on a buffer (`put-text-property`, `add-`, `set-` and
+  `remove-text-properties`, `remove-list-of-text-properties`,
+  `add-face-text-property`) checked nothing and ran no change hooks, and
+  given a buffer OBJECT they changed the current buffer. They now act as
+  modify_text_properties: only when something would change
+  (add_text_properties_1's all-properties test with EQ values, the remove
+  scans, set's intervals), with the object buffer current for the
+  read-only checks, the overlays' modification hooks, the lock and
+  `before-change-functions`, then the change and `after-change-functions`
+  in the caller's buffer, one tick counted. The minibuffer prompt's face
+  is added without hooks, as read_minibuf binds
+  `inhibit-modification-hooks`. (d) GNU's buffers and strings keep their
+  intervals when the properties go, and `set-text-properties` modifies a
+  region with intervals (returns t, signals, counts a tick and records a
+  first change) though no plist changes. A buffer now carries that state
+  (dropped when a deletion takes its whole text, exchanged by
+  `buffer-swap-text`), a string an empty interval container (copied by
+  `copy-sequence`, not by `substring` or `concat`, dropped by
+  `set-text-properties` of the whole string to nil). Still not as GNU: the
+  `modification-hooks`, `insert-in-front-hooks` and `insert-behind-hooks`
+  text properties (only the overlays' run), and a string's empty intervals
+  grafted into a buffer by its insertion.
+  `read_only_text_follows_textprop_intervals_and_stickiness`,
+  `text_property_changes_modify_the_object_buffer` and
+  `intervals_outlive_their_properties_until_the_text_goes` check them
+  against the GNU oracle. Profile-guided builds, each trained on its own
+  source: undo 1,048,999 -> 1,081,140 instructions a unit (GNU 1,252,071),
+  the property changes running the change hooks GNU runs and the read-only
+  walk's `textget` reading `char-property-alias-alist` by name (about
+  5,400 a unit); bytecode calls 418.5 -> 418.6 an iteration. Validation as
+  round 42's: the whole library suite (3,171 tests) passes but for the
+  same known failures. Clippy `-D warnings`, rustfmt and
+  `git diff --check` pass. The contract-like comparison of round 42's
+  profile-guided build, run twice: all 16 workloads within 1.03 of GNU's
+  wall time both times (the closest: bytecode calls 0.926 [0.868, 1.015]
+  and undo 0.912 [0.887, 0.992]; then undo 0.920 [0.802, 1.026], with one
+  1.229 round, and cons allocation 0.918 [0.767, 1.018]).
+- **Round 44: every change runs insdel.c's protocol.** Each edit path had
+  assembled its own hooks, and probing every edit primitive against GNU
+  with all the hooks logged found them apart: an internal counter stood in
+  for `inhibit-modification-hooks` (binding or setting the variable
+  inhibited nothing), the overlays' hooks ran before
+  `before-change-functions`, `first-change-hook` and the text's own
+  `modification-hooks`, `insert-in-front-hooks` and `insert-behind-hooks`
+  never ran, `deactivate-mark` was never set, the file was locked after
+  the change, and `erase-buffer`, `delete-char`, `replace-match`,
+  `subst-char-in-region`, `transpose-regions` and `delete-field` checked
+  no read-only text (`transpose-regions`, the base64 region primitives and
+  `compose-region` ran no hooks at all). One protocol (`insdel.rs`) now
+  serves them: prepare_to_modify_buffer's read-only buffer check,
+  undoable-change notice and interval walk (read-only text, the text's
+  `modification-hooks` run unbound, an insertion's neighbours' insert
+  hooks recorded), then unless the hooks are inhibited the first change's
+  file lock and, with `inhibit-modification-hooks` bound,
+  `first-change-hook`, `before-change-functions` and the overlays' hooks
+  (the bounds following the earlier hooks' changes), then
+  `deactivate-mark`; and signal_after_change's `after-change-functions`,
+  overlays' hooks and the recorded insert hooks, or its deferral under
+  `combine-after-change-calls` (whole-buffer offsets,
+  `syntax-ppss-flush-cache` alone allowed). The insert hooks persist as
+  textprop.c's globals do: an insertion in a buffer without intervals runs
+  the last ones found until another check replaces them, and the image
+  carries them as pdumper does a staticpro'd root. Each primitive signals
+  the change GNU does: `replace-match` one (its start preserved, the
+  casing a change of its own inside it), `subst-char-in-region` and
+  `translate-region` from the first changed character (translation a
+  change a character, string tables now accepted and the text's properties
+  kept), casing the changed span, `transpose-regions` one over both
+  regions, `indent-to` its tabs and spaces apart, the base64 regions an
+  insertion then a deletion, the default process filter and sentinel their
+  insertions (the buffer's read-only flag cleared). Also as GNU now:
+  `move-to-column` turns an overshooting tab into spaces only and extends
+  a short line only for FORCE `t`, `indent-to` reads an insane `tab-width`
+  as 8, `narrow-to-region` signals bounds outside the buffer, and
+  `delete-and-extract-region` of nothing is the empty unibyte string. The
+  probe's one remaining difference is GNU printing adjacent intervals with
+  equal plists apart where Emaxx merges them.
+  `change_hooks_run_in_insdel_order` and
+  `every_edit_primitive_checks_read_only_text` check them against the GNU
+  oracle. Profile-guided builds, each trained on its own source: undo
+  1,081,140 -> 1,086,993 instructions a unit (GNU 1,252,071), the protocol
+  costing what the hook paths it replaces did and the insertion checks
+  reaching `textget`'s by-name read of `char-property-alias-alist` (27 a
+  unit, about 9,600 instructions with their string compares; round 45
+  reads it as a C variable); bytecode calls 418.6 -> 417.7 an iteration.
+  Validation as round 43's: the whole library suite (3,173 tests) passes
+  but for the same known failures: 89 of its 98 groups on the round's
+  first build, then, after the `replace-match` casing and the insert
+  hooks' image slots were fixed, the other 9 and every group those fixes
+  touch (anti-cheat, the image writer and loader, the hooks, replacement
+  and regexp tests). Clippy `-D warnings`, rustfmt and `git diff --check`
+  pass. The seven GNU tests round 43's frozen run failed pass, run as
+  GNU's own test files.
+- **Round 45: text properties read and searched as textprop.c does.**
+  Chasing round 43's undo cost found `textget` reading
+  `char-property-alias-alist` by name as a buffer-local value (a let-bound
+  or global alias list never seen, hundreds of instructions a lookup),
+  taking an alternative's value through its category, stopping at a nil
+  category or alias value, and ignoring `default-text-properties`, so text
+  the defaults made read-only could be deleted. `textget` is now
+  intervals.c:lookup_char_property: the plist's value, else the category
+  symbol's non-nil value, else the first non-nil value of an alternative,
+  else the defaults, both variables read as C variables; an empty interval
+  and the end of the text read the defaults too, and a syntax scan sees
+  them only in a buffer with intervals (interval_of finds none otherwise).
+  `text-property-any`, `text-property-not-all` and the single-property
+  change scans read each character's raw property, compared values with
+  equal-like rules and clamped bad positions; they now walk the intervals
+  from find_interval (`PropertyIntervals` over a buffer's or string's
+  spans), compare `textget` values with EQ, answer for an object without
+  intervals as if every value were nil, coerce limits and markers and
+  signal args-out-of-range outside the accessible text. The string case
+  of the single-char-property scans is the single-property scan's (the
+  backward one read a string as a buffer name).
+  `property_change_helpers_accept_markers` had pinned a backward scan's 1
+  where GNU returns nil (no interval before the first).
+  `text_property_searches_walk_intervals_with_textget` checks the lookups
+  and searches against the GNU oracle.
+  Round 44's frozen run failed six erc tests with `text-read-only`:
+  `read-passwd`'s own cleanup erases the minibuffer, which in GNU
+  read_minibuf_unwind has already erased with `inhibit-read-only` bound,
+  while Emaxx left the read-only prompt there (round 44's read-only checks
+  in `erase-buffer` exposed it). Probing a read against GNU found the
+  minibuffer's whole life apart, and it now follows minibuf.c:
+  get_minibuffer makes the buffer with undo enabled (it was disabled, the
+  name starting with a space) and reuses one with its overlays deleted;
+  each read runs `minibuffer-mode` (the level-0 minibuffer
+  `minibuffer-inactive-mode`, as emacs.c sets it before the top level),
+  clears `truncate-lines`, erases the buffer and inserts the prompt through
+  `erase-buffer`, `insert`, `put-text-property` and
+  `add-face-text-property` with `inhibit-read-only` and
+  `inhibit-modification-hooks` bound (recording undo; the stickiness and
+  field controls first, then `minibuffer-prompt-properties`, so the
+  prompt's plist prints in GNU's order), inserts the initial input as an
+  ordinary insertion, and empties the undo list after the setup hook.
+  Every exit runs `minibuffer-exit-hook` (it ran only for a live
+  terminal's reads, there after the window restore and before the
+  contents were taken; the contents are now taken with the minibuffer
+  current, as read_minibuf's `Fset_buffer` before
+  `Fminibuffer_contents`, since an exiting command may have run in
+  `*Completions*`), then erases the expired minibuffer the same way,
+  keeping `deactivate-mark`, and runs `minibuffer-inactive-mode`. Both
+  recursive edits (the minibuffer's and `recursive-edit`'s) bind
+  `inhibit-redisplay` and `undo-auto--undoably-changed-buffers` as
+  recursive_edit_1 does, so a command inside one puts no undo boundary in
+  a buffer changed before it (Bug#23632), and the keyboard-macro command
+  loop takes its boundary through `undo-auto--add-boundary` before the
+  command, as command_loop_1 does, so typed characters amalgamate. A batch
+  read from stdin activates no minibuffer (read_minibuf_noninteractive
+  returns before choosing one). `erase-buffer` widens first and resets
+  `buffer-saved-size`, as Ferase_buffer. `deactivate-mark` and the twelve
+  other C variables keyboard.c, casefiddle.c and xdisp.c make
+  buffer-local when set (`case-symbols-as-words`, `wrap-prefix`,
+  `display-line-numbers` and the rest) now are, and the command loops'
+  reset of `deactivate-mark` is a C assignment that makes no local; a
+  store into a buffer-local variable whose binding in the current buffer
+  exists is set_internal's store into the loaded binding and nothing else
+  (`image_round_trips_buffers_markers_finalizers_and_nilled_frames` now
+  expects the buffer's `deactivate-mark` local, as GNU makes it).
+  `minibuffer_reads_unwind_like_read_minibuf` checks the read's setup
+  view, the expired minibuffer (its undo list included), the level-0
+  minibuffer, `read-passwd`, `erase-buffer` and the variables against the
+  GNU oracle; erc-sasl-tests, erc-tests, erc-scenarios-auth-source,
+  auth-source-tests, minibuffer-tests, minibuf-tests,
+  completion-preview-tests, rmc-tests, isearch-tests, comint-tests,
+  simple-tests, undo-tests, buffer-tests, replace-tests, subr-tests,
+  files-tests, data-tests, xdisp-tests, ert-x-tests, keyboard-tests,
+  edebug-tests and kmacro-tests fail exactly GNU's tests when run as
+  GNU's own files.
+  Profile-guided builds, each trained on its own source: undo 1,086,993 ->
+  1,087,600 instructions a unit (GNU 1,252,071). The text-property half
+  took it to 1,072,834, the by-name reads and their string compares gone;
+  the minibuffer half added 14.8K, nearly all of it insdel.c's `Fset
+  (Qdeactivate_mark, Qt)` in each `prepare_to_modify_buffer` now that
+  `deactivate-mark` is buffer-local (`set_internal_symbol` 646 -> 13,260 a
+  unit inclusive: two hash lookups a store, the buffer's locals and then
+  the binding, and the full path for a buffer's first store, which makes
+  the local), where GNU stores through the symbol's loaded binding (blv) in
+  a few instructions. Bytecode calls 417.7 -> 418.2 an iteration.
+  Validation as round 44's: the whole library suite (3,175 tests, two of
+  them new) passes but for the same known failures, all 98 groups on the
+  round's final build; clippy `-D warnings`, rustfmt and `git diff --check`
+  pass. The six erc tests round 44's frozen run failed pass, run as GNU's
+  own test files. Still not as GNU: `get-text-property` at a narrowed
+  buffer's end reads no interval (GNU reads the one there), and the buffer
+  case of the single-char-property scans compares overlay and text values
+  per character rather than through `next-char-property-change`.
+- **Round 46: buffer-local variables read and stored through their loaded
+  binding.** Round 45's `deactivate-mark`, buffer-local as in GNU, cost
+  each modification's `Fset (Qdeactivate_mark, Qt)` two hash lookups (the
+  buffer's local bindings, then the variable's) and a buffer's first store
+  the whole assignment path; the per-buffer variables (`buffer-read-only`,
+  `parse-sexp-lookup-properties`, `default-directory` and the rest, 116
+  reads a unit in undo) paid the same lookups on every read. data.c keeps
+  a localized variable's loaded binding in its blv (`where`, `valcell`);
+  Emaxx now keeps one per symbol slot in each interpreter
+  (`LoadedBindings`, 256 direct-mapped slots by the cell's address, beside
+  the symbols that the interpreter states of a process share), naming the
+  binding's value in a `Cell` whose node lasts as long as the binding.
+  With the current buffer's binding loaded, a read through
+  `find_symbol_value_redirected` or `buffer_local_binding_symbol` is a
+  compare and a load (a variable whose value the buffer or the evaluator
+  holds never loads), and so is a plain buffer-local variable's store. A
+  store with no binding here makes one when the variable is local when set
+  and no `let` of its default is in effect (let_shadows_buffer_binding_p),
+  and loads it. Making or killing a binding unloads its symbol, as data.c
+  swaps the loaded binding out; dropping or copying a buffer's bindings
+  wholesale (a buffer's death, `kill-all-local-variables`, an indirect
+  clone, an image load) advances a shape that retires every loaded
+  binding. `is_forwarded_eval_cell`, which every new binding and load
+  asked, compared the name with eight others (about 100 instructions); it
+  now rejects by length first.
+  `loaded_buffer_local_bindings_follow_data_c` checks reads and stores
+  across buffers, lets, kills, watchers added after a load, byte-code and
+  an indirect clone against the GNU oracle. Release builds: undo 1,187,477
+  -> 1,169,255 instructions a unit (`buffer_local_binding_symbol` 16.8K ->
+  6.7K a unit inclusive, `find_symbol_value_redirected` 24.7K -> 19.9K,
+  `set_internal_symbol` 13.5K -> 9.9K). Profile-guided builds, each
+  trained on its own source: undo 1,087,600 -> 1,084,787 instructions a
+  unit (`find_symbol_value_redirected` 28.5K -> 18.1K inclusive,
+  `set_internal_symbol` 13.3K -> 9.5K; the byte-code verifier's slow
+  paths, which vary from build to build, +4.9K); bytecode calls 418.2 ->
+  417.7 an iteration. Validation: 48 of the library suite's 98 groups ran
+  on this round's own build and failed only the known failures (the 49th
+  outlasted the background limit); the whole suite (3,177 tests) then ran
+  on round 47's build, which adds only that round's allocator layout.
+  Clippy `-D warnings`, rustfmt and `git diff --check` pass.
+- **Round 47: a cons or float block's address names no cell.**
+  `suspended_bytecode_retains_operand_and_unwind_roots` failed now and
+  then under load (4 in 300 runs on rounds 44 and 45, 2 in 300 on a
+  diagnostic build of round 46's source): after the worker joined, the
+  weak table's key survived the collection. A diagnostic build printing,
+  at each collection, the root that first reached the key found it held by
+  a word of a live frame of the main thread (an `eval_cons_call` frame's
+  `argvals` slot past the subr's arity, never written on the lambda path),
+  and the word was the key's cons block's address with the key the block's
+  first cell. A hardware write watchpoint on that slot (a
+  `perf_event_open` breakpoint whose signal handler logged each write's
+  instruction) showed the writer in passing runs too:
+  `funcall_interpreted_lambda`, walking its lambda list, spilled the block
+  address that `ConsRef`'s checked dereference forms (`cell & !0x7fff`) to
+  reach the block's allocation bits; the key was later allocated from the
+  same block, and the run failed when it took cell 0. Fcons and make_float
+  form a cell's block address the same way on every allocation
+  (`fill_cons`, `allocate_float`). GNU's cons and float blocks start with
+  their cells too, but outside checking builds only its collector forms a
+  block's address; in Emaxx every allocation does, so the bookkeeping
+  (epoch, bitmaps, serials) now starts each cons and float block and the
+  cells follow it (`cons_cell`, `float_cell`), and a block's address names
+  metadata, which `mem_find` rejects. The cons cells start on a bitmap
+  word's span (64 cells), so a cons's mark is still found by its slot from
+  the block's address and Fcons's bit arithmetic is unchanged (the first
+  version, indexing from the first cell, put a subtraction in every
+  allocation). Vector blocks keep GNU's layout: their allocation never
+  forms a block's address. `a_block_address_names_no_cons_or_float` checks
+  that a word equal to a block's address keeps neither its first cons nor
+  its first float. Release builds: cons allocation 5,087 -> 5,085
+  instructions an iteration, mapcar 33.68M -> 33.51M a unit; undo 1,169.2K
+  -> 1,179.0K a unit at 20 and 40 units, the difference all in collection
+  and malloc-trimming steps whose slope round 46's run measured negative
+  (the mutator's functions equal or lower). Profile-guided builds, each
+  trained on its own source: undo 1,084,787 -> 1,078,785 instructions a
+  unit (GNU 1,252,071), bytecode calls 417.7 -> 410.6 an iteration. The
+  flaky test passed 300 runs of 300 beside the gate's four test processes.
+  Validation: the whole library suite (3,178 tests) passes but for the
+  known failures, all 98 groups on the round's final build. Clippy
+  `-D warnings`, rustfmt and `git diff --check` pass.
+- **Round 47 measured** (its profile-guided build, idle host). The
+  contract-like comparison, run twice: 15 of the 16 workloads within 1.03
+  of GNU's wall time, then all 16; the first run's bytecode calls 0.863
+  [0.748, 1.034] had two of its nine rounds at 1.034 and 1.066 while GNU's
+  own processes ranged 0.376 to 0.478 s (0.857 [0.724, 0.915] in the
+  second run), and the closest otherwise were mapcar 0.873 [0.863, 1.013]
+  and undo 0.892 [0.803, 1.010]. The locked runner itself
+  (`tools/core_runtime_perf.py` prepare, calibrate and run, all
+  `--diagnostic` because this host's GNU differs from the platform lock)
+  completed every process, and every case's upper 95% bound is at or below
+  0.996: mapcar 0.915 [0.849, 0.996], cons allocation 0.898 [0.869,
+  0.955], bytecode-to-native 0.888 [0.842, 0.953], undo 0.883 [0.774,
+  0.952], bytecode calls 0.853 [0.757, 0.933], the other medians 0.774 and
+  below with upper bounds at most 0.850 (geometric mean 0.722). Its GNU
+  self-comparison resolved only list traversal (the other intervals as
+  wide as interpreted-to-native's [0.887, 1.084]), so the run certifies
+  nothing: the criterion still needs a quiet host and the locked GNU
+  build. Mapcar's instructions a unit are Emaxx 32.9 million to GNU's 46.4
+  million; its wall ratio near 0.9 is memory traffic, 100,000 new conses a
+  unit, not instructions.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4133,9 +4481,26 @@ frozen passed on its first attempt (run 39420955510). **On `1f69927`**
 (round 39): full Rust gate passed (run 39434615987), frozen passed on its
 first attempt (run 39434621069); PR #98 merged rounds 37 to 39 into main
 (`fe4e253`). **On `680498f`** (round 40): full Rust gate passed (run 39484877632),
-frozen passed on its first attempt (run 39484880717). **On round 41's
-commit**: the full Rust gate and frozen runs are dispatched with it; their
-results go in the next round's record. Locally,
+frozen passed on its first attempt (run 39484880717). **On `fbc0ed7`**
+(round 41): full Rust gate passed (run 39512630692), frozen passed on its
+first attempt (run 39512635191); PR #99 merged rounds 40 and 41 into main
+(`df82614`). **On `4bea9e1`** (round 42): full Rust gate passed (run
+39534620573), frozen passed on its first attempt (run 39534622994).
+**On `b0d0a63`** (round 43): full Rust gate passed (run 39554785723);
+frozen failed seven GNU tests (run 39554788795): jit-lock's three,
+python-mode's two string font-lock tests and eglot's column and
+multi-line eldoc tests, all from its property changes running the
+change hooks under `with-silent-modifications`, whose let-bound
+`inhibit-modification-hooks` it ignored; round 44 passes all seven
+here (eglot's with clangd installed). **On `61e3e66`** (round 44): full
+Rust gate passed (run 39573615433); frozen failed six erc tests with
+`text-read-only` (run 39573619718), `read-passwd`'s cleanup erasing the
+minibuffer GNU's read_minibuf_unwind had already erased; round 45 passes
+them. **On `626d1eb`** (round 45): full Rust gate passed (run
+39639732639), frozen passed on its first attempt (run 39639736946).
+**On `eb8e009`** (rounds 46 and 47, pushed together): full Rust gate
+passed (run 39682876524), frozen passed on its first attempt (run
+39682879871). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -4148,7 +4513,13 @@ this container's GNU build itself disagrees with the expected text (under
 `default` it prints the Latin-1 string without its `charset` property);
 `char_charset_family_follows_charset_c` fails the same way on its GNU side
 (this build answers `iso-8859-1` where the expected text, CI's, has
-`unicode`).
+`unicode`), and
+`process_tls_state_survives_collection_before_and_after_async_handshake`,
+whose asynchronous handshake this container's GNU leaves in `connect`
+(CI's completes it). `suspended_bytecode_retains_operand_and_unwind_roots`
+failed now and then under load until round 47: a cons block's address,
+left in a stack slot by the allocator's bookkeeping, kept the block's
+first cell, which the weak key sometimes was (see round 47).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

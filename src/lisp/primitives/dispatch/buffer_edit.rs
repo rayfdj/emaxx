@@ -1,5 +1,5 @@
 use super::*;
-use crate::lisp::types::Kind;
+use crate::lisp::types::{Kind, PropertyKey, PropertyName};
 
 // cmds.c:236/288: `self-insert-command' and `delete-char' amalgamate
 // their undo with a preceding run of the same command when the count's
@@ -13,6 +13,18 @@ fn call_undo_auto_amalgamate(interp: &mut Interpreter, env: &mut Env) {
             &[],
             env,
         );
+    }
+}
+
+/// editfns.c:Fwiden: the whole buffer accessible, or as much of it as the
+/// innermost labeled restriction allows.
+fn widen_current_buffer(interp: &Interpreter) {
+    if let Some((start, end)) =
+        interp.effective_labeled_restriction(interp.current_buffer_id(), None)
+    {
+        interp.buffer.borrow_mut().narrow_to_region(start, end);
+    } else {
+        interp.buffer.borrow_mut().widen();
     }
 }
 
@@ -153,32 +165,29 @@ fn forward_word(interp: &mut Interpreter, count: i64, env: &mut Env) -> Result<V
     Ok(Value::T)
 }
 
-fn stickiness_names_property(setting: &Value, prop: &str) -> bool {
+fn stickiness_names_property(setting: &Value, prop: impl PropertyKey) -> bool {
     match setting.kind() {
         Kind::T => true,
-        Kind::Cons(_) => setting.to_vec().is_ok_and(|items| {
-            items
-                .iter()
-                .any(|item| matches!(item.kind(), Kind::Symbol(name) if name == prop))
-        }),
+        Kind::Cons(_) => setting
+            .to_vec()
+            .is_ok_and(|items| items.iter().any(|item| prop.is(*item))),
         _ => false,
     }
 }
 
-fn property_is_default_nonsticky(defaults: &Value, prop: &str) -> bool {
+fn property_is_default_nonsticky(defaults: &Value, prop: impl PropertyKey) -> bool {
     defaults.to_vec().unwrap_or_default().iter().any(|entry| {
         let Some((name, nonsticky)) = (entry).cons_cells() else {
             return false;
         };
-        matches!(name.get().kind(), Kind::Symbol(candidate) if candidate == prop)
-            && nonsticky.get().is_truthy()
+        prop.is(name.get()) && nonsticky.get().is_truthy()
     })
 }
 
 fn span_properties_at(
     spans: &[crate::buffer::TextPropertySpan],
     position: usize,
-) -> &[(String, Value)] {
+) -> &[(PropertyName, Value)] {
     spans
         .iter()
         .find(|span| span.start <= position && position < span.end)
@@ -235,7 +244,7 @@ fn buffer_text_property_at_insertion(
     interp: &Interpreter,
     buffer: &crate::buffer::Buffer,
     pos: usize,
-    prop: &str,
+    prop: impl PropertyKey,
     default_nonsticky: &Value,
 ) -> Option<Value> {
     let previous = pos
@@ -856,6 +865,11 @@ define_dispatch!(
                 } else {
                     unibyte_buffer_text(&saved).0
                 };
+                // The deletions already recorded keep the strings they were
+                // recorded with, multibyte as the buffer was then.
+                if interp.buffer.borrow().undo_enabled() {
+                    interp.buffer.borrow().undo_list_value();
+                }
                 interp.buffer.borrow_mut().set_multibyte_representation(
                     enabled,
                     converted,
@@ -955,15 +969,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let from = position_from_value(interp, &args[0])?;
                 let to = position_from_value(interp, &args[1])?;
-                ensure_region_modifiable(interp, from, to)?;
-                let (start, end) = if from <= to { (from, to) } else { (to, from) };
-                let props = interp.buffer.borrow().substring_property_spans(start, end);
-                let multibyte = interp.buffer.borrow().is_multibyte();
-                Ok(string_like_value_with_multibyte(
-                    delete_region_with_hooks(interp, from, to, env)?,
-                    props,
-                    multibyte,
-                ))
+                extract_region_with_hooks(interp, from, to, env)
             }
             "delete-char" => {
                 let n = if args.is_empty() {
@@ -994,12 +1000,22 @@ define_dispatch!(
                 }
             }
             "erase-buffer" => {
-                let size = interp.buffer.borrow().buffer_size();
-                if size > 0 {
-                    let min = interp.buffer.borrow().point_min();
-                    let max = interp.buffer.borrow().point_max();
+                // buffer.c:Ferase_buffer: Fwiden, then del_range (BEG, Z),
+                // which del_range_1 clamps to what a labeled restriction
+                // leaves accessible; then the saved size is reset, so
+                // auto-saving does not take the shrink for lost text.
+                widen_current_buffer(interp);
+                let min = interp.buffer.borrow().point_min();
+                let max = interp.buffer.borrow().point_max();
+                if min < max {
                     delete_region_with_hooks(interp, min, max, env)?;
                 }
+                let buffer_id = interp.current_buffer_id();
+                interp.set_buffer_local_value_symbol(
+                    buffer_id,
+                    &cached_symbol!("buffer-saved-size").with(Clone::clone),
+                    Value::Integer(0),
+                );
                 Ok(Value::Nil)
             }
             "upcase-region"
@@ -1096,51 +1112,19 @@ define_dispatch!(
                     Some(value) if !value.is_nil() => value.as_integer()?,
                     _ => 0,
                 };
-                let saved = interp.buffer.borrow().point();
-                interp.buffer.borrow_mut().beginning_of_line();
-                let bol = interp.buffer.borrow().point();
-                interp.buffer.borrow_mut().goto_char(saved);
-                let from_col = column_at(interp, env, bol, saved) as i64;
-                let min_col = (from_col + minimum).max(target).max(from_col);
-                if min_col == from_col {
-                    return Ok(Value::Integer(min_col));
-                }
-
-                let tab_width = interp
-                    .lookup_var("tab-width", env)
-                    .and_then(|value| value.integer_value())
-                    .unwrap_or(8)
-                    .max(1);
-                let use_tabs = interp
-                    .lookup_var("indent-tabs-mode", env)
-                    .is_some_and(|value| value.is_truthy());
-
-                let mut current_col = from_col;
-                let mut text = String::new();
-                if use_tabs {
-                    let tab_count = min_col / tab_width - from_col / tab_width;
-                    if tab_count > 0 {
-                        text.push_str(&"\t".repeat(tab_count as usize));
-                        current_col = (min_col / tab_width) * tab_width;
-                    }
-                }
-                let space_count = (min_col - current_col).max(0) as usize;
-                if space_count > 0 {
-                    text.push_str(&" ".repeat(space_count));
-                }
-                insert_text_with_hooks(interp, &text, &[], &[], true, false, env)?;
-                Ok(Value::Integer(min_col))
+                indent_to(interp, target, minimum, env).map(Value::Integer)
             }
             "move-to-column" => {
                 need_args(name, args, 1)?;
                 let target = args[0].as_integer()?.max(0) as usize;
-                let force = args.get(1).is_some_and(Value::is_truthy);
+                let force = args.get(1).cloned().unwrap_or(Value::Nil);
                 let saved = interp.buffer.borrow().point();
                 interp.buffer.borrow_mut().beginning_of_line();
                 let start = interp.buffer.borrow().point();
                 interp.buffer.borrow_mut().goto_char(saved);
                 let mut pos = start;
                 let mut current_col = 0;
+                let mut previous_col = 0;
                 while pos < interp.buffer.borrow().point_max() {
                     if current_col >= target {
                         break;
@@ -1151,24 +1135,35 @@ define_dispatch!(
                     if ch == '\n' {
                         break;
                     }
-                    let next_col = column_after(interp, env, current_col, pos, ch);
-                    if next_col > target && force && ch == '\t' {
-                        interp.buffer.borrow_mut().goto_char(pos);
-                        interp.insert_current_buffer(&" ".repeat(target - current_col));
-                        pos = interp.buffer.borrow().point();
-                        current_col = target;
-                        break;
-                    }
-                    current_col = next_col;
+                    previous_col = current_col;
+                    current_col = column_after(interp, env, current_col, pos, ch);
                     pos += 1;
                 }
-                if force && current_col < target {
-                    interp.buffer.borrow_mut().goto_char(pos);
-                    interp.insert_current_buffer(&" ".repeat(target - current_col));
-                    pos = interp.buffer.borrow().point();
+                interp.buffer.borrow_mut().goto_char(pos);
+                // indent.c: a tab that overshot becomes spaces up to the goal,
+                // the tab deleted and the rest of its width indented, point
+                // at the goal.
+                if !force.is_nil()
+                    && current_col > target
+                    && pos > start
+                    && interp.buffer.borrow().char_at(pos - 1) == Some('\t')
+                    && previous_col < target
+                {
+                    interp.buffer.borrow_mut().goto_char(pos - 1);
+                    let spaces = " ".repeat(target - previous_col);
+                    insert_text_with_hooks(interp, &spaces, &[], &[], true, false, env)?;
+                    let point = interp.buffer.borrow().point();
+                    delete_region_with_hooks(interp, point, point + 1, env)?;
+                    let goal = interp.buffer.borrow().point();
+                    indent_to(interp, current_col as i64, 0, env)?;
+                    interp.buffer.borrow_mut().goto_char(goal);
                     current_col = target;
                 }
-                interp.buffer.borrow_mut().goto_char(pos);
+                // A line that ends short is filled out with spaces.
+                if current_col < target && matches!(force.kind(), Kind::T) {
+                    current_col = target;
+                    indent_to(interp, target as i64, 0, env)?;
+                }
                 Ok(Value::Integer(current_col as i64))
             }
             "line-number-at-pos" => {
@@ -1331,6 +1326,18 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let mut start = position_from_value(interp, &args[0])?;
                 let mut end = position_from_value(interp, &args[1])?;
+                // editfns.c: the bounds, in either order, within the whole
+                // buffer before any labeled restriction clamps them.
+                if end < start {
+                    std::mem::swap(&mut start, &mut end);
+                }
+                if start < 1 || end > interp.buffer.borrow().size_total() + 1 {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("args-out-of-range"),
+                        args[0],
+                        args[1],
+                    ])));
+                }
                 if let Some((clamp_start, clamp_end)) =
                     interp.effective_labeled_restriction(interp.current_buffer_id(), None)
                 {
@@ -1341,13 +1348,7 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "widen" => {
-                if let Some((start, end)) =
-                    interp.effective_labeled_restriction(interp.current_buffer_id(), None)
-                {
-                    interp.buffer.borrow_mut().narrow_to_region(start, end);
-                } else {
-                    interp.buffer.borrow_mut().widen();
-                }
+                widen_current_buffer(interp);
                 Ok(Value::Nil)
             }
             "buffer-modified-p" => {
@@ -1446,12 +1447,12 @@ define_dispatch!(
             }
             "get-pos-property" | "get-char-property" => {
                 need_args(name, args, 2)?;
-                let prop = args[1].as_symbol()?.to_string();
+                let prop = PropertyName::new(args[1]);
                 if let Some(object) = args.get(2)
                     && string_like(object).is_some()
                 {
                     let pos = args[0].as_integer()?.max(0) as usize;
-                    return Ok(string_property_at_with_category(interp, object, pos, &prop)
+                    return Ok(string_property_at_with_category(interp, object, pos, prop)
                         .unwrap_or(Value::Nil));
                 }
                 let pos = position_from_value(interp, &args[0])?;
@@ -1478,7 +1479,7 @@ define_dispatch!(
                     interp,
                     &buffer,
                     pos,
-                    &prop,
+                    prop,
                     name == "get-pos-property",
                     window_id,
                 )
@@ -1488,23 +1489,23 @@ define_dispatch!(
                             interp,
                             &buffer,
                             pos,
-                            &prop,
+                            prop,
                             &default_nonsticky,
                         )
                     } else {
-                        buffer_property_at_with_category(interp, &buffer, pos, &prop)
+                        buffer_property_at_with_category(interp, &buffer, pos, prop)
                     }
                 })
                 .unwrap_or(Value::Nil))
             }
             "get-char-property-and-overlay" => {
                 need_arg_range(name, args, 2, 3)?;
-                let prop = args[1].as_symbol()?.to_string();
+                let prop = PropertyName::new(args[1]);
                 if let Some(object) = args.get(2)
                     && string_like(object).is_some()
                 {
                     let pos = args[0].as_integer()?.max(0) as usize;
-                    let value = string_property_at_with_category(interp, object, pos, &prop)
+                    let value = string_property_at_with_category(interp, object, pos, prop)
                         .unwrap_or(Value::Nil);
                     return Ok(Value::cons(value, Value::Nil));
                 }
@@ -1522,11 +1523,11 @@ define_dispatch!(
                     .get_buffer_by_id(buffer_id)
                     .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
                 if let Some((value, overlay_id)) = highest_priority_overlay_property_with_id(
-                    interp, &buffer, pos, &prop, false, window_id,
+                    interp, &buffer, pos, prop, false, window_id,
                 ) {
                     return Ok(Value::cons(value, Value::Overlay(overlay_id)));
                 }
-                let value = buffer_property_at_with_category(interp, &buffer, pos, &prop)
+                let value = buffer_property_at_with_category(interp, &buffer, pos, prop)
                     .unwrap_or(Value::Nil);
                 Ok(Value::cons(value, Value::Nil))
             }
@@ -1534,11 +1535,11 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = args[1].as_symbol()?.to_string();
+                let prop = PropertyName::new(args[1]);
                 if let Some(object) = args.get(2) {
                     if string_like(object).is_some() {
                         let pos = args[0].as_integer()?.max(0) as usize;
-                        Ok(string_property_at_with_category(interp, object, pos, &prop)
+                        Ok(string_property_at_with_category(interp, object, pos, prop)
                             .unwrap_or(Value::Nil))
                     } else {
                         let pos = position_from_value(interp, &args[0])?;
@@ -1550,135 +1551,33 @@ define_dispatch!(
                         let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
                             LispError::Signal(format!("No buffer with id {}", buffer_id))
                         })?;
-                        Ok(
-                            buffer_property_at_with_category(interp, &buffer, pos, &prop)
-                                .unwrap_or(Value::Nil),
-                        )
+                        Ok(buffer_property_at_with_category(interp, &buffer, pos, prop)
+                            .unwrap_or(Value::Nil))
                     }
                 } else {
                     let pos = position_from_value(interp, &args[0])?;
-                    Ok(buffer_property_at_with_category(
-                        interp,
-                        &interp.buffer.borrow(),
-                        pos,
-                        &prop,
+                    Ok(
+                        buffer_property_at_with_category(
+                            interp,
+                            &interp.buffer.borrow(),
+                            pos,
+                            prop,
+                        )
+                        .unwrap_or(Value::Nil),
                     )
-                    .unwrap_or(Value::Nil))
                 }
             }
             "text-property-any" | "text-property-not-all" => {
                 if args.len() < 4 || args.len() > 5 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = args[2].as_symbol()?.to_string();
-                let want_match = name == "text-property-any";
-                if let Some(object) = args.get(4) {
-                    if string_like(object).is_some() {
-                        let start = args[0].as_integer()?.max(0) as usize;
-                        let end = args[1].as_integer()?.max(0) as usize;
-                        return Ok(text_property_search_string(
-                            interp, object, start, end, &prop, &args[3], want_match,
-                        )
-                        .map(|pos| Value::Integer(pos as i64))
-                        .unwrap_or(Value::Nil));
-                    }
-
-                    let buffer_id = if object.is_nil() {
-                        interp.current_buffer_id()
-                    } else {
-                        interp.resolve_buffer_id(object)?
-                    };
-                    let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
-                        LispError::Signal(format!("No buffer with id {}", buffer_id))
-                    })?;
-                    let start = position_from_value(interp, &args[0])?;
-                    let end = position_from_value(interp, &args[1])?;
-                    return Ok(text_property_search_buffer(
-                        interp, &buffer, start, end, &prop, &args[3], want_match,
-                    )
-                    .map(|pos| Value::Integer(pos as i64))
-                    .unwrap_or(Value::Nil));
-                }
-
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
-                Ok(text_property_search_buffer(
-                    interp,
-                    &interp.buffer.borrow(),
-                    start,
-                    end,
-                    &prop,
-                    &args[3],
-                    want_match,
-                )
-                .map(|pos| Value::Integer(pos as i64))
-                .unwrap_or(Value::Nil))
+                text_property_any(interp, args, name == "text-property-any")
             }
             "next-single-property-change" => {
                 if args.len() < 2 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = args[1].as_symbol()?.to_string();
-                let object = args.get(2).unwrap_or(&Value::Nil);
-                let limit = match args.get(3).filter(|value| !value.is_nil()) {
-                    Some(value) => Some(position_from_value(interp, value)?),
-                    None => None,
-                };
-                if string_like(object).is_some() {
-                    let pos = args[0].as_integer()?.max(0) as usize;
-                    let text = string_text(object)?;
-                    let max_pos = limit.unwrap_or(text.chars().count());
-                    let initial = string_property_at_with_category(interp, object, pos, &prop)
-                        .unwrap_or(Value::Nil);
-                    for cursor in pos.saturating_add(1)..max_pos {
-                        let current =
-                            string_property_at_with_category(interp, object, cursor, &prop)
-                                .unwrap_or(Value::Nil);
-                        if !crate::buffer::text_property_values_eq(&current, &initial) {
-                            return Ok(Value::Integer(cursor as i64));
-                        }
-                    }
-                    return Ok(limit
-                        .map(|value| Value::Integer(value as i64))
-                        .unwrap_or(Value::Nil));
-                }
-
-                let pos = position_from_value(interp, &args[0])?.max(1);
-                let (initial, max_pos) = {
-                    let buffer_id = if object.is_nil() {
-                        interp.current_buffer_id()
-                    } else {
-                        interp.resolve_buffer_id(object)?
-                    };
-                    let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
-                        LispError::Signal(format!("No buffer with id {}", buffer_id))
-                    })?;
-                    (
-                        buffer.text_property_at(pos, &prop).unwrap_or(Value::Nil),
-                        limit.unwrap_or(buffer.point_max()),
-                    )
-                };
-                for cursor in pos.saturating_add(1)..max_pos {
-                    let current = if object.is_nil() {
-                        interp
-                            .buffer
-                            .borrow()
-                            .text_property_at(cursor, &prop)
-                            .unwrap_or(Value::Nil)
-                    } else {
-                        let buffer_id = interp.resolve_buffer_id(object)?;
-                        let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
-                            LispError::Signal(format!("No buffer with id {}", buffer_id))
-                        })?;
-                        buffer.text_property_at(cursor, &prop).unwrap_or(Value::Nil)
-                    };
-                    if !crate::buffer::text_property_values_eq(&current, &initial) {
-                        return Ok(Value::Integer(cursor as i64));
-                    }
-                }
-                Ok(limit
-                    .map(|value| Value::Integer(value as i64))
-                    .unwrap_or(Value::Nil))
+                next_single_property_change(interp, args)
             }
             "next-property-change" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -1735,29 +1634,14 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = args[1].as_symbol()?.to_string();
+                let prop = PropertyName::new(args[1]);
                 let object = args.get(2).unwrap_or(&Value::Nil);
                 let limit = match args.get(3).filter(|value| !value.is_nil()) {
                     Some(value) => Some(position_from_value(interp, value)?),
                     None => None,
                 };
-                if string_like(object).is_some() {
-                    let pos = args[0].as_integer()?.max(0) as usize;
-                    let text = string_text(object)?;
-                    let max_pos = limit.unwrap_or(text.chars().count());
-                    let initial = string_property_at_with_category(interp, object, pos, &prop)
-                        .unwrap_or(Value::Nil);
-                    for cursor in pos.saturating_add(1)..max_pos {
-                        let current =
-                            string_property_at_with_category(interp, object, cursor, &prop)
-                                .unwrap_or(Value::Nil);
-                        if !crate::buffer::text_property_values_eq(&current, &initial) {
-                            return Ok(Value::Integer(cursor as i64));
-                        }
-                    }
-                    return Ok(limit
-                        .map(|value| Value::Integer(value as i64))
-                        .unwrap_or(Value::Nil));
+                if matches!(object.kind(), Kind::StringObject(_)) {
+                    return single_char_property_change_in_string(interp, args, true);
                 }
 
                 let pos = position_from_value(interp, &args[0])?.max(1);
@@ -1770,10 +1654,10 @@ define_dispatch!(
                     .get_buffer_by_id(buffer_id)
                     .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
                 let max_pos = limit.unwrap_or(buffer.point_max());
-                let initial = buffer_char_property_at_with_overlay_id(interp, &buffer, pos, &prop);
+                let initial = buffer_char_property_at_with_overlay_id(interp, &buffer, pos, prop);
                 for cursor in pos.saturating_add(1)..max_pos {
                     let current =
-                        buffer_char_property_at_with_overlay_id(interp, &buffer, cursor, &prop);
+                        buffer_char_property_at_with_overlay_id(interp, &buffer, cursor, prop);
                     let same_overlay = initial.1.is_some() && initial.1 == current.1;
                     if !same_overlay
                         && !crate::buffer::text_property_values_eq(&current.0, &initial.0)
@@ -1790,12 +1674,15 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = args[1].as_symbol()?.to_string();
+                let prop = PropertyName::new(args[1]);
                 let object = args.get(2).unwrap_or(&Value::Nil);
                 let limit = match args.get(3).filter(|value| !value.is_nil()) {
                     Some(value) => Some(position_from_value(interp, value)?),
                     None => None,
                 };
+                if matches!(object.kind(), Kind::StringObject(_)) {
+                    return single_char_property_change_in_string(interp, args, false);
+                }
                 let pos = position_from_value(interp, &args[0])?;
                 let buffer_id = if object.is_nil() {
                     interp.current_buffer_id()
@@ -1815,12 +1702,12 @@ define_dispatch!(
                     interp,
                     &buffer,
                     pos.saturating_sub(1),
-                    &prop,
+                    prop,
                 );
                 let mut cursor = pos;
                 while cursor > min_pos + 1 {
                     let current =
-                        buffer_char_property_at_with_overlay_id(interp, &buffer, cursor - 2, &prop);
+                        buffer_char_property_at_with_overlay_id(interp, &buffer, cursor - 2, prop);
                     let same_overlay = initial.1.is_some() && initial.1 == current.1;
                     if !same_overlay
                         && !crate::buffer::text_property_values_eq(&current.0, &initial.0)
@@ -1835,66 +1722,7 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = args[1].as_symbol()?.to_string();
-                let object = args.get(2).unwrap_or(&Value::Nil);
-                let limit = match args.get(3).filter(|value| !value.is_nil()) {
-                    Some(value) => Some(position_from_value(interp, value)?),
-                    None => None,
-                };
-                if string_like(object).is_some() {
-                    let pos = args[0].as_integer()?.max(0) as usize;
-                    let min_pos = limit.unwrap_or(0);
-                    if pos <= min_pos {
-                        return Ok(limit
-                            .map(|value| Value::Integer(value as i64))
-                            .unwrap_or(Value::Nil));
-                    }
-                    let initial = string_property_at(object, pos.saturating_sub(1), &prop)
-                        .unwrap_or(Value::Nil);
-                    for cursor in (min_pos..pos).rev() {
-                        let previous = cursor
-                            .checked_sub(1)
-                            .and_then(|index| string_property_at(object, index, &prop))
-                            .unwrap_or(Value::Nil);
-                        if !crate::buffer::text_property_values_eq(&previous, &initial) {
-                            return Ok(Value::Integer(cursor as i64));
-                        }
-                    }
-                    return Ok(limit
-                        .map(|value| Value::Integer(value as i64))
-                        .unwrap_or(Value::Nil));
-                }
-
-                let pos = position_from_value(interp, &args[0])?.max(1);
-                let buffer_id = if object.is_nil() {
-                    interp.current_buffer_id()
-                } else {
-                    interp.resolve_buffer_id(object)?
-                };
-                let buffer = interp
-                    .get_buffer_by_id(buffer_id)
-                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
-                let min_pos = limit.unwrap_or(buffer.point_min());
-                if pos <= min_pos {
-                    return Ok(limit
-                        .map(|value| Value::Integer(value as i64))
-                        .unwrap_or(Value::Nil));
-                }
-                let initial = buffer
-                    .text_property_at(pos.saturating_sub(1), &prop)
-                    .unwrap_or(Value::Nil);
-                for cursor in (min_pos..pos).rev() {
-                    let previous = cursor
-                        .checked_sub(1)
-                        .and_then(|index| buffer.text_property_at(index, &prop))
-                        .unwrap_or(Value::Nil);
-                    if !crate::buffer::text_property_values_eq(&previous, &initial) {
-                        return Ok(Value::Integer(cursor as i64));
-                    }
-                }
-                Ok(limit
-                    .map(|value| Value::Integer(value as i64))
-                    .unwrap_or(Value::Nil))
+                previous_single_property_change(interp, args)
             }
             "previous-property-change" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -2021,40 +1849,42 @@ define_dispatch!(
                 if args.len() < 4 || args.len() > 5 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = args[2].as_symbol()?.to_string();
+                let prop = PropertyName::new(args[2]);
                 // textprop.c:Fput_text_property stores VALUE itself. Copying
                 // a property-free string here loses identity and later edits.
                 let prop_value = args[3];
-                if let Some(object) = args.get(4) {
-                    if string_like(object).is_some() {
-                        let start = args[0].as_integer()?.max(0) as usize;
-                        let end = args[1].as_integer()?.max(0) as usize;
-                        modify_shared_string_properties(object, start, end, |mut current| {
-                            // GNU replaces an existing property in place and
-                            // conses a new one onto the plist head.
-                            if let Some((_, existing)) =
-                                current.iter_mut().find(|(key, _)| key == &prop)
-                            {
-                                *existing = prop_value;
-                            } else {
-                                current.insert(0, (prop.clone(), prop_value));
-                            }
-                            current
-                        })?;
-                    } else {
-                        let start = position_from_value(interp, &args[0])?;
-                        let end = position_from_value(interp, &args[1])?;
-                        interp.apply_text_property_change_shared(&|buffer| {
-                            buffer.put_text_property(start, end, &prop, prop_value)
-                        });
-                    }
-                } else {
-                    let start = position_from_value(interp, &args[0])?;
-                    let end = position_from_value(interp, &args[1])?;
-                    interp.apply_text_property_change_shared(&|buffer| {
-                        buffer.put_text_property(start, end, &prop, prop_value)
-                    });
+                if let Some(object) = args.get(4)
+                    && string_like(object).is_some()
+                {
+                    let start = args[0].as_integer()?.max(0) as usize;
+                    let end = args[1].as_integer()?.max(0) as usize;
+                    modify_shared_string_properties(object, start, end, |mut current| {
+                        // GNU replaces an existing property in place and
+                        // conses a new one onto the plist head.
+                        if let Some((_, existing)) =
+                            current.iter_mut().find(|(key, _)| key == &prop)
+                        {
+                            *existing = prop_value;
+                        } else {
+                            current.insert(0, (prop, prop_value));
+                        }
+                        current
+                    })?;
+                    return Ok(Value::Nil);
                 }
+                let buffer_id = property_buffer_id(interp, args.get(4))?;
+                let start = position_from_value(interp, &args[0])?;
+                let end = position_from_value(interp, &args[1])?;
+                let props = [(prop, prop_value)];
+                modify_buffer_text_properties(
+                    interp,
+                    buffer_id,
+                    start,
+                    end,
+                    &|buffer| properties_would_add(buffer, start, end, &props),
+                    &|buffer| buffer.put_text_property(start, end, prop, prop_value),
+                    env,
+                )?;
                 Ok(Value::Nil)
             }
             "add-text-properties" => {
@@ -2062,76 +1892,86 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let props = plist_pairs(&args[2])?;
-                if let Some(object) = args.get(3) {
-                    if string_like(object).is_some() {
-                        let start = args[0].as_integer()?.max(0) as usize;
-                        let end = args[1].as_integer()?.max(0) as usize;
-                        let changed =
-                            modify_shared_string_properties(object, start, end, |mut current| {
-                                // GNU replaces existing properties in place and
-                                // conses new ones onto the plist head.
-                                for (name, value) in &props {
-                                    if let Some((_, existing)) =
-                                        current.iter_mut().find(|(key, _)| key == name)
-                                    {
-                                        *existing = *value;
-                                    } else {
-                                        current.insert(0, (name.clone(), *value));
-                                    }
+                if let Some(object) = args.get(3)
+                    && string_like(object).is_some()
+                {
+                    let start = args[0].as_integer()?.max(0) as usize;
+                    let end = args[1].as_integer()?.max(0) as usize;
+                    let changed =
+                        modify_shared_string_properties(object, start, end, |mut current| {
+                            // GNU replaces existing properties in place and
+                            // conses new ones onto the plist head.
+                            for (name, value) in &props {
+                                if let Some((_, existing)) =
+                                    current.iter_mut().find(|(key, _)| key == name)
+                                {
+                                    *existing = *value;
+                                } else {
+                                    current.insert(0, (*name, *value));
                                 }
-                                current
-                            })?;
-                        return Ok(if changed { Value::T } else { Value::Nil });
-                    } else {
-                        let start = position_from_value(interp, &args[0])?;
-                        let end = position_from_value(interp, &args[1])?;
-                        interp.apply_text_property_change_shared(&|buffer| {
-                            buffer.add_text_properties(start, end, &props)
-                        });
-                    }
-                } else {
-                    let start = position_from_value(interp, &args[0])?;
-                    let end = position_from_value(interp, &args[1])?;
-                    interp.apply_text_property_change_shared(&|buffer| {
-                        buffer.add_text_properties(start, end, &props)
-                    });
+                            }
+                            current
+                        })?;
+                    return Ok(if changed { Value::T } else { Value::Nil });
                 }
-                Ok(Value::T)
+                let buffer_id = property_buffer_id(interp, args.get(3))?;
+                let start = position_from_value(interp, &args[0])?;
+                let end = position_from_value(interp, &args[1])?;
+                let changed = modify_buffer_text_properties(
+                    interp,
+                    buffer_id,
+                    start,
+                    end,
+                    &|buffer| properties_would_add(buffer, start, end, &props),
+                    &|buffer| buffer.add_text_properties(start, end, &props),
+                    env,
+                )?;
+                Ok(if changed { Value::T } else { Value::Nil })
             }
             "set-text-properties" => {
                 if args.len() < 3 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let props = plist_pairs(&args[2])?;
-                if let Some(object) = args.get(3) {
-                    if string_like(object).is_some() {
-                        let start = args[0].as_integer()?.max(0) as usize;
-                        let end = args[1].as_integer()?.max(0) as usize;
-                        let had_properties = match object.kind() {
-                            Kind::StringObject(state) => !state.borrow().props.is_empty(),
-                            _ => unreachable!("string checked above"),
-                        };
-                        modify_shared_string_properties(object, start, end, |_| props.clone())?;
-                        return Ok(if start < end && (had_properties || !props.is_empty()) {
-                            Value::T
-                        } else {
-                            Value::Nil
-                        });
-                    } else {
-                        let start = position_from_value(interp, &args[0])?;
-                        let end = position_from_value(interp, &args[1])?;
-                        interp.apply_text_property_change_shared(&|buffer| {
-                            buffer.set_text_properties(start, end, &props)
-                        });
+                if let Some(object) = args.get(3)
+                    && string_like(object).is_some()
+                {
+                    let start = args[0].as_integer()?.max(0) as usize;
+                    let end = args[1].as_integer()?.max(0) as usize;
+                    let Kind::StringObject(state) = object.kind() else {
+                        unreachable!("string checked above")
+                    };
+                    let had_intervals = state.borrow().props.has_intervals();
+                    // textprop.c set_text_properties: no properties for
+                    // the whole string drop its intervals.
+                    if props.is_empty() && start == 0 && end == state.borrow().len() {
+                        if !had_intervals {
+                            return Ok(Value::Nil);
+                        }
+                        state.check_impure()?;
+                        state.borrow_mut().props = Default::default();
+                        return Ok(Value::T);
                     }
-                } else {
-                    let start = position_from_value(interp, &args[0])?;
-                    let end = position_from_value(interp, &args[1])?;
-                    interp.apply_text_property_change_shared(&|buffer| {
-                        buffer.set_text_properties(start, end, &props)
+                    modify_shared_string_properties(object, start, end, |_| props.clone())?;
+                    return Ok(if start < end && (had_intervals || !props.is_empty()) {
+                        Value::T
+                    } else {
+                        Value::Nil
                     });
                 }
-                Ok(Value::T)
+                let buffer_id = property_buffer_id(interp, args.get(3))?;
+                let start = position_from_value(interp, &args[0])?;
+                let end = position_from_value(interp, &args[1])?;
+                let changed = modify_buffer_text_properties(
+                    interp,
+                    buffer_id,
+                    start,
+                    end,
+                    &|buffer| properties_would_set(buffer, start, end, &props),
+                    &|buffer| buffer.set_text_properties(start, end, &props),
+                    env,
+                )?;
+                Ok(if changed { Value::T } else { Value::Nil })
             }
             "remove-list-of-text-properties" => {
                 if args.len() < 3 || args.len() > 4 {
@@ -2140,35 +1980,34 @@ define_dispatch!(
                 let names = args[2]
                     .to_vec()?
                     .into_iter()
-                    .map(|value| value.as_symbol().map(|s| s.to_string()))
-                    .collect::<Result<Vec<_>, _>>()?;
-                if let Some(object) = args.get(3) {
-                    if string_like(object).is_some() {
-                        let start = args[0].as_integer()?.max(0) as usize;
-                        let end = args[1].as_integer()?.max(0) as usize;
-                        let changed =
-                            modify_shared_string_properties(object, start, end, |current| {
-                                current
-                                    .into_iter()
-                                    .filter(|(key, _)| !names.iter().any(|name| name == key))
-                                    .collect()
-                            })?;
-                        return Ok(if changed { Value::T } else { Value::Nil });
-                    } else {
-                        let start = position_from_value(interp, &args[0])?;
-                        let end = position_from_value(interp, &args[1])?;
-                        interp.apply_text_property_change_shared(&|buffer| {
-                            buffer.remove_list_of_text_properties(start, end, &names)
-                        });
-                    }
-                } else {
-                    let start = position_from_value(interp, &args[0])?;
-                    let end = position_from_value(interp, &args[1])?;
-                    interp.apply_text_property_change_shared(&|buffer| {
-                        buffer.remove_list_of_text_properties(start, end, &names)
-                    });
+                    .map(PropertyName::new)
+                    .collect::<Vec<_>>();
+                if let Some(object) = args.get(3)
+                    && string_like(object).is_some()
+                {
+                    let start = args[0].as_integer()?.max(0) as usize;
+                    let end = args[1].as_integer()?.max(0) as usize;
+                    let changed = modify_shared_string_properties(object, start, end, |current| {
+                        current
+                            .into_iter()
+                            .filter(|(key, _)| !names.iter().any(|name| name == key))
+                            .collect()
+                    })?;
+                    return Ok(if changed { Value::T } else { Value::Nil });
                 }
-                Ok(Value::T)
+                let buffer_id = property_buffer_id(interp, args.get(3))?;
+                let start = position_from_value(interp, &args[0])?;
+                let end = position_from_value(interp, &args[1])?;
+                let changed = modify_buffer_text_properties(
+                    interp,
+                    buffer_id,
+                    start,
+                    end,
+                    &|buffer| properties_would_remove(buffer, start, end, &names),
+                    &|buffer| buffer.remove_list_of_text_properties(start, end, &names),
+                    env,
+                )?;
+                Ok(if changed { Value::T } else { Value::Nil })
             }
             "remove-text-properties" => {
                 if args.len() < 3 || args.len() > 4 {
@@ -2178,35 +2017,34 @@ define_dispatch!(
                     .into_iter()
                     .map(|(name, _)| name)
                     .collect::<Vec<_>>();
-                if let Some(object) = args.get(3) {
-                    if string_like(object).is_some() {
-                        let start = args[0].as_integer()?.max(0) as usize;
-                        let end = args[1].as_integer()?.max(0) as usize;
-                        let changed =
-                            modify_shared_string_properties(object, start, end, |current| {
-                                current
-                                    .into_iter()
-                                    .filter(|(key, _)| !names.iter().any(|name| name == key))
-                                    .collect()
-                            })?;
-                        return Ok(if changed { Value::T } else { Value::Nil });
-                    } else {
-                        let start = position_from_value(interp, &args[0])?;
-                        let end = position_from_value(interp, &args[1])?;
-                        interp.apply_text_property_change_shared(&|buffer| {
-                            buffer.remove_list_of_text_properties(start, end, &names)
-                        });
-                    }
-                } else {
-                    let start = position_from_value(interp, &args[0])?;
-                    let end = position_from_value(interp, &args[1])?;
-                    interp.apply_text_property_change_shared(&|buffer| {
-                        buffer.remove_list_of_text_properties(start, end, &names)
-                    });
+                if let Some(object) = args.get(3)
+                    && string_like(object).is_some()
+                {
+                    let start = args[0].as_integer()?.max(0) as usize;
+                    let end = args[1].as_integer()?.max(0) as usize;
+                    let changed = modify_shared_string_properties(object, start, end, |current| {
+                        current
+                            .into_iter()
+                            .filter(|(key, _)| !names.iter().any(|name| name == key))
+                            .collect()
+                    })?;
+                    return Ok(if changed { Value::T } else { Value::Nil });
                 }
-                Ok(Value::T)
+                let buffer_id = property_buffer_id(interp, args.get(3))?;
+                let start = position_from_value(interp, &args[0])?;
+                let end = position_from_value(interp, &args[1])?;
+                let changed = modify_buffer_text_properties(
+                    interp,
+                    buffer_id,
+                    start,
+                    end,
+                    &|buffer| properties_would_remove(buffer, start, end, &names),
+                    &|buffer| buffer.remove_list_of_text_properties(start, end, &names),
+                    env,
+                )?;
+                Ok(if changed { Value::T } else { Value::Nil })
             }
-            "add-face-text-property" => add_face_text_property(interp, name, args),
+            "add-face-text-property" => add_face_text_property(interp, name, args, env),
             "put" => {
                 need_args(name, args, 3)?;
                 // GNU 30.2 fns.c:Fput shares `get's CHECK_SYMBOL/XSYMBOL
@@ -3255,6 +3093,54 @@ pub(super) fn direct_char_before(
     }
 }
 
+/// indent.c:Findent_to: from point's column to COLUMN (MINIMUM columns
+/// at least), tabs first under `indent-tabs-mode' and then spaces, each an
+/// insertion of its own that inherits the surrounding properties.  The
+/// column reached.
+fn indent_to(
+    interp: &mut Interpreter,
+    column: i64,
+    minimum: i64,
+    env: &mut crate::lisp::types::Env,
+) -> Result<i64, LispError> {
+    let saved = interp.buffer.borrow().point();
+    interp.buffer.borrow_mut().beginning_of_line();
+    let bol = interp.buffer.borrow().point();
+    interp.buffer.borrow_mut().goto_char(saved);
+    let mut from_col = column_at(interp, env, bol, saved) as i64;
+    let min_col = (from_col + minimum).max(column);
+    if min_col == from_col {
+        return Ok(min_col);
+    }
+    // SANE_TAB_WIDTH.
+    let tab_width = interp
+        .lookup_var("tab-width", env)
+        .and_then(|value| value.integer_value())
+        .filter(|width| (1..=1000).contains(width))
+        .unwrap_or(8);
+    if interp
+        .lookup_var("indent-tabs-mode", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        let tabs = min_col / tab_width - from_col / tab_width;
+        if tabs > 0 {
+            insert_text_with_hooks(
+                interp,
+                &"\t".repeat(tabs as usize),
+                &[],
+                &[],
+                true,
+                false,
+                env,
+            )?;
+            from_col = (min_col / tab_width) * tab_width;
+        }
+    }
+    let spaces = (min_col - from_col).max(0) as usize;
+    insert_text_with_hooks(interp, &" ".repeat(spaces), &[], &[], true, false, env)?;
+    Ok(min_col)
+}
+
 /// The `delete-region' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_delete_region(
     interp: &mut Interpreter,
@@ -3265,7 +3151,6 @@ pub(super) fn direct_delete_region(
     need_args(name, args, 2)?;
     let from = position_from_value(interp, &args[0])?;
     let to = position_from_value(interp, &args[1])?;
-    ensure_region_modifiable(interp, from, to)?;
     delete_region_with_hooks(interp, from, to, env)?;
     Ok(Value::Nil)
 }

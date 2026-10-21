@@ -363,6 +363,7 @@ fn run_owned(
     // emacs.c runs after-pdump-load-hook after init_display. Hook code can
     // therefore inspect the real terminal or read events before top-level.
     let startup = batch::safe_run_hooks(&mut interpreter, "after-pdump-load-hook")
+        .and_then(|()| crate::lisp::primitives::set_initial_minibuffer_mode(&mut interpreter))
         .and_then(|()| batch::run_startup_top_level(&mut interpreter, command_line_args));
     let termination = match startup.map_err(LispError::into_kind) {
         Err(LispErrorKind::Terminate(termination)) => Some(termination),
@@ -5215,7 +5216,7 @@ mod tests {
         .expect("display test minibuffer activates");
         crate::lisp::primitives::set_echo_area_message(None);
         let (row, mini, cursor) = compose_echo_row(&mut interpreter, &mut env, "", 8, &mut cache);
-        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active);
+        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active, &mut env);
         assert!(mini);
         assert_eq!(row.text.iter().collect::<String>(), "AB: AB  ");
         assert_eq!(cursor, Some(6));
@@ -6309,7 +6310,7 @@ mod tests {
         assert!(!minibuffer_echo_owns_hardware_cursor(&interpreter, true));
         assert!(!minibuffer_echo_owns_hardware_cursor(&interpreter, false));
 
-        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active);
+        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active, &mut env);
     }
 
     #[test]
@@ -6336,7 +6337,7 @@ mod tests {
         );
 
         crate::lisp::primitives::set_echo_area_message(None);
-        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active);
+        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active, &mut env);
         assert!(!from_minibuffer);
         assert_eq!(cursor, Some(7));
         assert_eq!(row.text.iter().take(7).collect::<String>(), "\"inner\"");
@@ -6372,7 +6373,7 @@ mod tests {
             80,
             &mut std::collections::HashMap::new(),
         );
-        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active);
+        crate::lisp::primitives::restore_active_minibuffer(&mut interpreter, active, &mut env);
         assert!(from_minibuffer);
         assert_eq!(
             row.attrs[0], row.attrs[7],

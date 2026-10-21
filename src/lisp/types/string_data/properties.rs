@@ -1,5 +1,6 @@
 //! The string header's single property pointer. Empty strings and strings
-//! without properties allocate no property container. The existing span
+//! without intervals allocate no property container; intervals whose
+//! plists are all empty keep one of no spans. The existing span
 //! representation remains authoritative until it is replaced by intervals.
 
 use super::StringPropertySpan;
@@ -26,7 +27,33 @@ pub struct StringProperties(Option<NonNull<PropertyData>>);
 
 impl Clone for StringProperties {
     fn clone(&self) -> Self {
+        if self.has_intervals() && self.is_empty() {
+            return Self::empty_tree();
+        }
         self.to_vec().into()
+    }
+}
+
+impl StringProperties {
+    /// Intervals every plist of which is empty: what textprop.c leaves of
+    /// a string's intervals when their properties are removed, until
+    /// `set-text-properties' clears the whole string.
+    pub fn empty_tree() -> Self {
+        let (layout, _) = property_layout(0);
+        // SAFETY: the layout is nonzero; it holds the count alone.
+        let allocation = unsafe { alloc(layout) };
+        let Some(data) = NonNull::new(allocation.cast::<PropertyData>()) else {
+            handle_alloc_error(layout);
+        };
+        // SAFETY: the allocation is aligned for its count.
+        unsafe { data.as_ptr().write(PropertyData { len: 0 }) };
+        Self(Some(data))
+    }
+
+    /// Whether the string has intervals (string_intervals non-null),
+    /// though every plist be empty.
+    pub fn has_intervals(&self) -> bool {
+        self.0.is_some()
     }
 }
 

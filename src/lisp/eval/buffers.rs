@@ -42,7 +42,7 @@ impl Interpreter {
         related: &[u64],
         pos: usize,
         s: &str,
-        props: Option<Vec<(String, Value)>>,
+        props: Option<Vec<(crate::lisp::types::PropertyName, Value)>>,
         before_markers: bool,
     ) {
         let current_id = self.current_buffer_id();

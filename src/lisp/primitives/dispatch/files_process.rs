@@ -2018,7 +2018,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
                 let text = string_text(&args[1])?;
-                internal_default_process_filter(interp, process_id, &text)?;
+                internal_default_process_filter(interp, process_id, &text, env)?;
                 Ok(Value::Nil)
             }
             "process-filter" => {
@@ -2047,7 +2047,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
                 let message = string_text(&args[1])?;
-                internal_default_process_sentinel(interp, process_id, &message)?;
+                internal_default_process_sentinel(interp, process_id, &message, env)?;
                 Ok(Value::Nil)
             }
             "set-process-sentinel" => {
@@ -2526,19 +2526,8 @@ define_dispatch!(
                     .buffer_substring(start, end)
                     .map_err(|error| LispError::Signal(error.to_string()))?;
                 let input = encode_raw_text_bytes(&compressed)?;
-                ensure_region_modifiable(interp, start, end)?;
-                ensure_no_supersession_threat(interp, env)?;
-                let overlay_calls =
-                    overlay_change_hook_calls(interp, &interp.buffer.borrow(), start, end, start);
-                with_overlay_hook_roots(interp, &overlay_calls, |interp| {
-                    run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
-                    run_change_hooks(
-                        interp,
-                        "before-change-functions",
-                        &[Value::Integer(start as i64), Value::Integer(end as i64)],
-                        env,
-                    )?;
-
+                // zlib.c: modify_text over the region, then one change.
+                modify_current_buffer(interp, start, end, false, env, |interp, _, _| {
                     let mut output = Vec::new();
                     let (complete, remaining) = if input.starts_with(&[0x1f, 0x8b]) {
                         let mut decoder = flate2::bufread::GzDecoder::new(&input[..]);
@@ -2551,18 +2540,11 @@ define_dispatch!(
                     };
                     let old_length = end - start;
                     if !complete && args.get(2).is_none_or(Value::is_nil) {
-                        run_change_hooks(
-                            interp,
-                            "after-change-functions",
-                            &[
-                                Value::Integer(start as i64),
-                                Value::Integer(end as i64),
-                                Value::Integer(old_length as i64),
-                            ],
-                            env,
-                        )?;
-                        run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
-                        return Ok(Value::Nil);
+                        // unwind_decompress balances the before-change call.
+                        return Ok((
+                            Some(AfterChange::new(start, old_length, old_length)),
+                            Value::Nil,
+                        ));
                     }
 
                     let saved_point = interp.buffer.borrow().point();
@@ -2576,21 +2558,11 @@ define_dispatch!(
                         let point = saved_point.min(interp.buffer.borrow().point_max());
                         interp.buffer.borrow_mut().goto_char(point);
                     }
-                    run_change_hooks(
-                        interp,
-                        "after-change-functions",
-                        &[
-                            Value::Integer(start as i64),
-                            Value::Integer((start + output.len()) as i64),
-                            Value::Integer(old_length as i64),
-                        ],
-                        env,
-                    )?;
-                    run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
+                    let change = AfterChange::new(start, old_length, output.len());
                     if complete {
-                        Ok(Value::T)
+                        Ok((Some(change), Value::T))
                     } else {
-                        Ok(Value::Integer(remaining as i64))
+                        Ok((Some(change), Value::Integer(remaining as i64)))
                     }
                 })
             }
@@ -2667,11 +2639,7 @@ define_dispatch!(
                     env,
                 )?;
                 if delete_region {
-                    interp
-                        .buffer
-                        .borrow_mut()
-                        .delete_region(start, end)
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    delete_region_with_hooks(interp, start, end, env)?;
                 }
                 write_process_output(
                     interp,

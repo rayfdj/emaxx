@@ -1,24 +1,25 @@
 use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
+use crate::lisp::types::PropertyName;
 
 pub(crate) fn format_source_props(
     value: &Value,
     from: usize,
     to: usize,
-) -> Option<Vec<(String, Value)>> {
+) -> Option<Vec<(PropertyName, Value)>> {
     // The format string's intervals, read in place: `format' asks once per
     // conversion, and its text is never needed here.
     let Kind::StringObject(state) = value.kind() else {
         return None;
     };
     let state = state.borrow();
-    let mut props: Vec<(String, Value)> = Vec::new();
+    let mut props: Vec<(PropertyName, Value)> = Vec::new();
     for span in state.props.iter() {
         if span.start < to && from < span.end {
             for (name, value) in &span.props {
                 if !props.iter().any(|(existing, _)| existing == name) {
-                    props.push((name.clone(), *value));
+                    props.push((*name, *value));
                 }
             }
         }
@@ -32,7 +33,7 @@ pub(crate) fn format_source_props(
 pub(crate) fn props_at_string_offset(
     spans: &[TextPropertySpan],
     pos: usize,
-) -> Vec<(String, Value)> {
+) -> Vec<(PropertyName, Value)> {
     spans
         .iter()
         .find(|span| span.start <= pos && pos < span.end)
@@ -1655,7 +1656,10 @@ fn charset_runs_to_props(charsets: Vec<(usize, usize, String)>) -> Vec<TextPrope
         .map(|(start, end, charset)| TextPropertySpan {
             start,
             end,
-            props: vec![("charset".to_string(), Value::Symbol(charset.into()))],
+            props: vec![(
+                PropertyName::symbol("charset"),
+                Value::Symbol(charset.into()),
+            )],
         })
         .collect()
 }
@@ -1982,36 +1986,6 @@ pub(crate) fn maybe_lock_current_buffer(
         return Ok(());
     }
     maybe_lock_current_buffer_file(interp, env)
-}
-
-pub(crate) fn maybe_lock_current_buffer_on_change(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    // GNU's prepare_to_modify_buffer locks only ordinary first changes to a
-    // real file-visiting buffer.  Silent/internal edits bind this variable
-    // and must not leave a lock behind.
-    //
-    // The buffer's own slots first (BVAR (current_buffer, filename)): a
-    // buffer visiting no file locks nothing, whatever the variables say
-    // (the lock itself reads the slots), and the slot read is a field
-    // where the variable reads walked the bindings.
-    if current_buffer_file(interp).is_none() {
-        return Ok(());
-    }
-    if interp
-        .lookup_var_key(cached_symbol!("inhibit-modification-hooks"), env)
-        .is_some_and(|value| value.is_truthy())
-        || !interp
-            .lookup_var_key(cached_symbol!("buffer-file-name"), env)
-            .is_some_and(|value| value.is_truthy())
-        || !interp
-            .lookup_var_key(cached_symbol!("buffer-file-truename"), env)
-            .is_some_and(|value| value.is_truthy())
-    {
-        return Ok(());
-    }
-    maybe_lock_current_buffer(interp, env)
 }
 
 pub(crate) fn maybe_lock_current_buffer_file(

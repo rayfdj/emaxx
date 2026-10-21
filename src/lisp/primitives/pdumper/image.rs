@@ -454,6 +454,10 @@ pub(crate) enum RootSlot {
     // Former keymap facade root code 55 is unsupported.
     SyntaxCodeObjects = 56,
     UnicodeMenuCaseTable = 57,
+    /// textprop.c's staticpro'd interval_insert_behind_hooks and
+    /// interval_insert_in_front_hooks.
+    IntervalInsertBehindHooks = 58,
+    IntervalInsertInFrontHooks = 59,
 }
 
 impl RootSlot {
@@ -514,6 +518,8 @@ impl RootSlot {
             54 => Self::RememberedScalars,
             56 => Self::SyntaxCodeObjects,
             57 => Self::UnicodeMenuCaseTable,
+            58 => Self::IntervalInsertBehindHooks,
+            59 => Self::IntervalInsertInFrontHooks,
             _ => return None,
         })
     }

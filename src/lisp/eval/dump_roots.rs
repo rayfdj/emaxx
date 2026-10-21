@@ -233,6 +233,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("regexp_syntax_class_cache", "a cache"),
     ("syntax_segment_cache", "a cache"),
     (
+        "loaded_bindings",
+        "a cache of the buffer-local bindings last used (data.c's blv where and valcell), loaded again on use",
+    ),
+    (
         "safe_terminal_coding",
         "terminal state, re-created by init_tty",
     ),
@@ -288,7 +292,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "carried in the remembered scalars",
     ),
     ("indirect_buffers", "written as each buffer's base"),
-    ("change_hooks_running", "a running change hook's guard"),
     (
         "network_connect_counter",
         "the running process's connections",
@@ -559,6 +562,11 @@ impl Interpreter {
         // keymap.c's staticpro'd Unicode table, including a captured table
         // no longer named by char-code-property-alist.
         groups.push((RootSlot::UnicodeMenuCaseTable, self.unicode_menu_case_table));
+        // textprop.c: the neighbours' insertion hooks the last insertion
+        // check found, staticpro'd (syms_of_textprop).
+        let [behind, in_front] = self.interval_insert_hooks;
+        groups.push((RootSlot::IntervalInsertBehindHooks, behind));
+        groups.push((RootSlot::IntervalInsertInFrontHooks, in_front));
         groups.push((
             RootSlot::StandardSyntaxTable,
             Value::CharTable(self.standard_syntax_table_id),
@@ -1059,6 +1067,8 @@ mod install {
                 RootSlot::UnicodeMenuCaseTable => {
                     crate::lisp::primitives::restore_unicode_menu_case_table(self, *value)?;
                 }
+                RootSlot::IntervalInsertBehindHooks => self.interval_insert_hooks[0] = *value,
+                RootSlot::IntervalInsertInFrontHooks => self.interval_insert_hooks[1] = *value,
                 RootSlot::SyntaxWordChars => {
                     let mut codes = Vec::new();
                     for entry in expect_vector(value, "syntax word chars")? {

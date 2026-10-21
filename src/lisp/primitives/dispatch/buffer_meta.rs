@@ -352,9 +352,7 @@ define_dispatch!(
                 .as_integer()? as usize;
                 let end = super::call(interp, "field-end", &[Value::Integer(pos as i64)], env)?
                     .as_integer()? as usize;
-                interp
-                    .delete_region_current_buffer(start, end)
-                    .map_err(|e| LispError::Signal(e.to_string()))?;
+                delete_region_with_hooks(interp, start, end, env)?;
                 Ok(Value::Nil)
             }
             "constrain-to-field" => {
@@ -560,7 +558,7 @@ define_dispatch!(
                     // Property spans are 1-based buffer positions, the
                     // same coordinates set_text_properties consumes.
                     for span in props {
-                        buffer.set_text_properties(span.start, span.end, &span.props);
+                        buffer.graft_text_properties(span.start, span.end, &span.props);
                     }
                     drop(buffer);
                     if clone {

@@ -75,7 +75,7 @@ pub(crate) fn set_echo_area_message_with_spans(text: String, spans: EchoSpans) {
         .map(|(start, end, face)| crate::buffer::TextPropertySpan {
             start: *start,
             end: *end,
-            props: vec![("face".into(), *face)],
+            props: vec![(crate::lisp::types::PropertyName::symbol("face"), *face)],
         })
         .collect();
     let value = crate::lisp::primitives::strings::string_like_value(text.clone(), props);
@@ -6531,7 +6531,7 @@ mod tests {
                 Value::Nil,
             ])
         );
-        crate::lisp::primitives::restore_active_minibuffer(&mut interp, active);
+        crate::lisp::primitives::restore_active_minibuffer(&mut interp, active, &mut env);
     }
 
     #[test]

@@ -132,6 +132,7 @@ pub(crate) use generated_gnu_c_primitives_linux::{
 };
 mod hash_insert;
 mod hooks_overlays;
+mod insdel;
 mod interactive;
 mod invisibility;
 mod keys;
@@ -147,6 +148,7 @@ mod strings;
 pub(crate) mod syntax;
 mod system;
 mod text;
+mod textprop;
 pub(crate) mod values;
 mod window;
 
@@ -162,6 +164,7 @@ pub(crate) use dispatch::gnutls::{AsyncGnuTlsProgress, progress_async_gnutls};
 pub(crate) use file_io::*;
 pub(crate) use hash_insert::*;
 pub(crate) use hooks_overlays::*;
+pub(crate) use insdel::*;
 pub(crate) use interactive::*;
 pub(crate) use invisibility::*;
 pub(crate) use keys::*;
@@ -181,6 +184,7 @@ pub(crate) use strings::*;
 pub(crate) use system::*;
 pub use system::{DaemonState, set_build_details, set_daemon_state};
 pub(crate) use text::*;
+pub(crate) use textprop::*;
 pub(crate) use values::*;
 pub(crate) use window::*;
 

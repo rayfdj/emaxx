@@ -358,8 +358,10 @@ pub(crate) fn set_internal_symbol(
     value: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    // data.c:set_internal's SYMBOL_PLAINVAL, untrapped: the store alone.
-    if interp.assign_plain_global(symbol, value) {
+    // data.c:set_internal's SYMBOL_PLAINVAL, untrapped: the store alone;
+    // SYMBOL_LOCALIZED with the current buffer's binding loaded: the
+    // store into it alone.
+    if interp.assign_plain_global(symbol, value) || interp.assign_loaded_local(symbol, value) {
         return Ok(());
     }
     if interp.check_constant_assignment_symbol(symbol, value)? {

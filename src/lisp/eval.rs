@@ -45,7 +45,7 @@ pub(crate) mod terminal;
 mod thread_context;
 pub(crate) use dump_roots::{FIELDS_NOT_CARRIED, ROOTS_RESET_AFTER_LOAD, TRANSIENT_ROOTS};
 pub(crate) use image_install::PdumperLoadRecord;
-pub(crate) use local_cells::LocalCells;
+pub(crate) use local_cells::{LoadedBindings, LocalCells};
 mod symbol_cells;
 pub(crate) use symbol_cells::{SymbolCellSnapshot, SymbolCells};
 pub(crate) mod symbol_cell_flags {
@@ -3064,9 +3064,8 @@ impl ImageGraphCopier {
                             .props
                             .iter()
                             .map(|(name, prop)| {
-                                let mut name = name.clone();
-                                self.copy_symbol_spelling(&mut name);
-                                (name, self.copy(prop))
+                                let name = self.copy(&name.value());
+                                (crate::lisp::types::PropertyName::new(name), self.copy(prop))
                             })
                             .collect(),
                     })
@@ -3536,7 +3535,8 @@ impl LispReachability {
             Kind::StringObject(value) => {
                 let state = value.borrow();
                 for span in &state.props {
-                    for (_, child) in &span.props {
+                    for (name, child) in &span.props {
+                        self.enqueue(&name.value());
                         self.enqueue(child);
                     }
                 }
@@ -3884,7 +3884,7 @@ impl Interpreter {
             .map(|cells| {
                 cells
                     .iter()
-                    .map(|(symbol, value)| (*symbol, *value))
+                    .map(|(symbol, value)| (*symbol, value))
                     .collect()
             })
             .unwrap_or_default()
@@ -4016,7 +4016,7 @@ impl Interpreter {
         for (symbol, value) in cells {
             self.globals
                 .set_flag_by_name(symbol.as_str(), symbol_cell_flags::LOCALIZED);
-            locals.insert(&symbol, value);
+            locals.insert(&symbol, value, &self.loaded_bindings);
         }
         self.remove_buffer_locals(id);
         if !locals.is_empty() {
@@ -4229,7 +4229,7 @@ impl Interpreter {
         }
         for bindings in self.buffer_locals.values() {
             for (_, value) in bindings.iter() {
-                mark(value);
+                mark(&value);
             }
         }
         for hooks in self.buffer_local_hooks.values() {
@@ -4321,6 +4321,9 @@ impl Interpreter {
             for argument in &timer.args {
                 mark(argument);
             }
+        }
+        for hooks in &self.interval_insert_hooks {
+            mark(hooks);
         }
         for notification in &self.pending_file_notifications {
             if let Some(event) = &notification.raw_event {
@@ -4793,6 +4796,9 @@ impl Interpreter {
                 for arg in &mut timer.args {
                     *arg = c.copy(arg);
                 }
+            }
+            for hooks in &mut clone.interval_insert_hooks {
+                *hooks = c.copy(hooks);
             }
             for notification in &mut clone.pending_file_notifications {
                 if let Some(event) = &notification.raw_event {
@@ -5350,6 +5356,9 @@ pub struct InterpreterState {
     /// order.  GNU's buffer slot lookup is constant-time; mode-heavy code must
     /// not scan every other live buffer's locals on each variable read.
     buffer_locals: BufferLocalBindings,
+    /// Each plain buffer-local variable's binding last read or stored, by
+    /// buffer (data.c's blv `where' and `valcell').
+    loaded_bindings: LoadedBindings,
     /// Buffer-local syntax tables keyed by buffer id.
     buffer_syntax_tables: Vec<(u64, CharTableRef)>,
     /// Active dynamic special bindings in stack order.
@@ -5359,8 +5368,6 @@ pub struct InterpreterState {
     labeled_restrictions: Vec<LabeledRestriction>,
     /// Indirect buffer mapping: (buffer id, base buffer id).
     indirect_buffers: Vec<(u64, u64)>,
-    /// Prevent recursive before/after-change hook re-entry.
-    change_hooks_running: usize,
     /// GNU connect_counter: numbers accepted server-child connections
     /// (unix children are named "NAME <N>" from it).
     pub(crate) network_connect_counter: u64,
@@ -5465,6 +5472,11 @@ pub struct InterpreterState {
     mutex_states: Vec<MutexState>,
     condition_variables: Vec<ConditionVariableState>,
     combined_after_change: Option<CombinedAfterChangeState>,
+    /// textprop.c's interval_insert_behind_hooks and
+    /// interval_insert_in_front_hooks: the hooks the last insertion check
+    /// in a buffer with intervals found beside the insertion, run after
+    /// each insertion until another check replaces them.
+    pub(crate) interval_insert_hooks: [Value; 2],
     process_states: Vec<ProcessState>,
     pending_timers: Vec<ScheduledTimer>,
     /// Source-loaded callbacks stand in for GNU's byte-compiled Lisp.  Keep
@@ -6107,12 +6119,12 @@ impl Interpreter {
             pdumper_loaded: None,
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
+            loaded_bindings: LoadedBindings::default(),
             buffer_syntax_tables: Vec::new(),
             active_special_restores: Vec::new(),
             next_special_binding_id: 1,
             labeled_restrictions: Vec::new(),
             indirect_buffers: Vec::new(),
-            change_hooks_running: 0,
             network_connect_counter: 0,
             function_binding_generation: 0,
             provided_features: STARTUP_FEATURES
@@ -6192,6 +6204,7 @@ impl Interpreter {
             mutex_states: Vec::new(),
             condition_variables: Vec::new(),
             combined_after_change: None,
+            interval_insert_hooks: [Value::Nil, Value::Nil],
             process_states: Vec::new(),
             pending_timers: Vec::new(),
             timer_callback_depth: 0,
@@ -7389,6 +7402,27 @@ impl Interpreter {
         // syntax.c:3797 Fmake_variable_buffer_local: a setq must localize,
         // never leak into the global default.
         interp.mark_auto_buffer_local("comment-end-can-be-escaped");
+        // The other C variables the syms_of_* functions make buffer-local
+        // when set: keyboard.c's `deactivate-mark' (a command's request
+        // stays with the buffer it ran in), casefiddle.c's, and xdisp.c's
+        // display controls.
+        for name in [
+            "deactivate-mark",
+            "case-symbols-as-words",
+            "make-window-start-visible",
+            "fontification-functions",
+            "wrap-prefix",
+            "line-prefix",
+            "display-line-numbers",
+            "display-line-numbers-width",
+            "display-line-numbers-widen",
+            "display-line-numbers-offset",
+            "display-fill-column-indicator",
+            "display-fill-column-indicator-column",
+            "display-fill-column-indicator-character",
+        ] {
+            interp.mark_auto_buffer_local(name);
+        }
         for (name, value) in [
             ("next-screen-context-lines", Value::Integer(2)),
             ("eol-mnemonic-unix", Value::String(":".into())),
@@ -7432,7 +7466,7 @@ impl Interpreter {
         if let Some(window) = interp.find_record_mut(selected_window_id) {
             window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(1);
         }
-        let (minibuffer_buffer_id, _) = interp.create_buffer(" *Minibuf-0*");
+        let (minibuffer_buffer_id, _) = primitives::get_minibuffer(&mut interp, 0);
         interp.buffer_list.push((1, "*Messages*".to_string()));
         let minibuffer_window = interp.create_pseudovector(
             RecordKind::Window,

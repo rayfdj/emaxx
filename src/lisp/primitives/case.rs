@@ -536,44 +536,35 @@ pub(crate) fn casify_buffer_region(
     if lo >= hi {
         return Ok(hi);
     }
-    let text = interp
-        .buffer
-        .borrow()
-        .buffer_substring(lo, hi)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    let mapped = casify_string(interp, &text, action, env)?;
-    let old_length = hi - lo;
-    let new_length = mapped.chars().count();
-    let new_end = lo + new_length;
-    let unchanged_prefix = text
-        .chars()
-        .zip(mapped.chars())
-        .take_while(|(old, new)| old == new)
-        .count();
-    let unchanged_suffix = text
-        .chars()
-        .rev()
-        .zip(mapped.chars().rev())
-        .take(old_length.min(new_length) - unchanged_prefix)
-        .take_while(|(old, new)| old == new)
-        .count();
-    let changed_start = lo + unchanged_prefix;
-    let old_changed_end = hi - unchanged_suffix;
-    let new_changed_end = new_end - unchanged_suffix;
-    ensure_region_modifiable(interp, lo, hi)?;
-    ensure_no_supersession_threat(interp, env)?;
-    let overlay_calls = overlay_change_hook_calls(interp, &interp.buffer.borrow(), lo, hi, new_end);
-    with_overlay_hook_roots(interp, &overlay_calls, |interp| {
-        run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
-        run_change_hooks(
-            interp,
-            "before-change-functions",
-            &[Value::Integer(lo as i64), Value::Integer(hi as i64)],
-            env,
-        )?;
+    // casefiddle.c:casify_region: modify_text over the region, the text
+    // cased as the hooks left it, then a signal of the characters that
+    // changed, none when none did.
+    modify_current_buffer(interp, lo, hi, false, env, |interp, _, env| {
+        let hi = hi.min(interp.buffer.borrow().point_max()).max(lo);
+        let text = interp
+            .buffer
+            .borrow()
+            .buffer_substring(lo, hi)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        let mapped = casify_string(interp, &text, action, env)?;
         if mapped == text {
-            return Ok(hi);
+            return Ok((None, hi));
         }
+        let old_length = hi - lo;
+        let new_length = mapped.chars().count();
+        let new_end = lo + new_length;
+        let unchanged_prefix = text
+            .chars()
+            .zip(mapped.chars())
+            .take_while(|(old, new)| old == new)
+            .count();
+        let unchanged_suffix = text
+            .chars()
+            .rev()
+            .zip(mapped.chars().rev())
+            .take(old_length.min(new_length) - unchanged_prefix)
+            .take_while(|(old, new)| old == new)
+            .count();
         if new_length == old_length {
             interp
                 .buffer
@@ -582,19 +573,15 @@ pub(crate) fn casify_buffer_region(
         } else {
             replace_buffer_region_with_text(interp, lo, hi, &mapped)?;
         }
-        run_change_hooks(
-            interp,
-            "after-change-functions",
-            &[
-                Value::Integer(changed_start as i64),
-                Value::Integer(new_changed_end as i64),
-                Value::Integer((old_changed_end - changed_start) as i64),
-            ],
-            env,
-        )?;
-        let _ = maybe_lock_current_buffer_on_change(interp, env);
-        run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
-        Ok(new_end)
+        let changed_start = lo + unchanged_prefix;
+        Ok((
+            Some(AfterChange::new(
+                changed_start,
+                hi - unchanged_suffix - changed_start,
+                new_end - unchanged_suffix - changed_start,
+            )),
+            new_end,
+        ))
     })
 }
 

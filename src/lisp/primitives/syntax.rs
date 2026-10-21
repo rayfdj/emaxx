@@ -600,16 +600,7 @@ impl SyntaxScan {
         let (start, end) = interp.buffer.borrow().text_property_interval_around(pos);
         self.b_property = start;
         self.e_property = end.max(pos + 1);
-        // syntax.c:374 (update_syntax_table): the property comes off the
-        // interval plist with `textget' -- buffer text properties (with
-        // category indirection) only; overlays never feed syntax scans.
-        let property = crate::lisp::primitives::strings::buffer_property_at_with_category(
-            interp,
-            &interp.buffer.borrow(),
-            pos,
-            "syntax-table",
-        )
-        .unwrap_or(Value::Nil);
+        let property = syntax_table_property_at(interp, pos);
         self.effective = match property.kind() {
             Kind::CharTable(property_table_id) => EffectiveSyntax::Table(property_table_id),
             Kind::Nil => EffectiveSyntax::Table(self.table_id),
@@ -652,6 +643,25 @@ impl SyntaxScan {
     }
 }
 
+/// syntax.c:374 (update_syntax_table): the property comes off the
+/// interval plist with `textget' -- buffer text properties (with category
+/// indirection) only; overlays never feed syntax scans.  interval_of finds
+/// no interval in a buffer without intervals or at its end, and then no
+/// property applies, `default-text-properties' included.
+fn syntax_table_property_at(interp: &Interpreter, pos: usize) -> Value {
+    let buffer = interp.buffer.borrow();
+    if !buffer.has_interval_tree() || pos >= buffer.point_max() {
+        return Value::Nil;
+    }
+    crate::lisp::primitives::strings::buffer_property_at_with_category(
+        interp,
+        &buffer,
+        pos,
+        "syntax-table",
+    )
+    .unwrap_or(Value::Nil)
+}
+
 fn syntax_entry_at_buffer_position(
     interp: &Interpreter,
     table_id: CharTableRef,
@@ -669,13 +679,7 @@ fn syntax_entry_at_buffer_position(
     {
         return syntax_entry_for_char(interp, table_id, ch);
     }
-    let property = crate::lisp::primitives::strings::buffer_property_at_with_category(
-        interp,
-        &interp.buffer.borrow(),
-        pos,
-        "syntax-table",
-    )
-    .unwrap_or(Value::Nil);
+    let property = syntax_table_property_at(interp, pos);
     match property.kind() {
         Kind::CharTable(property_table_id) => {
             Some(syntax_entry_for_char(interp, property_table_id, ch))
