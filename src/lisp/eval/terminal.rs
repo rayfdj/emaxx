@@ -569,10 +569,7 @@ impl Interpreter {
                 .is_some_and(|value| value.is_truthy()),
         );
         let margin = menu + tab;
-        let mini_buffer_id = self
-            .find_buffer(" *Minibuf-0*")
-            .unwrap_or_else(|| self.create_buffer(" *Minibuf-0*"))
-            .0;
+        let (mini_buffer_id, _) = crate::lisp::primitives::get_minibuffer(self, 0);
         let mut make_window = |buffer, point, kind, geometry| {
             let Kind::Record(window_id) = self
                 .create_pseudovector(

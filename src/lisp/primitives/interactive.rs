@@ -1036,24 +1036,14 @@ pub(crate) fn execute_recorded_input_command_binding(
     execute_command_binding_inner(interp, env, binding, keys, last_event, false)
 }
 
-fn execute_command_binding_inner(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    binding: Value,
-    keys: &[Value],
-    last_event: Value,
-    record_keys: bool,
-) -> Result<(), LispError> {
-    // keyboard.c refreshes point_before_last_command_or_undo at every
-    // command boundary, independently of whether simple.el decides that a
-    // new undo-list boundary is needed.  Without this, a motion between two
-    // edits leaves record_point using the earlier edit's position.
-    interp.buffer.borrow_mut().note_undo_command_point();
-    // keyboard.c:1537: before this command runs, boundaries for the
-    // LAST command's changes are ensured through simple.el's own
-    // `undo-auto--add-boundary', whose amalgamation policy (fusing runs
-    // of self-inserts) native boundary pushes cannot reproduce.  A bare
-    // runtime without simple.el keeps the plain native boundary.
+/// keyboard.c:1537, as a command is about to run: boundaries for the LAST
+/// command's changes through simple.el's own `undo-auto--add-boundary',
+/// whose amalgamation policy (fusing runs of self-inserts) native boundary
+/// pushes cannot reproduce, then point_before_last_command_or_undo, which
+/// is refreshed whether or not a boundary was needed (without it, a motion
+/// between two edits leaves record_point the earlier edit's position).  A
+/// bare runtime without simple.el keeps the plain native boundary.
+pub(crate) fn add_command_undo_boundary(interp: &mut Interpreter, env: &mut Env) {
     if interp
         .lookup_function("undo-auto--add-boundary", env)
         .is_ok()
@@ -1067,6 +1057,18 @@ fn execute_command_binding_inner(
     } else {
         interp.buffer.borrow_mut().push_undo_boundary();
     }
+    interp.buffer.borrow_mut().note_undo_command_point();
+}
+
+fn execute_command_binding_inner(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    binding: Value,
+    keys: &[Value],
+    last_event: Value,
+    record_keys: bool,
+) -> Result<(), LispError> {
+    add_command_undo_boundary(interp, env);
     // keyboard.c read_char wipes a lingering message when the next input
     // event arrives: the channel empties before the command runs, but the
     // glass only catches up at the next redisplay — so a command that
@@ -1100,8 +1102,9 @@ fn execute_command_binding_inner(
         interp.kbd_macro_definition.extend_from_slice(keys);
     }
     // Timers may have messed with `deactivate-mark'; the command starts
-    // with it reset (keyboard.c command_loop_1).
-    interp.set_variable("deactivate-mark", Value::Nil, env);
+    // with it reset (keyboard.c command_loop_1, a C assignment: no new
+    // local in the current buffer).
+    interp.set_c_variable("deactivate-mark", Value::Nil);
     let modified_before = (
         interp.current_buffer_id(),
         interp.buffer.borrow().chars_modified_tick(),

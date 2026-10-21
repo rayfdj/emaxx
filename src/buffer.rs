@@ -752,6 +752,93 @@ pub struct TextPropertySpan {
     pub props: Vec<(PropertyName, Value)>,
 }
 
+/// A buffer's or a string's span of text with a non-empty plist.
+pub(crate) trait PropertySpan {
+    fn bounds(&self) -> (usize, usize);
+    fn plist(&self) -> &[(PropertyName, Value)];
+}
+
+impl PropertySpan for TextPropertySpan {
+    fn bounds(&self) -> (usize, usize) {
+        (self.start, self.end)
+    }
+
+    fn plist(&self) -> &[(PropertyName, Value)] {
+        &self.props
+    }
+}
+
+impl PropertySpan for crate::lisp::types::StringPropertySpan {
+    fn bounds(&self) -> (usize, usize) {
+        (self.start, self.end)
+    }
+
+    fn plist(&self) -> &[(PropertyName, Value)] {
+        &self.props
+    }
+}
+
+/// One interval of an object's text: [START, END) and its plist.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PropertyInterval<'a> {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) plist: &'a [(PropertyName, Value)],
+}
+
+/// An object's interval tree as textprop.c walks it: the whole text
+/// [BEG, END), never empty, split at the bounds of its sorted, disjoint
+/// property SPANS, each stretch between them an interval with the empty
+/// plist.  (GNU may keep adjacent intervals with equal plists apart; no
+/// walk here tells them from one.)
+#[derive(Clone, Copy)]
+pub(crate) struct PropertyIntervals<'a, S> {
+    spans: &'a [S],
+    beg: usize,
+    end: usize,
+}
+
+impl<'a, S: PropertySpan> PropertyIntervals<'a, S> {
+    pub(crate) fn new(spans: &'a [S], beg: usize, end: usize) -> Self {
+        debug_assert!(beg < end);
+        Self { spans, beg, end }
+    }
+
+    /// intervals.c:find_interval: the interval holding POS, the last one
+    /// for POS at the end of the text.
+    pub(crate) fn find(&self, pos: usize) -> PropertyInterval<'a> {
+        let spans: &'a [S] = self.spans;
+        let pos = pos.clamp(self.beg, self.end - 1);
+        let index = spans.partition_point(|span| span.bounds().0 <= pos);
+        let before = index.checked_sub(1).map(|index| &spans[index]);
+        if let Some(span) = before
+            && pos < span.bounds().1
+        {
+            let (start, end) = span.bounds();
+            return PropertyInterval {
+                start,
+                end,
+                plist: span.plist(),
+            };
+        }
+        PropertyInterval {
+            start: before.map_or(self.beg, |span| span.bounds().1),
+            end: spans.get(index).map_or(self.end, |span| span.bounds().0),
+            plist: &[],
+        }
+    }
+
+    /// next_interval.
+    pub(crate) fn next(&self, interval: &PropertyInterval<'a>) -> Option<PropertyInterval<'a>> {
+        (interval.end < self.end).then(|| self.find(interval.end))
+    }
+
+    /// previous_interval.
+    pub(crate) fn previous(&self, interval: &PropertyInterval<'a>) -> Option<PropertyInterval<'a>> {
+        (interval.start > self.beg).then(|| self.find(interval.start - 1))
+    }
+}
+
 /// Errors that buffer operations can produce.
 #[derive(Debug, PartialEq)]
 pub enum BufferError {
@@ -1794,6 +1881,15 @@ impl Buffer {
             f(cursor, to, &[])?;
         }
         Ok(())
+    }
+
+    /// The buffer's intervals over its whole text [BEG, Z), narrowing
+    /// aside; None where buffer_intervals is null (no interval tree, or no
+    /// text).
+    pub(crate) fn property_intervals(&self) -> Option<PropertyIntervals<'_, TextPropertySpan>> {
+        let z = self.size_total() + 1;
+        (self.has_interval_tree() && z > 1)
+            .then(|| PropertyIntervals::new(&self.text_properties, 1, z))
     }
 
     pub fn text_properties_at(&self, pos: usize) -> Vec<(PropertyName, Value)> {

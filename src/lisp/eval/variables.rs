@@ -1537,6 +1537,19 @@ impl Interpreter {
         self.globals.value(name)
     }
 
+    /// A C assignment of a DEFVAR_LISP variable (keyboard.c's
+    /// `Vdeactivate_mark = Qnil'): the binding loaded for the current
+    /// buffer, its own if it has one and the default otherwise; never a new
+    /// local, which only Fset's `local_if_set' makes.
+    pub(crate) fn set_c_variable(&mut self, name: &str, value: Value) {
+        let buffer_id = self.current_buffer_id();
+        if self.has_buffer_local_binding(buffer_id, name) {
+            self.set_buffer_local_value(buffer_id, name, value);
+        } else {
+            self.set_global_binding(name, value);
+        }
+    }
+
     pub fn set_global_binding(&mut self, name: &str, value: Value) {
         let name = self
             .resolve_variable_name(name)
@@ -2054,6 +2067,34 @@ impl Interpreter {
             && !symbol.cell().is_constant()
             && !symbol.cell().has_c_slot();
         self.globals.set_plain_store(symbol, plain);
+    }
+
+    /// data.c:set_internal's SYMBOL_LOCALIZED store when the current
+    /// buffer's binding is the one loaded: a variable already local here
+    /// whose store changes nothing else (`is_plain_localized') takes the
+    /// value into that binding.  A buffer holding a binding an evaluator
+    /// cell mirrors goes the full way, which updates the cell.  False, with
+    /// nothing done, otherwise.
+    pub(crate) fn assign_loaded_local(&mut self, symbol: &SymbolName, value: Value) -> bool {
+        if !symbol.cell().is_plain_localized()
+            || self.has_native_text_conversion_style(symbol.as_str())
+        {
+            return false;
+        }
+        let buffer_id = self.current_buffer_id();
+        let Some(locals) = self.buffer_locals.get_mut(&buffer_id) else {
+            return false;
+        };
+        if locals.has_forwarded_eval_binding() {
+            return false;
+        }
+        match locals.binding_mut(symbol) {
+            Some(binding) => {
+                *binding = value;
+                true
+            }
+            None => false,
+        }
     }
 
     /// data.c:set_internal's SYMBOL_PLAINVAL store for a symbol known to be

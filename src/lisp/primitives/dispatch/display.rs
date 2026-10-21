@@ -6531,7 +6531,7 @@ mod tests {
                 Value::Nil,
             ])
         );
-        crate::lisp::primitives::restore_active_minibuffer(&mut interp, active);
+        crate::lisp::primitives::restore_active_minibuffer(&mut interp, active, &mut env);
     }
 
     #[test]

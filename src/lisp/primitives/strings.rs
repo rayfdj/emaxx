@@ -1094,41 +1094,97 @@ pub(crate) fn property_from_category_symbol(
     interp.get_symbol_property_by(category, prop)
 }
 
+/// intervals.c:textget, lookup_char_property for a text property: PROP's
+/// value in the interval's PROPS; else the non-nil PROP of its `category'
+/// symbol; else the first non-nil value in PROPS of an alternative that
+/// `char-property-alias-alist' (read as the C variable, in the current
+/// buffer) gives PROP, with no category consulted; else PROP's value in
+/// `default-text-properties', which an empty interval reads too.  None
+/// where every one of them is nil.
 pub(crate) fn property_from_props_with_category(
     interp: &Interpreter,
     props: &[(PropertyName, Value)],
     prop: impl PropertyKey,
 ) -> Option<Value> {
-    // Categories and aliases can only redirect a property already present in
-    // this interval.  Most buffer positions have no properties at all, so do
-    // not perform a buffer-local alias lookup for an empty interval.
-    if props.is_empty() {
-        return None;
+    if let Some((_, value)) = props.iter().find(|(name, _)| prop.names(name)) {
+        return Some(*value);
     }
-    let direct = props
-        .iter()
-        .find(|(name, _)| prop.names(name))
-        .map(|(_, value)| *value)
-        .or_else(|| property_from_category_symbol(interp, props, prop));
-    if direct.is_some() {
-        return direct;
+    if !props.is_empty() {
+        if let Some(value) =
+            property_from_category_symbol(interp, props, prop).filter(|value| !value.is_nil())
+        {
+            return Some(value);
+        }
+        let aliases = interp
+            .symbol_value_key(cached_symbol!("char-property-alias-alist"))
+            .unwrap_or(Value::Nil);
+        if let Some(value) = alias_property(props, prop, aliases) {
+            return Some(value);
+        }
     }
-    let aliases = interp
-        .buffer_local_value(interp.current_buffer_id(), "char-property-alias-alist")
-        .and_then(|value| value.to_vec().ok())
-        .unwrap_or_default();
-    let aliases = aliases.into_iter().find_map(|entry| {
-        let key = entry.car_if_list()?;
-        prop.is(key).then(|| entry.cdr_if_list()?.to_vec().ok())?
-    })?;
-    aliases.into_iter().find_map(|alias| {
-        let alias = PropertyName::new(alias);
-        props
-            .iter()
-            .find(|(name, _)| *name == alias)
-            .map(|(_, value)| *value)
-            .or_else(|| property_from_category_symbol(interp, props, alias))
-    })
+    let defaults = interp
+        .symbol_value_key(cached_symbol!("default-text-properties"))
+        .unwrap_or(Value::Nil);
+    Some(lisp_plist_get(defaults, prop)).filter(|value| !value.is_nil())
+}
+
+/// lookup_char_property's alternatives: `Fassq' of PROP in ALIASES, then
+/// the first name of its cdr with a non-nil value in PROPS.
+fn alias_property(
+    props: &[(PropertyName, Value)],
+    prop: impl PropertyKey,
+    aliases: Value,
+) -> Option<Value> {
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    let mut tail = aliases;
+    let names = loop {
+        let Kind::Cons(cell) = tail.kind() else {
+            return None;
+        };
+        if let Kind::Cons(entry) = cell.car.get().kind()
+            && prop.is(entry.car.get())
+        {
+            break entry.cdr.get();
+        }
+        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            return None;
+        }
+        tail = cell.cdr.get();
+    };
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    let mut tail = names;
+    while let Kind::Cons(cell) = tail.kind() {
+        let alias = PropertyName::new(cell.car.get());
+        if let Some((_, value)) = props.iter().find(|(name, _)| *name == alias)
+            && !value.is_nil()
+        {
+            return Some(*value);
+        }
+        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            return None;
+        }
+        tail = cell.cdr.get();
+    }
+    None
+}
+
+/// fns.c:plist_get of PROP in the Lisp property list PLIST.
+fn lisp_plist_get(plist: Value, prop: impl PropertyKey) -> Value {
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    let mut tail = plist;
+    while let Kind::Cons(cell) = tail.kind() {
+        let Kind::Cons(rest) = cell.cdr.get().kind() else {
+            break;
+        };
+        if prop.is(cell.car.get()) {
+            return rest.car.get();
+        }
+        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            break;
+        }
+        tail = rest.cdr.get();
+    }
+    Value::Nil
 }
 
 pub(crate) fn buffer_property_at_with_category(
@@ -1137,9 +1193,9 @@ pub(crate) fn buffer_property_at_with_category(
     pos: usize,
     prop: impl PropertyKey,
 ) -> Option<Value> {
-    if pos < buffer.point_min() || pos >= buffer.point_max() {
-        return None;
-    }
+    // Out of the accessible text there is no interval: the empty plist's
+    // textget, `default-text-properties' alone (Ftext_properties_at's nil
+    // at the end).
     property_from_props_with_category(interp, buffer.text_properties_at_ref(pos), prop)
 }
 
@@ -1207,74 +1263,14 @@ pub(crate) fn string_property_at_with_category(
     prop: impl PropertyKey,
 ) -> Option<Value> {
     let string = string_like(value)?;
-    let span = string
+    // A position no interval covers has the empty plist, whose textget
+    // still reads `default-text-properties'.
+    let props = string
         .props
         .iter()
-        .find(|span| span.start <= pos && pos < span.end)?;
-    property_from_props_with_category(interp, &span.props, prop)
-}
-
-pub(crate) fn text_property_search_buffer(
-    interp: &Interpreter,
-    buffer: &crate::buffer::Buffer,
-    start: usize,
-    end: usize,
-    prop: impl PropertyKey,
-    wanted: &Value,
-    want_match: bool,
-) -> Option<usize> {
-    let start = start.max(buffer.point_min());
-    let end = end.min(buffer.point_max());
-    if start >= end {
-        return None;
-    }
-    for pos in start..end {
-        // textprop.c's Ftext_property_any/not_all read each position
-        // through textget, so `char-property-alias-alist' entries (the
-        // face -> font-lock-face alias font-lock-mode installs) answer
-        // here exactly as for `get-text-property'.
-        // GNU compares property values with EQ, including distinct but
-        // structurally equal records, strings and other aggregate values.
-        let matches = values_eq_in_env(
-            interp,
-            &buffer_property_at_with_category(interp, buffer, pos, prop).unwrap_or(Value::Nil),
-            wanted,
-            &Env::new(),
-        );
-        if matches == want_match {
-            return Some(pos);
-        }
-    }
-    None
-}
-
-pub(crate) fn text_property_search_string(
-    interp: &Interpreter,
-    value: &Value,
-    start: usize,
-    end: usize,
-    prop: impl PropertyKey,
-    wanted: &Value,
-    want_match: bool,
-) -> Option<usize> {
-    let len = string_text(value).ok()?.chars().count();
-    let start = start.min(len);
-    let end = end.min(len);
-    if start >= end {
-        return None;
-    }
-    for pos in start..end {
-        let matches = values_eq_in_env(
-            interp,
-            &string_property_at_with_category(interp, value, pos, prop).unwrap_or(Value::Nil),
-            wanted,
-            &Env::new(),
-        );
-        if matches == want_match {
-            return Some(pos);
-        }
-    }
-    None
+        .find(|span| span.start <= pos && pos < span.end)
+        .map_or(&[][..], |span| span.props.as_slice());
+    property_from_props_with_category(interp, props, prop)
 }
 
 pub(crate) fn string_properties_at(value: &Value, pos: usize) -> Vec<(PropertyName, Value)> {

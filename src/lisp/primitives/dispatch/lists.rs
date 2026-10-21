@@ -257,6 +257,14 @@ fn finish_kbd_macro_command_cycle(
 }
 
 fn active_minibuffer_text(interp: &mut Interpreter, env: &mut Env) -> Result<String, LispError> {
+    // read_minibuf: "Make minibuffer contents into a string", with the
+    // minibuffer set current first (the exiting command may have run in
+    // another buffer, *Completions* for one).
+    if let Some(minibuffer) = interp.active_minibuffer_buffer_id()
+        && interp.has_buffer_id(minibuffer)
+    {
+        interp.set_current_buffer_id(minibuffer)?;
+    }
     let contents = super::call(interp, "minibuffer-contents-no-properties", &[], env)?;
     string_text(&contents)
 }
@@ -398,11 +406,14 @@ fn read_minibuffer_text_without_queued_events(
     history: Value,
     batch_stdin: bool,
 ) -> Result<String, LispError> {
+    // read_minibuf_noninteractive returns before any minibuffer is
+    // chosen: no buffer, no setup or exit hook.
+    if batch_stdin {
+        return read_minibuffer_text_from_batch_stdin(prompt);
+    }
     let minibuffer = activate_minibuffer(interp, prompt, initial_value, *local_map, env)?;
     run_active_minibuffer(interp, env, minibuffer, |interp, env| {
-        if batch_stdin {
-            read_minibuffer_text_from_batch_stdin(prompt)
-        } else if crate::lisp::primitives::has_tty_event_reader() {
+        if crate::lisp::primitives::has_tty_event_reader() {
             // A live terminal reads through the recursive minibuffer
             // command loop over the real Lisp keymaps; a session without
             // that machinery keeps the native editing subset.  C-g inside
@@ -548,15 +559,19 @@ fn recursive_edit(interp: &mut Interpreter, env: &mut Env) -> Result<Value, Lisp
     // recursive edit (ert's test wrapper) must not fire for a command
     // error this loop is about to report itself.
     let handler_start = interp.push_condition_case_handler(vec![Value::Symbol("error".into())]);
-    let result = entry_hooks
-        .and_then(|()| run_recursive_kbd_command_loop(interp, env))
-        // With no more events to dispatch the command loop goes idle, which
-        // processes queued file notifications and fires due timers.  Loaded
-        // timer.el owns GNU timer objects in `timer-list'; the native queue
-        // remains the bootstrap path, so a real command-loop pump must drain
-        // both representations just like the other event-waiting paths.
-        .and_then(|()| interp.service_file_notifications(env).map(|_| ()))
-        .and_then(|()| interp.run_pending_timer_events(env).map(|_| ()));
+    let result = entry_hooks.and_then(|()| {
+        crate::lisp::primitives::with_recursive_edit_bindings(interp, env, |interp, env| {
+            run_recursive_kbd_command_loop(interp, env)
+                // With no more events to dispatch the command loop goes
+                // idle, which processes queued file notifications and fires
+                // due timers.  Loaded timer.el owns GNU timer objects in
+                // `timer-list'; the native queue remains the bootstrap path,
+                // so a real command-loop pump must drain both
+                // representations just like the other event-waiting paths.
+                .and_then(|()| interp.service_file_notifications(env).map(|_| ()))
+                .and_then(|()| interp.run_pending_timer_events(env).map(|_| ()))
+        })
+    });
     interp.pop_handler_bindings(handler_start);
     interp.command_loop_recursion_depth -= 1;
     match result.map_err(LispError::into_kind) {
@@ -624,10 +639,8 @@ fn execute_kbd_macro_resolved_command(
     env: &mut Env,
 ) -> Result<(), LispError> {
     let event = events.last().copied().unwrap_or(Value::Nil);
-    // GNU's command loop separates each command into its own undo group
-    // (undo-auto--boundaries); viper's undo tests observe that grouping.
-    interp.buffer.borrow_mut().push_undo_boundary();
-    interp.set_variable("deactivate-mark", Value::Nil, env);
+    // command_loop_1's C assignment, as in the interactive loop.
+    interp.set_c_variable("deactivate-mark", Value::Nil);
     interp.set_variable("last-command-event", event, env);
     interp.set_variable("last-input-event", event, env);
     interp.set_variable("this-original-command", original_command, env);
@@ -643,6 +656,12 @@ fn execute_kbd_macro_resolved_command(
     // keyboard.c:command_loop_1 calls the unchanged Lisp `undefined' when
     // the map (or pre-command-hook) leaves this-command nil. In particular,
     // an unbound printable event is not an implicit self-insert command.
+    // A defined command first separates the previous command's changes
+    // into their own undo group (viper's undo tests observe the grouping)
+    // and lets a run of self-inserts amalgamate.
+    if !dispatched_command.is_nil() {
+        crate::lisp::primitives::add_command_undo_boundary(interp, env);
+    }
     let command_result = if dispatched_command.is_nil() {
         call_function_value(interp, &Value::symbol("undefined"), &[], env)
     } else if matches!(dispatched_command.kind(), Kind::Symbol(name) if name == "narrow-to-region")

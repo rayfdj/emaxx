@@ -35,6 +35,11 @@ impl LocalCells {
             .map(|value| (!matches!(value.kind(), Kind::Unbound)).then_some(value))
     }
 
+    /// SYMBOL's binding here, void or not, to store into.
+    pub(crate) fn binding_mut(&mut self, symbol: &SymbolName) -> Option<&mut Value> {
+        self.cells.get_mut(symbol)
+    }
+
     pub(crate) fn binding_by_name(&self, name: &str) -> Option<Option<&Value>> {
         let symbol = SymbolName::find(name)?;
         self.cells

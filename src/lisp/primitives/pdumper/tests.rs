@@ -1637,11 +1637,18 @@ fn image_round_trips_buffers_markers_finalizers_and_nilled_frames() {
     let loaded_undo = buffer.undo_list_value();
     drop(buffer);
     assert_eq!(printed(&mut target, &loaded_undo), source_undo);
+    // `deactivate-mark' is local too: the edits set it, and keyboard.c
+    // makes it buffer-local when set.
     let locals = target.buffer_local_cells(source_id);
     assert_eq!(
         locals.len(),
-        3,
-        "default-directory, buffer-read-only, zz-dump-local: {locals:?}"
+        4,
+        "default-directory, buffer-read-only, deactivate-mark, zz-dump-local: {locals:?}"
+    );
+    assert!(
+        locals
+            .iter()
+            .any(|(symbol, value)| symbol == "deactivate-mark" && *value == Value::T)
     );
     assert!(
         locals

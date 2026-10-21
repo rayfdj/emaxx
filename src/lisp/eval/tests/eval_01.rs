@@ -8731,7 +8731,7 @@ fn minibuffer_prompt_keeps_embedded_faces_under_prompt_face() {
         ])),
         "the n key keeps its specific face before the appended prompt face"
     );
-    crate::lisp::primitives::restore_active_minibuffer(&mut interp, active);
+    crate::lisp::primitives::restore_active_minibuffer(&mut interp, active, &mut env);
 }
 
 #[test]

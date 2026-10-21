@@ -1935,6 +1935,191 @@ fn every_edit_primitive_checks_read_only_text() {
 }
 
 #[test]
+fn minibuffer_reads_unwind_like_read_minibuf() {
+    // minibuf.c: get_minibuffer makes the buffer with undo enabled,
+    // read_minibuf runs `minibuffer-mode', erases and inserts the prompt with
+    // `inhibit-read-only' and `inhibit-modification-hooks' bound (recording
+    // undo, cleared after the setup hook), and read_minibuf_unwind erases
+    // the expired minibuffer the same way, keeping `deactivate-mark', before
+    // `minibuffer-inactive-mode' (read-passwd's own cleanup erases it again
+    // without inhibit-read-only).  The level-0 minibuffer is inactive.
+    // Ferase_buffer widens and resets the saved size; the C variables
+    // keyboard.c, casefiddle.c and xdisp.c make buffer-local when set.
+    assert_oracle_contract_matches_interpreter(
+        r##"(progn
+  (require 'ert-x)
+  (let (log)
+    (with-temp-buffer
+      (setq deactivate-mark 'outer)
+      (push (ert-simulate-keys "bar\r"
+              (minibuffer-with-setup-hook
+                  (lambda ()
+                    (push (list 'setup major-mode (length buffer-undo-list)
+                                (buffer-string))
+                          log))
+                (read-string "?")))
+            log)
+      (push (list 'deactivate deactivate-mark (local-variable-p 'deactivate-mark))
+            log))
+    (with-current-buffer " *Minibuf-1*"
+      (push (list 'expired (buffer-string) major-mode (buffer-modified-p)
+                  (local-variable-p 'minibuffer-history-variable)
+                  buffer-undo-list buffer-saved-size)
+            log))
+    (with-current-buffer " *Minibuf-0*"
+      (push (list 'level-0 major-mode buffer-undo-list) log))
+    (push (condition-case err (ert-simulate-keys "pw\r" (read-passwd "?"))
+            (error (list 'error err)))
+          log)
+    (push (with-temp-buffer
+            (insert "abcdef")
+            (setq buffer-saved-size 5)
+            (narrow-to-region 2 4)
+            (erase-buffer)
+            (list (buffer-string) (point-min) (point-max) buffer-saved-size))
+          log)
+    (push (mapcar #'local-variable-if-set-p
+                  '(deactivate-mark case-symbols-as-words make-window-start-visible
+                    fontification-functions wrap-prefix line-prefix
+                    display-line-numbers display-line-numbers-width
+                    display-line-numbers-widen display-line-numbers-offset
+                    display-fill-column-indicator
+                    display-fill-column-indicator-column
+                    display-fill-column-indicator-character))
+          log)
+    (nreverse log)))"##,
+        r##"((setup minibuffer-mode 7 #("?" 0 1 (face minibuffer-prompt read-only t field t rear-nonsticky t front-sticky t))) "bar" (deactivate outer t) (expired "" minibuffer-inactive-mode t nil ((#("?bar" 0 1 (face minibuffer-prompt read-only t field t rear-nonsticky t front-sticky t)) . -1) 5 nil (2 . 5)) 0) (level-0 minibuffer-inactive-mode nil) "pw" ("" 1 1 0) (t t t t t t t t t t t t t))"##,
+        "minibuffer unwinding",
+    );
+}
+
+#[test]
+fn text_property_searches_walk_intervals_with_textget() {
+    // textget as intervals.c:lookup_char_property: the C variable
+    // `char-property-alias-alist' (let-bound or buffer-local), each
+    // alternative's own value without its category, nil category and
+    // alias values passed over, then `default-text-properties' (empty
+    // intervals and the end of the text too; syntax scans see it only in a
+    // buffer with intervals).  The searches walk textprop.c's intervals
+    // comparing textget values with EQ: `text-property-any' and
+    // `-not-all' (no intervals: every value nil), the single-property
+    // change scans (limits, markers, narrowing, bounds errors) and the
+    // string case of the single-char-property scans.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+         (with-temp-buffer
+           (insert "abcdef")
+           (put-text-property 2 3 'face 'bold)
+           (put-text-property 4 5 'category 'emaxx-cat2)
+           (put 'emaxx-cat2 'foo 'from-cat)
+           (put 'emaxx-cat2 'baz 'cat-baz)
+           (put 'emaxx-cat2 'nilprop nil)
+           (put-text-property 5 6 'category 'emaxx-cat2)
+           (put-text-property 5 6 'alias2 'a2)
+           (put-text-property 5 6 'alias1 nil)
+           (let ((s (propertize "xyz" 'face 'italic)))
+             (list
+              ;; aliases: a global (let-bound) value, a buffer-local one, a nil
+              ;; alias value skipped, a category's nil value falling through
+              (let ((char-property-alias-alist '((bar alias1 baz alias2) (bar never))))
+                (list (get-text-property 4 'bar) (get-text-property 5 'bar)
+                      (get-char-property 5 'bar)))
+              (progn (setq-local char-property-alias-alist '((qux alias2)))
+                     (prog1 (list (get-text-property 5 'qux) (get-text-property 5 'bar))
+                       (kill-local-variable 'char-property-alias-alist)))
+              (let ((char-property-alias-alist '((nilprop alias2)))
+                    (default-text-properties '(nilprop dflt)))
+                (list (get-text-property 4 'nilprop) (get-text-property 5 'nilprop)
+                      (get-text-property 1 'nilprop)))
+              ;; default-text-properties everywhere textget reads
+              (let ((default-text-properties '(foo dflt face dface)))
+                (list (get-text-property 1 'foo) (get-text-property 7 'foo)
+                      (get-text-property 0 'foo s) (get-text-property 3 'foo s)
+                      (get-text-property 0 'face s)
+                      (text-property-any 1 7 'foo 'dflt) (text-property-not-all 1 7 'foo 'dflt)
+                      (next-single-property-change 1 'foo) (previous-single-property-change 7 'foo)
+                      (next-single-char-property-change 1 'foo)
+                      (get-char-property 1 'foo) (get-pos-property 1 'foo)
+                      (get-text-property 2 'face) (get-text-property 1 'face)
+                      (save-restriction (narrow-to-region 2 4) (list (get-text-property 4 'face) (get-text-property 2 'face)))))
+              ;; stickiness through the defaults
+              (let ((default-text-properties '(read-only t rear-nonsticky t)))
+                (list
+                 (condition-case err (progn (delete-region 1 2) 'deleted) (error (car err)))
+                 (condition-case err (progn (goto-char 1) (insert "q") 'inserted) (error (car err)))
+                 (condition-case err (progn (goto-char 3) (insert "r") 'inserted) (error (car err)))))
+              (let ((default-text-properties '(syntax-table (1))) (parse-sexp-lookup-properties t))
+                (list (progn (goto-char 1) (skip-syntax-forward "w") (point))
+                      (with-temp-buffer (insert "abc def") (goto-char 1) (skip-syntax-forward "w") (point))
+                      (with-temp-buffer (insert "abc def") (put-text-property 6 7 'face 'x) (goto-char 1) (skip-syntax-forward "w") (point))))
+              (buffer-string))))
+         (let* ((v1 (copy-sequence "v")) (v2 (copy-sequence "v")) (out nil))
+           (with-temp-buffer
+             (insert "abcdefghij")
+             (push (list 'none
+                         (text-property-any 1 5 'face nil) (text-property-any 1 5 'face 'bold)
+                         (text-property-not-all 1 5 'face nil) (text-property-not-all 1 5 'face 'bold)
+                         (text-property-any 3 3 'face nil) (text-property-any 50 50 'face nil)
+                         (next-single-property-change 1 'face) (next-single-property-change 1 'face nil 4)
+                         (previous-single-property-change 5 'face) (previous-single-property-change 5 'face nil 2)
+                         (condition-case err (text-property-any 1 50 'face nil) (error (list 'err (car err) (cdr err)))) (condition-case err (next-single-property-change 50 'face) (error (list 'err (car err) (cdr err))))
+                         (condition-case err (next-single-property-change 'x 'face) (error (list 'err (car err) (cdr err)))) (condition-case err (text-property-any 1 3 'face nil 5) (error (list 'err (car err) (cdr err)))))
+                   out)
+             (put-text-property 3 5 'face v1)
+             (put-text-property 5 7 'face v2)
+             (put-text-property 8 9 'face 'bold)
+             (let ((m (copy-marker 6)))
+               (push (list 'props
+                           (text-property-any 1 11 'face v2) (text-property-any 6 11 'face v2) (text-property-any 9 2 'face 'bold)
+                           (text-property-not-all 3 11 'face v1) (text-property-not-all 4 1 'face nil)
+                           (next-single-property-change 1 'face) (next-single-property-change 3 'face)
+                           (next-single-property-change 5 'face) (next-single-property-change 9 'face)
+                           (next-single-property-change 9 'face nil 10) (next-single-property-change 9 'face nil 30)
+                           (next-single-property-change 6 'face nil 2) (next-single-property-change 1 'face nil m)
+                           (next-single-property-change 11 'face)
+                           (previous-single-property-change 11 'face) (previous-single-property-change 9 'face)
+                           (previous-single-property-change 5 'face) (previous-single-property-change 3 'face)
+                           (previous-single-property-change 1 'face) (previous-single-property-change 7 'face nil 6)
+                           (previous-single-property-change 7 'face nil 1) (previous-single-property-change 4 'face nil 8)
+                           (previous-single-property-change m 'face))
+                     out))
+             (save-restriction
+               (narrow-to-region 4 8)
+               (push (list 'narrow (next-single-property-change 4 'face) (previous-single-property-change 8 'face)
+                           (text-property-any 4 8 'face 'bold) (text-property-not-all 4 8 'face v1)
+                           (condition-case err (text-property-any 1 8 'face nil) (error (list 'err (car err) (cdr err)))) (next-single-property-change 7 'face)
+                           (previous-single-property-change 5 'face))
+                     out))
+             (remove-text-properties 1 11 '(face nil))
+             (push (list 'emptied (text-property-any 1 11 'face nil) (text-property-not-all 1 11 'face nil)
+                         (next-single-property-change 1 'face) (previous-single-property-change 11 'face))
+                   out)
+             (let ((default-text-properties '(face dflt)))
+               (push (list 'defaults (text-property-any 1 11 'face 'dflt) (next-single-property-change 1 'face)) out)))
+           (let ((s (concat "ab" (propertize "cd" 'face 'bold) "ef" (propertize "g" 'category 'emaxx-tps)))
+                 (p (copy-sequence "plain")))
+             (put 'emaxx-tps 'face 'catface)
+             (push (list 'string
+                         (text-property-any 0 7 'face 'bold s) (text-property-not-all 2 7 'face 'bold s)
+                         (next-single-property-change 0 'face s) (next-single-property-change 2 'face s)
+                         (next-single-property-change 4 'face s) (next-single-property-change 6 'face s)
+                         (next-single-property-change 6 'face s 100) (previous-single-property-change 7 'face s)
+                         (previous-single-property-change 4 'face s) (previous-single-property-change 2 'face s)
+                         (next-single-char-property-change 0 'face s) (next-single-char-property-change 6 'face s)
+                         (next-single-char-property-change 6 'face s 9) (previous-single-char-property-change 2 'face s)
+                         (previous-single-char-property-change 7 'face s) (previous-single-char-property-change 2 'face s 1)
+                         (next-single-property-change 0 'face p) (next-single-char-property-change 0 'face p)
+                         (previous-single-char-property-change 5 'face p) (text-property-any 0 5 'face nil p)
+                         (text-property-not-all 0 5 'face nil p)
+                         (condition-case err (next-single-property-change 9 'face s) (error (list 'err (car err) (cdr err)))) (condition-case err (text-property-any 0 9 'face nil s) (error (list 'err (car err) (cdr err)))))
+                   out))
+           (nreverse out)))"##,
+        r##"(((nil a2 a2) (a2 nil) (dflt a2 dflt) (dflt dflt dflt dflt italic 1 4 4 6 4 dflt nil bold dface (dface bold)) (text-read-only inserted inserted) (1 4 1) #("qarbcdef" 3 4 (face bold) 5 6 (category emaxx-cat2) 6 7 (alias1 nil alias2 a2 category emaxx-cat2))) ((none 1 nil nil 1 nil nil nil 4 nil 2 (err args-out-of-range (1 50)) (err args-out-of-range (50 50)) (err wrong-type-argument (integer-or-marker-p x)) (err wrong-type-argument (buffer-or-string-p 5))) (props 5 6 8 5 3 3 5 7 nil 10 30 2 3 nil 9 8 3 nil nil 6 5 8 5) (narrow 5 7 nil 5 (err args-out-of-range (1 8)) nil nil) (emptied 1 nil nil nil) (defaults 1 nil) (string 2 4 2 4 6 nil 100 6 2 nil 2 7 9 0 6 1 nil 5 0 0 nil (err args-out-of-range (9 9)) (err args-out-of-range (0 9)))))"##,
+        "text property searches",
+    );
+}
+
+#[test]
 fn kill_buffer_queries_before_the_interactive_modified_prompt() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
@@ -17516,7 +17701,9 @@ fn property_change_helpers_accept_markers() {
     )
     .expect("next-single-property-change should accept markers");
 
-    assert_eq!(previous, Value::Integer(1));
+    // GNU: no interval precedes the one holding position 2, so the
+    // backward scan finds no change and returns its nil LIMIT.
+    assert_eq!(previous, Value::Nil);
     assert_eq!(next, Value::Integer(3));
 }
 
@@ -24201,7 +24388,7 @@ fn active_minibuffer_selected_window_tracks_entry_across_nested_reads() {
         "a nested read remembers the outer minibuffer window"
     );
 
-    crate::lisp::primitives::restore_active_minibuffer(&mut interp, inner);
+    crate::lisp::primitives::restore_active_minibuffer(&mut interp, inner, &mut env);
     assert_eq!(
         interp.active_minibuffer_activation_id(),
         Some(outer_activation),
@@ -24213,7 +24400,7 @@ fn active_minibuffer_selected_window_tracks_entry_across_nested_reads() {
         entry,
         "unwinding the nested read restores the outer entry window"
     );
-    crate::lisp::primitives::restore_active_minibuffer(&mut interp, outer);
+    crate::lisp::primitives::restore_active_minibuffer(&mut interp, outer, &mut env);
     assert_eq!(interp.active_minibuffer_activation_id(), None);
     assert_eq!(
         call(&mut interp, "selected-window", &[], &mut env).expect("restored selection"),

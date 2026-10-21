@@ -7398,6 +7398,27 @@ impl Interpreter {
         // syntax.c:3797 Fmake_variable_buffer_local: a setq must localize,
         // never leak into the global default.
         interp.mark_auto_buffer_local("comment-end-can-be-escaped");
+        // The other C variables the syms_of_* functions make buffer-local
+        // when set: keyboard.c's `deactivate-mark' (a command's request
+        // stays with the buffer it ran in), casefiddle.c's, and xdisp.c's
+        // display controls.
+        for name in [
+            "deactivate-mark",
+            "case-symbols-as-words",
+            "make-window-start-visible",
+            "fontification-functions",
+            "wrap-prefix",
+            "line-prefix",
+            "display-line-numbers",
+            "display-line-numbers-width",
+            "display-line-numbers-widen",
+            "display-line-numbers-offset",
+            "display-fill-column-indicator",
+            "display-fill-column-indicator-column",
+            "display-fill-column-indicator-character",
+        ] {
+            interp.mark_auto_buffer_local(name);
+        }
         for (name, value) in [
             ("next-screen-context-lines", Value::Integer(2)),
             ("eol-mnemonic-unix", Value::String(":".into())),
@@ -7441,7 +7462,7 @@ impl Interpreter {
         if let Some(window) = interp.find_record_mut(selected_window_id) {
             window.slots[primitives::WINDOW_USE_TIME_SLOT] = Value::Integer(1);
         }
-        let (minibuffer_buffer_id, _) = interp.create_buffer(" *Minibuf-0*");
+        let (minibuffer_buffer_id, _) = primitives::get_minibuffer(&mut interp, 0);
         interp.buffer_list.push((1, "*Messages*".to_string()));
         let minibuffer_window = interp.create_pseudovector(
             RecordKind::Window,

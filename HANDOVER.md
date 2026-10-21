@@ -3717,6 +3717,100 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   and regexp tests). Clippy `-D warnings`, rustfmt and `git diff --check`
   pass. The seven GNU tests round 43's frozen run failed pass, run as
   GNU's own test files.
+- **Round 45: text properties read and searched as textprop.c does.**
+  Chasing round 43's undo cost found `textget` reading
+  `char-property-alias-alist` by name as a buffer-local value (a let-bound
+  or global alias list never seen, hundreds of instructions a lookup),
+  taking an alternative's value through its category, stopping at a nil
+  category or alias value, and ignoring `default-text-properties`, so text
+  the defaults made read-only could be deleted. `textget` is now
+  intervals.c:lookup_char_property: the plist's value, else the category
+  symbol's non-nil value, else the first non-nil value of an alternative,
+  else the defaults, both variables read as C variables; an empty interval
+  and the end of the text read the defaults too, and a syntax scan sees
+  them only in a buffer with intervals (interval_of finds none otherwise).
+  `text-property-any`, `text-property-not-all` and the single-property
+  change scans read each character's raw property, compared values with
+  equal-like rules and clamped bad positions; they now walk the intervals
+  from find_interval (`PropertyIntervals` over a buffer's or string's
+  spans), compare `textget` values with EQ, answer for an object without
+  intervals as if every value were nil, coerce limits and markers and
+  signal args-out-of-range outside the accessible text. The string case
+  of the single-char-property scans is the single-property scan's (the
+  backward one read a string as a buffer name).
+  `property_change_helpers_accept_markers` had pinned a backward scan's 1
+  where GNU returns nil (no interval before the first).
+  `text_property_searches_walk_intervals_with_textget` checks the lookups
+  and searches against the GNU oracle.
+  Round 44's frozen run failed six erc tests with `text-read-only`:
+  `read-passwd`'s own cleanup erases the minibuffer, which in GNU
+  read_minibuf_unwind has already erased with `inhibit-read-only` bound,
+  while Emaxx left the read-only prompt there (round 44's read-only checks
+  in `erase-buffer` exposed it). Probing a read against GNU found the
+  minibuffer's whole life apart, and it now follows minibuf.c:
+  get_minibuffer makes the buffer with undo enabled (it was disabled, the
+  name starting with a space) and reuses one with its overlays deleted;
+  each read runs `minibuffer-mode` (the level-0 minibuffer
+  `minibuffer-inactive-mode`, as emacs.c sets it before the top level),
+  clears `truncate-lines`, erases the buffer and inserts the prompt through
+  `erase-buffer`, `insert`, `put-text-property` and
+  `add-face-text-property` with `inhibit-read-only` and
+  `inhibit-modification-hooks` bound (recording undo; the stickiness and
+  field controls first, then `minibuffer-prompt-properties`, so the
+  prompt's plist prints in GNU's order), inserts the initial input as an
+  ordinary insertion, and empties the undo list after the setup hook.
+  Every exit runs `minibuffer-exit-hook` (it ran only for a live
+  terminal's reads, there after the window restore and before the
+  contents were taken; the contents are now taken with the minibuffer
+  current, as read_minibuf's `Fset_buffer` before
+  `Fminibuffer_contents`, since an exiting command may have run in
+  `*Completions*`), then erases the expired minibuffer the same way,
+  keeping `deactivate-mark`, and runs `minibuffer-inactive-mode`. Both
+  recursive edits (the minibuffer's and `recursive-edit`'s) bind
+  `inhibit-redisplay` and `undo-auto--undoably-changed-buffers` as
+  recursive_edit_1 does, so a command inside one puts no undo boundary in
+  a buffer changed before it (Bug#23632), and the keyboard-macro command
+  loop takes its boundary through `undo-auto--add-boundary` before the
+  command, as command_loop_1 does, so typed characters amalgamate. A batch
+  read from stdin activates no minibuffer (read_minibuf_noninteractive
+  returns before choosing one). `erase-buffer` widens first and resets
+  `buffer-saved-size`, as Ferase_buffer. `deactivate-mark` and the twelve
+  other C variables keyboard.c, casefiddle.c and xdisp.c make
+  buffer-local when set (`case-symbols-as-words`, `wrap-prefix`,
+  `display-line-numbers` and the rest) now are, and the command loops'
+  reset of `deactivate-mark` is a C assignment that makes no local; a
+  store into a buffer-local variable whose binding in the current buffer
+  exists is set_internal's store into the loaded binding and nothing else
+  (`image_round_trips_buffers_markers_finalizers_and_nilled_frames` now
+  expects the buffer's `deactivate-mark` local, as GNU makes it).
+  `minibuffer_reads_unwind_like_read_minibuf` checks the read's setup
+  view, the expired minibuffer (its undo list included), the level-0
+  minibuffer, `read-passwd`, `erase-buffer` and the variables against the
+  GNU oracle; erc-sasl-tests, erc-tests, erc-scenarios-auth-source,
+  auth-source-tests, minibuffer-tests, minibuf-tests,
+  completion-preview-tests, rmc-tests, isearch-tests, comint-tests,
+  simple-tests, undo-tests, buffer-tests, replace-tests, subr-tests,
+  files-tests, data-tests, xdisp-tests, ert-x-tests, keyboard-tests,
+  edebug-tests and kmacro-tests fail exactly GNU's tests when run as
+  GNU's own files.
+  Profile-guided builds, each trained on its own source: undo 1,086,993 ->
+  1,087,600 instructions a unit (GNU 1,252,071). The text-property half
+  took it to 1,072,834, the by-name reads and their string compares gone;
+  the minibuffer half added 14.8K, nearly all of it insdel.c's `Fset
+  (Qdeactivate_mark, Qt)` in each `prepare_to_modify_buffer` now that
+  `deactivate-mark` is buffer-local (`set_internal_symbol` 646 -> 13,260 a
+  unit inclusive: two hash lookups a store, the buffer's locals and then
+  the binding, and the full path for a buffer's first store, which makes
+  the local), where GNU stores through the symbol's loaded binding (blv) in
+  a few instructions. Bytecode calls 417.7 -> 418.2 an iteration.
+  Validation as round 44's: the whole library suite (3,175 tests, two of
+  them new) passes but for the same known failures, all 98 groups on the
+  round's final build; clippy `-D warnings`, rustfmt and `git diff --check`
+  pass. The six erc tests round 44's frozen run failed pass, run as GNU's
+  own test files. Still not as GNU: `get-text-property` at a narrowed
+  buffer's end reads no interval (GNU reads the one there), and the buffer
+  case of the single-char-property scans compares overlay and text values
+  per character rather than through `next-char-property-change`.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4298,9 +4392,12 @@ python-mode's two string font-lock tests and eglot's column and
 multi-line eldoc tests, all from its property changes running the
 change hooks under `with-silent-modifications`, whose let-bound
 `inhibit-modification-hooks` it ignored; round 44 passes all seven
-here (eglot's with clangd installed). **On round 44's commit**: the
-full Rust gate and frozen runs are dispatched with it; their results go
-in the next round's record. Locally,
+here (eglot's with clangd installed). **On `61e3e66`** (round 44): full
+Rust gate passed (run 39573615433); frozen failed six erc tests with
+`text-read-only` (run 39573619718), `read-passwd`'s cleanup erasing the
+minibuffer GNU's read_minibuf_unwind had already erased; round 45 passes
+them. **On round 45's commit**: the full Rust gate and frozen runs are
+dispatched with it; their results go in the next round's record. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -4313,7 +4410,12 @@ this container's GNU build itself disagrees with the expected text (under
 `default` it prints the Latin-1 string without its `charset` property);
 `char_charset_family_follows_charset_c` fails the same way on its GNU side
 (this build answers `iso-8859-1` where the expected text, CI's, has
-`unicode`).
+`unicode`). `suspended_bytecode_retains_operand_and_unwind_roots` fails
+now and then under load, 4 times in 300 runs here on round 44's source
+and on round 45's alike: the weak table's key survives the collection
+after the thread joins, held by a conservative stack word that neither
+the collector's own frames nor the thread switch's hold (scrubbing each
+changed nothing); what holds it is not yet found.
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

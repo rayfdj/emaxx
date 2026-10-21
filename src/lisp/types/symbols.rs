@@ -57,6 +57,8 @@ const KEY_NAMES: &[&str] = &[
     "parse-sexp-lookup-properties",
     "cache-long-scans",
     "char-property-alias-alist",
+    "default-text-properties",
+    "buffer-saved-size",
     "search-spaces-regexp",
     "symbol",
     "integer",

@@ -1185,7 +1185,7 @@ impl Interpreter {
                     self.set_global_binding_resolved(symbol, value);
                 }
                 SpecialBindingScope::BufferLocal(buffer_id) => {
-                    self.set_buffer_local_value(buffer_id, resolved, value);
+                    self.set_buffer_local_value_symbol(buffer_id, symbol, value);
                 }
             }
             return;

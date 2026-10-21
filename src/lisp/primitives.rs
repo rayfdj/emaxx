@@ -148,6 +148,7 @@ mod strings;
 pub(crate) mod syntax;
 mod system;
 mod text;
+mod textprop;
 pub(crate) mod values;
 mod window;
 
@@ -183,6 +184,7 @@ pub(crate) use strings::*;
 pub(crate) use system::*;
 pub use system::{DaemonState, set_build_details, set_daemon_state};
 pub(crate) use text::*;
+pub(crate) use textprop::*;
 pub(crate) use values::*;
 pub(crate) use window::*;
 

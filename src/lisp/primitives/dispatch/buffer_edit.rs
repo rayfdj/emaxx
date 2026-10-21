@@ -16,6 +16,18 @@ fn call_undo_auto_amalgamate(interp: &mut Interpreter, env: &mut Env) {
     }
 }
 
+/// editfns.c:Fwiden: the whole buffer accessible, or as much of it as the
+/// innermost labeled restriction allows.
+fn widen_current_buffer(interp: &Interpreter) {
+    if let Some((start, end)) =
+        interp.effective_labeled_restriction(interp.current_buffer_id(), None)
+    {
+        interp.buffer.borrow_mut().narrow_to_region(start, end);
+    } else {
+        interp.buffer.borrow_mut().widen();
+    }
+}
+
 fn word_syntax_at(interp: &Interpreter, env: &Env, position: usize) -> bool {
     super::super::syntax::syntax_class_at_buffer_position_matches(interp, env, position, 'w')
 }
@@ -988,12 +1000,22 @@ define_dispatch!(
                 }
             }
             "erase-buffer" => {
-                let size = interp.buffer.borrow().buffer_size();
-                if size > 0 {
-                    let min = interp.buffer.borrow().point_min();
-                    let max = interp.buffer.borrow().point_max();
+                // buffer.c:Ferase_buffer: Fwiden, then del_range (BEG, Z),
+                // which del_range_1 clamps to what a labeled restriction
+                // leaves accessible; then the saved size is reset, so
+                // auto-saving does not take the shrink for lost text.
+                widen_current_buffer(interp);
+                let min = interp.buffer.borrow().point_min();
+                let max = interp.buffer.borrow().point_max();
+                if min < max {
                     delete_region_with_hooks(interp, min, max, env)?;
                 }
+                let buffer_id = interp.current_buffer_id();
+                interp.set_buffer_local_value_symbol(
+                    buffer_id,
+                    &cached_symbol!("buffer-saved-size").with(Clone::clone),
+                    Value::Integer(0),
+                );
                 Ok(Value::Nil)
             }
             "upcase-region"
@@ -1326,13 +1348,7 @@ define_dispatch!(
                 Ok(Value::Nil)
             }
             "widen" => {
-                if let Some((start, end)) =
-                    interp.effective_labeled_restriction(interp.current_buffer_id(), None)
-                {
-                    interp.buffer.borrow_mut().narrow_to_region(start, end);
-                } else {
-                    interp.buffer.borrow_mut().widen();
-                }
+                widen_current_buffer(interp);
                 Ok(Value::Nil)
             }
             "buffer-modified-p" => {
@@ -1555,115 +1571,13 @@ define_dispatch!(
                 if args.len() < 4 || args.len() > 5 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = PropertyName::new(args[2]);
-                let want_match = name == "text-property-any";
-                if let Some(object) = args.get(4) {
-                    if string_like(object).is_some() {
-                        let start = args[0].as_integer()?.max(0) as usize;
-                        let end = args[1].as_integer()?.max(0) as usize;
-                        return Ok(text_property_search_string(
-                            interp, object, start, end, prop, &args[3], want_match,
-                        )
-                        .map(|pos| Value::Integer(pos as i64))
-                        .unwrap_or(Value::Nil));
-                    }
-
-                    let buffer_id = if object.is_nil() {
-                        interp.current_buffer_id()
-                    } else {
-                        interp.resolve_buffer_id(object)?
-                    };
-                    let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
-                        LispError::Signal(format!("No buffer with id {}", buffer_id))
-                    })?;
-                    let start = position_from_value(interp, &args[0])?;
-                    let end = position_from_value(interp, &args[1])?;
-                    return Ok(text_property_search_buffer(
-                        interp, &buffer, start, end, prop, &args[3], want_match,
-                    )
-                    .map(|pos| Value::Integer(pos as i64))
-                    .unwrap_or(Value::Nil));
-                }
-
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
-                Ok(text_property_search_buffer(
-                    interp,
-                    &interp.buffer.borrow(),
-                    start,
-                    end,
-                    prop,
-                    &args[3],
-                    want_match,
-                )
-                .map(|pos| Value::Integer(pos as i64))
-                .unwrap_or(Value::Nil))
+                text_property_any(interp, args, name == "text-property-any")
             }
             "next-single-property-change" => {
                 if args.len() < 2 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = PropertyName::new(args[1]);
-                let object = args.get(2).unwrap_or(&Value::Nil);
-                let limit = match args.get(3).filter(|value| !value.is_nil()) {
-                    Some(value) => Some(position_from_value(interp, value)?),
-                    None => None,
-                };
-                if string_like(object).is_some() {
-                    let pos = args[0].as_integer()?.max(0) as usize;
-                    let text = string_text(object)?;
-                    let max_pos = limit.unwrap_or(text.chars().count());
-                    let initial = string_property_at_with_category(interp, object, pos, prop)
-                        .unwrap_or(Value::Nil);
-                    for cursor in pos.saturating_add(1)..max_pos {
-                        let current =
-                            string_property_at_with_category(interp, object, cursor, prop)
-                                .unwrap_or(Value::Nil);
-                        if !crate::buffer::text_property_values_eq(&current, &initial) {
-                            return Ok(Value::Integer(cursor as i64));
-                        }
-                    }
-                    return Ok(limit
-                        .map(|value| Value::Integer(value as i64))
-                        .unwrap_or(Value::Nil));
-                }
-
-                let pos = position_from_value(interp, &args[0])?.max(1);
-                let (initial, max_pos) = {
-                    let buffer_id = if object.is_nil() {
-                        interp.current_buffer_id()
-                    } else {
-                        interp.resolve_buffer_id(object)?
-                    };
-                    let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
-                        LispError::Signal(format!("No buffer with id {}", buffer_id))
-                    })?;
-                    (
-                        buffer.text_property_at(pos, prop).unwrap_or(Value::Nil),
-                        limit.unwrap_or(buffer.point_max()),
-                    )
-                };
-                for cursor in pos.saturating_add(1)..max_pos {
-                    let current = if object.is_nil() {
-                        interp
-                            .buffer
-                            .borrow()
-                            .text_property_at(cursor, prop)
-                            .unwrap_or(Value::Nil)
-                    } else {
-                        let buffer_id = interp.resolve_buffer_id(object)?;
-                        let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
-                            LispError::Signal(format!("No buffer with id {}", buffer_id))
-                        })?;
-                        buffer.text_property_at(cursor, prop).unwrap_or(Value::Nil)
-                    };
-                    if !crate::buffer::text_property_values_eq(&current, &initial) {
-                        return Ok(Value::Integer(cursor as i64));
-                    }
-                }
-                Ok(limit
-                    .map(|value| Value::Integer(value as i64))
-                    .unwrap_or(Value::Nil))
+                next_single_property_change(interp, args)
             }
             "next-property-change" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -1726,23 +1640,8 @@ define_dispatch!(
                     Some(value) => Some(position_from_value(interp, value)?),
                     None => None,
                 };
-                if string_like(object).is_some() {
-                    let pos = args[0].as_integer()?.max(0) as usize;
-                    let text = string_text(object)?;
-                    let max_pos = limit.unwrap_or(text.chars().count());
-                    let initial = string_property_at_with_category(interp, object, pos, prop)
-                        .unwrap_or(Value::Nil);
-                    for cursor in pos.saturating_add(1)..max_pos {
-                        let current =
-                            string_property_at_with_category(interp, object, cursor, prop)
-                                .unwrap_or(Value::Nil);
-                        if !crate::buffer::text_property_values_eq(&current, &initial) {
-                            return Ok(Value::Integer(cursor as i64));
-                        }
-                    }
-                    return Ok(limit
-                        .map(|value| Value::Integer(value as i64))
-                        .unwrap_or(Value::Nil));
+                if matches!(object.kind(), Kind::StringObject(_)) {
+                    return single_char_property_change_in_string(interp, args, true);
                 }
 
                 let pos = position_from_value(interp, &args[0])?.max(1);
@@ -1781,6 +1680,9 @@ define_dispatch!(
                     Some(value) => Some(position_from_value(interp, value)?),
                     None => None,
                 };
+                if matches!(object.kind(), Kind::StringObject(_)) {
+                    return single_char_property_change_in_string(interp, args, false);
+                }
                 let pos = position_from_value(interp, &args[0])?;
                 let buffer_id = if object.is_nil() {
                     interp.current_buffer_id()
@@ -1820,66 +1722,7 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = PropertyName::new(args[1]);
-                let object = args.get(2).unwrap_or(&Value::Nil);
-                let limit = match args.get(3).filter(|value| !value.is_nil()) {
-                    Some(value) => Some(position_from_value(interp, value)?),
-                    None => None,
-                };
-                if string_like(object).is_some() {
-                    let pos = args[0].as_integer()?.max(0) as usize;
-                    let min_pos = limit.unwrap_or(0);
-                    if pos <= min_pos {
-                        return Ok(limit
-                            .map(|value| Value::Integer(value as i64))
-                            .unwrap_or(Value::Nil));
-                    }
-                    let initial = string_property_at(object, pos.saturating_sub(1), prop)
-                        .unwrap_or(Value::Nil);
-                    for cursor in (min_pos..pos).rev() {
-                        let previous = cursor
-                            .checked_sub(1)
-                            .and_then(|index| string_property_at(object, index, prop))
-                            .unwrap_or(Value::Nil);
-                        if !crate::buffer::text_property_values_eq(&previous, &initial) {
-                            return Ok(Value::Integer(cursor as i64));
-                        }
-                    }
-                    return Ok(limit
-                        .map(|value| Value::Integer(value as i64))
-                        .unwrap_or(Value::Nil));
-                }
-
-                let pos = position_from_value(interp, &args[0])?.max(1);
-                let buffer_id = if object.is_nil() {
-                    interp.current_buffer_id()
-                } else {
-                    interp.resolve_buffer_id(object)?
-                };
-                let buffer = interp
-                    .get_buffer_by_id(buffer_id)
-                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
-                let min_pos = limit.unwrap_or(buffer.point_min());
-                if pos <= min_pos {
-                    return Ok(limit
-                        .map(|value| Value::Integer(value as i64))
-                        .unwrap_or(Value::Nil));
-                }
-                let initial = buffer
-                    .text_property_at(pos.saturating_sub(1), prop)
-                    .unwrap_or(Value::Nil);
-                for cursor in (min_pos..pos).rev() {
-                    let previous = cursor
-                        .checked_sub(1)
-                        .and_then(|index| buffer.text_property_at(index, prop))
-                        .unwrap_or(Value::Nil);
-                    if !crate::buffer::text_property_values_eq(&previous, &initial) {
-                        return Ok(Value::Integer(cursor as i64));
-                    }
-                }
-                Ok(limit
-                    .map(|value| Value::Integer(value as i64))
-                    .unwrap_or(Value::Nil))
+                previous_single_property_change(interp, args)
             }
             "previous-property-change" => {
                 need_arg_range(name, args, 1, 3)?;
