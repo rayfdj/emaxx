@@ -45,7 +45,7 @@ pub(crate) mod terminal;
 mod thread_context;
 pub(crate) use dump_roots::{FIELDS_NOT_CARRIED, ROOTS_RESET_AFTER_LOAD, TRANSIENT_ROOTS};
 pub(crate) use image_install::PdumperLoadRecord;
-pub(crate) use local_cells::LocalCells;
+pub(crate) use local_cells::{LoadedBindings, LocalCells};
 mod symbol_cells;
 pub(crate) use symbol_cells::{SymbolCellSnapshot, SymbolCells};
 pub(crate) mod symbol_cell_flags {
@@ -3884,7 +3884,7 @@ impl Interpreter {
             .map(|cells| {
                 cells
                     .iter()
-                    .map(|(symbol, value)| (*symbol, *value))
+                    .map(|(symbol, value)| (*symbol, value))
                     .collect()
             })
             .unwrap_or_default()
@@ -4016,7 +4016,7 @@ impl Interpreter {
         for (symbol, value) in cells {
             self.globals
                 .set_flag_by_name(symbol.as_str(), symbol_cell_flags::LOCALIZED);
-            locals.insert(&symbol, value);
+            locals.insert(&symbol, value, &self.loaded_bindings);
         }
         self.remove_buffer_locals(id);
         if !locals.is_empty() {
@@ -4229,7 +4229,7 @@ impl Interpreter {
         }
         for bindings in self.buffer_locals.values() {
             for (_, value) in bindings.iter() {
-                mark(value);
+                mark(&value);
             }
         }
         for hooks in self.buffer_local_hooks.values() {
@@ -5356,6 +5356,9 @@ pub struct InterpreterState {
     /// order.  GNU's buffer slot lookup is constant-time; mode-heavy code must
     /// not scan every other live buffer's locals on each variable read.
     buffer_locals: BufferLocalBindings,
+    /// Each plain buffer-local variable's binding last read or stored, by
+    /// buffer (data.c's blv `where' and `valcell').
+    loaded_bindings: LoadedBindings,
     /// Buffer-local syntax tables keyed by buffer id.
     buffer_syntax_tables: Vec<(u64, CharTableRef)>,
     /// Active dynamic special bindings in stack order.
@@ -6116,6 +6119,7 @@ impl Interpreter {
             pdumper_loaded: None,
             buffer_local_hooks: HashMap::default(),
             buffer_locals: HashMap::default(),
+            loaded_bindings: LoadedBindings::default(),
             buffer_syntax_tables: Vec::new(),
             active_special_restores: Vec::new(),
             next_special_binding_id: 1,

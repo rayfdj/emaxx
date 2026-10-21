@@ -233,6 +233,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("regexp_syntax_class_cache", "a cache"),
     ("syntax_segment_cache", "a cache"),
     (
+        "loaded_bindings",
+        "a cache of the buffer-local bindings last used (data.c's blv where and valcell), loaded again on use",
+    ),
+    (
         "safe_terminal_coding",
         "terminal state, re-created by init_tty",
     ),

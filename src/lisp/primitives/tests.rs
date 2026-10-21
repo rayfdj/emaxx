@@ -3713,6 +3713,114 @@ fn buffer_local_cells_follow_data_c() {
 }
 
 #[test]
+fn loaded_buffer_local_bindings_follow_data_c() {
+    // data.c's SYMBOL_LOCALIZED reads and stores through the binding loaded
+    // for a buffer (blv `where' and `valcell'): a store into a variable
+    // local when set makes the buffer's binding unless a `let' of the
+    // default is in effect (let_shadows_buffer_binding_p); a binding killed
+    // (`kill-local-variable', `kill-all-local-variables', the buffer's
+    // death), made again, copied to an indirect clone, `let'-bound or
+    // watched after it was loaded is the one read and stored next, from the
+    // evaluator and from byte-code; and each modification sets
+    // `deactivate-mark' in a binding of the buffer's own.
+    let program = r#"
+        (let ((results nil)
+              (a (generate-new-buffer "zz-lb-a"))
+              (b (generate-new-buffer "zz-lb-b")))
+          (defvar-local zz-lb-loc 'default)
+          (defvar zz-lb-plain 'plain-default)
+          ;; A store makes A's binding; B still sees the default.
+          (with-current-buffer a (setq zz-lb-loc 'in-a))
+          (push (list (with-current-buffer a zz-lb-loc) (with-current-buffer b zz-lb-loc)
+                      (default-value 'zz-lb-loc))
+                results)
+          ;; A `let' of the default in B shadows the binding a store would make.
+          (with-current-buffer b
+            (let ((zz-lb-loc 'let-default))
+              (setq zz-lb-loc 'set-in-let)
+              (push (list zz-lb-loc (local-variable-p 'zz-lb-loc) (default-value 'zz-lb-loc)
+                          (with-current-buffer a zz-lb-loc))
+                    results))
+            (push (list zz-lb-loc (local-variable-p 'zz-lb-loc) (default-value 'zz-lb-loc)) results)
+            (setq zz-lb-loc 'in-b)
+            (push (list zz-lb-loc (local-variable-p 'zz-lb-loc)) results))
+          ;; Killed, then made again, while loaded.
+          (with-current-buffer a
+            (push zz-lb-loc results)
+            (kill-local-variable 'zz-lb-loc)
+            (push (list zz-lb-loc (local-variable-p 'zz-lb-loc)) results)
+            (setq zz-lb-loc 'again)
+            (push (list zz-lb-loc (local-variable-p 'zz-lb-loc) (with-current-buffer b zz-lb-loc)) results))
+          ;; A plain variable made local in A: a store in B is the default's.
+          (with-current-buffer a (make-local-variable 'zz-lb-plain) (setq zz-lb-plain 'a-plain))
+          (with-current-buffer b (setq zz-lb-plain 'b-set))
+          (push (list (with-current-buffer a zz-lb-plain) (with-current-buffer b zz-lb-plain)
+                      (default-value 'zz-lb-plain) (with-current-buffer b (local-variable-p 'zz-lb-plain)))
+                results)
+          ;; A `let' of A's binding, read from B inside it.
+          (with-current-buffer a
+            (let ((zz-lb-loc 'a-let))
+              (push (list zz-lb-loc (with-current-buffer b zz-lb-loc)
+                          (progn (setq zz-lb-loc 'a-let-set) zz-lb-loc))
+                    results))
+            (push zz-lb-loc results))
+          ;; A watcher added once the binding is loaded sees the next store.
+          (let* ((seen nil)
+                 (watch (lambda (symbol new op where)
+                          (push (list symbol new op (buffer-name where)) seen))))
+            (with-current-buffer a (setq zz-lb-loc 'before-watch))
+            (add-variable-watcher 'zz-lb-loc watch)
+            (with-current-buffer a (setq zz-lb-loc 'watched))
+            (remove-variable-watcher 'zz-lb-loc watch)
+            (with-current-buffer a (setq zz-lb-loc 'unwatched))
+            (push (list (nreverse seen) (with-current-buffer a zz-lb-loc)) results))
+          ;; Byte-code reads and stores the same bindings.
+          (push (funcall (byte-compile
+                          (lambda (a b)
+                            (with-current-buffer a (setq zz-lb-loc 'bc-a))
+                            (list (with-current-buffer a zz-lb-loc)
+                                  (with-current-buffer b (setq zz-lb-loc 'bc-b) zz-lb-loc)
+                                  (with-current-buffer a zz-lb-loc))))
+                         a b)
+                results)
+          ;; An indirect clone copies the bindings; each keeps its own after.
+          (let ((c (with-current-buffer a (make-indirect-buffer a "zz-lb-c" t))))
+            (push (list (with-current-buffer c zz-lb-loc)
+                        (progn (with-current-buffer c (setq zz-lb-loc 'in-c)) (with-current-buffer a zz-lb-loc))
+                        (with-current-buffer c zz-lb-loc))
+                  results)
+            (kill-buffer c))
+          ;; `kill-all-local-variables' and `makunbound' of a loaded binding.
+          (with-current-buffer a
+            (kill-all-local-variables)
+            (push (list zz-lb-loc zz-lb-plain (local-variable-p 'zz-lb-loc)) results)
+            (setq zz-lb-loc 'after-kill-all)
+            (makunbound 'zz-lb-loc)
+            (push (list (boundp 'zz-lb-loc) (local-variable-p 'zz-lb-loc)
+                        (with-current-buffer b zz-lb-loc))
+                  results))
+          ;; Each modification stores `deactivate-mark' through a binding of its own.
+          (with-current-buffer b
+            (insert "x")
+            (push (list deactivate-mark (local-variable-p 'deactivate-mark)
+                        (with-current-buffer a (local-variable-p 'deactivate-mark)))
+                  results))
+          ;; A killed buffer's bindings go with it.
+          (kill-buffer a)
+          (push (with-current-buffer b (list zz-lb-loc (default-value 'zz-lb-loc))) results)
+          (kill-buffer b)
+          (nreverse results))"#;
+    assert_oracle_contract_matches_interpreter(
+        program,
+        "((in-a default default) (set-in-let nil set-in-let in-a) (default nil default) (in-b t) \
+         in-a (default nil) (again t in-b) (a-plain b-set b-set nil) (a-let in-b a-let-set) again \
+         (((zz-lb-loc watched set \"zz-lb-a\")) unwatched) (bc-a bc-b bc-a) (bc-a bc-a in-c) \
+         (default b-set nil) (nil t bc-b) (t t nil) (bc-b default))",
+        "loaded buffer-local bindings",
+    );
+}
+
+#[test]
 fn defvaralias_records_the_alias_in_load_history() {
     // eval.c:Fdefvaralias: LOADHIST_ATTACH (new_alias) -- the bare symbol,
     // exactly as Fdefvar records a variable.

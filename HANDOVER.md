@@ -3811,6 +3811,46 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   buffer's end reads no interval (GNU reads the one there), and the buffer
   case of the single-char-property scans compares overlay and text values
   per character rather than through `next-char-property-change`.
+- **Round 46: buffer-local variables read and stored through their loaded
+  binding.** Round 45's `deactivate-mark`, buffer-local as in GNU, cost
+  each modification's `Fset (Qdeactivate_mark, Qt)` two hash lookups (the
+  buffer's local bindings, then the variable's) and a buffer's first store
+  the whole assignment path; the per-buffer variables (`buffer-read-only`,
+  `parse-sexp-lookup-properties`, `default-directory` and the rest, 116
+  reads a unit in undo) paid the same lookups on every read. data.c keeps
+  a localized variable's loaded binding in its blv (`where`, `valcell`);
+  Emaxx now keeps one per symbol slot in each interpreter
+  (`LoadedBindings`, 256 direct-mapped slots by the cell's address, beside
+  the symbols that the interpreter states of a process share), naming the
+  binding's value in a `Cell` whose node lasts as long as the binding.
+  With the current buffer's binding loaded, a read through
+  `find_symbol_value_redirected` or `buffer_local_binding_symbol` is a
+  compare and a load (a variable whose value the buffer or the evaluator
+  holds never loads), and so is a plain buffer-local variable's store. A
+  store with no binding here makes one when the variable is local when set
+  and no `let` of its default is in effect (let_shadows_buffer_binding_p),
+  and loads it. Making or killing a binding unloads its symbol, as data.c
+  swaps the loaded binding out; dropping or copying a buffer's bindings
+  wholesale (a buffer's death, `kill-all-local-variables`, an indirect
+  clone, an image load) advances a shape that retires every loaded
+  binding. `is_forwarded_eval_cell`, which every new binding and load
+  asked, compared the name with eight others (about 100 instructions); it
+  now rejects by length first.
+  `loaded_buffer_local_bindings_follow_data_c` checks reads and stores
+  across buffers, lets, kills, watchers added after a load, byte-code and
+  an indirect clone against the GNU oracle. Release builds: undo 1,187,477
+  -> 1,169,255 instructions a unit (`buffer_local_binding_symbol` 16.8K ->
+  6.7K a unit inclusive, `find_symbol_value_redirected` 24.7K -> 19.9K,
+  `set_internal_symbol` 13.5K -> 9.9K). Profile-guided builds, each
+  trained on its own source: undo 1,087,600 -> 1,084,787 instructions a
+  unit (`find_symbol_value_redirected` 28.5K -> 18.1K inclusive,
+  `set_internal_symbol` 13.3K -> 9.5K; the byte-code verifier's slow
+  paths, which vary from build to build, +4.9K); bytecode calls 418.2 ->
+  417.7 an iteration. Validation: 48 of the library suite's 98 groups ran
+  on this round's own build and failed only the known failures (the 49th
+  outlasted the background limit); the whole suite (3,177 tests) then ran
+  on round 47's build, which adds only that round's allocator layout.
+  Clippy `-D warnings`, rustfmt and `git diff --check` pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
