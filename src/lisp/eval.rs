@@ -4322,6 +4322,9 @@ impl Interpreter {
                 mark(argument);
             }
         }
+        for hooks in &self.interval_insert_hooks {
+            mark(hooks);
+        }
         for notification in &self.pending_file_notifications {
             if let Some(event) = &notification.raw_event {
                 mark(event);
@@ -4793,6 +4796,9 @@ impl Interpreter {
                 for arg in &mut timer.args {
                     *arg = c.copy(arg);
                 }
+            }
+            for hooks in &mut clone.interval_insert_hooks {
+                *hooks = c.copy(hooks);
             }
             for notification in &mut clone.pending_file_notifications {
                 if let Some(event) = &notification.raw_event {
@@ -5359,8 +5365,6 @@ pub struct InterpreterState {
     labeled_restrictions: Vec<LabeledRestriction>,
     /// Indirect buffer mapping: (buffer id, base buffer id).
     indirect_buffers: Vec<(u64, u64)>,
-    /// Prevent recursive before/after-change hook re-entry.
-    change_hooks_running: usize,
     /// GNU connect_counter: numbers accepted server-child connections
     /// (unix children are named "NAME <N>" from it).
     pub(crate) network_connect_counter: u64,
@@ -5465,6 +5469,11 @@ pub struct InterpreterState {
     mutex_states: Vec<MutexState>,
     condition_variables: Vec<ConditionVariableState>,
     combined_after_change: Option<CombinedAfterChangeState>,
+    /// textprop.c's interval_insert_behind_hooks and
+    /// interval_insert_in_front_hooks: the hooks the last insertion check
+    /// in a buffer with intervals found beside the insertion, run after
+    /// each insertion until another check replaces them.
+    pub(crate) interval_insert_hooks: [Value; 2],
     process_states: Vec<ProcessState>,
     pending_timers: Vec<ScheduledTimer>,
     /// Source-loaded callbacks stand in for GNU's byte-compiled Lisp.  Keep
@@ -6112,7 +6121,6 @@ impl Interpreter {
             next_special_binding_id: 1,
             labeled_restrictions: Vec::new(),
             indirect_buffers: Vec::new(),
-            change_hooks_running: 0,
             network_connect_counter: 0,
             function_binding_generation: 0,
             provided_features: STARTUP_FEATURES
@@ -6192,6 +6200,7 @@ impl Interpreter {
             mutex_states: Vec::new(),
             condition_variables: Vec::new(),
             combined_after_change: None,
+            interval_insert_hooks: [Value::Nil, Value::Nil],
             process_states: Vec::new(),
             pending_timers: Vec::new(),
             timer_callback_depth: 0,

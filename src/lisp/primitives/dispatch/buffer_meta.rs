@@ -352,9 +352,7 @@ define_dispatch!(
                 .as_integer()? as usize;
                 let end = super::call(interp, "field-end", &[Value::Integer(pos as i64)], env)?
                     .as_integer()? as usize;
-                interp
-                    .delete_region_current_buffer(start, end)
-                    .map_err(|e| LispError::Signal(e.to_string()))?;
+                delete_region_with_hooks(interp, start, end, env)?;
                 Ok(Value::Nil)
             }
             "constrain-to-field" => {

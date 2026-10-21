@@ -957,15 +957,7 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let from = position_from_value(interp, &args[0])?;
                 let to = position_from_value(interp, &args[1])?;
-                ensure_region_modifiable(interp, from, to)?;
-                let (start, end) = if from <= to { (from, to) } else { (to, from) };
-                let props = interp.buffer.borrow().substring_property_spans(start, end);
-                let multibyte = interp.buffer.borrow().is_multibyte();
-                Ok(string_like_value_with_multibyte(
-                    delete_region_with_hooks(interp, from, to, env)?,
-                    props,
-                    multibyte,
-                ))
+                extract_region_with_hooks(interp, from, to, env)
             }
             "delete-char" => {
                 let n = if args.is_empty() {
@@ -1098,51 +1090,19 @@ define_dispatch!(
                     Some(value) if !value.is_nil() => value.as_integer()?,
                     _ => 0,
                 };
-                let saved = interp.buffer.borrow().point();
-                interp.buffer.borrow_mut().beginning_of_line();
-                let bol = interp.buffer.borrow().point();
-                interp.buffer.borrow_mut().goto_char(saved);
-                let from_col = column_at(interp, env, bol, saved) as i64;
-                let min_col = (from_col + minimum).max(target).max(from_col);
-                if min_col == from_col {
-                    return Ok(Value::Integer(min_col));
-                }
-
-                let tab_width = interp
-                    .lookup_var("tab-width", env)
-                    .and_then(|value| value.integer_value())
-                    .unwrap_or(8)
-                    .max(1);
-                let use_tabs = interp
-                    .lookup_var("indent-tabs-mode", env)
-                    .is_some_and(|value| value.is_truthy());
-
-                let mut current_col = from_col;
-                let mut text = String::new();
-                if use_tabs {
-                    let tab_count = min_col / tab_width - from_col / tab_width;
-                    if tab_count > 0 {
-                        text.push_str(&"\t".repeat(tab_count as usize));
-                        current_col = (min_col / tab_width) * tab_width;
-                    }
-                }
-                let space_count = (min_col - current_col).max(0) as usize;
-                if space_count > 0 {
-                    text.push_str(&" ".repeat(space_count));
-                }
-                insert_text_with_hooks(interp, &text, &[], &[], true, false, env)?;
-                Ok(Value::Integer(min_col))
+                indent_to(interp, target, minimum, env).map(Value::Integer)
             }
             "move-to-column" => {
                 need_args(name, args, 1)?;
                 let target = args[0].as_integer()?.max(0) as usize;
-                let force = args.get(1).is_some_and(Value::is_truthy);
+                let force = args.get(1).cloned().unwrap_or(Value::Nil);
                 let saved = interp.buffer.borrow().point();
                 interp.buffer.borrow_mut().beginning_of_line();
                 let start = interp.buffer.borrow().point();
                 interp.buffer.borrow_mut().goto_char(saved);
                 let mut pos = start;
                 let mut current_col = 0;
+                let mut previous_col = 0;
                 while pos < interp.buffer.borrow().point_max() {
                     if current_col >= target {
                         break;
@@ -1153,24 +1113,35 @@ define_dispatch!(
                     if ch == '\n' {
                         break;
                     }
-                    let next_col = column_after(interp, env, current_col, pos, ch);
-                    if next_col > target && force && ch == '\t' {
-                        interp.buffer.borrow_mut().goto_char(pos);
-                        interp.insert_current_buffer(&" ".repeat(target - current_col));
-                        pos = interp.buffer.borrow().point();
-                        current_col = target;
-                        break;
-                    }
-                    current_col = next_col;
+                    previous_col = current_col;
+                    current_col = column_after(interp, env, current_col, pos, ch);
                     pos += 1;
                 }
-                if force && current_col < target {
-                    interp.buffer.borrow_mut().goto_char(pos);
-                    interp.insert_current_buffer(&" ".repeat(target - current_col));
-                    pos = interp.buffer.borrow().point();
+                interp.buffer.borrow_mut().goto_char(pos);
+                // indent.c: a tab that overshot becomes spaces up to the goal,
+                // the tab deleted and the rest of its width indented, point
+                // at the goal.
+                if !force.is_nil()
+                    && current_col > target
+                    && pos > start
+                    && interp.buffer.borrow().char_at(pos - 1) == Some('\t')
+                    && previous_col < target
+                {
+                    interp.buffer.borrow_mut().goto_char(pos - 1);
+                    let spaces = " ".repeat(target - previous_col);
+                    insert_text_with_hooks(interp, &spaces, &[], &[], true, false, env)?;
+                    let point = interp.buffer.borrow().point();
+                    delete_region_with_hooks(interp, point, point + 1, env)?;
+                    let goal = interp.buffer.borrow().point();
+                    indent_to(interp, current_col as i64, 0, env)?;
+                    interp.buffer.borrow_mut().goto_char(goal);
                     current_col = target;
                 }
-                interp.buffer.borrow_mut().goto_char(pos);
+                // A line that ends short is filled out with spaces.
+                if current_col < target && matches!(force.kind(), Kind::T) {
+                    current_col = target;
+                    indent_to(interp, target as i64, 0, env)?;
+                }
                 Ok(Value::Integer(current_col as i64))
             }
             "line-number-at-pos" => {
@@ -1333,6 +1304,18 @@ define_dispatch!(
                 need_args(name, args, 2)?;
                 let mut start = position_from_value(interp, &args[0])?;
                 let mut end = position_from_value(interp, &args[1])?;
+                // editfns.c: the bounds, in either order, within the whole
+                // buffer before any labeled restriction clamps them.
+                if end < start {
+                    std::mem::swap(&mut start, &mut end);
+                }
+                if start < 1 || end > interp.buffer.borrow().size_total() + 1 {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("args-out-of-range"),
+                        args[0],
+                        args[1],
+                    ])));
+                }
                 if let Some((clamp_start, clamp_end)) =
                     interp.effective_labeled_restriction(interp.current_buffer_id(), None)
                 {
@@ -3267,6 +3250,54 @@ pub(super) fn direct_char_before(
     }
 }
 
+/// indent.c:Findent_to: from point's column to COLUMN (MINIMUM columns
+/// at least), tabs first under `indent-tabs-mode' and then spaces, each an
+/// insertion of its own that inherits the surrounding properties.  The
+/// column reached.
+fn indent_to(
+    interp: &mut Interpreter,
+    column: i64,
+    minimum: i64,
+    env: &mut crate::lisp::types::Env,
+) -> Result<i64, LispError> {
+    let saved = interp.buffer.borrow().point();
+    interp.buffer.borrow_mut().beginning_of_line();
+    let bol = interp.buffer.borrow().point();
+    interp.buffer.borrow_mut().goto_char(saved);
+    let mut from_col = column_at(interp, env, bol, saved) as i64;
+    let min_col = (from_col + minimum).max(column);
+    if min_col == from_col {
+        return Ok(min_col);
+    }
+    // SANE_TAB_WIDTH.
+    let tab_width = interp
+        .lookup_var("tab-width", env)
+        .and_then(|value| value.integer_value())
+        .filter(|width| (1..=1000).contains(width))
+        .unwrap_or(8);
+    if interp
+        .lookup_var("indent-tabs-mode", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        let tabs = min_col / tab_width - from_col / tab_width;
+        if tabs > 0 {
+            insert_text_with_hooks(
+                interp,
+                &"\t".repeat(tabs as usize),
+                &[],
+                &[],
+                true,
+                false,
+                env,
+            )?;
+            from_col = (min_col / tab_width) * tab_width;
+        }
+    }
+    let spaces = (min_col - from_col).max(0) as usize;
+    insert_text_with_hooks(interp, &" ".repeat(spaces), &[], &[], true, false, env)?;
+    Ok(min_col)
+}
+
 /// The `delete-region' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_delete_region(
     interp: &mut Interpreter,
@@ -3277,7 +3308,6 @@ pub(super) fn direct_delete_region(
     need_args(name, args, 2)?;
     let from = position_from_value(interp, &args[0])?;
     let to = position_from_value(interp, &args[1])?;
-    ensure_region_modifiable(interp, from, to)?;
     delete_region_with_hooks(interp, from, to, env)?;
     Ok(Value::Nil)
 }

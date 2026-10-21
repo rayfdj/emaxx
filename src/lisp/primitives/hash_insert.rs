@@ -713,19 +713,10 @@ pub(crate) fn insert_text_with_hooks(
     if text.is_empty() {
         return Ok(());
     }
-    ensure_insert_modifiable(interp)?;
-    ensure_no_supersession_threat(interp, env)?;
-    let start = interp.buffer.borrow().point();
-    let overlay_calls =
-        overlay_insert_hook_calls(interp, &interp.buffer.borrow(), start, text.chars().count());
-    with_overlay_hook_roots(interp, &overlay_calls, |interp| {
-        run_overlay_hook_calls(interp, &overlay_calls, false, env)?;
-        run_change_hooks(
-            interp,
-            "before-change-functions",
-            &[Value::Integer(start as i64), Value::Integer(start as i64)],
-            env,
-        )?;
+    let point = interp.buffer.borrow().point();
+    // insdel.c inserts at point as the before-change hooks left it.
+    modify_current_buffer(interp, point, point, false, env, |interp, _, _| {
+        let start = interp.buffer.borrow().point();
         if before_markers {
             if inherit {
                 interp.insert_current_buffer_before_markers_and_inherit(text);
@@ -779,20 +770,8 @@ pub(crate) fn insert_text_with_hooks(
             }
         }
         interp.set_inserted_extended_chars(start, extended_chars);
-        let end = start + text.chars().count();
-        run_change_hooks(
-            interp,
-            "after-change-functions",
-            &[
-                Value::Integer(start as i64),
-                Value::Integer(end as i64),
-                Value::Integer(0),
-            ],
-            env,
-        )?;
-        let _ = maybe_lock_current_buffer_on_change(interp, env);
-        run_overlay_hook_calls(interp, &overlay_calls, true, env)?;
-        Ok(())
+        let inserted = text.chars().count();
+        Ok((Some(AfterChange::new(start, 0, inserted)), ()))
     })
 }
 

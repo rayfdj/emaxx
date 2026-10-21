@@ -975,6 +975,7 @@ pub(crate) fn base64_encode_region_value(
     line_break: bool,
     pad: bool,
     base64url: bool,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     let lo = start.min(end);
     let hi = start.max(end);
@@ -985,8 +986,36 @@ pub(crate) fn base64_encode_region_value(
         .map_err(|error| LispError::Signal(error.to_string()))?;
     let bytes = encode_base64_source_bytes(&text, interp.buffer.borrow().is_multibyte())?;
     let encoded = encode_base64_bytes(&bytes, line_break, pad, base64url);
-    let new_end = replace_buffer_region_with_text(interp, lo, hi, &encoded)?;
-    Ok(Value::Integer((new_end - lo) as i64))
+    let inserted = insert_then_delete_region(interp, lo, hi, &encoded, env)?;
+    Ok(Value::Integer(inserted as i64))
+}
+
+/// fns.c's base64 region edit: the new text inserted before the old
+/// (keeping the markers with it), then the old deleted, each a change of
+/// its own; point is restored when outside the region, else at its start.
+/// The characters inserted.
+fn insert_then_delete_region(
+    interp: &mut Interpreter,
+    lo: usize,
+    hi: usize,
+    text: &str,
+    env: &mut Env,
+) -> Result<usize, LispError> {
+    let old_pos = interp.buffer.borrow().point();
+    interp.buffer.borrow_mut().goto_char(lo);
+    insert_text_with_hooks(interp, text, &[], &[], false, false, env)?;
+    let inserted = text.chars().count();
+    delete_region_with_hooks(interp, lo + inserted, hi + inserted, env)?;
+    let pos = if old_pos >= hi {
+        old_pos + inserted - (hi - lo)
+    } else if old_pos > lo {
+        lo
+    } else {
+        old_pos
+    };
+    let zv = interp.buffer.borrow().point_max();
+    interp.buffer.borrow_mut().goto_char(pos.min(zv));
+    Ok(inserted)
 }
 
 pub(crate) fn next_base64_byte(
@@ -1091,6 +1120,7 @@ pub(crate) fn base64_decode_region_value(
     end: usize,
     base64url: bool,
     ignore_invalid: bool,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
     let lo = start.min(end);
     let hi = start.max(end);
@@ -1102,8 +1132,8 @@ pub(crate) fn base64_decode_region_value(
     let decoded =
         decode_base64_string_value(&Value::String(text.into()), base64url, ignore_invalid)?;
     let decoded_text = string_text(&decoded)?;
-    let new_end = replace_buffer_region_with_text(interp, lo, hi, &decoded_text)?;
-    Ok(Value::Integer((new_end - lo) as i64))
+    let inserted = insert_then_delete_region(interp, lo, hi, &decoded_text, env)?;
+    Ok(Value::Integer(inserted as i64))
 }
 
 pub(crate) fn ascii_only_text(text: &str) -> bool {

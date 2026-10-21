@@ -913,7 +913,7 @@ pub(crate) fn deliver_process_output_decoded(
         return Ok(());
     }
 
-    internal_default_process_filter(interp, process_id, output)
+    internal_default_process_filter(interp, process_id, output, env)
 }
 
 /// GNU `internal-default-process-filter'.  Insert at the process mark before
@@ -923,6 +923,7 @@ pub(crate) fn internal_default_process_filter(
     interp: &mut Interpreter,
     process_id: u64,
     output: &str,
+    env: &mut Env,
 ) -> Result<(), LispError> {
     let target_buffer_id = interp
         .process_buffer_id(process_id)
@@ -943,18 +944,42 @@ pub(crate) fn internal_default_process_filter(
         .marker_position(mark_id)
         .unwrap_or_else(|| interp.current_buffer().point_max());
     interp.buffer.borrow_mut().goto_char(insert_at);
-    interp.insert_current_buffer_before_markers(output);
+    // process.c inserts with the buffer's read-only flag cleared, through
+    // insdel.c's change protocol.
+    let inserted = insert_with_read_only_cleared(interp, buffer_id, env, |interp, env| {
+        insert_text_with_hooks(interp, output, &[], &[], false, true, env)
+    });
     let new_pos = interp.buffer.borrow().point();
-    let result = interp.set_marker(mark_id, Some(new_pos), Some(buffer_id));
-    let inserted_chars = output.chars().count();
+    let result = inserted.and_then(|()| interp.set_marker(mark_id, Some(new_pos), Some(buffer_id)));
     let restored_point = if old_point >= insert_at {
-        old_point.saturating_add(inserted_chars)
+        old_point + new_pos.saturating_sub(insert_at)
     } else {
         old_point
     };
     interp.buffer.borrow_mut().goto_char(restored_point);
     if switched {
         interp.set_current_buffer_id(saved_buffer_id)?;
+    }
+    result
+}
+
+/// BODY with the current buffer's `buffer-read-only' cleared, set back
+/// after it (process.c's bset_read_only around its insertions).
+fn insert_with_read_only_cleared(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    env: &mut Env,
+    body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<(), LispError>,
+) -> Result<(), LispError> {
+    let read_only = interp
+        .symbol_value_key(cached_symbol!("buffer-read-only"))
+        .unwrap_or(Value::Nil);
+    if !read_only.is_nil() {
+        interp.set_buffer_local_value(buffer_id, "buffer-read-only", Value::Nil);
+    }
+    let result = interp.with_lisp_stack_roots(&read_only, |interp| body(interp, env));
+    if !read_only.is_nil() && interp.has_buffer_id(buffer_id) {
+        interp.set_buffer_local_value(buffer_id, "buffer-read-only", read_only);
     }
     result
 }
@@ -966,6 +991,7 @@ pub(crate) fn internal_default_process_sentinel(
     interp: &mut Interpreter,
     process_id: u64,
     message: &str,
+    env: &mut Env,
 ) -> Result<(), LispError> {
     if matches!(
         interp.process_status_value(process_id).map(|v| v.kind()),
@@ -983,7 +1009,6 @@ pub(crate) fn internal_default_process_sentinel(
         return Ok(());
     };
     let process_name = interp.process_name(process_id).unwrap_or_default();
-    let text = format!("\nProcess {process_name} {message}");
     let saved_buffer_id = interp.current_buffer_id();
     let switched = buffer_id != saved_buffer_id;
     if switched {
@@ -994,12 +1019,17 @@ pub(crate) fn internal_default_process_sentinel(
         .marker_position(mark_id)
         .unwrap_or_else(|| interp.current_buffer().point_max());
     interp.buffer.borrow_mut().goto_char(insert_at);
-    interp.insert_current_buffer(&text);
+    // process.c's four insertions, each through the change protocol.
+    let inserted = insert_with_read_only_cleared(interp, buffer_id, env, |interp, env| {
+        for text in ["\nProcess ", process_name.as_str(), " ", message] {
+            insert_text_with_hooks(interp, text, &[], &[], false, false, env)?;
+        }
+        Ok(())
+    });
     let new_pos = interp.buffer.borrow().point();
-    let result = interp.set_marker(mark_id, Some(new_pos), Some(buffer_id));
-    let inserted_chars = text.chars().count();
+    let result = inserted.and_then(|()| interp.set_marker(mark_id, Some(new_pos), Some(buffer_id)));
     let restored_point = if old_point >= insert_at {
-        old_point.saturating_add(inserted_chars)
+        old_point + new_pos.saturating_sub(insert_at)
     } else {
         old_point
     };
@@ -2452,7 +2482,7 @@ fn run_process_sentinel(
             env,
         )?;
     } else {
-        internal_default_process_sentinel(interp, process_id, event)?;
+        internal_default_process_sentinel(interp, process_id, event, env)?;
     }
     Ok(())
 }

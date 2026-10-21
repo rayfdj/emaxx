@@ -3661,6 +3661,62 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   wall time both times (the closest: bytecode calls 0.926 [0.868, 1.015]
   and undo 0.912 [0.887, 0.992]; then undo 0.920 [0.802, 1.026], with one
   1.229 round, and cons allocation 0.918 [0.767, 1.018]).
+- **Round 44: every change runs insdel.c's protocol.** Each edit path had
+  assembled its own hooks, and probing every edit primitive against GNU
+  with all the hooks logged found them apart: an internal counter stood in
+  for `inhibit-modification-hooks` (binding or setting the variable
+  inhibited nothing), the overlays' hooks ran before
+  `before-change-functions`, `first-change-hook` and the text's own
+  `modification-hooks`, `insert-in-front-hooks` and `insert-behind-hooks`
+  never ran, `deactivate-mark` was never set, the file was locked after
+  the change, and `erase-buffer`, `delete-char`, `replace-match`,
+  `subst-char-in-region`, `transpose-regions` and `delete-field` checked
+  no read-only text (`transpose-regions`, the base64 region primitives and
+  `compose-region` ran no hooks at all). One protocol (`insdel.rs`) now
+  serves them: prepare_to_modify_buffer's read-only buffer check,
+  undoable-change notice and interval walk (read-only text, the text's
+  `modification-hooks` run unbound, an insertion's neighbours' insert
+  hooks recorded), then unless the hooks are inhibited the first change's
+  file lock and, with `inhibit-modification-hooks` bound,
+  `first-change-hook`, `before-change-functions` and the overlays' hooks
+  (the bounds following the earlier hooks' changes), then
+  `deactivate-mark`; and signal_after_change's `after-change-functions`,
+  overlays' hooks and the recorded insert hooks, or its deferral under
+  `combine-after-change-calls` (whole-buffer offsets,
+  `syntax-ppss-flush-cache` alone allowed). The insert hooks persist as
+  textprop.c's globals do: an insertion in a buffer without intervals runs
+  the last ones found until another check replaces them, and the image
+  carries them as pdumper does a staticpro'd root. Each primitive signals
+  the change GNU does: `replace-match` one (its start preserved, the
+  casing a change of its own inside it), `subst-char-in-region` and
+  `translate-region` from the first changed character (translation a
+  change a character, string tables now accepted and the text's properties
+  kept), casing the changed span, `transpose-regions` one over both
+  regions, `indent-to` its tabs and spaces apart, the base64 regions an
+  insertion then a deletion, the default process filter and sentinel their
+  insertions (the buffer's read-only flag cleared). Also as GNU now:
+  `move-to-column` turns an overshooting tab into spaces only and extends
+  a short line only for FORCE `t`, `indent-to` reads an insane `tab-width`
+  as 8, `narrow-to-region` signals bounds outside the buffer, and
+  `delete-and-extract-region` of nothing is the empty unibyte string. The
+  probe's one remaining difference is GNU printing adjacent intervals with
+  equal plists apart where Emaxx merges them.
+  `change_hooks_run_in_insdel_order` and
+  `every_edit_primitive_checks_read_only_text` check them against the GNU
+  oracle. Profile-guided builds, each trained on its own source: undo
+  1,081,140 -> 1,086,993 instructions a unit (GNU 1,252,071), the protocol
+  costing what the hook paths it replaces did and the insertion checks
+  reaching `textget`'s by-name read of `char-property-alias-alist` (27 a
+  unit, about 9,600 instructions with their string compares; round 45
+  reads it as a C variable); bytecode calls 418.6 -> 417.7 an iteration.
+  Validation as round 43's: the whole library suite (3,173 tests) passes
+  but for the same known failures: 89 of its 98 groups on the round's
+  first build, then, after the `replace-match` casing and the insert
+  hooks' image slots were fixed, the other 9 and every group those fixes
+  touch (anti-cheat, the image writer and loader, the hooks, replacement
+  and regexp tests). Clippy `-D warnings`, rustfmt and `git diff --check`
+  pass. The seven GNU tests round 43's frozen run failed pass, run as
+  GNU's own test files.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4236,8 +4292,15 @@ frozen passed on its first attempt (run 39484880717). **On `fbc0ed7`**
 first attempt (run 39512635191); PR #99 merged rounds 40 and 41 into main
 (`df82614`). **On `4bea9e1`** (round 42): full Rust gate passed (run
 39534620573), frozen passed on its first attempt (run 39534622994).
-**On round 43's commit**: the full Rust gate and frozen runs are dispatched
-with it; their results go in the next round's record. Locally,
+**On `b0d0a63`** (round 43): full Rust gate passed (run 39554785723);
+frozen failed seven GNU tests (run 39554788795): jit-lock's three,
+python-mode's two string font-lock tests and eglot's column and
+multi-line eldoc tests, all from its property changes running the
+change hooks under `with-silent-modifications`, whose let-bound
+`inhibit-modification-hooks` it ignored; round 44 passes all seven
+here (eglot's with clangd installed). **On round 44's commit**: the
+full Rust gate and frozen runs are dispatched with it; their results go
+in the next round's record. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the

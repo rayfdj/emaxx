@@ -214,79 +214,254 @@ pub(crate) fn position_from_value(interp: &Interpreter, value: &Value) -> Result
     }
 }
 
-pub(crate) fn translate_region_with_table(
+/// What `translate-region-internal' translates by: a translation
+/// char-table, or a string whose Nth character maps the character with
+/// code N.
+pub(crate) enum TranslationTable {
+    Chars(crate::lisp::types::CharTableRef),
+    String(Value),
+}
+
+/// The characters character.c's CHAR_STRING writes for C in a multibyte
+/// buffer: a raw byte two, others as their code's size.
+fn multibyte_char_bytes(c: u32) -> usize {
+    match c {
+        0..0x80 => 1,
+        0x80..0x800 => 2,
+        0x800..0x10000 => 3,
+        0x10000..0x200000 => 4,
+        0x200000..0x3FFF80 => 5,
+        _ => 2,
+    }
+}
+
+/// editfns.c:Ftranslate_region_internal: modify_text over [FROM, TO),
+/// then each character TABLE maps to another replaced, in place and
+/// signalled as a change of its own when its encoding keeps its size,
+/// otherwise by replace_range with its own hooks (as are the char-table's
+/// sequence translations).  The characters changed.
+pub(crate) fn translate_region_internal(
     interp: &mut Interpreter,
     from: usize,
     to: usize,
-    table_id: crate::lisp::types::CharTableRef,
+    table: TranslationTable,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
-    let source = (from..to)
-        .map(|position| {
-            public_buffer_char_code_at(interp, position)
-                .and_then(|value| u32::try_from(value).ok())
-                .unwrap_or_default()
-        })
-        .collect::<Vec<_>>();
-    let mut translated = String::new();
-    let mut translated_props = Vec::new();
-    let mut translated_extended_chars = Vec::new();
-    let mut changed = 0i64;
-    let mut index = 0usize;
-    while index < source.len() {
-        let source_char = source[index];
-        let mapping = interp.char_table_get(table_id, source_char);
-        let mut consumed = 1usize;
-        let replacement = mapping.as_ref().and_then(|value| {
-            if let Ok(character) = value.as_integer() {
-                let character = u32::try_from(character).ok()?;
-                return (character != source_char).then_some(vec![character]);
-            }
-            translation_characters(value).or_else(|| {
-                translation_sequence_match(value, &source[index..]).map(
-                    |(matched_length, replacement)| {
-                        consumed = matched_length;
-                        replacement
-                    },
-                )
-            })
-        });
-        match replacement {
-            Some(replacement) => {
-                changed += replacement.len() as i64;
-                for character in replacement {
-                    append_public_buffer_character(
-                        &mut translated,
-                        &mut translated_props,
-                        &mut translated_extended_chars,
-                        character,
-                    );
-                }
-            }
-            None => {
-                append_public_buffer_character(
-                    &mut translated,
-                    &mut translated_props,
-                    &mut translated_extended_chars,
-                    source_char,
-                );
-            }
+    let (from, to) = if from <= to { (from, to) } else { (to, from) };
+    let multibyte = interp.buffer.borrow().is_multibyte();
+    // A string table: its bytes bound the translatable codes, and a unibyte
+    // buffer reads it as unibyte (string_make_unibyte).
+    let string_table = match &table {
+        TranslationTable::String(string) => {
+            let Kind::StringObject(state) = string.kind() else {
+                return Err(LispError::WrongTypeArgument("stringp".into(), *string));
+            };
+            let state = state.borrow();
+            let codes: Vec<u32> = if state.is_multibyte() && multibyte {
+                (0..state.len())
+                    .map(|index| state.character_at(index).unwrap_or(0) as u32)
+                    .collect()
+            } else if state.is_multibyte() {
+                (0..state.len())
+                    .map(|index| {
+                        let code = state.character_at(index).unwrap_or(0) as u32;
+                        if code >= RAW_BYTE8_BASE {
+                            code - RAW_BYTE8_BASE
+                        } else {
+                            code & 0xFF
+                        }
+                    })
+                    .collect()
+            } else {
+                state.bytes().iter().map(|byte| u32::from(*byte)).collect()
+            };
+            let translatable = if state.is_multibyte() && multibyte {
+                state.bytes().len()
+            } else {
+                codes.len()
+            };
+            Some((codes, state.is_multibyte() && multibyte, translatable))
         }
-        index += consumed;
+        TranslationTable::Chars(_) => None,
+    };
+    let prepared = prepare_to_modify_buffer(interp, from, to, false, env)?;
+    with_overlay_hook_roots(interp, &prepared.overlay_calls, |interp| {
+        let mut pos = from;
+        let mut end_pos = to;
+        let mut changed = 0_i64;
+        while pos < end_pos.min(interp.buffer.borrow().point_max()) {
+            let oc = public_buffer_char_code_at(interp, pos)
+                .and_then(|code| u32::try_from(code).ok())
+                .unwrap_or_default();
+            let old_bytes = if multibyte {
+                multibyte_char_bytes(oc)
+            } else {
+                1
+            };
+            // The simple translation's character and its encoding's size,
+            // or a sequence: the characters it replaces and those it puts.
+            let mut simple = None;
+            let mut sequence = None;
+            match (&table, &string_table) {
+                (_, Some((codes, table_multibyte, translatable))) => {
+                    if (oc as usize) < *translatable
+                        && let Some(&code) = codes.get(oc as usize)
+                    {
+                        let (nc, bytes) = if *table_multibyte {
+                            (code, multibyte_char_bytes(code))
+                        } else if code >= 0x80 && multibyte {
+                            (RAW_BYTE8_BASE + code, 2)
+                        } else {
+                            (code, 1)
+                        };
+                        simple = Some((nc, bytes));
+                    }
+                }
+                (TranslationTable::Chars(table_id), None) => {
+                    let mapping = interp.char_table_get(*table_id, oc);
+                    match mapping.as_ref().map(|value| value.kind()) {
+                        Some(Kind::Integer(code)) if code >= 0 => {
+                            let nc = code as u32;
+                            let bytes = if multibyte {
+                                multibyte_char_bytes(nc)
+                            } else {
+                                1
+                            };
+                            simple = Some((nc, bytes));
+                        }
+                        Some(Kind::Cons(_)) => {
+                            let source: Vec<u32> = (pos..end_pos)
+                                .map(|position| {
+                                    public_buffer_char_code_at(interp, position)
+                                        .and_then(|code| u32::try_from(code).ok())
+                                        .unwrap_or_default()
+                                })
+                                .collect();
+                            sequence = mapping
+                                .as_ref()
+                                .and_then(|value| translation_sequence_match(value, &source));
+                            if sequence.is_none() {
+                                pos += 1;
+                                continue;
+                            }
+                        }
+                        Some(_) if mapping.as_ref().is_some_and(is_vector_value) => {
+                            sequence = mapping
+                                .as_ref()
+                                .and_then(translation_characters)
+                                .map(|characters| (1, characters));
+                        }
+                        _ => {}
+                    }
+                }
+                (TranslationTable::String(_), None) => unreachable!("string table read above"),
+            }
+            if let Some((nc, new_bytes)) = simple
+                && nc != oc
+            {
+                if new_bytes != old_bytes {
+                    replace_range_with_hooks(interp, pos, pos + 1, &[nc], env)?;
+                } else {
+                    replace_character_in_place(interp, pos, nc)?;
+                    signal_after_change(
+                        interp,
+                        AfterChange::new(pos, 1, 1),
+                        &prepared.overlay_calls,
+                        env,
+                    )?;
+                }
+                changed += 1;
+            } else if let Some((length, replacement)) = sequence {
+                let inserted = replacement.len();
+                replace_range_with_hooks(interp, pos, pos + length, &replacement, env)?;
+                pos += inserted;
+                changed += inserted as i64;
+                end_pos = (end_pos + inserted).saturating_sub(length);
+                continue;
+            }
+            pos += 1;
+        }
+        Ok(Value::Integer(changed))
+    })
+}
+
+/// One character at POS replaced by NC where the text stands, its
+/// properties and markers kept, the change recorded for undo.
+fn replace_character_in_place(
+    interp: &mut Interpreter,
+    pos: usize,
+    nc: u32,
+) -> Result<(), LispError> {
+    if let Some(character) = char::from_u32(nc)
+        && !(RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xff).contains(&nc)
+        && interp.buffer.borrow().extended_char_at(pos).is_none()
+    {
+        let mut text = [0u8; 4];
+        interp.buffer.borrow_mut().replace_region_in_place(
+            pos,
+            pos + 1,
+            character.encode_utf8(&mut text),
+            false,
+        );
+        return Ok(());
     }
+    // A character outside Unicode's scalars lives in the extended sidecar:
+    // replaced as deleted and inserted text.
+    replace_characters_unsignalled(interp, pos, pos + 1, &[nc])
+}
+
+/// insdel.c:replace_range over [FROM, TO) by the characters REPLACEMENT,
+/// with its own prepare_to_modify_buffer and signal_after_change; point
+/// moves as a marker would.
+fn replace_range_with_hooks(
+    interp: &mut Interpreter,
+    from: usize,
+    to: usize,
+    replacement: &[u32],
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let length = to - from;
+    modify_current_buffer(interp, from, to, true, env, |interp, from, _| {
+        let to = (from + length)
+            .min(interp.buffer.borrow().point_max())
+            .max(from);
+        replace_characters_unsignalled(interp, from, to, replacement)?;
+        Ok((
+            Some(AfterChange::new(from, to - from, replacement.len())),
+            (),
+        ))
+    })
+}
+
+fn replace_characters_unsignalled(
+    interp: &mut Interpreter,
+    from: usize,
+    to: usize,
+    replacement: &[u32],
+) -> Result<(), LispError> {
+    let mut text = String::new();
+    let mut props = Vec::new();
+    let mut extended_chars = Vec::new();
+    for &character in replacement {
+        append_public_buffer_character(&mut text, &mut props, &mut extended_chars, character);
+    }
+    let point = interp.buffer.borrow().point();
     interp
         .delete_region_current_buffer(from, to)
         .map_err(|e| LispError::Signal(e.to_string()))?;
     interp.buffer.borrow_mut().goto_char(from);
-    interp.insert_current_buffer(&translated);
-    interp.set_inserted_extended_chars(from, &translated_extended_chars);
-    for span in translated_props {
-        interp.buffer.borrow_mut().graft_text_properties(
-            from + span.start,
-            from + span.end,
-            &span.props,
-        );
-    }
-    Ok(Value::Integer(changed))
+    interp.insert_current_buffer(&text);
+    interp.set_inserted_extended_chars(from, &extended_chars);
+    let inserted = replacement.len();
+    let point = if point >= to {
+        point + inserted - (to - from)
+    } else if point > from {
+        from
+    } else {
+        point
+    };
+    interp.buffer.borrow_mut().goto_char(point);
+    Ok(())
 }
 
 fn append_public_buffer_character(

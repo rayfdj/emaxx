@@ -1291,16 +1291,4 @@ impl Interpreter {
             .map(|marker| (marker, marker.position()))
             .collect()
     }
-
-    pub fn change_hooks_are_running(&self) -> bool {
-        self.change_hooks_running > 0
-    }
-
-    pub fn enter_change_hooks(&mut self) {
-        self.change_hooks_running += 1;
-    }
-
-    pub fn leave_change_hooks(&mut self) {
-        self.change_hooks_running = self.change_hooks_running.saturating_sub(1);
-    }
 }

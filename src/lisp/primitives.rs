@@ -132,6 +132,7 @@ pub(crate) use generated_gnu_c_primitives_linux::{
 };
 mod hash_insert;
 mod hooks_overlays;
+mod insdel;
 mod interactive;
 mod invisibility;
 mod keys;
@@ -162,6 +163,7 @@ pub(crate) use dispatch::gnutls::{AsyncGnuTlsProgress, progress_async_gnutls};
 pub(crate) use file_io::*;
 pub(crate) use hash_insert::*;
 pub(crate) use hooks_overlays::*;
+pub(crate) use insdel::*;
 pub(crate) use interactive::*;
 pub(crate) use invisibility::*;
 pub(crate) use keys::*;

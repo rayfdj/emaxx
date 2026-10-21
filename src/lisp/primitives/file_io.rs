@@ -1988,36 +1988,6 @@ pub(crate) fn maybe_lock_current_buffer(
     maybe_lock_current_buffer_file(interp, env)
 }
 
-pub(crate) fn maybe_lock_current_buffer_on_change(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<(), LispError> {
-    // GNU's prepare_to_modify_buffer locks only ordinary first changes to a
-    // real file-visiting buffer.  Silent/internal edits bind this variable
-    // and must not leave a lock behind.
-    //
-    // The buffer's own slots first (BVAR (current_buffer, filename)): a
-    // buffer visiting no file locks nothing, whatever the variables say
-    // (the lock itself reads the slots), and the slot read is a field
-    // where the variable reads walked the bindings.
-    if current_buffer_file(interp).is_none() {
-        return Ok(());
-    }
-    if interp
-        .lookup_var_key(cached_symbol!("inhibit-modification-hooks"), env)
-        .is_some_and(|value| value.is_truthy())
-        || !interp
-            .lookup_var_key(cached_symbol!("buffer-file-name"), env)
-            .is_some_and(|value| value.is_truthy())
-        || !interp
-            .lookup_var_key(cached_symbol!("buffer-file-truename"), env)
-            .is_some_and(|value| value.is_truthy())
-    {
-        return Ok(());
-    }
-    maybe_lock_current_buffer(interp, env)
-}
-
 pub(crate) fn maybe_lock_current_buffer_file(
     interp: &mut Interpreter,
     env: &mut Env,

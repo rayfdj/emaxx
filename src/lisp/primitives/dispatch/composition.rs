@@ -63,7 +63,11 @@ fn composition_property(length: usize, components: Value, modification: Value) -
     )
 }
 
-fn compose_region(interp: &mut Interpreter, args: &[Value]) -> Result<Value, LispError> {
+fn compose_region(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut crate::lisp::types::Env,
+) -> Result<Value, LispError> {
     let (start, end) = checked_buffer_region(interp, &args[0], &args[1])?;
     let components = args.get(2).cloned().unwrap_or(Value::Nil);
     if !matches!(
@@ -75,12 +79,24 @@ fn compose_region(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Lis
     }
     let modification = args.get(3).cloned().unwrap_or(Value::Nil);
     let property = composition_property(end - start, components, modification);
-    interp.buffer.borrow_mut().put_text_property(
-        start,
-        end,
+    // composite.c:compose_text puts the property as Fput_text_property does,
+    // through the change protocol.
+    let props = [(
         crate::lisp::types::PropertyName::symbol("composition"),
         property,
-    );
+    )];
+    let buffer_id = interp.current_buffer_id();
+    interp.with_lisp_stack_roots(&property, |interp| {
+        modify_buffer_text_properties(
+            interp,
+            buffer_id,
+            start,
+            end,
+            &|buffer| properties_would_add(buffer, start, end, &props),
+            &|buffer| buffer.put_text_property(start, end, props[0].0, props[0].1),
+            env,
+        )
+    })?;
     Ok(Value::Nil)
 }
 
@@ -965,7 +981,7 @@ define_dispatch!(
             }
             "compose-region-internal" => {
                 need_arg_range(name, args, 2, 4)?;
-                compose_region(interp, args)
+                compose_region(interp, args, env)
             }
             "compose-string-internal" => {
                 need_arg_range(name, args, 3, 5)?;
