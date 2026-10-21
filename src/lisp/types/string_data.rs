@@ -338,6 +338,26 @@ impl StringObjectRef {
         }
         Self::new(text.to_owned())
     }
+
+    /// `from_text' for borrowed text: ASCII is copied once, into the
+    /// string's data.
+    pub(crate) fn from_text_ref(
+        text: &str,
+        props: Vec<StringPropertySpan>,
+        multibyte: bool,
+        extended_chars: &[(usize, u32)],
+    ) -> Self {
+        if extended_chars.is_empty() && text.is_ascii() {
+            return Self::from_slice(
+                text.as_bytes(),
+                text.len(),
+                multibyte,
+                props,
+                StringAllocation::Ordinary,
+            );
+        }
+        Self::from_text(text.to_owned(), props, multibyte, extended_chars.to_vec())
+    }
 }
 
 impl SharedStringState {

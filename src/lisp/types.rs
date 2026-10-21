@@ -1324,7 +1324,122 @@ impl WeakConsSlot {
 pub struct StringPropertySpan {
     pub start: usize,
     pub end: usize,
-    pub props: Vec<(String, Value)>,
+    pub props: Vec<(PropertyName, Value)>,
+}
+
+/// A text property's name: any Lisp object, compared with EQ, as
+/// textprop.c compares an interval plist's names (`EQ (XCAR (tail),
+/// prop)').  A Rust caller's `name == "face"' asks for the interned
+/// symbol `face' itself.
+#[derive(Clone, Copy, Debug)]
+pub struct PropertyName(Value);
+
+impl PropertyName {
+    #[inline]
+    pub fn new(name: Value) -> Self {
+        Self(name)
+    }
+
+    /// The interned symbol named NAME.
+    pub fn symbol(name: &str) -> Self {
+        Self(Value::symbol(name))
+    }
+
+    #[inline]
+    pub fn value(self) -> Value {
+        self.0
+    }
+
+    /// The name's symbol name, for a symbol (internal markers and all).
+    #[inline]
+    pub fn symbol_str(&self) -> Option<&str> {
+        self.0.symbol_str()
+    }
+}
+
+impl PartialEq for PropertyName {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.0.word() == other.0.word()
+    }
+}
+
+impl Eq for PropertyName {}
+
+impl PartialEq<str> for PropertyName {
+    /// Whether this is the interned symbol named TEXT: an uninterned or
+    /// private obarray's symbol of that name carries a marker in its own
+    /// name and is not.
+    #[inline]
+    fn eq(&self, text: &str) -> bool {
+        self.0.symbol_str() == Some(text)
+    }
+}
+
+impl PartialEq<&str> for PropertyName {
+    #[inline]
+    fn eq(&self, text: &&str) -> bool {
+        *self == **text
+    }
+}
+
+impl From<&str> for PropertyName {
+    /// The interned symbol named NAME.
+    fn from(name: &str) -> Self {
+        Self::symbol(name)
+    }
+}
+
+/// How a Rust caller names the property it looks up: by the property
+/// object itself, compared with EQ (a Lisp caller's PROP), or by the
+/// name of an interned symbol (`"face"').
+pub trait PropertyKey: Copy {
+    /// Whether OBJECT, a name in some plist or alist, is this property.
+    fn is(self, object: Value) -> bool;
+
+    /// Whether this property is the interned symbol named TEXT.
+    fn is_named(self, text: &str) -> bool;
+
+    #[inline]
+    fn names(self, name: &PropertyName) -> bool {
+        self.is(name.0)
+    }
+}
+
+impl PropertyKey for PropertyName {
+    #[inline]
+    fn is(self, object: Value) -> bool {
+        self.0.word() == object.word()
+    }
+
+    #[inline]
+    fn is_named(self, text: &str) -> bool {
+        self == *text
+    }
+}
+
+impl PropertyKey for &str {
+    #[inline]
+    fn is(self, object: Value) -> bool {
+        object.symbol_str() == Some(self)
+    }
+
+    #[inline]
+    fn is_named(self, text: &str) -> bool {
+        self == text
+    }
+}
+
+impl PropertyKey for &String {
+    #[inline]
+    fn is(self, object: Value) -> bool {
+        self.as_str().is(object)
+    }
+
+    #[inline]
+    fn is_named(self, text: &str) -> bool {
+        self == text
+    }
 }
 
 pub(crate) mod string_data;

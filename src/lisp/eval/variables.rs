@@ -695,6 +695,23 @@ impl Interpreter {
     }
 
     pub fn get_symbol_property(&self, name: &str, property: &str) -> Option<Value> {
+        self.symbol_plist_find(
+            name,
+            |key| matches!(key.kind(), Kind::Symbol(key) if key == property),
+        )
+    }
+
+    /// fns.c:Fget with PROPERTY compared as plist_get compares it: EQ for
+    /// a property object, by interned name for a Rust caller's name.
+    pub fn get_symbol_property_by(
+        &self,
+        name: &str,
+        property: impl crate::lisp::types::PropertyKey,
+    ) -> Option<Value> {
+        self.symbol_plist_find(name, |key| property.is(key))
+    }
+
+    fn symbol_plist_find(&self, name: &str, matches: impl Fn(Value) -> bool) -> Option<Value> {
         let mut tail = self.globals.plist_by_name(name);
         // fns.c:plist_get walks with FOR_EACH_TAIL_SAFE: Brent's cycle
         // detection (a tortoise moved at powers of two), no allocation.
@@ -702,7 +719,7 @@ impl Interpreter {
         while let Kind::Cons(cell) = tail.kind() {
             let rest = cell.cdr.get();
             let (value_cell, next_cell) = rest.cons_cells()?;
-            if matches!(cell.car.get().kind(), Kind::Symbol(key) if key == property) {
+            if matches(cell.car.get()) {
                 return Some(value_cell.get());
             }
             tail = next_cell.get();
@@ -790,7 +807,7 @@ impl Interpreter {
                 Kind::StringObject(state) if seen_strings.insert(state.identity()) => {
                     for span in &state.borrow().props {
                         for (property, property_value) in &span.props {
-                            self.intern_symbol_name(property);
+                            pending.push(property.value());
                             pending.push(*property_value);
                         }
                     }
@@ -880,7 +897,10 @@ impl Interpreter {
                 }
                 let mut borrowed = state.borrow_mut();
                 for span in &mut borrowed.props {
-                    for (_, property_value) in &mut span.props {
+                    for (name, property_value) in &mut span.props {
+                        *name = crate::lisp::types::PropertyName::new(
+                            self.intern_read_symbols_in_obarray(name.value(), obarray, seen)?,
+                        );
                         *property_value =
                             self.intern_read_symbols_in_obarray(*property_value, obarray, seen)?;
                     }

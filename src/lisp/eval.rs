@@ -3064,9 +3064,8 @@ impl ImageGraphCopier {
                             .props
                             .iter()
                             .map(|(name, prop)| {
-                                let mut name = name.clone();
-                                self.copy_symbol_spelling(&mut name);
-                                (name, self.copy(prop))
+                                let name = self.copy(&name.value());
+                                (crate::lisp::types::PropertyName::new(name), self.copy(prop))
                             })
                             .collect(),
                     })
@@ -3536,7 +3535,8 @@ impl LispReachability {
             Kind::StringObject(value) => {
                 let state = value.borrow();
                 for span in &state.props {
-                    for (_, child) in &span.props {
+                    for (name, child) in &span.props {
+                        self.enqueue(&name.value());
                         self.enqueue(child);
                     }
                 }

@@ -1114,15 +1114,15 @@ define_dispatch!(
                 let value = shared_string_copy(&args[0])?;
                 let props = args[1..]
                     .chunks(2)
-                    .map(|pair| Ok((pair[0].as_symbol()?.to_string(), pair[1])))
-                    .collect::<Result<Vec<_>, LispError>>()?;
+                    .map(|pair| (crate::lisp::types::PropertyName::new(pair[0]), pair[1]))
+                    .collect::<Vec<_>>();
                 modify_shared_string_properties(&value, 0, len, |mut current| {
                     for (name, value) in &props {
                         if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name)
                         {
                             *existing = *value;
                         } else {
-                            current.push((name.clone(), *value));
+                            current.push((*name, *value));
                         }
                     }
                     current

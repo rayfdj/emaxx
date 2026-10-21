@@ -592,9 +592,7 @@ fn graph_matches(
                 }
                 for ((name_x, value_x), (name_y, value_y)) in span_x.props.iter().zip(&span_y.props)
                 {
-                    if name_x != name_y {
-                        return Err(format!("property name differs: {name_x} vs {name_y}"));
-                    }
+                    graph_matches(&name_x.value(), &name_y.value(), seen)?;
                     graph_matches(value_x, value_y, seen)?;
                 }
             }

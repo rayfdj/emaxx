@@ -124,7 +124,8 @@ pub(crate) fn read_object_needs_resolution(value: &Value) -> bool {
             }
             Kind::StringObject(state) => {
                 for span in &state.borrow().props {
-                    for (_, prop_value) in &span.props {
+                    for (name, prop_value) in &span.props {
+                        stack.push(name.value());
                         stack.push(*prop_value);
                     }
                 }
@@ -1714,7 +1715,10 @@ impl<'a> Reader<'a> {
             let mut span_props = Vec::new();
             let mut cursor = 0usize;
             while cursor + 1 < plist.len() {
-                span_props.push((plist[cursor].as_symbol()?.to_string(), plist[cursor + 1]));
+                span_props.push((
+                    crate::lisp::types::PropertyName::new(plist[cursor]),
+                    plist[cursor + 1],
+                ));
                 cursor += 2;
             }
             props.push(StringPropertySpan {

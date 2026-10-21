@@ -1,24 +1,25 @@
 use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
+use crate::lisp::types::PropertyName;
 
 pub(crate) fn format_source_props(
     value: &Value,
     from: usize,
     to: usize,
-) -> Option<Vec<(String, Value)>> {
+) -> Option<Vec<(PropertyName, Value)>> {
     // The format string's intervals, read in place: `format' asks once per
     // conversion, and its text is never needed here.
     let Kind::StringObject(state) = value.kind() else {
         return None;
     };
     let state = state.borrow();
-    let mut props: Vec<(String, Value)> = Vec::new();
+    let mut props: Vec<(PropertyName, Value)> = Vec::new();
     for span in state.props.iter() {
         if span.start < to && from < span.end {
             for (name, value) in &span.props {
                 if !props.iter().any(|(existing, _)| existing == name) {
-                    props.push((name.clone(), *value));
+                    props.push((*name, *value));
                 }
             }
         }
@@ -32,7 +33,7 @@ pub(crate) fn format_source_props(
 pub(crate) fn props_at_string_offset(
     spans: &[TextPropertySpan],
     pos: usize,
-) -> Vec<(String, Value)> {
+) -> Vec<(PropertyName, Value)> {
     spans
         .iter()
         .find(|span| span.start <= pos && pos < span.end)
@@ -1655,7 +1656,10 @@ fn charset_runs_to_props(charsets: Vec<(usize, usize, String)>) -> Vec<TextPrope
         .map(|(start, end, charset)| TextPropertySpan {
             start,
             end,
-            props: vec![("charset".to_string(), Value::Symbol(charset.into()))],
+            props: vec![(
+                PropertyName::symbol("charset"),
+                Value::Symbol(charset.into()),
+            )],
         })
         .collect()
 }

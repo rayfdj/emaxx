@@ -447,7 +447,14 @@ pub(crate) fn substitute_object_recurse(
             }
             let mut state = state.borrow_mut();
             for span in &mut state.props {
-                for (_, prop_value) in &mut span.props {
+                for (name, prop_value) in &mut span.props {
+                    *name = crate::lisp::types::PropertyName::new(substitute_object_recurse(
+                        interp,
+                        object,
+                        placeholder,
+                        &name.value(),
+                        seen,
+                    )?);
                     *prop_value =
                         substitute_object_recurse(interp, object, placeholder, prop_value, seen)?;
                 }
@@ -1229,7 +1236,7 @@ pub(crate) fn activate_minibuffer(
     // buffer-change hooks.
     interp.buffer.borrow_mut().insert(&prompt_string.text);
     for span in &prompt_string.props {
-        interp.buffer.borrow_mut().add_text_properties(
+        interp.buffer.borrow_mut().graft_text_properties(
             1 + span.start,
             1 + span.end.min(prompt_length),
             &span.props,
@@ -1251,7 +1258,7 @@ pub(crate) fn activate_minibuffer(
         {
             let properties = properties.to_vec().unwrap_or_default();
             for pair in properties.as_chunks::<2>().0 {
-                let name = pair[0].as_symbol()?;
+                let name = crate::lisp::types::PropertyName::new(pair[0]);
                 if name == "face" {
                     add_face_text_property(
                         interp,
@@ -1273,17 +1280,19 @@ pub(crate) fn activate_minibuffer(
             ("front-sticky", Value::T),
             ("rear-nonsticky", Value::T),
         ] {
-            interp
-                .buffer
-                .borrow_mut()
-                .put_text_property(1, 1 + prompt_length, name, value);
+            interp.buffer.borrow_mut().put_text_property(
+                1,
+                1 + prompt_length,
+                crate::lisp::types::PropertyName::symbol(name),
+                value,
+            );
         }
     }
     if !initial_string.text.is_empty() {
         let initial_start = 1 + prompt_length;
         interp.buffer.borrow_mut().insert(&initial_string.text);
         for span in &initial_string.props {
-            interp.buffer.borrow_mut().set_text_properties(
+            interp.buffer.borrow_mut().graft_text_properties(
                 initial_start + span.start,
                 initial_start + span.end.min(initial_length),
                 &span.props,

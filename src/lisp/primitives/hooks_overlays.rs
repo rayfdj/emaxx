@@ -1,6 +1,7 @@
 use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
+use crate::lisp::types::PropertyName;
 
 /// Ffuncall of FUNCTION, unnamed: a forwarder, inline at every caller.
 #[inline(always)]
@@ -821,8 +822,8 @@ pub(crate) fn add_face_text_property(
                 combine_font_lock_property_value("face", previous, &face, append)
             };
             modify_shared_string_properties(object, cursor, next, |mut current| {
-                current.retain(|(key, _)| key != "face");
-                current.push(("face".into(), updated));
+                current.retain(|(key, _)| *key != "face");
+                current.push((PropertyName::symbol("face"), updated));
                 current
             })?;
             cursor = next;
@@ -841,7 +842,14 @@ pub(crate) fn add_face_text_property(
         } else {
             combine_font_lock_property_value("face", previous, &face, append)
         };
-        font_lock_put_buffer_property(interp, buffer_id, cursor, next, "face", updated)?;
+        font_lock_put_buffer_property(
+            interp,
+            buffer_id,
+            cursor,
+            next,
+            PropertyName::symbol("face"),
+            updated,
+        )?;
         cursor = next;
     }
     Ok(Value::Nil)
@@ -877,12 +885,12 @@ pub(crate) fn font_lock_put_buffer_property(
     buffer_id: u64,
     start: usize,
     end: usize,
-    prop: &str,
+    prop: PropertyName,
     value: Value,
 ) -> Result<(), LispError> {
     let applied = interp.apply_text_property_change_shared_for(buffer_id, &|buffer| {
         if value.is_nil() {
-            buffer.remove_list_of_text_properties(start, end, &[prop.to_string()]);
+            buffer.remove_list_of_text_properties(start, end, &[prop]);
         } else {
             buffer.put_text_property(start, end, prop, value);
         }

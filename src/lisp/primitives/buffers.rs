@@ -28,7 +28,7 @@ pub(crate) fn highest_priority_overlay_property(
     interp: &Interpreter,
     buffer: &crate::buffer::Buffer,
     pos: usize,
-    prop: &str,
+    prop: impl crate::lisp::types::PropertyKey,
     at_insertion_position: bool,
     window_id: Option<u64>,
 ) -> Option<Value> {
@@ -47,7 +47,7 @@ pub(crate) fn highest_priority_overlay_property_with_id(
     interp: &Interpreter,
     buffer: &crate::buffer::Buffer,
     pos: usize,
-    prop: &str,
+    prop: impl crate::lisp::types::PropertyKey,
     at_insertion_position: bool,
     window_id: Option<u64>,
 ) -> Option<(Value, crate::overlay::OverlayRef)> {
@@ -280,7 +280,7 @@ pub(crate) fn translate_region_with_table(
     interp.insert_current_buffer(&translated);
     interp.set_inserted_extended_chars(from, &translated_extended_chars);
     for span in translated_props {
-        interp.buffer.borrow_mut().set_text_properties(
+        interp.buffer.borrow_mut().graft_text_properties(
             from + span.start,
             from + span.end,
             &span.props,
@@ -590,7 +590,10 @@ pub(crate) fn make_runtime_abbrev_table(
 pub(crate) fn abbrev_table_props_with_modiff(props: Value) -> Value {
     let mut pairs = plist_pairs(&props).unwrap_or_default();
     if !pairs.iter().any(|(key, _)| key == ":abbrev-table-modiff") {
-        pairs.push((":abbrev-table-modiff".into(), Value::Integer(0)));
+        pairs.push((
+            crate::lisp::types::PropertyName::symbol(":abbrev-table-modiff"),
+            Value::Integer(0),
+        ));
     }
     plist_value(&pairs)
 }

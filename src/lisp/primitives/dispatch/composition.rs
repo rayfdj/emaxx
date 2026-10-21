@@ -75,10 +75,12 @@ fn compose_region(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Lis
     }
     let modification = args.get(3).cloned().unwrap_or(Value::Nil);
     let property = composition_property(end - start, components, modification);
-    interp
-        .buffer
-        .borrow_mut()
-        .put_text_property(start, end, "composition", property);
+    interp.buffer.borrow_mut().put_text_property(
+        start,
+        end,
+        crate::lisp::types::PropertyName::symbol("composition"),
+        property,
+    );
     Ok(Value::Nil)
 }
 
@@ -97,7 +99,13 @@ fn compose_string(args: &[Value]) -> Result<Value, LispError> {
         {
             *value = property;
         } else {
-            properties.insert(0, ("composition".into(), property));
+            properties.insert(
+                0,
+                (
+                    crate::lisp::types::PropertyName::symbol("composition"),
+                    property,
+                ),
+            );
         }
         properties
     })?;

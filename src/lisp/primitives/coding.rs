@@ -566,7 +566,7 @@ fn run_coding_conversion(
         interp
             .buffer
             .borrow_mut()
-            .set_text_properties(1 + span.start, 1 + span.end, &span.props);
+            .graft_text_properties(1 + span.start, 1 + span.end, &span.props);
     }
     // GNU invokes a post-read conversion with point at the beginning of the
     // newly decoded span.  Lisp decoders such as `utf-7-decode' consume LEN
@@ -3341,7 +3341,10 @@ fn charset_spans_to_props(
             (end > start).then(|| TextPropertySpan {
                 start,
                 end,
-                props: vec![("charset".to_string(), Value::Symbol(charset.into()))],
+                props: vec![(
+                    crate::lisp::types::PropertyName::symbol("charset"),
+                    Value::Symbol(charset.into()),
+                )],
             })
         })
         .collect()

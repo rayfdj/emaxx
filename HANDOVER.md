@@ -3562,7 +3562,53 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   and `process_tls_state_survives_collection_before_and_after_async_handshake`
   failed among the four parallel processes and pass alone, three times of
   three each. Clippy `-D warnings` (all targets and features), rustfmt and
-  `git diff --check` pass.
+  `git diff --check` pass. The contract-like comparison of round 41's
+  profile-guided build (nine rounds, the paired median ratio's bootstrapped
+  95% interval): 15 of the 16 workloads within 1.03 of GNU's wall time;
+  mapcar's interval reaches over from two slow rounds (median 0.861,
+  [0.721, 1.088]), and undo is the tightest of the others (0.956,
+  [0.845, 0.995]).
+- **Round 42: a text property's name is the Lisp object; undo records an
+  edit as insdel.c does.** An interval's property names were Rust strings:
+  every `put-text-property`, lookup and undo record compared names as text,
+  a name that was not a symbol signalled `wrong-type-argument symbolp`
+  (`(put-text-property 1 2 1 'x)`, a string or list name kept by identity,
+  `(propertize "ab" 7 'seven)`: GNU takes any object), and an uninterned
+  symbol's name went through an encoded-name adapter. A name is now a
+  `PropertyName`, the object itself compared with EQ (textprop.c's
+  `EQ (XCAR (tail), prop)`); a Rust caller that asks for `"face"` names the
+  interned symbol (`PropertyKey`). The Lisp primitives take any object as
+  a name (`get-text-property`, `get-char-property`, `put-text-property`,
+  `add-`/`set-`/`remove-text-properties`, `remove-list-of-text-properties`,
+  `text-property-any`, the `*-property-change` scans, `propertize`, the
+  `#("ab" 0 1 (1 one))` read syntax, `overlay-get`), category and
+  `char-property-alias-alist` lookups compare with EQ, and the names are
+  traced wherever the values are: the collector, a buffer's intervals and
+  undo payload, the reader's placeholders and obarray interning, the image.
+  An undo record of a property change names the object (no symbol lookup
+  a record). Three older divergences from GNU in the same records, now as
+  insdel.c has them: (a) a deletion's record held its text alone, so
+  `primitive-undo` reinserted the text without its properties; the string
+  is now `make_buffer_string`'s, with the deleted intervals and multibyte
+  as the buffer is (`set-buffer-multibyte` keeps those already recorded).
+  (b) Inserting a propertized string recorded a property change after the
+  insertion (`(nil face nil 1 . 3)` after `(1 . 3)`), as did
+  `replace-match`, `replace-buffer-contents`, `transpose-regions`,
+  translation, decoding, the minibuffer's prompt and native undo's
+  reinsertion; the inserted text's intervals are now grafted unrecorded and
+  uncounted (graft_intervals_into_buffer), in their own order. (c) An
+  insertion, deletion or in-place replacement raised the modification tick
+  by one; it is raised as lisp.h's modiff_incr raises it, by one more than
+  the binary logarithm of the change's length. Profile-guided builds, each
+  trained on its own source: undo 1,057,434 -> 1,048,999 instructions a
+  unit (GNU 1,252,071), bytecode calls 417.7 -> 418.5 an iteration.
+  `text_property_names_are_any_object_compared_with_eq` and
+  `undo_records_inserted_and_deleted_text_as_insdel_does` check both
+  against the GNU oracle. Validation as round 41's: the whole library suite
+  (3,168 tests) passes but for the same known failures;
+  `process_tls_state_survives_collection_before_and_after_async_handshake`
+  failed among the four parallel processes and passes alone, three times of
+  three. Clippy `-D warnings`, rustfmt and `git diff --check` pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4133,9 +4179,11 @@ frozen passed on its first attempt (run 39420955510). **On `1f69927`**
 (round 39): full Rust gate passed (run 39434615987), frozen passed on its
 first attempt (run 39434621069); PR #98 merged rounds 37 to 39 into main
 (`fe4e253`). **On `680498f`** (round 40): full Rust gate passed (run 39484877632),
-frozen passed on its first attempt (run 39484880717). **On round 41's
-commit**: the full Rust gate and frozen runs are dispatched with it; their
-results go in the next round's record. Locally,
+frozen passed on its first attempt (run 39484880717). **On `fbc0ed7`**
+(round 41): full Rust gate passed (run 39512630692), frozen passed on its
+first attempt (run 39512635191); PR #99 merged rounds 40 and 41 into main
+(`df82614`). **On round 42's commit**: the full Rust gate and frozen runs
+are dispatched with it; their results go in the next round's record. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the

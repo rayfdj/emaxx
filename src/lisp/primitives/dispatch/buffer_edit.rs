@@ -1,5 +1,5 @@
 use super::*;
-use crate::lisp::types::Kind;
+use crate::lisp::types::{Kind, PropertyKey, PropertyName};
 
 // cmds.c:236/288: `self-insert-command' and `delete-char' amalgamate
 // their undo with a preceding run of the same command when the count's
@@ -153,32 +153,29 @@ fn forward_word(interp: &mut Interpreter, count: i64, env: &mut Env) -> Result<V
     Ok(Value::T)
 }
 
-fn stickiness_names_property(setting: &Value, prop: &str) -> bool {
+fn stickiness_names_property(setting: &Value, prop: impl PropertyKey) -> bool {
     match setting.kind() {
         Kind::T => true,
-        Kind::Cons(_) => setting.to_vec().is_ok_and(|items| {
-            items
-                .iter()
-                .any(|item| matches!(item.kind(), Kind::Symbol(name) if name == prop))
-        }),
+        Kind::Cons(_) => setting
+            .to_vec()
+            .is_ok_and(|items| items.iter().any(|item| prop.is(*item))),
         _ => false,
     }
 }
 
-fn property_is_default_nonsticky(defaults: &Value, prop: &str) -> bool {
+fn property_is_default_nonsticky(defaults: &Value, prop: impl PropertyKey) -> bool {
     defaults.to_vec().unwrap_or_default().iter().any(|entry| {
         let Some((name, nonsticky)) = (entry).cons_cells() else {
             return false;
         };
-        matches!(name.get().kind(), Kind::Symbol(candidate) if candidate == prop)
-            && nonsticky.get().is_truthy()
+        prop.is(name.get()) && nonsticky.get().is_truthy()
     })
 }
 
 fn span_properties_at(
     spans: &[crate::buffer::TextPropertySpan],
     position: usize,
-) -> &[(String, Value)] {
+) -> &[(PropertyName, Value)] {
     spans
         .iter()
         .find(|span| span.start <= position && position < span.end)
@@ -235,7 +232,7 @@ fn buffer_text_property_at_insertion(
     interp: &Interpreter,
     buffer: &crate::buffer::Buffer,
     pos: usize,
-    prop: &str,
+    prop: impl PropertyKey,
     default_nonsticky: &Value,
 ) -> Option<Value> {
     let previous = pos
@@ -856,6 +853,11 @@ define_dispatch!(
                 } else {
                     unibyte_buffer_text(&saved).0
                 };
+                // The deletions already recorded keep the strings they were
+                // recorded with, multibyte as the buffer was then.
+                if interp.buffer.borrow().undo_enabled() {
+                    interp.buffer.borrow().undo_list_value();
+                }
                 interp.buffer.borrow_mut().set_multibyte_representation(
                     enabled,
                     converted,
@@ -1446,12 +1448,12 @@ define_dispatch!(
             }
             "get-pos-property" | "get-char-property" => {
                 need_args(name, args, 2)?;
-                let prop = args[1].as_symbol()?.to_string();
+                let prop = PropertyName::new(args[1]);
                 if let Some(object) = args.get(2)
                     && string_like(object).is_some()
                 {
                     let pos = args[0].as_integer()?.max(0) as usize;
-                    return Ok(string_property_at_with_category(interp, object, pos, &prop)
+                    return Ok(string_property_at_with_category(interp, object, pos, prop)
                         .unwrap_or(Value::Nil));
                 }
                 let pos = position_from_value(interp, &args[0])?;
@@ -1478,7 +1480,7 @@ define_dispatch!(
                     interp,
                     &buffer,
                     pos,
-                    &prop,
+                    prop,
                     name == "get-pos-property",
                     window_id,
                 )
@@ -1488,23 +1490,23 @@ define_dispatch!(
                             interp,
                             &buffer,
                             pos,
-                            &prop,
+                            prop,
                             &default_nonsticky,
                         )
                     } else {
-                        buffer_property_at_with_category(interp, &buffer, pos, &prop)
+                        buffer_property_at_with_category(interp, &buffer, pos, prop)
                     }
                 })
                 .unwrap_or(Value::Nil))
             }
             "get-char-property-and-overlay" => {
                 need_arg_range(name, args, 2, 3)?;
-                let prop = args[1].as_symbol()?.to_string();
+                let prop = PropertyName::new(args[1]);
                 if let Some(object) = args.get(2)
                     && string_like(object).is_some()
                 {
                     let pos = args[0].as_integer()?.max(0) as usize;
-                    let value = string_property_at_with_category(interp, object, pos, &prop)
+                    let value = string_property_at_with_category(interp, object, pos, prop)
                         .unwrap_or(Value::Nil);
                     return Ok(Value::cons(value, Value::Nil));
                 }
@@ -1522,11 +1524,11 @@ define_dispatch!(
                     .get_buffer_by_id(buffer_id)
                     .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
                 if let Some((value, overlay_id)) = highest_priority_overlay_property_with_id(
-                    interp, &buffer, pos, &prop, false, window_id,
+                    interp, &buffer, pos, prop, false, window_id,
                 ) {
                     return Ok(Value::cons(value, Value::Overlay(overlay_id)));
                 }
-                let value = buffer_property_at_with_category(interp, &buffer, pos, &prop)
+                let value = buffer_property_at_with_category(interp, &buffer, pos, prop)
                     .unwrap_or(Value::Nil);
                 Ok(Value::cons(value, Value::Nil))
             }
@@ -1534,11 +1536,11 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = args[1].as_symbol()?.to_string();
+                let prop = PropertyName::new(args[1]);
                 if let Some(object) = args.get(2) {
                     if string_like(object).is_some() {
                         let pos = args[0].as_integer()?.max(0) as usize;
-                        Ok(string_property_at_with_category(interp, object, pos, &prop)
+                        Ok(string_property_at_with_category(interp, object, pos, prop)
                             .unwrap_or(Value::Nil))
                     } else {
                         let pos = position_from_value(interp, &args[0])?;
@@ -1550,34 +1552,34 @@ define_dispatch!(
                         let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
                             LispError::Signal(format!("No buffer with id {}", buffer_id))
                         })?;
-                        Ok(
-                            buffer_property_at_with_category(interp, &buffer, pos, &prop)
-                                .unwrap_or(Value::Nil),
-                        )
+                        Ok(buffer_property_at_with_category(interp, &buffer, pos, prop)
+                            .unwrap_or(Value::Nil))
                     }
                 } else {
                     let pos = position_from_value(interp, &args[0])?;
-                    Ok(buffer_property_at_with_category(
-                        interp,
-                        &interp.buffer.borrow(),
-                        pos,
-                        &prop,
+                    Ok(
+                        buffer_property_at_with_category(
+                            interp,
+                            &interp.buffer.borrow(),
+                            pos,
+                            prop,
+                        )
+                        .unwrap_or(Value::Nil),
                     )
-                    .unwrap_or(Value::Nil))
                 }
             }
             "text-property-any" | "text-property-not-all" => {
                 if args.len() < 4 || args.len() > 5 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = args[2].as_symbol()?.to_string();
+                let prop = PropertyName::new(args[2]);
                 let want_match = name == "text-property-any";
                 if let Some(object) = args.get(4) {
                     if string_like(object).is_some() {
                         let start = args[0].as_integer()?.max(0) as usize;
                         let end = args[1].as_integer()?.max(0) as usize;
                         return Ok(text_property_search_string(
-                            interp, object, start, end, &prop, &args[3], want_match,
+                            interp, object, start, end, prop, &args[3], want_match,
                         )
                         .map(|pos| Value::Integer(pos as i64))
                         .unwrap_or(Value::Nil));
@@ -1594,7 +1596,7 @@ define_dispatch!(
                     let start = position_from_value(interp, &args[0])?;
                     let end = position_from_value(interp, &args[1])?;
                     return Ok(text_property_search_buffer(
-                        interp, &buffer, start, end, &prop, &args[3], want_match,
+                        interp, &buffer, start, end, prop, &args[3], want_match,
                     )
                     .map(|pos| Value::Integer(pos as i64))
                     .unwrap_or(Value::Nil));
@@ -1607,7 +1609,7 @@ define_dispatch!(
                     &interp.buffer.borrow(),
                     start,
                     end,
-                    &prop,
+                    prop,
                     &args[3],
                     want_match,
                 )
@@ -1618,7 +1620,7 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = args[1].as_symbol()?.to_string();
+                let prop = PropertyName::new(args[1]);
                 let object = args.get(2).unwrap_or(&Value::Nil);
                 let limit = match args.get(3).filter(|value| !value.is_nil()) {
                     Some(value) => Some(position_from_value(interp, value)?),
@@ -1628,11 +1630,11 @@ define_dispatch!(
                     let pos = args[0].as_integer()?.max(0) as usize;
                     let text = string_text(object)?;
                     let max_pos = limit.unwrap_or(text.chars().count());
-                    let initial = string_property_at_with_category(interp, object, pos, &prop)
+                    let initial = string_property_at_with_category(interp, object, pos, prop)
                         .unwrap_or(Value::Nil);
                     for cursor in pos.saturating_add(1)..max_pos {
                         let current =
-                            string_property_at_with_category(interp, object, cursor, &prop)
+                            string_property_at_with_category(interp, object, cursor, prop)
                                 .unwrap_or(Value::Nil);
                         if !crate::buffer::text_property_values_eq(&current, &initial) {
                             return Ok(Value::Integer(cursor as i64));
@@ -1654,7 +1656,7 @@ define_dispatch!(
                         LispError::Signal(format!("No buffer with id {}", buffer_id))
                     })?;
                     (
-                        buffer.text_property_at(pos, &prop).unwrap_or(Value::Nil),
+                        buffer.text_property_at(pos, prop).unwrap_or(Value::Nil),
                         limit.unwrap_or(buffer.point_max()),
                     )
                 };
@@ -1663,14 +1665,14 @@ define_dispatch!(
                         interp
                             .buffer
                             .borrow()
-                            .text_property_at(cursor, &prop)
+                            .text_property_at(cursor, prop)
                             .unwrap_or(Value::Nil)
                     } else {
                         let buffer_id = interp.resolve_buffer_id(object)?;
                         let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
                             LispError::Signal(format!("No buffer with id {}", buffer_id))
                         })?;
-                        buffer.text_property_at(cursor, &prop).unwrap_or(Value::Nil)
+                        buffer.text_property_at(cursor, prop).unwrap_or(Value::Nil)
                     };
                     if !crate::buffer::text_property_values_eq(&current, &initial) {
                         return Ok(Value::Integer(cursor as i64));
@@ -1735,7 +1737,7 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = args[1].as_symbol()?.to_string();
+                let prop = PropertyName::new(args[1]);
                 let object = args.get(2).unwrap_or(&Value::Nil);
                 let limit = match args.get(3).filter(|value| !value.is_nil()) {
                     Some(value) => Some(position_from_value(interp, value)?),
@@ -1745,11 +1747,11 @@ define_dispatch!(
                     let pos = args[0].as_integer()?.max(0) as usize;
                     let text = string_text(object)?;
                     let max_pos = limit.unwrap_or(text.chars().count());
-                    let initial = string_property_at_with_category(interp, object, pos, &prop)
+                    let initial = string_property_at_with_category(interp, object, pos, prop)
                         .unwrap_or(Value::Nil);
                     for cursor in pos.saturating_add(1)..max_pos {
                         let current =
-                            string_property_at_with_category(interp, object, cursor, &prop)
+                            string_property_at_with_category(interp, object, cursor, prop)
                                 .unwrap_or(Value::Nil);
                         if !crate::buffer::text_property_values_eq(&current, &initial) {
                             return Ok(Value::Integer(cursor as i64));
@@ -1770,10 +1772,10 @@ define_dispatch!(
                     .get_buffer_by_id(buffer_id)
                     .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
                 let max_pos = limit.unwrap_or(buffer.point_max());
-                let initial = buffer_char_property_at_with_overlay_id(interp, &buffer, pos, &prop);
+                let initial = buffer_char_property_at_with_overlay_id(interp, &buffer, pos, prop);
                 for cursor in pos.saturating_add(1)..max_pos {
                     let current =
-                        buffer_char_property_at_with_overlay_id(interp, &buffer, cursor, &prop);
+                        buffer_char_property_at_with_overlay_id(interp, &buffer, cursor, prop);
                     let same_overlay = initial.1.is_some() && initial.1 == current.1;
                     if !same_overlay
                         && !crate::buffer::text_property_values_eq(&current.0, &initial.0)
@@ -1790,7 +1792,7 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = args[1].as_symbol()?.to_string();
+                let prop = PropertyName::new(args[1]);
                 let object = args.get(2).unwrap_or(&Value::Nil);
                 let limit = match args.get(3).filter(|value| !value.is_nil()) {
                     Some(value) => Some(position_from_value(interp, value)?),
@@ -1815,12 +1817,12 @@ define_dispatch!(
                     interp,
                     &buffer,
                     pos.saturating_sub(1),
-                    &prop,
+                    prop,
                 );
                 let mut cursor = pos;
                 while cursor > min_pos + 1 {
                     let current =
-                        buffer_char_property_at_with_overlay_id(interp, &buffer, cursor - 2, &prop);
+                        buffer_char_property_at_with_overlay_id(interp, &buffer, cursor - 2, prop);
                     let same_overlay = initial.1.is_some() && initial.1 == current.1;
                     if !same_overlay
                         && !crate::buffer::text_property_values_eq(&current.0, &initial.0)
@@ -1835,7 +1837,7 @@ define_dispatch!(
                 if args.len() < 2 || args.len() > 4 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = args[1].as_symbol()?.to_string();
+                let prop = PropertyName::new(args[1]);
                 let object = args.get(2).unwrap_or(&Value::Nil);
                 let limit = match args.get(3).filter(|value| !value.is_nil()) {
                     Some(value) => Some(position_from_value(interp, value)?),
@@ -1849,12 +1851,12 @@ define_dispatch!(
                             .map(|value| Value::Integer(value as i64))
                             .unwrap_or(Value::Nil));
                     }
-                    let initial = string_property_at(object, pos.saturating_sub(1), &prop)
+                    let initial = string_property_at(object, pos.saturating_sub(1), prop)
                         .unwrap_or(Value::Nil);
                     for cursor in (min_pos..pos).rev() {
                         let previous = cursor
                             .checked_sub(1)
-                            .and_then(|index| string_property_at(object, index, &prop))
+                            .and_then(|index| string_property_at(object, index, prop))
                             .unwrap_or(Value::Nil);
                         if !crate::buffer::text_property_values_eq(&previous, &initial) {
                             return Ok(Value::Integer(cursor as i64));
@@ -1881,12 +1883,12 @@ define_dispatch!(
                         .unwrap_or(Value::Nil));
                 }
                 let initial = buffer
-                    .text_property_at(pos.saturating_sub(1), &prop)
+                    .text_property_at(pos.saturating_sub(1), prop)
                     .unwrap_or(Value::Nil);
                 for cursor in (min_pos..pos).rev() {
                     let previous = cursor
                         .checked_sub(1)
-                        .and_then(|index| buffer.text_property_at(index, &prop))
+                        .and_then(|index| buffer.text_property_at(index, prop))
                         .unwrap_or(Value::Nil);
                     if !crate::buffer::text_property_values_eq(&previous, &initial) {
                         return Ok(Value::Integer(cursor as i64));
@@ -2021,7 +2023,7 @@ define_dispatch!(
                 if args.len() < 4 || args.len() > 5 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let prop = args[2].as_symbol()?.to_string();
+                let prop = PropertyName::new(args[2]);
                 // textprop.c:Fput_text_property stores VALUE itself. Copying
                 // a property-free string here loses identity and later edits.
                 let prop_value = args[3];
@@ -2037,7 +2039,7 @@ define_dispatch!(
                             {
                                 *existing = prop_value;
                             } else {
-                                current.insert(0, (prop.clone(), prop_value));
+                                current.insert(0, (prop, prop_value));
                             }
                             current
                         })?;
@@ -2045,14 +2047,14 @@ define_dispatch!(
                         let start = position_from_value(interp, &args[0])?;
                         let end = position_from_value(interp, &args[1])?;
                         interp.apply_text_property_change_shared(&|buffer| {
-                            buffer.put_text_property(start, end, &prop, prop_value)
+                            buffer.put_text_property(start, end, prop, prop_value)
                         });
                     }
                 } else {
                     let start = position_from_value(interp, &args[0])?;
                     let end = position_from_value(interp, &args[1])?;
                     interp.apply_text_property_change_shared(&|buffer| {
-                        buffer.put_text_property(start, end, &prop, prop_value)
+                        buffer.put_text_property(start, end, prop, prop_value)
                     });
                 }
                 Ok(Value::Nil)
@@ -2076,7 +2078,7 @@ define_dispatch!(
                                     {
                                         *existing = *value;
                                     } else {
-                                        current.insert(0, (name.clone(), *value));
+                                        current.insert(0, (*name, *value));
                                     }
                                 }
                                 current
@@ -2140,8 +2142,8 @@ define_dispatch!(
                 let names = args[2]
                     .to_vec()?
                     .into_iter()
-                    .map(|value| value.as_symbol().map(|s| s.to_string()))
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .map(PropertyName::new)
+                    .collect::<Vec<_>>();
                 if let Some(object) = args.get(3) {
                     if string_like(object).is_some() {
                         let start = args[0].as_integer()?.max(0) as usize;

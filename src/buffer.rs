@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use crate::lisp::types::Value;
 use crate::lisp::types::{BufferRef, Kind, MarkerRef};
+use crate::lisp::types::{PropertyKey, PropertyName, Value};
 use ropey::Rope;
 use std::cell::RefCell;
 use std::time::SystemTime;
@@ -590,7 +590,7 @@ impl Clone for UndoListViewCache {
     }
 }
 
-fn undo_entry_lisp_value(entry: &UndoEntry) -> Value {
+fn undo_entry_lisp_value(entry: &UndoEntry, multibyte: bool) -> Value {
     match entry {
         // GNU records an insertion as (BEG . END).
         UndoEntry::Insert { pos, len } => Value::cons(
@@ -601,9 +601,26 @@ fn undo_entry_lisp_value(entry: &UndoEntry) -> Value {
             pos,
             point_after,
             text,
+            props,
+            extended_chars,
             ..
         } => Value::cons(
-            Value::String(text.as_str().into()),
+            // insdel.c record_delete's `make_buffer_string (beg, beg +
+            // length, true)': the deleted text with its properties,
+            // multibyte as its buffer is.
+            Value::StringObject(crate::lisp::types::StringObjectRef::from_text_ref(
+                text,
+                props
+                    .iter()
+                    .map(|span| crate::lisp::types::StringPropertySpan {
+                        start: span.start,
+                        end: span.end,
+                        props: span.props.clone(),
+                    })
+                    .collect(),
+                multibyte,
+                extended_chars,
+            )),
             Value::Integer(if *point_after {
                 -(*pos as i64)
             } else {
@@ -659,7 +676,8 @@ impl UndoState {
                     UndoEntry::Opaque(value) => visit(value),
                     UndoEntry::Delete { props, markers, .. } => {
                         for span in props {
-                            for (_, value) in &span.props {
+                            for (name, value) in &span.props {
+                                visit(&name.value());
                                 visit(value);
                             }
                         }
@@ -723,7 +741,7 @@ pub struct UndoMarker {
 pub struct TextPropertySpan {
     pub start: usize,
     pub end: usize,
-    pub props: Vec<(String, Value)>,
+    pub props: Vec<(PropertyName, Value)>,
 }
 
 /// Errors that buffer operations can produce.
@@ -1616,18 +1634,11 @@ impl Buffer {
     /// template cells, so it is dropped rather than rewritten.
     pub(crate) fn rewrite_lisp_values(&mut self, copy: &mut impl FnMut(&Value) -> Value) {
         fn rewrite_properties(
-            props: &mut [(String, Value)],
+            props: &mut [(PropertyName, Value)],
             copy: &mut impl FnMut(&Value) -> Value,
         ) {
             for (name, value) in props {
-                // Property names still use the encoded-name adapter. A
-                // private symbol's key must follow its relocated object.
-                if crate::lisp::types::is_uninterned_symbol(name) {
-                    *name = copy(&Value::symbol(name.as_str()))
-                        .as_symbol()
-                        .expect("a copied property key remains a symbol")
-                        .to_owned();
-                }
+                *name = PropertyName::new(copy(&name.value()));
                 *value = copy(value);
             }
         }
@@ -1674,7 +1685,8 @@ impl Buffer {
             visit(&Value::Marker(marker));
         }
         for span in &self.text_properties {
-            for (_, value) in &span.props {
+            for (name, value) in &span.props {
+                visit(&name.value());
                 visit(value);
             }
         }
@@ -1692,7 +1704,8 @@ impl Buffer {
                         visit(&Value::Marker(marker.id));
                     }
                     for span in props {
-                        for (_, value) in &span.props {
+                        for (name, value) in &span.props {
+                            visit(&name.value());
                             visit(value);
                         }
                     }
@@ -1720,14 +1733,14 @@ impl Buffer {
         !self.text_properties.is_empty()
     }
 
-    pub fn text_property_at(&self, pos: usize, prop: &str) -> Option<Value> {
+    pub fn text_property_at(&self, pos: usize, prop: impl PropertyKey) -> Option<Value> {
         self.text_properties_at_ref(pos)
             .iter()
-            .find(|(name, _)| name == prop)
+            .find(|(name, _)| prop.names(name))
             .map(|(_, value)| *value)
     }
 
-    pub(crate) fn text_properties_at_ref(&self, pos: usize) -> &[(String, Value)] {
+    pub(crate) fn text_properties_at_ref(&self, pos: usize) -> &[(PropertyName, Value)] {
         if pos < self.point_min() || pos >= self.point_max() {
             return &[];
         }
@@ -1736,7 +1749,7 @@ impl Buffer {
             .unwrap_or_default()
     }
 
-    pub fn text_properties_at(&self, pos: usize) -> Vec<(String, Value)> {
+    pub fn text_properties_at(&self, pos: usize) -> Vec<(PropertyName, Value)> {
         self.text_properties_at_ref(pos).to_vec()
     }
 
@@ -1763,7 +1776,12 @@ impl Buffer {
         (start.max(begv), end.min(zv).max(start.max(begv)))
     }
 
-    pub fn add_text_properties(&mut self, start: usize, end: usize, props: &[(String, Value)]) {
+    pub fn add_text_properties(
+        &mut self,
+        start: usize,
+        end: usize,
+        props: &[(PropertyName, Value)],
+    ) {
         self.modify_text_properties(start, end, |mut current| {
             // GNU replaces existing properties in place and CONSES new
             // ones onto the front of the interval plist, so
@@ -1772,29 +1790,45 @@ impl Buffer {
                 if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name) {
                     *existing = *value;
                 } else {
-                    current.insert(0, (name.clone(), *value));
+                    current.insert(0, (*name, *value));
                 }
             }
             current
         });
     }
 
-    pub fn put_text_property(&mut self, start: usize, end: usize, name: &str, value: Value) {
+    pub fn put_text_property(
+        &mut self,
+        start: usize,
+        end: usize,
+        name: PropertyName,
+        value: Value,
+    ) {
         self.modify_text_properties(start, end, |mut current| {
-            if let Some((_, existing)) = current.iter_mut().find(|(key, _)| key == name) {
+            if let Some((_, existing)) = current.iter_mut().find(|(key, _)| *key == name) {
                 *existing = value;
             } else {
-                current.insert(0, (name.to_string(), value));
+                current.insert(0, (name, value));
             }
             current
         });
     }
 
-    pub fn set_text_properties(&mut self, start: usize, end: usize, props: &[(String, Value)]) {
+    pub fn set_text_properties(
+        &mut self,
+        start: usize,
+        end: usize,
+        props: &[(PropertyName, Value)],
+    ) {
         self.modify_text_properties(start, end, |_| props.to_vec());
     }
 
-    pub fn remove_list_of_text_properties(&mut self, start: usize, end: usize, names: &[String]) {
+    pub fn remove_list_of_text_properties(
+        &mut self,
+        start: usize,
+        end: usize,
+        names: &[PropertyName],
+    ) {
         self.modify_text_properties(start, end, |current| {
             current
                 .into_iter()
@@ -1857,7 +1891,7 @@ impl Buffer {
         &self,
         pos: usize,
         default_nonsticky: Option<&Value>,
-    ) -> Vec<(String, Value)> {
+    ) -> Vec<(PropertyName, Value)> {
         let previous = if pos > self.point_min() {
             self.text_properties_at(pos - 1)
         } else {
@@ -1898,7 +1932,7 @@ impl Buffer {
     pub fn insert_with_properties(
         &mut self,
         s: &str,
-        props: Option<Vec<(String, Value)>>,
+        props: Option<Vec<(PropertyName, Value)>>,
     ) -> usize {
         self.insert_with_properties_and_markers(s, props, false)
     }
@@ -1906,7 +1940,7 @@ impl Buffer {
     pub(crate) fn insert_with_properties_and_markers(
         &mut self,
         s: &str,
-        props: Option<Vec<(String, Value)>>,
+        props: Option<Vec<(PropertyName, Value)>>,
         before_markers: bool,
     ) -> usize {
         let nchars = s.chars().count();
@@ -1960,10 +1994,10 @@ impl Buffer {
             && !props.is_empty()
         {
             // Fresh text: keep the given plist order (GNU grafts intervals).
-            self.set_text_properties_without_undo(insert_at, insert_at + nchars, &props);
+            self.graft_text_properties(insert_at, insert_at + nchars, &props);
         }
 
-        self.modiff += 1;
+        modiff_incr(&mut self.modiff, nchars);
         self.chars_modiff = self.modiff;
         self.log_edit(insert_at, insert_at, insert_at + nchars, true);
         self.autosaved = false;
@@ -2000,7 +2034,8 @@ impl Buffer {
             .retain(|(position, _)| *position < from || *position >= to);
         self.invalidate_char_cache();
         self.refresh_marker_byte_positions();
-        self.modiff += 1;
+        // insdel.c modify_text.
+        modiff_incr(&mut self.modiff, to - from);
         self.chars_modiff = self.modiff;
         self.log_edit(from, to, to, true);
         self.autosaved = false;
@@ -2089,7 +2124,7 @@ impl Buffer {
         // Shrink accessible region
         self.zv -= nchars;
 
-        self.modiff += 1;
+        modiff_incr(&mut self.modiff, nchars);
         self.chars_modiff = self.modiff;
         self.log_edit(from, to, from, true);
         self.autosaved = false;
@@ -2262,7 +2297,7 @@ impl Buffer {
             .undo_list
             .iter()
             .rev()
-            .map(undo_entry_lisp_value)
+            .map(|entry| undo_entry_lisp_value(entry, self.multibyte))
             .collect::<Vec<_>>();
         let value = Value::list(entries);
         *self.undo_list_view.0.borrow_mut() = Some(UndoListView {
@@ -2303,7 +2338,7 @@ impl Buffer {
         let mut view = self.undo_list_view.0.borrow_mut();
         match view.as_mut() {
             Some(view) if view.undo_len == self.undo_list.len() => {
-                view.value = Value::cons(undo_entry_lisp_value(&entry), view.value);
+                view.value = Value::cons(undo_entry_lisp_value(&entry, self.multibyte), view.value);
                 view.undo_len += 1;
             }
             _ => *view = None,
@@ -2397,7 +2432,7 @@ impl Buffer {
             .and_then(|cached| cached.value.cons_values())
             .map(|(newest, rest)| {
                 let tail = entries.iter().fold(rest, |tail, entry| {
-                    Value::cons(undo_entry_lisp_value(entry), tail)
+                    Value::cons(undo_entry_lisp_value(entry, self.multibyte), tail)
                 });
                 Value::cons(newest, tail)
             });
@@ -2801,28 +2836,34 @@ impl Buffer {
 
     fn modify_text_properties<F>(&mut self, start: usize, end: usize, f: F)
     where
-        F: FnMut(Vec<(String, Value)>) -> Vec<(String, Value)>,
+        F: FnMut(Vec<(PropertyName, Value)>) -> Vec<(PropertyName, Value)>,
     {
         self.modify_text_properties_with_undo(start, end, true, f);
     }
 
-    fn set_text_properties_without_undo(
+    /// intervals.c graft_intervals_into_buffer: freshly inserted text
+    /// takes PROPS as part of its insertion, which alone is recorded and
+    /// counted.
+    pub(crate) fn graft_text_properties(
         &mut self,
         start: usize,
         end: usize,
-        props: &[(String, Value)],
+        props: &[(PropertyName, Value)],
     ) {
         self.modify_text_properties_with_undo(start, end, false, |_| props.to_vec());
     }
 
+    /// RECORD: a change of the properties alone (textprop.c
+    /// modify_text_properties), recorded for undo and counted; otherwise
+    /// a graft into text just inserted.
     fn modify_text_properties_with_undo<F>(
         &mut self,
         start: usize,
         end: usize,
-        record_undo: bool,
+        record: bool,
         mut f: F,
     ) where
-        F: FnMut(Vec<(String, Value)>) -> Vec<(String, Value)>,
+        F: FnMut(Vec<(PropertyName, Value)>) -> Vec<(PropertyName, Value)>,
     {
         let start = start.max(self.point_min());
         let end = end.min(self.point_max());
@@ -2871,7 +2912,7 @@ impl Buffer {
             let next = f(current.clone());
             if !text_property_plists_eq(&current, &next) {
                 changed = true;
-                if record_undo && !self.undo_disabled {
+                if record && !self.undo_disabled {
                     for (name, old_value) in &current {
                         let value_changed = next
                             .iter()
@@ -2916,7 +2957,7 @@ impl Buffer {
         if !changed {
             return;
         }
-        if record_undo && !self.undo_disabled {
+        if record && !self.undo_disabled {
             self.record_first_change_for_undo();
             for entry in undo_records {
                 self.push_undo_entry(UndoEntry::Opaque(entry));
@@ -2931,20 +2972,29 @@ impl Buffer {
         window.extend(self.text_properties[hi..splice_hi].iter().cloned());
         let window = merge_adjacent_spans(window);
         self.text_properties.splice(splice_lo..splice_hi, window);
-        self.modiff = self.modiff.saturating_add(1);
-        self.log_edit(start, end, end, false);
-        self.autosaved = false;
+        if record {
+            modiff_incr(&mut self.modiff, 1);
+            self.log_edit(start, end, end, false);
+            self.autosaved = false;
+        }
     }
 }
 
-fn property_undo_entry(name: &str, value: Value, start: usize, end: usize) -> Value {
-    // The span's name text stays where it is, so the address-keyed cache
-    // finds its symbol after the first record.
-    let name = crate::lisp::types::SymbolName::interned_cached(name).unwrap_or_else(|| name.into());
+/// lisp.h modiff_incr: a change of LEN characters counts one more than
+/// LEN's binary logarithm, so a large change counts more than a small one.
+fn modiff_incr(count: &mut ModCount, len: usize) {
+    *count += if len == 0 {
+        1
+    } else {
+        i64::from(len.ilog2()) + 1
+    };
+}
+
+fn property_undo_entry(name: &PropertyName, value: Value, start: usize, end: usize) -> Value {
     Value::cons(
         Value::Nil,
         Value::cons(
-            Value::Symbol(name),
+            name.value(),
             Value::cons(
                 value,
                 Value::cons(Value::Integer(start as i64), Value::Integer(end as i64)),
@@ -3119,8 +3169,10 @@ impl Buffer {
                 self.goto_char(*pos);
                 let insert_at = self.point();
                 self.insert(text);
+                // primitive-undo reinserts the recorded string, grafting its
+                // intervals as they were.
                 for span in props {
-                    self.add_text_properties(
+                    self.graft_text_properties(
                         insert_at + span.start,
                         insert_at + span.end,
                         &span.props,
@@ -3289,36 +3341,39 @@ fn text_property_span_at(spans: &[TextPropertySpan], pos: usize) -> Option<&Text
         .filter(|span| pos < span.end)
 }
 
-fn properties_at_from(spans: &[TextPropertySpan], pos: usize) -> Vec<(String, Value)> {
+fn properties_at_from(spans: &[TextPropertySpan], pos: usize) -> Vec<(PropertyName, Value)> {
     text_property_span_at(spans, pos)
         .map(|span| span.props.clone())
         .unwrap_or_default()
 }
 
-fn property_value<'a>(props: &'a [(String, Value)], name: &str) -> Option<&'a Value> {
+fn property_value<'a>(props: &'a [(PropertyName, Value)], name: &str) -> Option<&'a Value> {
     props
         .iter()
         .find(|(property, _)| property == name)
         .map(|(_, value)| value)
 }
 
-fn is_stickiness_control(name: &str) -> bool {
-    matches!(name, "front-sticky" | "rear-nonsticky")
+fn is_stickiness_control(name: &PropertyName) -> bool {
+    *name == "front-sticky" || *name == "rear-nonsticky"
 }
 
-fn property_named_by_stickiness(setting: Option<&Value>, name: &str) -> bool {
+/// textprop.c's `!NILP (Fmemq (prop, stickiness))' for a stickiness
+/// property's value: t names every property.
+fn property_named_by_stickiness(setting: Option<&Value>, name: &PropertyName) -> bool {
     match setting.map(|v| v.kind()) {
         Some(Kind::T) => true,
-        Some(value @ Kind::Cons(_)) => value.value().to_vec().is_ok_and(|items| {
-            items
-                .iter()
-                .any(|item| matches!(item.kind(), Kind::Symbol(property) if property == name))
-        }),
+        Some(value @ Kind::Cons(_)) => value
+            .value()
+            .to_vec()
+            .is_ok_and(|items| items.iter().any(|item| PropertyName::new(*item) == *name)),
         _ => false,
     }
 }
 
-fn default_property_nonsticky(defaults: Option<&Value>, name: &str) -> bool {
+/// textprop.c's `Fassq (prop, Vtext_property_default_nonsticky)' with a
+/// non-nil cdr.
+fn default_property_nonsticky(defaults: Option<&Value>, name: &PropertyName) -> bool {
     let Some(defaults) = defaults.and_then(|value| value.to_vec().ok()) else {
         return false;
     };
@@ -3326,12 +3381,14 @@ fn default_property_nonsticky(defaults: Option<&Value>, name: &str) -> bool {
         let Some((property, nonsticky)) = (entry).cons_cells() else {
             return false;
         };
-        matches!(property.get().kind(), Kind::Symbol(candidate) if candidate == name)
-            && nonsticky.get().is_truthy()
+        PropertyName::new(property.get()) == *name && nonsticky.get().is_truthy()
     })
 }
 
-pub(crate) fn text_property_plists_eq(left: &[(String, Value)], right: &[(String, Value)]) -> bool {
+pub(crate) fn text_property_plists_eq(
+    left: &[(PropertyName, Value)],
+    right: &[(PropertyName, Value)],
+) -> bool {
     left.len() == right.len()
         && left.iter().all(|(name, value)| {
             right

@@ -560,7 +560,7 @@ define_dispatch!(
                     // Property spans are 1-based buffer positions, the
                     // same coordinates set_text_properties consumes.
                     for span in props {
-                        buffer.set_text_properties(span.start, span.end, &span.props);
+                        buffer.graft_text_properties(span.start, span.end, &span.props);
                     }
                     drop(buffer);
                     if clone {

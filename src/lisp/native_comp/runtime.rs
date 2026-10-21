@@ -10328,7 +10328,7 @@ mod tests {
                     &"large buffer payload\n".repeat(8192),
                 );
                 state.file = Some("/tmp/retained-dead-buffer.el".into());
-                state.put_text_property(1, 2, "retained-property", property);
+                state.put_text_property(1, 2, "retained-property".into(), property);
                 state.set_undo_list_view(undo);
                 state.text_conversion_style = style;
             }

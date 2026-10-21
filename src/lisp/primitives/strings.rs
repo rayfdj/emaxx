@@ -1,5 +1,5 @@
 use super::*;
-use crate::lisp::types::Kind;
+use crate::lisp::types::{Kind, PropertyKey, PropertyName};
 
 /// alloc.c:memory_full signals with the existing Vmemory_signal_data. Rust
 /// storage builders have no interpreter, so resolve their typed failure at
@@ -894,25 +894,21 @@ fn nreverse_list_cells(value: &Value) -> Result<Value, LispError> {
     }
 }
 
-pub(crate) fn plist_pairs(value: &Value) -> Result<Vec<(String, Value)>, LispError> {
+/// A property list's pairs: any object names a property, as textprop.c
+/// takes each plist's names as they are.
+pub(crate) fn plist_pairs(value: &Value) -> Result<Vec<(PropertyName, Value)>, LispError> {
     let items = value.to_vec()?;
     let mut props = Vec::new();
     let mut i = 0;
     while i + 1 < items.len() {
-        let key = items[i].as_symbol()?.to_string();
-        props.push((key, items[i + 1]));
+        props.push((PropertyName::new(items[i]), items[i + 1]));
         i += 2;
     }
     Ok(props)
 }
 
-pub(crate) fn plist_value(props: &[(String, Value)]) -> Value {
-    let mut items = Vec::new();
-    for (key, value) in props {
-        items.push(Value::Symbol(key.clone().into()));
-        items.push(*value);
-    }
-    Value::list(items)
+pub(crate) fn plist_value(props: &[(PropertyName, Value)]) -> Value {
+    Value::list(props.iter().flat_map(|(key, value)| [key.value(), *value]))
 }
 
 pub(crate) fn object_intervals_value(
@@ -1045,12 +1041,12 @@ pub(crate) fn flatten_overlapping_string_props(
     let mut result = Vec::new();
     for window in bounds.windows(2) {
         let (start, end) = (window[0], window[1]);
-        let mut plist: Vec<(String, Value)> = Vec::new();
+        let mut plist: Vec<(PropertyName, Value)> = Vec::new();
         for span in &spans {
             if span.start <= start && end <= span.end {
                 for (key, value) in &span.props {
                     if !plist.iter().any(|(existing, _)| existing == key) {
-                        plist.push((key.clone(), *value));
+                        plist.push((*key, *value));
                     }
                 }
             }
@@ -1085,23 +1081,23 @@ pub(crate) fn merge_string_props(mut props: Vec<TextPropertySpan>) -> Vec<TextPr
 
 pub(crate) fn property_from_category_symbol(
     interp: &Interpreter,
-    props: &[(String, Value)],
-    prop: &str,
+    props: &[(PropertyName, Value)],
+    prop: impl PropertyKey,
 ) -> Option<Value> {
-    if prop == "category" {
+    if prop.is_named("category") {
         return None;
     }
     let category = props
         .iter()
-        .find(|(name, _)| name == "category")
+        .find(|(name, _)| *name == "category")
         .and_then(|(_, value)| value.symbol_str())?;
-    interp.get_symbol_property(category, prop)
+    interp.get_symbol_property_by(category, prop)
 }
 
 pub(crate) fn property_from_props_with_category(
     interp: &Interpreter,
-    props: &[(String, Value)],
-    prop: &str,
+    props: &[(PropertyName, Value)],
+    prop: impl PropertyKey,
 ) -> Option<Value> {
     // Categories and aliases can only redirect a property already present in
     // this interval.  Most buffer positions have no properties at all, so do
@@ -1111,7 +1107,7 @@ pub(crate) fn property_from_props_with_category(
     }
     let direct = props
         .iter()
-        .find(|(name, _)| name == prop)
+        .find(|(name, _)| prop.names(name))
         .map(|(_, value)| *value)
         .or_else(|| property_from_category_symbol(interp, props, prop));
     if direct.is_some() {
@@ -1123,14 +1119,13 @@ pub(crate) fn property_from_props_with_category(
         .unwrap_or_default();
     let aliases = aliases.into_iter().find_map(|entry| {
         let key = entry.car_if_list()?;
-        matches!(key.kind(), Kind::Symbol(name) if name == prop)
-            .then(|| entry.cdr_if_list()?.to_vec().ok())?
+        prop.is(key).then(|| entry.cdr_if_list()?.to_vec().ok())?
     })?;
     aliases.into_iter().find_map(|alias| {
-        let alias = alias.symbol_str()?;
+        let alias = PropertyName::new(alias);
         props
             .iter()
-            .find(|(name, _)| name == alias)
+            .find(|(name, _)| *name == alias)
             .map(|(_, value)| *value)
             .or_else(|| property_from_category_symbol(interp, props, alias))
     })
@@ -1140,7 +1135,7 @@ pub(crate) fn buffer_property_at_with_category(
     interp: &Interpreter,
     buffer: &crate::buffer::Buffer,
     pos: usize,
-    prop: &str,
+    prop: impl PropertyKey,
 ) -> Option<Value> {
     if pos < buffer.point_min() || pos >= buffer.point_max() {
         return None;
@@ -1152,7 +1147,7 @@ pub(crate) fn buffer_char_property_at(
     interp: &Interpreter,
     buffer: &crate::buffer::Buffer,
     pos: usize,
-    prop: &str,
+    prop: impl PropertyKey,
 ) -> Value {
     buffer_char_property_at_with_overlay_id(interp, buffer, pos, prop).0
 }
@@ -1161,7 +1156,7 @@ pub(crate) fn buffer_char_property_at_with_overlay_id(
     interp: &Interpreter,
     buffer: &crate::buffer::Buffer,
     pos: usize,
-    prop: &str,
+    prop: impl PropertyKey,
 ) -> (Value, Option<crate::overlay::OverlayRef>) {
     if let Some((value, overlay_id)) =
         highest_priority_overlay_property_with_id(interp, buffer, pos, prop, false, None)
@@ -1177,17 +1172,21 @@ pub(crate) fn buffer_char_property_at_with_overlay_id(
 pub(crate) fn overlay_property_with_category(
     interp: &Interpreter,
     overlay: &crate::overlay::OverlayRef,
-    prop: &str,
+    prop: impl PropertyKey,
 ) -> Option<Value> {
-    let direct = overlay.get_symbol_prop(prop);
-    if direct.is_some() || prop == "category" {
+    let direct = overlay.get_prop_by(prop);
+    if direct.is_some() || prop.is_named("category") {
         return direct;
     }
-    let category = overlay.get_symbol_prop("category")?;
-    interp.get_symbol_property(category.symbol_str()?, prop)
+    let category = overlay.get_prop_by("category")?;
+    interp.get_symbol_property_by(category.symbol_str()?, prop)
 }
 
-pub(crate) fn string_property_at(value: &Value, pos: usize, prop: &str) -> Option<Value> {
+pub(crate) fn string_property_at(
+    value: &Value,
+    pos: usize,
+    prop: impl PropertyKey,
+) -> Option<Value> {
     let string = string_like(value)?;
     string
         .props
@@ -1196,7 +1195,7 @@ pub(crate) fn string_property_at(value: &Value, pos: usize, prop: &str) -> Optio
         .and_then(|span| {
             span.props
                 .iter()
-                .find(|(name, _)| name == prop)
+                .find(|(name, _)| prop.names(name))
                 .map(|(_, value)| *value)
         })
 }
@@ -1205,7 +1204,7 @@ pub(crate) fn string_property_at_with_category(
     interp: &Interpreter,
     value: &Value,
     pos: usize,
-    prop: &str,
+    prop: impl PropertyKey,
 ) -> Option<Value> {
     let string = string_like(value)?;
     let span = string
@@ -1220,7 +1219,7 @@ pub(crate) fn text_property_search_buffer(
     buffer: &crate::buffer::Buffer,
     start: usize,
     end: usize,
-    prop: &str,
+    prop: impl PropertyKey,
     wanted: &Value,
     want_match: bool,
 ) -> Option<usize> {
@@ -1254,7 +1253,7 @@ pub(crate) fn text_property_search_string(
     value: &Value,
     start: usize,
     end: usize,
-    prop: &str,
+    prop: impl PropertyKey,
     wanted: &Value,
     want_match: bool,
 ) -> Option<usize> {
@@ -1278,7 +1277,7 @@ pub(crate) fn text_property_search_string(
     None
 }
 
-pub(crate) fn string_properties_at(value: &Value, pos: usize) -> Vec<(String, Value)> {
+pub(crate) fn string_properties_at(value: &Value, pos: usize) -> Vec<(PropertyName, Value)> {
     string_like(value)
         .and_then(|string| {
             string
@@ -1312,7 +1311,7 @@ pub(crate) fn merge_string_object_props(
 pub(crate) fn string_object_properties_at(
     spans: &[StringPropertySpan],
     pos: usize,
-) -> Vec<(String, Value)> {
+) -> Vec<(PropertyName, Value)> {
     spans
         .iter()
         .find(|span| span.start <= pos && pos < span.end)
@@ -1327,7 +1326,7 @@ pub(crate) fn modify_shared_string_properties<F>(
     mut f: F,
 ) -> Result<bool, LispError>
 where
-    F: FnMut(Vec<(String, Value)>) -> Vec<(String, Value)>,
+    F: FnMut(Vec<(PropertyName, Value)>) -> Vec<(PropertyName, Value)>,
 {
     let Kind::StringObject(state) = value.kind() else {
         return Err(LispError::WrongTypeArgument("stringp".into(), *value));

@@ -1178,7 +1178,7 @@ impl DumpContext {
             words.push(span.end as u64);
             words.push(span.props.len() as u64);
             for (name, value) in &span.props {
-                fields.push((words.len(), Value::symbol(name), WEIGHT_STRONG));
+                fields.push((words.len(), name.value(), WEIGHT_STRONG));
                 words.push(0);
                 fields.push((words.len(), *value, WEIGHT_STRONG));
                 words.push(0);

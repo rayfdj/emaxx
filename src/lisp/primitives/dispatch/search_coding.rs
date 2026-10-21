@@ -269,12 +269,13 @@ fn apply_buffer_replacement_hunks(
                     interp.insert_current_buffer(&inserted);
                     // `insert' can inherit edge properties.  `replace-buffer-contents'
                     // grafts the source intervals instead, including property-free gaps.
-                    interp
-                        .buffer
-                        .borrow_mut()
-                        .set_text_properties(from, from + inserted_len, &[]);
+                    interp.buffer.borrow_mut().graft_text_properties(
+                        from,
+                        from + inserted_len,
+                        &[],
+                    );
                     for span in clipped_property_spans(source_props, hunk.new_start, hunk.new_end) {
-                        interp.buffer.borrow_mut().set_text_properties(
+                        interp.buffer.borrow_mut().graft_text_properties(
                             from + span.start,
                             from + span.end,
                             &span.props,
@@ -623,7 +624,7 @@ define_dispatch!(
                     if !spans.is_empty() && source_len == replacement_len {
                         interp.apply_text_property_change_shared(&|buffer| {
                             for span in &spans {
-                                buffer.set_text_properties(
+                                buffer.graft_text_properties(
                                     start + span.start,
                                     start + span.end,
                                     &span.props,
@@ -925,7 +926,7 @@ define_dispatch!(
                 interp.buffer.borrow_mut().goto_char(start1);
                 interp.insert_current_buffer(&region2_text);
                 for span in &region2_props {
-                    interp.buffer.borrow_mut().add_text_properties(
+                    interp.buffer.borrow_mut().graft_text_properties(
                         start1 + span.start,
                         start1 + span.end,
                         &span.props,
@@ -935,7 +936,7 @@ define_dispatch!(
                 interp.buffer.borrow_mut().goto_char(insert_region1_at);
                 interp.insert_current_buffer(&region1_text);
                 for span in &region1_props {
-                    interp.buffer.borrow_mut().add_text_properties(
+                    interp.buffer.borrow_mut().graft_text_properties(
                         insert_region1_at + span.start,
                         insert_region1_at + span.end,
                         &span.props,

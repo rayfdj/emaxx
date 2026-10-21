@@ -1580,6 +1580,110 @@ fn overlay_property_keys_use_lisp_identity() {
 }
 
 #[test]
+fn text_property_names_are_any_object_compared_with_eq() {
+    // textprop.c compares an interval plist's names with EQ and takes any
+    // object as a name: an integer, an uninterned symbol distinct from the
+    // interned one of its name, a string or list kept by identity (and
+    // through a collection and an undo of its deletion), a category or
+    // read-syntax plist, and remove-list's names alike.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+         (with-temp-buffer
+           (insert "abc")
+           (put-text-property 1 2 1 'x)
+           (list (get-text-property 1 1) (text-properties-at 1)))
+         (let ((s (make-symbol "face")))
+           (with-temp-buffer
+             (insert "abc")
+             (put-text-property 1 2 s t)
+             (list (get-text-property 1 s) (get-text-property 1 'face)
+                   (eq (car (text-properties-at 1)) s))))
+         (let ((k (copy-sequence "k")))
+           (with-temp-buffer
+             (insert "abc")
+             (put-text-property 1 2 k 1)
+             (garbage-collect)
+             (list (get-text-property 1 k) (get-text-property 1 "k")
+                   (eq (car (text-properties-at 1)) k))))
+         (let* ((u (make-symbol "face"))
+                (s (propertize "ab" u 'q 'face 'r 7 'seven)))
+           (list (get-text-property 0 u s) (get-text-property 0 'face s)
+                 (get-text-property 0 7 s) (length (text-properties-at 0 s))))
+         (let* ((k (list 'x)) (s (propertize "ab" k 1)))
+           (list (get-text-property 0 k s) (get-text-property 0 (list 'x) s)
+                 (eq (car (text-properties-at 0 (substring s 0 1))) k)
+                 (equal-including-properties s (propertize "ab" k 1))
+                 (equal-including-properties s (propertize "ab" (list 'x) 1))))
+         (progn
+           (put 'emaxx-test-category 7 'from-category)
+           (list (get-text-property 0 7 (propertize "x" 'category 'emaxx-test-category))
+                 (next-single-property-change 0 7 (concat (propertize "a" 7 1) "b"))
+                 (text-property-any 0 2 7 1 (concat (propertize "a" 7 1) "b"))))
+         (text-properties-at 0 (car (read-from-string "#(\"ab\" 0 1 (1 one \"s\" str))")))
+         (with-temp-buffer
+           (insert "abcd")
+           (add-text-properties 1 3 '(a 1 b 2))
+           (remove-list-of-text-properties 1 2 '(a))
+           (put-text-property 3 4 5 'five)
+           (remove-text-properties 3 4 '(5 nil))
+           (list (text-properties-at 1) (text-properties-at 2)
+                 (next-single-property-change 1 'a) (text-properties-at 3)))
+         (with-temp-buffer
+           (buffer-enable-undo)
+           (insert "abc")
+           (undo-boundary)
+           (let ((k (copy-sequence "k")))
+             (put-text-property 1 2 k 1)
+             (undo-boundary)
+             (delete-region 1 4)
+             (undo-boundary)
+             (garbage-collect)
+             (primitive-undo 1 (cdr buffer-undo-list))
+             (list (eq (car (text-properties-at 1)) k) (get-text-property 1 k)))))"##,
+        "((x (1 x)) (t nil t) (1 nil t) (q r seven 6) (1 nil t t nil) \
+         (from-category 1 0) (1 one \"s\" str) ((b 2) (b 2 a 1) 2 nil) (t 1))",
+        "text property names",
+    );
+}
+
+#[test]
+fn undo_records_inserted_and_deleted_text_as_insdel_does() {
+    // insdel.c: an insertion records (BEG . END) alone, its string's
+    // intervals grafted unrecorded; a deletion records the text as
+    // `make_buffer_string' makes it (its properties, multibyte as the
+    // buffer), which primitive-undo reinserts with them; and each edit
+    // counts in the modification tick as modiff_incr counts it.
+    assert_oracle_contract_matches_interpreter(
+        r##"(list
+         (with-temp-buffer
+           (buffer-enable-undo)
+           (insert (propertize "ab" 'face 'bold))
+           buffer-undo-list)
+         (with-temp-buffer
+           (buffer-enable-undo)
+           (insert "abc")
+           (undo-boundary)
+           (put-text-property 1 2 'kk 1)
+           (undo-boundary)
+           (delete-region 1 4)
+           (let ((deleted (car (car buffer-undo-list))))
+             (primitive-undo 1 buffer-undo-list)
+             (list deleted (multibyte-string-p deleted) (buffer-string)
+                   (car buffer-undo-list))))
+         (with-temp-buffer
+           (list (buffer-modified-tick)
+                 (progn (insert "a") (buffer-modified-tick))
+                 (progn (insert (propertize "bcde" 'face 'bold)) (buffer-modified-tick))
+                 (progn (put-text-property 1 2 'x 1)
+                        (list (buffer-modified-tick) (buffer-chars-modified-tick)))
+                 (progn (delete-region 1 4) (buffer-modified-tick)))))"##,
+        "(((1 . 3) (t . 0)) (#(\"abc\" 0 1 (kk 1)) t #(\"abc\" 0 1 (kk 1)) (1 . 4)) \
+         (1 2 5 (6 5) 8))",
+        "undo records",
+    );
+}
+
+#[test]
 fn kill_buffer_queries_before_the_interactive_modified_prompt() {
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();

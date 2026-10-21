@@ -764,14 +764,14 @@ pub(crate) fn insert_text_with_hooks(
                     interp
                         .buffer
                         .borrow_mut()
-                        .set_text_properties(position, run_end, &merged);
+                        .graft_text_properties(position, run_end, &merged);
                     position = run_end;
                 }
             } else {
                 // Freshly inserted text: graft the string's plist verbatim so
                 // the stored order matches GNU (add_text_properties would
                 // reverse it).
-                interp.buffer.borrow_mut().set_text_properties(
+                interp.buffer.borrow_mut().graft_text_properties(
                     start + span.start,
                     start + span.end,
                     &span.props,

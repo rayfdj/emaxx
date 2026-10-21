@@ -315,7 +315,10 @@ impl CircularReadMaterializer<'_> {
                 for span in spans {
                     let mut props = Vec::with_capacity(span.props.len());
                     for (key, property) in span.props {
-                        props.push((key, self.resolve(&property)?));
+                        props.push((
+                            crate::lisp::types::PropertyName::new(self.resolve(&key.value())?),
+                            self.resolve(&property)?,
+                        ));
                     }
                     resolved_spans.push(StringPropertySpan { props, ..span });
                 }

@@ -243,11 +243,11 @@ define_dispatch!(
             "overlay-get" => {
                 need_args(name, args, 2)?;
                 let object = overlay(args[0])?;
-                Ok(if let Kind::Symbol(prop) = args[1].kind() {
-                    overlay_property_with_category(interp, &object, &prop)
-                } else {
-                    object.get_prop(&args[1])
-                }
+                Ok(overlay_property_with_category(
+                    interp,
+                    &object,
+                    crate::lisp::types::PropertyName::new(args[1]),
+                )
                 .unwrap_or(Value::Nil))
             }
             "overlay-properties" => {

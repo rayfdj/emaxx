@@ -123,6 +123,10 @@ impl OverlayValue {
         self.find_prop(|property| matches!(property.kind(), Kind::Symbol(name) if name == key))
     }
 
+    pub(crate) fn get_prop_by(&self, key: impl crate::lisp::types::PropertyKey) -> Option<Value> {
+        self.find_prop(|property| key.is(property))
+    }
+
     fn find_prop(&self, matches: impl Fn(Value) -> bool) -> Option<Value> {
         let mut tail = self.plist();
         while let Kind::Cons(property) = tail.kind() {
