@@ -146,6 +146,7 @@ mod search;
 mod sequences;
 mod strings;
 pub(crate) mod syntax;
+mod syntax_scan;
 mod system;
 mod text;
 mod textprop;

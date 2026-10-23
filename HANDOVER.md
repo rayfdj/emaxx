@@ -4071,6 +4071,95 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   buffer, editfns, fns, character, coding, mule-util, lisp) pass on the
   release build. Clippy `-D warnings`, rustfmt and `git diff --check`
   pass.
+- **Round 51: syntax.c's scanners, ported.** After round 50,
+  refontifying after edits was 12 to 15 times GNU's, and the cause was a
+  divergence, not a slow loop: `scan-lists`, `scan-sexps` and
+  `forward-comment` called `syntax-propertize` to `point-max` before
+  scanning, where GNU propertizes just in time as a scan reaches
+  `syntax-propertize--done`. Through
+  `lisp-font-lock-syntactic-face-function`'s `forward-sexp` that made
+  `elisp-mode-syntax-propertize` run `syntax-ppss` over the rest of the
+  buffer at each refontification: 1,517 `parse-partial-sexp` calls over
+  4,545,728 characters against GNU's 941 over 540,267 for ten edits of
+  subr.el. The scanners also read the buffer through a decoded
+  `Vec<char>` chunk and re-decoded every syntax descriptor, and
+  `parse-partial-sexp` returned a private element 10 (the state of its
+  own parser) where GNU returns the previous character's syntax.
+  `src/lisp/primitives/syntax_scan.rs` is now syntax.c's scanning core:
+  gl_state (`SETUP_SYNTAX_TABLE`, `update_syntax_table` over the
+  buffer's intervals, merging up to ten with an `eq` property,
+  `update_syntax_table_forward`, `parse_sexp_propertize` calling
+  `internal--syntax-propertize` with one past the position about to be
+  read, and `e_property_truncated`), `char_quoted`, `find_defun_start`
+  with its cache, `prev_char_comend_first`, `back_comment` with its
+  lossage path, `forw_comment`, `Fforward_comment`, `scan_lists`,
+  `Fbackward_prefix_chars`, `skip_syntaxes`, `in_2char_comment_start`,
+  `scan_sexps_forward`, `internalize_parse_state` and
+  `Fparse_partial_sexp`. Positions travel as GNU's (charpos, bytepos)
+  pairs over a snapshot of the rope read in place a chunk at a time
+  (bytes count Emaxx's UTF-8 and never leave the module); the snapshot
+  holds through the Lisp a scan calls because GNU signals when
+  `internal--syntax-propertize` or `syntax-ppss` changes the text.
+  SYNTAX reads the descriptor's car as GNU does (whitespace for a
+  non-cons); ASCII entries are remembered per table and forgotten after
+  any Lisp call, the only way an entry can change mid-scan. The C
+  variables (`parse-sexp-lookup-properties`, `syntax-propertize--done`,
+  `parse-sexp-ignore-comments`, `comment-end-can-be-escaped`,
+  `multibyte-syntax-as-symbol`, `open-paren-in-column-0-is-defun-start`,
+  `comment-use-syntax-ppss`) are read when first needed and again after
+  each Lisp call, which is when GNU's live reads could see them change.
+  A unibyte buffer's bytes read as raw-byte characters for the scans and
+  as themselves for `skip-syntax-*`, as FETCH_CHAR_AS_MULTIBYTE and
+  skip_syntaxes's `*p` do (Emaxx stores such a byte either as U+0080..
+  U+00FF or as a raw-byte marker). A runtime without syntax.el treats
+  `comment-use-syntax-ppss` as nil and has nothing to propertize with.
+  The old scanners (2,260 lines of syntax.rs) are gone. Against GNU (GNU /
+  Emaxx; round 50's Emaxx after the slash): font-lock over subr.el 0.268
+  / 0.273 s (0.500), two hundred edits refontified 0.403 / 0.397 s (5.2);
+  simple.el 0.338 / 0.375 and 0.318 / 0.428 s (7.2); python.el 0.175 /
+  0.236 and 0.251 / 0.380 s (4.6); xdisp.c in C mode 9.29 / 14.4 and 3.29
+  / 6.20 s (22.3 and 10.6). Ten edits of subr.el refontified: 0.016 /
+  0.026 s. What is left in C mode is cc-engine's Lisp, not scanning. A
+  differential probe of every position of buffers in Emacs Lisp, C,
+  Python, a Haskell-like table (nested `{- -}`, `--` comments, comment
+  and string fences, math, prefix flags, `comment-end-can-be-escaped`,
+  `parse-sexp-ignore-comments` nil), `syntax-table` properties (cons
+  and char table), narrowing, multibyte text with and without
+  `multibyte-syntax-as-symbol`, a unibyte buffer and unbalanced text
+  with `comment-use-syntax-ppss` on and off (8,130 results of
+  `parse-partial-sexp` from 1 and in `syntax-table` steps, `scan-sexps`
+  both ways, `scan-lists` up, `forward-comment` 1, -1 and to either end,
+  `skip-syntax-*`, `backward-prefix-chars` and `syntax-ppss`) is
+  identical to GNU's. New tests with the oracle's answers:
+  `parse_partial_sexp_state_carries_the_syntax_a_two_char_construct_started_with`
+  (element 10 and resuming inside `#|`), `scans_propertize_only_as_far_as_they_read`
+  (the propertizer's calls for `scan-sexps`, `forward-comment` and
+  `parse-partial-sexp`) and
+  `scans_read_a_unibyte_buffer_as_raw_bytes_and_skip_syntax_as_bytes`;
+  `syntax_ppss_reports_negative_depth_for_extra_closing_parens` expected
+  the old private element 10 and now expects GNU's nil. Validation: the
+  133 tests that call the scanners or the modes built on them pass
+  (gate profile, one thread a process, `RUST_MIN_STACK=134217728`), but
+  for the image round trip that fails in this container (below), as do
+  the syntax, comment, paren, ppss, prefix, sexp, skip and scan-list
+  filters but for the as-root `save_buffer_skips_unmodified_and_unchanged_files`
+  (below); thirty-three GNU test files (syntax and emacs-lisp/syntax,
+  elisp-mode, lisp-mode, lisp, python, cc-mode, ruby, js, css, sh-script,
+  perl, cperl, octave, f90, sql, scheme, opascal, pascal, tcl, ps-mode,
+  bat-mode, sgml, paragraphs, fill, newcomment, electric, hideshow,
+  thingatpt, simple, grep, xref, package) give GNU's results on the
+  release build, and the probe and fifteen of them on the gate build
+  (overflow checks on), but for package-tests' three asynchronous archive
+  tests, which fail the same way on round 50's build in this container
+  (its HTTP proxy settings meet the tests' local server) and passed in
+  round 50's CI. Round 50's frozen run (below) stopped at
+  `src/undo-tests.el`: `BufferText::check_counts`, a debug-build check
+  CI's gate profile runs, recounted the raw-byte markers of the whole
+  text at every edit since round 50, which made undo-test4's million
+  insertions quadratic (over 180 s, killed). It now recounts a small
+  text's only (at most 1 KB); on the gate build undo-tests take 2.2 s
+  and the three files after them (xdisp, xfaces, xml) give GNU's
+  results. Clippy `-D warnings`, rustfmt and `git diff --check` pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4664,8 +4753,12 @@ passed (run 39682876524), frozen passed on its first attempt (run
 39986757981); frozen matched 7,927 of 7,928 with the one unexpected
 outcome on GNU's side (run 39986763116), and its re-run passed. **On
 `1695c05`** (round 49): full Rust gate passed (run 39989914863),
-frozen passed on its first attempt (run 39989919866). **On round 50's
-commit** both are dispatched with it. Locally,
+frozen passed on its first attempt (run 39989919866). **On `8e2b9f8`**
+(round 50): full Rust gate passed (run 40021014339); frozen (run
+40021018468) stopped at `src/undo-tests.el`, which the gate build took
+over 180 s to run (bullet "Round 51"), after every earlier file had
+given its expected results. **On round 51's commit** both are
+dispatched with it. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -4958,9 +5051,14 @@ and failures are still recorded.
 2. **Performance, worst ratios first.** Outside the locked sixteen
    (bullet "Beyond the sixteen workloads") the gaps are larger than any
    workload's margin, so they come first now: syntax scanning under
-   font-lock (refontifying after edits is 12 to 15 times GNU's since
-   round 50 ported the regexp engine; `syntax-ppss`,
-   `parse-partial-sexp` and `ScanChars`), a case-folded `\b` (2.8 times)
+   font-lock is at GNU's time for subr.el since round 51 ported
+   syntax.c's scanners, 1.1 to 1.5 times in simple.el and python.el,
+   1.6 to 1.9 times in C mode (cc-engine's Lisp: the interpreter, the
+   byte-code VM and the matcher); search.rs still asks syntax classes of
+   round 50's `SyntaxScan` (a per-interval refresh that decodes integer
+   and string entries GNU reads as whitespace) where regex-emacs.c uses
+   gl_state, the next to port onto `syntax_scan.rs`'s; then a
+   case-folded `\b` (2.8 times)
    and `looking-at`'s cost a call (1.7 times), process start (0.19 s against 0.08 s; `shell-command` tests that
    start Emacs fifty times are 2.5 times slower for it), text
    properties kept in one flat vector of spans (each edit shifts it;

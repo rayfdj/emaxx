@@ -581,14 +581,13 @@ impl BufferText {
                 TextStore::Rope(rope) => (rope.len_chars(), rope.len_bytes()),
             };
             assert_eq!((self.chars, self.bytes), (chars, bytes));
-            let raw_markers = match &self.store {
-                TextStore::Small(text) => count_raw_markers(text.as_bytes()),
-                TextStore::Rope(rope) => rope
-                    .chunks()
-                    .map(|chunk| count_raw_markers(chunk.as_bytes()))
-                    .sum(),
-            };
-            assert_eq!(self.raw_markers, raw_markers);
+            // Recounting a rope's raw-byte markers walks all its text,
+            // which at every edit made a million insertions quadratic
+            // (undo-tests' flush-lines buffer); a small text's are
+            // recounted.
+            if let TextStore::Small(text) = &self.store {
+                assert_eq!(self.raw_markers, count_raw_markers(text.as_bytes()));
+            }
         }
     }
 }

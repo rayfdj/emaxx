@@ -55,6 +55,13 @@ impl std::hash::Hash for NameEntry {
 const KEY_NAMES: &[&str] = &[
     "keymap",
     "parse-sexp-lookup-properties",
+    "syntax-table",
+    "syntax-propertize--done",
+    "parse-sexp-ignore-comments",
+    "comment-end-can-be-escaped",
+    "multibyte-syntax-as-symbol",
+    "open-paren-in-column-0-is-defun-start",
+    "comment-use-syntax-ppss",
     "cache-long-scans",
     "char-property-alias-alist",
     "default-text-properties",

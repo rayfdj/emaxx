@@ -4811,6 +4811,97 @@ fn set_case_table_completes_a_table_and_buffers_keep_the_tables_they_were_given(
 }
 
 #[test]
+fn parse_partial_sexp_state_carries_the_syntax_a_two_char_construct_started_with() {
+    // syntax.c:scan_sexps_forward's state element 10 is the syntax of the
+    // last character when it may start a two-character construct (here
+    // the `#' of `#|', the escape before `e'), else nil, and
+    // internalize_parse_state resumes from it: parsing to the middle of a
+    // comment opener and on from that state gives the parse of the whole.
+    // The oracle's values.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(with-temp-buffer
+                 (let ((st (make-syntax-table)))
+                   (modify-syntax-entry ?# ". 14" st)
+                   (modify-syntax-entry ?| ". 23n" st)
+                   (modify-syntax-entry ?\\ "\\" st)
+                   (set-syntax-table st)
+                   (insert "(a #|b #|c|# d|# \\e)")
+                   (let* ((s4 (parse-partial-sexp 1 5))
+                          (rest (parse-partial-sexp 5 (point-max) nil nil s4))
+                          (whole (parse-partial-sexp 1 (point-max)))
+                          (q (parse-partial-sexp 1 19))
+                          (q2 (parse-partial-sexp 19 (point-max) nil nil q)))
+                     (list s4 (equal rest whole) whole q q2 (point)))))"#,
+        )
+        .to_string(),
+        "((1 1 2 nil nil nil 0 nil nil (1) 589825) t (0 nil 1 nil nil nil 0 nil nil nil nil) \
+         (1 1 2 nil nil t 0 nil nil (1) 9) (0 nil 1 nil nil nil 0 nil nil nil nil) 21)"
+    );
+}
+
+#[test]
+fn scans_propertize_only_as_far_as_they_read() {
+    // syntax.c:parse_sexp_propertize: a scan under
+    // `parse-sexp-lookup-properties' calls `internal--syntax-propertize'
+    // with one past the position it is about to read, each time it reaches
+    // `syntax-propertize--done', and never past where it stops.  The
+    // oracle's calls.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(progn
+                 (defvar r51-calls nil)
+                 (fset 'internal--syntax-propertize
+                       (lambda (pos)
+                         (push pos r51-calls)
+                         (setq syntax-propertize--done (+ pos 9))))
+                 (with-temp-buffer
+                   (insert "(a b) (c d) (e f) (g h) (i j) (k l) (m n) (o p) ; z\n(q)")
+                   (set (make-local-variable 'parse-sexp-lookup-properties) t)
+                   (setq syntax-propertize--done 1)
+                   (list (scan-sexps 1 2) (reverse r51-calls)
+                         (progn (setq r51-calls nil) (goto-char 30) (forward-comment 1) (point))
+                         (reverse r51-calls)
+                         (progn (setq r51-calls nil) (parse-partial-sexp 1 40))
+                         (reverse r51-calls)
+                         syntax-propertize--done)))"#,
+        )
+        .to_string(),
+        "(12 (2 12) 31 (31) (1 37 38 nil nil nil 0 nil nil (37) nil) nil 40)"
+    );
+}
+
+#[test]
+fn scans_read_a_unibyte_buffer_as_raw_bytes_and_skip_syntax_as_bytes() {
+    // FETCH_CHAR_AS_MULTIBYTE makes a unibyte buffer's byte 0351 the
+    // raw-byte character, whose syntax the sexp scan reads, while
+    // skip_syntaxes looks the byte itself up (as the character 0351).
+    // The oracle's values.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(with-temp-buffer
+                 (set-buffer-multibyte nil)
+                 (insert "(a \351\352 b)")
+                 (let ((st (make-syntax-table)))
+                   (modify-syntax-entry ?\351 "." st)
+                   (set-syntax-table st)
+                   (list (scan-sexps 4 1)
+                         (progn (goto-char 4) (skip-syntax-forward "w") (point))
+                         (progn (modify-syntax-entry (unibyte-char-to-multibyte ?\351) "." st)
+                                (scan-sexps 4 1)))))"#,
+        )
+        .to_string(),
+        "(6 4 6)"
+    );
+}
+
+#[test]
 fn patterns_holding_syntax_classes_compile_per_table_and_after_syntax_edits() {
     // regex-emacs.c fills `[[:space:]]' for ASCII from the syntax table
     // while compiling (`used_syntax'); search.c's cache then keys the

@@ -638,49 +638,24 @@ define_dispatch!(
             "posix-search-forward" => regexp::buffer_regex_search(interp, args, env, true, true),
             "posix-search-backward" => regexp::buffer_regex_search(interp, args, env, false, true),
             "forward-comment" => {
-                if args.len() > 1 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                syntax::forward_comment_impl(interp, args.first(), env)
+                need_arg_range(name, args, 1, 1)?;
+                syntax_scan::forward_comment(interp, env, &args[0])
             }
-            "scan-lists" => syntax::scan_lists_impl(interp, args, env),
+            "scan-lists" => {
+                need_arg_range(name, args, 3, 3)?;
+                syntax_scan::scan_lists(interp, env, &args[0], &args[1], &args[2])
+            }
             "scan-sexps" => {
-                need_args(name, args, 2)?;
-                let from = position_from_value(interp, &args[0])?;
-                let count = args[1].as_integer()?;
-                Ok(
-                    syntax::scan_sexps_position_for_scan_sexps(interp, env, from, count)?
-                        .map(|position| Value::Integer(position as i64))
-                        .unwrap_or(Value::Nil),
-                )
+                need_arg_range(name, args, 2, 2)?;
+                syntax_scan::scan_sexps(interp, env, &args[0], &args[1])
             }
             "backward-prefix-chars" => {
-                need_args(name, args, 0)?;
-                syntax::backward_prefix_chars(interp)
+                need_arg_range(name, args, 0, 0)?;
+                syntax_scan::backward_prefix_chars(interp, env)
             }
             "parse-partial-sexp" => {
-                if args.len() < 2 || args.len() > 6 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let from = position_from_value(interp, &args[0])?;
-                let to = position_from_value(interp, &args[1])?;
-                let target_depth = match args.get(2).map(|v| v.kind()) {
-                    Some(Kind::Nil) | None => None,
-                    Some(value) => Some(value.value().as_integer()?),
-                };
-                let stopbefore = args.get(3).is_some_and(Value::is_truthy);
-                let oldstate = args.get(4).filter(|value| !value.is_nil());
-                let commentstop = syntax::CommentStop::from_value(args.get(5));
-                syntax::parse_forward(
-                    interp,
-                    from,
-                    to,
-                    target_depth,
-                    stopbefore,
-                    oldstate,
-                    commentstop,
-                    env,
-                )
+                need_arg_range(name, args, 2, 6)?;
+                syntax_scan::parse_partial_sexp(interp, env, args)
             }
             "buffer-string" => Ok(string_like_value_with_extended_chars(
                 interp.buffer.borrow().buffer_string(),
@@ -2924,7 +2899,7 @@ pub(super) fn direct_skip_syntax_forward(
     if args.is_empty() || args.len() > 2 {
         return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
     }
-    syntax::skip_syntax_impl(interp, &args[0], args.get(1), true, env)
+    syntax_scan::skip_syntaxes(interp, env, true, &args[0], args.get(1))
 }
 
 /// The `skip-syntax-backward' primitive, callable directly (a subr's function pointer).
@@ -2937,7 +2912,7 @@ pub(super) fn direct_skip_syntax_backward(
     if args.is_empty() || args.len() > 2 {
         return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
     }
-    syntax::skip_syntax_impl(interp, &args[0], args.get(1), false, env)
+    syntax_scan::skip_syntaxes(interp, env, false, &args[0], args.get(1))
 }
 
 /// The `beginning-of-line' primitive, callable directly (a subr's function pointer).
