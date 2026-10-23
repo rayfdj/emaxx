@@ -4120,24 +4120,17 @@ fn file_name_handler_lookup_preserves_results_across_unrelated_writes() {
 }
 
 #[test]
-fn syntax_property_haystack_encoding_is_shared_across_a_buffer_state() {
-    // Under `parse-sexp-lookup-properties', every `looking-at' over the
-    // same buffer state shares one encoding of the haystack; a
-    // syntax-table change makes the next search encode again, while a
-    // `syntax-table' property write or an edit is followed from the edit
-    // log (`syntax_property_encoding_follows_edits_without_encoding_again'
-    // counts those).  The match results are GNU's.
+fn syntax_property_matches_follow_property_and_table_changes() {
+    // Under `parse-sexp-lookup-properties', `\sw' and `\s(' read the
+    // `syntax-table' property at each position (regex-emacs.c's SYNTAX
+    // after UPDATE_SYNTAX_TABLE); a property write, a syntax-table change
+    // and an edit are all seen by the next search.  The match results are
+    // GNU's.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    crate::lisp::primitives::reset_syntax_encoding_scan_count();
-    let mut step = |form: &str, expected: Value, scans: usize| {
+    let mut step = |form: &str, expected: Value| {
         let form =
             format!("(with-current-buffer (get-buffer-create \"*syntax-encoding-probe*\") {form})");
         assert_eq!(eval_str_with(&mut interp, &form), expected, "{form}");
-        assert_eq!(
-            crate::lisp::primitives::syntax_encoding_scan_count(),
-            scans,
-            "{form}"
-        );
     };
     step(
         r#"(progn
@@ -4157,30 +4150,25 @@ fn syntax_property_haystack_encoding_is_shared_across_a_buffer_state() {
             Value::T,
             Value::Integer(14),
         ]),
-        1,
     );
     step(
         r#"(progn (put-text-property 13 14 'syntax-table '(2))
                   (goto-char 13)
                   (list (looking-at "\\sw+") (match-end 0)))"#,
         Value::list([Value::T, Value::Integer(17)]),
-        1,
     );
-    step(r#"(progn (goto-char 1) (looking-at "\\sw+"))"#, Value::T, 1);
+    step(r#"(progn (goto-char 1) (looking-at "\\sw+"))"#, Value::T);
     step(
         r#"(progn (modify-syntax-entry ?q "." (syntax-table))
                   (goto-char 14)
                   (looking-at "\\sw+"))"#,
         Value::Nil,
-        2,
     );
 
     // `internal--set-buffer-modified-tick' moves the Lisp-visible tick
-    // backwards; an edit then reuses an old tick value.  The cache keys on
-    // the buffer's monotonic edit serial, so the new text is rendered (here
-    // by replaying the insertion), not served from the entry the old tick
-    // named.  (buffer.c's primitive; `primitive-undo' and
-    // `restore-buffer-modified-p' use it.)
+    // backwards; an edit then reuses an old tick value, and the search
+    // still sees the new text.  (buffer.c's primitive; `primitive-undo'
+    // and `restore-buffer-modified-p' use it.)
     step(
         r#"(let ((tick (buffer-modified-tick)))
              (goto-char 5)
@@ -4189,36 +4177,20 @@ fn syntax_property_haystack_encoding_is_shared_across_a_buffer_state() {
              (goto-char 5)
              (looking-at "\\s("))"#,
         Value::T,
-        2,
     );
-    step(r#"(progn (goto-char 5) (looking-at "\\s("))"#, Value::T, 2);
+    step(r#"(progn (goto-char 5) (looking-at "\\s("))"#, Value::T);
 }
 
 #[test]
-fn syntax_property_encoding_follows_edits_without_encoding_again() {
-    // After an edit, the encoding of the same range follows the buffer's
-    // edit log (the characters whose text or properties changed are
-    // rendered again, the rest shift) instead of being built from the
-    // whole buffer; a text-property write that is not `syntax-table' is
-    // an edit like any other.  The log holds 64 edits: more than that
-    // since the entry's state, or a swap of buffer texts (which no record
-    // describes), encodes afresh.  Every replay in a test build is
-    // compared with a fresh encoding by `replay_syntax_encoding' itself;
-    // the match results are GNU's.
+fn syntax_property_matches_follow_edits_and_buffer_text_swaps() {
+    // Edits before and inside the propertized range, writes of other text
+    // properties, many edits in a row and `buffer-swap-text' are all seen
+    // by the next `looking-at'; the match results are GNU's.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    crate::lisp::primitives::reset_syntax_encoding_scan_count();
-    let mut step = |form: &str, expected: Value, scans: usize, replays: usize| {
+    let mut step = |form: &str, expected: Value| {
         let form =
             format!("(with-current-buffer (get-buffer-create \"*syntax-replay-probe*\") {form})");
         assert_eq!(eval_str_with(&mut interp, &form), expected, "{form}");
-        assert_eq!(
-            (
-                crate::lisp::primitives::syntax_encoding_scan_count(),
-                crate::lisp::primitives::syntax_encoding_replay_count()
-            ),
-            (scans, replays),
-            "(scans, replays) after {form}"
-        );
     };
     let matched = |end: i64| Value::list([Value::T, Value::Integer(end)]);
     step(
@@ -4231,53 +4203,39 @@ fn syntax_property_encoding_follows_edits_without_encoding_again() {
              (goto-char 1)
              (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(8),
-        1,
-        0,
     );
     step(
         r#"(progn (goto-char 1) (insert "x") (goto-char 1)
                   (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(9),
-        1,
-        1,
     );
     step(
         r#"(progn (put-text-property 14 15 'syntax-table '(2)) (goto-char 14)
                   (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(18),
-        1,
-        2,
     );
     step(
         r#"(progn (goto-char 1) (delete-char 1) (goto-char 13)
                   (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(17),
-        1,
-        3,
     );
-    // 100 edits since the entry's state: past the log.
+    // 100 edits in a row.
     step(
         r#"(let ((i 0))
              (while (< i 50) (insert "y") (delete-char -1) (setq i (1+ i)))
              (goto-char 1)
              (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(8),
-        2,
-        3,
     );
     step(
         r#"(progn (put-text-property 1 3 'face 'bold) (goto-char 1)
                   (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(8),
-        2,
-        4,
     );
     step(
         r#"(progn (put-text-property 4 5 'syntax-table '(1)) (goto-char 1)
                   (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(4),
-        2,
-        5,
     );
     step(
         r#"(progn (with-current-buffer (get-buffer-create "*syntax-replay-other*")
@@ -4288,8 +4246,6 @@ fn syntax_property_encoding_follows_edits_without_encoding_again() {
                   (goto-char 1)
                   (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(3),
-        3,
-        5,
     );
 }
 
@@ -4664,12 +4620,13 @@ fn region_modification_checks_without_intervals_still_see_the_buffer_flag() {
 
 #[test]
 fn string_matches_reuse_the_last_compiled_pattern_under_its_key() {
-    // search.c keeps the most recently used compiled patterns in front of
-    // its cache; the front here is checked by exactly the fields the table
-    // key compares, so a repeated `string-match' compiles nothing and a
-    // change to what the translation read -- the current syntax table for
-    // a `\\s-' pattern, `case-fold-search' for any -- compiles again.
-    // Match positions are GNU's.
+    // search.c:compile_pattern keeps the most recently used compiled
+    // patterns in its cache, found by the pattern, its translate table and,
+    // for a pattern holding syntax-table contents, that table: a repeated
+    // `string-match' compiles nothing, `\\s-' reads the syntax table only
+    // while matching (no compile in another buffer's table), and
+    // `case-fold-search' changes the translate table.  Match positions are
+    // GNU's.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut step = |form: &str, expected: Value, compiles_delta: usize| {
         crate::lisp::primitives::reset_elisp_regex_compile_count();
@@ -4692,7 +4649,7 @@ fn string_matches_reuse_the_last_compiled_pattern_under_its_key() {
              (modify-syntax-entry ?_ " ")
              (string-match "b\\s-c" "ab_cd"))"#,
         Value::Integer(1),
-        1,
+        0,
     );
     step(
         r#"(let ((case-fold-search nil)) (list (string-match "B" "abc") (string-match "B" "aBc")))"#,
@@ -4708,15 +4665,12 @@ fn string_matches_reuse_the_last_compiled_pattern_under_its_key() {
 
 #[test]
 fn syntax_patterns_compile_once_across_buffers_with_like_tables() {
-    // search.c's compile_pattern cache keys on the syntax table object;
-    // the regex crate's compile costs milliseconds where GNU's costs
-    // microseconds, so the compiled-regexp cache keys on what the
-    // translation reads instead: the hash of the table's class
-    // renderings, and the thread's sentinel registry (one character per
-    // (character, class) pair, kept).  A mode that copies its table into
-    // every buffer (cperl-mode) and puts `syntax-table' properties in
-    // each then compiles a pattern once, not once per buffer; a table
-    // that renders differently compiles again.  Match results are GNU's.
+    // search.c's compile_pattern cache keys a pattern on its syntax table
+    // only when compiling read the table (`used_syntax'); `\\sw' reads it
+    // while matching, so a mode that copies its table into every buffer
+    // (cperl-mode) and puts `syntax-table' properties in each compiles the
+    // pattern once, and `modify-syntax-entry''s clear_regexp_cache keeps
+    // it.  Match results are GNU's.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut step = |form: &str, expected: Value, compiles_delta: usize| {
         crate::lisp::primitives::reset_elisp_regex_compile_count();
@@ -4758,7 +4712,7 @@ fn syntax_patterns_compile_once_across_buffers_with_like_tables() {
              (goto-char 9)
              (list (looking-at "\\sw+") (match-end 0)))"#,
         Value::list([Value::T, Value::Integer(12)]),
-        1,
+        0,
     );
     step(
         r#"(with-current-buffer "*like-a*"
@@ -4772,12 +4726,11 @@ fn syntax_patterns_compile_once_across_buffers_with_like_tables() {
 #[test]
 fn case_folded_patterns_ignore_writes_to_tables_that_are_not_case_tables() {
     // search.c's compile_pattern keys a case-folded pattern on the
-    // buffer's case-canon table object.  The compiled-regexp cache keys
-    // it on a generation the case tables' writes advance: a write to a
-    // char-table of another purpose (`regexp-opt' building its charset
-    // table, a script table, a display table) is not a case-table write
-    // and compiles nothing again; a write to the case table does.
-    // Match results are GNU's.
+    // buffer's case_canon_table object: a write to a char-table of
+    // another purpose (`regexp-opt' building its charset table, a script
+    // table, a display table) compiles nothing again, and neither does a
+    // write to the downcase table, whose canonicalization `set-case-table'
+    // computed before.  Match results are GNU's.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut step = |form: &str, expected: Value, compiles_delta: usize| {
         crate::lisp::primitives::reset_elisp_regex_compile_count();
@@ -4810,7 +4763,100 @@ fn case_folded_patterns_ignore_writes_to_tables_that_are_not_case_tables() {
     step(
         &format!("(progn (aset (standard-case-table) ?Z ?z) {search})"),
         Value::list([Value::Integer(4), Value::Integer(4)]),
+        0,
+    );
+}
+
+#[test]
+fn set_case_table_completes_a_table_and_buffers_keep_the_tables_they_were_given() {
+    // casetab.c:set_case_table computes a missing upcase table (identity,
+    // then shuffle), canonicalization (DOWN[UP[DOWN[c]]]) and equivalences
+    // and stores all four in the buffer: clearing the table's slots later
+    // leaves the buffer folding with the canonicalization it was given,
+    // and casefiddle.c's prepare_casing_context installs the table again.
+    // The oracle's values.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(let ((tbl (make-char-table 'case-table)))
+                 (dotimes (i 26) (aset tbl (+ ?A i) (+ ?a i)) (aset tbl (+ ?a i) (+ ?a i)))
+                 (aset tbl ?\u00C9 ?\u00E9) (aset tbl ?\u00E9 ?\u00E9)
+                 (with-temp-buffer
+                   (set-case-table tbl)
+                   (list (char-table-p (char-table-extra-slot tbl 0))
+                         (char-table-p (char-table-extra-slot tbl 1))
+                         (char-table-p (char-table-extra-slot tbl 2))
+                         (eq (char-table-extra-slot (char-table-extra-slot tbl 1) 2)
+                             (char-table-extra-slot tbl 2))
+                         (mapcar (lambda (c) (aref (char-table-extra-slot tbl 0) c))
+                                 '(?A ?a ?1 ?\u00E9 ?\u00C9))
+                         (mapcar (lambda (c) (aref (char-table-extra-slot tbl 1) c))
+                                 '(?A ?a ?1 ?\u00E9 ?\u00C9))
+                         (mapcar (lambda (c) (aref (char-table-extra-slot tbl 2) c))
+                                 '(?A ?a ?1 ?\u00E9 ?\u00C9))
+                         (progn (set-char-table-extra-slot tbl 1 nil)
+                                (set-char-table-extra-slot tbl 2 nil)
+                                (let ((case-fold-search t)) (string-match "x" "X")))
+                         (progn (aset tbl ?Q ?z)
+                                (let ((case-fold-search t)) (string-match "q" "Q")))
+                         (char-table-extra-slot tbl 1)
+                         (progn (upcase "abc") (char-table-p (char-table-extra-slot tbl 1)))
+                         (let ((case-fold-search t)) (string-match "q" "Q"))
+                         (let ((case-fold-search t)) (string-match "z" "Q")))))"#,
+        )
+        .to_string(),
+        "(t t t t (97 65 nil 201 233) (97 97 nil 233 233) (97 65 nil 201 233) 0 0 nil t 0 0)"
+    );
+}
+
+#[test]
+fn patterns_holding_syntax_classes_compile_per_table_and_after_syntax_edits() {
+    // regex-emacs.c fills `[[:space:]]' for ASCII from the syntax table
+    // while compiling (`used_syntax'); search.c's cache then keys the
+    // pattern on that table, and syntax.c:Fmodify_syntax_entry's
+    // clear_regexp_cache drops every such pattern.  Match results are
+    // GNU's.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut step = |form: &str, expected: Value, compiles_delta: usize| {
+        crate::lisp::primitives::reset_elisp_regex_compile_count();
+        assert_eq!(eval_str_with(&mut interp, form), expected, "{form}");
+        assert_eq!(
+            crate::lisp::primitives::elisp_regex_compile_count(),
+            compiles_delta,
+            "compiles during {form}"
+        );
+    };
+    step(
+        r#"(list (string-match "x[[:space:]]y" "x_y x y")
+                 (string-match "x[[:space:]]y" "x_y x y"))"#,
+        Value::list([Value::Integer(4), Value::Integer(4)]),
         1,
+    );
+    step(
+        r#"(with-current-buffer (get-buffer-create "*space-b*")
+             (set-syntax-table (make-syntax-table))
+             (modify-syntax-entry ?_ " ")
+             (string-match "x[[:space:]]y" "x_y x y"))"#,
+        Value::Integer(0),
+        1,
+    );
+    step(
+        r#"(string-match "x[[:space:]]y" "x_y x y")"#,
+        Value::Integer(4),
+        1,
+    );
+    step(
+        r#"(with-current-buffer "*space-b*"
+             (modify-syntax-entry ?_ "_")
+             (string-match "x[[:space:]]y" "x_y x y"))"#,
+        Value::Integer(4),
+        1,
+    );
+    step(
+        r#"(with-current-buffer "*space-b*" (string-match "x[[:space:]]y" "x_y x y"))"#,
+        Value::Integer(4),
+        0,
     );
 }
 

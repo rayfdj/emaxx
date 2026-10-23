@@ -5,7 +5,6 @@ use super::types::{EmacsTermination, Env, LispError, StringObjectRef, StringProp
 use crate::buffer::TextPropertySpan;
 use crate::file_system as fs;
 use chrono::{Datelike, FixedOffset, Local, TimeZone, Timelike, Utc};
-use fancy_regex::Regex as FancyRegex;
 use flate2::read::GzDecoder;
 use lcms2::{CIECAM02, CIELab, CIELabExt, CIEXYZ, JCh, ViewingConditions};
 use lcms2_sys::Surround;
@@ -39,7 +38,6 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::{cell::RefCell, rc::Rc};
 use unicode_general_category::get_general_category;
 use unicode_width::UnicodeWidthChar;
 
@@ -47,6 +45,7 @@ mod accessors_random;
 pub(crate) mod batch_stdout;
 mod buffers;
 mod case;
+pub(crate) mod casetab;
 mod ccl;
 pub(crate) mod coding;
 mod color_lcms;
@@ -143,6 +142,7 @@ pub(crate) mod print;
 mod processes;
 mod purecopy;
 mod regexp;
+mod search;
 mod sequences;
 mod strings;
 pub(crate) mod syntax;
@@ -173,12 +173,6 @@ pub(crate) use numeric_time::*;
 pub(crate) use print::*;
 pub(crate) use processes::*;
 pub(crate) use purecopy::*;
-pub(crate) use regexp::forget_buffer_views;
-#[cfg(test)]
-pub(crate) use regexp::{
-    elisp_regex_compile_count, reset_elisp_regex_compile_count, reset_syntax_encoding_scan_count,
-    syntax_encoding_replay_count, syntax_encoding_scan_count,
-};
 pub(crate) use sequences::*;
 pub(crate) use strings::*;
 pub(crate) use system::*;
@@ -309,6 +303,8 @@ pub(crate) use dispatch::{
 };
 pub use dispatch::{call, is_builtin};
 pub(crate) use dispatch::{call_with_facts, call_with_facts_arity_checked};
+#[cfg(test)]
+pub(crate) use search::{elisp_regex_compile_count, reset_elisp_regex_compile_count};
 
 #[cfg(test)]
 mod tests;

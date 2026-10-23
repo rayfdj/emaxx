@@ -547,9 +547,6 @@ pub(super) struct SyntaxScan {
     e_property: usize,
     effective: EffectiveSyntax,
     ascii_memo: [Option<SyntaxEntry>; 128],
-    // Plain buffer-table entries, property-independent: the scan's table
-    // is fixed for its lifetime, so this memo never invalidates.
-    plain_memo: [Option<SyntaxEntry>; 128],
 }
 
 #[derive(Clone, Copy)]
@@ -579,21 +576,7 @@ impl SyntaxScan {
             e_property: 0, // empty interval: first query refreshes
             effective: EffectiveSyntax::Table(table_id),
             ascii_memo: [None; 128],
-            plain_memo: [None; 128],
         }
-    }
-
-    pub(super) fn plain_table_entry(&mut self, interp: &Interpreter, ch: char) -> SyntaxEntry {
-        let index = ch as usize;
-        if index < 128 {
-            if let Some(entry) = self.plain_memo[index] {
-                return entry;
-            }
-            let entry = syntax_entry_for_char(interp, self.table_id, ch);
-            self.plain_memo[index] = Some(entry);
-            return entry;
-        }
-        syntax_entry_for_char(interp, self.table_id, ch)
     }
 
     fn refresh(&mut self, interp: &Interpreter, pos: usize) {
@@ -621,6 +604,30 @@ impl SyntaxScan {
         match self.effective {
             EffectiveSyntax::Table(id) => self.table_entry(interp, id, ch),
             EffectiveSyntax::Direct(entry) => entry,
+        }
+    }
+
+    /// The syntax class of character code CODE at POS: `entry_at' for a
+    /// character, and for a code beyond Unicode's scalars (a raw byte) the
+    /// effective table read by code.
+    pub(super) fn class_at_code(
+        &mut self,
+        interp: &Interpreter,
+        code: u32,
+        pos: usize,
+    ) -> SyntaxClass {
+        if let Some(ch) = char::from_u32(code) {
+            return self.entry_at(interp, ch, pos).class;
+        }
+        if !self.use_properties {
+            return syntax_entry_for_code(interp, self.table_id, code).class;
+        }
+        if pos < self.b_property || pos >= self.e_property {
+            self.refresh(interp, pos);
+        }
+        match self.effective {
+            EffectiveSyntax::Table(id) => syntax_entry_for_code(interp, id, code).class,
+            EffectiveSyntax::Direct(entry) => entry.class,
         }
     }
 
@@ -2626,20 +2633,6 @@ pub(super) fn syntax_class_at_buffer_position_matches(
         syntax_entry_for_char(interp, table_id, ch)
     };
     syntax_entry_class_matches(entry, class)
-}
-
-// Scan-holding form of the pair above for per-character loops (the
-// regexp haystack encoder): the plain-table class comes from the scan's
-// ASCII memo, the effective class through its interval state.
-pub(super) fn syntax_class_chars_with_scan(
-    interp: &Interpreter,
-    effective: &mut SyntaxScan,
-    position: usize,
-) -> Option<(char, char)> {
-    let ch = interp.buffer.borrow().char_at(position)?;
-    let table_class = syntax_class_char(effective.plain_table_entry(interp, ch).class);
-    let effective_class = syntax_class_char(effective.entry_at(interp, ch, position).class);
-    Some((table_class, effective_class))
 }
 
 pub(super) fn skip_syntax_impl(

@@ -5257,9 +5257,11 @@ fn compiled_regexp_introspection_preserves_the_real_backend_boundary() {
          (condition-case error-data
              (re--describe-compiled "a" t)
            (error error-data)))"#;
-    let unavailable =
-        "(error \"Compiled regexp introspection is unavailable from the fancy-regex backend\")";
-    let boundary_expected = format!("((1 . 2) invalid-regexp {unavailable} {unavailable})");
+    // search.c:Fre__describe_compiled: GNU without --enable-checking
+    // refuses the description but returns the raw bytecode (exactn 1 ?a,
+    // succeed).
+    let boundary_expected = "((1 . 2) invalid-regexp \
+         (error \"Not available: rebuild with --enable-checking\") \"\\2\\1a\\1\")";
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(boundary_program)
@@ -5269,7 +5271,7 @@ fn compiled_regexp_introspection_preserves_the_real_backend_boundary() {
     let actual = interp
         .eval(&form, &mut env)
         .expect("compiled-regexp boundary should be catchable");
-    let expected = Reader::new(&boundary_expected)
+    let expected = Reader::new(boundary_expected)
         .read()
         .expect("compiled-regexp boundary expectation should parse")
         .expect("compiled-regexp boundary expectation should contain a form");
@@ -5805,47 +5807,37 @@ fn project_does_not_ship_lisp_compatibility_facades() {
     );
 }
 
+/// Patterns from GNU's own Lisp (the resource helpers, a hyphen class,
+/// empty shy groups) compile and match as regex-emacs.c does.  In
+/// `[\-[:alnum:]]' a backslash is an ordinary character: `\-[' is a
+/// reversed (empty) range, `:alnum:' are plain members and the class
+/// closes before a literal `]', which `--tofu-policy=' lacks.
 #[test]
-fn regex_resource_helper_patterns_compile() {
-    for literal in [
-        r#""\\(?:^\\|[^\\]\\)\\(?:\\\\\\\\\\)*\\\\""#,
-        r#""\\(?:^\\|[^\\]\\)\\(?:\\\\\\\\\\)*\\\\.\\=""#,
+fn regex_helper_and_rx_patterns_match_like_gnu() {
+    let mut interp = Interpreter::new();
+    let mut env = crate::lisp::types::Env::new();
+    for (pattern, text, expected) in [
+        (r"\(?:^\|[^\]\)\(?:\\\\\)*\\", r"ab\\\c", Value::Integer(1)),
+        (r"\(?:^\|[^\]\)\(?:\\\\\)*\\.\=", r"x\y", Value::Nil),
+        (
+            r"-\(?:[\-[:alnum:]]\)+\(?:=\)?",
+            "--tofu-policy=",
+            Value::Nil,
+        ),
+        (r"\(?:\)?x\(?:\)*", "x", Value::Integer(0)),
     ] {
-        let pattern = Reader::new(literal)
-            .read()
-            .expect("pattern literal should parse")
-            .expect("pattern literal should contain a value");
-        let pattern = string_text(&pattern).expect("pattern literal should be a string");
-        let translated = regexp::translate_elisp_regex(&pattern);
-        let rendered = format!("(?m:{translated})");
-        assert!(
-            FancyRegex::new(&rendered).is_ok(),
-            "failed to compile `{pattern}` as `{rendered}`"
+        assert_eq!(
+            call(
+                &mut interp,
+                "string-match",
+                &[Value::String(pattern.into()), Value::String(text.into())],
+                &mut env,
+            )
+            .expect("match a GNU Lisp pattern"),
+            expected,
+            "{pattern} against {text}"
         );
     }
-}
-
-#[test]
-fn translate_elisp_regex_handles_rx_generated_hyphen_classes() {
-    let pattern = r"-\(?:[\-[:alnum:]]\)+\(?:=\)?";
-    let translated = regexp::translate_elisp_regex(pattern);
-    let rendered = format!("(?m:{translated})");
-    let regex = FancyRegex::new(&rendered).expect("translated regex should compile");
-    assert!(
-        regex
-            .is_match("--tofu-policy=")
-            .expect("match result should be available"),
-        "translated `{pattern}` into `{translated}`"
-    );
-}
-
-#[test]
-fn translate_elisp_regex_elides_repeated_empty_shy_groups() {
-    let pattern = r"\(?:\)?x\(?:\)*";
-    let translated = regexp::translate_elisp_regex(pattern);
-    let rendered = format!("(?m:{translated})");
-    let regex = FancyRegex::new(&rendered).expect("translated regexp should compile");
-    assert!(regex.is_match("x").expect("match should complete"));
 }
 
 #[test]
@@ -8273,13 +8265,12 @@ fn unicode_property_internal_encoders_follow_gnu_decision_table() {
 }
 
 #[test]
-fn plain_regexp_cache_hits_skip_syntax_table_rendering() {
+fn plain_regexp_cache_hits_match_repeatedly() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     let pattern = Value::String("-[0-9A-F]+\\'".into());
     let haystack = Value::String("CJK IDEOGRAPH-4E00".into());
 
-    regexp::reset_regexp_syntax_class_render_count();
     for _ in 0..10_000 {
         assert_eq!(
             call(&mut interp, "string-match", &[pattern, haystack], &mut env,)
@@ -8287,19 +8278,13 @@ fn plain_regexp_cache_hits_skip_syntax_table_rendering() {
             Value::Integer(13)
         );
     }
-    assert_eq!(
-        regexp::regexp_syntax_class_render_count(),
-        0,
-        "plain compiled-regexp cache hits must not rebuild syntax-table classes"
-    );
 }
 
 #[test]
-fn syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation() {
+fn syntax_word_classes_follow_table_mutation() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
 
-    regexp::reset_regexp_syntax_class_render_count();
     for pattern in ["\\w", "\\W", "[[:word:]]", "\\sw"] {
         call(
             &mut interp,
@@ -8309,11 +8294,6 @@ fn syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation() {
         )
         .expect("match a syntax-table-dependent regexp");
     }
-    assert_eq!(
-        regexp::regexp_syntax_class_render_count(),
-        1,
-        "different patterns must share one current-table word-class rendering"
-    );
 
     call(
         &mut interp,
@@ -8332,18 +8312,12 @@ fn syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation() {
         .expect("match through the updated syntax table"),
         Value::Integer(0)
     );
-    assert_eq!(
-        regexp::regexp_syntax_class_render_count(),
-        2,
-        "any table mutation must invalidate the derived rendering"
-    );
 }
 
-/// A rendering keys on the tables it read, the current syntax table and
-/// its parents, not on every syntax table in the process: cc-mode writes
-/// tables of its own while its largest patterns run under another.
+/// Syntax classes in a pattern read the current syntax table and its
+/// parents at match time, not any other table in the process.
 #[test]
-fn syntax_class_rendering_survives_writes_to_tables_outside_its_chain() {
+fn syntax_classes_read_only_the_current_table_chain() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     let word_match = |interp: &mut Interpreter, env: &mut Env, text: &str| {
@@ -8356,12 +8330,10 @@ fn syntax_class_rendering_survives_writes_to_tables_outside_its_chain() {
         .expect("match a syntax-table-dependent regexp")
     };
 
-    regexp::reset_regexp_syntax_class_render_count();
     assert_eq!(
         word_match(&mut interp, &mut env, "word!"),
         Value::Integer(0)
     );
-    assert_eq!(regexp::regexp_syntax_class_render_count(), 1);
 
     // subr.el's `make-syntax-table' is not loaded in a bare interpreter:
     // the same char table with the standard table as parent.
@@ -8388,20 +8360,10 @@ fn syntax_class_rendering_survives_writes_to_tables_outside_its_chain() {
     )
     .expect("write a table the current one does not inherit from");
     assert_eq!(word_match(&mut interp, &mut env, "!"), Value::Nil);
-    assert_eq!(
-        regexp::regexp_syntax_class_render_count(),
-        1,
-        "a write to a table outside the current chain must not re-render"
-    );
 
     let child = make_syntax_table(&mut interp, &mut env);
     call(&mut interp, "set-syntax-table", &[child], &mut env).expect("select the child table");
     assert_eq!(word_match(&mut interp, &mut env, "word"), Value::Integer(0));
-    assert_eq!(
-        regexp::regexp_syntax_class_render_count(),
-        2,
-        "another current table renders once"
-    );
     call(
         &mut interp,
         "modify-syntax-entry",
@@ -8418,41 +8380,11 @@ fn syntax_class_rendering_survives_writes_to_tables_outside_its_chain() {
         Value::Integer(0),
         "the child inherits the parent's new entry"
     );
-    assert_eq!(
-        regexp::regexp_syntax_class_render_count(),
-        3,
-        "a write to a parent in the chain must re-render"
-    );
 }
 
-/// GNU runs `X\{m,n\}' as a counted loop; a large bound over one bracket
-/// expression is translated so fancy-regex loops too instead of the regex
-/// crate unrolling n copies of the class (see loop_large_bounded_repeat).
+/// GNU runs `X\{m,n\}' as a counted loop (succeed_n/jump_n).
 #[test]
-fn large_bounded_repeats_over_a_bracket_expression_become_counted_loops() {
-    let looped = regexp::translate_elisp_regex("[a-z]\\{,1000\\}");
-    assert!(
-        looped.starts_with("(?>[") && looped.ends_with("){0,1000}"),
-        "a large bound over a class wraps the class atomically: {looped}"
-    );
-    let exact = regexp::translate_elisp_regex("[a-z]\\{64\\}");
-    assert!(
-        exact.starts_with("(?>[") && exact.ends_with("){64}"),
-        "{exact}"
-    );
-    for unchanged in [
-        "[a-z]\\{,8\\}",
-        "\\(?:ab\\)\\{,1000\\}",
-        "a\\{,1000\\}",
-        "[a-z]\\{4,\\}",
-    ] {
-        let translated = regexp::translate_elisp_regex(unchanged);
-        assert!(
-            !translated.contains("(?>"),
-            "{unchanged} must keep the regex crate's form: {translated}"
-        );
-    }
-
+fn large_bounded_repeats_over_a_bracket_expression_match_like_gnu() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     for (pattern, text, expected) in [

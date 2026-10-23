@@ -390,7 +390,7 @@ impl Interpreter {
         self.reset_buffer_text_conversion_style(buffer_id);
         self.remove_buffer_locals(buffer_id);
         self.buffer_local_hooks.remove(&buffer_id);
-        self.buffer_case_tables.retain(|(id, _)| *id != buffer_id);
+        crate::lisp::primitives::casetab::reset_buffer_case_tables(self, buffer_id);
     }
 
     /// Drop every local binding of BUFFER_ID. A current buffer's evaluator
@@ -428,7 +428,7 @@ impl Interpreter {
             self.buffer_local_hooks
                 .insert(buffer_id, super::ordered_hooks(permanent_hooks));
         }
-        self.buffer_case_tables.retain(|(id, _)| *id != buffer_id);
+        crate::lisp::primitives::casetab::reset_buffer_case_tables(self, buffer_id);
     }
 
     pub fn clone_buffer_local_state(&mut self, from_buffer_id: u64, to_buffer_id: u64) {
@@ -466,13 +466,8 @@ impl Interpreter {
             self.set_buffer_local_hook(to_buffer_id, &name, values);
         }
 
-        if let Some((_, table)) = self
-            .buffer_case_tables
-            .iter()
-            .find(|(id, _)| *id == from_buffer_id)
-            .cloned()
-        {
-            self.buffer_case_tables.push((to_buffer_id, table));
+        if let Some(tables) = self.buffer_case_tables(from_buffer_id) {
+            self.install_buffer_case_tables(to_buffer_id, tables);
         }
     }
 

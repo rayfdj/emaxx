@@ -388,6 +388,7 @@ impl Interpreter {
         // the creating buffer from making a fresh temporary buffer read-only.
         let symbol = cached_symbol!("buffer-read-only").with(Clone::clone);
         self.set_buffer_local_value_symbol(id, &symbol, Value::Nil);
+        primitives::casetab::reset_buffer_case_tables(self, id);
         (id, name.to_string())
     }
 
@@ -1245,6 +1246,8 @@ impl Interpreter {
         self.detach_markers_for_buffer(id);
         self.remove_buffer_locals(id);
         self.buffer_local_hooks.remove(&id);
+        self.buffer_case_tables
+            .retain(|(buffer_id, _)| *buffer_id != id);
         self.labeled_restrictions
             .retain(|restriction| restriction.buffer_id != id);
         self.indirect_buffers
@@ -1611,27 +1614,6 @@ impl Interpreter {
         CharTableChainSignature::capture(table)
     }
 
-    pub(crate) fn cached_regexp_syntax_classes(
-        &self,
-        table_id: CharTableRef,
-    ) -> Option<[String; 16]> {
-        self.regexp_syntax_class_cache
-            .borrow()
-            .iter()
-            .find(|cache| cache.table_id == table_id && cache.chain.matches(Some(table_id)))
-            .map(|cache| cache.rendered.clone())
-    }
-
-    /// The hash of the table's sixteen class renderings as cached: what a
-    /// syntax-dependent pattern's translation reads from the table.
-    pub(crate) fn cached_regexp_syntax_classes_hash(&self, table_id: CharTableRef) -> Option<u64> {
-        self.regexp_syntax_class_cache
-            .borrow()
-            .iter()
-            .find(|cache| cache.table_id == table_id && cache.chain.matches(Some(table_id)))
-            .map(|cache| cache.rendered_hash)
-    }
-
     pub(crate) fn cached_syntax_segments(
         &self,
         table_id: CharTableRef,
@@ -1652,30 +1634,6 @@ impl Interpreter {
             table_id,
             chain: self.char_table_chain_signature(table_id),
             segments,
-        });
-    }
-
-    pub(crate) fn cache_regexp_syntax_classes(
-        &self,
-        table_id: CharTableRef,
-        rendered: [String; 16],
-    ) {
-        // A few tables at a time: a mode that swaps its syntax table around
-        // a scan (cc-mode's `c-with-syntax-table') keeps both renderings.
-        let chain = self.char_table_chain_signature(table_id);
-        let mut cache = self.regexp_syntax_class_cache.borrow_mut();
-        cache.retain(|entry| entry.table_id != table_id);
-        if cache.len() >= 8 {
-            cache.remove(0);
-        }
-        cache.push(RegexpSyntaxClassCache {
-            table_id,
-            chain,
-            rendered_hash: {
-                use std::hash::BuildHasher;
-                crate::lisp::primitives::FnvBuildHasher::default().hash_one(&rendered)
-            },
-            rendered,
         });
     }
 

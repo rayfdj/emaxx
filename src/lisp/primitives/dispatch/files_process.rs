@@ -1642,12 +1642,14 @@ define_dispatch!(
                     .lookup_var("completion-regexp-list", env)
                     .and_then(|value| value.to_vec().ok())
                     .unwrap_or_default();
-                let matches = |candidate: &str| -> Result<bool, LispError> {
+                // dired.c file_name_completion folds with Vascii_canon_table.
+                let case_table = ignore_case.then(|| interp.standard_case_tables().canon);
+                let mut matches = |candidate: &str| -> Result<bool, LispError> {
                     if !completion_matches_prefix(&prefix, candidate, ignore_case) {
                         return Ok(false);
                     }
                     for pattern in &regexp_list {
-                        if !completion_regex_matches(interp, env, candidate, pattern)? {
+                        if !completion_regex_matches(interp, env, candidate, pattern, case_table)? {
                             return Ok(false);
                         }
                     }

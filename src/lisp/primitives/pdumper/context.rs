@@ -1631,6 +1631,9 @@ impl DumpContext {
                 BUFFER_SYNTAX_TABLE,
                 BUFFER_CASE_TABLE,
                 BUFFER_TEXT_CONVERSION_STYLE,
+                BUFFER_UPCASE_TABLE,
+                BUFFER_CASE_CANON_TABLE,
+                BUFFER_CASE_EQV_TABLE,
             ] {
                 self.field_lv(
                     start,
@@ -1661,7 +1664,12 @@ impl DumpContext {
             .and_then(|base| interp.buffer_value(base));
         let mark_marker = interp.buffer_mark_marker_id(id).map(Value::Marker);
         let syntax_table = interp.buffer_syntax_table_id(id).map(Value::CharTable);
-        let case_table = interp.buffer_case_table_id(id).map(Value::CharTable);
+        let case_tables = interp.buffer_case_tables(id);
+        let case_slot = |pick: fn(
+            &crate::lisp::eval::coding::CaseTables,
+        ) -> crate::lisp::types::CharTableRef| {
+            case_tables.map_or(Value::Nil, |tables| Value::CharTable(pick(&tables)))
+        };
         let locals = interp.buffer_local_cells(id);
         let hooks = interp.buffer_local_hook_lists(id);
         let markers = interp.buffer_marker_ids(id);
@@ -1762,12 +1770,27 @@ impl DumpContext {
             ),
             (
                 BUFFER_CASE_TABLE as usize,
-                case_table.unwrap_or(Value::Nil),
+                case_slot(|tables| tables.down),
                 WEIGHT_STRONG,
             ),
             (
                 BUFFER_TEXT_CONVERSION_STYLE as usize,
                 parts.text_conversion_style,
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_UPCASE_TABLE as usize,
+                case_slot(|tables| tables.up),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_CASE_CANON_TABLE as usize,
+                case_slot(|tables| tables.canon),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_CASE_EQV_TABLE as usize,
+                case_slot(|tables| tables.eqv),
                 WEIGHT_STRONG,
             ),
         ];
@@ -2478,10 +2501,16 @@ pub(crate) const BUFFER_BASE: u32 = 20;
 pub(crate) const BUFFER_INTERVALS: u32 = 21;
 pub(crate) const BUFFER_MARK_MARKER: u32 = 22;
 pub(crate) const BUFFER_SYNTAX_TABLE: u32 = 23;
+/// The buffer's downcase_table, nil when it holds the standard four.
 pub(crate) const BUFFER_CASE_TABLE: u32 = 24;
-/// The variable part: the local bindings, the markers, the undo entries.
 pub(crate) const BUFFER_TEXT_CONVERSION_STYLE: u32 = 25;
-pub(crate) const BUFFER_VARIABLE_PART: u32 = 26;
+/// upcase_table, case_canon_table and case_eqv_table, with
+/// BUFFER_CASE_TABLE.
+pub(crate) const BUFFER_UPCASE_TABLE: u32 = 26;
+pub(crate) const BUFFER_CASE_CANON_TABLE: u32 = 27;
+pub(crate) const BUFFER_CASE_EQV_TABLE: u32 = 28;
+/// The variable part: the local bindings, the markers, the undo entries.
+pub(crate) const BUFFER_VARIABLE_PART: u32 = 29;
 // The flag bits of BUFFER_FLAGS.
 pub(crate) const BUFFER_FLAG_MULTIBYTE: u64 = 1;
 pub(crate) const BUFFER_FLAG_MARK_ACTIVE: u64 = 2;

@@ -778,7 +778,7 @@ pub(crate) fn native_comp_fast_paths_are_audited_against_gnu_c() {
             ][..],
         ),
         (
-            "src/lisp/primitives/regexp.rs",
+            "src/lisp/primitives/search.rs",
             &[
                 "c_string_match_folds_only_ascii_and_preserves_match_data",
                 "c_string_match_converts_the_pattern_to_unibyte_before_compilation",

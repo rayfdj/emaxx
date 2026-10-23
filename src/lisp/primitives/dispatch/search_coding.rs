@@ -484,21 +484,8 @@ define_dispatch!(
             }
             "re--describe-compiled" => {
                 need_arg_range(name, args, 1, 2)?;
-                let pattern = string_like(&args[0]).ok_or_else(|| {
-                    LispError::SignalValue(Value::list([
-                        Value::symbol("wrong-type-argument"),
-                        Value::symbol("stringp"),
-                        args[0],
-                    ]))
-                })?;
-                regexp::compile_elisp_regex(interp, &pattern, env, "", true)?;
-                // GNU exposes private bytecode from its own regexp engine.
-                // `fancy-regex` deliberately keeps both its VM program and
-                // delegated regex-automata state behind a private stable API.
-                Err(LispError::Signal(
-                    "Compiled regexp introspection is unavailable from the fancy-regex backend"
-                        .into(),
-                ))
+                let raw = args.get(1).is_some_and(Value::is_truthy);
+                search::describe_compiled(interp, env, &args[0], raw)
             }
 
             "replace-match" => {

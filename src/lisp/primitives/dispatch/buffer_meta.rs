@@ -154,26 +154,12 @@ define_dispatch!(
             }
             "compare-buffer-substrings" => {
                 need_args(name, args, 6)?;
-                // GNU editfns.c consults `case-fold-search' in the current
-                // buffer, even when either substring belongs to another
-                // buffer.  Its canonical table is extra slot one of the
-                // current downcase table; Emaxx's lazily initialized standard
-                // table has the same effective mapping in the downcase table
-                // until a materialized canonical slot exists.
-                let canonical_table = if interp.case_fold_search_active(env) {
-                    let downcase_table = interp.current_case_table_id();
-                    Some(
-                        match interp
-                            .char_table_extra_slot(downcase_table, 1)
-                            .map(|v| v.kind())
-                        {
-                            Some(Kind::CharTable(canonical_table)) => canonical_table,
-                            _ => downcase_table,
-                        },
-                    )
-                } else {
-                    None
-                };
+                // GNU editfns.c consults `case-fold-search' and the
+                // case_canon_table of the current buffer, even when either
+                // substring belongs to another buffer.
+                let canonical_table = interp
+                    .case_fold_search_active(env)
+                    .then(|| interp.current_case_tables().canon);
                 // Both operands are read in place, as editfns.c reads the
                 // buffer text; neither is copied.
                 let interp = &*interp;

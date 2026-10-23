@@ -1264,7 +1264,27 @@ impl Loader<'_> {
             }
         };
         let syntax_table = self.optional_char_table_at(offset + 8 * BUFFER_SYNTAX_TABLE)?;
-        let case_table = self.optional_char_table_at(offset + 8 * BUFFER_CASE_TABLE)?;
+        let case_tables = match (
+            self.optional_char_table_at(offset + 8 * BUFFER_CASE_TABLE)?,
+            self.optional_char_table_at(offset + 8 * BUFFER_UPCASE_TABLE)?,
+            self.optional_char_table_at(offset + 8 * BUFFER_CASE_CANON_TABLE)?,
+            self.optional_char_table_at(offset + 8 * BUFFER_CASE_EQV_TABLE)?,
+        ) {
+            (Some(down), Some(up), Some(canon), Some(eqv)) => {
+                Some(crate::lisp::eval::coding::CaseTables {
+                    down,
+                    up,
+                    canon,
+                    eqv,
+                })
+            }
+            (None, None, None, None) => None,
+            _ => {
+                return Err(LoadError::Error(format!(
+                    "buffer {id}'s case tables are incomplete"
+                )));
+            }
+        };
         let mut at = offset + 8 * BUFFER_VARIABLE_PART;
         let nlocals = self.reader.word(at)? as usize;
         at += 8;
@@ -1358,8 +1378,8 @@ impl Loader<'_> {
         if let Some(table) = syntax_table {
             self.interp.install_buffer_syntax_table(id, table);
         }
-        if let Some(table) = case_table {
-            self.interp.install_buffer_case_table(id, table);
+        if let Some(tables) = case_tables {
+            self.interp.install_buffer_case_tables(id, tables);
         }
         Ok((object, marker_chain))
     }

@@ -506,6 +506,7 @@ pub(crate) mod modules;
 pub(crate) mod native_comp;
 pub(crate) mod primitives;
 pub(crate) mod reader;
+pub(crate) mod regex_emacs;
 pub(crate) mod runtime;
 pub(crate) mod sqlite;
 pub(crate) mod types;

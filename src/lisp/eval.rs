@@ -1163,14 +1163,6 @@ pub struct CharTableEntry {
     pub value: Value,
 }
 
-#[derive(Clone, Debug)]
-struct RegexpSyntaxClassCache {
-    table_id: CharTableRef,
-    chain: CharTableChainSignature,
-    rendered: [String; 16],
-    rendered_hash: u64,
-}
-
 #[derive(Clone)]
 pub(crate) struct SyntaxSegmentCache {
     table_id: CharTableRef,
@@ -3913,13 +3905,12 @@ impl Interpreter {
             .map(|(_, table)| *table)
     }
 
-    /// BVAR (b, case_table) when the buffer has set one.
-    pub(crate) fn buffer_case_table_id(&self, id: u64) -> Option<CharTableRef> {
+    /// BUFFER's four case tables when they are not the standard ones.
+    pub(crate) fn buffer_case_tables(&self, id: u64) -> Option<coding::CaseTables> {
         self.buffer_case_tables
             .iter()
-            .rev()
             .find(|(buffer_id, _)| *buffer_id == id)
-            .map(|(_, table)| *table)
+            .map(|(_, tables)| *tables)
     }
 
     /// alloc.c's `finalizers' list in order (head.next first).
@@ -4034,11 +4025,10 @@ impl Interpreter {
         self.buffer_syntax_tables.push((id, table));
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn install_buffer_case_table(&mut self, id: u64, table: CharTableRef) {
+    pub(crate) fn install_buffer_case_tables(&mut self, id: u64, tables: coding::CaseTables) {
         self.buffer_case_tables
             .retain(|(buffer_id, _)| *buffer_id != id);
-        self.buffer_case_tables.push((id, table));
+        self.buffer_case_tables.push((id, tables));
     }
 
     /// Mark actual roots, then iterate weak-table reachability to a fixed
@@ -4261,18 +4251,15 @@ impl Interpreter {
         mark(&self.syntax_code_objects);
         mark(&self.unicode_menu_case_table);
         mark(&Value::CharTable(self.standard_syntax_table_id));
-        for table in self
-            .standard_category_table_id
-            .iter()
-            .chain(self.standard_case_table_id.iter())
-        {
-            mark(&Value::CharTable(*table));
+        for table in self.standard_category_table_id.into_iter().chain(
+            self.standard_case_tables
+                .iter()
+                .chain(self.buffer_case_tables.iter().map(|(_, tables)| tables))
+                .flat_map(|tables| tables.each()),
+        ) {
+            mark(&Value::CharTable(table));
         }
-        for (_, table) in self
-            .buffer_syntax_tables
-            .iter()
-            .chain(self.buffer_case_tables.iter())
-        {
+        for (_, table) in &self.buffer_syntax_tables {
             mark(&Value::CharTable(*table));
         }
         for (_, value) in &self.charset_plists {
@@ -4735,14 +4722,14 @@ impl Interpreter {
             clone.standard_category_table_id = clone
                 .standard_category_table_id
                 .map(|table| copy_table(c, table));
-            clone.standard_case_table_id = clone
-                .standard_case_table_id
-                .map(|table| copy_table(c, table));
+            clone.standard_case_tables = clone
+                .standard_case_tables
+                .map(|tables| tables.map(|table| copy_table(c, table)));
             for (_, table) in clone.buffer_syntax_tables.iter_mut() {
                 *table = copy_table(c, *table);
             }
-            for (_, table) in &mut clone.buffer_case_tables {
-                *table = copy_table(c, *table);
+            for (_, tables) in &mut clone.buffer_case_tables {
+                *tables = tables.map(|table| copy_table(c, table));
             }
             for (_, plist) in &mut clone.charset_plists {
                 *plist = c.copy(plist);
@@ -4903,9 +4890,7 @@ impl Interpreter {
         // Identity-keyed caches: the copied cells have fresh identities, so
         // every cached verdict keyed by (or holding) template cells is
         // stale.  All of these repopulate lazily.
-        crate::lisp::primitives::forget_buffer_views();
         *clone.known_symbols_cache.get_mut() = None;
-        clone.regexp_syntax_class_cache.get_mut().clear();
         *clone.syntax_segment_cache.get_mut() = None;
         clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
         clone.bc_unwinds.clear();
@@ -5234,7 +5219,6 @@ pub struct InterpreterState {
     /// is stamped with the table identity and its chain signature; regexp
     /// code declines to populate it for tables containing mutable Lisp
     /// entry objects whose in-place changes bypass the table mutation door.
-    regexp_syntax_class_cache: RefCell<Vec<RegexpSyntaxClassCache>>,
     syntax_segment_cache: RefCell<Option<SyntaxSegmentCache>>,
     /// Charset aliases defined at runtime.
     charset_aliases: Vec<(String, String)>,
@@ -5292,10 +5276,12 @@ pub struct InterpreterState {
     input_interrupt_mode: bool,
     /// Shared standard category table.
     standard_category_table_id: Option<CharTableRef>,
-    /// Shared standard case table.
-    standard_case_table_id: Option<CharTableRef>,
-    /// Buffer-local case tables keyed by buffer id.
-    buffer_case_tables: Vec<(u64, CharTableRef)>,
+    /// casetab.c's Vascii_downcase_table, Vascii_upcase_table,
+    /// Vascii_canon_table and Vascii_eqv_table.
+    standard_case_tables: Option<coding::CaseTables>,
+    /// buffer.h's four case-table slots of each live buffer whose four are
+    /// not the standard ones; a buffer without an entry holds those.
+    buffer_case_tables: Vec<(u64, coding::CaseTables)>,
     /// Allocated record objects.
     /// The records by id (`find_record'), a registry and not a root:
     /// a record the sweep frees leaves it (`purge_freed_records').
@@ -5607,9 +5593,6 @@ impl Interpreter {
         // scope restores its caller on exit. Lisp thread state transfers do
         // not construct a new editor or change this owner.
         crate::lisp::types::symbols::SymbolOwner::fresh().select();
-        // A new interpreter numbers buffers and edits from the start; the
-        // thread's cached views of buffer state are of some other one.
-        crate::lisp::primitives::forget_buffer_views();
         primitives::install_user_signal_handlers();
         let initial_terminal =
             crate::lisp::types::TerminalRef::new(0, terminal::TerminalState::initial());
@@ -5990,7 +5973,6 @@ impl Interpreter {
             // buffer exists, below.
             buffer_list: vec![(0, "*scratch*".to_string())],
             next_buffer_id: 2,
-            regexp_syntax_class_cache: RefCell::new(Vec::new()),
             syntax_segment_cache: RefCell::new(None),
             charset_aliases: Vec::new(),
             charset_ids: vec![
@@ -6092,7 +6074,7 @@ impl Interpreter {
             safe_terminal_coding: Some("us-ascii".into()),
             input_interrupt_mode: true,
             standard_category_table_id: None,
-            standard_case_table_id: None,
+            standard_case_tables: None,
             buffer_case_tables: Vec::new(),
             records: vec![Some(main_thread), Some(standard_obarray)],
             record_owner,

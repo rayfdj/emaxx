@@ -3983,6 +3983,94 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   profile, one thread a process); GNU's editfns, simple, minibuffer,
   comint, subr and subr-x test files give the results they gave before.
   Clippy `-D warnings`, rustfmt and `git diff --check` pass.
+- **Round 50: regex-emacs.c and search.c, ported; casetab.c's case
+  tables.** Elisp regexps were translated to `fancy-regex`/`regex`
+  syntax, with syntax classes, categories and case folding rendered into
+  the translated pattern and the haystack copied out of the buffer for
+  each search; a syntax-table or `syntax-table` property change
+  re-rendered both. Font-lock over subr.el took 24.7 s (GNU 0.27 s), a
+  new pattern 38 µs to compile (GNU 2.5 µs), `\_<defun\_>` over a 5 MB
+  buffer 0.32 s (GNU 0.020 s). `src/lisp/regex_emacs/` is now
+  regex-emacs.c: `regex_compile` into GNU's opcodes (exactn in the
+  buffer's storage form, charset bitmaps with range tables, `succeed_n`
+  counters, `on_failure_jump_smart` rewritten by `mutually_exclusive_p`),
+  the fastmap by stored lead byte (`analyze_first`), and
+  `re_match_2_internal` with GNU's failure stack (40,000 × 20 items,
+  "Stack overflow in regexp matcher") reading the rope's chunks in place,
+  with the syntax class, category and case translation of each character
+  asked of the buffer or string at that position (`syntax-table`
+  properties and `syntax-propertize` included). `src/lisp/primitives/
+  search.rs` is search.c's side: the 20-entry pattern cache keyed as
+  `compile_pattern` keys it (the pattern, its translate table, posix,
+  `search-spaces-regexp`, and the syntax table only for a pattern that
+  read one while compiling, `[[:space:]]` and `[[:word:]]`), cleared of
+  those by `modify-syntax-entry` (`clear_regexp_cache`), `looking-at`,
+  `string-match`, the four searches, `re--describe-compiled` (RAW gives
+  GNU's bytecode) and the `fast_*` entry points the C code uses (file
+  name handlers, `directory-files`, completion, compositions,
+  tree-sitter predicates, coding-system lookups). The old translator
+  and its caches (6,200 lines, `fancy-regex` and `regex-automata` with
+  them) are gone. Case folding needed casetab.c: `set-case-table` and
+  `set-standard-case-table` now complete a table (the upcase table by
+  `set_identity` and `shuffle`, the canonicalization DOWN[UP[DOWN[c]]],
+  the equivalences) and store all four tables in the buffer's slots,
+  as buffer.h keeps them; a buffer keeps the four it was given when the
+  standard ones change, `kill-all-local-variables` and a new buffer
+  take the standard ones (completing an invalidated standard table
+  first), `upcase`/`downcase` reinstall a table whose canonicalization
+  was cleared, and the image carries the four per buffer and the
+  standard four. A folded search keys its pattern on the buffer's
+  canonicalization, as GNU's translate table, so a store into another
+  char-table (`regexp-opt`'s charset table) compiles nothing again.
+  `marker_byte_position` counted the bytes before a position by walking
+  the text (O(n) per call in a non-ASCII buffer, which made the new
+  matcher's match data cost 58 times GNU's fontification); the text now
+  keeps a count of its raw-byte markers, so a byte position is the rope's
+  byte offset adjusted by that count and the side table. A unibyte
+  buffer stores the bytes 0x80 to 0xFF as U+0080 to U+00FF where strings
+  keep raw-byte markers; the matcher reads them as the raw-byte
+  characters (a unibyte buffer's `\220` had matched nothing). Against
+  GNU, over the 5 MB elisp.info (GNU / Emaxx / round 47's profile-guided
+  build): `\*note` 0.0140 / 0.0065 / 0.0036 s, node separators 0.0150 /
+  0.0039 / 0.0026, `[ \t]+$` 0.170 / 0.127 / 0.0097, `\_<defun\_>`
+  0.0199 / 0.0157 / 0.324, folded `\bfunction\b` 0.0425 / 0.120 /
+  0.860, `\(\w+\) \1` 0.714 / 0.700 / 0.936, folded xref 0.0345 /
+  0.0552 / 0.0107, 200,000 `looking-at` 0.201 / 0.350 / 0.202, 200,000
+  `string-match` 0.402 / 0.449 / 0.319, 2,000 distinct patterns 0.0050
+  / 0.0030 / 0.0757. Font-lock: subr.el 0.265 / 0.500 / 24.7 s, forty
+  edits each refontified 0.086 / 1.19 / 14.9 s; xdisp.c 10.9 / 22.3 s
+  (GNU / Emaxx); two hundred edits refontified in subr.el 0.36 / 5.2 s,
+  simple.el 0.33 / 7.2 s, python.el 0.32 / 4.6 s, xdisp.c 4.4 / 10.6 s.
+  The refontification gap is syntax scanning (`syntax-ppss`,
+  `parse-partial-sexp`), the next round's. Tests: the old engine's
+  count tests (renderings, encodings, compiles) are GNU results now,
+  with a test-only compile counter asserting compile_pattern's reuse,
+  `clear_regexp_cache`, and that a folded pattern survives stores into
+  other tables and into the downcase table;
+  `set_case_table_completes_a_table_and_buffers_keep_the_tables_they_were_given`
+  checks casetab.c's tables and a buffer's kept canonicalization
+  against the oracle; `src/lisp/regex_emacs/tests.rs` has fourteen
+  matcher tests with GNU's answers. Two old expectations were not
+  GNU's: `[\-[:alnum:]]` is `\-[` (an empty range) plus `:alnum:` and
+  closes before a literal `]` (it matched `--tofu-policy=`), and a
+  lambda parameter named `case-fold-search` is lexical in the batch
+  image (the test let-binds it now). Syntax lookups read each entry's
+  class from the entry, as SYNTAX does, so a descriptor changed in place
+  is seen at once. A POSIX pattern ends without a final `succeed` (GNU
+  reads past its buffer when a loop's tail runs to the end); the
+  first-character walk takes the end as matching the empty string.
+  Validation: the regex, search, case, syntax, completion, marker,
+  match, dump, image, case-table, compile-count, POSIX and anti-cheat
+  filters pass (gate profile, one thread a process,
+  `RUST_MIN_STACK=134217728` as CI sets it), but for
+  `batch_startup_image_round_trip_or_explicit_native_image_limit`, which
+  fails in this container as before (below); thirty GNU test files
+  (regex-emacs, search, rx, regexp-opt, syntax, casefiddle, subr,
+  subr-x, simple, replace, thingatpt, isearch, minibuffer, minibuf,
+  files, dired, fill, font-lock, elisp-mode, python, ruby, css, cc-mode,
+  buffer, editfns, fns, character, coding, mule-util, lisp) pass on the
+  release build. Clippy `-D warnings`, rustfmt and `git diff --check`
+  pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4572,10 +4660,12 @@ them. **On `626d1eb`** (round 45): full Rust gate passed (run
 39639732639), frozen passed on its first attempt (run 39639736946).
 **On `eb8e009`** (rounds 46 and 47, pushed together): full Rust gate
 passed (run 39682876524), frozen passed on its first attempt (run
-39682879871). **On `445cc7d`** (round 48): the full Rust gate (run
-39986757981) and frozen (run 39986763116) are running; **on round 49's
-commit** both are dispatched with it. Their results go in the next
-round's record. Locally,
+39682879871). **On `445cc7d`** (round 48): full Rust gate passed (run
+39986757981); frozen matched 7,927 of 7,928 with the one unexpected
+outcome on GNU's side (run 39986763116), and its re-run passed. **On
+`1695c05`** (round 49): full Rust gate passed (run 39989914863),
+frozen passed on its first attempt (run 39989919866). **On round 50's
+commit** both are dispatched with it. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -4867,10 +4957,11 @@ and failures are still recorded.
    counter branch.
 2. **Performance, worst ratios first.** Outside the locked sixteen
    (bullet "Beyond the sixteen workloads") the gaps are larger than any
-   workload's margin, so they come first now: regexp compilation (about
-   42 µs a new pattern against 1 µs), symbol-boundary and case-folded
-   word-boundary searches and the whole-buffer copy each search makes,
-   process start (0.19 s against 0.08 s; `shell-command` tests that
+   workload's margin, so they come first now: syntax scanning under
+   font-lock (refontifying after edits is 12 to 15 times GNU's since
+   round 50 ported the regexp engine; `syntax-ppss`,
+   `parse-partial-sexp` and `ScanChars`), a case-folded `\b` (2.8 times)
+   and `looking-at`'s cost a call (1.7 times), process start (0.19 s against 0.08 s; `shell-command` tests that
    start Emacs fifty times are 2.5 times slower for it), text
    properties kept in one flat vector of spans (each edit shifts it;
    GNU keeps intervals), keymap description

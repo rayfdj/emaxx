@@ -1594,14 +1594,18 @@ pub(crate) fn find_file_name_handler(
             } else {
                 Value::Nil
             };
-            if let Some(pattern) = string_like(&pattern) {
-                let regexp = regexp::compile_elisp_regex(interp, &pattern, &regexp_env, "", true)?;
-                let captures = regexp
-                    .captures(file)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                if let Some(position) =
-                    captures.and_then(|captures| captures.get(0).map(|m| m.start()))
-                    && best.is_none_or(|current| position > current)
+            if pattern.is_string() {
+                // fileio.c: fast_string_match, case-sensitive.
+                if let Some(position) = search::fast_text_match(
+                    interp,
+                    &mut regexp_env,
+                    &pattern,
+                    file,
+                    &[],
+                    true,
+                    None,
+                    false,
+                )? && best.is_none_or(|current| position > current)
                     && (operations.is_nil()
                         || super::call(interp, "memq", &[operation, operations], &mut regexp_env)?
                             .is_truthy())
@@ -1946,7 +1950,7 @@ pub(crate) fn dispatch_file_name_handler(
 }
 
 pub(crate) fn directory_files(
-    interp: &Interpreter,
+    interp: &mut Interpreter,
     directory: &str,
     full: bool,
     matcher: Option<&Value>,
@@ -1965,15 +1969,24 @@ pub(crate) fn directory_files(
         entries.push(entry.file_name().to_string_lossy().into_owned());
     }
     if let Some(matcher) = matcher {
-        let pattern = string_like(matcher)
-            .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *matcher))?;
-        regexp::validate_elisp_regex(&pattern.text)?;
-        let regex = regexp::compile_elisp_regex(interp, &pattern, env, "", true)?;
+        if !matcher.is_string() {
+            return Err(LispError::WrongTypeArgument("stringp".into(), *matcher));
+        }
+        // dired.c: fast_string_match_internal, case-sensitive off Windows.
+        let mut match_env = env.clone();
         let mut filtered = Vec::new();
         for entry in entries {
-            if regex
-                .is_match(&entry)
-                .map_err(|error| LispError::Signal(error.to_string()))?
+            if search::fast_text_match(
+                interp,
+                &mut match_env,
+                matcher,
+                &entry,
+                &[],
+                true,
+                None,
+                false,
+            )?
+            .is_some()
             {
                 filtered.push(entry);
             }
