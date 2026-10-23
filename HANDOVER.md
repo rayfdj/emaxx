@@ -3967,6 +3967,22 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   data and subr-x test files pass on the release build. Clippy
   `-D warnings`, rustfmt and `git diff --check` pass; the full Rust gate
   runs in CI.
+- **Round 49: line motion looks for a field only where it moves.**
+  `beginning-of-line`, `line-beginning-position` and `line-end-position`
+  asked `constrain-to-field` for their result only when the buffer had a
+  `field` property anywhere, found by scanning every text-property span
+  and comparing its names: 265,000 instructions a `beginning-of-line` in
+  dired-aux-tests, whose listings put properties on every line. They now
+  test the gate Fconstrain_to_field opens with, a `field` at or just
+  before the new or the old position (`field_near`, four lookups, which
+  `constrain-to-field` itself now uses); past a failed gate the call
+  returned the new position anyway. dired-aux-tests 2.50 s -> 1.75 s
+  (GNU 0.88 s), ls-lisp-tests 2.38 s -> 1.43 s (GNU 0.66 s), round 47's
+  profile-guided build against this round's release build. Validation:
+  109 field, line-motion, minibuffer and comint tests pass (gate
+  profile, one thread a process); GNU's editfns, simple, minibuffer,
+  comint, subr and subr-x test files give the results they gave before.
+  Clippy `-D warnings`, rustfmt and `git diff --check` pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4556,9 +4572,10 @@ them. **On `626d1eb`** (round 45): full Rust gate passed (run
 39639732639), frozen passed on its first attempt (run 39639736946).
 **On `eb8e009`** (rounds 46 and 47, pushed together): full Rust gate
 passed (run 39682876524), frozen passed on its first attempt (run
-39682879871). **On round 48's commit**: the full Rust gate and frozen
-runs are dispatched with it; their results go in the next round's
-record. Locally,
+39682879871). **On `445cc7d`** (round 48): the full Rust gate (run
+39986757981) and frozen (run 39986763116) are running; **on round 49's
+commit** both are dispatched with it. Their results go in the next
+round's record. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -4853,10 +4870,11 @@ and failures are still recorded.
    workload's margin, so they come first now: regexp compilation (about
    42 µs a new pattern against 1 µs), symbol-boundary and case-folded
    word-boundary searches and the whole-buffer copy each search makes,
-   process start (0.19 s against 0.08 s), text properties kept in one
-   flat vector of spans (each edit shifts it and `beginning-of-line`
-   scans it for a `field`; GNU keeps intervals), keymap description
-   (28 times) and `shell-command` (2.5 times). The host is a different machine
+   process start (0.19 s against 0.08 s; `shell-command` tests that
+   start Emacs fifty times are 2.5 times slower for it), text
+   properties kept in one flat vector of spans (each edit shifts it;
+   GNU keeps intervals), keymap description
+   (28 times). The host is a different machine
    since `aa68c68` (bullet "The host changed under the session"). On it,
    with round 25's jump padding, the contract's comparison of the
    profile-guided build reads: undo 1.042 [0.876, 1.110],

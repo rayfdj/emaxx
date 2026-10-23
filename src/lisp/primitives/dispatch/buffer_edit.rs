@@ -1265,7 +1265,9 @@ define_dispatch!(
                 // GNU's `pos-bol' ignores fields; only `line-beginning-position'
                 // constrains (with ESCAPE-FROM-EDGE only after actual line
                 // motion and ONLY-IN-LINE set; see Fline_beginning_position).
-                if name == "line-beginning-position" && buffer_has_field_property(interp) {
+                if name == "line-beginning-position"
+                    && super::buffer_meta::field_near(interp, result, saved)
+                {
                     result = super::call(
                         interp,
                         "constrain-to-field",
@@ -1306,7 +1308,9 @@ define_dispatch!(
                 interp.buffer.borrow_mut().goto_char(saved);
                 // GNU's `pos-eol' ignores fields; `line-end-position'
                 // constrains with ONLY-IN-LINE set (Fline_end_position).
-                if name == "line-end-position" && buffer_has_field_property(interp) {
+                if name == "line-end-position"
+                    && super::buffer_meta::field_near(interp, result, saved)
+                {
                     result = super::call(
                         interp,
                         "constrain-to-field",
@@ -2074,10 +2078,6 @@ define_dispatch!(
         }
     }
 );
-
-fn buffer_has_field_property(interp: &Interpreter) -> bool {
-    interp.buffer.borrow().has_text_property_named("field")
-}
 
 /// Column width of a display spec form: integers are columns, one-element
 /// lists are pixels (one per column on the batch frame), symbols are
@@ -2971,8 +2971,8 @@ pub(super) fn direct_beginning_of_line(
     if !crossed_to_unterminated_eob {
         interp.buffer.borrow_mut().beginning_of_line();
     }
-    if buffer_has_field_property(interp) {
-        let new_pos = interp.buffer.borrow().point();
+    let new_pos = interp.buffer.borrow().point();
+    if super::buffer_meta::field_near(interp, new_pos, old_pos) {
         let constrained = super::call(
             interp,
             "constrain-to-field",
