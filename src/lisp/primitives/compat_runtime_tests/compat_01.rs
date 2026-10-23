@@ -496,6 +496,56 @@ fn nthcdr_handles_circular_lists_with_large_counts() {
 }
 
 #[test]
+fn nthcdr_large_counts_match_a_plain_walk_past_a_prefix() {
+    // fns.c:Fnthcdr measures a cycle from where Brent's tortoise last moved.
+    // A prefix before the cycle and lengths off the tortoise's powers of two
+    // exercise that count, for fixnum and bignum counts alike; a count that
+    // ends exactly at a dotted tail returns the tail.
+    let mut interp = Interpreter::new();
+    let mut env = crate::lisp::types::Env::new();
+    let forms = Reader::new(
+        r#"
+            (let* ((list (append (make-list 37 'p) (make-list 23 'c)))
+                   (big (ash 1 200))
+                   (ok t)
+                   (counts '(128 129 200 1000 4097 65536 65537 100000))
+                   (offsets '(0 1 5 22)))
+              (setcdr (nthcdr 59 list) (nthcdr 37 list))
+              (while counts
+                (let ((n (car counts)) (tail list) (i 0))
+                  (while (< i n)
+                    (setq tail (cdr tail) i (1+ i)))
+                  (if (eq (nthcdr n list) tail)
+                      nil
+                    (setq ok (list 'fixnum n))))
+                (setq counts (cdr counts)))
+              (while offsets
+                (let ((n (+ big (car offsets))))
+                  (if (eq (nthcdr n list) (nthcdr (+ 37 (mod (- n 37) 23)) list))
+                      nil
+                    (setq ok (list 'bignum (car offsets)))))
+                (setq offsets (cdr offsets)))
+              (let ((dotted (append (make-list 200 'x) 'end)))
+                (list ok
+                      (nthcdr 200 dotted)
+                      (condition-case err (nthcdr 201 dotted)
+                        (wrong-type-argument (eq (nth 2 err) dotted)))
+                      (nthcdr 300 (make-list 200 'x)))))
+            "#,
+    )
+    .read_all()
+    .expect("nthcdr prefix-and-cycle test should parse");
+    let result = forms
+        .iter()
+        .try_fold(Value::Nil, |_, form| interp.eval(form, &mut env))
+        .expect("nthcdr prefix-and-cycle forms should evaluate");
+    assert_eq!(
+        result,
+        Value::list([Value::T, Value::symbol("end"), Value::T, Value::Nil])
+    );
+}
+
+#[test]
 fn nth_and_nthcdr_share_gnu_negative_count_and_keymap_semantics() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
@@ -535,19 +585,33 @@ fn nth_and_nthcdr_share_gnu_negative_count_and_keymap_semantics() {
 
 #[test]
 fn nthcdr_value_reduces_large_counts_on_cycles() {
+    let mut interp = Interpreter::new();
+    let mut env = crate::lisp::types::Env::new();
     let cycle = Value::list(vec![Value::Nil; 5]);
-    nthcdr_value(&Value::Integer(4), &cycle)
+    nthcdr_value(&mut interp, &mut env, &Value::Integer(4), &cycle)
         .expect("nthcdr should reach the last cons")
         .set_cdr(cycle)
         .expect("last cons should become circular");
 
-    let one_step = nthcdr_value(&Value::Integer(1), &cycle).expect("small nthcdr should work");
-    let huge_fixnum = nthcdr_value(&Value::Integer(2_305_843_009_213_693_951), &cycle)
-        .expect("large fixnum nthcdr should reduce by cycle length");
+    let one_step = nthcdr_value(&mut interp, &mut env, &Value::Integer(1), &cycle)
+        .expect("small nthcdr should work");
+    let huge_fixnum = nthcdr_value(
+        &mut interp,
+        &mut env,
+        &Value::Integer(2_305_843_009_213_693_951),
+        &cycle,
+    )
+    .expect("large fixnum nthcdr should reduce by cycle length");
     let huge_bignum_value = BigInt::from(1u8) << 12345usize;
-    let huge_bignum = nthcdr_value(&Value::big_integer(huge_bignum_value), &cycle)
-        .expect("large bignum nthcdr should reduce by cycle length");
-    let two_steps = nthcdr_value(&Value::Integer(2), &cycle).expect("small nthcdr should work");
+    let huge_bignum = nthcdr_value(
+        &mut interp,
+        &mut env,
+        &Value::big_integer(huge_bignum_value),
+        &cycle,
+    )
+    .expect("large bignum nthcdr should reduce by cycle length");
+    let two_steps = nthcdr_value(&mut interp, &mut env, &Value::Integer(2), &cycle)
+        .expect("small nthcdr should work");
 
     let cell_id = |value: &Value| {
         let (car, _) = value.cons_cells().expect("value should be a cons cell");
@@ -559,6 +623,8 @@ fn nthcdr_value_reduces_large_counts_on_cycles() {
     assert_eq!(
         cell_id(
             &nthcdr_value(
+                &mut interp,
+                &mut env,
                 &Value::big_integer(BigInt::from(-1_000_000_000_000_i64)),
                 &cycle,
             )

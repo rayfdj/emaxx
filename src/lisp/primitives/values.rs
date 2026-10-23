@@ -1,6 +1,5 @@
 use super::*;
 use crate::lisp::types::Kind;
-use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::PropertyName;
 
 pub fn buffer_undo_list_value(buffer: &crate::buffer::Buffer) -> Value {
@@ -548,70 +547,131 @@ pub(crate) fn safe_list_length(list: &Value) -> i64 {
     }
 }
 
-pub(crate) fn nthcdr_value(count: &Value, list: &Value) -> Result<Value, LispError> {
-    // fns.c:Fnthcdr: a small fixnum count walks without circularity checks
-    // (SMALL_LIST_LEN_MAX).
-    if let Kind::Integer(n) = count.kind()
-        && n <= 127
-    {
-        let mut tail = *list;
-        for _ in 0..n.max(0) {
-            match tail.kind() {
-                Kind::Cons(cell) => tail = cell.cdr.get(),
-                Kind::Nil => return Ok(Value::Nil),
-                _ => return Err(wrong_type_argument("listp", *list)),
+pub(crate) fn nthcdr_value(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    count: &Value,
+    list: &Value,
+) -> Result<Value, LispError> {
+    let mut tail = *list;
+    // fns.c:Fnthcdr counts down in an EMACS_INT.  A positive bignum counts
+    // down from LARGE_NUM instead: no list or cycle is that long, and the
+    // cycle reduction below adds back what the substitution left out.
+    const LARGE_NUM: i64 = i64::MAX;
+    let mut num = match count.kind() {
+        Kind::Integer(n) => {
+            // A small fixnum count walks without circularity or quit
+            // checks (SMALL_LIST_LEN_MAX).
+            if n <= 127 {
+                for _ in 0..n.max(0) {
+                    match tail.kind() {
+                        Kind::Cons(cell) => tail = cell.cdr.get(),
+                        Kind::Nil => return Ok(Value::Nil),
+                        _ => return Err(wrong_type_argument("listp", *list)),
+                    }
+                }
+                return Ok(tail);
             }
+            n
         }
-        return Ok(tail);
-    }
-    let mut remaining = match count.kind() {
-        Kind::Integer(n) => BigInt::from(n),
-        Kind::BigInteger(n) => (n).into(),
+        Kind::BigInteger(n) => {
+            if BigInt::from(n).is_negative() {
+                return Ok(tail);
+            }
+            LARGE_NUM
+        }
         _ => {
             return Err(LispError::WrongTypeArgument("integerp".into(), *count));
         }
     };
 
-    if remaining <= BigInt::zero() {
-        return Ok(*list);
-    }
-
-    let mut current = *list;
-    let mut visited = HashMap::new();
-    let mut steps = 0usize;
-
-    loop {
-        if remaining.is_zero() {
-            return Ok(current);
+    // FOR_EACH_TAIL_SAFE: Brent's tortoise, counted as lisp.h counts
+    // `li.q' and `li.n'.
+    let mut tortoise = tail;
+    let mut maximum = 2_isize;
+    let mut remaining = 0_isize;
+    let mut quit_count = 2_u16;
+    let mut tortoise_num = num;
+    let mut saved_tail = tail;
+    let mut cycle = false;
+    while let Kind::Cons(cell) = tail.kind() {
+        // If the tortoise just jumped (which is rare), update TORTOISE_NUM
+        // accordingly.
+        if tail.word() == tortoise.word() {
+            tortoise_num = num;
         }
-
-        match current.kind() {
-            Kind::Nil => return Ok(Value::Nil),
-            Kind::Cons(cons_cell) => {
-                let cdr = &cons_cell.cdr;
-                let cell_id = crate::lisp::types::ConsCell::identity(&cons_cell);
-                if let Some(&cycle_start) = visited.get(&cell_id) {
-                    let cycle_len = steps.saturating_sub(cycle_start);
-                    if cycle_len > 0 {
-                        remaining %= BigInt::from(cycle_len);
-                        if remaining.is_zero() {
-                            return Ok(current);
-                        }
-                    }
-                } else {
-                    visited.insert(cell_id, steps);
-                }
-
-                remaining -= 1;
-                steps += 1;
-                current = cdr.get();
+        saved_tail = cell.cdr.get();
+        num -= 1;
+        if num == 0 {
+            return Ok(saved_tail);
+        }
+        rarely_quit(interp, env, num)?;
+        tail = saved_tail;
+        quit_count = quit_count.wrapping_sub(1);
+        let compare = if quit_count != 0 {
+            true
+        } else {
+            remaining = remaining.wrapping_sub(1);
+            remaining > 0
+        };
+        if compare {
+            if tail.word() == tortoise.word() {
+                cycle = true;
+                break;
             }
-            // Fnthcdr's CHECK_LIST_END reports the original list.  If
-            // the requested count stops exactly at an improper tail,
-            // it returns that tail above without this error.
-            _ => return Err(wrong_type_argument("listp", *list)),
+        } else {
+            maximum = maximum.wrapping_shl(1);
+            quit_count = maximum as u16;
+            remaining = maximum >> u16::BITS;
+            tortoise = tail;
         }
     }
+
+    tail = saved_tail;
+    if !cycle {
+        // CHECK_LIST_END reports the original list.  A count that stops
+        // exactly at an improper tail returned that tail above.
+        if !tail.is_nil() {
+            return Err(wrong_type_argument("listp", *list));
+        }
+        return Ok(Value::Nil);
+    }
+
+    // TAIL is part of a cycle.  Reduce NUM modulo the cycle length to avoid
+    // going around this cycle repeatedly.
+    let cycle_length = tortoise_num - num;
+    if let Kind::BigInteger(n) = count.kind() {
+        // Undo the error introduced when LARGE_NUM was substituted for N:
+        // the steps left are N less the steps taken, modulo CYCLE_LENGTH.
+        let taken = BigInt::from(LARGE_NUM - num);
+        let left = (BigInt::from(n) - taken) % BigInt::from(cycle_length);
+        num = left
+            .to_i64()
+            .expect("a remainder is less than the cycle length");
+    } else {
+        num %= cycle_length;
+    }
+
+    // One last time through the cycle.
+    while num > 0 {
+        let Kind::Cons(cell) = tail.kind() else {
+            unreachable!("a cycle's tails are conses");
+        };
+        tail = cell.cdr.get();
+        rarely_quit(interp, env, num)?;
+        num -= 1;
+    }
+    Ok(tail)
+}
+
+/// lisp.h:rarely_quit: maybe_quit once each QUIT_COUNT_HEURISTIC (2^16)
+/// counts.
+#[inline]
+fn rarely_quit(interp: &mut Interpreter, env: &mut Env, count: i64) -> Result<(), LispError> {
+    if count & 0xffff == 0 {
+        interp.maybe_quit(env)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn sequence_length_value(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
@@ -1342,20 +1402,21 @@ pub(crate) fn value_less(
     ))
 }
 
+/// fns.c:Fproper_list_p's count: the length of a proper list, None for a
+/// dotted or circular one.  FOR_EACH_TAIL_SAFE counts the tails in place;
+/// copying the elements made the predicate allocate a list's length.
 pub(crate) fn proper_list_length(value: &Value) -> Option<usize> {
-    if matches!(value.kind(), Kind::Nil) {
-        return Some(0);
+    let mut len = 0;
+    let mut tail = *value;
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    while let Some(cell) = tail.cons_ref() {
+        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            return None;
+        }
+        len += 1;
+        tail = cell.cdr.get();
     }
-    if !matches!(value.kind(), Kind::Cons(_)) || is_vector_value(value) {
-        return None;
-    }
-    match value.to_vec().map_err(LispError::into_kind) {
-        Ok(items) => Some(items.len()),
-        Err(LispErrorKind::TypeError(expected, _)) if expected == "list" => None,
-        Err(LispErrorKind::WrongTypeArgument(predicate, _)) if predicate == "listp" => None,
-        Err(LispErrorKind::SignalValue(signal)) if circular_list_signal_p(&signal) => None,
-        Err(_) => None,
-    }
+    tail.is_nil().then_some(len)
 }
 
 pub(crate) fn circular_list_signal_p(value: &Value) -> bool {

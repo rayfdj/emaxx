@@ -3911,6 +3911,62 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   build. Mapcar's instructions a unit are Emaxx 32.9 million to GNU's 46.4
   million; its wall ratio near 0.9 is memory traffic, 100,000 new conses a
   unit, not instructions.
+- **Beyond the sixteen workloads** (round 47's profile-guided build;
+  GNU's own ERT files, each run in both editors at once). Of the 230
+  files under `test/src`, `test/lisp` and `test/lisp/emacs-lisp`, 226
+  ran in both: their tests took 166.1 s in GNU and 239.6 s in Emaxx
+  (1.44; 1.51 with process start). Of the 70 files whose tests take
+  0.3 s or more in GNU, the median ratio is 1.63, 12 run faster in Emaxx
+  and 18 at least twice as slow: keymap-tests 7.36
+  (`describe-buffer-bindings` takes 0.72 s a call against 0.026 s,
+  spread over the keymap code's lookups of symbols by name and its
+  `RootedVec` records), cl-seq-tests 4.21 (`nthcdr`, round 48),
+  ls-lisp 3.75, dired-aux 3.43, regex-emacs 3.33, help-fns 3.30, dabbrev
+  3.05 and simple 2.70 (two `shell-command` tests, 11.2 s against
+  4.4 s). In callgrind, 70% of dired-aux-tests is `beginning-of-line`
+  and copies: each `beginning-of-line` scans every text-property span
+  for a `field` (265,000 instructions a call), a search after an edit
+  or over another range copies the searched text into a fresh string
+  (`buffer_regexp_haystack`: 7,419 copies, 168 KB on average) and an
+  edit shifts the vector of spans; 35% of help-fns-tests
+  is fancy-regex's backtracking VM, lookaround patterns over NEWS files.
+  info-xref-tests had not finished after 400 s (GNU 49 s);
+  autorevert-tests timed out once at 300 s and ran in 17 s the next time,
+  its remote tests failing; comp-tests timed out in GNU. Starting
+  `-Q --batch` takes 0.19 s against 0.08 s: 508 million instructions
+  against 166 million, about 260 million of them loading the image and
+  140 million compiling regexps (73 regex-automata builds and one
+  fancy-regex build of 41 million, a lookaround under Unicode case
+  folding). A regexp compiled afresh costs about 42 µs against GNU's
+  1 µs (2,000 distinct `string-match` patterns: 0.084 s against
+  0.002 s). In a 5 MB buffer plain searches run 3 to 30 times faster
+  than GNU's, but `\_<...\_>` runs 10 times slower, a case-folded `\b` 9
+  times and a back-reference 1.5 times. Building an 8-million-cell list
+  takes 2.2 times GNU's time and 1.8 times its memory.
+- **Round 48: `nthcdr` counts down as fns.c does.** Above 127, `nthcdr`
+  (and `nth`, list `elt` and `last`, which walk through it) kept every
+  cell it passed in a `HashMap` and counted down in a `BigInt`, about
+  400 ns a cell: 3.2 s for an 8-million-cell list against GNU's 0.044 s,
+  and `cl-seq-test-bug24264`, whose `last` calls walk such lists, took
+  25 s against 10.7 s. It is now Fnthcdr: an `i64` count (a positive
+  bignum counts down from `i64::MAX`, and the cycle reduction adds back
+  the difference), FOR_EACH_TAIL_SAFE's tortoise counted as lisp.h counts
+  `li.q` and `li.n`, the cycle's length taken from where the tortoise
+  last moved, and `rarely_quit` each 2^16 cells. `proper-list-p` counts
+  the tails in place (it copied the list into a vector), and list `elt`
+  reads the head before it checks for a `vector-literal` list (it copied
+  every list first). On 8 million cells, against GNU: `nthcdr` 0.75,
+  `nth` 0.78, `last` 0.90 and `proper-list-p` 0.92 (73, 80, 54 and 3.3
+  before); cl-seq-tests 3.7 s against round 47's 16.1 s (GNU about 9 s).
+  `nthcdr_large_counts_match_a_plain_walk_past_a_prefix` checks fixnum
+  and bignum counts on a cycle reached after a prefix against a plain
+  walk (GNU gives the same answers) and a count that ends at a dotted
+  tail. Validation: 387 list, keymap, sequence, `cl-`, `apply`,
+  membership and circular-list tests pass (gate profile, one thread a
+  process), the new one with them; GNU's fns, subr, cl-seq, seq, cl-lib,
+  data and subr-x test files pass on the release build. Clippy
+  `-D warnings`, rustfmt and `git diff --check` pass; the full Rust gate
+  runs in CI.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4500,7 +4556,9 @@ them. **On `626d1eb`** (round 45): full Rust gate passed (run
 39639732639), frozen passed on its first attempt (run 39639736946).
 **On `eb8e009`** (rounds 46 and 47, pushed together): full Rust gate
 passed (run 39682876524), frozen passed on its first attempt (run
-39682879871). Locally,
+39682879871). **On round 48's commit**: the full Rust gate and frozen
+runs are dispatched with it; their results go in the next round's
+record. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -4790,7 +4848,15 @@ and failures are still recorded.
 
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
-2. **Performance, worst ratios first.** The host is a different machine
+2. **Performance, worst ratios first.** Outside the locked sixteen
+   (bullet "Beyond the sixteen workloads") the gaps are larger than any
+   workload's margin, so they come first now: regexp compilation (about
+   42 µs a new pattern against 1 µs), symbol-boundary and case-folded
+   word-boundary searches and the whole-buffer copy each search makes,
+   process start (0.19 s against 0.08 s), text properties kept in one
+   flat vector of spans (each edit shifts it and `beginning-of-line`
+   scans it for a `field`; GNU keeps intervals), keymap description
+   (28 times) and `shell-command` (2.5 times). The host is a different machine
    since `aa68c68` (bullet "The host changed under the session"). On it,
    with round 25's jump padding, the contract's comparison of the
    profile-guided build reads: undo 1.042 [0.876, 1.110],

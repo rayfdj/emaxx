@@ -779,11 +779,16 @@ fn finish_kbd_macro_command(
     }
 }
 
-fn nth_list_element(list: &Value, count: &Value) -> Result<Value, LispError> {
+fn nth_list_element(
+    interp: &mut Interpreter,
+    env: &mut crate::lisp::types::Env,
+    list: &Value,
+    count: &Value,
+) -> Result<Value, LispError> {
     // GNU fns.c defines `nth' and list `elt' as car(nthcdr(...)).  Keep that
     // one traversal authority so negative counts, bignums, improper tails,
     // and circular lists cannot drift between the three public primitives.
-    let tail = nthcdr_value(count, list)?;
+    let tail = nthcdr_value(interp, env, count, list)?;
     match tail.kind() {
         Kind::Nil => Ok(Value::Nil),
         Kind::Cons(ref cell) => Ok(cell.car.get()),
@@ -1851,24 +1856,24 @@ pub(super) fn direct_cdr_safe(
 
 /// The `nth' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_nth(
-    _interp: &mut Interpreter,
+    interp: &mut Interpreter,
     args: &[Value],
-    _env: &mut crate::lisp::types::Env,
+    env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     let name = "nth";
     need_args(name, args, 2)?;
-    nth_list_element(&args[1], &args[0])
+    nth_list_element(interp, env, &args[1], &args[0])
 }
 
 /// The `nthcdr' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_nthcdr(
-    _interp: &mut Interpreter,
+    interp: &mut Interpreter,
     args: &[Value],
-    _env: &mut crate::lisp::types::Env,
+    env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     let name = "nthcdr";
     need_args(name, args, 2)?;
-    nthcdr_value(&args[0], &args[1])
+    nthcdr_value(interp, env, &args[0], &args[1])
 }
 
 /// The `elt' primitive, callable directly (a subr's function pointer).
@@ -1879,15 +1884,16 @@ pub(super) fn direct_elt(
 ) -> Result<Value, LispError> {
     let name = "elt";
     need_args(name, args, 2)?;
-    if matches!(args[0].kind(), Kind::Cons(_))
-        && matches!(
-            args[0].to_vec().ok().and_then(|items| items.first().cloned()).map(|v| v.kind()),
-            Some(Kind::Symbol(symbol)) if symbol == "vector-literal"
-        )
+    // A proper list headed by `vector-literal' is a vector's list form.
+    // Its head is read first: copying every other list to see its head
+    // made each `elt' as long as the list.
+    if args[0].cons_ref().is_some_and(
+        |cell| matches!(cell.car.get().kind(), Kind::Symbol(symbol) if symbol == "vector-literal"),
+    ) && args[0].to_vec().is_ok()
     {
         super::call(interp, "aref", args, env)
     } else if matches!(args[0].kind(), Kind::Nil | Kind::Cons(_)) {
-        nth_list_element(&args[0], &args[1])
+        nth_list_element(interp, env, &args[0], &args[1])
     } else {
         super::call(interp, "aref", args, env)
     }
