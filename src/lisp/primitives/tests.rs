@@ -17211,6 +17211,60 @@ fn map_keymap_internal_visits_only_direct_bindings_and_returns_the_parent() {
 }
 
 #[test]
+fn help_describe_vector_describes_each_run_of_a_char_table_once() {
+    // keymap.c:describe_vector: char_table_ref_and_range gives each run of
+    // characters bound to one object, which is looked up in SHADOW and the
+    // entire map at its first character only; a vector's consecutive
+    // `equal' elements merge, and VECTOR must be a vector or a char-table.
+    // The oracle's text.
+    let program = r#"
+        (let ((map (make-keymap)) (shadow (make-sparse-keymap)))
+          (define-key map "a" 'forward-char)
+          (define-key map "b" 'forward-char)
+          (define-key map "c" 'backward-char)
+          (set-char-table-range (nth 1 map) '(#x100 . #x2ff) 'self-insert-command)
+          (define-key shadow "b" 'next-line)
+          (list
+           (with-temp-buffer
+             (help--describe-vector (nth 1 map) nil (lambda (d) (insert (format "%S\n" d)))
+                                    nil (list shadow) map nil)
+             (buffer-substring-no-properties 1 (point-max)))
+           (with-temp-buffer
+             (help--describe-vector (nth 1 map) [?\C-x] (lambda (d) (insert (format "%S\n" d)))
+                                    nil (list shadow) map t)
+             (buffer-substring-no-properties 1 (point-max)))
+           (with-temp-buffer
+             (help--describe-vector (vector 'a 'a nil 'b 'b 'b) [?\C-c]
+                                    (lambda (d) (insert (format "%S\n" d))) nil nil nil nil)
+             (buffer-substring-no-properties 1 (point-max)))
+           (condition-case e (help--describe-vector 'x nil #'ignore nil nil nil nil) (error e))))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("describe-vector contract should parse")
+        .expect("describe-vector contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("describe-vector contract should evaluate");
+    let expected = Value::list([
+        Value::string(
+            "\na .. bforward-char\ncbackward-char\n\u{100} .. \u{2ff}self-insert-command\n",
+        ),
+        Value::string(
+            "\nC-x a .. C-x bforward-char\nC-x cbackward-char\nC-x \u{100} .. C-x \u{2ff}self-insert-command\n",
+        ),
+        Value::string("\nC-c C-@ .. C-c C-aa\nC-c C-c .. C-c C-eb\n"),
+        Value::list([
+            Value::symbol("wrong-type-argument"),
+            Value::symbol("vector-or-char-table-p"),
+            Value::symbol("x"),
+        ]),
+    ]);
+    assert_eq!(value, expected);
+}
+
+#[test]
 fn describe_vector_groups_equal_ranges_and_shares_standard_output_with_describers() {
     let program = r#"
         (let ((table (make-char-table nil nil)))

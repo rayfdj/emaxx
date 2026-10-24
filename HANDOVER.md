@@ -4230,6 +4230,50 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   files (syntax, regex-emacs, search, casefiddle, subword, thingatpt, rx,
   simple, python, ruby, cperl, sh-script, css, lisp-mode, elisp-mode,
   js, fill, octave, sgml, nxml) give GNU's results.
+- **Round 53: keymap.c's `describe_vector`, ported.** Emaxx's
+  `help--describe-vector` expanded a char-table into its characters
+  (`char_table_effective_ranges`, then every code of every range), looked
+  each one up in ENTIRE-MAP and SHADOW with full key lookups, and merged
+  neighbours afterwards: `describe-buffer-bindings` of the global map ran
+  4.19 million lookups for the 4 million characters bound to
+  `self-insert-command`. It is now keymap.c's loop: `char_table_ref_and_range`
+  (`CharTable::ref_and_range`, a run of `eq` values within the bounds GNU
+  passes, with `range_value` its first value) gives each run once, split at
+  `MAX_5_BYTE_CHAR` as GNU's STOP; the run's first character alone is
+  checked against SHADOW (`shadow_lookup`, defaults accepted, no
+  remapping, a binding `eq` to the definition not shadowing it) and
+  ENTIRE-MAP (`Flookup_key` with defaults, `eq`); `get_keyelt` without
+  autoloading; a vector's following elements are merged while `equal`;
+  `describe-bindings-check-shadowing-in-ranges` (with `ignore-self-insert`)
+  shortens a char-table run at the first character whose shadowing
+  binding differs, C's live `j <= i` included; keys are
+  `describe_key_maybe_fontify` (`key-description` with the prefix, then
+  `font-lock-face help-key-binding` over the whole description); the
+  shadow note goes before the describer's newline; and a char-table's
+  default is described last. `standard-output` is bound to the current
+  buffer for the whole call, and a non-array signals
+  `(wrong-type-argument vector-or-char-table-p ...)`. Wall (GNU / Emaxx
+  before / after): `describe-buffer-bindings` three times 0.12 / 2.03 /
+  0.13 s; keymap-tests 0.36 / 3.13 / 0.53 s. Differential probe
+  (`describe-buffer-bindings` of the global map, emacs-lisp-mode and the
+  `C-x` prefix, and `help--describe-vector` over a char-table with
+  ranges, a default, shadowing with and without MENTION-SHADOW, a plain
+  vector with a prefix and `describe-bindings-check-shadowing-in-ranges`):
+  identical to GNU's except where they already differed. Those are (a)
+  `key-description` of codes past the Unicode range, which Emaxx prints
+  as `[4194175]` where GNU prints the raw-byte character (Emaxx keeps such
+  characters as a placeholder plus a side table), and the column widths
+  that follow from it; (b) touch-screen and `XF86WakeUp` bindings, which
+  this container's GNU has because it was built with X and loadup loads
+  touch-screen.el under `(featurep 'x)`; and (c) prefix commands
+  (`C-c`, `C-h`, `C-x`, `ESC`, `<f1>`, `<f2>`, `<help>`) that Emaxx lists
+  and help.el's `describe-map` drops, because `keymapp` answers nil for a
+  symbol whose function is a keymap (round 54). New test:
+  `help_describe_vector_describes_each_run_of_a_char_table_once`. 239
+  keymap, key-description, menu, help and `where-is` Rust tests pass, and
+  six GNU test files (keymap, help, help-fns, help-mode, kmacro, subr)
+  give GNU's results, apart from two help-fns tests that this container's
+  GNU itself fails.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4832,7 +4876,10 @@ given its expected results. **On `d658dad`** (round 51): the Rust gate
 in its `primitives` group, and frozen (run 40034222838) failed 77 of
 7,928 outcomes in cl-generic, cl-macs, edebug, gv and testcover tests,
 all from the loader's oversized `forward-comment` count (bullet "Round
-51"). **On the fix's commit** both are dispatched with it. Locally,
+51"). **On `2ff27af`** (the fix): full Rust gate passed (run
+40053413052), frozen passed on its first attempt (run 40053415013).
+**On `1b61c83`** (round 52): the Rust gate (run 40056463837) and frozen
+(run 40056465430) are dispatched; round 54 records them. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -5135,13 +5182,17 @@ and failures are still recorded.
    chunk lookups, the buffer-local `parse-sexp-lookup-properties` read);
    `forward-word` is 1.2 times. Round 51's frozen run (gate profile)
    puts the slowest files where GNU takes 100 ms or more at keymap-tests
-   11.6 times, data-tests 3.6, marker-tests 3.2, help-fns-tests 3.1 and
-   simple-tests 2.75, summed test time at 1.21 times and setup at 2.30;
-   then process start (0.19 s against 0.08 s; `shell-command` tests that
-   start Emacs fifty times are 2.5 times slower for it), text
-   properties kept in one flat vector of spans (each edit shifts it;
-   GNU keeps intervals), keymap description
-   (28 times). The host is a different machine
+   11.6 times (1.5 since round 53 ported `describe_vector`), data-tests
+   3.6, marker-tests 3.2, help-fns-tests 3.1 (`describe-function` reads
+   all of etc/DOC for each docstring, and the Latin-1 NEWS decoder asks
+   a charset's dimension by name for every byte) and simple-tests 2.75,
+   summed test time at 1.21 times and setup at 2.30; then process start
+   (0.19 s against 0.08 s; `shell-command` tests that start Emacs fifty
+   times are 2.5 times slower for it), and text properties kept in one
+   flat vector of spans (each edit shifts it; GNU keeps intervals).
+   `keymapp` and the keymap primitives do not resolve a symbol's
+   function or a keymap autoload as keymap.c's `get_keymap` does (bullet
+   "Round 53"). The host is a different machine
    since `aa68c68` (bullet "The host changed under the session"). On it,
    with round 25's jump padding, the contract's comparison of the
    profile-guided build reads: undo 1.042 [0.876, 1.110],

@@ -3852,140 +3852,221 @@ pub(crate) fn accessible_keymaps(
     ))
 }
 
+/// keymap.c:Fhelp__describe_vector and describe_vector with KEYMAP_P:
+/// each run of a char-table's characters bound to one object
+/// (char_table_ref_and_range) is looked up and described once, a vector's
+/// consecutive `equal' elements are merged, and the char-table's default
+/// is described last.
 pub(crate) fn help_describe_vector(
     interp: &mut Interpreter,
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
     need_args("help--describe-vector", args, 7)?;
-    let saved_buffer_id = interp.current_buffer_id();
-    let Kind::CharTable(table_id) = args[0].kind() else {
-        return Ok(Value::Nil);
-    };
-    let prefix = if args[1].is_nil() {
-        Vec::new()
-    } else {
-        key_sequence_keymap_parts(&args[1])?
-    };
-    let partial = args[3].is_truthy();
-    let shadow = &args[4];
-    let entire_map = &args[5];
-    let mention_shadow = args[6].is_truthy();
-    let entries = interp
-        .char_table_effective_ranges(table_id)
-        .unwrap_or_default();
-    let mut ranges = crate::lisp::alloc::RootedVec::<(u32, u32, Value, Value)>::new();
-
-    for entry in entries {
-        for code in entry.start..=entry.end {
-            let definition = keymap_get_keyelt(interp, &entry.value, true, env)?;
-            if definition.is_nil()
-                || partial
-                    && matches!(definition.kind(), Kind::Symbol(symbol)
-                        if interp.get_symbol_property(&symbol, "suppress-keymap")
-                            .is_some_and(|value| value.is_truthy()))
-            {
-                continue;
-            }
-            let event_parts = vec![Value::Integer(i64::from(code))];
-            if !entire_map.is_nil() {
-                let effective =
-                    keymap_lookup_sequence_value(interp, entire_map, &event_parts, env)?;
-                if !values_eq_in_env(interp, &effective, &definition, env) {
-                    continue;
-                }
-            }
-            let mut shadowed_by = if shadow.is_nil() {
-                Value::Nil
-            } else {
-                keymap_lookup_sequence_value(interp, shadow, &event_parts, env)?
-            };
-            // A binding does not shadow itself.  This is also the partition
-            // key for ranges: adjacent characters may only coalesce when the
-            // same definition shadows all of them.
-            let shadowed =
-                !shadowed_by.is_nil() && !values_eq_in_env(interp, &shadowed_by, &definition, env);
-            if !shadowed {
-                shadowed_by = Value::Nil;
-            }
-            if shadowed && !mention_shadow {
-                continue;
-            }
-
-            if let Some((_, end, previous, previous_shadowed_by)) = ranges.last_mut()
-                && end.saturating_add(1) == code
-                && values_eq_in_env(interp, previous, &definition, env)
-                && values_eq_in_env(interp, previous_shadowed_by, &shadowed_by, env)
-            {
-                *end = code;
-            } else {
-                ranges.push((code, code, definition, shadowed_by));
-            }
+    let vector = args[0];
+    let table = match vector.kind() {
+        Kind::CharTable(table) => Some(table),
+        Kind::Vector(_) => None,
+        _ => {
+            return Err(LispError::WrongTypeArgument(
+                "vector-or-char-table-p".into(),
+                vector,
+            ));
         }
-    }
-
-    let mut first = true;
-    interp.switch_to_buffer_id(saved_buffer_id)?;
+    };
     let output_buffer = Value::Buffer(interp.buffer);
     let restore = interp.bind_special_variable("standard-output", output_buffer, env)?;
-    let mut result = (|| -> Result<Value, LispError> {
-        for &(start, end, definition, shadowed_by) in ranges.iter() {
-            if first {
-                interp.insert_current_buffer("\n");
-                first = false;
-            }
-            let describe = |code| {
-                let mut parts = prefix.clone();
-                parts.push(Value::Integer(i64::from(code)));
-                key_sequence_binding_text(&key_parts_to_sequence_value(&parts))
-            };
-            insert_described_key(interp, describe(start)?, env)?;
-            if start != end {
-                interp.insert_current_buffer(" .. ");
-                insert_described_key(interp, describe(end)?, env)?;
-            }
-            call_function_value(interp, &args[2], &[definition], env)?;
-            if !shadowed_by.is_nil() {
-                let point = interp.buffer.borrow().point();
-                if interp.buffer.borrow().char_before() == Some('\n') {
-                    let _ = interp.delete_region_current_buffer(point - 1, point);
-                }
-                if let Kind::Symbol(command) = shadowed_by.kind() {
-                    interp
-                        .insert_current_buffer(&format!("  (currently shadowed by `{command}')\n"));
-                } else {
-                    interp.insert_current_buffer("  (currently shadowed)\n");
-                }
-            }
-        }
-        Ok(Value::Nil)
-    })();
+    let mut result = describe_vector(interp, vector, table, args, env);
     if let Err(error) = interp.restore_special_binding(restore, env)
         && result.is_ok()
     {
         result = Err(error);
     }
-    result
+    result.map(|()| Value::Nil)
 }
 
-// keymap.c:describe_key_maybe_fontify applies this property to each
-// endpoint independently. Keep the separator between range endpoints plain.
-fn insert_described_key(
+/// shadow_lookup without remapping: KEY's binding in the keymaps SHADOW,
+/// defaults accepted, nil for a key too long.
+fn shadow_lookup(
     interp: &mut Interpreter,
-    text: String,
+    shadow: &Value,
+    key: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let value = keymap_lookup_sequence_value_with_default(interp, shadow, key, true, env)?;
+    Ok(match value.kind() {
+        Kind::Integer(n) if n >= 0 => Value::Nil,
+        _ => value,
+    })
+}
+
+fn describe_vector(
+    interp: &mut Interpreter,
+    vector: Value,
+    table: Option<crate::lisp::types::CharTableRef>,
+    args: &[Value],
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let key = call(
+    // MAX_5_BYTE_CHAR + 1 and MAX_CHAR + 1.
+    const BYTE8_START: u32 = 0x3F_FF80;
+    const END: u32 = 0x40_0000;
+    let (prefix, describer) = (args[1], args[2]);
+    let partial = args[3].is_truthy();
+    let (shadow, entire_map) = (args[4], args[5]);
+    let mention_shadow = args[6].is_truthy();
+    let element = |index: u32| match vector.kind() {
+        Kind::Vector(items) => items.get(index as usize).unwrap_or(Value::Nil),
+        _ => Value::Nil,
+    };
+    let (mut stop, to) = match (table, vector.kind()) {
+        (Some(_), _) => (BYTE8_START, END),
+        (None, Kind::Vector(items)) => (items.len() as u32, items.len() as u32),
+        (None, _) => (0, 0),
+    };
+    let mut first = true;
+    let mut i = 0u32;
+    loop {
+        interp.maybe_quit(env)?;
+        if i == stop {
+            if i == to {
+                break;
+            }
+            stop = to;
+        }
+        let starting_i = i;
+        let mut range_beg = i;
+        let val = match table {
+            Some(table) => {
+                let (val, from, end) = table.ref_and_range(i, i, stop - 1);
+                range_beg = from;
+                i = end;
+                val
+            }
+            None => element(i),
+        };
+        let definition = keymap_get_keyelt(interp, &val, false, env)?;
+        let suppressed = || {
+            partial
+                && matches!(definition.kind(), Kind::Symbol(symbol)
+                    if interp.get_symbol_property(&symbol, "suppress-keymap")
+                        .is_some_and(|value| value.is_truthy()))
+        };
+        if definition.is_nil() || suppressed() {
+            i += 1;
+            continue;
+        }
+        let key = [Value::Integer(i64::from(starting_i))];
+        let mut this_shadowed = false;
+        let mut shadowed_by = Value::Nil;
+        if !shadow.is_nil() {
+            shadowed_by = shadow_lookup(interp, &shadow, &key, env)?;
+            if !shadowed_by.is_nil() && !shadowed_by.eq_value(definition) {
+                if mention_shadow {
+                    this_shadowed = true;
+                } else {
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+        // Ignore a definition shadowed by an earlier one in the same map.
+        if !entire_map.is_nil() {
+            let tem =
+                keymap_lookup_sequence_value_with_default(interp, &entire_map, &key, true, env)?;
+            if !tem.eq_value(definition) {
+                i += 1;
+                continue;
+            }
+        }
+        if first {
+            interp.insert_current_buffer("\n");
+            first = false;
+        }
+        insert_described_key_of(interp, starting_i, &prefix, env)?;
+        if table.is_none() {
+            while i + 1 < stop {
+                let next = keymap_get_keyelt(interp, &element(i + 1), false, env)?;
+                if next.is_nil() || !values_equal(interp, &next, &definition) {
+                    break;
+                }
+                i += 1;
+            }
+        }
+        // Consecutive keys either not shadowed, or shadowed by the same
+        // command.
+        let check = interp
+            .symbol_value_key(cached_symbol!(
+                "describe-bindings-check-shadowing-in-ranges"
+            ))
+            .unwrap_or(Value::Nil);
+        if !check.is_nil()
+            && table.is_some()
+            && i != starting_i
+            && (!check.eq_value(Value::symbol("ignore-self-insert"))
+                || !definition.eq_value(Value::symbol("self-insert-command")))
+        {
+            // C's `j <= i' reads the I the body may have lowered.
+            let mut j = range_beg + 1;
+            while j <= i {
+                let tem = shadow_lookup(interp, &shadow, &[Value::Integer(i64::from(j))], env)?;
+                if !values_equal(interp, &tem, &shadowed_by) {
+                    i = j - 1;
+                }
+                j += 1;
+            }
+        }
+        if i != starting_i {
+            interp.insert_current_buffer(" .. ");
+            insert_described_key_of(interp, i, &prefix, env)?;
+        }
+        call_function_value(interp, &describer, &[definition], env)?;
+        if this_shadowed {
+            let point = interp.buffer.borrow().point();
+            interp.buffer.borrow_mut().goto_char(point - 1);
+            if let Kind::Symbol(command) = shadowed_by.kind() {
+                interp.insert_current_buffer(&format!("  (currently shadowed by `{command}')"));
+            } else {
+                interp.insert_current_buffer("  (currently shadowed)");
+            }
+            let point = interp.buffer.borrow().point();
+            interp.buffer.borrow_mut().goto_char(point + 1);
+        }
+        i += 1;
+    }
+    if let Some(table) = table
+        && !table.default().is_nil()
+    {
+        interp.insert_current_buffer("default");
+        call_function_value(interp, &describer, &[table.default()], env)?;
+    }
+    Ok(())
+}
+
+/// describe_key_maybe_fontify of the one-event key CODE after PREFIX.
+fn insert_described_key_of(
+    interp: &mut Interpreter,
+    code: u32,
+    prefix: &Value,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let key = Value::vector([Value::Integer(i64::from(code))]);
+    let description = call(interp, "key-description", &[key, *prefix], env)?;
+    let length = call(interp, "length", &[description], env)?;
+    call(
         interp,
-        "propertize",
+        "add-text-properties",
         &[
-            Value::String(text.into()),
-            Value::symbol("font-lock-face"),
-            Value::symbol("help-key-binding"),
+            Value::Integer(0),
+            length,
+            Value::list([
+                Value::symbol("font-lock-face"),
+                Value::symbol("help-key-binding"),
+            ]),
+            description,
         ],
         env,
     )?;
-    call(interp, "insert", &[key], env)?;
+    call(interp, "insert", &[description], env)?;
     Ok(())
 }
 

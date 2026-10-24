@@ -63,6 +63,7 @@ const KEY_NAMES: &[&str] = &[
     "open-paren-in-column-0-is-defun-start",
     "comment-use-syntax-ppss",
     "words-include-escapes",
+    "describe-bindings-check-shadowing-in-ranges",
     "cache-long-scans",
     "char-property-alias-alist",
     "default-text-properties",
