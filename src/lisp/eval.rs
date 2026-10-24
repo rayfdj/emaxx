@@ -5229,6 +5229,10 @@ pub struct InterpreterState {
     charset_aliases: Vec<(String, String)>,
     /// Registered charsets and their stable GNU-compatible numeric IDs.
     charset_ids: Vec<(String, i64)>,
+    /// charset.c's Vcharset_hash_table: each registered name's ID.
+    charset_id_index: HashMap<String, i64, crate::lisp::primitives::FnvBuildHasher>,
+    /// `charset_aliases' by alias name.
+    charset_alias_index: HashMap<String, String, crate::lisp::primitives::FnvBuildHasher>,
     /// Charset plist overrides keyed by canonical charset name.
     charset_plists: Vec<(String, Value)>,
     /// Current charset priority order.
@@ -5253,6 +5257,16 @@ pub struct InterpreterState {
     /// offset-method charsets at load; while unified, code<->character
     /// conversion goes through the charset's `:unify-map' file.
     charset_unified: HashSet<String>,
+    /// charset.c's charset table: each charset's attributes read once from
+    /// its plist, by the name asked for.  Emptied whenever a charset, an
+    /// alias, a plist or a unification changes.
+    pub(crate) charset_table: RefCell<
+        HashMap<
+            String,
+            std::rc::Rc<crate::lisp::primitives::CharsetInfo>,
+            crate::lisp::primitives::FnvBuildHasher,
+        >,
+    >,
     /// ISO charset associations keyed by (dimension, chars, final).
     iso_charsets: Vec<(i64, i64, u32, String)>,
     /// charset.c Viso_2022_charset_list: the charsets with an ISO final
@@ -5265,6 +5279,11 @@ pub struct InterpreterState {
     charset_non_preferred_head: Option<String>,
     /// Coding systems keyed by canonical name.
     coding_systems: Vec<CodingSystemState>,
+    /// coding.c's Vcoding_system_hash_table: each name's index in
+    /// `coding_systems'.
+    coding_system_index: HashMap<String, usize, crate::lisp::primitives::FnvBuildHasher>,
+    /// `coding_aliases' by alias name.
+    coding_alias_index: HashMap<String, String, crate::lisp::primitives::FnvBuildHasher>,
     /// GNU ccl.c's private registration table.  Lisp symbols refer to these
     /// entries through their `ccl-program-idx' property.
     pub(crate) ccl_programs: Vec<Option<(String, Value)>>,
@@ -5680,6 +5699,8 @@ impl Interpreter {
             },
         );
         initial_terminal.borrow_mut().top_frame = Some(initial_frame);
+        let coding_systems = builtin_coding_systems();
+        let coding_aliases = builtin_coding_aliases();
         let state = InterpreterState {
             image_template_token: None,
             detached_forwarded_variables: HashMap::default(),
@@ -5988,63 +6009,26 @@ impl Interpreter {
             next_buffer_id: 2,
             syntax_segment_cache: RefCell::new(None),
             charset_aliases: Vec::new(),
-            charset_ids: vec![
-                ("ascii".into(), 0),
-                ("iso-8859-1".into(), 1),
-                ("unicode".into(), 2),
-                ("emacs".into(), 3),
-                ("eight-bit".into(), 4),
-            ],
-            // charset.c creates these five records before dumped Lisp runs.
-            // Their direct mappings are part of the preload contract: merely
-            // reserving the names makes charset codings appear valid while
-            // rejecting every non-ASCII character (notably Latin-1).
+            charset_ids: C_CHARSETS
+                .iter()
+                .map(|&(name, id)| (name.to_string(), id))
+                .collect(),
+            charset_id_index: C_CHARSETS
+                .iter()
+                .map(|&(name, id)| (name.to_string(), id))
+                .collect(),
+            charset_alias_index: HashMap::default(),
+            // charset.c creates these five records before dumped Lisp runs,
+            // with define_charset_internal's plist.  Their direct mappings are
+            // part of the preload contract: merely reserving the names makes
+            // charset codings appear valid while rejecting every non-ASCII
+            // character (notably Latin-1).
             charset_plists: vec![
-                (
-                    "ascii".into(),
-                    Value::list([
-                        Value::symbol(":ascii-compatible-p"),
-                        Value::T,
-                        Value::symbol(":code-offset"),
-                        Value::Integer(0),
-                    ]),
-                ),
-                (
-                    "iso-8859-1".into(),
-                    Value::list([
-                        Value::symbol(":ascii-compatible-p"),
-                        Value::T,
-                        Value::symbol(":code-offset"),
-                        Value::Integer(0),
-                    ]),
-                ),
-                (
-                    "unicode".into(),
-                    Value::list([
-                        Value::symbol(":ascii-compatible-p"),
-                        Value::T,
-                        Value::symbol(":code-offset"),
-                        Value::Integer(0),
-                    ]),
-                ),
-                (
-                    "emacs".into(),
-                    Value::list([
-                        Value::symbol(":ascii-compatible-p"),
-                        Value::T,
-                        Value::symbol(":code-offset"),
-                        Value::Integer(0),
-                    ]),
-                ),
-                (
-                    "eight-bit".into(),
-                    Value::list([
-                        Value::symbol(":ascii-compatible-p"),
-                        Value::Nil,
-                        Value::symbol(":code-offset"),
-                        Value::Integer(0x3f_ff80),
-                    ]),
-                ),
+                c_charset_plist("ascii", 1, &[0, 127], Some(66), Some(0), true, 0),
+                c_charset_plist("iso-8859-1", 1, &[0, 255], None, None, true, 0),
+                c_charset_plist("unicode", 3, &[0, 255, 0, 255, 0, 16], None, None, true, 0),
+                c_charset_plist("emacs", 3, &[0, 255, 0, 255, 0, 63], None, None, true, 0),
+                c_charset_plist("eight-bit", 1, &[128, 255], None, None, false, 0x3f_ff80),
             ],
             // charset.c's C-level definitions, in definition order: the
             // ordered list keeps non-supplementary charsets first (`emacs'
@@ -6068,14 +6052,21 @@ impl Interpreter {
                 .into_iter()
                 .collect(),
             charset_unified: HashSet::new(),
+            charset_table: RefCell::new(HashMap::default()),
             sjis_coding_system: "sjis".into(),
             big5_coding_system: "big5".into(),
             iso_charsets: vec![(1, 94, 'B' as u32, "ascii".into())],
             iso_2022_charset_list: vec!["ascii".into()],
             charset_non_preferred_head: None,
-            coding_systems: builtin_coding_systems(),
+            coding_system_index: coding_systems
+                .iter()
+                .enumerate()
+                .map(|(index, coding)| (coding.name.clone(), index))
+                .collect(),
+            coding_alias_index: coding_aliases.iter().cloned().collect(),
+            coding_systems,
             ccl_programs: vec![None; 32],
-            coding_aliases: builtin_coding_aliases(),
+            coding_aliases,
             coding_priority: builtin_coding_priority(),
             coding_category_representatives: {
                 let mut representatives = vec![None; coding::CODING_CATEGORY_COUNT];
@@ -7675,6 +7666,50 @@ impl Interpreter {
     pub(crate) fn in_interactive_call(&self) -> bool {
         self.interactive_call_depth > 0
     }
+}
+
+/// The charsets charset.c defines before dumped Lisp runs, with their IDs.
+const C_CHARSETS: [(&str, i64); 5] = [
+    ("ascii", 0),
+    ("iso-8859-1", 1),
+    ("unicode", 2),
+    ("emacs", 3),
+    ("eight-bit", 4),
+];
+
+/// charset.c:define_charset_internal's plist for a charset defined in C.
+fn c_charset_plist(
+    name: &str,
+    dimension: i64,
+    code_space: &[i64],
+    iso_final: Option<i64>,
+    emacs_mule_id: Option<i64>,
+    ascii_compatible: bool,
+    code_offset: i64,
+) -> (String, Value) {
+    let mut space = [0i64; 8];
+    space[..code_space.len()].copy_from_slice(code_space);
+    let plist = Value::list([
+        Value::symbol(":name"),
+        Value::symbol(name),
+        Value::symbol(":dimension"),
+        Value::Integer(dimension),
+        Value::symbol(":code-space"),
+        Value::vector(space.map(Value::Integer)),
+        Value::symbol(":iso-final-char"),
+        iso_final.map_or(Value::Nil, Value::Integer),
+        Value::symbol(":emacs-mule-id"),
+        emacs_mule_id.map_or(Value::Nil, Value::Integer),
+        Value::symbol(":ascii-compatible-p"),
+        if ascii_compatible {
+            Value::T
+        } else {
+            Value::Nil
+        },
+        Value::symbol(":code-offset"),
+        Value::Integer(code_offset),
+    ]);
+    (name.to_string(), plist)
 }
 
 fn symbol_name(value: &Value) -> Option<String> {

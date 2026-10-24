@@ -134,6 +134,23 @@ pub(crate) fn lisp_string_storage_byte_len(
     if !multibyte {
         return text.chars().count();
     }
+    if extended_chars.is_empty() {
+        // A character takes as many bytes as its UTF-8 but for those of
+        // U+E000..U+E0FF, read as raw-byte codes below: two bytes for
+        // U+E080..U+E0FF, five for U+E000..U+E07F.  Their UTF-8 is three
+        // bytes led by 0xEE, which leads no other character's bytes but
+        // U+E100..U+EFFF's.
+        let bytes = text.as_bytes();
+        let mut len = bytes.len();
+        for at in memchr::memchr_iter(0xEE, bytes) {
+            match bytes.get(at + 1) {
+                Some(0x80 | 0x81) => len += 2,
+                Some(0x82 | 0x83) => len -= 1,
+                _ => {}
+            }
+        }
+        return len;
+    }
     text.chars()
         .enumerate()
         .map(|(index, ch)| {
@@ -433,25 +450,52 @@ pub(crate) fn compare_strings_value(
     };
     let left_end = clamp_end(args[2], left.borrow().len());
     let right_end = clamp_end(args[5], right.borrow().len());
-    let (left_start, left_end, mut left_byte) = {
+    let (left_start, left_end) = {
         let state = left.borrow();
-        let (from, to) = validate_subarray(args[0], args[1], left_end, state.len())?;
-        (
-            from,
-            to,
-            state.byte_offset(from).expect("validated string index"),
-        )
+        validate_subarray(args[0], args[1], left_end, state.len())?
     };
-    let (right_start, right_end, mut right_byte) = {
+    let (right_start, right_end) = {
         let state = right.borrow();
-        let (from, to) = validate_subarray(args[3], args[4], right_end, state.len())?;
-        (
-            from,
-            to,
-            state.byte_offset(from).expect("validated string index"),
-        )
+        validate_subarray(args[3], args[4], right_end, state.len())?
     };
     let ignore_case = args.get(6).is_some_and(Value::is_truthy);
+    compare_string_ranges(
+        interp,
+        &args[0],
+        (left_start, left_end),
+        &args[3],
+        (right_start, right_end),
+        ignore_case,
+        env,
+    )
+}
+
+/// The comparison of fns.c:Fcompare_strings over character ranges of two
+/// strings already validated: t when they are equal, else the 1-based
+/// position of the first difference, negative when LEFT is less.
+pub(crate) fn compare_string_ranges(
+    interp: &mut Interpreter,
+    left: &Value,
+    (left_start, left_end): (usize, usize),
+    right: &Value,
+    (right_start, right_end): (usize, usize),
+    ignore_case: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let Kind::StringObject(left) = left.kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), *left));
+    };
+    let Kind::StringObject(right) = right.kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), *right));
+    };
+    let mut left_byte = left
+        .borrow()
+        .byte_offset(left_start)
+        .expect("validated string index");
+    let mut right_byte = right
+        .borrow()
+        .byte_offset(right_start)
+        .expect("validated string index");
     let left_length = left_end - left_start;
     let right_length = right_end - right_start;
     let common_length = left_length.min(right_length);

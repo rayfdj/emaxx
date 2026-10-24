@@ -18,7 +18,9 @@ const UNSET: isize = -1;
 /// Reads the text a chunk at a time.  Chunks end on character boundaries,
 /// so a character never straddles two.
 struct Reader<'a> {
-    rope: ropey::RopeSlice<'a>,
+    /// The rope read a chunk at a time; None for a string, whose bytes
+    /// are all of `chunk'.
+    rope: Option<ropey::RopeSlice<'a>>,
     chunk: &'a [u8],
     start: usize,
     /// Text::latin1_bytes.
@@ -27,9 +29,13 @@ struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     fn new(text: &Text<'a>) -> Self {
+        let (rope, chunk) = match text.source() {
+            super::TextSource::Str(text) => (None, text.as_bytes()),
+            super::TextSource::Rope(rope) => (Some(rope), &[][..]),
+        };
         Reader {
-            rope: text.rope,
-            chunk: &[],
+            rope,
+            chunk,
             start: 0,
             latin1_bytes: text.latin1_bytes,
         }
@@ -45,7 +51,11 @@ impl<'a> Reader<'a> {
     #[cold]
     #[inline(never)]
     fn load(&mut self, d: usize) {
-        let (chunk, start, _, _) = self.rope.chunk_at_byte(d);
+        // A string's one run is already loaded.
+        let Some(rope) = self.rope else {
+            return;
+        };
+        let (chunk, start, _, _) = rope.chunk_at_byte(d);
         self.chunk = chunk.as_bytes();
         self.start = start;
     }

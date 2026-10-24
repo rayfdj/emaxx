@@ -308,7 +308,7 @@ pub(crate) fn bytes_by_char_head(lead: u8) -> usize {
 /// to its start (search.c's offsets from BEGV_BYTE).
 #[derive(Clone, Copy)]
 pub(crate) struct Text<'a> {
-    rope: ropey::RopeSlice<'a>,
+    source: TextSource<'a>,
     size: usize,
     /// Whether characters of the text sit in a side table, so a raw-byte
     /// marker or the placeholder must be checked against it.
@@ -323,10 +323,18 @@ pub(crate) struct Text<'a> {
     pub(super) latin1_bytes: bool,
 }
 
+/// Where the text's bytes are: one run (a string's data, read in place as
+/// GNU's re_search_2 reads SDATA) or a rope's chunks.
+#[derive(Clone, Copy)]
+pub(super) enum TextSource<'a> {
+    Str(&'a str),
+    Rope(ropey::RopeSlice<'a>),
+}
+
 impl<'a> Text<'a> {
     pub(crate) fn from_str(text: &'a str, multibyte: bool, has_side_table: bool) -> Self {
         Text {
-            rope: ropey::RopeSlice::from(text),
+            source: TextSource::Str(text),
             size: text.len(),
             has_side_table,
             multibyte,
@@ -341,7 +349,7 @@ impl<'a> Text<'a> {
     ) -> Self {
         Text {
             size: rope.len_bytes(),
-            rope,
+            source: TextSource::Rope(rope),
             has_side_table,
             multibyte,
             latin1_bytes: false,
@@ -363,7 +371,14 @@ impl<'a> Text<'a> {
     /// Byte offset D as a character offset.
     #[cfg(test)]
     pub(crate) fn char_offset(&self, d: usize) -> usize {
-        self.rope.byte_to_char(d)
+        match self.source {
+            TextSource::Str(text) => ropey::str_utils::byte_to_char_idx(text, d),
+            TextSource::Rope(rope) => rope.byte_to_char(d),
+        }
+    }
+
+    pub(super) fn source(&self) -> TextSource<'a> {
+        self.source
     }
 }
 

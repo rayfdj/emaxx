@@ -17287,6 +17287,200 @@ fn keymaps_resolve_through_symbols_and_autoloads_as_get_keymap_does() {
 }
 
 #[test]
+fn plain_string_searches_are_search_c_simple_and_boyer_moore() {
+    // search.c:search_buffer_non_re: with case folding, a pattern whose
+    // characters' case-equivalents all share a group is searched by
+    // boyer_moore (CAFÉ, foo), any other by simple_search (straße has
+    // `ſ', kelvin the KELVIN SIGN); a count that runs out leaves
+    // boyer_moore's last occurrence as the match data and simple_search's
+    // none; a trivial regexp is searched as its string; a unibyte buffer
+    // compares bytes.  The oracle's answer.
+    let program = r#"
+(let (out)
+  (with-temp-buffer
+    (insert "Straße STRASSE ſtraße Kelvin Kelvin café CAFÉ foo foo")
+    (dolist (cf '(nil t))
+      (let ((case-fold-search cf))
+        (dolist (p '("straße" "kelvin" "CAFÉ" "foo"))
+          (goto-char (point-min))
+          (let (hits)
+            (while (search-forward p nil t) (push (point) hits))
+            (push (nreverse hits) out))
+          (goto-char (point-max))
+          (let (hits)
+            (while (search-backward p nil t) (push (point) hits))
+            (push (nreverse hits) out)))))
+    ;; A count that runs out: boyer_moore keeps the occurrences it found
+    ;; as the match data, simple_search none.
+    (goto-char (point-min))
+    (push (list (search-forward "foo" nil t 3) (list (match-beginning 0) (match-end 0))) out)
+    (goto-char (point-min))
+    (let ((case-fold-search t))
+      (push (list (search-forward "kelvin" nil t 3) (list (match-beginning 0) (match-end 0)) (point)) out))
+    (goto-char (point-min))
+    (push (list (re-search-forward "f\\oo" nil t 2) (list (match-beginning 0) (match-end 0))) out)
+    (push (condition-case err (search-forward "foo" 5) (error err)) out))
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert "ab\351cd AB\351CD")
+    (let ((case-fold-search t))
+      (goto-char (point-min))
+      (push (list (search-forward "b\351c" nil t) (search-forward "B\351C" nil t)) out)))
+  (prin1-to-string (nreverse out)))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("search contract should parse")
+        .expect("search contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("search contract should evaluate");
+    assert_eq!(
+        value,
+        Value::string(
+            "(nil nil nil nil (46) (42) (50 54) (51 47) (7) (1) (29) (23) (41 46) (42 37) (50 54) (51 47) (nil (51 54)) (nil (23 29) 1) (54 (51 54)) (error \"Invalid search bound (wrong side of point)\") (5 11))"
+        )
+    );
+}
+
+#[test]
+fn charset_codings_go_through_the_charset_table_like_charset_c() {
+    // charset.c:define_charset_internal gives the five C charsets their
+    // :dimension, :code-space and :iso-final-char; coding.c:decode_eol
+    // settles an undecided eol from the decoded text (mixed CR and LF is
+    // unix and converts nothing, CRLF with a stray CR dos, CR alone mac);
+    // the charset, ISO-2022, emacs-mule, SJIS and Big5 encoders substitute
+    // the coding's default character.  The oracle's answer.
+    let program = r#"
+(let (out)
+  (dolist (cs '(ascii iso-8859-1 unicode emacs eight-bit))
+    (push (list (charset-dimension cs) (plist-get (charset-plist cs) :code-space)
+                (plist-get (charset-plist cs) :iso-final-char) (charset-iso-final-char cs))
+          out))
+  (dolist (s '("\na\rb" "x\r\ny\r" "a\r\nb\nc" "a\rb\r"))
+    (let ((d (decode-coding-string s 'iso-latin-1)))
+      (push (list (string-to-list d) last-coding-system-used) out)))
+  (dolist (c '(iso-latin-2 koi8-r windows-1252 cp437))
+    (let ((d (decode-coding-string (unibyte-string #xa1 #xb5 #xc8 #xe9 #xff) c)))
+      (push (list c (string-to-list d) (string-to-list (encode-coding-string d c))) out)))
+  (dolist (c '(iso-2022-jp euc-kr gb2312 emacs-mule shift_jis big5))
+    (push (list c (string-to-list (encode-coding-string "aあ漢한€" c))) out))
+  (push (list (make-char 'ascii 65) (make-char 'latin-iso8859-2 #x41) (encode-char ?é 'iso-8859-1)) out)
+  (prin1-to-string (nreverse out)))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("charset contract should parse")
+        .expect("charset contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("charset contract should evaluate");
+    assert_eq!(
+        value,
+        Value::string(concat!(
+            "((1 [0 127 0 0 0 0 0 0] 66 66) (1 [0 255 0 0 0 0 0 0] nil -1) ",
+            "(3 [0 255 0 255 0 16 0 0] nil -1) (3 [0 255 0 255 0 63 0 0] nil -1) ",
+            "(1 [128 255 0 0 0 0 0 0] nil -1) ((10 97 13 98) iso-latin-1-unix) ",
+            "((120 10 121 13) iso-latin-1-dos) ((97 13 10 98 10 99) iso-latin-1-unix) ",
+            "((97 10 98 10) iso-latin-1-mac) ",
+            "(iso-latin-2 (260 318 268 233 729) (161 181 200 233 255)) ",
+            "(koi8-r (9553 9571 1093 1048 1066) (161 181 200 233 255)) ",
+            "(windows-1252 (161 181 200 233 255) (161 181 200 233 255)) ",
+            "(cp437 (237 9569 9562 920 160) (161 181 200 233 255)) ",
+            "(iso-2022-jp (97 27 36 66 36 34 52 65 27 40 66 32 32)) ",
+            "(euc-kr (97 170 162 249 211 199 209 162 230)) (gb2312 (97 164 162 32 32 32)) ",
+            "(emacs-mule (97 145 164 162 149 233 199 147 199 209 134 164)) ",
+            "(shift_jis (97 130 160 138 191 32 32)) (big5 (97 32 186 126 32 163 225)) ",
+            "(65 193 233))"
+        ))
+    );
+}
+
+#[test]
+fn completion_walks_lists_obarrays_and_hash_tables_like_minibuf_c() {
+    // minibuf.c: Ftry_completion keeps the best match's common prefix
+    // (Fcompare_strings, the user's case on an exact match with
+    // completion-ignore-case), Fall_completions answers each match in
+    // table order (a leading space hidden by HIDE-SPACES), and
+    // Ftest_completion goes through assoc-string, oblookup or the hash
+    // lookup.  A table that is no list, obarray or hash table is called as
+    // a function, so `t' is void and 5 invalid.  The oracle's answer.
+    let program = r#"
+(let (out (l '("foo" "foobar" "fooBaz" "bar" " hidden" "Foo" foo-sym nil 3 ("fooq" . 1)))
+      (h (make-hash-table :test 'equal)) (ob (obarray-make)))
+  (puthash "alpha" 1 h) (puthash "alpine" 2 h) (puthash 'alps 3 h) (puthash 5 6 h)
+  (intern "car-thing" ob) (intern "car-other" ob) (intern "cdr-thing" ob)
+  (push (list (try-completion "f" l) (try-completion "foob" l) (try-completion "foobar" l)
+              (try-completion "zz" l) (all-completions "foo" l) (all-completions " " l)
+              (all-completions "" l nil t) (test-completion "fooq" l) (test-completion "foo-sym" l))
+        out)
+  (let ((completion-ignore-case t))
+    (push (list (try-completion "FOOB" l) (try-completion "fo" '("Foo" "FOO"))
+                (try-completion "fo" '("FOOx" "foo")) (test-completion "ALPHA" h))
+          out))
+  (let ((completion-regexp-list '("ba")))
+    (push (list (all-completions "foo" l) (try-completion "foo" l) (test-completion "foo" l)) out))
+  (push (list (sort (all-completions "al" h) #'string<) (try-completion "alp" h (lambda (_k v) (> v 1)))
+              (test-completion "alps" h) (sort (all-completions "car" ob) #'string<)
+              (try-completion "car" ob (lambda (s) (string-match "other" (symbol-name s))))
+              (test-completion "car" ob))
+        out)
+  (push (list (try-completion "x" (lambda (s p a) (list s p a)))
+              (test-completion "x" (lambda (s p a) (list s p a)))
+              (condition-case e (all-completions "a" 5) (error e))
+              (condition-case e (try-completion "x" t) (error e))
+              (condition-case e (try-completion 5 [1 2]) (error e))
+              (try-completion "nil" '(nil t)))
+        out)
+  (prin1-to-string (nreverse out)))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("completion contract should parse")
+        .expect("completion contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("completion contract should evaluate");
+    assert_eq!(
+        value,
+        Value::string(concat!(
+            "((\"foo\" \"foobar\" t nil (\"foo\" \"foobar\" \"fooBaz\" \"foo-sym\" \"fooq\") ",
+            "(\" hidden\") (\"foo\" \"foobar\" \"fooBaz\" \"bar\" \"Foo\" \"foo-sym\" \"nil\" \"fooq\") ",
+            "t t) (\"fooba\" \"Foo\" \"foo\" t) ((\"foobar\") \"foobar\" nil) ",
+            "((\"alpha\" \"alpine\" \"alps\") \"alp\" t (\"car-other\" \"car-thing\") \"car-other\" nil) ",
+            "((\"x\" nil nil) (\"x\" nil lambda) (invalid-function 5) (void-function t) ",
+            "(wrong-type-argument obarrayp [1 2]) t))"
+        ))
+    );
+}
+
+#[test]
+fn generate_new_buffer_name_tries_a_random_suffix_for_internal_names() {
+    // buffer.c:Fgenerate_new_buffer_name: a name starting with a space
+    // first tries NAME-NNNNNN (a random number below a million), then
+    // <2>, <3>... on that; other names go straight to <2>.
+    let program = r#"
+(progn
+  (get-buffer-create " int") (get-buffer-create "ext")
+  (format "%S" (list (string-match-p "\\` int-[0-9]+\\'" (generate-new-buffer-name " int"))
+        (generate-new-buffer-name "ext") (generate-new-buffer-name "ext" "ext")
+        (generate-new-buffer-name " fresh"))))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("buffer-name contract should parse")
+        .expect("buffer-name contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("buffer-name contract should evaluate");
+    assert_eq!(value, Value::string("(0 \"ext<2>\" \"ext\" \" fresh\")"));
+}
+
+#[test]
 fn help_describe_vector_describes_each_run_of_a_char_table_once() {
     // keymap.c:describe_vector: char_table_ref_and_range gives each run of
     // characters bound to one object, which is looked up in SHADOW and the

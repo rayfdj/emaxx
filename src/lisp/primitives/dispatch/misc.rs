@@ -1838,13 +1838,13 @@ fn resolve_doc_reference(
     let Some((path, position)) = doc_reference_parts(interp, value, env)? else {
         return Ok(None);
     };
-    match std::fs::read(&path) {
-        Ok(bytes) => {
-            Ok(
-                decode_doc_string(&bytes, position, !matches!(value.kind(), Kind::Integer(_)))?
-                    .map(|value| Value::String(value.into())),
-            )
-        }
+    match read_doc_string_block(&path, position.unsigned_abs()) {
+        Ok((bytes, offset)) => Ok(decode_doc_string(
+            &bytes,
+            offset as i64,
+            !matches!(value.kind(), Kind::Integer(_)),
+        )?
+        .map(|value| Value::String(value.into()))),
         Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound) => {
             let filename = path
                 .file_name()
@@ -1859,6 +1859,40 @@ fn resolve_doc_reference(
             &path.to_string_lossy(),
         ))),
     }
+}
+
+/// doc.c get_doc_string's read: from the disk block before POSITION, at
+/// least 1024 bytes ahead of it for the consistency checks, a block at a
+/// time to the docstring's terminating 037 or the end of the file.  The
+/// result is the bytes read and POSITION's offset in them.
+fn read_doc_string_block(path: &Path, position: u64) -> std::io::Result<(Vec<u8>, usize)> {
+    use std::io::{Read, Seek, SeekFrom};
+    const BLOCK: u64 = 8 * 1024;
+    let mut file = std::fs::File::open(path)?;
+    let offset = position.min(1024.max(position % BLOCK));
+    file.seek(SeekFrom::Start(position - offset))?;
+    let offset = offset as usize;
+    let mut bytes = Vec::new();
+    let mut block = [0u8; BLOCK as usize];
+    loop {
+        let read = match file.read(&mut block) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if read == 0 {
+            break;
+        }
+        let searched = bytes.len().max(offset);
+        bytes.extend_from_slice(&block[..read]);
+        if bytes
+            .get(searched..)
+            .is_some_and(|rest| rest.contains(&0x1f))
+        {
+            break;
+        }
+    }
+    Ok((bytes, offset))
 }
 
 fn is_doc_reference(value: &Value) -> bool {

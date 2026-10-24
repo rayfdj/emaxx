@@ -2,8 +2,11 @@ use super::*;
 use crate::lisp::types::Kind;
 use encoding_rs::{Encoding, KOI8_R, WINDOWS_1251, WINDOWS_1252};
 
+mod charset_table;
 mod detect;
 mod iso2022;
+
+pub(crate) use charset_table::{CharsetInfo, charset_info};
 
 pub(crate) use detect::DetectSource;
 pub(crate) use iso2022::charset_dimension;
@@ -113,94 +116,14 @@ fn raw_index_to_code_point(bounds: &[(u32, u32)], index: u32) -> Option<u32> {
     (remaining == 0).then_some(code)
 }
 
-fn charset_map(interp: &Interpreter, charset: &str) -> Option<Vec<(u32, u32)>> {
-    // Unified charsets (charset.c's UNIFIED_P, set by `unify-charset' --
-    // mule-conf.el unifies the CJK offset charsets at load) convert
-    // through their :unify-map table; only codes absent from the table
-    // fall back to the code-offset rule.
-    let map = charset_plist_property(interp, charset, ":map").or_else(|| {
-        interp
-            .charset_is_unified(charset)
-            .then(|| charset_plist_property(interp, charset, ":unify-map"))
-            .flatten()
-    })?;
-    if is_vector_value(&map) {
-        let values = map.to_vec().ok()?;
-        let values = values
-            .strip_prefix(&[Value::Symbol("vector-literal".into())])
-            .unwrap_or(&values);
-        return Some(
-            values
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .filter_map(|pair| {
-                    Some((
-                        u32::try_from(pair[0].integer_value()?).ok()?,
-                        u32::try_from(pair[1].integer_value()?).ok()?,
-                    ))
-                })
-                .collect(),
-        );
-    }
-    let map_name = string_text(&map).ok()?;
-    let data_directory = interp
-        .lookup_var("data-directory", &crate::lisp::types::Env::new())
-        .and_then(|value| string_like(&value).map(|string| PathBuf::from(string.text)))
-        .or_else(|| compat_data_directory().map(PathBuf::from))?;
-    let path = data_directory
-        .join("charsets")
-        .join(format!("{map_name}.map"));
-
-    let bounds = charset_code_space(interp, charset)?;
-    type CharsetMapCache = HashMap<(PathBuf, Vec<(u32, u32)>), Vec<(u32, u32)>>;
-    static CACHE: OnceLock<Mutex<CharsetMapCache>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let key = (path, bounds);
-    if let Some(map) = cache.lock().ok()?.get(&key).cloned() {
-        return Some(map);
-    }
-    let parsed = parse_charset_map(&fs::read_to_string(&key.0).ok()?, &key.1);
-    cache.lock().ok()?.insert(key, parsed.clone());
-    Some(parsed)
-}
-
-/// A `:subset (PARENT MIN MAX OFFSET)' charset (e.g. latin-jisx0201 and
-/// katakana-jisx0201, both windows onto jisx0201) converts through PARENT:
-/// its code C corresponds to PARENT's code C - OFFSET, valid when the
-/// parent code lies in MIN..=MAX.
+/// A `:subset (PARENT MIN MAX OFFSET)' charset's parent and window.
 fn charset_subset(interp: &Interpreter, charset: &str) -> Option<(String, i64, i64, i64)> {
-    let subset = charset_plist_property(interp, charset, ":subset")?;
-    let items = subset.to_vec().ok()?;
-    if items.len() != 4 {
-        return None;
-    }
-    Some((
-        items[0].symbol_str()?.to_string(),
-        items[1].integer_value()?,
-        items[2].integer_value()?,
-        items[3].integer_value()?,
-    ))
+    charset_info(interp, charset)?.subset.clone()
 }
 
-/// A `:superset (CHILD ...)' charset (japanese-jisx0213.2004-1 is the
-/// superset of jisx0213-a and jisx0213-1) shares its children's code
-/// space: conversion tries each child in order.  An entry may also be
-/// (CHILD . OFFSET), shifting the codes by OFFSET.
+/// A `:superset' charset's children and their offsets.
 fn charset_superset(interp: &Interpreter, charset: &str) -> Option<Vec<(String, i64)>> {
-    let superset = charset_plist_property(interp, charset, ":superset")?;
-    let items = superset.to_vec().ok()?;
-    let children: Vec<(String, i64)> = items
-        .iter()
-        .filter_map(|item| match item.kind() {
-            Kind::Symbol(name) => Some((name.to_string(), 0)),
-            other => {
-                let (car, cdr) = other.value().cons_values()?;
-                Some((car.symbol_str()?.to_string(), cdr.integer_value()?))
-            }
-        })
-        .collect();
-    (!children.is_empty()).then_some(children)
+    charset_info(interp, charset)?.superset.clone()
 }
 
 /// charset.c:Fmake_char assembles position codes in most-significant-byte
@@ -214,21 +137,23 @@ pub(crate) fn make_charset_character(
     let canonical = interp
         .charset_canonical_name(name)
         .ok_or_else(|| LispError::WrongTypeArgument("charsetp".into(), *charset))?;
-    let bounds = charset_code_space(interp, &canonical)
+    let info = charset_info(interp, &canonical)
         .ok_or_else(|| LispError::Signal("Invalid code(s)".into()))?;
-    let dimension = charset_dimension(interp, &canonical) as usize;
+    let bounds = info
+        .code_space
+        .as_deref()
+        .ok_or_else(|| LispError::Signal("Invalid code(s)".into()))?;
+    let dimension = info.dimension as usize;
     let first = positions.first().unwrap_or(&Value::Nil);
     let mut code = if first.is_nil() {
-        let ascii_compatible = charset_plist_property(interp, &canonical, ":ascii-compatible-p")
-            .map(|value| value.is_truthy())
-            .unwrap_or(matches!(
-                canonical.as_str(),
-                "ascii" | "iso-8859-1" | "unicode" | "emacs"
-            ));
+        let ascii_compatible = info.ascii_compatible_p.unwrap_or(matches!(
+            canonical.as_str(),
+            "ascii" | "iso-8859-1" | "unicode" | "emacs"
+        ));
         if ascii_compatible {
             0
         } else {
-            charset_code_bounds(interp, &canonical)
+            info.code_bounds
                 .ok_or_else(|| LispError::Signal("Invalid code(s)".into()))?
                 .0
         }
@@ -261,7 +186,8 @@ pub(crate) fn make_charset_character(
     if iso2022::charset_iso_final(interp, &canonical).is_some() {
         code &= 0x7f7f7f7f;
     }
-    let character = decode_charset_code(interp, &canonical, code)
+    let character = info
+        .decode(interp, code)
         .ok_or_else(|| LispError::Signal("Invalid code(s)".into()))?;
     let character = if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xff).contains(&character) {
         RAW_BYTE8_BASE + character - RAW_BYTE_REGEX_BASE
@@ -271,112 +197,17 @@ pub(crate) fn make_charset_character(
     Ok(Value::Integer(i64::from(character)))
 }
 
+/// DECODE_CHAR: the character CODE is in CHARSET.
 pub(crate) fn decode_charset_code(interp: &Interpreter, charset: &str, code: u32) -> Option<u32> {
-    let canonical = interp.charset_canonical_name(charset)?;
-    match canonical.as_str() {
-        "ascii" if code <= 0x7f => return Some(code),
-        "ascii" => return None,
-        "iso-8859-1" if code <= 0xff => return Some(code),
-        "iso-8859-1" => return None,
-        // charset.c: the code space of `unicode' ends at MAX_UNICODE_CHAR
-        // and that of `emacs' at MAX_5_BYTE_CHAR (the oracle answers nil
-        // for `(decode-char 'emacs #x3fff80)'); `eight-bit' is the
-        // code-offset charset for the raw bytes 128..255.
-        "unicode" if code <= MAX_UNICODE_CHAR => return Some(code),
-        "unicode" => return None,
-        "emacs" if code <= MAX_5_BYTE_CHAR => return Some(code),
-        "emacs" => return None,
-        "eight-bit" if (0x80..=0xff).contains(&code) => {
-            return Some(RAW_BYTE_REGEX_BASE + code);
-        }
-        "eight-bit" => return None,
-        _ => {}
-    }
-    if let Some(map) = charset_map(interp, &canonical)
-        && let Some((_, character)) = map.iter().find(|(mapped_code, _)| *mapped_code == code)
-    {
-        return Some(*character);
-    }
-    if let Some(children) = charset_superset(interp, &canonical) {
-        return children.iter().find_map(|(child, offset)| {
-            let child_code = u32::try_from(i64::from(code).checked_sub(*offset)?).ok()?;
-            decode_charset_code(interp, child, child_code)
-        });
-    }
-    if let Some((parent, min, max, offset)) = charset_subset(interp, &canonical) {
-        let parent_code = i64::from(code).checked_sub(offset)?;
-        if !(min..=max).contains(&parent_code) {
-            return None;
-        }
-        return decode_charset_code(interp, &parent, u32::try_from(parent_code).ok()?);
-    }
-    let offset = charset_plist_property(interp, &canonical, ":code-offset")?
-        .as_integer()
-        .ok()?;
-    // DECODE_CHAR: a code outside `:min-code'..`:max-code' or the code
-    // space is no character of the charset.
-    let index = charset_code_to_index(interp, &canonical, code)?;
-    u32::try_from(i64::from(index).checked_add(offset)?).ok()
+    charset_info(interp, charset)?.decode(interp, code)
 }
 
-/// charset.c's CODE_POINT_TO_INDEX: the ordinal of CODE within the
-/// charset's :code-space, counting the first (least significant) byte
-/// fastest.  jisx0208's hole 0x222F is index 108, so its non-unified
-/// character is code-offset + 108, not code-offset + 0x222F.
+/// The charset's `:code-space' as (min, max) byte ranges, least
+/// significant first (charset.c's CODE_POINT_TO_INDEX counts the first
+/// byte fastest: jisx0208's hole 0x222F is index 108, so its non-unified
+/// character is code-offset + 108, not code-offset + 0x222F).
 fn charset_code_space(interp: &Interpreter, charset: &str) -> Option<Vec<(u32, u32)>> {
-    let Some(space) = charset_plist_property(interp, charset, ":code-space") else {
-        // charset.c syms_of_charset defines these five in C, with the
-        // code spaces below; the bootstrap plists carry no :code-space.
-        return match interp.charset_canonical_name(charset)?.as_str() {
-            "ascii" => Some(vec![(0, 127)]),
-            "iso-8859-1" => Some(vec![(0, 255)]),
-            "unicode" => Some(vec![(0, 255), (0, 255), (0, 16)]),
-            "emacs" => Some(vec![(0, 255), (0, 255), (0, 63)]),
-            "eight-bit" => Some(vec![(128, 255)]),
-            _ => None,
-        };
-    };
-    let values = space.to_vec().ok()?;
-    let values = values
-        .strip_prefix(&[Value::Symbol("vector-literal".into())])
-        .unwrap_or(&values);
-    let bounds: Vec<(u32, u32)> = values
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .filter_map(|pair| {
-            Some((
-                u32::try_from(pair[0].integer_value()?).ok()?,
-                u32::try_from(pair[1].integer_value()?).ok()?,
-            ))
-        })
-        .collect();
-    (!bounds.is_empty()).then_some(bounds)
-}
-
-/// charset.c CODE_POINT_TO_INDEX with the charset's `char_index_offset':
-/// CODE must lie in `:min-code'..`:max-code' (DECODE_CHAR's range test),
-/// and the index counts from the minimum code's position, so an offset
-/// charset's first character is `:code-offset' itself (gb18030-4-byte-ext-1
-/// starts at 0x8431A530, not at the code space's corner).
-fn charset_code_to_index(interp: &Interpreter, charset: &str, code: u32) -> Option<u32> {
-    let bounds = charset_code_space(interp, charset)?;
-    let (min_code, max_code) = charset_code_bounds(interp, charset)?;
-    if code < min_code || code > max_code {
-        return None;
-    }
-    let base = code_point_to_raw_index(&bounds, min_code)?;
-    code_point_to_raw_index(&bounds, code)?.checked_sub(base)
-}
-
-/// INDEX_TO_CODE_POINT with the `char_index_offset' added back; None past
-/// `:max-code'.
-fn charset_index_to_code(interp: &Interpreter, charset: &str, index: u32) -> Option<u32> {
-    let bounds = charset_code_space(interp, charset)?;
-    let (min_code, max_code) = charset_code_bounds(interp, charset)?;
-    let base = code_point_to_raw_index(&bounds, min_code)?;
-    let code = raw_index_to_code_point(&bounds, index.checked_add(base)?)?;
-    (code <= max_code).then_some(code)
+    charset_info(interp, charset)?.code_space.clone()
 }
 
 pub(crate) fn encode_charset_char(
@@ -400,62 +231,20 @@ fn encode_charset_character_number(
     charset: &str,
     character: u32,
 ) -> Option<u32> {
-    let canonical = interp.charset_canonical_name(charset)?;
-    let public = character;
-    match canonical.as_str() {
-        "ascii" if public <= 0x7f => return Some(public),
-        "ascii" => return None,
-        "iso-8859-1" if public <= 0xff => return Some(public),
-        "iso-8859-1" => return None,
-        "unicode" if public <= MAX_UNICODE_CHAR => return Some(public),
-        "unicode" => return None,
-        "emacs" if public <= MAX_5_BYTE_CHAR => return Some(public),
-        "emacs" => return None,
-        "eight-bit" if (RAW_BYTE8_BASE + 0x80..=RAW_BYTE8_BASE + 0xff).contains(&public) => {
-            return Some(public - RAW_BYTE8_BASE);
-        }
-        "eight-bit" => return None,
-        _ => {}
-    }
-    if public > MAX_5_BYTE_CHAR {
-        // A raw byte belongs to no map, superset or offset charset.
-        return None;
-    }
-    if let Some(map) = charset_map(interp, &canonical)
-        && let Some((code, _)) = map
-            .iter()
-            .find(|(_, mapped_character)| *mapped_character == character)
-    {
-        return Some(*code);
-    }
-    if let Some(children) = charset_superset(interp, &canonical) {
-        return children.iter().find_map(|(child, offset)| {
-            let child_code = encode_charset_character_number(interp, child, character)?;
-            u32::try_from(i64::from(child_code).checked_add(*offset)?).ok()
-        });
-    }
-    if let Some((parent, min, max, offset)) = charset_subset(interp, &canonical) {
-        let parent_code = i64::from(encode_charset_character_number(interp, &parent, character)?);
-        if !(min..=max).contains(&parent_code) {
-            return None;
-        }
-        return u32::try_from(parent_code.checked_add(offset)?).ok();
-    }
-    let offset = charset_plist_property(interp, &canonical, ":code-offset")?
-        .as_integer()
-        .ok()?;
-    let index = u32::try_from(i64::from(character).checked_sub(offset)?).ok()?;
-    // charset.c ENCODE_CHAR for the offset method: the index must lie
-    // within the code space (latin-iso8859-1 spans 96 codes; a character
-    // past them is not its member).
-    charset_index_to_code(interp, &canonical, index)
+    charset_info(interp, charset)?.encode(interp, character)
 }
 
+/// coding-system-get: `plist-get' on the coding system's plist.
 fn coding_system_property(interp: &Interpreter, coding: &str, property: &str) -> Option<Value> {
-    let items = interp.coding_system_plist_value(coding)?.to_vec().ok()?;
-    items.windows(2).find_map(|pair| {
-        matches!(pair[0].kind(), Kind::Symbol(name) if name == property).then(|| pair[1])
-    })
+    let mut tail = interp.coding_system(coding)?.plist;
+    while let Some((key, rest)) = tail.cons_values() {
+        let (value, next) = rest.cons_values()?;
+        if matches!(key.kind(), Kind::Symbol(name) if name == property) {
+            return Some(value);
+        }
+        tail = next;
+    }
+    None
 }
 
 fn coding_system_default_char_byte(interp: &Interpreter, coding: &str) -> u8 {
@@ -614,43 +403,43 @@ fn encode_charset_coding_bytes(
     text: &str,
     coding: &str,
 ) -> Result<Vec<u8>, LispError> {
-    let charsets = coding_system_charset_names(interp, coding);
+    let charsets: Vec<std::rc::Rc<CharsetInfo>> = coding_system_charset_names(interp, coding)
+        .iter()
+        .filter_map(|charset| charset_info(interp, charset))
+        .collect();
     let ascii_compatible = coding_system_is_ascii_compatible(interp, coding);
     // setup_coding_system takes the codec's default character from its
     // attributes.  Charset codings do not share one replacement: us-ascii
     // specifies `?' while iso-latin-1 and the Japanese families default to
     // SPACE.  Reading the live property also preserves package-defined
     // charset codings instead of special-casing these builtins.
-    let default_char = coding_system_default_char_byte(interp, coding);
+    // EMIT_ONE_BYTE stores its low eight bits.
+    let default_char = coding_system_default_char(interp, coding) as u8;
     let mut encoded = Vec::new();
     for character in text.chars() {
-        let scalar = raw_byte_from_regex_char(character)
-            .map(u32::from)
-            .unwrap_or(character as u32);
-        if ascii_compatible && scalar <= 0x7f {
-            encoded.push(scalar as u8);
+        // CHAR_BYTE8_P: a raw byte is written as itself.
+        if let Some(byte) = raw_byte_from_regex_char(character) {
+            encoded.push(byte);
             continue;
         }
-        let code = charsets
-            .iter()
-            .find_map(|charset| encode_charset_char(interp, charset, scalar));
-        let code = if let Some(code) = code {
-            code
-        } else if ascii_compatible {
-            encoded.push(default_char);
+        let c = character as u32;
+        if ascii_compatible && c <= 0x7f {
+            encoded.push(c as u8);
             continue;
-        } else {
-            charsets
-                .iter()
-                .find_map(|charset| encode_charset_char(interp, charset, u32::from(b' ')))
-                .ok_or_else(|| LispError::Signal("Character cannot be encoded".into()))?
-        };
-        let bytes = code.to_be_bytes();
-        let first = bytes
-            .iter()
-            .position(|byte| *byte != 0)
-            .unwrap_or(bytes.len() - 1);
-        encoded.extend_from_slice(&bytes[first..]);
+        }
+        let number = gnu_character_number(c);
+        match charsets.iter().find_map(|charset| {
+            charset
+                .encode(interp, number)
+                .map(|code| (charset.dimension, code))
+        }) {
+            // EMIT_ONE_BYTE ... EMIT_FOUR_BYTES by the charset's dimension.
+            Some((dimension, code)) => {
+                let bytes = code.to_be_bytes();
+                encoded.extend_from_slice(&bytes[4 - dimension.clamp(1, 4) as usize..]);
+            }
+            None => encoded.push(default_char),
+        }
     }
     Ok(encoded)
 }
@@ -674,24 +463,22 @@ fn decode_charset_coding_bytes(interp: &Interpreter, bytes: &[u8], coding: &str)
             let mut code = u32::from(c);
             let mut len = 1usize;
             for charset in charsets {
-                let dim = iso2022::charset_dimension(interp, charset) as usize;
+                let dim = charset.dimension as usize;
                 while len < dim {
                     let &next = bytes.get(p)?;
                     p += 1;
                     code = (code << 8) | u32::from(next);
                     len += 1;
                 }
-                if let Some(ch) =
-                    decode_charset_code(interp, charset, code).and_then(char::from_u32)
-                {
-                    return Some((charset.clone(), ch));
+                if let Some(ch) = charset.decode(interp, code).and_then(char::from_u32) {
+                    return Some((charset, ch));
                 }
             }
             None
         });
         match decoded {
             Some((charset, ch)) => {
-                runs.note(&charset, offset);
+                runs.note(&charset.name, offset);
                 out.push(ch);
                 offset += 1;
             }
@@ -1725,16 +1512,24 @@ pub(crate) fn decode_big5_bytes(interp: &Interpreter, bytes: &[u8], coding: &str
 }
 
 pub(crate) fn decode_raw_text_bytes(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte| {
-            if *byte <= 0x7F {
-                char::from(*byte)
-            } else {
-                raw_byte_regex_char(*byte)
-            }
-        })
-        .collect()
+    // The ASCII runs are copied as they are; each other byte becomes its
+    // raw-byte character.
+    let mut text = String::with_capacity(bytes.len());
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let ascii = rest
+            .iter()
+            .position(|byte| !byte.is_ascii())
+            .unwrap_or(rest.len());
+        // SAFETY: ASCII is UTF-8.
+        text.push_str(unsafe { std::str::from_utf8_unchecked(&rest[..ascii]) });
+        rest = &rest[ascii..];
+        if let Some((&byte, after)) = rest.split_first() {
+            text.push(raw_byte_regex_char(byte));
+            rest = after;
+        }
+    }
+    text
 }
 
 pub(crate) fn decode_latin_bytes(bytes: &[u8]) -> String {
@@ -2097,12 +1892,17 @@ fn encode_string_text_for_coding(interp: &Interpreter, text: &str, coding: &str)
         "iso-2022" => {
             // encode_coding_iso_2022 substitutes coding->default_char.
             let default_char = char::from(coding_system_default_char_byte(interp, coding));
+            let attrs = iso2022::iso_attributes(interp, coding);
             text.chars()
                 .map(|ch| {
                     let scalar = raw_byte_from_regex_char(ch)
                         .map(|byte| RAW_BYTE_REGEX_BASE + u32::from(byte))
                         .unwrap_or(ch as u32);
-                    if iso2022::char_encodable(interp, coding, scalar) {
+                    if scalar < 0x80
+                        || attrs
+                            .as_ref()
+                            .is_some_and(|attrs| iso2022::char_encodable(interp, attrs, scalar))
+                    {
                         ch
                     } else {
                         default_char
@@ -2218,18 +2018,6 @@ impl CharsetRuns {
     }
 }
 
-/// charset.c char_charset over an explicit CHARSET_LIST: the first charset
-/// that encodes C, with its code.
-pub(crate) fn char_charset_in(
-    interp: &Interpreter,
-    charset_list: &[String],
-    ch: u32,
-) -> Option<(String, u32)> {
-    charset_list.iter().find_map(|charset| {
-        encode_charset_char(interp, charset, ch).map(|code| (charset.clone(), code))
-    })
-}
-
 /// charset.c CHAR_CHARSET / char_charset (c, Qnil): ASCII is `ascii';
 /// otherwise the charsets of the ordered list are tried in order, a
 /// Unicode character answering `unicode' once the non-preferred part of
@@ -2288,29 +2076,99 @@ pub(crate) fn char_charset(interp: &Interpreter, ch: u32) -> (String, u32) {
 /// Fdefine_coding_system_internal's `charset_valids' vector for a
 /// charset-type coding: per first byte, the charsets it may start,
 /// smaller dimensions first.
-pub(crate) fn charset_valids(interp: &Interpreter, coding: &str) -> Vec<Option<Vec<String>>> {
-    let mut valids: Vec<Option<Vec<String>>> = vec![None; 256];
+pub(crate) fn charset_valids(
+    interp: &Interpreter,
+    coding: &str,
+) -> Vec<Option<Vec<std::rc::Rc<CharsetInfo>>>> {
+    let mut valids: Vec<Option<Vec<std::rc::Rc<CharsetInfo>>>> = vec![None; 256];
     for charset in coding_system_charset_names(interp, coding) {
-        let Some(canonical) = interp.charset_canonical_name(&charset) else {
+        let Some(info) = charset_info(interp, &charset) else {
             continue;
         };
-        let dim = iso2022::charset_dimension(interp, &canonical) as usize;
-        let Some(bounds) = charset_code_space(interp, &canonical) else {
-            continue;
-        };
-        let Some(&(min, max)) = bounds.get(dim - 1) else {
+        let dim = info.dimension as usize;
+        let Some(&(min, max)) = info
+            .code_space
+            .as_ref()
+            .and_then(|bounds| bounds.get(dim - 1))
+        else {
             continue;
         };
         for byte in min..=max.min(255) {
             let entry = valids[byte as usize].get_or_insert_with(Vec::new);
             let position = entry
                 .iter()
-                .position(|existing| iso2022::charset_dimension(interp, existing) as usize > dim)
+                .position(|existing| existing.dimension as usize > dim)
                 .unwrap_or(entry.len());
-            entry.insert(position, canonical.clone());
+            entry.insert(position, info.clone());
         }
     }
     valids
+}
+
+/// coding.c:get_translation_table for decoding, as far as whether there
+/// is one: none while `enable-character-translation' is nil; else the
+/// coding's `:decode-translation-table' (a symbol naming its
+/// `translation-table' property, a list of tables, or the table) with
+/// `standard-translation-table-for-decode' after it.
+fn decode_translation_table_p(interp: &Interpreter, coding: &str, env: &Env) -> bool {
+    if interp
+        .lookup_var("enable-character-translation", env)
+        .is_none_or(|value| value.is_nil())
+    {
+        return false;
+    }
+    let standard = interp
+        .lookup_var("standard-translation-table-for-decode", env)
+        .unwrap_or(Value::Nil);
+    let table =
+        coding_system_property(interp, coding, ":decode-translation-table").unwrap_or(Value::Nil);
+    if table.is_nil() {
+        return !standard.is_nil();
+    }
+    if !standard.is_nil() {
+        return true;
+    }
+    match table.kind() {
+        Kind::Symbol(name) => interp
+            .get_symbol_property(&name, "translation-table")
+            .is_some_and(|table| !table.is_nil()),
+        Kind::T => interp
+            .get_symbol_property("t", "translation-table")
+            .is_some_and(|table| !table.is_nil()),
+        // A list stays a list after its symbols are resolved.
+        _ => true,
+    }
+}
+
+/// decode_coding_gap: the BYTES a file read left in the gap as the text
+/// CODING decodes them to, with the charsets its decoder annotates.  When
+/// CODING is ASCII compatible with no post-read conversion and no
+/// translation table, and every byte is ASCII, the bytes are the text as
+/// they are (`disable-ascii-optimization' turns this off).  EOL
+/// conversion is the caller's, before.
+pub(crate) fn decode_coding_gap(
+    interp: &Interpreter,
+    env: &Env,
+    bytes: &[u8],
+    coding: &str,
+) -> Result<DecodedText, LispError> {
+    if bytes.is_ascii()
+        && interp
+            .lookup_var("disable-ascii-optimization", env)
+            .is_none_or(|value| value.is_nil())
+        && coding_system_is_ascii_compatible(interp, coding)
+        && coding_system_property(interp, coding, ":post-read-conversion")
+            .is_none_or(|value| value.is_nil())
+        && !decode_translation_table_p(interp, coding, env)
+    {
+        // SAFETY: ASCII is UTF-8.
+        let text = unsafe { String::from_utf8_unchecked(bytes.to_vec()) };
+        return Ok(DecodedText {
+            text,
+            charsets: Vec::new(),
+        });
+    }
+    decode_text_bytes_annotated(interp, bytes, coding)
 }
 
 pub(crate) fn decode_text_bytes_annotated(
@@ -2396,6 +2254,23 @@ pub(crate) fn string_unencodable_positions(
         .coding_system_kind_name(&canonical)
         .unwrap_or_else(|| canonical.clone());
     let legacy_single_byte = legacy_single_byte_encoding(interp, &canonical);
+    // A charset coding's attributes, resolved once for the whole text.
+    let (charset_ascii_compatible, charsets) = if kind == "charset" {
+        (
+            coding_system_is_ascii_compatible(interp, &canonical),
+            coding_system_charset_names(interp, &canonical)
+                .iter()
+                .filter_map(|charset| charset_info(interp, charset))
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        (false, Vec::new())
+    };
+    let iso_attrs = if kind == "iso-2022" {
+        iso2022::iso_attributes(interp, &canonical)
+    } else {
+        None
+    };
     let mut failures = Vec::new();
     for (index, ch) in text.chars().enumerate() {
         let raw_byte = raw_byte_from_regex_char(ch);
@@ -2411,13 +2286,10 @@ pub(crate) fn string_unencodable_positions(
             "iso-latin-1" => raw_byte.is_some() || code <= 0xFF,
             "iso-2022" => {
                 raw_byte.is_some()
-                    || iso2022::char_encodable(
-                        interp,
-                        &canonical,
-                        raw_byte
-                            .map(|byte| RAW_BYTE_REGEX_BASE + u32::from(byte))
-                            .unwrap_or(code),
-                    )
+                    || code < 0x80
+                    || iso_attrs
+                        .as_ref()
+                        .is_some_and(|attrs| iso2022::char_encodable(interp, attrs, code))
             }
             "us-ascii" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
             "sjis" => {
@@ -2445,12 +2317,12 @@ pub(crate) fn string_unencodable_positions(
                     .any(|charset| encode_charset_char(interp, charset, code).is_some())
             }
             "charset" => {
-                (coding_system_is_ascii_compatible(interp, &canonical)
+                (charset_ascii_compatible
                     && (raw_byte.is_some_and(|byte| byte <= 0x7f) || code <= 0x7f))
                     || raw_byte.is_some()
-                    || coding_system_charset_names(interp, &canonical)
+                    || charsets
                         .iter()
-                        .any(|charset| encode_charset_char(interp, charset, code).is_some())
+                        .any(|charset| charset.encode(interp, gnu_character_number(code)).is_some())
             }
             _ => true,
         };
@@ -2551,9 +2423,7 @@ pub(crate) fn emacs_mule_charset_list(interp: &Interpreter) -> Vec<String> {
         .charset_priority_list()
         .into_iter()
         .filter(|charset| {
-            charset_plist_property(interp, charset, ":emacs-mule-id")
-                .and_then(|value| value.integer_value())
-                .is_some()
+            charset_info(interp, charset).is_some_and(|info| info.emacs_mule_id.is_some())
         })
         .collect()
 }
@@ -2569,7 +2439,23 @@ pub(crate) fn emacs_mule_charset_list(interp: &Interpreter) -> Vec<String> {
 /// not steer emacs-mule (the oracle re-encodes a jisx0208-annotated
 /// hiragana through chinese-gb2312, the list's first match).
 fn encode_emacs_mule_bytes(interp: &Interpreter, text: &str, coding: &str) -> Vec<u8> {
-    let charset_list = emacs_mule_charset_list(interp);
+    let charsets: Vec<(std::rc::Rc<CharsetInfo>, u8)> = emacs_mule_charset_list(interp)
+        .iter()
+        .filter_map(|charset| {
+            let info = charset_info(interp, charset)?;
+            let id = info.emacs_mule_id?;
+            Some((info, id))
+        })
+        .collect();
+    // char_charset (C, Vemacs_mule_charset_list, &code).
+    let char_charset = |c: u32| {
+        let number = gnu_character_number(c);
+        charsets.iter().find_map(|(charset, id)| {
+            charset
+                .encode(interp, number)
+                .map(|code| (charset.dimension, *id, code))
+        })
+    };
     let default_char = coding_system_default_char(interp, coding);
     let mut out = Vec::with_capacity(text.len());
     for ch in text.chars() {
@@ -2582,20 +2468,13 @@ fn encode_emacs_mule_bytes(interp: &Interpreter, text: &str, coding: &str) -> Ve
             out.push(code as u8);
             continue;
         }
-        let found = char_charset_in(interp, &charset_list, code);
-        let Some((charset, charset_code)) = found.or_else(|| {
+        let Some((dimension, id, charset_code)) = char_charset(code).or_else(|| {
             if default_char < 0x80 {
                 out.push(default_char as u8);
                 return None;
             }
-            char_charset_in(interp, &charset_list, default_char)
+            char_charset(default_char)
         }) else {
-            continue;
-        };
-        let Some(id) = charset_plist_property(interp, &charset, ":emacs-mule-id")
-            .and_then(|value| value.integer_value())
-            .and_then(|value| u8::try_from(value).ok())
-        else {
             continue;
         };
         // EMACS_MULE_LEADING_CODES
@@ -2606,7 +2485,7 @@ fn encode_emacs_mule_bytes(interp: &Interpreter, text: &str, coding: &str) -> Ve
             0xF0..=0xF4 => out.extend([0x9C, id]),
             _ => out.extend([0x9D, id]),
         }
-        if charset_dimension(interp, &charset) == 1 {
+        if dimension == 1 {
             out.push((charset_code | 0x80) as u8);
         } else {
             let charset_code = charset_code | 0x8080;
@@ -3540,8 +3419,15 @@ pub(crate) fn decode_coding_text(
         match interp.coding_system_eol_type_value(&canonical) {
             Some(1) => Some(true),
             Some(2) => Some(false),
+            // coding.c:decode_eol settles an undecided eol from the decoded
+            // text: CRLF (with stray CRs) is dos, CR alone mac, and any
+            // other mixture unix, which converts nothing.
             None if !matches!(canonical.as_str(), "no-conversion" | "binary") => {
-                Some(staged.contains("\r\n"))
+                match detect_eol_type(staged.as_bytes()) {
+                    1 => Some(true),
+                    2 => Some(false),
+                    _ => None,
+                }
             }
             _ => None,
         }
@@ -3603,31 +3489,9 @@ pub(crate) fn decode_coding_text(
     }
 }
 
-// charset.c CHARSET_MIN_CODE / CHARSET_MAX_CODE: the `:min-code' and
-// `:max-code' attributes (an integer, or a (HIGH . LOW) pair of 16-bit
-// halves as `charset-plist' shows them), defaulting to the corners of the
-// :code-space.
+/// charset.c CHARSET_MIN_CODE / CHARSET_MAX_CODE.
 fn charset_code_bounds(interp: &Interpreter, charset: &str) -> Option<(u32, u32)> {
-    let bounds = charset_code_space(interp, charset)?;
-    let mut min_code = 0u32;
-    let mut max_code = 0u32;
-    for (dimension, (min, max)) in bounds.iter().enumerate() {
-        min_code |= min << (8 * dimension);
-        max_code |= max << (8 * dimension);
-    }
-    let attribute = |name: &str| -> Option<u32> {
-        let value = charset_plist_property(interp, charset, name)?;
-        if let Some((high, low)) = value.cons_values() {
-            let high = u32::try_from(high.integer_value()?).ok()?;
-            let low = u32::try_from(low.integer_value()?).ok()?;
-            return Some((high << 16) | low);
-        }
-        u32::try_from(value.integer_value()?).ok()
-    };
-    Some((
-        attribute(":min-code").unwrap_or(min_code),
-        attribute(":max-code").unwrap_or(max_code),
-    ))
+    charset_info(interp, charset)?.code_bounds
 }
 
 fn push_sorted_char_ranges(chars: &mut Vec<u32>, ranges: &mut Vec<(i64, i64)>) {
@@ -3695,14 +3559,15 @@ pub(crate) fn map_charset_char_ranges(
         return Some(ranges);
     }
 
-    let offset = charset_plist_property(interp, &canonical, ":code-offset")
-        .and_then(|value| value.integer_value());
-    let has_direct_map = charset_plist_property(interp, &canonical, ":map").is_some();
-    let unified = interp.charset_is_unified(&canonical) && offset.is_some();
+    let info = charset_info(interp, &canonical)?;
+    let offset = info.code_offset;
+    let has_direct_map = info.has_direct_map;
+    let unified = info.unified && offset.is_some();
     if (has_direct_map || unified)
-        && let Some(map) = charset_map(interp, &canonical)
+        && let Some(map) = info.map(interp)
     {
         let mut chars: Vec<u32> = map
+            .entries
             .iter()
             .filter(|(code, _)| (from..=to).contains(code))
             .map(|(_, character)| *character)
@@ -3710,8 +3575,8 @@ pub(crate) fn map_charset_char_ranges(
         push_sorted_char_ranges(&mut chars, &mut ranges);
     }
     if let Some(offset) = offset.filter(|_| !has_direct_map) {
-        let from_index = charset_code_to_index(interp, &canonical, from)?;
-        let to_index = charset_code_to_index(interp, &canonical, to)?;
+        let from_index = info.code_to_index(from)?;
+        let to_index = info.code_to_index(to)?;
         ranges.push((i64::from(from_index) + offset, i64::from(to_index) + offset));
     }
     Some(ranges)

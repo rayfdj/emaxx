@@ -377,7 +377,7 @@ pub(super) fn buffer_regex_search(
             args.len(),
         ));
     }
-    super::search::re_search_command(interp, env, args, if forward { 1 } else { -1 }, posix)
+    super::search::search_command(interp, env, args, if forward { 1 } else { -1 }, true, posix)
 }
 
 pub(super) fn expand_replace_match(

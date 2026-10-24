@@ -498,10 +498,23 @@ define_dispatch!(
                     let ignore = args
                         .get(1)
                         .and_then(|ignore| string_like(ignore).map(|s| s.text));
+                    // bug#1229: a name that starts with a space first tries
+                    // a random -NNNNNN suffix, so that thousands of
+                    // internal buffers do not each scan <2>, <3>, ...
+                    let genbase = if base.starts_with(' ') {
+                        let number = (crate::lisp::primitives::next_random_u64() >> 2) % 1_000_000;
+                        let genbase = format!("{base}-{number}");
+                        if !interp.has_buffer(&genbase) {
+                            return Ok(Value::String(genbase.into()));
+                        }
+                        genbase
+                    } else {
+                        base
+                    };
                     let mut n = 2;
                     loop {
-                        let candidate = format!("{}<{}>", base, n);
-                        if !interp.has_buffer(&candidate) || ignore.as_deref() == Some(&candidate) {
+                        let candidate = format!("{genbase}<{n}>");
+                        if ignore.as_deref() == Some(&candidate) || !interp.has_buffer(&candidate) {
                             break Ok(Value::String(candidate.into()));
                         }
                         n += 1;

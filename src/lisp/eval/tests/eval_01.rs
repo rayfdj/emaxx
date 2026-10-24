@@ -4730,7 +4730,9 @@ fn case_folded_patterns_ignore_writes_to_tables_that_are_not_case_tables() {
     // another purpose (`regexp-opt' building its charset table, a script
     // table, a display table) compiles nothing again, and neither does a
     // write to the downcase table, whose canonicalization `set-case-table'
-    // computed before.  Match results are GNU's.
+    // computed before.  Match results are GNU's.  The pattern is not a
+    // trivial regexp, which search_buffer would search as a string with
+    // nothing compiled.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut step = |form: &str, expected: Value, compiles_delta: usize| {
         crate::lisp::primitives::reset_elisp_regex_compile_count();
@@ -4745,7 +4747,7 @@ fn case_folded_patterns_ignore_writes_to_tables_that_are_not_case_tables() {
              (erase-buffer) (insert "Foo bar")
              (goto-char 1)
              (let ((case-fold-search t))
-               (list (re-search-forward "foo" nil t) (match-end 0))))"#;
+               (list (re-search-forward "fo+" nil t) (match-end 0))))"#;
     step(
         search,
         Value::list([Value::Integer(4), Value::Integer(4)]),

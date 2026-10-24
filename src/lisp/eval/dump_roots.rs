@@ -942,6 +942,7 @@ mod install {
                     }
                 }
                 RootSlot::Charsets => {
+                    self.charset_table.borrow_mut().clear();
                     self.charset_ids.clear();
                     self.charset_plists.clear();
                     self.charset_supplementary.clear();
@@ -962,6 +963,8 @@ mod install {
                             self.charset_unified.insert(name);
                         }
                     }
+                    // Vcharset_hash_table, rebuilt for the registrations.
+                    self.charset_id_index = self.charset_ids.iter().cloned().collect();
                 }
                 RootSlot::CharsetOrderedList => {
                     self.charset_priority = symbol_names(value, "charset ordered list")?;
@@ -974,6 +977,7 @@ mod install {
                 }
                 RootSlot::CharsetAliases => {
                     self.charset_aliases = symbol_pairs(value, "charset aliases")?;
+                    self.charset_alias_index = self.charset_aliases.iter().cloned().collect();
                 }
                 RootSlot::IsoCharsetTable => {
                     self.iso_charsets.clear();
@@ -1022,9 +1026,17 @@ mod install {
                             type_args: expect_vector(&fields[8], "type args")?,
                         });
                     }
+                    // Vcoding_system_hash_table, rebuilt for the table.
+                    self.coding_system_index = self
+                        .coding_systems
+                        .iter()
+                        .enumerate()
+                        .map(|(index, coding)| (coding.name.clone(), index))
+                        .collect();
                 }
                 RootSlot::CodingAliases => {
                     self.coding_aliases = symbol_pairs(value, "coding aliases")?;
+                    self.coding_alias_index = self.coding_aliases.iter().cloned().collect();
                 }
                 RootSlot::CodingPriority => {
                     self.coding_priority = symbol_names(value, "coding priority")?;

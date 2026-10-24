@@ -7,21 +7,7 @@ pub(crate) const OBARRAY_RECORD_TYPE: &str = "obarray";
 #[derive(Clone)]
 pub(crate) struct CompletionCandidate {
     name: String,
-    result: Value,
     predicate_args: Vec<Value>,
-}
-
-fn completion_result_value(value: &Value, name: &str) -> Value {
-    match value.kind() {
-        Kind::StringObject(_) => *value,
-        // minibuf.c's Fall_completions and Ftry_completion answer with
-        // SYMBOL_NAME itself for an obarray's or an alist's symbol: the
-        // symbol's own name object, which the symbol keeps reachable (a
-        // fresh copy per symbol lived in a Rust vector across the
-        // predicate's calls, where the collector could not see it).
-        Kind::Symbol(symbol) => symbol.lisp_name(),
-        _ => make_shared_string_value_with_multibyte(name.to_string(), Vec::new(), false),
-    }
 }
 
 pub(crate) fn ensure_interaction_allowed(interp: &Interpreter, env: &Env) -> Result<(), LispError> {
@@ -565,7 +551,6 @@ pub(crate) fn completion_list_candidates(
                 };
                 if let Ok(name) = completion_display_name(&key) {
                     candidates.push(CompletionCandidate {
-                        result: completion_result_value(&key, &name),
                         name,
                         predicate_args: vec![item],
                     });
@@ -593,7 +578,6 @@ pub(crate) fn completion_candidates(
                 completion_display_name(&key)
                     .ok()
                     .map(|name| CompletionCandidate {
-                        result: completion_result_value(&key, &name),
                         name,
                         predicate_args: vec![key, value],
                     })
@@ -608,7 +592,6 @@ pub(crate) fn completion_candidates(
                 .map(|symbol| {
                     let name = completion_display_name(&symbol)?;
                     Ok(CompletionCandidate {
-                        result: completion_result_value(&symbol, &name),
                         name,
                         predicate_args: vec![symbol],
                     })
@@ -705,7 +688,6 @@ pub(crate) fn filtered_completion_matches(
             let value = name;
             let name = completion_display_name(&value)?;
             matches.push(CompletionCandidate {
-                result: completion_result_value(&value, &name),
                 name,
                 predicate_args: Vec::new(),
             });
@@ -741,42 +723,253 @@ pub(crate) fn filtered_completion_matches(
     Ok(matches)
 }
 
-fn completion_collection_function(
-    collection: &Value,
-    interp: &Interpreter,
-    env: &Env,
-) -> Result<Option<Value>, LispError> {
-    let function = match collection.kind() {
-        Kind::Symbol(symbol) => interp.lookup_function(&symbol, env)?,
-        _ if callable_value_p(interp, collection, env) => *collection,
-        _ => return Ok(None),
-    };
-    Ok(Some(function))
+/// minibuf.c's table type for COLLECTION: a hash table, an obarray (a
+/// vector goes through check_obarray), nil or a cons that is not a
+/// function as a list, and anything else as a function to call.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompletionTable {
+    Function,
+    List,
+    Obarray,
+    Hash,
 }
 
-fn call_programmed_completion(
+fn completion_table_type(interp: &Interpreter, collection: &Value, env: &Env) -> CompletionTable {
+    if matches!(collection.kind(), Kind::HashTable(_)) {
+        CompletionTable::Hash
+    } else if is_vector_value(collection) || is_obarray_like_value(interp, collection) {
+        CompletionTable::Obarray
+    } else if collection.is_nil()
+        || (collection.is_cons() && !function_value_p(interp, collection, env))
+    {
+        CompletionTable::List
+    } else {
+        CompletionTable::Function
+    }
+}
+
+/// call3 (collection, string, predicate, ACTION) for a function table.
+fn call_completion_table(
     interp: &mut Interpreter,
-    input: Value,
-    collection: &Value,
+    string: Value,
+    collection: Value,
     predicate: Option<&Value>,
     action: Value,
     env: &mut Env,
-) -> Result<Option<Value>, LispError> {
-    let Some(function) = completion_collection_function(collection, interp, env)? else {
-        return Ok(None);
-    };
-    Ok(Some(interp.call_function_value(
-        function,
+) -> Result<Value, LispError> {
+    interp.call_function_value(
+        collection,
         None,
-        &[
-            // minibuf.c passes the original STRING to the completion table.
-            // Preserve its identity, properties and callback-visible mutation.
-            input,
-            predicate.cloned().unwrap_or(Value::Nil),
-            action,
-        ],
+        &[string, predicate.copied().unwrap_or(Value::Nil), action],
         env,
-    )?))
+    )
+}
+
+/// minibuf.c's walk over a COLLECTION that is not a function: the
+/// elements of a list, the symbols of an obarray, or a hash table's keys
+/// with their values.  What the walk holds is rooted across the
+/// predicate's calls.
+struct CompletionElements {
+    kind: CompletionElementsKind,
+    /// List: the tail and the tortoise of the cycle check; obarray: its
+    /// symbols; hash table: its keys and values, in pairs.
+    roots: crate::lisp::alloc::RootedVec<Value>,
+    index: usize,
+    steps: usize,
+    limit: usize,
+}
+
+enum CompletionElementsKind {
+    List,
+    StandardObarray(std::rc::Rc<Vec<crate::lisp::types::SymbolName>>),
+    Obarray,
+    Hash,
+}
+
+/// One possible completion: the element the predicate is given, the name
+/// it offers (a symbol's name object), and a hash table's value.
+struct CompletionElement {
+    elt: Value,
+    eltstring: Value,
+    hash_value: Option<Value>,
+}
+
+/// Fsymbol_name for an element: the symbol's own name object.
+fn completion_element_name(value: Value) -> Value {
+    match value.kind() {
+        Kind::Nil => crate::lisp::types::symbols::builtin_boolean(false).lisp_name(),
+        Kind::T => crate::lisp::types::symbols::builtin_boolean(true).lisp_name(),
+        Kind::Symbol(symbol) => symbol.lisp_name(),
+        _ => value,
+    }
+}
+
+impl CompletionElements {
+    fn new(interp: &Interpreter, collection: &Value) -> Result<Self, LispError> {
+        let (kind, roots) = if let Some((_, entries)) = json::hash_table_entries(interp, collection)
+        {
+            let mut roots = Vec::with_capacity(entries.len() * 2);
+            for (key, value) in entries {
+                roots.push(key);
+                roots.push(value);
+            }
+            (CompletionElementsKind::Hash, roots)
+        } else if matches!(collection.kind(), Kind::Record(id) if interp.is_standard_obarray_id(id.id))
+        {
+            (
+                CompletionElementsKind::StandardObarray(interp.known_symbols_shared()),
+                Vec::new(),
+            )
+        } else if is_vector_value(collection) || is_obarray_like_value(interp, collection) {
+            (
+                CompletionElementsKind::Obarray,
+                obarray_symbols(interp, collection)?,
+            )
+        } else {
+            (CompletionElementsKind::List, vec![*collection, *collection])
+        };
+        Ok(CompletionElements {
+            kind,
+            roots: crate::lisp::alloc::RootedVec::from_vec(roots),
+            index: 0,
+            steps: 0,
+            limit: 2,
+        })
+    }
+
+    fn next(&mut self) -> Result<Option<CompletionElement>, LispError> {
+        match &self.kind {
+            CompletionElementsKind::List => {
+                let Some((elt, tail)) = self.roots[0].cons_values() else {
+                    return Ok(None);
+                };
+                self.roots[0] = tail;
+                // minibuf.c walks the list with no cycle check; a circular
+                // one is signaled here instead of looping forever.
+                if tail.eq_value(self.roots[1]) && tail.is_cons() {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::Symbol("circular-list".into()),
+                        Value::String("Circular list".into()),
+                    ])));
+                }
+                self.steps += 1;
+                if self.steps == self.limit {
+                    self.roots[1] = tail;
+                    self.steps = 0;
+                    self.limit *= 2;
+                }
+                let eltstring = match elt.cons_values() {
+                    Some((key, _)) => key,
+                    None => elt,
+                };
+                Ok(Some(CompletionElement {
+                    elt,
+                    eltstring: completion_element_name(eltstring),
+                    hash_value: None,
+                }))
+            }
+            CompletionElementsKind::StandardObarray(symbols) => {
+                let Some(symbol) = symbols.get(self.index) else {
+                    return Ok(None);
+                };
+                self.index += 1;
+                let elt = match symbol.as_str() {
+                    "nil" => Value::Nil,
+                    "t" => Value::T,
+                    _ => Value::Symbol(*symbol),
+                };
+                Ok(Some(CompletionElement {
+                    elt,
+                    eltstring: completion_element_name(elt),
+                    hash_value: None,
+                }))
+            }
+            CompletionElementsKind::Obarray => {
+                let Some(&elt) = self.roots.get(self.index) else {
+                    return Ok(None);
+                };
+                self.index += 1;
+                Ok(Some(CompletionElement {
+                    elt,
+                    eltstring: completion_element_name(elt),
+                    hash_value: None,
+                }))
+            }
+            CompletionElementsKind::Hash => {
+                let Some(&elt) = self.roots.get(self.index) else {
+                    return Ok(None);
+                };
+                let value = self.roots[self.index + 1];
+                self.index += 2;
+                Ok(Some(CompletionElement {
+                    elt,
+                    eltstring: completion_element_name(elt),
+                    hash_value: Some(value),
+                }))
+            }
+        }
+    }
+}
+
+/// SCHARS of a string value.
+fn string_chars(value: &Value) -> usize {
+    match value.kind() {
+        Kind::StringObject(string) => string.borrow().len(),
+        _ => 0,
+    }
+}
+
+/// Fcompare_strings (A, 0, A_END, B, 0, B_END, IGNORE_CASE) with both
+/// ends within their strings.
+fn compare_prefixes(
+    interp: &mut Interpreter,
+    a: &Value,
+    a_end: usize,
+    b: &Value,
+    b_end: usize,
+    ignore_case: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    compare_string_ranges(interp, a, (0, a_end), b, (0, b_end), ignore_case, env)
+}
+
+/// minibuf.c match_regexps: whether STRING matches every regexp of
+/// REGEXPS, folding case with the buffer's canonical table when asked.
+fn match_regexps(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    string: &Value,
+    regexps: Value,
+    ignore_case: bool,
+) -> Result<bool, LispError> {
+    let mut tail = regexps;
+    while let Some((regexp, next)) = tail.cons_values() {
+        if !regexp.is_string() {
+            return Err(LispError::WrongTypeArgument("stringp".into(), regexp));
+        }
+        let case_table = ignore_case.then(|| interp.current_case_tables().canon);
+        if search::fast_string_match(interp, env, &regexp, string, case_table, true)?.is_none() {
+            return Ok(false);
+        }
+        tail = next;
+    }
+    Ok(true)
+}
+
+/// The predicate test of Ftry_completion and Fall_completions: a hash
+/// table's predicate also receives the value.
+fn completion_predicate_accepts(
+    interp: &mut Interpreter,
+    predicate: &Value,
+    element: &CompletionElement,
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let predicate = resolve_callable(interp, predicate, env)?;
+    let accepted = match element.hash_value {
+        Some(value) => invoke_function_value(interp, &predicate, &[element.elt, value], env)?,
+        None => invoke_function_value(interp, &predicate, &[element.elt], env)?,
+    };
+    Ok(accepted.is_truthy())
 }
 
 pub(crate) fn try_completion(
@@ -790,70 +983,124 @@ pub(crate) fn try_completion(
             args.len(),
         ));
     }
-    let input = string_text(&args[0])?;
-    if let Some(result) =
-        call_programmed_completion(interp, args[0], &args[1], args.get(2), Value::Nil, env)?
-    {
-        return Ok(result);
+    // minibuf.c:Ftry_completion: check_obarray on a vector, then CHECK_STRING.
+    let string = args[0];
+    let elements = match completion_table_type(interp, &args[1], env) {
+        CompletionTable::Function => None,
+        _ => Some(CompletionElements::new(interp, &args[1])?),
+    };
+    if !string.is_string() {
+        return Err(LispError::WrongTypeArgument("stringp".into(), string));
     }
-    let matches = filtered_completion_matches(interp, &input, &args[1], args.get(2), env)?;
-    if matches.is_empty() {
-        return Ok(Value::Nil);
-    }
-
-    // minibuf.c:Ftry_completion keeps one actual best match, its common
-    // character count, and whether the matches are distinct. Case folding
-    // selects that whole candidate; it does not invent a spelling by mixing
-    // individual characters from different candidates.
+    let Some(mut elements) = elements else {
+        return call_completion_table(interp, string, args[1], args.get(2), Value::Nil, env);
+    };
     let ignore_case = completion_ignores_case(interp, env);
-    let mut best = &matches[0];
-    let mut size = best.name.chars().count();
-    let mut distinct = false;
-    let input_len = input.chars().count();
-    for candidate in &matches[1..] {
-        let candidate_len = candidate.name.chars().count();
-        let best_len = best.name.chars().count();
-        let compare = size.min(candidate_len);
-        let matched = best
-            .name
-            .chars()
-            .zip(candidate.name.chars())
-            .take(compare)
-            .take_while(|(a, b)| a == b || (ignore_case && a.eq_ignore_ascii_case(b)))
-            .count();
-        let same_case = best
-            .name
-            .chars()
-            .take(compare)
-            .eq(candidate.name.chars().take(compare));
-        distinct |= size != candidate_len || size != matched || (ignore_case && !same_case);
-        if ignore_case
-            && ((matched == candidate_len && matched < best_len)
-                || ((matched == candidate_len) == (matched == best_len)
-                    && candidate.name.starts_with(&input)
-                    && !best.name.starts_with(&input)))
+    let regexps = interp
+        .lookup_var("completion-regexp-list", env)
+        .unwrap_or(Value::Nil);
+    let predicate = args.get(2).copied().filter(|value| !value.is_nil());
+    let size = string_chars(&string);
+    let mut best = crate::lisp::alloc::RootedVec::from_vec(vec![Value::Nil]);
+    let mut bestmatchsize = 0usize;
+    let mut matchcount = 0;
+    while let Some(element) = elements.next()? {
+        let eltstring = element.eltstring;
+        if !eltstring.is_string()
+            || size > string_chars(&eltstring)
+            || !compare_prefixes(interp, &eltstring, size, &string, size, ignore_case, env)?
+                .eq_value(Value::T)
         {
-            best = candidate;
+            continue;
         }
-        size = matched;
-        if size <= input_len && !ignore_case && distinct {
+        // Ignore this element if it fails to match all the regexps.
+        if !match_regexps(interp, env, &eltstring, regexps, ignore_case)? {
+            continue;
+        }
+        // Ignore this element if there is a predicate and the predicate
+        // doesn't like it.
+        if let Some(predicate) = &predicate
+            && !completion_predicate_accepts(interp, predicate, &element, env)?
+        {
+            continue;
+        }
+        // Update computation of how much all possible completions match.
+        let eltsize = string_chars(&eltstring);
+        if best[0].is_nil() {
+            matchcount = 1;
+            best[0] = eltstring;
+            bestmatchsize = eltsize;
+            continue;
+        }
+        let compare = bestmatchsize.min(eltsize);
+        let bestmatch = best[0];
+        let tem = compare_prefixes(
+            interp,
+            &bestmatch,
+            compare,
+            &eltstring,
+            compare,
+            ignore_case,
+            env,
+        )?;
+        let matchsize = match tem.kind() {
+            Kind::Integer(position) => position.unsigned_abs() as usize - 1,
+            _ => compare,
+        };
+        if ignore_case {
+            // If this is an exact match except for case, use it as the
+            // best match rather than one that is not an exact match, to
+            // get the case pattern of the actual match.  If there is more
+            // than one exact match ignoring case and one of them is exact
+            // including case, prefer that one; with no exact match
+            // ignoring case, prefer a match that does not change the case
+            // of the input.
+            let best_size = string_chars(&bestmatch);
+            if (matchsize == eltsize && matchsize < best_size)
+                || ((matchsize == eltsize) == (matchsize == best_size)
+                    && compare_prefixes(interp, &eltstring, size, &string, size, false, env)?
+                        .eq_value(Value::T)
+                    && !compare_prefixes(interp, &bestmatch, size, &string, size, false, env)?
+                        .eq_value(Value::T))
+            {
+                best[0] = eltstring;
+            }
+        }
+        if bestmatchsize != eltsize
+            || bestmatchsize != matchsize
+            || (ignore_case
+                && !compare_prefixes(interp, &bestmatch, compare, &eltstring, compare, false, env)?
+                    .eq_value(Value::T))
+        {
+            // Don't count the same string multiple times.
+            if matchcount <= 1 {
+                matchcount += 1;
+            }
+        }
+        bestmatchsize = matchsize;
+        if matchsize <= size && !ignore_case && matchcount > 1 {
+            // No need to look any further.
             break;
         }
     }
-
-    if ignore_case && size == input_len && best.name.chars().count() > size {
-        return Ok(args[0]);
+    let bestmatch = best[0];
+    if bestmatch.is_nil() {
+        return Ok(Value::Nil);
     }
-    if !distinct && best.name == input {
+    // If we are ignoring case, and there is no exact match, and no
+    // additional text was supplied, don't change the case of what the user
+    // typed.
+    if ignore_case && bestmatchsize == size && string_chars(&bestmatch) > bestmatchsize {
+        return Ok(string);
+    }
+    // Return t if the supplied string is an exact match (counting case).
+    if matchcount == 1 && values_equal(interp, &bestmatch, &string) {
         return Ok(Value::T);
     }
-
-    // GNU returns Fsubstring of the selected candidate, preserving its bytes,
-    // encoding and copied properties without materializing another text view.
     substring_value(
-        best.result,
+        bestmatch,
         Value::Integer(0),
-        Value::Integer(size as i64),
+        Value::Integer(bestmatchsize as i64),
         true,
     )
 }
@@ -869,17 +1116,60 @@ pub(crate) fn all_completions(
             args.len(),
         ));
     }
-    let input = string_text(&args[0])?;
-    if let Some(result) =
-        call_programmed_completion(interp, args[0], &args[1], args.get(2), Value::T, env)?
-    {
-        return Ok(result);
+    // minibuf.c:Fall_completions: check_obarray on a vector, then CHECK_STRING.
+    let string = args[0];
+    let elements = match completion_table_type(interp, &args[1], env) {
+        CompletionTable::Function => None,
+        _ => Some(CompletionElements::new(interp, &args[1])?),
+    };
+    if !string.is_string() {
+        return Err(LispError::WrongTypeArgument("stringp".into(), string));
     }
-    Ok(Value::list(
-        filtered_completion_matches(interp, &input, &args[1], args.get(2), env)?
-            .into_iter()
-            .map(|candidate| candidate.result),
-    ))
+    let Some(mut elements) = elements else {
+        return call_completion_table(interp, string, args[1], args.get(2), Value::T, env);
+    };
+    let ignore_case = completion_ignores_case(interp, env);
+    let regexps = interp
+        .lookup_var("completion-regexp-list", env)
+        .unwrap_or(Value::Nil);
+    let predicate = args.get(2).copied().filter(|value| !value.is_nil());
+    let hide_spaces = args.get(3).is_some_and(Value::is_truthy);
+    let string_starts_with_space = string_first_byte(&string) == Some(b' ');
+    let size = string_chars(&string);
+    let mut allmatches = crate::lisp::alloc::RootedVec::new();
+    while let Some(element) = elements.next()? {
+        let eltstring = element.eltstring;
+        if !eltstring.is_string()
+            || size > string_chars(&eltstring)
+            // If HIDE_SPACES, reject alternatives that start with space
+            // unless the input starts with space.
+            || (hide_spaces
+                && !string_starts_with_space
+                && string_first_byte(&eltstring) == Some(b' '))
+            || !compare_prefixes(interp, &eltstring, size, &string, size, ignore_case, env)?
+                .eq_value(Value::T)
+        {
+            continue;
+        }
+        if !match_regexps(interp, env, &eltstring, regexps, ignore_case)? {
+            continue;
+        }
+        if let Some(predicate) = &predicate
+            && !completion_predicate_accepts(interp, predicate, &element, env)?
+        {
+            continue;
+        }
+        allmatches.push(eltstring);
+    }
+    Ok(Value::list(allmatches.iter().copied()))
+}
+
+/// SREF (STRING, 0): the first byte of a nonempty string.
+fn string_first_byte(value: &Value) -> Option<u8> {
+    match value.kind() {
+        Kind::StringObject(string) => string.borrow().bytes().first().copied(),
+        _ => None,
+    }
 }
 
 pub(crate) fn test_completion(
@@ -893,50 +1183,126 @@ pub(crate) fn test_completion(
             args.len(),
         ));
     }
-    let input = string_text(&args[0])?;
-    if let Some(result) = call_programmed_completion(
-        interp,
-        args[0],
-        &args[1],
-        args.get(2),
-        Value::Symbol("lambda".into()),
-        env,
-    )? {
-        return Ok(result);
+    let string = args[0];
+    if !string.is_string() {
+        return Err(LispError::WrongTypeArgument("stringp".into(), string));
+    }
+    // minibuf.c:Ftest_completion.
+    let collection = args[1];
+    let table = completion_table_type(interp, &collection, env);
+    if table == CompletionTable::Function {
+        let action = Value::Symbol("lambda".into());
+        return call_completion_table(interp, string, collection, args.get(2), action, env);
     }
     let ignore_case = completion_ignores_case(interp, env);
-    // minibuf.c match_regexps folds with the buffer's canonical table.
-    let case_table = ignore_case.then(|| interp.current_case_tables().canon);
-    let regexp_list = interp
-        .lookup_var("completion-regexp-list", env)
-        .and_then(|value| value.to_vec().ok())
-        .unwrap_or_default();
-    let predicate = args.get(2).filter(|value| !value.is_nil()).cloned();
-    for candidate in completion_candidates(interp, &args[1])? {
-        if !completion_strings_equal(&candidate.name, &input, ignore_case) {
-            continue;
-        }
-        let mut matches_regexps = true;
-        for pattern in &regexp_list {
-            if !completion_regex_matches(interp, env, &candidate.name, pattern, case_table)? {
-                matches_regexps = false;
-                break;
-            }
-        }
-        if !matches_regexps {
-            continue;
-        }
-        if let Some(predicate) = &predicate {
-            let predicate = resolve_callable(interp, predicate, env)?;
-            let result = invoke_function_value(interp, &predicate, &candidate.predicate_args, env)?;
-            if result.is_truthy() {
-                return Ok(result);
-            }
+    let mut roots = crate::lisp::alloc::RootedVec::from_vec(vec![Value::Nil, Value::Nil]);
+    let hash_table = table == CompletionTable::Hash;
+    if let Kind::HashTable(table) = collection.kind() {
+        let (_, index) = hash_insert::hash_table_lookup(interp, table, &string, env)?;
+        if let Some((key, value)) = index.and_then(|index| table.entry(index)) {
+            roots[0] = key;
+            roots[1] = value;
         } else {
-            return Ok(Value::T);
+            let mut found = false;
+            for (key, value) in table
+                .entries()
+                .map(|(_, key, value)| (key, value))
+                .collect::<Vec<_>>()
+            {
+                let strkey = completion_element_name(key);
+                if !strkey.is_string() {
+                    continue;
+                }
+                let (string_size, key_size) = (string_chars(&string), string_chars(&strkey));
+                if compare_string_ranges(
+                    interp,
+                    &string,
+                    (0, string_size),
+                    &strkey,
+                    (0, key_size),
+                    ignore_case,
+                    env,
+                )?
+                .eq_value(Value::T)
+                {
+                    roots[0] = key;
+                    roots[1] = value;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return Ok(Value::Nil);
+            }
         }
+    } else if table == CompletionTable::Obarray {
+        // Bypass intern-soft as that loses for nil.
+        let name = string_text(&string)?;
+        let symbols = obarray_symbols(interp, &collection)?;
+        let mut tem = symbols
+            .iter()
+            .copied()
+            .find(|symbol| obarray_symbol_matches(symbol, &name));
+        if ignore_case && tem.is_none() {
+            let string_size = string_chars(&string);
+            for symbol in symbols {
+                let symbol_name = completion_element_name(symbol);
+                let name_size = string_chars(&symbol_name);
+                if compare_string_ranges(
+                    interp,
+                    &string,
+                    (0, string_size),
+                    &symbol_name,
+                    (0, name_size),
+                    true,
+                    env,
+                )?
+                .eq_value(Value::T)
+                {
+                    tem = Some(symbol);
+                    break;
+                }
+            }
+        }
+        let Some(tem) = tem else {
+            return Ok(Value::Nil);
+        };
+        roots[0] = tem;
+    } else {
+        let tem = super::call(
+            interp,
+            "assoc-string",
+            &[
+                string,
+                collection,
+                if ignore_case { Value::T } else { Value::Nil },
+            ],
+            env,
+        )?;
+        if tem.is_nil() {
+            return Ok(Value::Nil);
+        }
+        roots[0] = tem;
     }
-    Ok(Value::Nil)
+    // Reject this element if it fails to match all the regexps.
+    let regexps = interp
+        .lookup_var("completion-regexp-list", env)
+        .unwrap_or(Value::Nil);
+    if !match_regexps(interp, env, &string, regexps, ignore_case)? {
+        return Ok(Value::Nil);
+    }
+    // Finally, check the predicate.
+    match args.get(2).filter(|value| !value.is_nil()) {
+        Some(predicate) => {
+            let predicate = resolve_callable(interp, predicate, env)?;
+            if hash_table {
+                invoke_function_value(interp, &predicate, &[roots[0], roots[1]], env)
+            } else {
+                invoke_function_value(interp, &predicate, &[roots[0]], env)
+            }
+        }
+        None => Ok(Value::T),
+    }
 }
 
 pub(crate) fn internal_complete_buffer(

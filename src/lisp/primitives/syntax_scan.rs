@@ -342,6 +342,14 @@ pub(super) struct GlState {
     ascii_known: u128,
 }
 
+thread_local! {
+    /// The gl_state the last regexp match used, kept for the next one as
+    /// GNU keeps its one gl_state: setting it up for a match clears what
+    /// it held, without a fresh allocation and copy a match.
+    static REGEXP_GL_STATE: std::cell::Cell<Option<Box<GlState>>> =
+        const { std::cell::Cell::new(None) };
+}
+
 impl GlState {
     fn new(interp: &Interpreter) -> Self {
         let buffer_table = interp.current_syntax_table_id();
@@ -367,6 +375,38 @@ impl GlState {
         };
         gl.read_state(interp);
         gl
+    }
+
+    /// What `new' makes for a regexp match in OBJECT while
+    /// `parse-sexp-lookup-properties' is set, in place: the ASCII entries
+    /// need no clearing, as `ascii_known' forgets them, and
+    /// `syntax-propertize--done' is read for a buffer alone, the one
+    /// object `syntax-propertize' runs on.
+    fn reset_for_regexp(&mut self, interp: &Interpreter, object: GlObject) {
+        let buffer_table = interp.current_syntax_table_id();
+        self.object = object;
+        self.start = 0;
+        self.stop = 0;
+        self.use_global = false;
+        self.global_code = SWHITESPACE;
+        self.current_syntax_table = buffer_table;
+        self.old_prop = Value::Nil;
+        self.b_property = 0;
+        self.e_property = 0;
+        self.e_property_truncated = false;
+        self.forward_i = None;
+        self.backward_i = None;
+        self.ran_lisp = false;
+        self.buffer_table = buffer_table;
+        self.ascii_known = 0;
+        self.lookup_properties = true;
+        self.propertize_done = match object {
+            GlObject::Buffer => interp
+                .symbol_value_key(cached_symbol!("syntax-propertize--done"))
+                .and_then(|value| value.integer_value())
+                .unwrap_or(-1),
+            _ => -1,
+        };
     }
 
     /// Read what Lisp may have changed: the buffer's syntax table and the
@@ -714,28 +754,32 @@ impl GlState {
         Ok(())
     }
 
-    /// RE_SETUP_SYNTAX_TABLE_FOR_OBJECT: gl_state for a regexp match in
-    /// OBJECT starting at the character position CHARPOS gives (read only
-    /// when properties are looked up, as RE_SYNTAX_TABLE_BYTE_TO_CHAR).
+    /// RE_SETUP_SYNTAX_TABLE_FOR_OBJECT while `parse-sexp-lookup-properties'
+    /// is set (without it the matcher reads the buffer's table alone):
+    /// gl_state for a regexp match in OBJECT starting at the character
+    /// position CHARPOS gives (RE_SYNTAX_TABLE_BYTE_TO_CHAR).
     pub(super) fn for_regexp(
         interp: &Interpreter,
         object: GlObject,
         charpos: impl FnOnce() -> usize,
-    ) -> (Self, Option<LispError>) {
-        let mut gl = GlState::new(interp);
+    ) -> (Box<Self>, Option<LispError>) {
+        let mut gl = REGEXP_GL_STATE
+            .take()
+            .unwrap_or_else(|| Box::new(GlState::new(interp)));
+        gl.reset_for_regexp(interp, object);
         gl.setup_buffer_syntax_table();
-        gl.object = object;
         (gl.b_property, gl.e_property) = match object {
             GlObject::Buffer => (1, interp.buffer.borrow().point_max()),
             GlObject::Plain => (0, usize::MAX),
             GlObject::String(string) => (0, 1 + string_chars(&string)),
         };
-        let error = if gl.lookup_properties {
-            gl.update_syntax_table(interp, charpos(), 1, true).err()
-        } else {
-            None
-        };
+        let error = gl.update_syntax_table(interp, charpos(), 1, true).err();
         (gl, error)
+    }
+
+    /// Give back a regexp match's gl_state for the next match.
+    pub(super) fn release_for_regexp(gl: Box<Self>) {
+        REGEXP_GL_STATE.set(Some(gl));
     }
 
     /// Whether `parse-sexp-lookup-properties' is in force.
