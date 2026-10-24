@@ -17533,6 +17533,60 @@ fn coding_destinations_eight_bit_storage_and_byte_positions_follow_gnu() {
 }
 
 #[test]
+fn encoders_read_consume_chars_codes_like_coding_c() {
+    // coding.c:consume_chars parses a unibyte source's multibyte sequences
+    // for every encoder but raw-text's; the encoders take GNU character
+    // codes (an eight-bit one written as its byte, a character beyond
+    // Unicode or a private-use U+E080 as itself) and substitute the
+    // default character inline; unencodable-char-position and
+    // check-coding-systems-region test the coding's charset list.  The
+    // oracle's answer.
+    let program = r#"
+(format "%S" (list
+  (string-to-list (encode-coding-string "\303\251\300\200\343\201\202\351" 'latin-1))
+  (string-to-list (encode-coding-string "\300\200" 'utf-8))
+  (string-to-list (encode-coding-string "\303\251" 'raw-text))
+  (string-to-list (encode-coding-string (string #xe080 #x3fffe9 ?a #x20ac) 'iso-latin-1))
+  (string-to-list (encode-coding-string (string #x110000 ?\n) 'utf-16le-dos))
+  (string-to-list (encode-coding-string (string ?a #x3fffe9 #x20ac) 'us-ascii))
+  (string-to-list (encode-coding-string (string #x430 #x20ac #x3042) 'windows-1251))
+  (string-to-list (encode-coding-string (string #x3042 #x20ac #xff71 ?\n) 'shift_jis-mac))
+  (string-to-list (encode-coding-string (string #x3042 #x20ac #xff71 #x3fffe9) 'euc-jp))
+  (with-temp-buffer
+    (insert (string ?a #x110000 #x3fffe9 ?\n))
+    (encode-coding-region 1 (point-max) 'utf-8-dos)
+    (string-to-list (buffer-string)))
+  (let ((s (string ?a #xe9 #x20ac #x3fffe9 #x110000 #xe080)))
+    (list (unencodable-char-position 0 6 'latin-1 10 s)
+          (unencodable-char-position 0 6 'raw-text 10 s)
+          (check-coding-systems-region s nil '(latin-1 utf-8 raw-text))))
+  (with-temp-buffer
+    (insert "aé€b") (narrow-to-region 2 3)
+    (list (condition-case e (unencodable-char-position 1 5 'us-ascii 5) (error (car e)))
+          (unencodable-char-position 3 2 'us-ascii 5)
+          (check-coding-systems-region 1 5 '(us-ascii))))))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("encoder contract should parse")
+        .expect("encoder contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("encoder contract should evaluate");
+    assert_eq!(
+        value,
+        Value::string(concat!(
+            "((233 128 32 233) (128) (195 169) (32 233 97 32) (32 0 13 0 10 0) (97 233 63) ",
+            "(224 136 32) (130 160 32 177 13) (164 162 32 142 177 233) ",
+            "(97 4194292 4194192 4194176 4194176 4194281 13 10) ",
+            "((2 3 4 5) nil ((latin-1 2 3 4 5) (utf-8 3 4) (raw-text 1 2 3 4 5))) ",
+            "(args-out-of-range (2) ((us-ascii 2 3))))"
+        ))
+    );
+}
+
+#[test]
 fn help_describe_vector_describes_each_run_of_a_char_table_once() {
     // keymap.c:describe_vector: char_table_ref_and_range gives each run of
     // characters bound to one object, which is looked up in SHADOW and the

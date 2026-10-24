@@ -909,6 +909,51 @@ pub(crate) fn decode_character(bytes: &[u8]) -> Result<(u32, usize), LispError> 
     Ok((code, width))
 }
 
+/// character.h multibyte_length (P, PEND, true, ALLOW_8BIT): the length of
+/// the internal multibyte sequence BYTES starts with, or 0 when they start
+/// with none.  ALLOW_8BIT accepts the two-byte spelling of an eight-bit
+/// character (lead 0xC0 or 0xC1).
+pub(crate) fn multibyte_length(bytes: &[u8], allow_8bit: bool) -> usize {
+    let Some(&c) = bytes.first() else {
+        return 0;
+    };
+    if c < 0x80 {
+        return 1;
+    }
+    let Some(&d) = bytes.get(1) else {
+        return 0;
+    };
+    let mut w = (u32::from(d & 0xC0) << 2) + u32::from(c);
+    if (if allow_8bit { 0x2C0 } else { 0x2C2 }) <= w && w <= 0x2DF {
+        return 2;
+    }
+    let Some(&e) = bytes.get(2) else {
+        return 0;
+    };
+    w += u32::from(e & 0xC0) << 4;
+    let w1 = w | (u32::from(d & 0x20) >> 2);
+    if (0xAE1..=0xAEF).contains(&w1) {
+        return 3;
+    }
+    let Some(&f) = bytes.get(3) else {
+        return 0;
+    };
+    w += u32::from(f & 0xC0) << 6;
+    let w2 = w | (u32::from(d & 0x30) >> 3);
+    if (0x2AF1..=0x2AF7).contains(&w2) {
+        return 4;
+    }
+    let Some(&g) = bytes.get(4) else {
+        return 0;
+    };
+    let lw = i64::from(w) + (i64::from(g & 0xC0) << 8);
+    let w3 = (lw << 24) + (i64::from(d) << 16) + (i64::from(e) << 8) + i64::from(f);
+    if (0xAA_F888_8080..=0xAA_F88F_BFBD).contains(&w3) {
+        return 5;
+    }
+    0
+}
+
 pub(crate) fn decode_bytes(
     bytes: &[u8],
     multibyte: bool,

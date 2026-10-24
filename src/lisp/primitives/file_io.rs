@@ -821,6 +821,12 @@ fn write_region_with_coding(
     set_last_coding_system_used(interp, coding_name, env);
     // Selection calls Lisp, which may mutate the supplied string or buffer.
     // Read its actual current contents after the callback has returned.
+    // choose_write_coding: CODING_MODE_SELECTIVE_DISPLAY for a buffer
+    // region whose `selective-display' is t.
+    let selective_display = !selected_args[0].is_string()
+        && interp
+            .lookup_var("selective-display", env)
+            .is_some_and(|value| value.eq_value(Value::T));
     let source = if let Some(string) = string_like(&selected_args[0]) {
         string
     } else {
@@ -839,7 +845,15 @@ fn write_region_with_coding(
     let inhibit_eol_conversion = interp
         .lookup_var("inhibit-eol-conversion", env)
         .is_some_and(|value| value.is_truthy());
-    let bytes = encode_text_bytes(interp, &source, coding_name, inhibit_eol_conversion)?;
+    let translation = encode_translation_tables(interp, coding_name, env)?;
+    let bytes = encode_text_bytes(
+        interp,
+        &source,
+        coding_name,
+        inhibit_eol_conversion,
+        selective_display,
+        &translation,
+    )?;
     let lock_path = logical_lock_path
         .map(str::to_string)
         .or_else(|| args.get(5).and_then(string_like).map(|string| string.text))

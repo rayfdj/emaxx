@@ -4598,6 +4598,54 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   U+F8FF, and the substitution pass before encoding (charset and us-ascii
   codings) replaces an eight-bit character too when the text holds an
   unencodable one.
+- **Round 62: consume_chars and the encoders on GNU character codes.**
+  Every encoder reads what coding.c's `consume_chars` hands it: a
+  multibyte source's characters as GNU numbers (an eight-bit one as
+  #x3FFF80..#x3FFFFF, one beyond Unicode from the side table, a real
+  U+E080..U+E0FF as itself); a unibyte source's bytes for the raw-text
+  encoder and, for every other one, each internal multibyte sequence the
+  bytes spell as its character (`multibyte_length` with eight-bit
+  allowed, so `"\303\251"` encodes in latin-1 as 0xE9 and `"\300\200"`
+  in utf-8 as 0x80) and the other bytes as eight-bit characters; the dos
+  and mac newline conversions; a CR read as a newline for write-region in
+  a buffer whose `selective-display` is t; and the encode translation
+  tables (`get_translation_table`, sequence entries through
+  `get_translation`). The encoder is the coding type's, as
+  setup_coding_system chooses it: utf-8 and raw-text write the internal
+  spelling with an eight-bit character as its byte, utf-16 the default
+  character above MAX_UNICODE_CHAR, and charset, shift-jis, big5,
+  emacs-mule and iso-2022 their charset lists with the default character
+  substituted inline. shift-jis and big5 go through CODING_CHAR_CHARSET
+  over the coding's own list, so japanese-shift-jis-2004's fourth charset
+  encodes and decodes, where a shift-jis coding other than
+  japanese-shift-jis fell to raw text both ways. japanese-iso-8bit is an
+  iso-2022 coding again (the bootstrap's separate EUC-JP codec routing is
+  gone), and the ISO-2022 decoder closes its last charset run before it
+  flushes an incomplete trailing sequence, as no_more_source does. The
+  pass that substituted unencodable characters by coding kind before
+  encoding, the "Character cannot be encoded" error GNU's encoders never
+  signal, the hand-written EUC-JP, Latin-1 and ASCII encoders and
+  encoding_rs (windows-1251, windows-1252 and koi8-r are charset codings
+  over their charset maps) are gone. `encode-coding-region` encodes the
+  region with its characters beyond Unicode and its `charset`
+  properties. `unencodable-char-position` and
+  `check-coding-systems-region` are coding.c's: the coding's charset list
+  (CODING_ATTR_CHARSET_LIST, `iso-2022` and `emacs-mule` standing for
+  those lists) after the encode translation, a raw-text coding answering
+  nil in the first and every non-ASCII position in the second,
+  validate_region (swapped bounds, narrowing) for the first and BEG..Z
+  for the second, the coding as given in the result; the terminal's
+  glyphless test is term.c's char_charset over coding_charset_list. A
+  probe of 37 codings over 19 strings and two regions, the
+  encodability probe (20 codings) and a decode probe of eight Japanese
+  codings give GNU's output, except euc-jis-2004's two characters of
+  japanese-jisx0213-2 (#x150000 and up): every decoder still builds Rust
+  text, which cannot hold a character beyond Unicode, so such a code
+  comes out as its bytes. Porting the decode side the same way
+  (`produce_chars` from GNU codes, the decoders writing character codes
+  rather than a `String`) is the next coding step. 20,000 encodings of a
+  100-character string: utf-8 0.076 s (GNU 0.122), latin-1 0.082
+  (0.084), euc-jp 0.195 (0.180), utf-16le 0.071 (0.051) on a loaded host.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,

@@ -29,9 +29,6 @@ unicode-general-category = "1.1"
 unicode_names2 = "=1.2.2"
 unicode-width = "0.2"
 flate2 = "1.1"
-# Delegate standardized legacy single-byte encodings to the mature WHATWG
-# implementation instead of maintaining error-prone handwritten tables.
-encoding_rs = "=0.8.35"
 libxml = "0.3.16"
 rusqlite = { version = "0.34", features = ["bundled"] }
 # Global Lisp value cells need stable enumeration plus constant-time lookup,

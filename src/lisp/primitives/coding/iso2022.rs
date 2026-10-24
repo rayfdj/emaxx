@@ -42,13 +42,11 @@ pub(crate) struct IsoAttributes {
 impl IsoAttributes {
     /// char_charset (C, CODING_ATTR_CHARSET_LIST, &code): the first of
     /// the coding's charsets that has C, with its code.
+    /// char_charset over the coding's charset list; C is a character code.
     fn char_charset(&self, interp: &Interpreter, c: u32) -> Option<(&CharsetInfo, u32)> {
-        let number = gnu_character_number(c);
-        self.charsets.iter().find_map(|charset| {
-            charset
-                .encode(interp, number)
-                .map(|code| (&**charset, code))
-        })
+        self.charsets
+            .iter()
+            .find_map(|charset| charset.encode(interp, c).map(|code| (&**charset, code)))
     }
 
     fn safe_charset(&self, charset: &str) -> bool {
@@ -928,11 +926,12 @@ pub(crate) fn decode(interp: &Interpreter, bytes: &[u8], coding: &str) -> Decode
     }
     // no_more_source with the last block: an unfinished composition is
     // invalid, and decode_coding flushes the unconsumed tail as bytes.
+    // The last charset run closes there too, before the tail.
     finish_composition(&mut out, &mut cmp);
+    let charsets = runs.finish(out.char_offset);
     for &byte in &bytes[src_base..] {
         out.push_byte(byte);
     }
-    let charsets = runs.finish(out.char_offset);
     Decoded {
         text: out.text,
         charsets,
@@ -1125,36 +1124,28 @@ impl Encoder<'_> {
     }
 }
 
-/// encode_coding_iso_2022.  TEXT already carries the eol convention;
-/// EOL_TYPE says which (2 = mac, whose CR ends a line).  PREFERRED holds,
-/// per character, the `charset' text property GNU would have consumed as
-/// an annotation.
+/// encode_coding_iso_2022 over consume_chars' character codes CHARS,
+/// which already carry the eol convention; EOL_TYPE says which (2 = mac,
+/// whose CR ends a line).  PREFERRED holds, per code, the `charset' text
+/// property GNU would have consumed as an annotation.
 pub(crate) fn encode(
     interp: &Interpreter,
-    text: &str,
+    chars: &[u32],
     coding: &str,
     eol_type: Option<i64>,
     preferred: &[Option<String>],
 ) -> Result<Vec<u8>, LispError> {
     let Some(attrs) = iso_attributes(interp, coding) else {
-        return encode_raw_text_bytes(text);
+        return super::encode_coding_raw_text(chars, true);
     };
     let flags = attrs.flags;
     let ascii_compatible =
         attrs.ascii_compatible && flags & (ISO_FLAG_DESIGNATION | ISO_FLAG_LOCKING_SHIFT) == 0;
-    let chars: Vec<u32> = text
-        .chars()
-        .map(|ch| {
-            raw_byte_from_regex_char(ch)
-                .map(|byte| RAW_BYTE_REGEX_BASE + u32::from(byte))
-                .unwrap_or(ch as u32)
-        })
-        .collect();
     let mut encoder = Encoder {
         interp,
         state: IsoState::new(&attrs),
         attrs: &attrs,
-        out: Vec::with_capacity(text.len()),
+        out: Vec::with_capacity(chars.len()),
     };
     let mut bol_designation = flags & ISO_FLAG_DESIGNATE_AT_BOL != 0 && encoder.state.bol;
     for (index, &c) in chars.iter().enumerate() {
@@ -1186,8 +1177,8 @@ pub(crate) fn encode(
             } else {
                 encoder.encode_iso_character("ascii", 1, c);
             }
-        } else if (RAW_BYTE_REGEX_BASE + 0x80..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&c) {
-            encoder.out.push((c - RAW_BYTE_REGEX_BASE) as u8);
+        } else if RAW_BYTE8_CHARS.contains(&c) {
+            encoder.out.push((c - RAW_BYTE8_BASE) as u8);
         } else {
             let preferred_charset = preferred
                 .get(index)
@@ -1195,9 +1186,7 @@ pub(crate) fn encode(
                 .and_then(|name| charset_info(interp, name))
                 .filter(|charset| attrs.charset_list.contains(&charset.name));
             let found = match &preferred_charset {
-                Some(charset) => charset
-                    .encode(interp, gnu_character_number(c))
-                    .map(|code| (&**charset, code)),
+                Some(charset) => charset.encode(interp, c).map(|code| (&**charset, code)),
                 None => None,
             }
             .or_else(|| attrs.char_charset(interp, c));
@@ -1224,12 +1213,4 @@ pub(crate) fn encode(
         encoder.reset_plane_and_register();
     }
     Ok(encoder.out)
-}
-
-/// Whether the iso-2022 coding ATTRS describes can encode character C
-/// (raw bytes and ASCII always can).
-pub(crate) fn char_encodable(interp: &Interpreter, attrs: &IsoAttributes, c: u32) -> bool {
-    c < 0x80
-        || (RAW_BYTE_REGEX_BASE + 0x80..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&c)
-        || attrs.char_charset(interp, c).is_some()
 }

@@ -951,16 +951,27 @@ define_dispatch!(
                 // codec's business, not last-coding-system-used's.
                 let coding = checked_coding_name(interp, &args[2])?
                     .map(|_| args[2].as_symbol().expect("validated symbol").to_string());
-                let region = interp
-                    .buffer
-                    .borrow()
-                    .buffer_substring(start, end)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                let region = make_shared_string_value_with_multibyte(
-                    region,
-                    Vec::new(),
-                    interp.buffer.borrow().is_multibyte(),
-                );
+                // The region as encode_coding_object and decode_coding_object
+                // read it: its characters (those beyond Unicode included)
+                // and, for encoding, the `charset' properties the ISO-2022
+                // encoder takes as annotations.
+                let region = {
+                    let buffer = interp.buffer.borrow();
+                    let text = buffer
+                        .buffer_substring(start, end)
+                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    let props = if name == "encode-coding-region" {
+                        buffer.substring_property_spans(start, end)
+                    } else {
+                        Vec::new()
+                    };
+                    make_shared_string_value_with_extended_chars(
+                        text,
+                        props,
+                        buffer.is_multibyte(),
+                        buffer.substring_extended_chars(start, end),
+                    )
+                };
                 enum Destination {
                     Replace,
                     Return,

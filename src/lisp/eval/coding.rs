@@ -771,25 +771,11 @@ impl Interpreter {
             items.push(mnemonic_key);
             items.push(Value::Integer(mnemonic));
         }
-        // The Rust `kind' field is the internal codec discriminator, not
-        // the public coding type (bootstrap gives its euc-jp entry kind
-        // "euc-jp" while `coding-system-type' answers iso-2022 from the
-        // plist).  When japanese.el re-defines japanese-iso-8bit with
-        // :coding-type iso-2022, keep routing it to the EUC-JP codec;
-        // without this the Lisp definition shadowed the bootstrap entry
-        // and every euc-jp conversion fell to the raw-bytes default arms.
+        // The coding type, which selects the codec as setup_coding_system
+        // selects the encoder and decoder.
         let resolved_kind = self
             .coding_system_kind_name(&kind_canonical)
             .unwrap_or_else(|| kind_canonical.clone());
-        let resolved_kind = if resolved_kind == "iso-2022" && name == "japanese-iso-8bit" {
-            "euc-jp".to_string()
-        } else if resolved_kind == "shift-jis" && name == "japanese-shift-jis" {
-            // Same routing for the Shift-JIS codec: japanese.el's
-            // re-definition must keep reaching it.
-            "sjis".to_string()
-        } else {
-            resolved_kind
-        };
         // The three type checks below compare the RAW :coding-type
         // argument, not its canonicalization: `big5' is also a coding
         // system name, and once chinese.el defines chinese-big5 and

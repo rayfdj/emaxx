@@ -95,62 +95,8 @@ define_dispatch!(
     ) -> Result<Value, LispError> {
         match name {
             "unencodable-char-position" => {
-                // coding.c Funencodable_char_position: the first position
-                // (or, with COUNT, up to COUNT positions) in the region or
-                // STRING that CODING-SYSTEM cannot encode.
                 need_arg_range(name, args, 3, 5)?;
-                let coding = checked_coding_symbol(interp, &args[2])?;
-                let count = match args.get(3).map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => None,
-                    Some(Kind::Integer(count)) if count >= 0 => Some(count as usize),
-                    Some(other) => {
-                        return Err(crate::lisp::primitives::wrong_type_argument(
-                            "wholenump",
-                            other.value(),
-                        ));
-                    }
-                };
-                let (text, base) = match args.get(4) {
-                    Some(string) if !string.is_nil() => {
-                        let text = string_text(string)?;
-                        let length = text.chars().count();
-                        let start = usize::try_from(args[0].as_integer()?).unwrap_or(usize::MAX);
-                        let end = usize::try_from(args[1].as_integer()?).unwrap_or(usize::MAX);
-                        if start > end || end > length {
-                            return Err(LispError::Signal("Args out of range".into()));
-                        }
-                        (
-                            text.chars()
-                                .skip(start)
-                                .take(end - start)
-                                .collect::<String>(),
-                            start,
-                        )
-                    }
-                    _ => {
-                        let start = position_from_value(interp, &args[0])?;
-                        let end = position_from_value(interp, &args[1])?;
-                        if start > end || end > interp.buffer.borrow().point_max() {
-                            return Err(LispError::Signal("Args out of range".into()));
-                        }
-                        (
-                            interp
-                                .buffer
-                                .borrow()
-                                .buffer_substring(start, end)
-                                .map_err(|error| LispError::Signal(error.to_string()))?,
-                            start,
-                        )
-                    }
-                };
-                let positions = string_unencodable_positions(&text, &coding, interp)?;
-                let positions = positions
-                    .into_iter()
-                    .map(|index| Value::Integer(index + base as i64));
-                Ok(match count {
-                    None => positions.take(1).next().unwrap_or(Value::Nil),
-                    Some(count) => Value::list(positions.take(count).collect::<Vec<_>>()),
-                })
+                unencodable_char_position_value(interp, args, env)
             }
             "compare-buffer-substrings" => {
                 need_args(name, args, 6)?;
@@ -1693,7 +1639,7 @@ define_dispatch!(
             }
             "check-coding-systems-region" => {
                 need_args(name, args, 3)?;
-                check_coding_systems_region_value(interp, &args[0], args.get(1), &args[2])
+                check_coding_systems_region_value(interp, &args[0], args.get(1), &args[2], env)
             }
             "detect-coding-string" => {
                 need_args(name, args, 1)?;
