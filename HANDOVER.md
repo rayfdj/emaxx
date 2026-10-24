@@ -4464,6 +4464,29 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   windows-1252 and koi8-r go through encoding_rs instead of their
   charset maps. That wants `encode_coding_object` and the encoders
   ported whole.
+- **Round 57: `equal`'s EQ test and `get_doc_string`'s block read.**
+  `substitute-command-keys` was 24 times GNU's (fifty rounds of twelve
+  calls, 0.47 s against 0.019): `where_is_internal` checks its cache
+  with `Fequal (keymaps, where_is_cache_keymaps)`, as GNU does, on a fresh
+  list of the same keymaps, and both of Emaxx's `equal` walks lacked
+  `internal_equal`'s first test, `BASE_EQ (o1, o2)`, so each check
+  compared the global map with itself element by element through a
+  SipHash table of visited pairs (2 million instructions a call). Both
+  walks now answer t for the same object before anything else, as fns.c
+  does. Raw `documentation` was 20 times GNU's (57 against 2.7
+  microseconds a call): every docstring read the whole of etc/DOC or the
+  `.elc` file. The read is now `get_doc_string`'s: seek to the disk
+  block before the position (at least 1,024 bytes ahead of it for the
+  consistency checks) and read 8 KB blocks to the terminating 037; the
+  checks and the decoding are unchanged. Wall, GNU / Emaxx before /
+  after: `substitute-command-keys` 0.019 / 0.47 / 0.014 s, raw
+  `documentation` 0.0016 / 0.034 / 0.0020 s, `documentation` with
+  substitution 0.17 / 0.53 / 0.28 to 0.36 s; five `describe-function`
+  calls 0.200 to 0.210 / 0.235 to 0.240 / 0.232 to 0.235 s and nine
+  `describe-key` 0.36 to 0.40 / 0.47 to 0.54 / 0.43 to 0.46 s. The
+  printed docstrings are GNU's (one hash over twelve functions), and
+  fns, doc, help, help-fns, keymap, data, subr, cl-lib, seq, coding,
+  charset and mule tests give GNU's results.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -5074,7 +5097,14 @@ frozen passed on its first attempt (run 40056465430). **On `d1a3230`**
 first attempt (run 40058057152). **On `d3b2ee3`** (round 54): full Rust
 gate passed (run 40063298332), frozen passed on its first attempt (run
 40063300298). **On `0148bb1`** (round 55): full Rust gate passed (run
-40066473882), frozen passed on its first attempt (run 40066475799). Locally,
+40066473882), frozen passed on its first attempt (run 40066475799). Run
+the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
+with the inherited environment and their answers were recorded under that
+locale. With none set here, `char_charset_family_follows_charset_c` and
+`print_prunes_charset_properties_like_print_prune_string_charset` see
+GNU put `iso-8859-1` ahead of the non-preferred head; under `C.UTF-8`,
+`new_file_coding_lifecycle_matches_gnu_after_save_and_revisit` sees GNU
+pick `utf-8-unix` for a new file. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -5379,8 +5409,10 @@ and failures are still recorded.
    puts the slowest files where GNU takes 100 ms or more at keymap-tests
    11.6 times (1.5 since round 53 ported `describe_vector`), data-tests
    3.6, marker-tests 3.2, help-fns-tests 3.1 (round 55 took
-   `describe-function` from 2.4 to about 1.2 times GNU's; `documentation`
-   is still four times GNU's, 0.9 ms a call) and simple-tests 2.75,
+   `describe-function` from 2.4 to about 1.2 times GNU's, round 57 raw
+   `documentation` from 20 to 1.25 times and `substitute-command-keys`
+   below GNU's; `documentation` with substitution is still 1.6 to 2.1
+   times, the byte-code of help.el's substitution loop) and simple-tests 2.75,
    summed test time at 1.21 times and setup at 2.30; then process start
    (0.11 s against 0.05 s on this host; `shell-command` tests that start
    Emacs fifty times are 2.5 times slower for it: 400 million

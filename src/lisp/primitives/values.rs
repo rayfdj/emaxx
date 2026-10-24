@@ -57,6 +57,10 @@ fn values_equal_signaling_depth(
         matches!(value.kind(), Kind::Cons(cell)
             if !matches!(cell.car.get().kind(), Kind::Symbol(tag) if tag == "vector-literal"))
     }
+    // internal_equal: BASE_EQ objects are equal, before any walk.
+    if left.eq_value(*right) {
+        return Ok(true);
+    }
     if !plain_cons(left) || !plain_cons(right) {
         // Leaves take the same env-aware walk `equal' uses everywhere
         // else: internal_equal's EQ sees through `symbol-with-pos'
@@ -192,6 +196,10 @@ fn values_equal_recursive_with_env(
         && let Some(equal) = symbol_with_pos_equal_in_env(interp, left, right, env)
     {
         return equal;
+    }
+    // fns.c internal_equal: BASE_EQ objects are equal, before any walk.
+    if left.eq_value(*right) {
+        return true;
     }
     if let Some(equal) = crate::lisp::primitives::strings::string_texts_equal_in_place(left, right)
     {
