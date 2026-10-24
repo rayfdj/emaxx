@@ -361,10 +361,10 @@ impl Interpreter {
     /// Create and register a new empty buffer.
     pub fn create_buffer(&mut self, name: &str) -> (u64, String) {
         // GNU reset_buffer initializes a new buffer's directory from the
-        // current buffer, while other per-buffer state such as read-only is
-        // reset.  Materialize that inherited value on the new buffer instead
-        // of making unrelated dynamic per-buffer bindings leak at lookup.
-        let inherited_directory = self.symbol_value_key(cached_symbol!("default-directory"));
+        // current buffer's slot (a `let' of it there included).
+        let inherited_directory = self
+            .symbol_value_key(cached_symbol!("default-directory"))
+            .unwrap_or(Value::Nil);
         let id = self.alloc_buffer_id();
         let mut buffer = crate::buffer::Buffer::new(name);
         buffer.text_conversion_style = self.native_text_conversion_style_default();
@@ -377,17 +377,10 @@ impl Interpreter {
         self.inactive_buffers
             .push((id, crate::lisp::types::BufferRef::new(id, buffer)));
         self.buffer_list.push((id, name.to_string()));
-        // The two locals by their symbols (`set_buffer_local_value_symbol'),
-        // held interned, not found by their names for each buffer.
-        if let Some(directory) = inherited_directory {
-            let symbol = cached_symbol!("default-directory").with(Clone::clone);
-            self.set_buffer_local_value_symbol(id, &symbol, directory);
-        }
-        // GNU reset_buffer materializes buffer-read-only as a local nil in
-        // every new buffer.  This keeps a process-wide dynamic binding in
-        // the creating buffer from making a fresh temporary buffer read-only.
-        let symbol = cached_symbol!("buffer-read-only").with(Clone::clone);
-        self.set_buffer_local_value_symbol(id, &symbol, Value::Nil);
+        // Every always-local slot is the new buffer's own from the start,
+        // so neither a `let' in the creating buffer nor a `setq-default'
+        // (buffer_defaults) reaches it.
+        self.reset_always_local_slots(id, inherited_directory);
         primitives::casetab::reset_buffer_case_tables(self, id);
         (id, name.to_string())
     }
@@ -1244,6 +1237,10 @@ impl Interpreter {
         self.delete_buffer_overlays(id);
         let selected_window_showed_buffer = self.selected_window_buffer_id() == id;
         self.detach_markers_for_buffer(id);
+        // A *scratch* made to replace the last buffer inherits its directory.
+        let directory = self
+            .buffer_local_value(id, "default-directory")
+            .unwrap_or(Value::Nil);
         self.remove_buffer_locals(id);
         self.buffer_local_hooks.remove(&id);
         self.buffer_case_tables
@@ -1284,6 +1281,7 @@ impl Interpreter {
                 );
                 self.current_buffer_id = scratch_id;
                 self.buffer_list.push((scratch_id, "*scratch*".to_string()));
+                self.reset_always_local_slots(scratch_id, directory);
             }
         } else {
             let _ = self.remove_buffer_id(id);

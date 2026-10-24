@@ -1634,6 +1634,7 @@ impl DumpContext {
                 BUFFER_UPCASE_TABLE,
                 BUFFER_CASE_CANON_TABLE,
                 BUFFER_CASE_EQV_TABLE,
+                BUFFER_MARK_ACTIVE,
             ] {
                 self.field_lv(
                     start,
@@ -1677,7 +1678,6 @@ impl DumpContext {
         let mut flags = 0;
         for (set, bit) in [
             (parts.multibyte, BUFFER_FLAG_MULTIBYTE),
-            (parts.mark_active, BUFFER_FLAG_MARK_ACTIVE),
             (parts.forced_modified, BUFFER_FLAG_FORCED_MODIFIED),
             (parts.autosaved, BUFFER_FLAG_AUTOSAVED),
             (parts.undo_disabled, BUFFER_FLAG_UNDO_DISABLED),
@@ -1791,6 +1791,11 @@ impl DumpContext {
             (
                 BUFFER_CASE_EQV_TABLE as usize,
                 case_slot(|tables| tables.eqv),
+                WEIGHT_STRONG,
+            ),
+            (
+                BUFFER_MARK_ACTIVE as usize,
+                parts.mark_active,
                 WEIGHT_STRONG,
             ),
         ];
@@ -2509,11 +2514,12 @@ pub(crate) const BUFFER_TEXT_CONVERSION_STYLE: u32 = 25;
 pub(crate) const BUFFER_UPCASE_TABLE: u32 = 26;
 pub(crate) const BUFFER_CASE_CANON_TABLE: u32 = 27;
 pub(crate) const BUFFER_CASE_EQV_TABLE: u32 = 28;
+/// BVAR (b, mark_active), any Lisp object.
+pub(crate) const BUFFER_MARK_ACTIVE: u32 = 29;
 /// The variable part: the local bindings, the markers, the undo entries.
-pub(crate) const BUFFER_VARIABLE_PART: u32 = 29;
+pub(crate) const BUFFER_VARIABLE_PART: u32 = 30;
 // The flag bits of BUFFER_FLAGS.
 pub(crate) const BUFFER_FLAG_MULTIBYTE: u64 = 1;
-pub(crate) const BUFFER_FLAG_MARK_ACTIVE: u64 = 2;
 pub(crate) const BUFFER_FLAG_FORCED_MODIFIED: u64 = 4;
 pub(crate) const BUFFER_FLAG_AUTOSAVED: u64 = 8;
 pub(crate) const BUFFER_FLAG_UNDO_DISABLED: u64 = 16;

@@ -595,6 +595,45 @@ fn assert_upstream_primitive_contract(program: &str, expected: &str) {
 }
 
 #[test]
+fn always_local_slots_are_each_buffers_own_like_buffer_c() {
+    // buffer.c: an index -1 DEFVAR_PER_BUFFER slot is every buffer's own
+    // from reset_buffer on; buffer_defaults only answers default-value.
+    assert_oracle_contract_matches_interpreter(
+        r#"(with-temp-buffer
+             (let ((other (generate-new-buffer " other")))
+               (unwind-protect
+                   (list
+                    (default-value 'mode-name)
+                    (default-value 'default-directory)
+                    (progn (setq mode-name "M") (kill-local-variable 'mode-name) mode-name)
+                    (progn (setq local-minor-modes '(x) mark-active t mode-name "N")
+                           (kill-all-local-variables)
+                           (list local-minor-modes mark-active mode-name))
+                    (progn (setq-default mode-name "D")
+                           (prog1 (list mode-name (with-current-buffer other mode-name)
+                                        (with-temp-buffer mode-name))
+                             (setq-default mode-name nil)))
+                    (let ((mark-active 'zz))
+                      (list mark-active (default-value 'mark-active)
+                            (buffer-local-value 'mark-active other)))
+                    (with-current-buffer other
+                      (setq buffer-file-name "/tmp/x")
+                      (prog1 (with-temp-buffer (buffer-local-value 'buffer-file-name other))
+                        (setq buffer-file-name nil)))
+                    (mapcar (lambda (e) (if (consp e) (car e) e))
+                            (buffer-local-variables other)))
+                 (kill-buffer other))))"#,
+        "(nil nil \"M\" ((x) t \"Fundamental\") (\"Fundamental\" \"Fundamental\" \"Fundamental\") \
+         (zz nil nil) \"/tmp/x\" (buffer-undo-list buffer-display-time buffer-display-count \
+         buffer-invisibility-spec buffer-file-truename point-before-scroll \
+         buffer-auto-save-file-format buffer-file-format enable-multibyte-characters mark-active \
+         mode-name local-minor-modes major-mode buffer-read-only buffer-auto-save-file-name \
+         buffer-saved-size buffer-backed-up default-directory buffer-file-name))",
+        "always-local slots",
+    );
+}
+
+#[test]
 fn looking_at_does_not_create_or_assign_unrelated_lisp_variables() {
     assert_oracle_contract_matches_interpreter(
         r#"(with-temp-buffer

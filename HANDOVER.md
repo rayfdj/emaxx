@@ -5019,6 +5019,66 @@ setup_process_coding_systems's check now refuses). A 13-form
   still gives the startup directory and "Fundamental" (GNU: nil), Emaxx's
   global bindings of them standing in for buffer_defaults; (3) the round
   66 items (2) to (5).
+- **Round 68: buffer.c's always-local slots.** Every DEFVAR_PER_BUFFER
+  slot whose buffer_local_flags index is -1 is each buffer's own from the
+  start, as reset_buffer and reset_buffer_local_variables make it: a new
+  buffer gets `default-directory` (the creating buffer's, a `let` of it
+  included), `buffer-backed-up`, `buffer-saved-size`,
+  `buffer-auto-save-file-name`, `buffer-read-only`, `major-mode`
+  (`fundamental-mode`), `local-minor-modes`, `mode-name` (QSFundamental,
+  one string every buffer shares, a new dumped root as GNU staticpros it),
+  `buffer-file-format`, `buffer-auto-save-file-format` (t),
+  `point-before-scroll`, `buffer-invisibility-spec` (t),
+  `buffer-display-count` and `buffer-display-time`, and the first buffer
+  gets them with the working directory (init_buffer). The slots the
+  buffer record holds (`buffer-file-name`, `buffer-file-truename`,
+  `mark-active`, `enable-multibyte-characters`) answer
+  `buffer-local-value`, `local-variable-p`, `buffer-local-variables` and
+  `let` for the buffer named, as `text-conversion-style` did: a `let`
+  binds the buffer's slot and restores it there, where it bound the
+  default (`default-value` of `mark-active` showed the `let`'s value).
+  `mark-active` holds any Lisp object (it kept t or nil, and nil whenever
+  there was no mark), a new pdumper word. The global cells are
+  buffer_defaults': `default-value` of `mode-name` and
+  `default-directory` is nil, `setq-default` reaches no buffer.
+  `kill-local-variable` of a DEFVAR_PER_BUFFER slot tells no watcher and
+  returns VARIABLE as given, an index -1 slot staying as it is;
+  `kill-all-local-variables` keeps every index -1 slot but the three
+  reset_buffer_local_variables assigns (`major-mode`, `mode-name`,
+  `buffer-invisibility-spec`), returns indexed ones to their defaults
+  unless buffer_permanent_local_flags keeps them (`truncate-lines`,
+  `buffer-file-coding-system`), and tells watchers only of the alist
+  cells; `buffer-local-variables` lists `buffer-undo-list`, the slots in
+  struct buffer's order reversed, then the ordinary locals oldest first.
+  `make-indirect-buffer` gives a non-clone a fresh mark and `mark-active`
+  nil (it set the base's mark and activated it) and a clone the base's
+  mark and `mark-active`, then resets its display count, backup and
+  auto-save state and minor modes, sets `buffer-save-without-query` and
+  `buffer-file-number` and kills a local `buffer-stale-function` as
+  Fmake_indirect_buffer does. Before, an always-local slot without a
+  local cell read the global binding, so `setq-default mode-name` renamed
+  every buffer's mode, `kill-local-variable` and
+  `kill-all-local-variables` dropped `local-minor-modes` and
+  `mark-active`, and another buffer's `buffer-file-name` read nil. A
+  49-form probe of defaults, kills, lets, `setq-default`, other buffers'
+  values, `buffer-local-variables` (its order included) and indirect
+  buffers gives GNU's output but for `makunbound`; the dired, derived,
+  easy-mmode, edebug, ert-x, generator, subr-x, files, files-x, hi-lock,
+  minibuffer, elisp-mode, simple, subr, fill, buffer, data, editfns,
+  fileio, minibuf, textprop and undo tests give GNU's results. Still
+  open: (1) `makunbound` of a DEFVAR_PER_BUFFER slot: GNU's set_internal
+  makes the symbol plain and void in every buffer (`default-boundp` nil,
+  `local-variable-if-set-p` nil), its C slots kept for C readers; Emaxx
+  voids the current buffer's cell -- porting it needs Emaxx's Rust
+  readers of these slots to stop going through the symbol; (2) the round
+  67 items (1) and (3).
+  A temporary buffer costs 19.8K instructions (`with-temp-buffer` with
+  one insertion, 20,000 times under callgrind; 17.7K on `183603d`, GNU's
+  wall time three times Emaxx's): its 14 cells go into a fresh table at
+  once. Measuring it found the sweep reclaiming each dead buffer with a
+  linear search of the all-buffers list, quadratic in the buffers one
+  collection frees (39.4K a buffer once the cells made collections
+  rarer); the list is an address set now.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -5647,7 +5707,9 @@ bullet's item (4) describes. **On `d99d85c`** (round 64): full Rust gate
 passed (run 40097399568); frozen matched 7,926 of 7,928 tests (run
 40097401438), the same two bookmark tests, which pass after round 65.
 **On `6002362`** (rounds 65 and 66): full Rust gate passed (run
-40113387970), frozen passed on its first attempt (run 40113390272). Run
+40113387970), frozen passed on its first attempt (run 40113390272).
+**On `183603d`** (round 67): full Rust gate passed (run 40117891134),
+frozen passed on its first attempt (run 40117893169). Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that
 locale. With none set here, `char_charset_family_follows_charset_c` and

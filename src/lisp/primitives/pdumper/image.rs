@@ -458,6 +458,8 @@ pub(crate) enum RootSlot {
     /// interval_insert_in_front_hooks.
     IntervalInsertBehindHooks = 58,
     IntervalInsertInFrontHooks = 59,
+    /// buffer.c's staticpro'd QSFundamental.
+    FundamentalModeName = 60,
 }
 
 impl RootSlot {
@@ -520,6 +522,7 @@ impl RootSlot {
             57 => Self::UnicodeMenuCaseTable,
             58 => Self::IntervalInsertBehindHooks,
             59 => Self::IntervalInsertInFrontHooks,
+            60 => Self::FundamentalModeName,
             _ => return None,
         })
     }

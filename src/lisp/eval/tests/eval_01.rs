@@ -6269,6 +6269,19 @@ fn new_buffers_inherit_default_directory_but_not_read_only() {
 }
 
 #[test]
+fn buffer_local_variables_order_lists_every_native_slot_once() {
+    let mut ordered = crate::lisp::eval::BUFFER_LOCAL_VARIABLES_ORDER.to_vec();
+    let mut manifest = GNU_NATIVE_PER_BUFFER_VARIABLES
+        .iter()
+        .map(|variable| variable.name)
+        .filter(|name| !matches!(*name, "buffer-undo-list" | "syntax-propertize--done"))
+        .collect::<Vec<_>>();
+    ordered.sort_unstable();
+    manifest.sort_unstable();
+    assert_eq!(ordered, manifest);
+}
+
+#[test]
 fn native_per_buffer_manifest_is_special_and_automatically_local() {
     let interp = Interpreter::new();
     let env = Env::new();

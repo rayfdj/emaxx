@@ -476,7 +476,7 @@ define_dispatch!(
                 let clone = args.get(2).is_some_and(|value| value.is_truthy());
                 let inhibit_hooks = args.get(3).is_some_and(|value| value.is_truthy());
                 let (new_id, _) = interp.create_buffer(&new_name);
-                let (text, props, point, mark, base_overlays, restriction, multibyte) = {
+                let (text, props, point, mark, mark_active, base_overlays, restriction, multibyte) = {
                     let base = interp.get_buffer_by_id(base_id).ok_or_else(|| {
                         LispError::Signal(format!("No buffer with id {}", base_id))
                     })?;
@@ -485,6 +485,7 @@ define_dispatch!(
                         base.full_property_spans(),
                         base.point(),
                         base.mark(),
+                        base.mark_active_value(),
                         base.overlays.iter().collect::<Vec<_>>(),
                         base.restriction(),
                         base.is_multibyte(),
@@ -503,8 +504,14 @@ define_dispatch!(
                     buffer.set_multibyte(multibyte);
                     buffer.restore_restriction(restriction.0, restriction.1);
                     buffer.goto_char(point);
-                    if let Some(mark) = mark {
-                        buffer.set_mark(mark);
+                    // A fresh mark pointing nowhere and `mark-active' nil
+                    // (reset_buffer), unless clone_per_buffer_values copies
+                    // the base's mark and `mark-active'.
+                    if clone {
+                        if let Some(mark) = mark {
+                            buffer.set_mark_position(mark);
+                        }
+                        buffer.set_mark_active_value(mark_active);
                     }
                     // Property spans are 1-based buffer positions, the
                     // same coordinates set_text_properties consumes.
@@ -528,6 +535,42 @@ define_dispatch!(
                 interp.register_indirect_buffer(new_id, base_id);
                 if clone {
                     interp.clone_buffer_local_state(base_id, new_id);
+                    // The clone visits no file, has its own display count,
+                    // backup history and auto-save file, and no minor modes.
+                    for (slot, value) in [
+                        ("buffer-display-count", Value::Integer(0)),
+                        ("buffer-backed-up", Value::Nil),
+                        ("local-minor-modes", Value::Nil),
+                        ("buffer-auto-save-file-name", Value::Nil),
+                    ] {
+                        interp.set_buffer_local_value(new_id, slot, value);
+                    }
+                    // Then, in the clone, Fset of buffer-save-without-query
+                    // and buffer-file-number, and no buffer-local
+                    // buffer-stale-function the base has.
+                    let saved = interp.current_buffer_id();
+                    interp.set_current_buffer_id(new_id)?;
+                    let result = (|| {
+                        for variable in ["buffer-save-without-query", "buffer-file-number"] {
+                            call_named_function(
+                                interp,
+                                "set",
+                                &[Value::symbol(variable), Value::Nil],
+                                env,
+                            )?;
+                        }
+                        if interp.has_buffer_local_binding(base_id, "buffer-stale-function") {
+                            call_named_function(
+                                interp,
+                                "kill-local-variable",
+                                &[Value::symbol("buffer-stale-function")],
+                                env,
+                            )?;
+                        }
+                        Ok::<(), LispError>(())
+                    })();
+                    interp.set_current_buffer_id(saved)?;
+                    result?;
                     interp.run_clone_indirect_buffer_hook(new_id, env)?;
                 }
                 if !inhibit_hooks {
@@ -659,26 +702,43 @@ define_dispatch!(
                     Some(value) => interp.resolve_buffer_id(value)?,
                     None => interp.current_buffer_id(),
                 };
-                // buffer.c:buffer_lisp_local_variables: a void local is the
-                // bare symbol, a bound one `(symbol . value)'.
-                let mut vars = interp
-                    .buffer_local_variables(buffer_id)
-                    .into_iter()
-                    .map(|(name, value)| {
-                        if matches!(value.kind(), Kind::Unbound) {
-                            Value::Symbol(name.into())
-                        } else {
-                            Value::cons(Value::Symbol(name.into()), value)
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let buffer = interp
-                    .get_buffer_by_id(buffer_id)
-                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
-                vars.push(Value::cons(
+                // buffer.c:Fbuffer_local_variables: `buffer-undo-list'
+                // first, then the DEFVAR_PER_BUFFER slots local in BUFFER
+                // (every index -1 one) in struct buffer's order reversed,
+                // then the alist cells oldest first
+                // (buffer_lisp_local_variables); a void one is the bare
+                // symbol, a bound one `(symbol . value)'.
+                let entry = |name: &str, value: Value| {
+                    if matches!(value.kind(), Kind::Unbound) {
+                        Value::Symbol(name.into())
+                    } else {
+                        Value::cons(Value::Symbol(name.into()), value)
+                    }
+                };
+                let undo_list = {
+                    let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
+                        LispError::Signal(format!("No buffer with id {}", buffer_id))
+                    })?;
+                    buffer_undo_list_value(&buffer)
+                };
+                let mut vars = vec![Value::cons(
                     Value::Symbol("buffer-undo-list".into()),
-                    buffer_undo_list_value(&buffer),
-                ));
+                    undo_list,
+                )];
+                for name in crate::lisp::eval::BUFFER_LOCAL_VARIABLES_ORDER {
+                    if let Some(local) = interp.buffer_local_binding(buffer_id, name) {
+                        vars.push(entry(name, local.unwrap_or(Value::Unbound)));
+                    }
+                }
+                vars.extend(
+                    interp
+                        .buffer_local_variables(buffer_id)
+                        .into_iter()
+                        .filter(|(name, _)| {
+                            crate::lisp::eval::native_per_buffer_slot(name).is_none()
+                        })
+                        .map(|(name, value)| entry(&name, value)),
+                );
                 Ok(Value::list(vars))
             }
             #[cfg(target_os = "linux")]
@@ -693,12 +753,17 @@ define_dispatch!(
             "kill-local-variable" => {
                 need_args(name, args, 1)?;
                 let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
-                // data.c:Fkill_local_variable's BUFFER_OBJFWD branch
-                // resets the field and flag before its alist watcher path.
-                if interp.has_native_text_conversion_style(&symbol) {
-                    interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
-                    // The forwarded branch returns VARIABLE as supplied,
-                    // including an alias, before the alist branch rewrites it.
+                // data.c:Fkill_local_variable's BUFFER_OBJFWD branch: an
+                // indexed slot returns to its default with its flag
+                // cleared, an always-local one (index -1) stays as it is;
+                // no watcher is told, and VARIABLE comes back as supplied,
+                // an alias included, before the alist branch rewrites it.
+                if let Some(slot) = crate::lisp::eval::native_per_buffer_slot(&symbol)
+                    && interp.is_per_buffer_special(&symbol)
+                {
+                    if !slot.always_local {
+                        interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
+                    }
                     return Ok(args[0]);
                 }
                 interp.notify_variable_watchers(

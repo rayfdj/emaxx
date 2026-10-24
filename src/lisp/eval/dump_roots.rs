@@ -577,6 +577,7 @@ impl Interpreter {
         let [behind, in_front] = self.interval_insert_hooks;
         groups.push((RootSlot::IntervalInsertBehindHooks, behind));
         groups.push((RootSlot::IntervalInsertInFrontHooks, in_front));
+        groups.push((RootSlot::FundamentalModeName, self.fundamental_mode_name));
         groups.push((
             RootSlot::StandardSyntaxTable,
             Value::CharTable(self.standard_syntax_table_id),
@@ -1107,6 +1108,7 @@ mod install {
                 }
                 RootSlot::IntervalInsertBehindHooks => self.interval_insert_hooks[0] = *value,
                 RootSlot::IntervalInsertInFrontHooks => self.interval_insert_hooks[1] = *value,
+                RootSlot::FundamentalModeName => self.fundamental_mode_name = *value,
                 RootSlot::SyntaxWordChars => {
                     let mut codes = Vec::new();
                     for entry in expect_vector(value, "syntax word chars")? {

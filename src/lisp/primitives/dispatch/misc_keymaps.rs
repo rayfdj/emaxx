@@ -1414,11 +1414,24 @@ define_dispatch!(
                 let buffer_id = interp.current_buffer_id();
                 let kill_permanent = args.first().is_some_and(Value::is_truthy);
                 run_named_hooks(interp, "change-major-mode-hook", env, Some(buffer_id))?;
-                // buffer.c resets native fields directly; only the alist
-                // cells participate in watchers and permanent-local props.
+                // buffer.c:reset_buffer_local_variables.  Only the alist
+                // cells (ordinary buffer-local variables) participate in
+                // watchers and `permanent-local' properties; the
+                // DEFVAR_PER_BUFFER slots are reset directly: an index -1
+                // slot is kept (but for the three assigned below), an
+                // indexed one returns to its default unless
+                // buffer_permanent_local_flags keeps it.
                 let locals = interp.buffer_local_cells(buffer_id);
                 let mut permanent = Vec::new();
                 for (name, value) in &locals {
+                    if let Some(slot) = crate::lisp::eval::native_per_buffer_slot(name.as_str()) {
+                        if slot.always_local || (slot.permanent && !kill_permanent) {
+                            permanent.push((*name, *value));
+                        } else {
+                            interp.mark_buffer_local_special_binding_killed(buffer_id, name);
+                        }
+                        continue;
+                    }
                     let preserve = !kill_permanent
                         && interp
                             .get_symbol_property(name, "permanent-local")
@@ -1444,6 +1457,7 @@ define_dispatch!(
                 for (name, value) in permanent {
                     interp.set_buffer_local_value(buffer_id, &name, value);
                 }
+                interp.reset_major_mode_slots(buffer_id);
                 Ok(Value::Nil)
             }
             "force-mode-line-update" => {

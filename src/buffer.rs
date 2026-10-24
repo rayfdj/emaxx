@@ -80,8 +80,9 @@ pub struct Buffer {
     /// position with the actual mark object, without retaining a position copy.
     mark: BufferMark,
 
-    /// True when the region between point and mark is active.
-    mark_active: bool,
+    /// BVAR (b, mark_active): any Lisp object, non-nil when the region
+    /// between point and mark is active.
+    mark_active: Value,
 
     /// Bumped on every modification.
     modiff: ModCount,
@@ -780,7 +781,7 @@ pub(crate) struct BufferImage {
     pub(crate) text: String,
     pub(crate) pt: usize,
     pub(crate) mark: Option<usize>,
-    pub(crate) mark_active: bool,
+    pub(crate) mark_active: Value,
     pub(crate) modiff: ModCount,
     pub(crate) chars_modiff: ModCount,
     pub(crate) save_modiff: ModCount,
@@ -943,7 +944,7 @@ impl Buffer {
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: 1,
             mark: BufferMark::Position(None),
-            mark_active: false,
+            mark_active: Value::Nil,
             modiff: 1,
             chars_modiff: 1,
             save_modiff: 1,
@@ -984,7 +985,7 @@ impl Buffer {
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: 1,
             mark: BufferMark::Position(None),
-            mark_active: false,
+            mark_active: Value::Nil,
             modiff: 1,
             chars_modiff: 1,
             save_modiff: 1,
@@ -1550,12 +1551,17 @@ impl Buffer {
     }
 
     pub fn mark_active(&self) -> bool {
+        !self.mark_active.is_nil()
+    }
+
+    /// `mark-active' as stored, any Lisp object.
+    pub fn mark_active_value(&self) -> Value {
         self.mark_active
     }
 
     pub fn set_mark(&mut self, pos: usize) {
         self.set_mark_position(pos);
-        self.mark_active = true;
+        self.mark_active = Value::T;
     }
 
     /// Move the buffer's mark marker without changing whether the region is
@@ -1571,8 +1577,10 @@ impl Buffer {
         }
     }
 
-    pub fn set_mark_active(&mut self, active: bool) {
-        self.mark_active = active && self.mark().is_some();
+    /// A store into the slot: buffer.c keeps whatever `mark-active' is
+    /// set to, mark or no mark.
+    pub fn set_mark_active_value(&mut self, value: Value) {
+        self.mark_active = value;
     }
 
     pub fn clear_mark(&mut self) {
@@ -1580,11 +1588,11 @@ impl Buffer {
             BufferMark::Position(_) => self.mark = BufferMark::Position(None),
             BufferMark::Object { marker, .. } => marker.detach(),
         }
-        self.mark_active = false;
+        self.mark_active = Value::Nil;
     }
 
     pub fn deactivate_mark(&mut self) {
-        self.mark_active = false;
+        self.mark_active = Value::Nil;
     }
 
     pub fn region(&self) -> Option<(usize, usize)> {
@@ -1825,6 +1833,7 @@ impl Buffer {
             }
         }
         self.text_conversion_style = copy(&self.text_conversion_style);
+        self.mark_active = copy(&self.mark_active);
         for span in &mut self.text_properties {
             rewrite_properties(&mut span.props, copy);
         }
@@ -1863,6 +1872,7 @@ impl Buffer {
     /// payloads and attached overlay objects are Lisp roots.
     pub(crate) fn visit_lisp_values(&self, visit: &mut impl FnMut(&Value)) {
         visit(&self.text_conversion_style);
+        visit(&self.mark_active);
         if let Some(marker) = self.mark_object() {
             visit(&Value::Marker(marker));
         }
@@ -2891,7 +2901,7 @@ impl Buffer {
         self.overlays.clear();
         // Fkill_buffer detaches only markers whose buffer is dying. Its
         // mark can have been moved into another buffer and must survive there.
-        self.mark_active = false;
+        self.mark_active = Value::Nil;
         self.mark = BufferMark::Position(None);
         self.pt = 1;
         self.begv = 1;
@@ -3390,7 +3400,7 @@ impl Buffer {
         region: Option<(usize, usize)>,
         skip_newest_groups: usize,
     ) -> Result<Vec<UndoEntry>, BufferError> {
-        if region.is_none() || !self.mark_active {
+        if region.is_none() || self.mark_active.is_nil() {
             if skip_newest_groups == 0 {
                 return self.pop_latest_undo_group();
             }
