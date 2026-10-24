@@ -610,6 +610,10 @@ impl Interpreter {
         };
         let callable_name = match head_value.as_ref() {
             None => head_symbol,
+            // eval_sub reads `t''s function cell like any symbol's.
+            Some(value) if matches!(value.kind(), Kind::T) => {
+                Some(crate::lisp::types::symbols::builtin_boolean(true))
+            }
             Some(value) => self.callable_symbol_name(value, env),
         };
         // Regular function call
@@ -1910,8 +1914,15 @@ impl Interpreter {
             return self.execute_bytecode_funcall_body(closure, args, env);
         }
         let mut owned_name: Option<SymbolName> = None;
-        let func = match func.kind() {
-            Kind::Symbol(name) => match self.resolve_symbol_call(&name, env)? {
+        // `t' is a symbol too: funcall_general reads its function cell,
+        // void unless `fset' gave it one.
+        let symbol = match func.kind() {
+            Kind::Symbol(name) => Some(name),
+            Kind::T => Some(crate::lisp::types::symbols::builtin_boolean(true)),
+            _ => None,
+        };
+        let func = match symbol {
+            Some(name) => match self.resolve_symbol_call(&name, env)? {
                 FunctionResolution::DirectBuiltin(subr) => {
                     return primitives::call_with_facts(
                         self,
@@ -1938,7 +1949,7 @@ impl Interpreter {
                     value
                 }
             },
-            other => other.value(),
+            None => func,
         };
         let original_name = original_name.or_else(|| owned_name.as_ref().map(CallName::Symbol));
         // A symbol's interpreted closure, as one called directly above.

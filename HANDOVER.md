@@ -4487,6 +4487,41 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   printed docstrings are GNU's (one hash over twelve functions), and
   fns, doc, help, help-fns, keymap, data, subr, cl-lib, seq, coding,
   charset and mule tests give GNU's results.
+- **Rounds 58 and 59: minibuf.c's completion functions and buffer.c's
+  `generate-new-buffer-name`.** `execute-extended-command--shorter` was
+  2.9 times GNU's (0.55 s against 0.19) and `all-completions` 2.6 times
+  on a list and 4 times on the obarray. `try-completion`,
+  `all-completions` and `test-completion` collected every candidate's
+  name into Rust strings before matching, compared them with
+  `eq_ignore_ascii_case`, and kept a fresh name per symbol. They are now
+  ports of `Ftry_completion`, `Fall_completions` and `Ftest_completion`:
+  minibuf.c's table type (hash table, obarray with `check_obarray` on a
+  vector, nil or a cons that is no function as a list, anything else
+  called as a function, so `t` is void and 5 invalid), one walk over the
+  list, obarray or hash table with its elements rooted across the
+  predicate's calls, the prefix test and the best match's common prefix
+  through `Fcompare_strings` (`compare_string_ranges`, split out of
+  `compare-strings`), `match_regexps` through `fast_string_match` with
+  the canonical case table, `hide-spaces`, the user's case kept on an
+  exact match, and `test-completion` through `assoc-string`, the
+  obarray lookup or the hash lookup and then a `compare-strings` loop. A
+  circular list signals `circular-list` where GNU would loop. The
+  evaluator, `funcall` and `functionp` now read `t`'s function cell like
+  any symbol's (`(funcall t)` is `(void-function t)`, and `fset` on `t`
+  works), where Emaxx had said `invalid-function`.
+  `generate-new-buffer-name` tries `NAME-NNNNNN` with a random number
+  first for a name that starts with a space, as buffer.c does. Wall, GNU
+  / Emaxx before / after: `all-completions` with a regexp over an
+  18,000-string list ten times 0.023 / 0.080 / 0.018 s, over the obarray
+  with `commandp` 0.013 / 0.057 / 0.016 s,
+  `execute-extended-command--shorter` three times 0.22 / 0.55 / 0.29 s
+  (the rest is `string-match` with a lazy `.*?`, 1.4 to 3 times GNU's).
+  A 97-line probe of the three functions over lists, alists, obarrays,
+  hash tables, predicates, regexps, case folding, function tables and
+  errors gives GNU's output, as do minibuf, minibuffer, completion,
+  completion-preview, simple, buffer, eval, data, subr, help-fns and
+  files tests. Two new tests check the completion functions and
+  `generate-new-buffer-name` against the oracle's answers.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -5097,7 +5132,9 @@ frozen passed on its first attempt (run 40056465430). **On `d1a3230`**
 first attempt (run 40058057152). **On `d3b2ee3`** (round 54): full Rust
 gate passed (run 40063298332), frozen passed on its first attempt (run
 40063300298). **On `0148bb1`** (round 55): full Rust gate passed (run
-40066473882), frozen passed on its first attempt (run 40066475799). Run
+40066473882), frozen passed on its first attempt (run 40066475799).
+**On `71b5174`** (rounds 56 and 57): full Rust gate passed (run
+40073624210), frozen passed on its first attempt (run 40073625996). Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that
 locale. With none set here, `char_charset_family_follows_charset_c` and

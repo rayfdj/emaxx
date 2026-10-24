@@ -2327,6 +2327,8 @@ pub(crate) fn resolve_callable(
     };
     match callable.kind() {
         Kind::Symbol(name) => interp.lookup_function(&name, env),
+        // `t' is a symbol whose function cell `fset' may fill.
+        Kind::T => interp.lookup_function(&crate::lisp::types::symbols::builtin_boolean(true), env),
         _ => Ok(callable),
     }
 }

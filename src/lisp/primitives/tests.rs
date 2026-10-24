@@ -17399,6 +17399,88 @@ fn charset_codings_go_through_the_charset_table_like_charset_c() {
 }
 
 #[test]
+fn completion_walks_lists_obarrays_and_hash_tables_like_minibuf_c() {
+    // minibuf.c: Ftry_completion keeps the best match's common prefix
+    // (Fcompare_strings, the user's case on an exact match with
+    // completion-ignore-case), Fall_completions answers each match in
+    // table order (a leading space hidden by HIDE-SPACES), and
+    // Ftest_completion goes through assoc-string, oblookup or the hash
+    // lookup.  A table that is no list, obarray or hash table is called as
+    // a function, so `t' is void and 5 invalid.  The oracle's answer.
+    let program = r#"
+(let (out (l '("foo" "foobar" "fooBaz" "bar" " hidden" "Foo" foo-sym nil 3 ("fooq" . 1)))
+      (h (make-hash-table :test 'equal)) (ob (obarray-make)))
+  (puthash "alpha" 1 h) (puthash "alpine" 2 h) (puthash 'alps 3 h) (puthash 5 6 h)
+  (intern "car-thing" ob) (intern "car-other" ob) (intern "cdr-thing" ob)
+  (push (list (try-completion "f" l) (try-completion "foob" l) (try-completion "foobar" l)
+              (try-completion "zz" l) (all-completions "foo" l) (all-completions " " l)
+              (all-completions "" l nil t) (test-completion "fooq" l) (test-completion "foo-sym" l))
+        out)
+  (let ((completion-ignore-case t))
+    (push (list (try-completion "FOOB" l) (try-completion "fo" '("Foo" "FOO"))
+                (try-completion "fo" '("FOOx" "foo")) (test-completion "ALPHA" h))
+          out))
+  (let ((completion-regexp-list '("ba")))
+    (push (list (all-completions "foo" l) (try-completion "foo" l) (test-completion "foo" l)) out))
+  (push (list (sort (all-completions "al" h) #'string<) (try-completion "alp" h (lambda (_k v) (> v 1)))
+              (test-completion "alps" h) (sort (all-completions "car" ob) #'string<)
+              (try-completion "car" ob (lambda (s) (string-match "other" (symbol-name s))))
+              (test-completion "car" ob))
+        out)
+  (push (list (try-completion "x" (lambda (s p a) (list s p a)))
+              (test-completion "x" (lambda (s p a) (list s p a)))
+              (condition-case e (all-completions "a" 5) (error e))
+              (condition-case e (try-completion "x" t) (error e))
+              (condition-case e (try-completion 5 [1 2]) (error e))
+              (try-completion "nil" '(nil t)))
+        out)
+  (prin1-to-string (nreverse out)))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("completion contract should parse")
+        .expect("completion contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("completion contract should evaluate");
+    assert_eq!(
+        value,
+        Value::string(concat!(
+            "((\"foo\" \"foobar\" t nil (\"foo\" \"foobar\" \"fooBaz\" \"foo-sym\" \"fooq\") ",
+            "(\" hidden\") (\"foo\" \"foobar\" \"fooBaz\" \"bar\" \"Foo\" \"foo-sym\" \"nil\" \"fooq\") ",
+            "t t) (\"fooba\" \"Foo\" \"foo\" t) ((\"foobar\") \"foobar\" nil) ",
+            "((\"alpha\" \"alpine\" \"alps\") \"alp\" t (\"car-other\" \"car-thing\") \"car-other\" nil) ",
+            "((\"x\" nil nil) (\"x\" nil lambda) (invalid-function 5) (void-function t) ",
+            "(wrong-type-argument obarrayp [1 2]) t))"
+        ))
+    );
+}
+
+#[test]
+fn generate_new_buffer_name_tries_a_random_suffix_for_internal_names() {
+    // buffer.c:Fgenerate_new_buffer_name: a name starting with a space
+    // first tries NAME-NNNNNN (a random number below a million), then
+    // <2>, <3>... on that; other names go straight to <2>.
+    let program = r#"
+(progn
+  (get-buffer-create " int") (get-buffer-create "ext")
+  (format "%S" (list (string-match-p "\\` int-[0-9]+\\'" (generate-new-buffer-name " int"))
+        (generate-new-buffer-name "ext") (generate-new-buffer-name "ext" "ext")
+        (generate-new-buffer-name " fresh"))))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("buffer-name contract should parse")
+        .expect("buffer-name contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("buffer-name contract should evaluate");
+    assert_eq!(value, Value::string("(0 \"ext<2>\" \"ext\" \" fresh\")"));
+}
+
+#[test]
 fn help_describe_vector_describes_each_run_of_a_char_table_once() {
     // keymap.c:describe_vector: char_table_ref_and_range gives each run of
     // characters bound to one object, which is looked up in SHADOW and the

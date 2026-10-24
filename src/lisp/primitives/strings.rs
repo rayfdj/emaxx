@@ -450,25 +450,52 @@ pub(crate) fn compare_strings_value(
     };
     let left_end = clamp_end(args[2], left.borrow().len());
     let right_end = clamp_end(args[5], right.borrow().len());
-    let (left_start, left_end, mut left_byte) = {
+    let (left_start, left_end) = {
         let state = left.borrow();
-        let (from, to) = validate_subarray(args[0], args[1], left_end, state.len())?;
-        (
-            from,
-            to,
-            state.byte_offset(from).expect("validated string index"),
-        )
+        validate_subarray(args[0], args[1], left_end, state.len())?
     };
-    let (right_start, right_end, mut right_byte) = {
+    let (right_start, right_end) = {
         let state = right.borrow();
-        let (from, to) = validate_subarray(args[3], args[4], right_end, state.len())?;
-        (
-            from,
-            to,
-            state.byte_offset(from).expect("validated string index"),
-        )
+        validate_subarray(args[3], args[4], right_end, state.len())?
     };
     let ignore_case = args.get(6).is_some_and(Value::is_truthy);
+    compare_string_ranges(
+        interp,
+        &args[0],
+        (left_start, left_end),
+        &args[3],
+        (right_start, right_end),
+        ignore_case,
+        env,
+    )
+}
+
+/// The comparison of fns.c:Fcompare_strings over character ranges of two
+/// strings already validated: t when they are equal, else the 1-based
+/// position of the first difference, negative when LEFT is less.
+pub(crate) fn compare_string_ranges(
+    interp: &mut Interpreter,
+    left: &Value,
+    (left_start, left_end): (usize, usize),
+    right: &Value,
+    (right_start, right_end): (usize, usize),
+    ignore_case: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let Kind::StringObject(left) = left.kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), *left));
+    };
+    let Kind::StringObject(right) = right.kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), *right));
+    };
+    let mut left_byte = left
+        .borrow()
+        .byte_offset(left_start)
+        .expect("validated string index");
+    let mut right_byte = right
+        .borrow()
+        .byte_offset(right_start)
+        .expect("validated string index");
     let left_length = left_end - left_start;
     let right_length = right_end - right_start;
     let common_length = left_length.min(right_length);
