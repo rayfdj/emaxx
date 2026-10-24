@@ -439,10 +439,13 @@ fn eval_region_via_read_function(
     let stream = interp.buffer_value(buffer_id).expect("live buffer object");
     let mut result = Value::Nil;
     while interp.buffer.borrow().point() < end {
+        // As many comments as the text has characters: a fixnum, which
+        // forward-comment's count must be.
+        let comments = interp.buffer.borrow().size_total() as i64 + 1;
         let _ = crate::lisp::primitives::call(
             interp,
             "forward-comment",
-            &[Value::Integer(i64::MAX / 2)],
+            &[Value::Integer(comments)],
             env,
         );
         if interp.buffer.borrow().point() >= end {
@@ -686,10 +689,13 @@ fn eval_buffer_via_load_read_function(
     let stream = crate::lisp::primitives::call(interp, "current-buffer", &[], env)?;
     let mut result = Ok(Value::Nil);
     loop {
+        // As many comments as the text has characters: a fixnum, which
+        // forward-comment's count must be.
+        let comments = interp.buffer.borrow().size_total() as i64 + 1;
         let _ = crate::lisp::primitives::call(
             interp,
             "forward-comment",
-            &[Value::Integer(i64::MAX / 2)],
+            &[Value::Integer(comments)],
             env,
         );
         if interp.buffer.borrow().point() >= interp.buffer.borrow().point_max() {

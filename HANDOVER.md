@@ -4160,6 +4160,13 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   text's only (at most 1 KB); on the gate build undo-tests take 2.2 s
   and the three files after them (xdisp, xfaces, xml) give GNU's
   results. Clippy `-D warnings`, rustfmt and `git diff --check` pass.
+  Round 51's CI then found the loader's `eval-region` and `eval-buffer`
+  skipping the whitespace between forms with `forward-comment` of
+  `i64::MAX / 2`, a bignum here, which the ported count check rejects as
+  CHECK_FIXNUM does; the error was dropped, so edebug's and testcover's
+  reading went wrong. They pass the buffer's size plus one, a fixnum, and
+  cl-generic, cl-macs, edebug, gv and testcover tests give GNU's results
+  again, as do the 13 eval-region, eval-buffer and load tests.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4757,8 +4764,12 @@ frozen passed on its first attempt (run 39989919866). **On `8e2b9f8`**
 (round 50): full Rust gate passed (run 40021014339); frozen (run
 40021018468) stopped at `src/undo-tests.el`, which the gate build took
 over 180 s to run (bullet "Round 51"), after every earlier file had
-given its expected results. **On round 51's commit** both are
-dispatched with it. Locally,
+given its expected results. **On `d658dad`** (round 51): the Rust gate
+(run 40034219662) failed `eval_region_preserves_point_and_uses_the_supplied_reader`
+in its `primitives` group, and frozen (run 40034222838) failed 77 of
+7,928 outcomes in cl-generic, cl-macs, edebug, gv and testcover tests,
+all from the loader's oversized `forward-comment` count (bullet "Round
+51"). **On the fix's commit** both are dispatched with it. Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
