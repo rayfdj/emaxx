@@ -986,12 +986,23 @@ define_dispatch!(
                 let transformed = if name == "encode-coding-region" {
                     encode_coding_value(interp, &region, coding.as_deref(), return_string, env)?
                 } else {
+                    // decode_coding_object decodes into the destination
+                    // buffer as it is, multibyte or not; a string result
+                    // follows the coding.
+                    let dst_multibyte = match destination {
+                        Destination::Replace => Some(interp.buffer.borrow().is_multibyte()),
+                        Destination::Return => None,
+                        Destination::Buffer(id) => interp
+                            .get_buffer_by_id(id)
+                            .map(|buffer| buffer.is_multibyte()),
+                    };
                     decode_coding_text(
                         interp,
                         &region,
                         coding.as_deref(),
                         return_string,
                         true,
+                        dst_multibyte,
                         env,
                     )?
                 };
@@ -1106,12 +1117,18 @@ define_dispatch!(
                 let destination = code_convert_destination(interp, args.get(3))?;
                 // code_convert_string's ASCII shortcut applies only when
                 // returning a string, never when inserting into a buffer.
+                let dst_multibyte = destination.and_then(|id| {
+                    interp
+                        .get_buffer_by_id(id)
+                        .map(|buffer| buffer.is_multibyte())
+                });
                 let decoded = decode_coding_text(
                     interp,
                     &args[0],
                     coding.as_deref(),
                     nocopy,
                     destination.is_some(),
+                    dst_multibyte,
                     env,
                 )?;
                 match destination {

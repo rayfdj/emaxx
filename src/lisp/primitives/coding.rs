@@ -235,7 +235,11 @@ fn encode_charset_character_number(
 }
 
 /// coding-system-get: `plist-get' on the coding system's plist.
-fn coding_system_property(interp: &Interpreter, coding: &str, property: &str) -> Option<Value> {
+pub(crate) fn coding_system_property(
+    interp: &Interpreter,
+    coding: &str,
+    property: &str,
+) -> Option<Value> {
     let mut tail = interp.coding_system(coding)?.plist;
     while let Some((key, rest)) = tail.cons_values() {
         let (value, next) = rest.cons_values()?;
@@ -500,6 +504,29 @@ pub(crate) fn checked_coding_name(
         .coding_system_canonical_name(&symbol)
         .ok_or_else(|| coding_system_error(*value))
         .map(Some)
+}
+
+/// A coding system VALUE as given (an alias keeps its name), once
+/// CHECK_CODING_SYSTEM accepts it; None for nil.
+pub(crate) fn checked_coding_given(
+    interp: &Interpreter,
+    value: &Value,
+) -> Result<Option<String>, LispError> {
+    Ok(checked_coding_name(interp, value)?
+        .map(|_| value.symbol_str().map(str::to_string).unwrap_or_default()))
+}
+
+/// coding.c raw_text_coding_system: what a unibyte buffer reads CODING
+/// as -- a raw-text coding stays, one with an undecided eol becomes
+/// `raw-text', and any other the raw-text subsidiary of its eol type.
+pub(crate) fn raw_text_coding_system(interp: &Interpreter, coding: &str) -> String {
+    if interp.coding_system_kind_name(coding).as_deref() == Some("raw-text") {
+        return coding.to_string();
+    }
+    match coding_eol_type(interp, coding) {
+        None => "raw-text".into(),
+        Some(eol) => coding_variant_name(interp, "raw-text", Some(eol)),
+    }
 }
 
 pub(crate) fn checked_coding_symbol(
@@ -899,80 +926,11 @@ pub(crate) fn base64_decode_region_value(
     Ok(Value::Integer(inserted as i64))
 }
 
-pub(crate) fn ascii_only_text(text: &str) -> bool {
-    text.chars()
-        .all(|ch| raw_byte_from_regex_char(ch).unwrap_or_default() <= 0x7F && (ch as u32) <= 0x7F)
-}
-
 pub(crate) fn strip_utf8_bom(bytes: &[u8]) -> (bool, &[u8]) {
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         (true, &bytes[3..])
     } else {
         (false, bytes)
-    }
-}
-
-/// Like `detect_eol_type', but reports None when the bytes contain no
-/// line-ending byte at all: GNU's detector leaves the eol UNDECIDED then,
-/// and the detected coding keeps its bare base name (`undecided', `utf-8')
-/// instead of gaining a `-unix' suffix.
-pub(crate) fn detect_eol_type_opt(bytes: &[u8]) -> Option<i64> {
-    bytes
-        .iter()
-        .any(|byte| matches!(byte, b'\r' | b'\n'))
-        .then(|| detect_eol_type(bytes))
-}
-
-pub(crate) fn detect_eol_type(bytes: &[u8]) -> i64 {
-    let mut saw_crlf = false;
-    let mut saw_lf = false;
-    let mut saw_cr = false;
-    let mut index = 0usize;
-
-    while index < bytes.len() {
-        match bytes[index] {
-            b'\r' if bytes.get(index + 1) == Some(&b'\n') => {
-                saw_crlf = true;
-                index += 2;
-                continue;
-            }
-            b'\r' => saw_cr = true,
-            b'\n' => saw_lf = true,
-            _ => {}
-        }
-        index += 1;
-    }
-
-    if saw_crlf && !saw_lf {
-        1
-    } else if saw_cr && !saw_crlf && !saw_lf {
-        2
-    } else {
-        0
-    }
-}
-
-pub(crate) fn decode_bytes_with_explicit_eol(bytes: &[u8], eol_type: i64) -> Vec<u8> {
-    match eol_type {
-        1 => {
-            let mut decoded = Vec::with_capacity(bytes.len());
-            let mut index = 0usize;
-            while index < bytes.len() {
-                if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
-                    decoded.push(b'\n');
-                    index += 2;
-                } else {
-                    decoded.push(bytes[index]);
-                    index += 1;
-                }
-            }
-            decoded
-        }
-        2 => bytes
-            .iter()
-            .map(|byte| if *byte == b'\r' { b'\n' } else { *byte })
-            .collect(),
-        _ => bytes.to_vec(),
     }
 }
 
@@ -1343,15 +1301,28 @@ pub(crate) fn decode_big5_bytes(interp: &Interpreter, bytes: &[u8], coding: &str
 
 /// coding.c decode_coding_raw_text: each byte as itself, a non-ASCII one
 /// as its eight-bit character.
+/// The length of the ASCII run BYTES starts with, a word at a time.
+fn ascii_prefix_len(bytes: &[u8]) -> usize {
+    let mut i = 0;
+    while let Some(word) = bytes.get(i..i + 8) {
+        let word = u64::from_ne_bytes(word.try_into().expect("eight bytes"));
+        if word & 0x8080_8080_8080_8080 != 0 {
+            break;
+        }
+        i += 8;
+    }
+    while bytes.get(i).is_some_and(u8::is_ascii) {
+        i += 1;
+    }
+    i
+}
+
 pub(crate) fn decode_coding_raw_text(bytes: &[u8]) -> DecodedText {
     let mut out = DecodedText::new();
     out.text.reserve(bytes.len());
     let mut rest = bytes;
     while !rest.is_empty() {
-        let ascii = rest
-            .iter()
-            .position(|byte| !byte.is_ascii())
-            .unwrap_or(rest.len());
+        let ascii = ascii_prefix_len(rest);
         out.push_ascii(&rest[..ascii]);
         rest = &rest[ascii..];
         if let Some((&byte, after)) = rest.split_first() {
@@ -1809,22 +1780,26 @@ pub(crate) fn detect_auto_bom_coding(
     ))
 }
 
-/// setup_coding_system (FOUND) then adjust_coding_eol_type for an eol type
-/// already specified: a coding whose eol is undecided becomes its EOL
-/// subsidiary, one whose eol is settled stays.
+/// setup_coding_system (CODING) then adjust_coding_eol_type for EOL: a
+/// coding whose eol is undecided becomes its EOL subsidiary (that of the
+/// coding an alias names, whose eol-type vector the alias shares), one
+/// whose eol is settled stays.
 pub(crate) fn adjust_coding_eol_type(
     interp: &Interpreter,
-    found: &str,
+    coding: &str,
     eol: Option<i64>,
 ) -> String {
     match eol {
-        Some(eol) if interp.coding_system_eol_type_value(found).is_none() => {
+        Some(eol) if coding_eol_type(interp, coding).is_none() => {
+            let canonical = interp
+                .coding_system_canonical_name(coding)
+                .unwrap_or_else(|| coding.to_string());
             let base = interp
-                .coding_system_base_name(found)
-                .unwrap_or_else(|| found.to_string());
+                .coding_system_base_name(&canonical)
+                .unwrap_or(canonical);
             coding_variant_name(interp, &base, Some(eol))
         }
-        _ => found.to_string(),
+        _ => coding.to_string(),
     }
 }
 
@@ -1967,6 +1942,66 @@ impl DecodedText {
         self.text
             .push_str(unsafe { std::str::from_utf8_unchecked(run) });
         self.chars += run.len();
+    }
+
+    /// decode_eol's scan of the produced text: the EOL_SEEN bits, with
+    /// CRLF counted once and CR LF's second character skipped.
+    fn eol_seen(&self) -> u8 {
+        // CR and LF are never part of another character's UTF-8.
+        let bytes = self.text.as_bytes();
+        let mut seen = detect::EOL_SEEN_NONE;
+        let mut i = 0;
+        while let Some(offset) = memchr::memchr2(b'\n', b'\r', &bytes[i..]) {
+            let p = i + offset;
+            if bytes[p] == b'\n' {
+                seen |= detect::EOL_SEEN_LF;
+                i = p + 1;
+            } else if bytes.get(p + 1) == Some(&b'\n') {
+                seen |= detect::EOL_SEEN_CRLF;
+                i = p + 2;
+            } else {
+                seen |= detect::EOL_SEEN_CR;
+                i = p + 1;
+            }
+            if seen == detect::EOL_SEEN_LF | detect::EOL_SEEN_CR | detect::EOL_SEEN_CRLF {
+                break;
+            }
+        }
+        seen
+    }
+
+    /// decode_eol's conversion for EOL_TYPE (1 dos, 2 mac): a CR becomes a
+    /// newline under mac, and under dos each CR followed by a newline goes,
+    /// the side table and the charset runs moving with the characters
+    /// after it.
+    fn convert_eol(&mut self, eol_type: i64) {
+        match eol_type {
+            2 => self.text = self.text.replace('\r', "\n"),
+            1 if self.text.contains("\r\n") => {
+                // removed[i]: the CRs deleted before character index I.
+                let mut removed = Vec::with_capacity(self.chars + 1);
+                let mut count = 0;
+                let mut chars = self.text.chars().peekable();
+                while let Some(ch) = chars.next() {
+                    removed.push(count);
+                    if ch == '\r' && chars.peek() == Some(&'\n') {
+                        count += 1;
+                    }
+                }
+                removed.push(count);
+                let shift = |index: usize| index - removed[index.min(removed.len() - 1)];
+                for entry in &mut self.extended {
+                    entry.0 = shift(entry.0);
+                }
+                for run in &mut self.charsets {
+                    run.0 = shift(run.0);
+                    run.1 = shift(run.1);
+                }
+                self.text = self.text.replace("\r\n", "\n");
+                self.chars -= count;
+            }
+            _ => {}
+        }
     }
 
     /// Append OTHER, shifting its character offsets past these.
@@ -2175,34 +2210,6 @@ fn decode_translation_table_p(interp: &Interpreter, coding: &str, env: &Env) -> 
     }
 }
 
-/// decode_coding_gap: the BYTES a file read left in the gap as the text
-/// CODING decodes them to, with the charsets its decoder annotates.  When
-/// CODING is ASCII compatible with no post-read conversion and no
-/// translation table, and every byte is ASCII, the bytes are the text as
-/// they are (`disable-ascii-optimization' turns this off).  EOL
-/// conversion is the caller's, before.
-pub(crate) fn decode_coding_gap(
-    interp: &Interpreter,
-    env: &Env,
-    bytes: &[u8],
-    coding: &str,
-) -> Result<DecodedText, LispError> {
-    if bytes.is_ascii()
-        && interp
-            .lookup_var("disable-ascii-optimization", env)
-            .is_none_or(|value| value.is_nil())
-        && coding_system_is_ascii_compatible(interp, coding)
-        && coding_system_property(interp, coding, ":post-read-conversion")
-            .is_none_or(|value| value.is_nil())
-        && !decode_translation_table_p(interp, coding, env)
-    {
-        let mut decoded = DecodedText::new();
-        decoded.push_ascii(bytes);
-        return Ok(decoded);
-    }
-    decode_text_bytes_annotated(interp, bytes, coding)
-}
-
 pub(crate) fn decode_text_bytes_annotated(
     interp: &Interpreter,
     bytes: &[u8],
@@ -2219,6 +2226,17 @@ pub(crate) fn decode_text_bytes_annotated(
         &Env::new(),
     )
     .unwrap_or(canonical);
+    decode_bytes_with_coding(interp, bytes, &canonical)
+}
+
+/// The decoder of the coding system CANONICAL over BYTES, with no
+/// detection.
+fn decode_bytes_with_coding(
+    interp: &Interpreter,
+    bytes: &[u8],
+    canonical: &str,
+) -> Result<DecodedText, LispError> {
+    let canonical = canonical.to_string();
     let kind = interp
         .coding_system_kind_name(&canonical)
         .unwrap_or_else(|| canonical.clone());
@@ -2426,51 +2444,6 @@ pub(crate) fn unencodable_char_position_value(
     })
 }
 
-pub(crate) fn string_identity_for_coding(
-    text: &str,
-    coding: &str,
-    interp: &Interpreter,
-    encode: bool,
-    inhibit_eol_conversion: bool,
-) -> bool {
-    let eol_type = if inhibit_eol_conversion {
-        None
-    } else {
-        interp.coding_system_eol_type_value(coding)
-    };
-    let kind = interp
-        .coding_system_kind_name(coding)
-        .unwrap_or_else(|| coding.to_string());
-    let single_byte_translation = kind == "charset";
-    if encode {
-        if matches!(eol_type, Some(1) | Some(2)) && text.contains('\n') {
-            return false;
-        }
-        if kind == "utf-8-with-signature"
-            || (kind == "utf-8" && coding_system_requires_bom(interp, coding))
-            || matches!(kind.as_str(), "utf-16" | "utf-16be" | "utf-16le")
-            || (kind == "iso-2022" && !coding_system_is_ascii_compatible(interp, coding))
-        {
-            return false;
-        }
-        if single_byte_translation
-            && text
-                .chars()
-                .any(|ch| raw_byte_from_regex_char(ch).is_some() || !ch.is_ascii())
-        {
-            return false;
-        }
-    } else if (matches!(eol_type, Some(1) | Some(2)) && text.contains('\r'))
-        || (single_byte_translation && text.chars().any(is_raw_byte_regex_char))
-        || matches!(kind.as_str(), "utf-16" | "utf-16be" | "utf-16le")
-        || ((kind == "utf-8" || kind == "utf-8-with-signature")
-            && coding_system_consumes_bom(interp, coding))
-    {
-        return false;
-    }
-    true
-}
-
 struct EmacsMuleLayout {
     lengths: [usize; 256],
     charsets: Vec<Option<String>>,
@@ -2658,69 +2631,6 @@ pub(crate) fn decode_emacs_mule_bytes(interp: &Interpreter, bytes: &[u8]) -> Dec
     }
     out.charsets = runs.finish(out.char_count());
     out
-}
-
-/// coding.c detect_coding for a decode with CODING (an undecided-type or
-/// an auto-BOM system): the coding system the bytes decode with, named
-/// with the eol convention decode_eol settles on afterwards, and the
-/// bytes with that convention normalized to LF.  TEXT is the multibyte
-/// source when the bytes came from one (detection then skips its
-/// multibyte characters, as ONE_MORE_BYTE does).
-pub(crate) fn auto_detect_coding_for(
-    interp: &Interpreter,
-    bytes: &[u8],
-    text: Option<&str>,
-    coding: &str,
-    env: &Env,
-) -> (String, Vec<u8>) {
-    let canonical = interp
-        .coding_system_canonical_name(coding)
-        .unwrap_or_else(|| coding.to_string());
-    let src = match text {
-        Some(text) => DetectSource::from_text(text, true),
-        None => DetectSource::from_bytes(bytes),
-    };
-    let found = detect::detect_coding(interp, &src, &canonical, env).unwrap_or(canonical);
-    let kind = interp
-        .coding_system_kind_name(&found)
-        .unwrap_or_else(|| found.clone());
-    if matches!(found.as_str(), "no-conversion" | "binary")
-        || matches!(kind.as_str(), "utf-16" | "utf-16be" | "utf-16le")
-    {
-        // A unix eol (no-conversion) converts nothing; the UTF-16 decoder
-        // reads its own code units.
-        return (found, bytes.to_vec());
-    }
-    // detect_coding: a specified eol (an undecided-unix request) carries
-    // over to the found coding system; an undecided one is settled by
-    // decode_eol from the decoded text.
-    let explicit_eol = interp.coding_system_eol_type_value(&found);
-    let eol = explicit_eol
-        .or_else(|| interp.coding_system_eol_type_value(coding))
-        .or_else(|| detect_eol_type_opt(bytes));
-    let name = match (explicit_eol, eol) {
-        (None, Some(eol)) => {
-            let base = interp
-                .coding_system_base_name(&found)
-                .unwrap_or_else(|| found.clone());
-            coding_variant_name(interp, &base, Some(eol))
-        }
-        _ => found,
-    };
-    (
-        name,
-        decode_bytes_with_explicit_eol(bytes, eol.unwrap_or(0)),
-    )
-}
-
-pub(crate) fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String, Vec<u8>) {
-    auto_detect_coding_for(
-        interp,
-        bytes,
-        None,
-        "undecided",
-        &crate::lisp::types::Env::new(),
-    )
 }
 
 pub(crate) fn text_from_region_or_string(
@@ -3239,12 +3149,14 @@ pub(crate) fn encode_coding_value_recording(
 /// its byte and every other non-ASCII character as an invalid (negative)
 /// code that comes through unchanged, so the byte runs decode and the
 /// characters between them pass.  The decoder's `charset' runs are kept,
-/// re-based on the output.
+/// re-based on the output.  RAW_TO_UNIBYTE is a raw-text decode into a
+/// unibyte destination, which produce_chars fills with the bytes
+/// ONE_MORE_BYTE reads (a character's negative code's low eight bits).
 fn decode_multibyte_source_text(
     interp: &Interpreter,
     source: &StringLike,
     coding: &str,
-    for_unibyte: bool,
+    raw_to_unibyte: bool,
 ) -> Result<DecodedText, LispError> {
     let mut decoded = DecodedText::new();
     let mut run: Vec<u8> = Vec::new();
@@ -3258,14 +3170,14 @@ fn decode_multibyte_source_text(
             run.push((code - RAW_BYTE8_BASE) as u8);
             continue;
         }
-        flush_decoded_source_run(interp, &mut run, &mut decoded, coding, for_unibyte)?;
-        if for_unibyte {
+        flush_decoded_source_run(interp, &mut run, &mut decoded, coding, raw_to_unibyte)?;
+        if raw_to_unibyte {
             decoded.push_byte(((-i64::from(code)) & 0xFF) as u8);
         } else {
             decoded.push_code(code);
         }
     }
-    flush_decoded_source_run(interp, &mut run, &mut decoded, coding, for_unibyte)?;
+    flush_decoded_source_run(interp, &mut run, &mut decoded, coding, raw_to_unibyte)?;
     Ok(decoded)
 }
 
@@ -3284,7 +3196,7 @@ fn flush_decoded_source_run(
             decoded.push_byte(byte);
         }
     } else {
-        decoded.append(decode_text_bytes_annotated(interp, run, coding)?);
+        decoded.append(decode_bytes_with_coding(interp, run, coding)?);
     }
     run.clear();
     Ok(())
@@ -3339,6 +3251,234 @@ fn charset_spans_to_props(
         .collect()
 }
 
+/// A text decode_coding_object reads.
+pub(crate) enum DecodeSource<'a> {
+    /// The bytes of a unibyte text: a unibyte string's or buffer's, a
+    /// file's or a process's.
+    Bytes(&'a [u8]),
+    /// A string's or a buffer region's characters.
+    Text(&'a StringLike),
+}
+
+/// What decode_coding_object leaves behind.
+pub(crate) struct CodingDecode {
+    pub(crate) decoded: DecodedText,
+    /// CODING_ID_NAME once detect_coding and decode_eol have settled it:
+    /// the coding as given (an alias stays its name) unless detection
+    /// found another or the eol decided a subsidiary.
+    pub(crate) coding: String,
+    /// The settled coding's CODING_FOR_UNIBYTE: a string decoded with it
+    /// is unibyte.
+    pub(crate) for_unibyte: bool,
+}
+
+/// CODING_ID_EOL_TYPE as a settled type (0 unix, 1 dos, 2 mac), or None
+/// for an undecided one's vector of subsidiaries.
+pub(crate) fn coding_eol_type(interp: &Interpreter, coding: &str) -> Option<i64> {
+    let canonical = interp
+        .coding_system_canonical_name(coding)
+        .unwrap_or_else(|| coding.to_string());
+    if matches!(canonical.as_str(), "no-conversion" | "binary") {
+        // `binary' and `no-conversion' are unix in GNU; the native
+        // accessor keeps them out of the eol-variant table.
+        return Some(0);
+    }
+    interp.coding_system_eol_type_value(&canonical)
+}
+
+/// coding.c decode_coding_object without its destination: SOURCE decoded
+/// by CODING into a destination whose multibyteness is DST_MULTIBYTE (a
+/// buffer's), or None for a string, multibyte unless the settled coding
+/// is for unibyte text.  detect_coding settles an undecided or auto-BOM
+/// coding first, carrying CODING's specified eol type over; the settled
+/// coding's decoder runs; then decode_eol, unless the eol is unix or
+/// `inhibit-eol-conversion' is set, decides an undecided eol from the
+/// decoded text (naming its subsidiary) and converts.
+pub(crate) fn decode_coding_object(
+    interp: &Interpreter,
+    env: &Env,
+    source: DecodeSource<'_>,
+    coding: &str,
+    dst_multibyte: Option<bool>,
+) -> Result<CodingDecode, LispError> {
+    decode_coding(interp, env, source, coding, dst_multibyte, false)
+}
+
+/// decode_coding_gap: decode_coding_object for a file's BYTES, read into
+/// a buffer whose multibyteness is DST_MULTIBYTE, with its ASCII
+/// optimization.
+pub(crate) fn decode_coding_gap(
+    interp: &Interpreter,
+    env: &Env,
+    bytes: &[u8],
+    coding: &str,
+    dst_multibyte: bool,
+) -> Result<CodingDecode, LispError> {
+    decode_coding(
+        interp,
+        env,
+        DecodeSource::Bytes(bytes),
+        coding,
+        Some(dst_multibyte),
+        true,
+    )
+}
+
+fn decode_coding(
+    interp: &Interpreter,
+    env: &Env,
+    source: DecodeSource<'_>,
+    coding: &str,
+    dst_multibyte: Option<bool>,
+    gap: bool,
+) -> Result<CodingDecode, LispError> {
+    let canonical = interp
+        .coding_system_canonical_name(coding)
+        .ok_or_else(|| coding_system_error(Value::symbol(coding)))?;
+    // coding->src_multibyte = chars < bytes: a multibyte text of ASCII
+    // characters alone is read as its bytes.
+    let (bytes, text) = match source {
+        DecodeSource::Bytes(bytes) => (std::borrow::Cow::Borrowed(bytes), None),
+        DecodeSource::Text(string) if !string.multibyte => (
+            std::borrow::Cow::Owned(encode_raw_text_bytes(&string.text)?),
+            None,
+        ),
+        DecodeSource::Text(string) if string.text.is_ascii() => {
+            (std::borrow::Cow::Borrowed(string.text.as_bytes()), None)
+        }
+        DecodeSource::Text(string) => (std::borrow::Cow::Borrowed(&[][..]), Some(string)),
+    };
+    let mut name = coding.to_string();
+    let mut settled = canonical.clone();
+    let mut detection = detect::DetectOutcome::default();
+    if interp.coding_system_kind_name(&canonical).as_deref() == Some("undecided")
+        || coding_system_auto_detects_bom(interp, &canonical)
+    {
+        let src = match text {
+            Some(string) => detect::DetectSource::from_codes(string.character_codes_iter()),
+            None => detect::DetectSource::from_bytes(&bytes),
+        };
+        // decode_coding_gap detects before it sets CODING_MODE_LAST_BLOCK.
+        let src = if gap { src.not_last_block() } else { src };
+        detection = detect::detect_coding_outcome(interp, &src, &canonical, env);
+        if let Some(found) = &detection.found {
+            name = adjust_coding_eol_type(interp, found, coding_eol_type(interp, &canonical));
+            settled = interp
+                .coding_system_canonical_name(&name)
+                .unwrap_or_else(|| name.clone());
+        }
+    }
+    let for_unibyte = coding_system_property(interp, &settled, ":for-unibyte")
+        .is_some_and(|value| value.is_truthy());
+    let inhibit_eol_conversion = interp
+        .lookup_var("inhibit-eol-conversion", env)
+        .is_some_and(|value| value.is_truthy());
+    // decode_coding_gap's ASCII optimization: with an ascii-compatible
+    // coding, no post-read conversion and no translation table, ASCII
+    // bytes -- or bytes detect_coding_utf_8 accepted to their end, for a
+    // utf-8 coding -- go in as they are.  The eol bits detection saw (its
+    // head scan, or the check_ascii over the ASCII head of an auto-BOM
+    // detection), else check_ascii's (only LF under
+    // `inhibit-eol-conversion' or a settled eol), still name an undecided
+    // eol's subsidiary, and a dos or mac eol still converts.
+    let utf_8_whole = detection.utf8_whole
+        && interp.coding_system_kind_name(&settled).as_deref() == Some("utf-8");
+    if gap
+        && text.is_none()
+        && (bytes.is_ascii() || utf_8_whole)
+        && interp
+            .lookup_var("disable-ascii-optimization", env)
+            .is_none_or(|value| value.is_nil())
+        && coding_system_is_ascii_compatible(interp, &settled)
+        && coding_system_property(interp, &settled, ":post-read-conversion")
+            .is_none_or(|value| value.is_nil())
+        && !decode_translation_table_p(interp, &settled, env)
+    {
+        let mut decoded = if bytes.is_ascii() {
+            let mut decoded = DecodedText::new();
+            decoded.push_ascii(&bytes);
+            decoded
+        } else {
+            decode_coding_utf_8(&bytes)
+        };
+        let mut eol_type = coding_eol_type(interp, &settled);
+        if eol_type.is_none() {
+            let seen = match detection.eol_seen {
+                Some(seen) => seen,
+                None if inhibit_eol_conversion => {
+                    if bytes.contains(&b'\n') {
+                        detect::EOL_SEEN_LF
+                    } else {
+                        detect::EOL_SEEN_NONE
+                    }
+                }
+                None => decoded.eol_seen(),
+            };
+            eol_type = detect::eol_type_for_seen(seen);
+            if eol_type.is_some() {
+                name = adjust_coding_eol_type(interp, &name, eol_type);
+            }
+        }
+        if let Some(eol_type) = eol_type {
+            decoded.convert_eol(eol_type);
+        }
+        return Ok(CodingDecode {
+            decoded,
+            coding: name,
+            for_unibyte,
+        });
+    }
+    // produce_chars copies the source of a raw-text decode (undecided
+    // that detected nothing decodes as raw text too): unchanged into a
+    // multibyte destination, and from a multibyte source into a unibyte
+    // one as the bytes ONE_MORE_BYTE reads.
+    let dst_multibyte = dst_multibyte.unwrap_or(!for_unibyte);
+    let mut decoded = match text {
+        Some(string) => decode_multibyte_source_text(
+            interp,
+            string,
+            &settled,
+            !dst_multibyte
+                && matches!(
+                    interp.coding_system_kind_name(&settled).as_deref(),
+                    Some("raw-text" | "undecided")
+                ),
+        )?,
+        None => decode_bytes_with_coding(interp, &bytes, &settled)?,
+    };
+    if !inhibit_eol_conversion {
+        let eol_type = match coding_eol_type(interp, &settled) {
+            Some(eol_type) => Some(eol_type),
+            None => {
+                // Stray CRs among CRLFs are dos; any other mixture is unix.
+                let seen = match decoded.eol_seen() {
+                    seen if seen == detect::EOL_SEEN_CRLF | detect::EOL_SEEN_CR => {
+                        detect::EOL_SEEN_CRLF
+                    }
+                    detect::EOL_SEEN_NONE => detect::EOL_SEEN_NONE,
+                    seen @ (detect::EOL_SEEN_LF | detect::EOL_SEEN_CRLF | detect::EOL_SEEN_CR) => {
+                        seen
+                    }
+                    _ => detect::EOL_SEEN_LF,
+                };
+                let eol_type = detect::eol_type_for_seen(seen);
+                if eol_type.is_some() {
+                    name = adjust_coding_eol_type(interp, &name, eol_type);
+                }
+                eol_type
+            }
+        };
+        if let Some(eol_type) = eol_type {
+            decoded.convert_eol(eol_type);
+        }
+    }
+    Ok(CodingDecode {
+        decoded,
+        coding: name,
+        for_unibyte,
+    })
+}
+
 /// Decode VALUE with CODING. code_convert_string's ASCII fast path applies
 /// only to a string result; a source region or a buffer destination goes
 /// straight through decode_coding_object (BUFFER_CONVERSION).
@@ -3348,6 +3488,7 @@ pub(crate) fn decode_coding_text(
     coding: Option<&str>,
     nocopy: bool,
     buffer_conversion: bool,
+    dst_multibyte: Option<bool>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let string =
@@ -3363,54 +3504,23 @@ pub(crate) fn decode_coding_text(
     let canonical = interp
         .coding_system_canonical_name(coding)
         .ok_or_else(|| coding_system_error(Value::symbol(coding)))?;
-    // coding.c's code_convert_string decodes the STRING's own bytes
-    // (SDATA/SBYTES), so a multibyte string contributes its internal
-    // spelling -- reading it as one octet per character rejected every
-    // non-Latin-1 character with "Character cannot be encoded" instead of
-    // decoding it.
-    let source_bytes = if string.multibyte {
-        encode_internal_multibyte_bytes(&string.text)?
-    } else {
-        encode_raw_text_bytes(&string.text)?
-    };
     let inhibit_eol_conversion = interp
         .lookup_var("inhibit-eol-conversion", env)
         .is_some_and(|value| value.is_truthy());
-    // A unibyte Lisp string is a byte stream even when its internal scalar
-    // happens to be in U+0080..U+00FF; a byte-oriented coding such as
-    // UTF-16 is not ascii-compatible, so the fast path below never claims
-    // its ASCII-looking octets (30 42 encodes U+3042 in UTF-16BE).
-    // decode_coding_object: coding->src_multibyte = chars < bytes.  A raw
-    // byte8 character counts as two bytes in that comparison, exactly as
-    // SBYTES counts its internal C0/C1 pair.
-    let source_chars = string.text.chars().count();
-    let src_multibyte = source_chars < string.byte_len()?;
-    // setup_coding_system: CODING_FOR_UNIBYTE comes from the coding
-    // system's `:for-unibyte' attribute (the raw-text family), and such a
-    // decode produces a unibyte string.
-    let for_unibyte = coding_system_property(interp, &canonical, ":for-unibyte")
-        .is_some_and(|value| value.is_truthy());
-    // code_convert_string's fast path: an ascii-compatible coding whose
-    // source carries no multibyte content and nothing for eol conversion
-    // to do returns the string unchanged -- the decoder never runs, and
-    // neither does detection.
+    // code_convert_string's fast path: an ascii-compatible coding, an
+    // ASCII string (a multibyte one whose characters are its bytes) and
+    // nothing for eol conversion to do return the string as it is -- the
+    // decoder never runs, and neither does detection.  A region or a
+    // buffer destination never takes it.
     let fast_path = !buffer_conversion
         && coding_system_is_ascii_compatible(interp, &canonical)
-        && (if string.multibyte {
-            !src_multibyte
-        } else {
-            source_bytes.iter().all(u8::is_ascii)
-        })
-        && (interp.coding_system_eol_type_value(&canonical) == Some(0)
-            // `binary'/`no-conversion' report eol type 0 to Lisp; the
-            // native accessor keeps them out of the eol-variant table.
-            || matches!(canonical.as_str(), "no-conversion" | "binary")
+        && string.text.is_ascii()
+        && (coding_eol_type(interp, &canonical) == Some(0)
             || inhibit_eol_conversion
-            || !source_bytes.contains(&b'\r'));
+            || !string.text.contains('\r'));
     if fast_path {
-        // coding.c:code_convert_string returns before post-read conversion.
         // A copied result is a fresh, unpropertized multibyte ASCII string;
-        // NOCOPY preserves the original object, including its properties.
+        // NOCOPY gives back the original object, properties and all.
         set_last_coding_system_used(interp, coding, env);
         return Ok(if nocopy {
             *value
@@ -3418,185 +3528,50 @@ pub(crate) fn decode_coding_text(
             make_shared_string_value_with_multibyte(string.text, Vec::new(), true)
         });
     }
-    // detect_coding: an auto-BOM coding settles on the coding its `:bom'
-    // names for this source, which then decodes it and is the one
-    // recorded in `last-coding-system-used'.
-    let bom_coding = detect_auto_bom_coding(
+    let CodingDecode {
+        decoded,
+        coding: actual_coding,
+        for_unibyte,
+    } = decode_coding_object(
         interp,
-        &canonical,
-        &if src_multibyte {
-            detect::DetectSource::from_codes(string.character_codes_iter())
-        } else {
-            detect::DetectSource::from_bytes(&source_bytes)
-        },
         env,
-    );
-    let (canonical, coding) = match &bom_coding {
-        Some(found) => (found.clone(), found.as_str()),
-        None => (canonical, coding),
-    };
-    let undecided_bytes = if !fast_path
-        && interp.coding_system_kind_name(&canonical).as_deref() == Some("undecided")
-    {
-        Some(auto_detect_coding_for(
-            interp,
-            &source_bytes,
-            string.multibyte.then_some(string.text.as_str()),
-            &canonical,
-            env,
-        ))
-    } else {
-        None
-    };
-    let detected_undecided = undecided_bytes.is_some();
-    let decoder_ran = !detected_undecided && !fast_path;
-    let mut staged = if let Some((detected, normalized)) = &undecided_bytes {
-        decode_text_bytes_annotated(interp, normalized, detected)?
-    } else if src_multibyte {
-        decode_multibyte_source_text(interp, &string, &canonical, for_unibyte)?
-    } else if for_unibyte {
-        let mut decoded = DecodedText::new();
-        for &byte in &source_bytes {
-            decoded.push_byte(byte);
-        }
-        decoded
-    } else {
-        decode_text_bytes_annotated(interp, &source_bytes, &canonical)?
-    };
-    let charsets = std::mem::take(&mut staged.charsets);
-    let extended = std::mem::take(&mut staged.extended);
-    let staged = staged.text;
-    // String decoding names `last-coding-system-used' differently from a
-    // file read (the oracle's contract): the fast path never re-resolves
-    // the name -- the requested spelling survives, alias and all (euc-jp
-    // stays `euc-jp', LF included) -- and a converted text gains the
-    // canonical eol subsidiary only when an eol byte was seen.
-    let actual_coding = if let Some((detected, _)) = &undecided_bytes {
-        detected.clone()
-    } else if interp.coding_system_eol_type_value(&canonical).is_none()
-        && !matches!(canonical.as_str(), "no-conversion" | "binary")
-    {
-        // The pure-ASCII shortcut is really "the decoder never ran": it
-        // needs the coding to be ascii-compatible.  iso-2022-7bit is not
-        // (its ESC sequences convert), so even an all-ASCII decode with a
-        // LF re-resolves to iso-2022-7bit-unix, per the oracle.  The eol
-        // convention is a property of the DECODED characters: a byte
-        // oriented coding such as utf-16 swallows a CR octet inside a code
-        // unit, so it never names an eol subsidiary for it.
-        let bytes = staged.as_bytes();
-        let untouched =
-            bytes.iter().all(u8::is_ascii) && coding_system_is_ascii_compatible(interp, &canonical);
-        match detect_eol_type_opt(bytes) {
-            Some(eol) if bytes.contains(&b'\r') || !untouched => {
-                let base = interp
-                    .coding_system_base_name(&canonical)
-                    .unwrap_or_else(|| canonical.clone());
-                coding_variant_name(interp, &base, Some(eol))
-            }
-            _ => coding.to_string(),
-        }
-    } else {
-        // Explicit eol (or binary): the requested spelling survives.
-        coding.to_string()
-    };
-    set_last_coding_system_used(interp, &actual_coding, env);
-    // The decoder's own output stage performs the eol conversion, so it
-    // applies to the DECODED characters (fileio/coding.c never rewrites
-    // source octets before decoding them).  GNU detects the EOL
-    // convention for codings with an unspecified eol type; only
-    // no-conversion/binary keep raw CR bytes.
-    let crlf_conversion = if detected_undecided || inhibit_eol_conversion || !staged.contains('\r')
-    {
-        None
-    } else {
-        match interp.coding_system_eol_type_value(&canonical) {
-            Some(1) => Some(true),
-            Some(2) => Some(false),
-            // coding.c:decode_eol settles an undecided eol from the decoded
-            // text: CRLF (with stray CRs) is dos, CR alone mac, and any
-            // other mixture unix, which converts nothing.
-            None if !matches!(canonical.as_str(), "no-conversion" | "binary") => {
-                match detect_eol_type(staged.as_bytes()) {
-                    1 => Some(true),
-                    2 => Some(false),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    };
-    // The decoder's `charset' annotations become text properties of the
-    // decoded text (produce_charset); they index the staged text, and
-    // the eol conversion below removes CRs before them.
-    let charset_props = charset_spans_to_props(charsets, &staged, crlf_conversion);
-    let extended = match crlf_conversion {
-        Some(crlf) => {
-            let removed = eol_removed_prefix(&staged, crlf);
-            extended
-                .into_iter()
-                .map(|(index, code)| (index - removed[index], code))
-                .collect()
-        }
-        None => extended,
-    };
-    let text = match crlf_conversion {
-        Some(true) => staged.replace("\r\n", "\n"),
-        Some(false) => staged.replace('\r', "\n"),
-        None => staged,
-    };
-    // A raw-text decode that actually ran yields a unibyte string; the
-    // ASCII fast path in code_convert_string still returns multibyte.
-    // decode_coding_object sets dst_multibyte after detect_coding, from
-    // the coding detection settled on.
-    let result_multibyte = if let Some((detected, _)) = &undecided_bytes {
-        !coding_system_property(interp, detected, ":for-unibyte")
-            .is_some_and(|value| value.is_truthy())
-    } else {
-        !(decoder_ran && for_unibyte)
-    };
+        DecodeSource::Text(&string),
+        coding,
+        dst_multibyte,
+    )?;
+    // produce_annotation's `charset' properties of the decoded text.
+    let charset_props = charset_spans_to_props(decoded.charsets, &decoded.text, None);
+    // decode_coding_object makes the work buffer multibyte unless the
+    // coding detect_coding settled on is for unibyte text.
     let post_read = coding_system_property(interp, &actual_coding, ":post-read-conversion")
         .unwrap_or(Value::Nil);
     let conversion_ran = !post_read.is_nil();
     let decoded = StringLike {
-        text,
+        text: decoded.text,
         props: Vec::new(),
-        multibyte: result_multibyte,
-        extended_chars: extended,
+        // A buffer destination takes the characters produced (written
+        // into a unibyte one in their multibyte form, by the caller); a
+        // string is unibyte for a coding for unibyte text.
+        multibyte: dst_multibyte.is_some() || !for_unibyte,
+        extended_chars: decoded.extended,
     };
     let converted = run_coding_conversion(interp, &decoded, &post_read, false, env)?;
-    let text = converted.text;
-    if nocopy
-        && !conversion_ran
-        && text == string.text
-        && string_identity_for_coding(
-            &string.text,
-            &canonical,
-            interp,
-            false,
-            inhibit_eol_conversion,
-        )
-    {
-        Ok(*value)
+    // code_convert_string records CODING_ID_NAME once decode_coding_object,
+    // post-read conversion included, has returned.
+    set_last_coding_system_used(interp, &actual_coding, env);
+    // A post-read conversion rewrites the text, after which the decoder's
+    // annotations cannot be placed.
+    let props = if conversion_ran {
+        Vec::new()
     } else {
-        // A decode that ran carries only the decoder's annotations; a
-        // post-read conversion rewrites the text, after which they cannot
-        // be placed.
-        let props = if decoder_ran || detected_undecided {
-            if conversion_ran {
-                Vec::new()
-            } else {
-                charset_props
-            }
-        } else {
-            string.props
-        };
-        Ok(make_shared_string_value_with_extended_chars(
-            text,
-            props,
-            converted.multibyte,
-            converted.extended_chars,
-        ))
-    }
+        charset_props
+    };
+    Ok(make_shared_string_value_with_extended_chars(
+        converted.text,
+        props,
+        converted.multibyte,
+        converted.extended_chars,
+    ))
 }
 
 /// charset.c CHARSET_MIN_CODE / CHARSET_MAX_CODE.

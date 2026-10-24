@@ -4705,6 +4705,81 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   text without the side table. All three want one decode_coding_object
   (detect_coding, the decoder over the source with multibytep, decode_eol
   on the produced text) behind strings, regions, files and processes.
+- **Round 64: one decode_coding_object for strings, regions, files and
+  processes.** `decode_coding_object` (strings, regions, `call-process`
+  output) and `decode_coding_gap` (`insert-file-contents`) share one
+  `decode_coding`, coding.c's: the name starts as the coding as given (an
+  alias keeps its own), detect_coding runs for `undecided` and the
+  auto-BOM codings with the specified eol carried over
+  (`adjust_coding_eol_type`, the subsidiary taken from the canonical base's
+  eol vector, so `euc-jp` settles as `japanese-iso-8bit-unix`), the settled
+  coding decodes, and decode_eol then works on the decoded text: it counts
+  LF, CR LF as a pair and lone CR (CR LF with lone CR but no LF counts as
+  CR LF, any other mixture as LF), names the subsidiary from what it saw
+  (LF before CR LF before CR), turns CR into LF for `mac` and drops each
+  CR before LF for `dos`, and is skipped for `unix` or under
+  `inhibit-eol-conversion`. A file's detection runs without
+  CODING_MODE_LAST_BLOCK (an odd-length UTF-16 file or a truncated UTF-8
+  tail is not rejected), with decode_coding_gap's ASCII optimization (an
+  ASCII-compatible coding with no post-read conversion, translation table
+  or `disable-ascii-optimization`, over all-ASCII bytes or UTF-8 whose
+  detection counted every byte) and its eol from the detection's head scan.
+  Finsert_file_contents picks the coding as fileio.c does
+  (`coding-system-for-read`, `auto-save-coding` as `utf-8-emacs-unix`,
+  `set-auto-coding-function` on a non-empty file, the car of
+  find-operation-coding-system called with the file name as given, VISIT,
+  BEG, END and REPLACE, else `undecided`; a unibyte buffer's
+  raw_text_coding_system), makes a visited buffer unibyte for a coding
+  `:for-unibyte`, does not decode an empty file, records the decided name
+  in `last-coding-system-used` (`after-insert-file-set-coding` sets
+  `buffer-file-coding-system` from it, as in GNU, in place of the old
+  heuristic), and runs the post-read conversion with point at the inserted
+  text and undo off, the inserted count growing by its change of size.
+  `decode-coding-string` takes code_convert_string's fast path only for an
+  ASCII string and an ASCII-compatible coding with nothing to convert at
+  eol, which alone returns the source under NOCOPY, decodes into a
+  multibyte string unless the settled coding is for unibyte text, runs the
+  settled coding's post-read conversion and then records it; a region
+  decode's destination is the buffer it writes. Raw text copies a
+  multibyte source's characters into a multibyte destination and the low
+  bytes ONE_MORE_BYTE reads into a unibyte one. `call-process` decodes as
+  callproc.c chooses (`coding-system-for-read`, else the car of
+  find-operation-coding-system, else of `default-process-coding-system`,
+  raw text with the eol type in a unibyte buffer), records
+  `last-coding-system-used` even when the program writes nothing, and
+  reads DESTINATION as callproc.c does: `(REAL-BUFFER STDERR-FILE)` with
+  REAL-BUFFER possibly `(:file FILE)`, both files expanded against
+  `default-directory` and truncated even when nothing is written, and a
+  dotted `(BUFFER . X)` mixing standard error into the output. File reads
+  cost 2.82 to 2.12 billion instructions on a probe reading 60 Lisp files
+  ten times (GNU 1.52): detect.rs's head scan skips printable ASCII runs,
+  decode_eol finds CR and LF with `memchr2`, raw text copies its ASCII
+  prefix a word at a time, the inserted text is not counted twice, and
+  `search`'s unibyte loader copies an ASCII chunk at once. The naming
+  probe (2,312 lines) went from 360 differing lines to none and the BOM
+  file probe (337) from 45 to none; the file-read (1,080), alias,
+  decode, encode and charset probes give GNU's output but for the round 63
+  ISO-2022 line. GNU's arc-mode, bytecomp, files, ccl, mule, mule-util,
+  textsec, qp, rfc2045, rfc2047, simple, subr, buffer, casefiddle,
+  character, charset, coding, data, editfns, fileio, fns, json, lread,
+  print, process, search, jit-lock, tramp-archive, compile and esh-proc
+  tests give GNU's results. Still open: (1) the ISO-2022 line, as in round
+  63; (2) `call-process` sends a unibyte argument's raw bytes as the UTF-8
+  of their markers and fails on a NUL where GNU truncates the argument
+  (60 of 162 lines of a process probe), and `call-process-region` sends
+  the region's Rust text rather than encoding it; (3) a process filter
+  still reads `undecided` output as UTF-8, and `call-process` decodes its
+  whole output at once where callproc.c decodes each 16 to 64 KB block,
+  detection settling on the first; (4) the two `bookmark-tests`
+  non-ASCII tests that fail on `9ba4dee` (below): their gb18030
+  character, #x22484C, now decodes to GNU's code beyond Unicode, and
+  `read` from a buffer, `format`, `message`, case conversion, `char-width`,
+  regexp search and several editing commands lose such characters (or
+  real U+E000..U+E0FF ones) through the Rust text view; (5) with
+  `:expensive-test`s, `package-test-update-archives-async` fails
+  (`url-http-response-status` void in its filter) and leaves two later
+  package tests failing, and `ucs-normalize-part1` fails on U+E0FF, as on
+  `9ba4dee`; the frozen run does not include them.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -5322,7 +5397,14 @@ gate passed (run 40063298332), frozen passed on its first attempt (run
 40076991774), frozen passed on its first attempt (run 40076993546).
 **On `440d81c`** (round 60): full Rust gate passed (run 40078381958),
 frozen passed on its first attempt (run 40078383462); rounds 55 to 60 were
-merged into main by PR #102 (`df6c293`). Run
+merged into main by PR #102 (`df6c293`). **On `8c95f91`** (rounds 61 and
+62): full Rust gate passed (run 40087156789); frozen matched 7,927 of 7,928
+tests on its first attempt, the miss GNU's eglot flake, and passed on the
+second (run 40087158866). **On `9ba4dee`** (round 63): full Rust gate
+passed (run 40090524898); frozen matched 7,926 of 7,928 tests (run
+40090526570): `bookmark-tests-save/non-ascii-annotation` and
+`bookmark-tests-save/non-ascii-bookmark-name` fail, as the round 64
+bullet's item (4) describes. Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that
 locale. With none set here, `char_charset_family_follows_charset_c` and

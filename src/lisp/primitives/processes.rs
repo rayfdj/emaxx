@@ -241,15 +241,49 @@ pub(crate) enum ExternalStderr {
     Separate,
 }
 
-pub(crate) fn external_stderr_for_destination(destination: &Value) -> ExternalStderr {
-    if let Ok(items) = destination.to_vec()
-        && items.len() == 2
-        && items[0] != Value::Symbol(":file".into())
-        && items[1] != Value::T
+/// callproc.c call_process's reading of DESTINATION.  A list whose car
+/// is not `:file' is (REAL-BUFFER STDERR-FILE): STDERR-FILE (when the
+/// list has one) nil discards the child's stderr, t mixes it with the
+/// output and a string names a file; REAL-BUFFER is read on.  A
+/// `(:file FILE)' then sends the output to FILE.
+pub(crate) struct ProcessDestination {
+    pub(crate) buffer: Value,
+    pub(crate) output_file: Option<Value>,
+    pub(crate) error_file: Value,
+}
+
+pub(crate) fn process_destination(destination: &Value) -> ProcessDestination {
+    let file_key = Value::Symbol(":file".into());
+    let mut buffer = *destination;
+    let mut error_file = Value::T;
+    if let Some((head, tail)) = buffer.cons_values()
+        && head != file_key
     {
-        return ExternalStderr::Separate;
+        if let Some((stderr_file, _)) = tail.cons_values() {
+            error_file = stderr_file;
+        }
+        buffer = head;
     }
-    ExternalStderr::Mixed
+    let mut output_file = None;
+    if let Some((head, tail)) = buffer.cons_values()
+        && head == file_key
+    {
+        output_file = Some(tail.cons_values().map_or(tail, |(file, _)| file));
+        buffer = Value::Nil;
+    }
+    ProcessDestination {
+        buffer,
+        output_file,
+        error_file,
+    }
+}
+
+pub(crate) fn external_stderr_for_destination(destination: &Value) -> ExternalStderr {
+    if process_destination(destination).error_file == Value::T {
+        ExternalStderr::Mixed
+    } else {
+        ExternalStderr::Separate
+    }
 }
 
 /// callproc.c returns an exit code or the host's signal description.
@@ -1107,15 +1141,20 @@ pub(crate) fn getenv_in_environment(
     Ok(None)
 }
 
+/// call-process's output into DESTINATION's buffer, decoded as callproc.c
+/// decodes it.  The process's output stream (OUTPUT) records the coding
+/// in `last-coding-system-used' even when it was empty; a separate stderr
+/// stream with nothing in it leaves the buffer and the variable alone.
 pub(crate) fn append_process_bytes_to_buffer(
     interp: &mut Interpreter,
     destination: &Value,
     bytes: &[u8],
+    output: bool,
     operation: &str,
     operation_args: &[Value],
     env: &mut Env,
 ) -> Result<(), LispError> {
-    if bytes.is_empty() {
+    if bytes.is_empty() && !output {
         return Ok(());
     }
     let target_id = match destination.kind() {
@@ -1138,79 +1177,55 @@ pub(crate) fn append_process_bytes_to_buffer(
     if target_id != original_id {
         interp.set_current_buffer_id(target_id)?;
     }
-    let mut coding = interp
+    // callproc.c: coding-system-for-read, else the car of
+    // find-operation-coding-system's answer, else of
+    // `default-process-coding-system' (nil decodes as undecided); a
+    // unibyte buffer reads raw text with its eol type.
+    let mut coding = match interp
         .lookup_var("coding-system-for-read", env)
         .filter(|value| !value.is_nil())
-        .map(|value| checked_coding_symbol(interp, &value))
-        .transpose()?;
+    {
+        Some(value) => checked_coding_given(interp, &value)?,
+        None => None,
+    };
     if coding.is_none() {
         let mut lookup_args = Vec::with_capacity(operation_args.len() + 1);
         lookup_args.push(Value::Symbol(operation.into()));
         lookup_args.extend_from_slice(operation_args);
         let operation_coding = find_operation_coding_system_value(interp, &lookup_args, env)?;
-        coding = operation_coding
-            .cons_values()
-            .and_then(|(decoding, _)| (!decoding.is_nil()).then_some(decoding))
-            .map(|value| checked_coding_symbol(interp, &value))
-            .transpose()?;
-    }
-    if coding.is_none() {
-        coding = interp
-            .lookup_var("default-process-coding-system", env)
-            .and_then(|value| value.cons_values())
-            .and_then(|(decoding, _)| (!decoding.is_nil()).then_some(decoding))
-            .map(|value| checked_coding_symbol(interp, &value))
-            .transpose()?;
-    }
-    let mut coding = coding.unwrap_or_else(|| "undecided".into());
-    if !interp.buffer.borrow().is_multibyte() {
-        coding = coding_variant_name(
-            interp,
-            "raw-text",
-            interp.coding_system_eol_type_value(&coding),
-        );
-    }
-    let (decoded, coding_used) =
-        if interp.coding_system_kind_name(&coding).as_deref() == Some("undecided") {
-            let (detected, normalized) = auto_detect_coding(interp, bytes);
-            (
-                decode_text_bytes_annotated(interp, &normalized, &detected)?,
-                detected,
-            )
-        } else {
-            let actual_eol = detect_eol_type(bytes);
-            let normalized = decode_bytes_with_explicit_eol(
-                bytes,
-                interp
-                    .coding_system_eol_type_value(&coding)
-                    .unwrap_or(actual_eol),
-            );
-            let canonical = interp
-                .coding_system_canonical_name(&coding)
-                .unwrap_or(coding);
-            let base = interp
-                .coding_system_base_name(&canonical)
-                .unwrap_or_else(|| canonical.clone());
-            let coding_used = if interp.coding_system_eol_type_value(&canonical).is_some() {
-                canonical
-            } else {
-                coding_variant_name(interp, &base, Some(actual_eol))
-            };
-            let source = if interp.coding_system_kind_name(&coding_used).as_deref()
-                == Some("utf-8-with-signature")
+        coding = match operation_coding.cons_values() {
+            Some((decoding, _)) => checked_coding_given(interp, &decoding)?,
+            None => match interp
+                .lookup_var("default-process-coding-system", env)
+                .and_then(|value| value.cons_values())
             {
-                strip_utf8_bom(&normalized).1
-            } else {
-                &normalized
-            };
-            (
-                decode_text_bytes_annotated(interp, source, &coding_used)?,
-                coding_used,
-            )
+                Some((decoding, _)) => checked_coding_given(interp, &decoding)?,
+                None => None,
+            },
         };
-    let insert_at = interp.buffer.borrow().point();
-    interp.insert_current_buffer(&decoded.text);
-    interp.set_inserted_extended_chars(insert_at, &decoded.extended);
+    }
+    let multibyte = interp.buffer.borrow().is_multibyte();
+    let coding = match coding {
+        Some(coding) if !multibyte => raw_text_coding_system(interp, &coding),
+        Some(coding) => coding,
+        None => "undecided".into(),
+    };
+    let CodingDecode {
+        decoded,
+        coding: coding_used,
+        ..
+    } = decode_coding_object(
+        interp,
+        env,
+        DecodeSource::Bytes(bytes),
+        &coding,
+        Some(multibyte),
+    )?;
+    if !decoded.text.is_empty() {
+        let insert_at = interp.buffer.borrow().point();
+        interp.insert_current_buffer(&decoded.text);
+        interp.set_inserted_extended_chars(insert_at, &decoded.extended);
+    }
     interp.set_variable(
         "last-coding-system-used",
         Value::Symbol(coding_used.into()),
@@ -1308,65 +1323,53 @@ pub(crate) fn write_process_output(
     operation_args: &[Value],
     env: &mut Env,
 ) -> Result<(), LispError> {
-    if destination.is_nil() {
-        return Ok(());
-    }
-    if let Ok(items) = destination.to_vec()
-        && items.len() == 2
-    {
-        if items[0] == Value::Symbol(":file".into()) {
-            let path = string_text(&items[1])?;
-            if !stdout.is_empty() {
-                write_process_bytes_to_file(&path, stdout, false)?;
-            }
-            return Ok(());
-        }
-        append_process_bytes_to_buffer(interp, &items[0], stdout, operation, operation_args, env)?;
-        if !stderr.is_empty() {
-            if items[1] == Value::T {
-                append_process_bytes_to_buffer(
-                    interp,
-                    &items[0],
-                    stderr,
-                    operation,
-                    operation_args,
-                    env,
-                )?;
-            } else if !items[1].is_nil() {
-                let path = string_text(&items[1])?;
-                write_process_bytes_to_file(&path, stderr, false)?;
-            }
-        }
-        return Ok(());
-    }
-    if let Some((stdout_destination, stderr_destination)) = destination.cons_values() {
+    let ProcessDestination {
+        buffer,
+        output_file,
+        error_file,
+    } = process_destination(destination);
+    // An output or stderr file is expanded against `default-directory'
+    // and opened (truncated) whether or not the child writes to it.
+    let output_path = match output_file {
+        Some(file) => Some(resolve_file_name_in_env(interp, env, &string_text(&file)?)),
+        None => None,
+    };
+    let error_path = if error_file.is_nil() || error_file == Value::T {
+        None
+    } else {
+        Some(resolve_file_name_in_env(
+            interp,
+            env,
+            &string_text(&error_file)?,
+        ))
+    };
+    let discard =
+        matches!(buffer.kind(), Kind::Integer(_)) || (buffer.is_nil() && output_path.is_none());
+    // STDERR-FILE t shares the output's descriptor; standard error read
+    // on its own follows the output in that one stream.
+    let mixed;
+    let output = if error_file == Value::T && !stderr.is_empty() {
+        mixed = [stdout, stderr].concat();
+        &mixed[..]
+    } else {
+        stdout
+    };
+    if let Some(path) = &output_path {
+        write_process_bytes_to_file(path, output, false)?;
+    } else if !discard {
         append_process_bytes_to_buffer(
             interp,
-            &stdout_destination,
-            stdout,
+            &buffer,
+            output,
+            true,
             operation,
             operation_args,
             env,
         )?;
-        if !stderr.is_empty() {
-            if stderr_destination == Value::T {
-                append_process_bytes_to_buffer(
-                    interp,
-                    &stdout_destination,
-                    stderr,
-                    operation,
-                    operation_args,
-                    env,
-                )?;
-            } else if !stderr_destination.is_nil() {
-                let path = string_text(&stderr_destination)?;
-                write_process_bytes_to_file(&path, stderr, false)?;
-            }
-        }
-        return Ok(());
     }
-    append_process_bytes_to_buffer(interp, destination, stdout, operation, operation_args, env)?;
-    append_process_bytes_to_buffer(interp, destination, stderr, operation, operation_args, env)?;
+    if let Some(path) = &error_path {
+        write_process_bytes_to_file(path, stderr, false)?;
+    }
     Ok(())
 }
 

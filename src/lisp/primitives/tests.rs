@@ -17639,6 +17639,75 @@ fn decoders_produce_gnu_character_codes_like_coding_c() {
 }
 
 #[test]
+fn decode_coding_object_settles_and_names_codings_like_coding_c() {
+    // decode_coding_object and decode_coding_gap: detect_coding settles an
+    // auto-BOM or undecided coding (without CODING_MODE_LAST_BLOCK for a
+    // file, so an odd-length UTF-16 file and a truncated UTF-8 tail still
+    // detect), decode_eol works on the decoded text and names the
+    // subsidiary of the coding an alias names, a unibyte buffer reads raw
+    // text, a visit with raw-text makes the buffer unibyte, a file's
+    // post-read conversion runs, NOCOPY returns a fresh string unless the
+    // ASCII fast path applies, `inhibit-eol-conversion' names nothing,
+    // and call-process records its coding with no output.  The oracle's
+    // answer.
+    let program = r#"
+(progn
+  (defvar t64-file (make-temp-file "t64"))
+  (defun t64-rd (bytes coding &optional unibyte visit)
+    (let ((coding-system-for-write 'no-conversion))
+      (write-region bytes nil t64-file nil 'silent))
+    (with-temp-buffer
+      (when unibyte (set-buffer-multibyte nil))
+      (let ((coding-system-for-read coding))
+        (insert-file-contents t64-file visit))
+      (list (string-to-list (buffer-string)) last-coding-system-used
+            buffer-file-coding-system enable-multibyte-characters)))
+  (format "%S" (prog1 (list
+   (t64-rd "\377\376a\000\r\000\n\000" 'utf-16)
+   (t64-rd "\377\376a" 'utf-16)
+   (t64-rd "\303\251\n" 'utf-8-auto)
+   (t64-rd "\357\273\277a\r\n" 'utf-8-auto)
+   (t64-rd "\303\251\200" 'undecided)
+   (t64-rd "\303\251\r\n" nil t)
+   (t64-rd "abc" 'raw-text nil t)
+   (t64-rd "" 'latin-1)
+   (t64-rd "a+AOk-b" 'utf-7)
+   (let ((s "\244\242\n"))
+     (list (string-to-list (decode-coding-string s 'euc-jp)) last-coding-system-used
+           (eq s (decode-coding-string s 'utf-8 t))))
+   (let ((inhibit-eol-conversion t))
+     (decode-coding-string "\351\r\n" 'utf-8) last-coding-system-used)
+   (with-temp-buffer (insert "a\nb") (decode-coding-region 1 4 'utf-8) last-coding-system-used)
+   (with-temp-buffer (insert "é\n") (decode-coding-region 1 3 'raw-text)
+                     (list (string-to-list (buffer-string)) last-coding-system-used))
+   (with-temp-buffer (let ((coding-system-for-read 'latin-1)) (call-process "true" nil t nil))
+                     last-coding-system-used))
+    (delete-file t64-file))))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("decode contract should parse")
+        .expect("decode contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("decode contract should evaluate");
+    assert_eq!(
+        value,
+        Value::string(concat!(
+            "(((97 10) utf-16le-with-signature-dos utf-16le-with-signature-dos t) ",
+            "((97) utf-16le-with-signature utf-16le-with-signature-unix t) ",
+            "((233 10) utf-8 utf-8-unix t) ",
+            "((97 10) utf-8-with-signature-dos utf-8-with-signature-dos t) ",
+            "((233 4194176) utf-8 utf-8-unix t) ((195 169 10) raw-text-dos raw-text-dos nil) ",
+            "((97 98 99) raw-text raw-text-unix nil) (nil latin-1 iso-latin-1-unix t) ",
+            "((97 233 98) utf-7 utf-7-unix t) ((12354 10) japanese-iso-8bit-unix nil) ",
+            "utf-8 utf-8-unix ((233 10) raw-text-unix) latin-1)"
+        ))
+    );
+}
+
+#[test]
 fn help_describe_vector_describes_each_run_of_a_char_table_once() {
     // keymap.c:describe_vector: char_table_ref_and_range gives each run of
     // characters bound to one object, which is looked up in SHADOW and the

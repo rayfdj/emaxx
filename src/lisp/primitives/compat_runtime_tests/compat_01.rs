@@ -1615,15 +1615,21 @@ fn discard_input_clears_pending_events_and_keyboard_macro_definition() {
 }
 
 #[test]
-fn detect_eol_type_preserves_embedded_cr_in_unix_files() {
-    assert_eq!(detect_eol_type(b"left\rmiddle\nnext\n"), 0);
-    assert_eq!(
-        decode_bytes_with_explicit_eol(
-            b"left\rmiddle\nnext\n",
-            detect_eol_type(b"left\rmiddle\nnext\n")
-        ),
-        b"left\rmiddle\nnext\n"
-    );
+fn decode_eol_preserves_embedded_cr_in_unix_text() {
+    // decode_eol: a CR among LFs makes no dos or mac text, so the eol is
+    // unix and the CR stays.
+    let interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let env = crate::lisp::types::Env::new();
+    let outcome = crate::lisp::primitives::coding::decode_coding_object(
+        &interp,
+        &env,
+        crate::lisp::primitives::coding::DecodeSource::Bytes(b"left\rmiddle\nnext\n"),
+        "undecided",
+        Some(true),
+    )
+    .expect("undecided decodes");
+    assert_eq!(outcome.decoded.text, "left\rmiddle\nnext\n");
+    assert_eq!(outcome.coding, "undecided-unix");
 }
 
 #[test]
