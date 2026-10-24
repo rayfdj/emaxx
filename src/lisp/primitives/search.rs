@@ -166,7 +166,8 @@ enum Object<'t> {
         ascii: bool,
     },
     String {
-        rope: ropey::RopeSlice<'t>,
+        /// The string's data, read in place.
+        text: &'t str,
         extended: &'t [(usize, u32)],
         /// The string object (`re_match_object'), None for text without
         /// one (GNU's t).
@@ -260,6 +261,14 @@ pub(super) struct LispMatchEnv<'a, 't> {
     categories: Option<CharTableRef>,
 }
 
+impl Drop for LispMatchEnv<'_, '_> {
+    fn drop(&mut self) {
+        if let Some(gl) = self.gl.take() {
+            super::syntax_scan::GlState::release_for_regexp(gl);
+        }
+    }
+}
+
 impl<'a, 't> LispMatchEnv<'a, 't> {
     /// An environment folding case with the canonicalization CANON (a
     /// case_canon_table), or not at all.
@@ -296,7 +305,7 @@ impl<'a, 't> LispMatchEnv<'a, 't> {
                     begv + rope.byte_to_char(at)
                 }
             }
-            Object::String { rope, .. } => rope.byte_to_char(at),
+            Object::String { text, .. } => ropey::str_utils::byte_to_char_idx(text, at),
             Object::None => at,
         }
     }
@@ -483,7 +492,9 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
             Object::String { string: None, .. } => GlObject::Plain,
             Object::None => return,
         };
-        self.gl = None;
+        if let Some(gl) = self.gl.take() {
+            GlState::release_for_regexp(gl);
+        }
         if !self
             .interp
             .symbol_value_key(cached_symbol!("parse-sexp-lookup-properties"))
@@ -495,7 +506,7 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
         if let Some(error) = error {
             self.error.get_or_insert(error);
         }
-        self.gl = Some(Box::new(gl));
+        self.gl = Some(gl);
     }
 
     fn syntax(&mut self, c: u32, at: usize) -> u8 {
@@ -899,9 +910,12 @@ pub(super) fn string_match_1(
         .then(|| interp.current_case_tables().canon);
     let string_text = StringText::new(string).expect("a string");
     let haystack = string_text.text();
-    let rope = ropey::RopeSlice::from(haystack);
     let ascii = haystack.len() == chars;
-    let pos_byte = if ascii { pos } else { rope.char_to_byte(pos) };
+    let pos_byte = if ascii {
+        pos
+    } else {
+        ropey::str_utils::char_to_byte_idx(haystack, pos)
+    };
     let text = Text::from_str(
         haystack,
         string_multibyte,
@@ -911,7 +925,7 @@ pub(super) fn string_match_1(
     let mut menv = LispMatchEnv::new(interp, env, case_table);
     let mut entry = compile_pattern(&mut menv, regexp, posix)?;
     menv.object = Object::String {
-        rope,
+        text: haystack,
         extended: string_text.extended(),
         string: Some(*string),
     };
@@ -932,7 +946,7 @@ pub(super) fn string_match_1(
         if ascii {
             offset
         } else {
-            rope.byte_to_char(offset)
+            ropey::str_utils::byte_to_char_idx(haystack, offset)
         }
     };
     let start = registers.regs[0].expect("group 0").0;
@@ -1251,12 +1265,11 @@ fn text_match(
     case_table: Option<CharTableRef>,
     signal_overflow: bool,
 ) -> Result<Option<usize>, LispError> {
-    let rope = ropey::RopeSlice::from(haystack);
     let text = Text::from_str(haystack, multibyte, !extended.is_empty());
     let mut menv = LispMatchEnv::new(interp, env, case_table);
     let mut entry = compile_pattern(&mut menv, regexp, false)?;
     menv.object = Object::String {
-        rope,
+        text: haystack,
         extended,
         string,
     };
@@ -1280,7 +1293,7 @@ fn text_match(
     Ok(Some(if haystack.is_ascii() {
         start
     } else {
-        rope.byte_to_char(start)
+        ropey::str_utils::byte_to_char_idx(haystack, start)
     }))
 }
 
@@ -1311,7 +1324,7 @@ pub(crate) fn fast_c_string_match_ignore_case(
     let mut menv = LispMatchEnv::new(interp, env, Some(standard));
     let mut entry = compile_pattern(&mut menv, regexp, false)?;
     menv.object = Object::String {
-        rope: ropey::RopeSlice::from(haystack.as_str()),
+        text: &haystack,
         extended: &[],
         string: None,
     };
@@ -1368,20 +1381,19 @@ pub(crate) fn fast_looking_at(
     };
     let string_text = StringText::new(string).expect("a string");
     let haystack = string_text.text();
-    let rope = ropey::RopeSlice::from(haystack);
     let ascii = haystack.len() == chars;
     let byte = |index: usize| {
         if ascii {
             index
         } else {
-            rope.char_to_byte(index)
+            ropey::str_utils::char_to_byte_idx(haystack, index)
         }
     };
     let text = Text::from_str(haystack, multibyte, !string_text.extended().is_empty());
     let mut menv = LispMatchEnv::new(interp, env, None);
     let mut entry = compile_pattern(&mut menv, regexp, false)?;
     menv.object = Object::String {
-        rope,
+        text: haystack,
         extended: string_text.extended(),
         string: Some(*string),
     };
@@ -1392,7 +1404,13 @@ pub(crate) fn fast_looking_at(
         return Ok(None);
     };
     let end = registers.regs[0].expect("group 0").1;
-    Ok(Some(if ascii { end } else { rope.byte_to_char(end) } - pos))
+    Ok(Some(
+        if ascii {
+            end
+        } else {
+            ropey::str_utils::byte_to_char_idx(haystack, end)
+        } - pos,
+    ))
 }
 
 #[cfg(test)]

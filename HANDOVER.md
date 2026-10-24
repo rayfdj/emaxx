@@ -4522,6 +4522,37 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   completion-preview, simple, buffer, eval, data, subr, help-fns and
   files tests. Two new tests check the completion functions and
   `generate-new-buffer-name` against the oracle's answers.
+- **Round 60: `string-match`'s setup.** After round 59,
+  `execute-extended-command--shorter` spent its time in `string-match`
+  with a lazy `.*?`: 6,185 instructions a call against GNU's 2,750, the
+  matcher itself (`re_match_2_internal`, 2,400) at GNU's cost. The rest
+  was setup GNU does not do. Each call built two `RopeSlice`s of the
+  string (one for the matcher's text, one for position conversions;
+  ropey counts the characters and line breaks of the whole string to
+  make one, 460 instructions for 25 bytes): the matcher now reads a
+  string's bytes in place, as `re_search_2` reads SDATA (`TextSource`),
+  and the conversions use `str_utils` on the string. And with
+  `parse-sexp-lookup-properties` set (as in every Lisp-mode buffer,
+  `*scratch*` included) RE_SETUP_SYNTAX_TABLE_FOR_OBJECT built a fresh
+  700-byte gl_state, cleared its 128 cached ASCII entries, copied it
+  four times into a new box and read `parse-sexp-lookup-properties`
+  twice and `syntax-propertize--done` once (1,250 instructions): one
+  gl_state is now kept per thread and reset in place, as GNU keeps its
+  one `gl_state`, and `syntax-propertize--done` is read for a buffer
+  alone. `string-match` 6,185 to 4,170 instructions a call; 100,000
+  matches of ``\`d.*?-`` 0.066 to 0.137 s before, 0.052 to 0.056 after
+  (GNU 0.044 to 0.067); `execute-extended-command--shorter` three times
+  0.26 to 0.39 s (GNU 0.21 to 0.25) on a host loaded by a test run. What
+  is left is the general cost of reading a buffer-local variable (about
+  100 instructions for `case-fold-search` or
+  `parse-sexp-lookup-properties` where GNU reads a C variable), the
+  matcher's pooled state (250) and `compile_pattern`'s cache lookup. A
+  string-match probe (non-ASCII positions and starts, case folding,
+  classes and categories, strings with `syntax-table` properties, a
+  `syntax-propertize-function` that matches strings inside a buffer
+  search, unibyte and raw-byte strings) gives GNU's output, as do
+  regex-emacs, search, syntax, fns, casefiddle, editfns, rx, subr-x,
+  subr, replace, isearch, thingatpt, minibuffer, simple and files tests.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
