@@ -16,10 +16,20 @@ pub(crate) fn is_raw_like_byte_char(code: u32) -> bool {
     matches!(code, 0x00CF | 0x00EF | 0x00FF)
 }
 
+/// The eight-bit characters, #x3FFF80 to #x3FFFFF (CHAR_BYTE8_P); #x3FFF00
+/// to #x3FFF7F are ordinary characters.
+pub(crate) const RAW_BYTE8_CHARS: std::ops::RangeInclusive<u32> =
+    RAW_BYTE8_BASE + 0x80..=RAW_BYTE8_BASE + 0xFF;
+
+/// The stored markers of the eight-bit characters, U+E080 to U+E0FF; a
+/// U+E000 to U+E07F is the private-use character itself.
+pub(crate) const RAW_BYTE_MARKERS: std::ops::RangeInclusive<u32> =
+    RAW_BYTE_REGEX_BASE + 0x80..=RAW_BYTE_REGEX_BASE + 0xFF;
+
 pub(crate) fn raw_case_byte(key: u32) -> Option<u32> {
-    if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xFF).contains(&key) {
+    if RAW_BYTE8_CHARS.contains(&key) {
         Some(key - RAW_BYTE8_BASE)
-    } else if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&key) {
+    } else if RAW_BYTE_MARKERS.contains(&key) {
         Some(key - RAW_BYTE_REGEX_BASE)
     } else {
         None
@@ -31,11 +41,9 @@ pub(crate) fn normalize_case_key(key: u32) -> u32 {
 }
 
 pub(crate) fn denormalize_case_key(template: u32, mapped: u32) -> u32 {
-    if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xFF).contains(&template) && mapped <= 0xFF {
+    if RAW_BYTE8_CHARS.contains(&template) && (0x80..=0xFF).contains(&mapped) {
         RAW_BYTE8_BASE + mapped
-    } else if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&template)
-        && mapped <= 0xFF
-    {
+    } else if RAW_BYTE_MARKERS.contains(&template) && (0x80..=0xFF).contains(&mapped) {
         RAW_BYTE_REGEX_BASE + mapped
     } else {
         mapped
@@ -43,25 +51,29 @@ pub(crate) fn denormalize_case_key(template: u32, mapped: u32) -> u32 {
 }
 
 pub(crate) fn alternate_case_key(key: u32) -> Option<u32> {
-    if key <= 0xFF {
+    if (0x80..=0xFF).contains(&key) {
         Some(RAW_BYTE8_BASE + key)
-    } else if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xFF).contains(&key) {
+    } else if RAW_BYTE8_CHARS.contains(&key) {
         Some(key - RAW_BYTE8_BASE)
-    } else if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&key) {
+    } else if RAW_BYTE_MARKERS.contains(&key) {
         Some(RAW_BYTE8_BASE + (key - RAW_BYTE_REGEX_BASE))
     } else {
         None
     }
 }
 
+/// The stored form of BYTE: its marker above 0x7F, an ASCII byte itself.
 pub(crate) fn raw_byte_regex_char(byte: u8) -> char {
+    if byte < 0x80 {
+        return byte as char;
+    }
     char::from_u32(RAW_BYTE_REGEX_BASE + byte as u32)
         .expect("raw byte regex marker is a valid private-use character")
 }
 
 pub(crate) fn raw_byte_from_regex_char(ch: char) -> Option<u8> {
     let code = ch as u32;
-    if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&code) {
+    if RAW_BYTE_MARKERS.contains(&code) {
         Some((code - RAW_BYTE_REGEX_BASE) as u8)
     } else {
         None

@@ -17481,6 +17481,58 @@ fn generate_new_buffer_name_tries_a_random_suffix_for_internal_names() {
 }
 
 #[test]
+fn coding_destinations_eight_bit_storage_and_byte_positions_follow_gnu() {
+    // coding.c:code_convert_string with a buffer destination answers the
+    // characters produced and leaves point before them; fns.c's
+    // string-to-unibyte; encode_coding_utf_16's default character for an
+    // eight-bit one; U+E000..U+E07F and #x3FFF00..#x3FFF7F are ordinary
+    // characters; position-bytes and byte-to-position count GNU's bytes.
+    // The oracle's answer.
+    let program = r#"
+(format "%S" (list
+  (condition-case e (string-to-unibyte (string #x3fffe9 #x80a)) (error e))
+  (let ((s (unibyte-string 1 2))) (eq s (string-to-unibyte s)))
+  (text-properties-at 0 (string-to-unibyte (propertize (string #x3fffe9 ?a) 'face 'x)))
+  (string-to-list (encode-coding-string (string #x3fff90 ?a) 'utf-16le))
+  (with-temp-buffer
+    (insert "AB") (goto-char 2)
+    (let (log)
+      (add-hook 'after-change-functions (lambda (b e l) (push (list b e l (point)) log)) nil t)
+      (list (encode-coding-string "éx" 'utf-8 nil (current-buffer))
+            (decode-coding-string "\303\251z" 'utf-8 nil (current-buffer))
+            (point) (string-to-list (buffer-string)) log)))
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (list (decode-coding-string "\303\251z" 'utf-8 nil (current-buffer)) (string-to-list (buffer-string))))
+  (condition-case e (encode-coding-string "x" 'utf-8 nil 5) (error e))
+  (condition-case e (decode-coding-string 5 'bogus) (error e))
+  (decode-coding-string "a" 'utf-8 nil t)
+  (with-temp-buffer
+    (insert #xe01e #x3fff10 #x3fff90 "a")
+    (list (string-to-list (buffer-string)) (mapcar #'position-bytes '(1 2 3 4 5)) (mapcar #'byte-to-position '(1 4 5 9 10 11 12))))
+  (upcase (string #xe01e)) (multibyte-char-to-unibyte #x3fff10)
+  (string-to-list (decode-coding-string (unibyte-string #xf0) 'mac-roman))))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("coding contract should parse")
+        .expect("coding contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("coding contract should evaluate");
+    assert_eq!(
+        value,
+        Value::string(concat!(
+            "((error \"Cannot convert character at index 1 to unibyte\") t nil (32 0 97 0) ",
+            "(3 2 2 (65 233 122 4194243 4194217 120 66) ((2 4 0 2) (2 5 0 2))) (2 (195 169 122)) ",
+            "(wrong-type-argument bufferp 5) (wrong-type-argument stringp 5) \"a\" ",
+            "((57374 4194064 4194192 97) (1 4 9 11 12) (1 2 2 3 3 4 5)) \"\u{e01e}\" -1 (57374))"
+        ))
+    );
+}
+
+#[test]
 fn help_describe_vector_describes_each_run_of_a_char_table_once() {
     // keymap.c:describe_vector: char_table_ref_and_range gives each run of
     // characters bound to one object, which is looked up in SHADOW and the

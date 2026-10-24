@@ -4553,6 +4553,51 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   search, unibyte and raw-byte strings) gives GNU's output, as do
   regex-emacs, search, syntax, fns, casefiddle, editfns, rx, subr-x,
   subr, replace, isearch, thingatpt, minibuffer, simple and files tests.
+- **Round 61: code_convert_string's buffer destination, eight-bit
+  storage, byte positions.** A probe of the encoders against GNU found:
+  `encode-coding-string` and `decode-coding-string` with a BUFFER returned
+  the string where code_convert_string returns the characters produced,
+  `decode-coding-string` checked the coding system before the string, and
+  neither checked the destination's type. Both now follow
+  code_convert_string: CHECK_STRING, the coding system, nil or t for a
+  string and else a buffer (`bufferp`), a nil coding system with a buffer
+  encoding with no-conversion. The text goes in as insert_from_gap puts
+  it, `insert_text_before_point`: before-change at point, point and the
+  markers at it left before the text, after-change for
+  `coding->produced_char` characters; decoded into a unibyte buffer each
+  character is written in its multibyte form, as produce_chars does, and
+  still counts as one. `string-to-unibyte` returned a copy of a unibyte
+  string, kept the properties and signalled "Character cannot be
+  encoded"; it is fns.c's now (the string itself, no properties, "Cannot
+  convert character at index N to unibyte"). The UTF-16 encoders wrote an
+  eight-bit character's byte where encode_coding_utf_16 writes the
+  default character. The stored eight-bit markers are U+E080..U+E0FF,
+  but `raw_byte_from_regex_char`, `raw_case_byte` and the reader's,
+  JSON's and `decode-char`'s tests took all of U+E000..U+E0FF, so a
+  private-use U+E000..U+E07F (mac-roman's 0xF0 decodes to U+E01E) read
+  back as a character #x3FFF00 + N in buffers, `upcase` and `format`;
+  #x3FFF00..#x3FFF7F, ordinary five-byte characters, were taken for raw
+  bytes by `insert`, `char_from_integer` and `multibyte-char-to-unibyte`.
+  Both ranges are 0x80..0xFF now (`RAW_BYTE_MARKERS`, `RAW_BYTE8_CHARS`)
+  and a marker is never made for an ASCII byte. `position-bytes` and
+  `byte-to-position` counted Emaxx's UTF-8 storage (three bytes for a raw
+  byte, three for a character beyond Unicode); they count GNU's bytes
+  through `marker_byte_position`, and tree-sitter and unibyte overlay
+  positions, which index the stored text, use the new
+  `storage_byte_position` and `storage_byte_to_position`. Encoder,
+  destination, private-use and byte-position probes give GNU's output
+  (GNU itself crashes on `(encode-coding-string "é" 'utf-8 nil t)` and on
+  a killed destination buffer, where Emaxx returns a string and signals),
+  as do coding, fns, character, charset, casefiddle, buffer, editfns,
+  data, print, lread, search, regex-emacs, syntax, json, marker, mule,
+  mule-util, textsec, subr, subr-x, simple, files, bytecomp, fill, replace
+  and rx tests. Still open on the encode side: GNU's encoders take
+  consume_chars' character codes, emit an eight-bit character as its byte
+  and substitute the default character inline; Emaxx's take the stored
+  text, so a character beyond Unicode reaches them as its placeholder
+  U+F8FF, and the substitution pass before encoding (charset and us-ascii
+  codings) replaces an eight-bit character too when the text holds an
+  unencodable one.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -5165,7 +5210,12 @@ gate passed (run 40063298332), frozen passed on its first attempt (run
 40063300298). **On `0148bb1`** (round 55): full Rust gate passed (run
 40066473882), frozen passed on its first attempt (run 40066475799).
 **On `71b5174`** (rounds 56 and 57): full Rust gate passed (run
-40073624210), frozen passed on its first attempt (run 40073625996). Run
+40073624210), frozen passed on its first attempt (run 40073625996).
+**On `5d2bdea`** (rounds 58 and 59): full Rust gate passed (run
+40076991774), frozen passed on its first attempt (run 40076993546).
+**On `440d81c`** (round 60): full Rust gate passed (run 40078381958),
+frozen passed on its first attempt (run 40078383462); rounds 55 to 60 were
+merged into main by PR #102 (`df6c293`). Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that
 locale. With none set here, `char_charset_family_follows_charset_c` and

@@ -189,7 +189,7 @@ pub(crate) fn make_charset_character(
     let character = info
         .decode(interp, code)
         .ok_or_else(|| LispError::Signal("Invalid code(s)".into()))?;
-    let character = if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xff).contains(&character) {
+    let character = if RAW_BYTE_MARKERS.contains(&character) {
         RAW_BYTE8_BASE + character - RAW_BYTE_REGEX_BASE
     } else {
         character
@@ -1673,10 +1673,17 @@ pub(crate) fn encode_text_bytes_with_charsets(
         }
         "utf-16" => {
             let (big_endian, with_bom, _) = coding_system_utf16_options(interp, &canonical, &kind);
-            encode_utf16_bytes(&text, big_endian, with_bom)
+            let default_char = coding_system_default_char(interp, &canonical);
+            encode_utf16_bytes(&text, big_endian, with_bom, default_char)
         }
-        "utf-16be" => encode_utf16_bytes(&text, true, false),
-        "utf-16le" => encode_utf16_bytes(&text, false, false),
+        "utf-16be" => {
+            let default_char = coding_system_default_char(interp, &canonical);
+            encode_utf16_bytes(&text, true, false, default_char)
+        }
+        "utf-16le" => {
+            let default_char = coding_system_default_char(interp, &canonical);
+            encode_utf16_bytes(&text, false, false, default_char)
+        }
         "iso-latin-1" => encode_iso_latin_bytes(&text),
         "us-ascii" => encode_ascii_bytes(&text),
         "euc-jp" => encode_euc_jp_bytes(interp, &text),
@@ -1693,7 +1700,12 @@ pub(crate) fn encode_text_bytes_with_charsets(
 
 /// Encode TEXT as UTF-16 (big- or little-endian), optionally prefixing a
 /// byte-order mark.  Raw-byte marker chars encode as their byte value.
-fn encode_utf16_bytes(text: &str, big_endian: bool, bom: bool) -> Result<Vec<u8>, LispError> {
+fn encode_utf16_bytes(
+    text: &str,
+    big_endian: bool,
+    bom: bool,
+    default_char: u32,
+) -> Result<Vec<u8>, LispError> {
     let mut out = Vec::new();
     if bom {
         // U+FEFF
@@ -1704,8 +1716,11 @@ fn encode_utf16_bytes(text: &str, big_endian: bool, bom: bool) -> Result<Vec<u8>
         }
     }
     for ch in text.chars() {
-        let scalar = if let Some(byte) = raw_byte_from_regex_char(ch) {
-            byte as u32
+        // encode_coding_utf_16: a character above MAX_UNICODE_CHAR, an
+        // eight-bit one (a unibyte source's byte above 0x7F among them,
+        // as consume_chars reads it), is the coding's default character.
+        let scalar = if raw_byte_from_regex_char(ch).is_some() {
+            default_char
         } else {
             ch as u32
         };

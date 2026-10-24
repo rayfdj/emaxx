@@ -1049,7 +1049,7 @@ fn hash_table_key_string(value: &Value) -> Result<String, LispError> {
 
 fn raw_byte_from_regex_char(ch: char) -> Option<u8> {
     let code = ch as u32;
-    if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&code) {
+    if (RAW_BYTE_REGEX_BASE + 0x80..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&code) {
         Some((code - RAW_BYTE_REGEX_BASE) as u8)
     } else {
         None

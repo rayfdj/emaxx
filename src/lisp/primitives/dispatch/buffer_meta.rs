@@ -1106,9 +1106,7 @@ define_dispatch!(
                     .map_err(|_| LispError::Signal("Invalid charset code-point".into()))?;
                 Ok(decode_charset_code(interp, charset, code)
                     .map(|character| {
-                        let public = if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xff)
-                            .contains(&character)
-                        {
+                        let public = if RAW_BYTE_MARKERS.contains(&character) {
                             RAW_BYTE8_BASE + character - RAW_BYTE_REGEX_BASE
                         } else {
                             character

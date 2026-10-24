@@ -195,24 +195,25 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let string = string_like(&args[0])
                     .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
+                // fns.c:Fstring_to_unibyte: a unibyte STRING itself, else a
+                // new string without properties of its ASCII and eight-bit
+                // characters' bytes.
                 if !string.multibyte {
-                    return Ok(string_like_value_with_multibyte(
-                        string.text,
-                        string.props,
-                        false,
-                    ));
+                    return Ok(args[0]);
                 }
                 let mut text = String::new();
-                for ch in string.text.chars() {
+                for (index, ch) in string.text.chars().enumerate() {
                     if let Some(byte) = raw_case_byte(ch as u32) {
                         text.push(raw_byte_regex_char(byte as u8));
                     } else if (ch as u32) <= 0x7F {
                         text.push(ch);
                     } else {
-                        return Err(LispError::Signal("Character cannot be encoded".into()));
+                        return Err(LispError::Signal(format!(
+                            "Cannot convert character at index {index} to unibyte"
+                        )));
                     }
                 }
-                Ok(string_like_value_with_multibyte(text, string.props, false))
+                Ok(string_like_value_with_multibyte(text, Vec::new(), false))
             }
             "string-to-multibyte" => {
                 need_args(name, args, 1)?;
@@ -347,7 +348,9 @@ define_dispatch!(
                 let ch = args[0].as_integer()?;
                 Ok(if (0..=255).contains(&ch) {
                     Value::Integer(ch)
-                } else if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&ch) {
+                } else if (RAW_BYTE8_BASE as i64 + 0x80..=RAW_BYTE8_BASE as i64 + 0xFF)
+                    .contains(&ch)
+                {
                     Value::Integer(ch - RAW_BYTE8_BASE as i64)
                 } else {
                     Value::Integer(-1)

@@ -1052,47 +1052,55 @@ define_dispatch!(
                 if args.len() < 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
+                // coding.c:code_convert_string: CHECK_STRING, then the
+                // coding system, then a destination that is no t a buffer.
+                if !args[0].is_string() {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                }
                 // Verbatim for the same reason as the region ops above.
                 let coding = checked_coding_name(interp, &args[1])?
                     .map(|_| args[1].as_symbol().expect("validated symbol").to_string());
                 let nocopy = args.get(2).is_some_and(Value::is_truthy);
-                encode_coding_value(interp, &args[0], coding.as_deref(), nocopy, env)
+                let Some(buffer_id) = code_convert_destination(interp, args.get(3))? else {
+                    return encode_coding_value(interp, &args[0], coding.as_deref(), nocopy, env);
+                };
+                // A nil coding system with a buffer destination encodes
+                // with no-conversion.
+                let encoded = encode_coding_value(
+                    interp,
+                    &args[0],
+                    Some(coding.as_deref().unwrap_or("no-conversion")),
+                    false,
+                    env,
+                )?;
+                insert_converted_text(interp, buffer_id, &encoded, env)
             }
 
             "decode-coding-string" => {
                 if args.len() < 2 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
+                if !args[0].is_string() {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                }
                 let coding = checked_coding_name(interp, &args[1])?
                     .map(|_| args[1].as_symbol().expect("validated symbol").to_string());
                 let nocopy = args.get(2).is_some_and(Value::is_truthy);
+                let destination = code_convert_destination(interp, args.get(3))?;
                 // code_convert_string's ASCII shortcut applies only when
                 // returning a string, never when inserting into a buffer.
-                let buffer_destination = args.get(3).is_some_and(|buffer| !buffer.is_nil());
                 let decoded = decode_coding_text(
                     interp,
                     &args[0],
                     coding.as_deref(),
                     nocopy,
-                    buffer_destination,
+                    destination.is_some(),
                     env,
                 )?;
-                if let Some(buffer) = args.get(3)
-                    && !buffer.is_nil()
-                {
-                    let buffer_id = interp.resolve_buffer_id(buffer)?;
-                    let saved_buffer_id = interp.current_buffer_id();
-                    interp.switch_to_buffer_id(buffer_id)?;
-                    let insert_at = interp.buffer.borrow().point();
-                    let decoded_text = string_text(&decoded)?;
-                    let props = string_like(&decoded)
-                        .map(|string| string.props)
-                        .unwrap_or_default();
-                    insert_text_with_hooks(interp, &decoded_text, &props, &[], false, false, env)?;
-                    interp.buffer.borrow_mut().goto_char(insert_at);
-                    let _ = interp.switch_to_buffer_id(saved_buffer_id);
+                match destination {
+                    Some(buffer_id) => insert_converted_text(interp, buffer_id, &decoded, env),
+                    None => Ok(decoded),
                 }
-                Ok(decoded)
             }
             "json-parse-string" => {
                 if args.is_empty() {
@@ -1228,4 +1236,70 @@ pub(super) fn direct_match_end(
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     match_bound_named(interp, "match-end", args, env)
+}
+
+/// code_convert_string's DST_OBJECT: nil or t returns a string, anything
+/// else must be a buffer to insert into.
+fn code_convert_destination(
+    interp: &Interpreter,
+    destination: Option<&Value>,
+) -> Result<Option<u64>, LispError> {
+    match destination {
+        None => Ok(None),
+        Some(value) if value.is_nil() || value.eq_value(Value::T) => Ok(None),
+        Some(value) if !matches!(value.kind(), Kind::Buffer(_)) => {
+            Err(LispError::WrongTypeArgument("bufferp".into(), *value))
+        }
+        Some(value) => interp.resolve_buffer_id(value).map(Some),
+    }
+}
+
+/// code_convert_string with a buffer destination: CONVERTED inserted at
+/// the buffer's point, which stays before it, and the number of
+/// characters produced as the value.
+fn insert_converted_text(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    converted: &Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let converted = string_like(converted)
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *converted))?;
+    let produced = converted.text.chars().count();
+    let saved_buffer_id = interp.current_buffer_id();
+    interp.switch_to_buffer_id(buffer_id)?;
+    // produce_chars into a unibyte destination writes an eight-bit
+    // character as its byte and any other in its multibyte form; each
+    // still counts as one character produced.
+    let converted = if converted.multibyte && !interp.buffer.borrow().is_multibyte() {
+        let mut bytes = Vec::with_capacity(converted.text.len());
+        for code in converted.character_codes_iter() {
+            let code = code as u32;
+            if (0x3F_FF80..=0x3F_FFFF).contains(&code) {
+                bytes.push((code - 0x3F_FF00) as u8);
+            } else {
+                match crate::lisp::types::string_data::encode_character(code) {
+                    Ok((encoded, width)) => bytes.extend_from_slice(&encoded[..width]),
+                    Err(error) => {
+                        let _ = interp.switch_to_buffer_id(saved_buffer_id);
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        string_like(&bytes_to_shared_unibyte_value(&bytes)).expect("a unibyte string")
+    } else {
+        converted
+    };
+    let inserted = insert_text_before_point(
+        interp,
+        &converted.text,
+        &converted.props,
+        &converted.extended_chars,
+        produced,
+        env,
+    );
+    let _ = interp.switch_to_buffer_id(saved_buffer_id);
+    inserted?;
+    Ok(Value::Integer(produced as i64))
 }

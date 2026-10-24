@@ -137,13 +137,16 @@ pub(crate) fn read_object_needs_resolution(value: &Value) -> bool {
 }
 
 fn encode_raw_byte(byte: u8) -> char {
+    if byte < 0x80 {
+        return byte as char;
+    }
     char::from_u32(RAW_BYTE_REGEX_BASE + byte as u32)
         .expect("raw byte regex marker is a valid private-use character")
 }
 
 fn raw_byte_from_source_char(ch: char) -> Option<u8> {
     let code = ch as u32;
-    if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&code) {
+    if (RAW_BYTE_REGEX_BASE + 0x80..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&code) {
         Some((code - RAW_BYTE_REGEX_BASE) as u8)
     } else {
         None

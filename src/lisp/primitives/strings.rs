@@ -344,7 +344,7 @@ pub(crate) fn char_from_integer(code: i64) -> Result<char, LispError> {
     if code < 0 {
         return Err(LispError::Signal("Invalid character".into()));
     }
-    if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&code) {
+    if (RAW_BYTE8_BASE as i64 + 0x80..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&code) {
         return Ok(raw_byte_regex_char((code - RAW_BYTE8_BASE as i64) as u8));
     }
     char::from_u32(code as u32).ok_or_else(|| LispError::Signal("Invalid character".into()))

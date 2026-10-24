@@ -411,6 +411,14 @@ impl BufferText {
         }
     }
 
+    /// The char index of the character byte index BYTE lies in.
+    fn byte_to_char(&self, byte: usize) -> usize {
+        match &self.store {
+            TextStore::Small(text) => ropey::str_utils::byte_to_char_idx(text, byte),
+            TextStore::Rope(rope) => rope.byte_to_char(byte),
+        }
+    }
+
     #[inline]
     fn slice(&self, range: std::ops::Range<usize>) -> ropey::RopeSlice<'_> {
         match &self.store {
@@ -1625,7 +1633,11 @@ impl Buffer {
             .collect()
     }
 
-    pub fn position_bytes(&self, pos: usize) -> Option<usize> {
+    /// The stored text's byte offset of POS plus one: what a consumer of
+    /// the UTF-8 text itself (tree-sitter) indexes by, which differs from
+    /// GNU's byte position where raw bytes or characters beyond Unicode
+    /// sit before POS.
+    pub fn storage_byte_position(&self, pos: usize) -> Option<usize> {
         let char_len = self.text.len_chars();
         if pos == 0 || pos > char_len + 1 {
             return None;
@@ -1633,26 +1645,41 @@ impl Buffer {
         Some(1 + self.text.char_to_byte(pos - 1))
     }
 
+    /// The position of the character the stored text's byte offset
+    /// BYTE - 1 lies in: `storage_byte_position' inverted.
+    pub fn storage_byte_to_position(&self, byte: usize) -> Option<usize> {
+        if byte == 0 || byte > self.text.len_bytes() + 1 {
+            return None;
+        }
+        Some(self.text.byte_to_char(byte - 1) + 1)
+    }
+
+    /// Fposition_bytes: GNU's byte position of POS in [BEG, Z].
+    pub fn position_bytes(&self, pos: usize) -> Option<usize> {
+        let char_len = self.text.len_chars();
+        if pos == 0 || pos > char_len + 1 {
+            return None;
+        }
+        Some(self.marker_byte_position(pos))
+    }
+
+    /// Fbyte_to_position: the character at GNU byte position BYTE in
+    /// [BEG_BYTE, Z_BYTE], the one a byte inside a character belongs to.
     pub fn byte_to_position(&self, byte: usize) -> Option<usize> {
-        if byte == 0 {
+        let end = self.text.len_chars() + 1;
+        if byte == 0 || byte > self.marker_byte_position(end) {
             return None;
         }
-        let total_bytes = self.text.len_bytes();
-        if byte > total_bytes + 1 {
-            return None;
-        }
-        if byte == total_bytes + 1 {
-            return Some(self.text.len_chars() + 1);
-        }
-        let mut current_byte = 1usize;
-        for (index, ch) in self.text.chars().enumerate() {
-            let next = current_byte + ch.len_utf8();
-            if byte == current_byte || byte < next {
-                return Some(index + 1);
+        let (mut low, mut high) = (1, end);
+        while low < high {
+            let middle = low + (high - low).div_ceil(2);
+            if self.marker_byte_position(middle) <= byte {
+                low = middle;
+            } else {
+                high = middle - 1;
             }
-            current_byte = next;
         }
-        Some(self.text.len_chars() + 1)
+        Some(low)
     }
 
     /// The characters `buffer_substring' returns for [FROM, TO), read from

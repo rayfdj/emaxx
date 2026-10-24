@@ -555,7 +555,7 @@ pub(crate) fn insert_char_impl(
         _ => 1,
     };
     let inherit = args.get(2).is_some_and(Value::is_truthy);
-    if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&ch) {
+    if (RAW_BYTE8_BASE as i64 + 0x80..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&ch) {
         let byte = (ch - RAW_BYTE8_BASE as i64) as u8;
         let text: String = std::iter::repeat_n(raw_byte_regex_char(byte), count).collect();
         insert_text_with_hooks(interp, &text, &[], &[], inherit, false, env)?;
@@ -581,6 +581,57 @@ pub(crate) fn insert_text_with_hooks(
     extended_chars: &[(usize, u32)],
     inherit: bool,
     before_markers: bool,
+    env: &mut crate::lisp::types::Env,
+) -> Result<(), LispError> {
+    insert_text_and_signal(
+        interp,
+        text,
+        props,
+        extended_chars,
+        inherit,
+        before_markers,
+        None,
+        env,
+    )
+}
+
+/// What encode_coding_object and decode_coding_object do for a buffer
+/// destination: prepare_to_modify_buffer at point, the text inserted
+/// there by insert_from_gap, which leaves point and the markers at it
+/// before the text, and signal_after_change for PRODUCED characters
+/// (coding->produced_char, which counts a character decoded into a
+/// unibyte buffer once however many bytes it took).
+pub(crate) fn insert_text_before_point(
+    interp: &mut Interpreter,
+    text: &str,
+    props: &[TextPropertySpan],
+    extended_chars: &[(usize, u32)],
+    produced: usize,
+    env: &mut crate::lisp::types::Env,
+) -> Result<(), LispError> {
+    insert_text_and_signal(
+        interp,
+        text,
+        props,
+        extended_chars,
+        false,
+        false,
+        Some(produced),
+        env,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_text_and_signal(
+    interp: &mut Interpreter,
+    text: &str,
+    props: &[TextPropertySpan],
+    extended_chars: &[(usize, u32)],
+    inherit: bool,
+    before_markers: bool,
+    // Some for an insertion that leaves point before the text and
+    // reports this many characters to the after-change functions.
+    keep_point: Option<usize>,
     env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
     if text.is_empty() {
@@ -643,7 +694,11 @@ pub(crate) fn insert_text_with_hooks(
             }
         }
         interp.set_inserted_extended_chars(start, extended_chars);
-        let inserted = text.chars().count();
+        let mut inserted = text.chars().count();
+        if let Some(produced) = keep_point {
+            interp.buffer.borrow_mut().goto_char(start);
+            inserted = produced;
+        }
         Ok((Some(AfterChange::new(start, 0, inserted)), ()))
     })
 }
@@ -676,7 +731,7 @@ pub(crate) fn combine_insert_args(args: &[Value]) -> Result<StringLike, LispErro
             let fragment = match arg.kind() {
                 Kind::Integer(n) => {
                     let offset = text.chars().count();
-                    if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&n) {
+                    if (RAW_BYTE8_BASE as i64 + 0x80..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&n) {
                         raw_byte_regex_char((n - RAW_BYTE8_BASE as i64) as u8).to_string()
                     } else if let Some(c) = char::from_u32(n as u32) {
                         c.to_string()
