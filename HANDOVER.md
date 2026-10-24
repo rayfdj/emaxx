@@ -5237,6 +5237,75 @@ setup_process_coding_systems's check now refuses). A 13-form
   uses unicode-bidi's levels, which agree with GNU on textsec's and
   bidi's cases; (4) `ring_bell` ignores `visible-bell`; (5) round 68's
   item (1).
+- **Round 71: textprop.c's lookups, scans and changes, editfns.c's
+  fields.** validate_interval_range is ported: the object nil the current
+  buffer or CHECK_STRING_OR_BUFFER, each bound CHECK_FIXNUM_COERCE_MARKER
+  (fix_position: a bignum the most positive or negative fixnum), the same
+  position twice nothing for a primitive over a range, then the bounds in
+  BEGV..ZV or 0..length, else `(args-out-of-range BEGIN END)` as given;
+  no text and (soft) no intervals are GNU's NULL. Over it, as textprop.c
+  writes them: `text-properties-at` and `get-text-property` (the
+  interval's plist, nil at the object's very end, so narrowing does not
+  hide ZV's properties), `next-property-change` and
+  `previous-property-change` (intervals_equal over the interval walk,
+  LIMIT t the next interval's start), get_char_property_and_overlay
+  (`get-char-property`, `get-char-property-and-overlay`: fix_position, a
+  live window's buffer with only its overlays, `(args-out-of-range POS)`
+  outside BEGV..ZV), `get-pos-property` (overlays by their ends' advance
+  types, else text_property_stickiness: `text-property-default-nonsticky`,
+  `rear-nonsticky` before, `front-sticky` after), `next-char-property-
+  change` and `previous-char-property-change` (bounded by
+  Fnext_overlay_change), and the single-char-property scans, which now
+  step from char-property change to change with OBJECT's buffer current
+  instead of testing every character. `add-text-properties`,
+  `put-text-property`, `set-text-properties`, `remove-text-properties`,
+  `remove-list-of-text-properties` and `add-face-text-property` follow
+  their GNU control flow: validate_plist (an odd list "Odd length text
+  property list", a non-list that property with nil), the range checks,
+  nil without intervals to remove from, `set-text-properties` t whenever
+  there is something to set, and a buffer OBJECT current for the whole
+  change, its hooks included (bug 36190; before, only
+  prepare_to_modify_buffer ran there). `add-face-text-property` is
+  add_properties' prepend or append per interval: an interval whose face
+  is FACE already unchanged, a list face (not an anonymous one) taking
+  FACE at its head or, copied, at its end, a single value (nil too)
+  becoming a list of the two, in one walk over the range's intervals (a
+  face over 2,000 intervals took 0.213 s, now 0.080 s; GNU 0.024 s; the
+  single-char-property scans over them now beat GNU's time). Foverlay_get is lookup_char_property: a nil
+  value is no value (a higher overlay's explicit nil no longer hides a
+  lower one's), and `char-property-alias-alist` applies to overlays.
+  editfns.c's find_field, `field-beginning`, `field-end`, `field-string`,
+  `field-string-no-properties`, `delete-field` and `constrain-to-field`
+  are ported (fields from overlays too; ONLY-IN-LINE and
+  INHIBIT-CAPTURE-PROPERTY), and `line-beginning-position`,
+  `line-end-position`, `beginning-of-line` and `end-of-line` constrain
+  through it as GNU's do (`end-of-line` ignored fields before).
+  `insert-buffer-substring` checks its range (`(args-out-of-range START
+  END)`) and runs update_buffer_properties, as do `buffer-substring` and
+  `buffer-string` (`buffer-access-fontify-functions`); `secure-hash` reads
+  its object through extract_data_from_object as `md5` does (its range
+  checked, a multibyte buffer encoded); `buffer-hash` hashes the whole
+  buffer, narrowing aside; an overlay prints as print.c's `#<overlay from
+  S to E in NAME>` or `#<overlay in no buffer>`. Also fixed: a `#N=` label
+  inside a string's property list was left as a reader placeholder (its
+  materialization never looked into strings), which failed six
+  erc-fill-tests. The six `secure-hash`, `buffer-hash` and gnutls digest
+  tests that hash a unibyte string run under the batch runtime now: GNU
+  encodes it as `raw-text`, which mule-conf.el defines and the early-Lisp
+  test environment lacks. Probes: the 98 region-validation cases of round 70 and
+  64 property, field, overlay and hash cases give GNU's output. The GNU textprop,
+  editfns, buffer, fns, print, lread, simple, text-property-search,
+  comint, faces, font-lock, jit-lock, button, shr, erc, erc-fill,
+  erc-stamp, eshell, em-prompt, em-hist, minibuffer, isearch, fill,
+  subr-x, minibuf, help, elisp-mode, subr, undo, hi-lock, ert-x, python,
+  casefiddle, xdisp, wid-edit, pp, diff-mode, cperl-mode, ses, eww, term,
+  css-mode and package test files give GNU's results (help-fns-tests
+  fails two tests under this checkout's GNU, for its source layout, and
+  none under Emaxx). Still open: (1) intervals: a string's or buffer's
+  adjacent spans with EQ plists are one span, so `object-intervals` shows
+  fewer intervals than GNU where GNU keeps them apart; (2) deletions do
+  not run update_buffer_properties (del_range_2 makes the deleted text a
+  string with properties); (3) round 70's items (2) to (5).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -5874,8 +5943,12 @@ primitives group (run 40123867987; the groups after it did not run):
 round 68's `buffer-local-variables` read the `text-conversion-style` slot
 through the symbol, which `makunbound` had made plain; fixed in round 69.
 Frozen passed on its first attempt (run 40123869891). **On `13dfb41`**
-(round 69): the full Rust gate and frozen runs are dispatched with it;
-their results go in the next round's record. Run
+(round 69): full Rust gate passed (run 40133162719), frozen passed on its
+first attempt (run 40133164494). **On `896ba25`** (round 70): full Rust
+gate passed (run 40134441249), frozen passed on its first attempt (run
+40134442777); PR #103 merged rounds 61 to 70 into main (`7b960e7`).
+**On round 71's commit**: the full Rust gate and frozen runs are
+dispatched with it; their results go in the next round's record. Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that
 locale. With none set here, `char_charset_family_follows_charset_c` and

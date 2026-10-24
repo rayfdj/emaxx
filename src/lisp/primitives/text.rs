@@ -127,6 +127,8 @@ pub(crate) fn digest_hex(bytes: &[u8]) -> String {
     output
 }
 
+/// fns.c:Fsecure_hash: secure_hash of extract_data_from_object's bytes,
+/// as `md5' reads them without a coding system or NOERROR.
 pub(crate) fn secure_hash_value(
     interp: &mut Interpreter,
     algorithm: &str,
@@ -134,8 +136,14 @@ pub(crate) fn secure_hash_value(
     start: Option<&Value>,
     end: Option<&Value>,
     binary: Option<&Value>,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
-    let input = secure_hash_source_bytes(interp, source, start, end)?;
+    let spec = [
+        *source,
+        start.copied().unwrap_or(Value::Nil),
+        end.copied().unwrap_or(Value::Nil),
+    ];
+    let input = md5_source_bytes(interp, &spec, env)?;
     let digest = secure_hash_digest(algorithm, &input)?;
     if binary.is_some_and(Value::is_truthy) {
         Ok(bytes_to_shared_unibyte_value(&digest))
@@ -144,16 +152,21 @@ pub(crate) fn secure_hash_value(
     }
 }
 
+/// fns.c:Fbuffer_hash: the SHA-1 of the buffer's whole text, narrowing
+/// aside, as it is held.
 pub(crate) fn buffer_hash_value(
     interp: &mut Interpreter,
     buffer_or_name: Option<&Value>,
 ) -> Result<Value, LispError> {
-    let bytes = match buffer_or_name {
-        Some(value) if !value.is_nil() => secure_hash_source_bytes(interp, value, None, None)?,
-        _ => internal_text_bytes(
-            &interp.buffer.borrow().buffer_string(),
-            interp.buffer.borrow().is_multibyte(),
-        )?,
+    let buffer_id = match buffer_or_name {
+        Some(value) if !value.is_nil() => interp.resolve_buffer_id(value)?,
+        _ => interp.current_buffer_id(),
+    };
+    let bytes = {
+        let buffer = interp
+            .get_buffer_by_id(buffer_id)
+            .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+        internal_text_bytes(&buffer.full_buffer_string(), buffer.is_multibyte())?
     };
     let digest = secure_hash_digest("sha1", &bytes)?;
     Ok(Value::String(digest_hex(&digest).into()))

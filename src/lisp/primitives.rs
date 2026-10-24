@@ -129,6 +129,7 @@ pub(crate) fn gnu_c_localized_forwarded_variables() -> &'static [&'static str] {
 pub(crate) use generated_gnu_c_primitives_linux::{
     GNU_C_PRIMITIVES, generated_gnu_c_primitive_available, generated_gnu_c_primitive_special_form,
 };
+mod fields;
 mod hash_insert;
 mod hooks_overlays;
 mod insdel;
@@ -163,6 +164,7 @@ pub(crate) use color_lcms::*;
 pub(crate) use completion::*;
 pub(crate) use dispatch::display::log_message_text;
 pub(crate) use dispatch::gnutls::{AsyncGnuTlsProgress, progress_async_gnutls};
+pub(crate) use fields::*;
 pub(crate) use file_io::*;
 pub(crate) use hash_insert::*;
 pub(crate) use hooks_overlays::*;

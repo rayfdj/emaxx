@@ -1,5 +1,5 @@
 use super::*;
-use crate::lisp::types::{Kind, PropertyKey, PropertyName};
+use crate::lisp::types::{Kind, PropertyName};
 
 // cmds.c:236/288: `self-insert-command' and `delete-char' amalgamate
 // their undo with a preceding run of the same command when the count's
@@ -262,120 +262,6 @@ fn widen_current_buffer(interp: &Interpreter) {
     }
 }
 
-fn stickiness_names_property(setting: &Value, prop: impl PropertyKey) -> bool {
-    match setting.kind() {
-        Kind::T => true,
-        Kind::Cons(_) => setting
-            .to_vec()
-            .is_ok_and(|items| items.iter().any(|item| prop.is(*item))),
-        _ => false,
-    }
-}
-
-fn property_is_default_nonsticky(defaults: &Value, prop: impl PropertyKey) -> bool {
-    defaults.to_vec().unwrap_or_default().iter().any(|entry| {
-        let Some((name, nonsticky)) = (entry).cons_cells() else {
-            return false;
-        };
-        prop.is(name.get()) && nonsticky.get().is_truthy()
-    })
-}
-
-fn span_properties_at(
-    spans: &[crate::buffer::TextPropertySpan],
-    position: usize,
-) -> &[(PropertyName, Value)] {
-    spans
-        .iter()
-        .find(|span| span.start <= position && position < span.end)
-        .map(|span| span.props.as_slice())
-        .unwrap_or(&[])
-}
-
-fn property_span_boundaries(spans: &[crate::buffer::TextPropertySpan]) -> Vec<usize> {
-    let mut boundaries = spans
-        .iter()
-        .flat_map(|span| [span.start, span.end])
-        .collect::<Vec<_>>();
-    boundaries.sort_unstable();
-    boundaries.dedup();
-    boundaries
-}
-
-fn next_property_span_boundary(
-    spans: &[crate::buffer::TextPropertySpan],
-    position: usize,
-    limit: usize,
-    next_interval_only: bool,
-) -> Option<usize> {
-    let initial = span_properties_at(spans, position);
-    property_span_boundaries(spans)
-        .into_iter()
-        .filter(|boundary| position < *boundary && *boundary < limit)
-        .find(|boundary| next_interval_only || span_properties_at(spans, *boundary) != initial)
-}
-
-fn previous_property_span_boundary(
-    spans: &[crate::buffer::TextPropertySpan],
-    position: usize,
-    limit: usize,
-) -> Option<usize> {
-    let initial = position
-        .checked_sub(1)
-        .map(|position| span_properties_at(spans, position))
-        .unwrap_or(&[]);
-    property_span_boundaries(spans)
-        .into_iter()
-        .rev()
-        .filter(|boundary| limit < *boundary && *boundary < position)
-        .find(|boundary| {
-            boundary
-                .checked_sub(1)
-                .map(|position| span_properties_at(spans, position))
-                .unwrap_or(&[])
-                != initial
-        })
-}
-
-fn buffer_text_property_at_insertion(
-    interp: &Interpreter,
-    buffer: &crate::buffer::Buffer,
-    pos: usize,
-    prop: impl PropertyKey,
-    default_nonsticky: &Value,
-) -> Option<Value> {
-    let previous = pos
-        .checked_sub(1)
-        .filter(|previous| *previous >= buffer.point_min())
-        .and_then(|previous| buffer_property_at_with_category(interp, buffer, previous, prop))
-        .unwrap_or(Value::Nil);
-    let following =
-        buffer_property_at_with_category(interp, buffer, pos, prop).unwrap_or(Value::Nil);
-    let rear_nonsticky = pos
-        .checked_sub(1)
-        .filter(|previous| *previous >= buffer.point_min())
-        .and_then(|previous| {
-            buffer_property_at_with_category(interp, buffer, previous, "rear-nonsticky")
-        })
-        .unwrap_or(Value::Nil);
-    let front_sticky =
-        buffer_property_at_with_category(interp, buffer, pos, "front-sticky").unwrap_or(Value::Nil);
-
-    let rear_sticky = pos > buffer.point_min()
-        && !property_is_default_nonsticky(default_nonsticky, prop)
-        && !stickiness_names_property(&rear_nonsticky, prop);
-    let front_sticky = stickiness_names_property(&front_sticky, prop);
-    let inherited = match (rear_sticky, front_sticky) {
-        (true, false) => previous,
-        (false, true) => following,
-        (false, false) => Value::Nil,
-        // Rear stickiness wins a conflict unless it would inherit nil.
-        (true, true) if previous.is_nil() => following,
-        (true, true) => previous,
-    };
-    (!inherited.is_nil()).then_some(inherited)
-}
-
 fn character_byte_value(character: Option<char>, multibyte: bool) -> Result<Value, LispError> {
     let Some(character) = character else {
         // GNU exposes the terminating NUL at point-max and at the end of an
@@ -518,18 +404,48 @@ define_dispatch!(
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
                 let buffer_id = interp.resolve_buffer_id(&args[0])?;
+                let (begv, zv) = {
+                    let source = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
+                        LispError::Signal(format!("No buffer with id {}", buffer_id))
+                    })?;
+                    (source.point_min() as i64, source.point_max() as i64)
+                };
+                // editfns.c: nil START and END the accessible portion's
+                // bounds, the others fix_position'd, in order, within it,
+                // else (args-out-of-range START END).
+                let start_arg = args.get(1).copied().unwrap_or(Value::Nil);
+                let end_arg = args.get(2).copied().unwrap_or(Value::Nil);
+                let b = if start_arg.is_nil() {
+                    begv
+                } else {
+                    fix_position(interp, &start_arg)?
+                };
+                let e = if end_arg.is_nil() {
+                    zv
+                } else {
+                    fix_position(interp, &end_arg)?
+                };
+                let (b, e) = (b.min(e), b.max(e));
+                if !(begv <= b && e <= zv) {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("args-out-of-range"),
+                        start_arg,
+                        end_arg,
+                    ])));
+                }
+                let (start, end) = (b as usize, e as usize);
+                let original = interp.current_buffer_id();
+                if buffer_id != original {
+                    interp.set_current_buffer_id(buffer_id)?;
+                }
+                let updated = update_buffer_properties(interp, start, end, env);
+                if buffer_id != original && interp.has_buffer_id(original) {
+                    interp.set_current_buffer_id(original)?;
+                }
+                updated?;
                 let source = interp
                     .get_buffer_by_id(buffer_id)
                     .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
-                // GNU: nil START/END mean the accessible portion's bounds.
-                let start = match args.get(1) {
-                    Some(value) if !value.is_nil() => position_from_value(interp, value)?,
-                    _ => source.point_min(),
-                };
-                let end = match args.get(2) {
-                    Some(value) if !value.is_nil() => position_from_value(interp, value)?,
-                    _ => source.point_max(),
-                };
                 let text = source
                     .buffer_substring(start, end)
                     .map_err(|e| LispError::Signal(e.to_string()))?;
@@ -627,18 +543,25 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 6)?;
                 syntax_scan::parse_partial_sexp(interp, env, args)
             }
-            "buffer-string" => Ok(string_like_value_with_extended_chars(
-                interp.buffer.borrow().buffer_string(),
-                interp.buffer.borrow().substring_property_spans(
-                    interp.buffer.borrow().point_min(),
-                    interp.buffer.borrow().point_max(),
-                ),
-                interp.buffer.borrow().is_multibyte(),
-                interp.buffer.borrow().substring_extended_chars(
-                    interp.buffer.borrow().point_min(),
-                    interp.buffer.borrow().point_max(),
-                ),
-            )),
+            "buffer-string" => {
+                let (begv, zv) = {
+                    let buffer = interp.buffer.borrow();
+                    (buffer.point_min(), buffer.point_max())
+                };
+                update_buffer_properties(interp, begv, zv, env)?;
+                Ok(string_like_value_with_extended_chars(
+                    interp.buffer.borrow().buffer_string(),
+                    interp.buffer.borrow().substring_property_spans(
+                        interp.buffer.borrow().point_min(),
+                        interp.buffer.borrow().point_max(),
+                    ),
+                    interp.buffer.borrow().is_multibyte(),
+                    interp.buffer.borrow().substring_extended_chars(
+                        interp.buffer.borrow().point_min(),
+                        interp.buffer.borrow().point_max(),
+                    ),
+                ))
+            }
             "minibuffer-contents" | "minibuffer-contents-no-properties" => {
                 need_arg_range(name, args, 0, 0)?;
                 let active_minibuffer =
@@ -1212,99 +1135,22 @@ define_dispatch!(
                 line_number_display_width_value(interp, env, args.first())
             }
             "line-beginning-position" | "pos-bol" => {
-                // GNU treats an explicit nil N as 1 (lisp-mnt passes
-                // (if after 2) straight through).
-                let n = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => 1,
-                    Some(value) => value.value().as_integer()?,
-                };
-                let saved = interp.buffer.borrow().point();
-                let count = (n - 1) as isize;
-                let shortage = if count != 0 {
-                    interp.buffer.borrow_mut().forward_line(count)
+                need_arg_range(name, args, 0, 1)?;
+                let n = line_count_arg(args.first())?;
+                Ok(Value::Integer(if name == "pos-bol" {
+                    bol(interp, n) as i64
                 } else {
-                    0
-                };
-                // Crossing an unterminated final line lands at ZV, which is
-                // the requested next-line position even though moving to the
-                // beginning of its containing line would jump backward.
-                let at_unterminated_eob = count > 0
-                    && interp.buffer.borrow().point() == interp.buffer.borrow().point_max()
-                    && interp.buffer.borrow().char_before() != Some('\n');
-                // If forward_line otherwise overshot, point is already at
-                // point-max/point-min; preserve that shortage position.
-                if !at_unterminated_eob
-                    && (shortage == 0
-                        || (count > 0
-                            && interp.buffer.borrow().point() < interp.buffer.borrow().point_max()))
-                {
-                    interp.buffer.borrow_mut().beginning_of_line();
-                }
-                let mut result = interp.buffer.borrow().point();
-                interp.buffer.borrow_mut().goto_char(saved);
-                // GNU's `pos-bol' ignores fields; only `line-beginning-position'
-                // constrains (with ESCAPE-FROM-EDGE only after actual line
-                // motion and ONLY-IN-LINE set; see Fline_beginning_position).
-                if name == "line-beginning-position"
-                    && super::buffer_meta::field_near(interp, result, saved)
-                {
-                    result = super::call(
-                        interp,
-                        "constrain-to-field",
-                        &[
-                            Value::Integer(result as i64),
-                            Value::Integer(saved as i64),
-                            if count != 0 { Value::T } else { Value::Nil },
-                            Value::T,
-                        ],
-                        env,
-                    )?
-                    .as_integer()? as usize;
-                }
-                Ok(Value::Integer(result as i64))
+                    line_beginning_position(interp, n)?
+                }))
             }
             "line-end-position" | "pos-eol" => {
-                // GNU treats an explicit nil N as 1.
-                let n = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => 1,
-                    Some(value) => value.value().as_integer()?,
-                };
-                let saved = interp.buffer.borrow().point();
-                let count = (n - 1) as isize;
-                let shortage = if count != 0 {
-                    interp.buffer.borrow_mut().forward_line(count)
+                need_arg_range(name, args, 0, 1)?;
+                let n = line_count_arg(args.first())?;
+                Ok(Value::Integer(if name == "pos-eol" {
+                    eol(interp, n) as i64
                 } else {
-                    0
-                };
-                // search.c's find_before_next_newline: a backward scan that
-                // runs out of newlines yields BEGV itself, not the end of
-                // the first accessible line.
-                let mut result = if count < 0 && shortage != 0 {
-                    interp.buffer.borrow().point_min()
-                } else {
-                    interp.buffer.borrow_mut().end_of_line();
-                    interp.buffer.borrow().point()
-                };
-                interp.buffer.borrow_mut().goto_char(saved);
-                // GNU's `pos-eol' ignores fields; `line-end-position'
-                // constrains with ONLY-IN-LINE set (Fline_end_position).
-                if name == "line-end-position"
-                    && super::buffer_meta::field_near(interp, result, saved)
-                {
-                    result = super::call(
-                        interp,
-                        "constrain-to-field",
-                        &[
-                            Value::Integer(result as i64),
-                            Value::Integer(saved as i64),
-                            Value::Nil,
-                            Value::T,
-                        ],
-                        env,
-                    )?
-                    .as_integer()? as usize;
-                }
-                Ok(Value::Integer(result as i64))
+                    line_end_position(interp, n)?
+                }))
             }
             "narrow-to-region" => {
                 need_args(name, args, 2)?;
@@ -1429,127 +1275,45 @@ define_dispatch!(
                 }
                 Ok(flag)
             }
-            "get-pos-property" | "get-char-property" => {
-                need_args(name, args, 2)?;
-                let prop = PropertyName::new(args[1]);
-                if let Some(object) = args.get(2)
-                    && string_like(object).is_some()
-                {
-                    let pos = args[0].as_integer()?.max(0) as usize;
-                    return Ok(string_property_at_with_category(interp, object, pos, prop)
-                        .unwrap_or(Value::Nil));
-                }
-                let pos = position_from_value(interp, &args[0])?;
-                let window_id = args
-                    .get(2)
-                    .and_then(|object| window_record_id_from_value(interp, object));
-                let buffer_id = match args.get(2) {
-                    Some(object) if window_id.is_some() => window_buffer_id(interp, object)
-                        .ok_or_else(|| wrong_type_argument("window-live-p", *object))?,
-                    Some(object) if !object.is_nil() => interp.resolve_buffer_id(object)?,
-                    _ => interp.current_buffer_id(),
-                };
-                let buffer = interp
-                    .get_buffer_by_id(buffer_id)
-                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
-                let default_nonsticky = if name == "get-pos-property" {
-                    interp
-                        .lookup_var("text-property-default-nonsticky", env)
-                        .unwrap_or(Value::Nil)
-                } else {
-                    Value::Nil
-                };
-                Ok(highest_priority_overlay_property(
+            "get-char-property" => {
+                need_arg_range(name, args, 2, 3)?;
+                get_char_property(
                     interp,
-                    &buffer,
-                    pos,
-                    prop,
-                    name == "get-pos-property",
-                    window_id,
+                    &args[0],
+                    PropertyName::new(args[1]),
+                    args.get(2).copied().unwrap_or(Value::Nil),
                 )
-                .or_else(|| {
-                    if name == "get-pos-property" {
-                        buffer_text_property_at_insertion(
-                            interp,
-                            &buffer,
-                            pos,
-                            prop,
-                            &default_nonsticky,
-                        )
-                    } else {
-                        buffer_property_at_with_category(interp, &buffer, pos, prop)
-                    }
-                })
-                .unwrap_or(Value::Nil))
+            }
+            "get-pos-property" => {
+                need_arg_range(name, args, 2, 3)?;
+                get_pos_property(
+                    interp,
+                    &args[0],
+                    PropertyName::new(args[1]),
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                )
             }
             "get-char-property-and-overlay" => {
                 need_arg_range(name, args, 2, 3)?;
-                let prop = PropertyName::new(args[1]);
-                if let Some(object) = args.get(2)
-                    && string_like(object).is_some()
-                {
-                    let pos = args[0].as_integer()?.max(0) as usize;
-                    let value = string_property_at_with_category(interp, object, pos, prop)
-                        .unwrap_or(Value::Nil);
-                    return Ok(Value::cons(value, Value::Nil));
-                }
-                let pos = position_from_value(interp, &args[0])?;
-                let window_id = args
-                    .get(2)
-                    .and_then(|object| window_record_id_from_value(interp, object));
-                let buffer_id = match args.get(2) {
-                    Some(object) if window_id.is_some() => window_buffer_id(interp, object)
-                        .ok_or_else(|| wrong_type_argument("window-live-p", *object))?,
-                    Some(object) if !object.is_nil() => interp.resolve_buffer_id(object)?,
-                    _ => interp.current_buffer_id(),
-                };
-                let buffer = interp
-                    .get_buffer_by_id(buffer_id)
-                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-                if let Some((value, overlay_id)) = highest_priority_overlay_property_with_id(
-                    interp, &buffer, pos, prop, false, window_id,
-                ) {
-                    return Ok(Value::cons(value, Value::Overlay(overlay_id)));
-                }
-                let value = buffer_property_at_with_category(interp, &buffer, pos, prop)
-                    .unwrap_or(Value::Nil);
-                Ok(Value::cons(value, Value::Nil))
+                let (value, overlay) = get_char_property_and_overlay(
+                    interp,
+                    &args[0],
+                    PropertyName::new(args[1]),
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                )?;
+                Ok(Value::cons(
+                    value,
+                    overlay.map_or(Value::Nil, Value::Overlay),
+                ))
             }
             "get-text-property" => {
-                if args.len() < 2 || args.len() > 3 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let prop = PropertyName::new(args[1]);
-                if let Some(object) = args.get(2) {
-                    if string_like(object).is_some() {
-                        let pos = args[0].as_integer()?.max(0) as usize;
-                        Ok(string_property_at_with_category(interp, object, pos, prop)
-                            .unwrap_or(Value::Nil))
-                    } else {
-                        let pos = position_from_value(interp, &args[0])?;
-                        let buffer_id = if object.is_nil() {
-                            interp.current_buffer_id()
-                        } else {
-                            interp.resolve_buffer_id(object)?
-                        };
-                        let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
-                            LispError::Signal(format!("No buffer with id {}", buffer_id))
-                        })?;
-                        Ok(buffer_property_at_with_category(interp, &buffer, pos, prop)
-                            .unwrap_or(Value::Nil))
-                    }
-                } else {
-                    let pos = position_from_value(interp, &args[0])?;
-                    Ok(
-                        buffer_property_at_with_category(
-                            interp,
-                            &interp.buffer.borrow(),
-                            pos,
-                            prop,
-                        )
-                        .unwrap_or(Value::Nil),
-                    )
-                }
+                need_arg_range(name, args, 2, 3)?;
+                get_text_property(
+                    interp,
+                    &args[0],
+                    PropertyName::new(args[1]),
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                )
             }
             "text-property-any" | "text-property-not-all" => {
                 if args.len() < 4 || args.len() > 5 {
@@ -1565,142 +1329,32 @@ define_dispatch!(
             }
             "next-property-change" => {
                 need_arg_range(name, args, 1, 3)?;
-                let object = args.get(1).unwrap_or(&Value::Nil);
-                let next_interval_only = matches!(args.get(2).map(|v| v.kind()), Some(Kind::T));
-                let explicit_limit = args
-                    .get(2)
-                    .filter(|value| !value.is_nil() && !matches!(value.kind(), Kind::T));
-                if let Some(string) = string_like(object) {
-                    let pos = args[0].as_integer()?.max(0) as usize;
-                    let end = string.text.chars().count();
-                    let limit = explicit_limit
-                        .map(Value::as_integer)
-                        .transpose()?
-                        .map(|value| value.max(0) as usize)
-                        .unwrap_or(end)
-                        .min(end);
-                    let change =
-                        next_property_span_boundary(&string.props, pos, limit, next_interval_only);
-                    return Ok(change
-                        .map(|position| Value::Integer(position as i64))
-                        .or_else(|| {
-                            (explicit_limit.is_some() || next_interval_only)
-                                .then_some(Value::Integer(limit as i64))
-                        })
-                        .unwrap_or(Value::Nil));
-                }
-                let pos = position_from_value(interp, &args[0])?;
-                let buffer_id = if object.is_nil() {
-                    interp.current_buffer_id()
-                } else {
-                    interp.resolve_buffer_id(object)?
-                };
-                let buffer = interp
-                    .get_buffer_by_id(buffer_id)
-                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-                let end = buffer.point_max();
-                let limit = explicit_limit
-                    .map(|value| position_from_value(interp, value))
-                    .transpose()?
-                    .unwrap_or(end)
-                    .min(end);
-                let spans = buffer.full_property_spans();
-                let change = next_property_span_boundary(&spans, pos, limit, next_interval_only);
-                Ok(change
-                    .map(|position| Value::Integer(position as i64))
-                    .or_else(|| {
-                        (explicit_limit.is_some() || next_interval_only)
-                            .then_some(Value::Integer(limit as i64))
-                    })
-                    .unwrap_or(Value::Nil))
+                next_property_change(
+                    interp,
+                    &args[0],
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                )
             }
             "next-single-char-property-change" => {
-                if args.len() < 2 || args.len() > 4 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let prop = PropertyName::new(args[1]);
-                let object = args.get(2).unwrap_or(&Value::Nil);
-                let limit = match args.get(3).filter(|value| !value.is_nil()) {
-                    Some(value) => Some(position_from_value(interp, value)?),
-                    None => None,
-                };
-                if matches!(object.kind(), Kind::StringObject(_)) {
-                    return single_char_property_change_in_string(interp, args, true);
-                }
-
-                let pos = position_from_value(interp, &args[0])?.max(1);
-                let buffer_id = if object.is_nil() {
-                    interp.current_buffer_id()
-                } else {
-                    interp.resolve_buffer_id(object)?
-                };
-                let buffer = interp
-                    .get_buffer_by_id(buffer_id)
-                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
-                let max_pos = limit.unwrap_or(buffer.point_max());
-                let initial = buffer_char_property_at_with_overlay_id(interp, &buffer, pos, prop);
-                for cursor in pos.saturating_add(1)..max_pos {
-                    let current =
-                        buffer_char_property_at_with_overlay_id(interp, &buffer, cursor, prop);
-                    let same_overlay = initial.1.is_some() && initial.1 == current.1;
-                    if !same_overlay
-                        && !crate::buffer::text_property_values_eq(&current.0, &initial.0)
-                    {
-                        return Ok(Value::Integer(cursor as i64));
-                    }
-                }
-                Ok(Value::Integer(max_pos as i64))
+                need_arg_range(name, args, 2, 4)?;
+                next_single_char_property_change(
+                    interp,
+                    &args[0],
+                    args[1],
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                    args.get(3).copied().unwrap_or(Value::Nil),
+                )
             }
             "previous-single-char-property-change" => {
-                // (previous-single-char-property-change POSITION PROP &optional
-                // OBJECT LIMIT): scan back for a change in PROP (text property or
-                // overlay), returning the position AFTER the change.
-                if args.len() < 2 || args.len() > 4 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let prop = PropertyName::new(args[1]);
-                let object = args.get(2).unwrap_or(&Value::Nil);
-                let limit = match args.get(3).filter(|value| !value.is_nil()) {
-                    Some(value) => Some(position_from_value(interp, value)?),
-                    None => None,
-                };
-                if matches!(object.kind(), Kind::StringObject(_)) {
-                    return single_char_property_change_in_string(interp, args, false);
-                }
-                let pos = position_from_value(interp, &args[0])?;
-                let buffer_id = if object.is_nil() {
-                    interp.current_buffer_id()
-                } else {
-                    interp.resolve_buffer_id(object)?
-                };
-                let buffer = interp
-                    .get_buffer_by_id(buffer_id)
-                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
-                let min_pos = limit.unwrap_or(buffer.point_min());
-                if pos <= min_pos {
-                    return Ok(Value::Integer(min_pos as i64));
-                }
-                // The property "at" POS for backward scans is that of the char
-                // before POS.
-                let initial = buffer_char_property_at_with_overlay_id(
+                need_arg_range(name, args, 2, 4)?;
+                previous_single_char_property_change(
                     interp,
-                    &buffer,
-                    pos.saturating_sub(1),
-                    prop,
-                );
-                let mut cursor = pos;
-                while cursor > min_pos + 1 {
-                    let current =
-                        buffer_char_property_at_with_overlay_id(interp, &buffer, cursor - 2, prop);
-                    let same_overlay = initial.1.is_some() && initial.1 == current.1;
-                    if !same_overlay
-                        && !crate::buffer::text_property_values_eq(&current.0, &initial.0)
-                    {
-                        return Ok(Value::Integer((cursor - 1) as i64));
-                    }
-                    cursor -= 1;
-                }
-                Ok(Value::Integer(min_pos as i64))
+                    &args[0],
+                    args[1],
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                    args.get(3).copied().unwrap_or(Value::Nil),
+                )
             }
             "previous-single-property-change" => {
                 if args.len() < 2 || args.len() > 4 {
@@ -1710,325 +1364,101 @@ define_dispatch!(
             }
             "previous-property-change" => {
                 need_arg_range(name, args, 1, 3)?;
-                let object = args.get(1).unwrap_or(&Value::Nil);
-                let explicit_limit = args.get(2).filter(|value| !value.is_nil());
-                if let Some(string) = string_like(object) {
-                    let pos = args[0].as_integer()?.max(0) as usize;
-                    let limit = explicit_limit
-                        .map(Value::as_integer)
-                        .transpose()?
-                        .map(|value| value.max(0) as usize)
-                        .unwrap_or(0);
-                    let change = previous_property_span_boundary(&string.props, pos, limit);
-                    return Ok(change
-                        .map(|position| Value::Integer(position as i64))
-                        .or_else(|| {
-                            explicit_limit
-                                .is_some()
-                                .then_some(Value::Integer(limit as i64))
-                        })
-                        .unwrap_or(Value::Nil));
-                }
-                let pos = position_from_value(interp, &args[0])?;
-                let buffer_id = if object.is_nil() {
-                    interp.current_buffer_id()
-                } else {
-                    interp.resolve_buffer_id(object)?
-                };
-                let buffer = interp
-                    .get_buffer_by_id(buffer_id)
-                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-                let limit = explicit_limit
-                    .map(|value| position_from_value(interp, value))
-                    .transpose()?
-                    .unwrap_or(buffer.point_min())
-                    .max(buffer.point_min());
-                let spans = buffer.full_property_spans();
-                let change = previous_property_span_boundary(&spans, pos, limit);
-                Ok(change
-                    .map(|position| Value::Integer(position as i64))
-                    .or_else(|| {
-                        explicit_limit
-                            .is_some()
-                            .then_some(Value::Integer(limit as i64))
-                    })
-                    .unwrap_or(Value::Nil))
+                previous_property_change(
+                    interp,
+                    &args[0],
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                )
             }
             "next-char-property-change" => {
                 need_arg_range(name, args, 1, 2)?;
-                let position = position_from_value(interp, &args[0])?;
-                let mut limit = super::overlays::next_overlay_change_position(
-                    &interp.buffer.borrow(),
-                    position,
-                ) as i64;
-                if let Some(explicit_limit) = args.get(1).filter(|value| !value.is_nil()) {
-                    limit = limit.min(explicit_limit.as_integer()?);
-                }
-                let change = usize::try_from(limit).ok().and_then(|limit| {
-                    next_property_span_boundary(
-                        &interp.buffer.borrow().full_property_spans(),
-                        position,
-                        limit,
-                        false,
-                    )
-                });
-                Ok(change
-                    .map(|position| Value::Integer(position as i64))
-                    .unwrap_or(Value::Integer(limit)))
+                next_char_property_change(
+                    interp,
+                    &args[0],
+                    &args.get(1).copied().unwrap_or(Value::Nil),
+                )
             }
             "previous-char-property-change" => {
                 need_arg_range(name, args, 1, 2)?;
-                let position = position_from_value(interp, &args[0])?;
-                let mut limit = super::overlays::previous_overlay_change_position(
-                    &interp.buffer.borrow(),
-                    position,
-                ) as i64;
-                if let Some(explicit_limit) = args.get(1).filter(|value| !value.is_nil()) {
-                    limit = limit.max(explicit_limit.as_integer()?);
-                }
-                let change = usize::try_from(limit).ok().and_then(|limit| {
-                    previous_property_span_boundary(
-                        &interp.buffer.borrow().full_property_spans(),
-                        position,
-                        limit,
-                    )
-                });
-                Ok(change
-                    .map(|position| Value::Integer(position as i64))
-                    .unwrap_or(Value::Integer(limit)))
+                previous_char_property_change(
+                    interp,
+                    &args[0],
+                    &args.get(1).copied().unwrap_or(Value::Nil),
+                )
             }
             "text-properties-at" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let props = if let Some(object) = args.get(1) {
-                    if string_like(object).is_some() {
-                        let pos = args[0].as_integer()?.max(0) as usize;
-                        string_properties_at(object, pos)
-                    } else {
-                        let pos = position_from_value(interp, &args[0])?;
-                        let buffer_id = if object.is_nil() {
-                            interp.current_buffer_id()
-                        } else {
-                            interp.resolve_buffer_id(object)?
-                        };
-                        interp
-                            .get_buffer_by_id(buffer_id)
-                            .ok_or_else(|| {
-                                LispError::Signal(format!("No buffer with id {}", buffer_id))
-                            })?
-                            .text_properties_at(pos)
-                    }
-                } else {
-                    let pos = position_from_value(interp, &args[0])?;
-                    interp.buffer.borrow().text_properties_at(pos)
-                };
-                Ok(plist_value(&props))
+                need_arg_range(name, args, 1, 2)?;
+                text_properties_at(interp, &args[0], args.get(1).copied().unwrap_or(Value::Nil))
             }
             "object-intervals" => {
                 need_args(name, args, 1)?;
                 object_intervals_value(interp, &args[0])
             }
             "put-text-property" => {
-                if args.len() < 4 || args.len() > 5 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let prop = PropertyName::new(args[2]);
-                // textprop.c:Fput_text_property stores VALUE itself. Copying
-                // a property-free string here loses identity and later edits.
-                let prop_value = args[3];
-                if let Some(object) = args.get(4)
-                    && string_like(object).is_some()
-                {
-                    let start = args[0].as_integer()?.max(0) as usize;
-                    let end = args[1].as_integer()?.max(0) as usize;
-                    modify_shared_string_properties(object, start, end, |mut current| {
-                        // GNU replaces an existing property in place and
-                        // conses a new one onto the plist head.
-                        if let Some((_, existing)) =
-                            current.iter_mut().find(|(key, _)| key == &prop)
-                        {
-                            *existing = prop_value;
-                        } else {
-                            current.insert(0, (prop, prop_value));
-                        }
-                        current
-                    })?;
-                    return Ok(Value::Nil);
-                }
-                let buffer_id = property_buffer_id(interp, args.get(4))?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
-                let props = [(prop, prop_value)];
-                modify_buffer_text_properties(
+                need_arg_range(name, args, 4, 5)?;
+                let properties = Value::list([args[2], args[3]]);
+                add_text_properties(
                     interp,
-                    buffer_id,
-                    start,
-                    end,
-                    &|buffer| properties_would_add(buffer, start, end, &props),
-                    &|buffer| buffer.put_text_property(start, end, prop, prop_value),
+                    &args[0],
+                    &args[1],
+                    properties,
+                    args.get(4).copied().unwrap_or(Value::Nil),
                     env,
                 )?;
                 Ok(Value::Nil)
             }
             "add-text-properties" => {
-                if args.len() < 3 || args.len() > 4 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let props = plist_pairs(&args[2])?;
-                if let Some(object) = args.get(3)
-                    && string_like(object).is_some()
-                {
-                    let start = args[0].as_integer()?.max(0) as usize;
-                    let end = args[1].as_integer()?.max(0) as usize;
-                    let changed =
-                        modify_shared_string_properties(object, start, end, |mut current| {
-                            // GNU replaces existing properties in place and
-                            // conses new ones onto the plist head.
-                            for (name, value) in &props {
-                                if let Some((_, existing)) =
-                                    current.iter_mut().find(|(key, _)| key == name)
-                                {
-                                    *existing = *value;
-                                } else {
-                                    current.insert(0, (*name, *value));
-                                }
-                            }
-                            current
-                        })?;
-                    return Ok(if changed { Value::T } else { Value::Nil });
-                }
-                let buffer_id = property_buffer_id(interp, args.get(3))?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
-                let changed = modify_buffer_text_properties(
+                need_arg_range(name, args, 3, 4)?;
+                let changed = add_text_properties(
                     interp,
-                    buffer_id,
-                    start,
-                    end,
-                    &|buffer| properties_would_add(buffer, start, end, &props),
-                    &|buffer| buffer.add_text_properties(start, end, &props),
+                    &args[0],
+                    &args[1],
+                    args[2],
+                    args.get(3).copied().unwrap_or(Value::Nil),
                     env,
                 )?;
                 Ok(if changed { Value::T } else { Value::Nil })
             }
             "set-text-properties" => {
-                if args.len() < 3 || args.len() > 4 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let props = plist_pairs(&args[2])?;
-                if let Some(object) = args.get(3)
-                    && string_like(object).is_some()
-                {
-                    let start = args[0].as_integer()?.max(0) as usize;
-                    let end = args[1].as_integer()?.max(0) as usize;
-                    let Kind::StringObject(state) = object.kind() else {
-                        unreachable!("string checked above")
-                    };
-                    let had_intervals = state.borrow().props.has_intervals();
-                    // textprop.c set_text_properties: no properties for
-                    // the whole string drop its intervals.
-                    if props.is_empty() && start == 0 && end == state.borrow().len() {
-                        if !had_intervals {
-                            return Ok(Value::Nil);
-                        }
-                        state.check_impure()?;
-                        state.borrow_mut().props = Default::default();
-                        return Ok(Value::T);
-                    }
-                    modify_shared_string_properties(object, start, end, |_| props.clone())?;
-                    return Ok(if start < end && (had_intervals || !props.is_empty()) {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    });
-                }
-                let buffer_id = property_buffer_id(interp, args.get(3))?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
-                let changed = modify_buffer_text_properties(
+                need_arg_range(name, args, 3, 4)?;
+                let changed = set_text_properties(
                     interp,
-                    buffer_id,
-                    start,
-                    end,
-                    &|buffer| properties_would_set(buffer, start, end, &props),
-                    &|buffer| buffer.set_text_properties(start, end, &props),
+                    &args[0],
+                    &args[1],
+                    args[2],
+                    args.get(3).copied().unwrap_or(Value::Nil),
                     env,
                 )?;
                 Ok(if changed { Value::T } else { Value::Nil })
             }
-            "remove-list-of-text-properties" => {
-                if args.len() < 3 || args.len() > 4 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let names = args[2]
-                    .to_vec()?
-                    .into_iter()
-                    .map(PropertyName::new)
-                    .collect::<Vec<_>>();
-                if let Some(object) = args.get(3)
-                    && string_like(object).is_some()
-                {
-                    let start = args[0].as_integer()?.max(0) as usize;
-                    let end = args[1].as_integer()?.max(0) as usize;
-                    let changed = modify_shared_string_properties(object, start, end, |current| {
-                        current
-                            .into_iter()
-                            .filter(|(key, _)| !names.iter().any(|name| name == key))
-                            .collect()
-                    })?;
-                    return Ok(if changed { Value::T } else { Value::Nil });
-                }
-                let buffer_id = property_buffer_id(interp, args.get(3))?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
-                let changed = modify_buffer_text_properties(
+            "remove-text-properties" | "remove-list-of-text-properties" => {
+                need_arg_range(name, args, 3, 4)?;
+                let changed = remove_text_properties(
                     interp,
-                    buffer_id,
-                    start,
-                    end,
-                    &|buffer| properties_would_remove(buffer, start, end, &names),
-                    &|buffer| buffer.remove_list_of_text_properties(start, end, &names),
+                    &args[0],
+                    &args[1],
+                    args[2],
+                    args.get(3).copied().unwrap_or(Value::Nil),
+                    name == "remove-list-of-text-properties",
                     env,
                 )?;
                 Ok(if changed { Value::T } else { Value::Nil })
             }
-            "remove-text-properties" => {
-                if args.len() < 3 || args.len() > 4 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let names = plist_pairs(&args[2])?
-                    .into_iter()
-                    .map(|(name, _)| name)
-                    .collect::<Vec<_>>();
-                if let Some(object) = args.get(3)
-                    && string_like(object).is_some()
-                {
-                    let start = args[0].as_integer()?.max(0) as usize;
-                    let end = args[1].as_integer()?.max(0) as usize;
-                    let changed = modify_shared_string_properties(object, start, end, |current| {
-                        current
-                            .into_iter()
-                            .filter(|(key, _)| !names.iter().any(|name| name == key))
-                            .collect()
-                    })?;
-                    return Ok(if changed { Value::T } else { Value::Nil });
-                }
-                let buffer_id = property_buffer_id(interp, args.get(3))?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
-                let changed = modify_buffer_text_properties(
+            "add-face-text-property" => {
+                need_arg_range(name, args, 3, 5)?;
+                let append = args.get(3).is_some_and(|value| value.is_truthy());
+                add_face_text_property(
                     interp,
-                    buffer_id,
-                    start,
-                    end,
-                    &|buffer| properties_would_remove(buffer, start, end, &names),
-                    &|buffer| buffer.remove_list_of_text_properties(start, end, &names),
+                    &args[0],
+                    &args[1],
+                    args[2],
+                    append,
+                    args.get(4).copied().unwrap_or(Value::Nil),
                     env,
                 )?;
-                Ok(if changed { Value::T } else { Value::Nil })
+                Ok(Value::Nil)
             }
-            "add-face-text-property" => add_face_text_property(interp, name, args, env),
             "put" => {
                 need_args(name, args, 3)?;
                 // GNU 30.2 fns.c:Fput shares `get's CHECK_SYMBOL/XSYMBOL
@@ -2924,47 +2354,12 @@ pub(super) fn direct_skip_syntax_backward(
 pub(super) fn direct_beginning_of_line(
     interp: &mut Interpreter,
     args: &[Value],
-    env: &mut crate::lisp::types::Env,
+    _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    // GNU constrains bol motion to the current field (fields are
-    // rare; skip the work when the buffer has none).
-    let old_pos = interp.buffer.borrow().point();
-    let n = args
-        .first()
-        .and_then(|value| value.integer_value())
-        .unwrap_or(1);
-    if n != 1 {
-        interp.buffer.borrow_mut().forward_line((n - 1) as isize);
-    }
-    // After crossing an unterminated final line, GNU's
-    // line-beginning-position leaves point at ZV.  Calling the
-    // ordinary current-line BOL operation there would incorrectly
-    // rewind to that same final line and can make region walkers
-    // loop forever.
-    let crossed_to_unterminated_eob = n > 1
-        && interp.buffer.borrow().point() == interp.buffer.borrow().point_max()
-        && interp
-            .buffer
-            .borrow()
-            .char_before()
-            .is_some_and(|ch| ch != '\n');
-    if !crossed_to_unterminated_eob {
-        interp.buffer.borrow_mut().beginning_of_line();
-    }
-    let new_pos = interp.buffer.borrow().point();
-    if super::buffer_meta::field_near(interp, new_pos, old_pos) {
-        let constrained = super::call(
-            interp,
-            "constrain-to-field",
-            &[
-                Value::Integer(new_pos as i64),
-                Value::Integer(old_pos as i64),
-            ],
-            env,
-        )?
-        .as_integer()? as usize;
-        interp.buffer.borrow_mut().goto_char(constrained);
-    }
+    // cmds.c:Fbeginning_of_line: point to Fline_beginning_position.
+    let n = line_command_count(args.first())?;
+    let pos = line_beginning_position(interp, n)?;
+    interp.buffer.borrow_mut().goto_char(pos as usize);
     Ok(Value::Nil)
 }
 
@@ -2974,17 +2369,114 @@ pub(super) fn direct_end_of_line(
     args: &[Value],
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    // (end-of-line N): end of the Nth line counting from the
-    // current one (0 = previous line's end).
-    let n = args
-        .first()
-        .and_then(|value| value.integer_value())
-        .unwrap_or(1);
-    if n != 1 {
-        interp.buffer.borrow_mut().forward_line((n - 1) as isize);
-    }
-    interp.buffer.borrow_mut().end_of_line();
+    // cmds.c:Fend_of_line: point to Fline_end_position (no intangible
+    // text moves point past it).
+    let n = line_command_count(args.first())?;
+    let pos = line_end_position(interp, n)?;
+    interp.buffer.borrow_mut().goto_char(pos as usize);
     Ok(Value::Nil)
+}
+
+/// The line count N of `line-beginning-position' and its relatives: nil
+/// 1, else an integer.
+fn line_count_arg(n: Option<&Value>) -> Result<i64, LispError> {
+    match n.map(|value| value.kind()) {
+        None | Some(Kind::Nil) => Ok(1),
+        Some(value) => value.value().as_integer(),
+    }
+}
+
+/// cmds.c's N of `beginning-of-line' and `end-of-line': nil 1, else
+/// CHECK_FIXNUM.
+fn line_command_count(n: Option<&Value>) -> Result<i64, LispError> {
+    match n.map(|value| value.kind()) {
+        None | Some(Kind::Nil) => Ok(1),
+        Some(Kind::Integer(n)) => Ok(n),
+        Some(_) => Err(LispError::WrongTypeArgument(
+            "fixnump".into(),
+            *n.expect("an argument"),
+        )),
+    }
+}
+
+/// editfns.c:bol: the start of the line N - 1 lines from point's.
+fn bol(interp: &mut Interpreter, n: i64) -> usize {
+    let saved = interp.buffer.borrow().point();
+    let count = (n - 1) as isize;
+    let shortage = if count != 0 {
+        interp.buffer.borrow_mut().forward_line(count)
+    } else {
+        0
+    };
+    // Crossing an unterminated final line lands at ZV, which is the
+    // requested next-line position even though moving to the beginning of
+    // its containing line would jump backward.
+    let at_unterminated_eob = count > 0
+        && interp.buffer.borrow().point() == interp.buffer.borrow().point_max()
+        && interp.buffer.borrow().char_before() != Some('\n');
+    // If forward_line otherwise overshot, point is already at
+    // point-max/point-min; preserve that shortage position.
+    if !at_unterminated_eob
+        && (shortage == 0
+            || (count > 0 && interp.buffer.borrow().point() < interp.buffer.borrow().point_max()))
+    {
+        interp.buffer.borrow_mut().beginning_of_line();
+    }
+    let result = interp.buffer.borrow().point();
+    interp.buffer.borrow_mut().goto_char(saved);
+    result
+}
+
+/// editfns.c:Fline_beginning_position: bol constrained to point's field,
+/// escaping its edge after line motion, only within the line.
+fn line_beginning_position(interp: &mut Interpreter, n: i64) -> Result<i64, LispError> {
+    let charpos = bol(interp, n) as i64;
+    let point = interp.buffer.borrow().point() as i64;
+    constrain_to_field(
+        interp,
+        &Value::Integer(charpos),
+        &Value::Integer(point),
+        n != 1,
+        true,
+        Value::Nil,
+    )
+}
+
+/// editfns.c:eol: the end of the line N - 1 lines from point's.
+fn eol(interp: &mut Interpreter, n: i64) -> usize {
+    let saved = interp.buffer.borrow().point();
+    let count = (n - 1) as isize;
+    let shortage = if count != 0 {
+        interp.buffer.borrow_mut().forward_line(count)
+    } else {
+        0
+    };
+    // search.c's find_before_next_newline: a backward scan that runs out
+    // of newlines yields BEGV itself, not the end of the first accessible
+    // line.
+    let result = if count < 0 && shortage != 0 {
+        interp.buffer.borrow().point_min()
+    } else {
+        interp.buffer.borrow_mut().end_of_line();
+        interp.buffer.borrow().point()
+    };
+    interp.buffer.borrow_mut().goto_char(saved);
+    result
+}
+
+/// editfns.c:Fline_end_position: eol constrained to point's field, only
+/// within the line.
+fn line_end_position(interp: &mut Interpreter, n: i64) -> Result<i64, LispError> {
+    let charpos = eol(interp, n) as i64;
+    let point = interp.buffer.borrow().point() as i64;
+    constrain_to_field(
+        interp,
+        &Value::Integer(charpos),
+        &Value::Integer(point),
+        false,
+        true,
+        Value::Nil,
+    )
 }
 
 /// The `forward-line' primitive, callable directly (a subr's function pointer).
@@ -3173,10 +2665,13 @@ fn buffer_substring_named(
     interp: &mut Interpreter,
     name: &str,
     args: &[Value],
-    _env: &mut crate::lisp::types::Env,
+    env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     need_args(name, args, 2)?;
     let (start, end) = validate_region(interp, &args[0], &args[1])?;
+    if name == "buffer-substring" {
+        update_buffer_properties(interp, start, end, env)?;
+    }
     match interp.buffer.borrow().buffer_substring(start, end) {
         Ok(s) => {
             if name == "buffer-substring" {

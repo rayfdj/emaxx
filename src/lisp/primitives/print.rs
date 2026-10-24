@@ -1297,6 +1297,18 @@ pub(crate) fn render_prin1_body(
                     }
                     None => "#<marker in no buffer>".into(),
                 })),
+                // print.c's PVEC_OVERLAY: its bounds and buffer's name, or
+                // no buffer once deleted (its buffer killed too).
+                Kind::Overlay(overlay) => Ok(PrintOutput::from(match overlay.buffer() {
+                    Some(buffer) => {
+                        let (start, end) = overlay.bounds();
+                        format!(
+                            "#<overlay from {start} to {end} in {}>",
+                            buffer.borrow().name
+                        )
+                    }
+                    None => "#<overlay in no buffer>".into(),
+                })),
                 _ => Ok(value.to_string().into()),
             }
         }

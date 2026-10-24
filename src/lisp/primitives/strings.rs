@@ -1405,17 +1405,77 @@ pub(crate) fn buffer_char_property_at_with_overlay_id(
     )
 }
 
+/// buffer.c:Foverlay_get, intervals.c:lookup_char_property over the
+/// overlay's plist without `default-text-properties': PROP's value, else
+/// the non-nil PROP of its `category' symbol, else the first non-nil
+/// value in the plist of an alternative `char-property-alias-alist' gives
+/// PROP.  None where that is nil.
 pub(crate) fn overlay_property_with_category(
     interp: &Interpreter,
     overlay: &crate::overlay::OverlayRef,
     prop: impl PropertyKey,
 ) -> Option<Value> {
-    let direct = overlay.get_prop_by(prop);
-    if direct.is_some() || prop.is_named("category") {
-        return direct;
+    let plist = overlay.plist();
+    let mut fallback = Value::Nil;
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    let mut tail = plist;
+    while let Kind::Cons(cell) = tail.kind() {
+        let name = cell.car.get();
+        let rest = cell.cdr.get();
+        let value = match rest.kind() {
+            Kind::Cons(rest) => rest.car.get(),
+            _ => Value::Nil,
+        };
+        if prop.is(name) {
+            return Some(value).filter(|value| !value.is_nil());
+        }
+        if matches!(name.kind(), Kind::Symbol(symbol) if symbol == "category")
+            && let Some(category) = value.symbol_str()
+        {
+            fallback = interp
+                .get_symbol_property_by(category, prop)
+                .unwrap_or(Value::Nil);
+        }
+        let Kind::Cons(rest) = rest.kind() else {
+            break;
+        };
+        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            break;
+        }
+        tail = rest.cdr.get();
     }
-    let category = overlay.get_prop_by("category")?;
-    interp.get_symbol_property_by(category.symbol_str()?, prop)
+    if !fallback.is_nil() {
+        return Some(fallback);
+    }
+    let aliases = interp
+        .symbol_value_key(cached_symbol!("char-property-alias-alist"))
+        .unwrap_or(Value::Nil);
+    let mut seen = crate::lisp::types::CycleGuard::new();
+    let mut tail = aliases;
+    while let Kind::Cons(cell) = tail.kind() {
+        if let Kind::Cons(entry) = cell.car.get().kind()
+            && prop.is(entry.car.get())
+        {
+            let mut names = entry.cdr.get();
+            let mut seen = crate::lisp::types::CycleGuard::new();
+            while let Kind::Cons(alias) = names.kind() {
+                let value = lisp_plist_get(plist, PropertyName::new(alias.car.get()));
+                if !value.is_nil() {
+                    return Some(value);
+                }
+                if seen.step(crate::lisp::types::ConsCell::identity(&alias)) {
+                    break;
+                }
+                names = alias.cdr.get();
+            }
+            return None;
+        }
+        if seen.step(crate::lisp::types::ConsCell::identity(&cell)) {
+            break;
+        }
+        tail = cell.cdr.get();
+    }
+    None
 }
 
 pub(crate) fn string_property_at(
@@ -1451,18 +1511,6 @@ pub(crate) fn string_property_at_with_category(
         .find(|span| span.start <= pos && pos < span.end)
         .map_or(&[][..], |span| span.props.as_slice());
     property_from_props_with_category(interp, props, prop)
-}
-
-pub(crate) fn string_properties_at(value: &Value, pos: usize) -> Vec<(PropertyName, Value)> {
-    string_like(value)
-        .and_then(|string| {
-            string
-                .props
-                .iter()
-                .find(|span| span.start <= pos && pos < span.end)
-                .map(|span| span.props.clone())
-        })
-        .unwrap_or_default()
 }
 
 pub(crate) fn merge_string_object_props(

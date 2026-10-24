@@ -148,6 +148,16 @@ pub(crate) fn contains_circular_read_syntax(value: &Value) -> bool {
             Kind::Vector(vector) if seen_vectors.insert(vector.identity()) => {
                 pending.extend(vector.slots());
             }
+            // lread.c's substitute_object_recurse walks a string's
+            // intervals too: a #N= label may sit in a property list.
+            Kind::StringObject(state) => {
+                for span in &state.borrow().props {
+                    for (name, property) in &span.props {
+                        pending.push(name.value());
+                        pending.push(*property);
+                    }
+                }
+            }
             Kind::ReaderForm(form) => match form.as_ref() {
                 ReaderForm::HashTable { fields }
                 | ReaderForm::CharTable { fields }
