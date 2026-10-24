@@ -995,31 +995,36 @@ define_dispatch!(
                         env,
                     )?
                 };
-                let transformed_text = string_text(&transformed)?;
-                let transformed_length = transformed_text.chars().count();
+                let transformed_string = string_like(&transformed)
+                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), transformed))?;
+                let transformed_length = transformed_string.text.chars().count();
                 // produce_charset's `charset' properties land in the
                 // destination buffer along with the decoded text.
-                let transformed_props = string_like(&transformed)
-                    .map(|string| string.props)
-                    .unwrap_or_default();
-                let text_for_buffer = |multibyte: bool| -> Result<String, LispError> {
-                    if name == "decode-coding-region" && !multibyte {
-                        Ok(decode_raw_text_bytes(&encode_utf8_bytes(
-                            &transformed_text,
-                            false,
-                        )?))
-                    } else {
-                        Ok(transformed_text.clone())
-                    }
-                };
+                let transformed_props = transformed_string.props.clone();
+                // The text (with its characters beyond Unicode) the
+                // destination stores.
+                let text_for_buffer =
+                    |multibyte: bool| -> Result<(String, Vec<(usize, u32)>), LispError> {
+                        let form = if name == "decode-coding-region"
+                            && !multibyte
+                            && transformed_string.multibyte
+                        {
+                            unibyte_destination_form(&transformed_string)?
+                        } else {
+                            transformed_string.clone()
+                        };
+                        Ok((form.text, form.extended_chars))
+                    };
                 match destination {
                     Destination::Return => Ok(transformed),
                     Destination::Replace => {
-                        let text = text_for_buffer(interp.buffer.borrow().is_multibyte())?;
+                        let (text, extended) =
+                            text_for_buffer(interp.buffer.borrow().is_multibyte())?;
                         let old_length = end - start;
                         let new_end = start + text.chars().count();
                         modify_current_buffer(interp, start, end, false, env, |interp, _, _| {
                             replace_buffer_region_with_text(interp, start, end, &text)?;
+                            interp.set_inserted_extended_chars(start, &extended);
                             // decode_coding counts produced characters even
                             // into a unibyte destination, so the spans keep
                             // their character offsets there.
@@ -1040,12 +1045,13 @@ define_dispatch!(
                         let saved_buffer_id = interp.current_buffer_id();
                         interp.switch_to_buffer_id(buffer_id)?;
                         let insert_at = interp.buffer.borrow().point();
-                        let text = text_for_buffer(interp.buffer.borrow().is_multibyte())?;
+                        let (text, extended) =
+                            text_for_buffer(interp.buffer.borrow().is_multibyte())?;
                         let insertion = insert_text_with_hooks(
                             interp,
                             &text,
                             &transformed_props,
-                            &[],
+                            &extended,
                             false,
                             false,
                             env,
@@ -1268,6 +1274,23 @@ fn code_convert_destination(
 /// code_convert_string with a buffer destination: CONVERTED inserted at
 /// the buffer's point, which stays before it, and the number of
 /// characters produced as the value.
+/// produce_chars into a unibyte destination writes an eight-bit character
+/// as its byte and any other in its multibyte form; each still counts as
+/// one character produced.
+fn unibyte_destination_form(converted: &StringLike) -> Result<StringLike, LispError> {
+    let mut bytes = Vec::with_capacity(converted.text.len());
+    for code in converted.character_codes_iter() {
+        let code = code as u32;
+        if (0x3F_FF80..=0x3F_FFFF).contains(&code) {
+            bytes.push((code - 0x3F_FF00) as u8);
+        } else {
+            let (encoded, width) = crate::lisp::types::string_data::encode_character(code)?;
+            bytes.extend_from_slice(&encoded[..width]);
+        }
+    }
+    Ok(string_like(&bytes_to_shared_unibyte_value(&bytes)).expect("a unibyte string"))
+}
+
 fn insert_converted_text(
     interp: &mut Interpreter,
     buffer_id: u64,
@@ -1279,26 +1302,14 @@ fn insert_converted_text(
     let produced = converted.text.chars().count();
     let saved_buffer_id = interp.current_buffer_id();
     interp.switch_to_buffer_id(buffer_id)?;
-    // produce_chars into a unibyte destination writes an eight-bit
-    // character as its byte and any other in its multibyte form; each
-    // still counts as one character produced.
     let converted = if converted.multibyte && !interp.buffer.borrow().is_multibyte() {
-        let mut bytes = Vec::with_capacity(converted.text.len());
-        for code in converted.character_codes_iter() {
-            let code = code as u32;
-            if (0x3F_FF80..=0x3F_FFFF).contains(&code) {
-                bytes.push((code - 0x3F_FF00) as u8);
-            } else {
-                match crate::lisp::types::string_data::encode_character(code) {
-                    Ok((encoded, width)) => bytes.extend_from_slice(&encoded[..width]),
-                    Err(error) => {
-                        let _ = interp.switch_to_buffer_id(saved_buffer_id);
-                        return Err(error);
-                    }
-                }
+        match unibyte_destination_form(&converted) {
+            Ok(converted) => converted,
+            Err(error) => {
+                let _ = interp.switch_to_buffer_id(saved_buffer_id);
+                return Err(error);
             }
         }
-        string_like(&bytes_to_shared_unibyte_value(&bytes)).expect("a unibyte string")
     } else {
         converted
     };

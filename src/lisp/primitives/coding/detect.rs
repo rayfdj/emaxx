@@ -78,6 +78,11 @@ pub(crate) struct DetectSource {
     units: Vec<i32>,
     src_bytes: usize,
     src_chars: usize,
+    /// The units of a UTF-8 signature at the head, which
+    /// detect_coding_utf_8 tests on the raw source (EF BB BF followed by
+    /// more text): the three bytes of a unibyte source, or a multibyte
+    /// one's U+FEFF character, whose internal sequence they are.
+    bom_units: usize,
 }
 
 impl DetectSource {
@@ -86,6 +91,11 @@ impl DetectSource {
             units: bytes.iter().map(|byte| i32::from(*byte)).collect(),
             src_bytes: bytes.len(),
             src_chars: bytes.len(),
+            bom_units: if bytes.len() > 3 && bytes[..3] == [0xEF, 0xBB, 0xBF] {
+                3
+            } else {
+                0
+            },
         }
     }
 
@@ -112,10 +122,42 @@ impl DetectSource {
                 src_bytes += ch.len_utf8();
             }
         }
+        let bom_units = usize::from(units.first() == Some(&-0xFEFF) && src_bytes > 3);
         DetectSource {
             units,
             src_bytes,
             src_chars,
+            bom_units,
+        }
+    }
+
+    /// A multibyte text's characters (CODES, eight-bit ones as
+    /// #x3FFF80..#x3FFFFF) as the byte reader sees their internal
+    /// sequences: ASCII and eight-bit characters as their bytes, any other
+    /// as a negative unit.
+    pub(crate) fn from_codes(codes: impl Iterator<Item = i64>) -> Self {
+        let mut units = Vec::new();
+        let mut src_bytes = 0;
+        let mut src_chars = 0;
+        for code in codes {
+            src_chars += 1;
+            let (unit, width) = match code {
+                0..0x80 => (code as i32, 1),
+                0x80..0x800 => (-(code as i32), 2),
+                0x800..0x10000 => (-(code as i32), 3),
+                0x10000..0x20_0000 => (-(code as i32), 4),
+                0x3F_FF80.. => ((code - 0x3F_FF00) as i32, 2),
+                _ => (-(code as i32), 5),
+            };
+            units.push(unit);
+            src_bytes += width;
+        }
+        let bom_units = usize::from(units.first() == Some(&-0xFEFF) && src_bytes > 3);
+        DetectSource {
+            units,
+            src_bytes,
+            src_chars,
+            bom_units,
         }
     }
 
@@ -193,9 +235,9 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
     let mut nchars = head_ascii;
     let mut bom_found = false;
     info.checked |= MASK_UTF_8;
-    if p == 0 && p + 3 < end && units[0] == 0xEF && units[1] == 0xBB && units[2] == 0xBF {
+    if p == 0 && src.bom_units > 0 {
         bom_found = true;
-        p += 3;
+        p += src.bom_units;
         nchars += 1;
     }
     let src_base;

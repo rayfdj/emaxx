@@ -1170,10 +1170,13 @@ pub(crate) fn append_process_bytes_to_buffer(
             interp.coding_system_eol_type_value(&coding),
         );
     }
-    let (text, coding_used) =
+    let (decoded, coding_used) =
         if interp.coding_system_kind_name(&coding).as_deref() == Some("undecided") {
             let (detected, normalized) = auto_detect_coding(interp, bytes);
-            (decode_text_bytes(interp, &normalized, &detected)?, detected)
+            (
+                decode_text_bytes_annotated(interp, &normalized, &detected)?,
+                detected,
+            )
         } else {
             let actual_eol = detect_eol_type(bytes);
             let normalized = decode_bytes_with_explicit_eol(
@@ -1201,11 +1204,13 @@ pub(crate) fn append_process_bytes_to_buffer(
                 &normalized
             };
             (
-                decode_text_bytes(interp, source, &coding_used)?,
+                decode_text_bytes_annotated(interp, source, &coding_used)?,
                 coding_used,
             )
         };
-    interp.insert_current_buffer(&text);
+    let insert_at = interp.buffer.borrow().point();
+    interp.insert_current_buffer(&decoded.text);
+    interp.set_inserted_extended_chars(insert_at, &decoded.extended);
     interp.set_variable(
         "last-coding-system-used",
         Value::Symbol(coding_used.into()),

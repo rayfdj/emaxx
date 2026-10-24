@@ -487,14 +487,6 @@ pub(crate) fn make_temp_file_internal(
     Ok(last)
 }
 
-pub(crate) fn decode_inserted_bytes(bytes: &[u8], multibyte: bool, literal: bool) -> String {
-    if literal || !multibyte {
-        return decode_raw_text_bytes(bytes);
-    }
-    String::from_utf8(bytes.to_vec())
-        .unwrap_or_else(|_| bytes.iter().map(|byte| char::from(*byte)).collect())
-}
-
 pub(crate) fn read_insert_file_bytes(
     path: &str,
     start: Option<usize>,
@@ -1494,12 +1486,9 @@ pub(crate) fn decode_file_contents(
     literal: bool,
     filename: Option<&str>,
     charset_props: &mut Vec<TextPropertySpan>,
-) -> Result<(String, String), LispError> {
+) -> Result<(DecodedText, String), LispError> {
     if literal {
-        return Ok((
-            decode_inserted_bytes(bytes, interp.buffer.borrow().is_multibyte(), true),
-            "no-conversion".into(),
-        ));
+        return Ok((decode_coding_raw_text(bytes), "no-conversion".into()));
     }
     let mut requested = interp
         .lookup_var("coding-system-for-read", env)
@@ -1560,7 +1549,7 @@ pub(crate) fn decode_file_contents(
             .unwrap_or_else(|| detect_eol_type_opt(bytes));
         let normalized = decode_bytes_with_explicit_eol(bytes, eol.unwrap_or(0));
         return Ok((
-            decode_raw_text_bytes(&normalized),
+            decode_coding_raw_text(&normalized),
             coding_variant_name(interp, "raw-text", eol),
         ));
     }
@@ -1569,7 +1558,7 @@ pub(crate) fn decode_file_contents(
         // `insert-file-contents-literally' wrapper.  In particular, CRLF
         // and CR bytes must not pass through the normal EOL decoder.
         if requested == "no-conversion" {
-            return Ok((decode_raw_text_bytes(bytes), requested));
+            return Ok((decode_coding_raw_text(bytes), requested));
         }
         // `prefer-utf-8' is GNU's undecided-type system from mule-conf.el
         // (file-coding-system-alist maps "\.el\'" to it): detection runs
@@ -1580,11 +1569,13 @@ pub(crate) fn decode_file_contents(
         {
             let (detected, normalized) =
                 auto_detect_coding_for(interp, bytes, None, &requested, env);
-            let decoded = decode_coding_gap(interp, env, &normalized, &detected)?;
-            *charset_props = charset_runs_to_props(decoded.charsets);
-            return Ok((decoded.text, detected));
+            let mut decoded = decode_coding_gap(interp, env, &normalized, &detected)?;
+            *charset_props = charset_runs_to_props(std::mem::take(&mut decoded.charsets));
+            return Ok((decoded, detected));
         }
-        if coding_system_auto_detects_bom(interp, &requested) {
+        if coding_system_auto_detects_bom(interp, &requested)
+            && interp.coding_system_kind_name(&requested).as_deref() == Some("utf-8")
+        {
             let actual_eol = detect_eol_type(bytes);
             let normalized = decode_bytes_with_explicit_eol(bytes, actual_eol);
             let (has_bom, bomless) = strip_utf8_bom(&normalized);
@@ -1598,7 +1589,7 @@ pub(crate) fn decode_file_contents(
                 Some(actual_eol),
             );
             return Ok((
-                decode_utf8_bytes(if has_bom { bomless } else { &normalized }),
+                decode_coding_utf_8(if has_bom { bomless } else { &normalized }),
                 detected,
             ));
         }
@@ -1637,12 +1628,11 @@ pub(crate) fn decode_file_contents(
             } else {
                 coding_variant_name(interp, &detected_base, Some(eol))
             };
-            let text = match detected_base.as_str() {
-                "utf-8" => decode_utf8_bytes(&normalized),
-                "raw-text" => decode_raw_text_bytes(&normalized),
-                _ => normalized.iter().map(|byte| char::from(*byte)).collect(),
+            let decoded = match detected_base.as_str() {
+                "utf-8" => decode_coding_utf_8(&normalized),
+                _ => decode_coding_raw_text(&normalized),
             };
-            return Ok((text, detected));
+            return Ok((decoded, detected));
         }
         let normalized = decode_bytes_with_explicit_eol(bytes, explicit_eol.unwrap_or(actual_eol));
         let detected = if explicit_eol.is_some() {
@@ -1652,16 +1642,16 @@ pub(crate) fn decode_file_contents(
         };
         if interp.coding_system_kind_name(&requested).as_deref() == Some("utf-8-with-signature") {
             let (_, bomless) = strip_utf8_bom(&normalized);
-            return Ok((decode_utf8_bytes(bomless), detected));
+            return Ok((decode_coding_utf_8(bomless), detected));
         }
-        let decoded = decode_coding_gap(interp, env, &normalized, &requested)?;
-        *charset_props = charset_runs_to_props(decoded.charsets);
-        return Ok((decoded.text, detected));
+        let mut decoded = decode_coding_gap(interp, env, &normalized, &requested)?;
+        *charset_props = charset_runs_to_props(std::mem::take(&mut decoded.charsets));
+        return Ok((decoded, detected));
     }
     let (detected, normalized) = auto_detect_coding_for(interp, bytes, None, "undecided", env);
-    let decoded = decode_coding_gap(interp, env, &normalized, &detected)?;
-    *charset_props = charset_runs_to_props(decoded.charsets);
-    Ok((decoded.text, detected))
+    let mut decoded = decode_coding_gap(interp, env, &normalized, &detected)?;
+    *charset_props = charset_runs_to_props(std::mem::take(&mut decoded.charsets));
+    Ok((decoded, detected))
 }
 
 fn charset_runs_to_props(charsets: Vec<(usize, usize, String)>) -> Vec<TextPropertySpan> {
@@ -1728,7 +1718,7 @@ pub(crate) fn insert_file_contents(
         }
     };
     let mut charset_props = Vec::new();
-    let (text, detected) = decode_file_contents(
+    let (decoded, detected) = decode_file_contents(
         interp,
         env,
         &bytes,
@@ -1736,6 +1726,8 @@ pub(crate) fn insert_file_contents(
         Some(&path),
         &mut charset_props,
     )?;
+    let text = decoded.text;
+    let extended = decoded.extended;
     // A REPLACE is one file-read transaction, not an ordinary user edit.
     // GNU dynamically hides `buffer-file-name' across its delete+insert so
     // the generic stale-file edit guard cannot interrupt the operation in
@@ -1749,25 +1741,50 @@ pub(crate) fn insert_file_contents(
     let original_point = interp.buffer.borrow().point();
     let edit_result = (|| {
         if replace {
-            let old = interp.buffer.borrow().buffer_string();
-            let old_chars = old.chars().collect::<Vec<_>>();
+            // The texts compare by character code, those beyond Unicode
+            // included.
+            let (old_codes, begv) = {
+                let buffer = interp.buffer.borrow();
+                let (begv, zv) = (buffer.point_min(), buffer.point_max());
+                let old = StringLike {
+                    text: buffer.buffer_string(),
+                    props: Vec::new(),
+                    multibyte: true,
+                    extended_chars: buffer.substring_extended_chars(begv, zv),
+                };
+                (old.character_codes_iter().collect::<Vec<_>>(), begv)
+            };
             let new_chars = text.chars().collect::<Vec<_>>();
-            let prefix = old_chars
+            let new_codes = StringLike {
+                text: text.clone(),
+                props: Vec::new(),
+                multibyte: true,
+                extended_chars: extended.clone(),
+            }
+            .character_codes_iter()
+            .collect::<Vec<_>>();
+            let prefix = old_codes
                 .iter()
-                .zip(&new_chars)
+                .zip(&new_codes)
                 .take_while(|(left, right)| left == right)
                 .count();
-            let suffix = old_chars[prefix..]
+            let suffix = old_codes[prefix..]
                 .iter()
                 .rev()
-                .zip(new_chars[prefix..].iter().rev())
+                .zip(new_codes[prefix..].iter().rev())
                 .take_while(|(left, right)| left == right)
                 .count();
+            let old_chars = &old_codes;
             let old_end = old_chars.len() - suffix;
             let new_end = new_chars.len() - suffix;
-            let start = interp.buffer.borrow().point_min() + prefix;
-            let end = interp.buffer.borrow().point_min() + old_end;
+            let start = begv + prefix;
+            let end = begv + old_end;
             let replacement = new_chars[prefix..new_end].iter().collect::<String>();
+            let replacement_extended = extended
+                .iter()
+                .filter(|(index, _)| (prefix..new_end).contains(index))
+                .map(|&(index, code)| (index - prefix, code))
+                .collect::<Vec<_>>();
             let replacement_len = replacement.chars().count();
             // fileio.c saves point as a marker across the delete+insert
             // (get_window_points_and_markers/restore_point_unwind), so it
@@ -1805,7 +1822,7 @@ pub(crate) fn insert_file_contents(
                     interp,
                     &replacement,
                     &[],
-                    &[],
+                    &replacement_extended,
                     false,
                     false,
                     env,
@@ -1833,7 +1850,7 @@ pub(crate) fn insert_file_contents(
             interp,
             &text,
             &charset_props,
-            &[],
+            &extended,
             false,
             false,
             env,

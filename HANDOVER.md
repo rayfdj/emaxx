@@ -4646,6 +4646,65 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   rather than a `String`) is the next coding step. 20,000 encodings of a
   100-character string: utf-8 0.076 s (GNU 0.122), latin-1 0.082
   (0.084), euc-jp 0.195 (0.180), utf-16le 0.071 (0.051) on a loaded host.
+- **Round 63: the decoders on GNU character codes, detect_coding first.**
+  Every decoder writes coding.c's character codes into a `DecodedText`
+  (its text, the `charset` runs and the side table of characters beyond
+  Unicode, as strings and buffers keep them) through `push_code`: an
+  eight-bit character becomes its stored marker, a real U+E080..U+E0FF
+  stays a character, and a code beyond Unicode, or a surrogate, goes to
+  the side table. Before, the decoders built Rust text, so such codes came
+  out as their bytes, and a real U+E080 decoded as a raw byte. The utf-8
+  decoder is decode_coding_utf_8's, with 4-octet sequences up to #x1FFFFF
+  and 5-octet ones up to MAX_CHAR; the utf-16 one is decode_coding_utf_16's:
+  a lone low surrogate decodes to its own character, a high one followed by
+  anything else comes out as its two bytes, and since
+  CODING_UTF_16_SURROGATE is cleared only by the next surrogate, every unit
+  after it until then repeats those bytes. An auto-BOM coding (`utf-16`,
+  `utf-8-auto`) is settled by detect_coding before anything decodes, from
+  detect.rs's port (a multibyte source's characters through the new
+  `DetectSource::from_codes`, the UTF-8 signature tested on the raw
+  source as detect_coding_utf_8 tests it: a multibyte buffer's three
+  eight-bit characters EF BB BF are no signature), with the requested eol
+  type carried over (`adjust_coding_eol_type`); the settled coding decodes
+  and is the one `last-coding-system-used` records
+  (`utf-16le-with-signature`), and one detection could not settle decodes
+  without a BOM in its own byte order, as utf_detect_bom does. A string
+  decoded by a coding detection settles on `raw-text` is unibyte, as
+  decode_coding_object sets `dst_multibyte` after detect_coding. The
+  decoded side table reaches strings, regions (Replace, Return and a
+  buffer destination), `insert-file-contents` (including REPLACE, which
+  compares character codes) and `call-process` output. A decode probe of
+  27 codings over 20 inputs plus 30 multibyte-buffer region decodes went
+  from 49 differing lines to one, and the round 62 encode probes give
+  GNU's output. A naming probe of 36 codings over 18 strings, with
+  `inhibit-eol-conversion` and as regions (2,312 lines), differs on 360:
+  `decode-coding-string` with NOCOPY returns the source string itself
+  whenever the decoded text reads the same, where GNU returns it only on
+  code_convert_string's ASCII fast path (so `(decode-coding-string
+  "\244\242\n" 'utf-8 t)` gives back the unibyte source); with
+  `inhibit-eol-conversion` the name still gains an eol subsidiary; and a
+  region decode of ASCII text keeps the requested name where decode_eol
+  names the subsidiary (`utf-8-unix`). Compare probe output with `diff -a`:
+  these probes hold raw bytes, and plain `diff` reports only "Binary files
+  differ". Still open: (1) the one
+  differing line is ISO-2022's CODING_DECODE_CHAR failure on a multibyte
+  source, where GNU emits the internal bytes of the invalid sequence one by
+  one; Emaxx splits a multibyte source into runs of bytes and decodes each
+  run on its own, so decoder state also does not carry across a non-byte
+  character. The faithful form is the decoders reading the source with
+  ONE_MORE_BYTE's multibytep semantics. (2) `insert-file-contents`
+  converts end-of-lines in the raw bytes before decoding, where
+  decode_coding_gap runs decode_eol on the decoded text, so a UTF-16 file
+  with CR LF keeps its CR and one whose code units contain 0x0D or 0x0A
+  bytes is corrupted; its naming (`last-coding-system-used` against
+  `buffer-file-coding-system`, `utf-8-auto` files) is heuristic and differs
+  from GNU on 45 lines of a BOM probe. (3) process output: `call-process`
+  converts end-of-lines in the bytes before decoding as files do, and a
+  process filter's output with an undecided coding is read as UTF-8 with
+  U+FFFD for an invalid byte (`decode_process_output_bytes`), its decoded
+  text without the side table. All three want one decode_coding_object
+  (detect_coding, the decoder over the source with multibytep, decode_eol
+  on the produced text) behind strings, regions, files and processes.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,

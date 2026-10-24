@@ -17587,6 +17587,58 @@ fn encoders_read_consume_chars_codes_like_coding_c() {
 }
 
 #[test]
+fn decoders_produce_gnu_character_codes_like_coding_c() {
+    // coding.c's decoders: utf-8 takes 4-octet sequences up to #x1FFFFF and
+    // 5-octet ones up to MAX_CHAR, and a real U+E080 stays a character;
+    // utf-16 keeps a lone low surrogate and repeats a stale high one's
+    // bytes; detect_coding settles an auto-BOM coding (reading a multibyte
+    // source's raw bytes for the UTF-8 signature) and a detected raw-text
+    // gives a unibyte string; the jisx0213 codings reach characters beyond
+    // Unicode.  The oracle's answer.
+    let program = r#"
+(format "%S" (list
+  (mapcar (lambda (s) (let ((d (decode-coding-string s 'utf-8)))
+                        (list (string-to-list d) (multibyte-string-p d))))
+          (list "\356\202\200" "\364\220\200\200" "\370\210\200\200\200" "\355\240\200" "\300\200"))
+  (mapcar (lambda (s) (string-to-list (decode-coding-string s 'utf-16le)))
+          (list "\000\330\000\334" "\000\330a\000b\000\000\334" "\000\334" "\000\330" "a"))
+  (mapcar (lambda (s) (list (string-to-list (decode-coding-string s 'utf-16))
+                            last-coding-system-used))
+          (list "\377\376a\000\r\000\n\000" "\376\377\000a" "\377\376a"))
+  (let ((d (decode-coding-string "\200\377" 'undecided)))
+    (list (string-to-list d) (multibyte-string-p d) last-coding-system-used))
+  (with-temp-buffer
+    (insert "\357\273\277a")
+    (decode-coding-region 1 (point-max) 'utf-8-auto)
+    (list (string-to-list (buffer-string)) last-coding-system-used))
+  (with-temp-buffer
+    (insert "\377\376a\000")
+    (decode-coding-region 1 (point-max) 'utf-16)
+    (list (string-to-list (buffer-string)) last-coding-system-used))
+  (string-to-list (decode-coding-string "\217\260\241w" 'euc-jis-2004))
+  (string-to-list (decode-coding-string "\234\362\240\241" 'japanese-shift-jis-2004))))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("decoder contract should parse")
+        .expect("decoder contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("decoder contract should evaluate");
+    assert_eq!(
+        value,
+        Value::string(concat!(
+            "((((57472) t) ((1114112) t) ((2097152) t) ((4194285 4194208 4194176) t) ",
+            "((4194240 4194176) t)) ((65536) (0 216 97 0 216 98 65536) (56320) nil (97)) ",
+            "(((97 10) utf-16le-with-signature-dos) ((97) utf-16be-with-signature) ",
+            "((65534 97) utf-16)) ((128 255) nil raw-text) ((65279 97) utf-8) ",
+            "((97) utf-16le-with-signature) (1377666 119) (25087 4194208 65377))"
+        ))
+    );
+}
+
+#[test]
 fn help_describe_vector_describes_each_run_of_a_char_table_once() {
     // keymap.c:describe_vector: char_table_ref_and_range gives each run of
     // characters bound to one object, which is looked up in SHADOW and the
