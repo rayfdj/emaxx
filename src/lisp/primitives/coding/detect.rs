@@ -9,7 +9,7 @@
 //! character code of a multibyte character (a raw byte8 character is its
 //! own byte, as the macro recovers it from its C0/C1 lead).
 
-use super::iso2022::{IsoAttributes, charset_dimension, iso_attributes};
+use super::iso2022::{IsoAttributes, iso_attributes};
 use super::*;
 use crate::lisp::eval::coding::*;
 use crate::lisp::types::Kind;
@@ -624,8 +624,8 @@ fn detect_charset(
         let mut idx = 1usize;
         let mut matched = false;
         for charset in charsets {
-            let dim = charset_dimension(interp, charset) as usize;
-            let bounds = charset_code_space(interp, charset).unwrap_or_default();
+            let dim = charset.dimension as usize;
+            let bounds = charset.code_space.as_deref().unwrap_or_default();
             while idx < dim {
                 if p == end {
                     // too_short
@@ -919,7 +919,7 @@ struct UndecidedSpec {
 fn undecided_spec(interp: &Interpreter, coding: &str, env: &Env) -> UndecidedSpec {
     let args = interp
         .coding_system(coding)
-        .map(|state| state.type_args)
+        .map(|state| state.type_args.clone())
         .unwrap_or_default();
     UndecidedSpec {
         inhibit_nbd: inhibit_flag(

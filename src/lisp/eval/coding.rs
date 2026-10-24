@@ -90,45 +90,35 @@ impl Interpreter {
     }
 
     pub fn charset_canonical_name(&self, name: &str) -> Option<String> {
-        let mut current = name.to_string();
+        self.charset_canonical(name).map(str::to_owned)
+    }
+
+    /// The charset NAME stands for, through at most 16 aliases.
+    pub(crate) fn charset_canonical<'a>(&'a self, name: &'a str) -> Option<&'a str> {
+        let mut current = name;
         for _ in 0..16 {
-            if self
-                .charset_ids
-                .iter()
-                .any(|(registered, _)| registered == &current)
-            {
+            if self.charset_id_index.contains_key(current) {
                 return Some(current);
             }
-            let (_, target) = self
-                .charset_aliases
-                .iter()
-                .rev()
-                .find(|(alias, _)| alias == &current)?;
-            current = target.clone();
+            current = self.charset_alias_index.get(current)?;
         }
         None
     }
 
     pub fn has_charset(&self, name: &str) -> bool {
-        self.charset_canonical_name(name).is_some()
+        self.charset_canonical(name).is_some()
     }
 
     pub fn charset_id(&self, name: &str) -> Option<i64> {
-        let canonical = self.charset_canonical_name(name)?;
-        self.charset_ids
-            .iter()
-            .rev()
-            .find(|(registered, _)| registered == &canonical)
-            .map(|(_, id)| *id)
+        self.charset_id_index
+            .get(self.charset_canonical(name)?)
+            .copied()
     }
 
     pub fn define_charset(&mut self, name: &str, plist: Value, supplementary: bool) -> i64 {
-        let existing = self
-            .charset_ids
-            .iter()
-            .rev()
-            .find(|(registered, _)| registered == name)
-            .map(|(_, id)| *id);
+        // The charset table reads what this changes.
+        self.charset_table.borrow_mut().clear();
+        let existing = self.charset_id_index.get(name).copied();
         let new_definition = existing.is_none();
         let id = existing.unwrap_or_else(|| {
             let id = self
@@ -139,6 +129,7 @@ impl Interpreter {
                 .unwrap_or(-1)
                 + 1;
             self.charset_ids.push((name.to_string(), id));
+            self.charset_id_index.insert(name.to_string(), id);
             id
         });
         if new_definition {
@@ -238,6 +229,8 @@ impl Interpreter {
     }
 
     pub fn set_charset_unified(&mut self, name: &str, unified: bool) {
+        // The charset table reads what this changes.
+        self.charset_table.borrow_mut().clear();
         if let Some(canonical) = self.charset_canonical_name(name) {
             if unified {
                 self.charset_unified.insert(canonical);
@@ -257,6 +250,8 @@ impl Interpreter {
     }
 
     pub fn set_charset_plist_value(&mut self, name: &str, value: Value) -> Result<(), LispError> {
+        // The charset table reads what this changes.
+        self.charset_table.borrow_mut().clear();
         let canonical = self
             .charset_canonical_name(name)
             .ok_or_else(|| LispError::Void(name.to_string()))?;
@@ -274,6 +269,8 @@ impl Interpreter {
     }
 
     pub fn define_charset_alias(&mut self, alias: &str, target: &str) -> Result<(), LispError> {
+        // The charset table reads what this changes.
+        self.charset_table.borrow_mut().clear();
         let canonical = self
             .charset_canonical_name(target)
             .ok_or_else(|| LispError::Void(target.to_string()))?;
@@ -283,10 +280,13 @@ impl Interpreter {
             .rev()
             .find(|(existing_alias, _)| existing_alias == alias)
         {
-            *existing = canonical;
+            existing.clone_from(&canonical);
         } else {
-            self.charset_aliases.push((alias.to_string(), canonical));
+            self.charset_aliases
+                .push((alias.to_string(), canonical.clone()));
         }
+        self.charset_alias_index
+            .insert(alias.to_string(), canonical);
         // charset.c Fdefine_charset_alias: the alias joins `charset-list'.
         if !self.charset_names.iter().any(|existing| existing == alias) {
             self.charset_names.insert(0, alias.to_string());
@@ -409,44 +409,39 @@ impl Interpreter {
     }
 
     pub fn coding_system_canonical_name(&self, name: &str) -> Option<String> {
-        let mut current = name.to_string();
+        self.coding_system_canonical(name).map(str::to_owned)
+    }
+
+    /// The coding system NAME stands for, through at most 16 aliases.
+    fn coding_system_canonical<'a>(&'a self, name: &'a str) -> Option<&'a str> {
+        let mut current = name;
         for _ in 0..16 {
-            if self
-                .coding_systems
-                .iter()
-                .any(|coding| coding.name == current)
-            {
+            if self.coding_system_index.contains_key(current) {
                 return Some(current);
             }
-            let (_, target) = self
-                .coding_aliases
-                .iter()
-                .rev()
-                .find(|(alias, _)| alias == &current)?;
-            current = target.clone();
+            current = self.coding_alias_index.get(current)?;
         }
         None
     }
 
     pub fn has_coding_system(&self, name: &str) -> bool {
-        self.coding_system_canonical_name(name).is_some()
+        self.coding_system_canonical(name).is_some()
     }
 
-    pub fn coding_system(&self, name: &str) -> Option<CodingSystemState> {
-        let canonical = self.coding_system_canonical_name(name)?;
+    /// coding.c CODING_SYSTEM_SPEC: the definition NAME stands for, from
+    /// the table's name index (Vcoding_system_hash_table).
+    pub fn coding_system(&self, name: &str) -> Option<&CodingSystemState> {
+        let canonical = self.coding_system_canonical(name)?;
         self.coding_systems
-            .iter()
-            .rev()
-            .find(|coding| coding.name == canonical)
-            .cloned()
+            .get(*self.coding_system_index.get(canonical)?)
     }
 
     pub fn coding_system_base_name(&self, name: &str) -> Option<String> {
-        self.coding_system(name).map(|coding| coding.base)
+        self.coding_system(name).map(|coding| coding.base.clone())
     }
 
     pub fn coding_system_kind_name(&self, name: &str) -> Option<String> {
-        self.coding_system(name).map(|coding| coding.kind)
+        self.coding_system(name).map(|coding| coding.kind.clone())
     }
 
     pub fn coding_system_eol_type_value(&self, name: &str) -> Option<i64> {
@@ -455,6 +450,19 @@ impl Interpreter {
 
     pub fn coding_system_plist_value(&self, name: &str) -> Option<Value> {
         self.coding_system(name).map(|coding| coding.plist)
+    }
+
+    /// Add DEFINITION to the table, or replace the one of its name.
+    fn store_coding_system(&mut self, definition: CodingSystemState) {
+        match self.coding_system_index.get(&definition.name) {
+            Some(&index) => self.coding_systems[index] = definition,
+            None => {
+                let index = self.coding_systems.len();
+                self.coding_system_index
+                    .insert(definition.name.clone(), index);
+                self.coding_systems.push(definition);
+            }
+        }
     }
 
     pub fn set_coding_system_plist_property(
@@ -466,14 +474,10 @@ impl Interpreter {
         let canonical = self
             .coding_system_canonical_name(name)
             .ok_or_else(|| LispError::Void(name.to_string()))?;
-        let Some(coding) = self
-            .coding_systems
-            .iter_mut()
-            .rev()
-            .find(|coding| coding.name == canonical)
-        else {
+        let Some(&index) = self.coding_system_index.get(&canonical) else {
             return Err(LispError::Void(name.to_string()));
         };
+        let coding = &mut self.coding_systems[index];
         let mut items = coding.plist.to_vec()?;
         let key_value = Value::Symbol(key.to_string().into());
         if let Some(index) = items.iter().position(|item| item == &key_value) {
@@ -509,6 +513,8 @@ impl Interpreter {
             self.coding_aliases
                 .push((alias.to_string(), canonical.clone()));
         }
+        self.coding_alias_index
+            .insert(alias.to_string(), canonical.clone());
         // coding.c:Fdefine_coding_system_alias recurses over the target's eol
         // subsidiaries: when CODING-SYSTEM has a vector eol-type, ALIAS-unix,
         // ALIAS-dos and ALIAS-mac are defined as aliases of the corresponding
@@ -523,6 +529,8 @@ impl Interpreter {
                 // coding.c reaches this via make_subsidiaries, which
                 // interns each subsidiary name in the standard obarray.
                 self.intern_symbol_name(&alias_variant);
+                self.coding_alias_index
+                    .insert(alias_variant.clone(), target_variant.clone());
                 self.coding_aliases.push((alias_variant, target_variant));
             }
         }
@@ -908,24 +916,14 @@ impl Interpreter {
         {
             self.coding_category_representatives[category] = Some(name.to_string());
         }
-        if let Some(existing) = self
-            .coding_systems
-            .iter_mut()
-            .rev()
-            .find(|coding| coding.name == name)
-        {
-            *existing = definition.clone();
-        } else {
-            self.coding_systems.push(definition.clone());
-        }
+        self.store_coding_system(definition.clone());
         // GNU's C primitive creates the complete EOL subsidiary family when
         // :eol-type is omitted.  High-level mule.el relies on the base query
         // returning this vector; it does not define the three variants itself.
         if eol_type.is_none() && name != "no-conversion" {
             for (suffix, variant_eol) in [("unix", 0), ("dos", 1), ("mac", 2)] {
-                let variant_name = format!("{name}-{suffix}");
                 let variant = CodingSystemState {
-                    name: variant_name.clone(),
+                    name: format!("{name}-{suffix}"),
                     base: name.to_string(),
                     kind: definition.kind.clone(),
                     eol_type: Some(variant_eol),
@@ -935,16 +933,7 @@ impl Interpreter {
                     default_char: definition.default_char,
                     type_args: definition.type_args.clone(),
                 };
-                if let Some(existing) = self
-                    .coding_systems
-                    .iter_mut()
-                    .rev()
-                    .find(|coding| coding.name == variant_name)
-                {
-                    *existing = variant;
-                } else {
-                    self.coding_systems.push(variant);
-                }
+                self.store_coding_system(variant);
             }
         }
         if !self.coding_priority.iter().any(|existing| existing == name) {

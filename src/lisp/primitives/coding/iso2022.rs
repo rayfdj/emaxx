@@ -21,7 +21,7 @@ const MAX_COMPOSITION_COMPONENTS: usize = 16;
 
 /// The attributes coding.c keeps for an iso-2022 coding system, with
 /// setup_iso_safe_charsets' register table already computed.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct IsoAttributes {
     pub(crate) flags: u32,
     pub(crate) initial: [Option<String>; 4],
@@ -30,9 +30,27 @@ pub(crate) struct IsoAttributes {
     pub(crate) safe: HashMap<String, u8>,
     pub(crate) ascii_compatible: bool,
     pub(crate) default_char: u32,
+    /// The charset list's records, resolved once (setup_coding_system).
+    charsets: Vec<std::rc::Rc<CharsetInfo>>,
+    /// latin-jisx0201, japanese-jisx0208 and japanese-jisx0208-1978, for
+    /// the use-roman and use-oldjis flags.
+    roman: Option<String>,
+    jisx0208: Option<String>,
+    jisx0208_1978: Option<String>,
 }
 
 impl IsoAttributes {
+    /// char_charset (C, CODING_ATTR_CHARSET_LIST, &code): the first of
+    /// the coding's charsets that has C, with its code.
+    fn char_charset(&self, interp: &Interpreter, c: u32) -> Option<(&CharsetInfo, u32)> {
+        let number = gnu_character_number(c);
+        self.charsets.iter().find_map(|charset| {
+            charset
+                .encode(interp, number)
+                .map(|code| (&**charset, code))
+        })
+    }
+
     fn safe_charset(&self, charset: &str) -> bool {
         self.safe.contains_key(charset)
     }
@@ -53,11 +71,7 @@ pub(crate) fn charset_iso_chars_96(interp: &Interpreter, charset: &str) -> bool 
 }
 
 pub(crate) fn charset_dimension(interp: &Interpreter, charset: &str) -> u32 {
-    charset_plist_property(interp, charset, ":dimension")
-        .and_then(|value| value.integer_value())
-        .and_then(|value| u32::try_from(value).ok())
-        .or_else(|| charset_code_space(interp, charset).map(|bounds| bounds.len() as u32))
-        .unwrap_or(1)
+    charset_info(interp, charset).map_or(1, |info| info.dimension)
 }
 
 /// The charset's ISO final byte, from its plist or (for the C-defined
@@ -164,6 +178,10 @@ pub(crate) fn iso_attributes(interp: &Interpreter, coding: &str) -> Option<IsoAt
             safe.insert(charset.clone(), 0);
         }
     }
+    let charsets = charset_list
+        .iter()
+        .filter_map(|charset| charset_info(interp, charset))
+        .collect();
     Some(IsoAttributes {
         flags,
         initial,
@@ -171,6 +189,10 @@ pub(crate) fn iso_attributes(interp: &Interpreter, coding: &str) -> Option<IsoAt
         safe,
         ascii_compatible: coding_system_is_ascii_compatible(interp, coding),
         default_char: state.default_char,
+        charsets,
+        roman: interp.charset_canonical_name("latin-jisx0201"),
+        jisx0208: interp.charset_canonical_name("japanese-jisx0208"),
+        jisx0208_1978: interp.charset_canonical_name("japanese-jisx0208-1978"),
     })
 }
 
@@ -229,6 +251,12 @@ impl IsoState {
             return None;
         }
         self.designation[reg as usize].charset().map(str::to_string)
+    }
+
+    /// Whether CHARSET is CODING_ISO_INVOKED_CHARSET (PLANE).
+    fn invoked_charset_is(&self, plane: usize, charset: &str) -> bool {
+        let reg = self.invocation[plane];
+        reg >= 0 && self.designation[reg as usize].charset() == Some(charset)
     }
 
     fn designated(&self, reg: usize) -> bool {
@@ -1021,30 +1049,27 @@ impl Encoder<'_> {
     }
 
     /// ENCODE_ISO_CHARACTER.
-    fn encode_iso_character(&mut self, charset: &str, code: u32) {
-        let mut charset = charset.to_string();
-        let dimension = charset_dimension(self.interp, &charset);
+    fn encode_iso_character(&mut self, charset: &str, dimension: u32, code: u32) {
+        let attrs = self.attrs;
+        let mut charset = charset;
         if dimension == 1 {
             if self.flags() & ISO_FLAG_USE_ROMAN != 0
                 && charset == "ascii"
-                && let Some(roman) = self.interp.charset_canonical_name("latin-jisx0201")
+                && let Some(roman) = attrs.roman.as_deref()
             {
                 charset = roman;
             }
         } else if self.flags() & ISO_FLAG_USE_OLDJIS != 0
-            && Some(charset.as_str())
-                == self
-                    .interp
-                    .charset_canonical_name("japanese-jisx0208")
-                    .as_deref()
-            && let Some(old) = self.interp.charset_canonical_name("japanese-jisx0208-1978")
+            && Some(charset) == attrs.jisx0208.as_deref()
+            && let Some(old) = attrs.jisx0208_1978.as_deref()
         {
             charset = old;
         }
-        let bytes: Vec<u8> = if dimension == 1 {
-            vec![(code & 0xFF) as u8]
+        let pair = [((code >> 8) & 0xFF) as u8, (code & 0xFF) as u8];
+        let bytes = if dimension == 1 {
+            &pair[1..]
         } else {
-            vec![((code >> 8) & 0xFF) as u8, (code & 0xFF) as u8]
+            &pair[..]
         };
         for _ in 0..6 {
             if self.state.single_shifting {
@@ -1055,14 +1080,14 @@ impl Encoder<'_> {
                 }
                 self.state.single_shifting = false;
                 return;
-            } else if self.state.invoked_charset(0).as_deref() == Some(charset.as_str()) {
+            } else if self.state.invoked_charset_is(0, charset) {
                 self.out.extend(bytes.iter().map(|byte| byte & 0x7F));
                 return;
-            } else if self.state.invoked_charset(1).as_deref() == Some(charset.as_str()) {
+            } else if self.state.invoked_charset_is(1, charset) {
                 self.out.extend(bytes.iter().map(|byte| byte | 0x80));
                 return;
             }
-            self.encode_invocation_designation(&charset);
+            self.encode_invocation_designation(charset);
         }
     }
 
@@ -1078,15 +1103,14 @@ impl Encoder<'_> {
             if c == u32::from(b'\n') {
                 break;
             }
-            let Some((charset, _)) = char_charset_in(self.interp, &self.attrs.charset_list, c)
-            else {
+            let Some((charset, _)) = self.attrs.char_charset(self.interp, c) else {
                 continue;
             };
-            if let Some(reg) = self.attrs.request(&charset)
+            if let Some(reg) = self.attrs.request(&charset.name)
                 && registers[usize::from(reg)].is_none()
             {
                 found += 1;
-                registers[usize::from(reg)] = Some(charset);
+                registers[usize::from(reg)] = Some(charset.name.clone());
             }
         }
         if found > 0 {
@@ -1160,33 +1184,39 @@ pub(crate) fn encode(
             if ascii_compatible {
                 encoder.out.push(c as u8);
             } else {
-                encoder.encode_iso_character("ascii", c);
+                encoder.encode_iso_character("ascii", 1, c);
             }
         } else if (RAW_BYTE_REGEX_BASE + 0x80..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&c) {
             encoder.out.push((c - RAW_BYTE_REGEX_BASE) as u8);
         } else {
-            let mut found = preferred
+            let preferred_charset = preferred
                 .get(index)
                 .and_then(Option::as_deref)
-                .and_then(|name| interp.charset_canonical_name(name))
-                .filter(|charset| attrs.charset_list.contains(charset))
-                .and_then(|charset| {
-                    encode_charset_char(interp, &charset, c).map(|code| (charset, code))
-                })
-                .or_else(|| char_charset_in(interp, &attrs.charset_list, c));
-            if found.is_none() {
+                .and_then(|name| charset_info(interp, name))
+                .filter(|charset| attrs.charset_list.contains(&charset.name));
+            let found = match &preferred_charset {
+                Some(charset) => charset
+                    .encode(interp, gnu_character_number(c))
+                    .map(|code| (&**charset, code)),
+                None => None,
+            }
+            .or_else(|| attrs.char_charset(interp, c));
+            match found {
+                Some((charset, code)) => {
+                    encoder.encode_iso_character(&charset.name, charset.dimension, code);
+                }
                 // CODING_MODE_SAFE_ENCODING (the `safe' flag) writes the
                 // inhibit-substitution marker `?'; otherwise the default
                 // character stands in.
-                found = if flags & ISO_FLAG_SAFE != 0 {
-                    Some(("ascii".into(), u32::from(b'?')))
-                } else {
-                    char_charset_in(interp, &attrs.charset_list, attrs.default_char)
-                        .or_else(|| Some(("ascii".into(), u32::from(b' '))))
-                };
-            }
-            if let Some((charset, code)) = found {
-                encoder.encode_iso_character(&charset, code);
+                None if flags & ISO_FLAG_SAFE != 0 => {
+                    encoder.encode_iso_character("ascii", 1, u32::from(b'?'));
+                }
+                None => match attrs.char_charset(interp, attrs.default_char) {
+                    Some((charset, code)) => {
+                        encoder.encode_iso_character(&charset.name, charset.dimension, code);
+                    }
+                    None => encoder.encode_iso_character("ascii", 1, u32::from(b' ')),
+                },
             }
         }
     }
@@ -1196,12 +1226,10 @@ pub(crate) fn encode(
     Ok(encoder.out)
 }
 
-/// Whether the iso-2022 coding can encode character C (raw bytes and
-/// ASCII always can).
-pub(crate) fn char_encodable(interp: &Interpreter, coding: &str, c: u32) -> bool {
-    if c < 0x80 || (RAW_BYTE_REGEX_BASE + 0x80..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&c) {
-        return true;
-    }
-    iso_attributes(interp, coding)
-        .is_some_and(|attrs| char_charset_in(interp, &attrs.charset_list, c).is_some())
+/// Whether the iso-2022 coding ATTRS describes can encode character C
+/// (raw bytes and ASCII always can).
+pub(crate) fn char_encodable(interp: &Interpreter, attrs: &IsoAttributes, c: u32) -> bool {
+    c < 0x80
+        || (RAW_BYTE_REGEX_BASE + 0x80..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&c)
+        || attrs.char_charset(interp, c).is_some()
 }
