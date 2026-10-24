@@ -1372,6 +1372,7 @@ impl Interpreter {
         let resolved = self.resolve_variable_symbol(symbol)?;
         Ok(self
             .global_binding_value_symbol(&resolved)
+            .or_else(|| buffer_defaults_value(resolved.as_str()))
             .or_else(|| self.builtin_symbol_value(&resolved)))
     }
 
@@ -3694,6 +3695,17 @@ impl Brent {
             self.steps = 0;
         }
         false
+    }
+}
+
+/// buffer.c init_buffer_once's buffer_defaults slots of the always-local
+/// per-buffer variables no global binding stands for: data.c
+/// default_value reads per_buffer_default, not the current buffer's.
+fn buffer_defaults_value(name: &str) -> Option<Value> {
+    match name {
+        "buffer-undo-list" | "default-directory" | "mode-name" => Some(Value::Nil),
+        "enable-multibyte-characters" => Some(Value::T),
+        _ => None,
     }
 }
 

@@ -5786,10 +5786,9 @@ impl Interpreter {
                 ("kill-emacs-hook".into(), Value::Nil),
                 ("delete-terminal-functions".into(), Value::Nil),
                 ("null-device".into(), Value::String("/dev/null".into())),
-                (
-                    "default-process-coding-system".into(),
-                    Value::cons(Value::symbol("utf-8-unix"), Value::symbol("utf-8-unix")),
-                ),
+                // coding.c syms_of_coding leaves this nil; mule-cmds.el's
+                // `set-default-coding-systems' fills it in at startup.
+                ("default-process-coding-system".into(), Value::Nil),
                 ("process-coding-system-alist".into(), Value::Nil),
                 ("network-coding-system-alist".into(), Value::Nil),
                 ("delete-exited-processes".into(), Value::T),

@@ -6209,10 +6209,8 @@ fn process_runtime_defaults_match_dumped_process_c_state() {
         ),
         Value::list([
             Value::T,
-            Value::cons(
-                Value::Symbol("utf-8-unix".into()),
-                Value::Symbol("utf-8-unix".into()),
-            ),
+            // coding.c leaves it nil until mule-cmds.el sets it.
+            Value::Nil,
             Value::T,
             Value::T,
             Value::Nil,

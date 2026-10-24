@@ -2032,17 +2032,28 @@ define_dispatch!(
             }
             "set-process-coding-system" => {
                 need_arg_range(name, args, 1, 3)?;
+                // process.c Fset_process_coding_system: both checked, the
+                // encoding's eol completed (coding_inherit_eol_type).
                 let process_id = interp.resolve_process_id(&args[0])?;
                 let decoding = args.get(1).cloned().unwrap_or(Value::Nil);
                 let encoding = args.get(2).cloned().unwrap_or(Value::Nil);
+                checked_coding_given(interp, &decoding)?;
+                checked_coding_given(interp, &encoding)?;
+                let encoding = crate::lisp::primitives::file_io::inherit_write_coding_eol(
+                    interp,
+                    encoding,
+                    Value::Nil,
+                )?;
                 interp.set_process_coding_system(process_id, decoding, encoding)?;
                 Ok(Value::Nil)
             }
             "internal-default-process-filter" => {
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                let text = string_text(&args[1])?;
-                internal_default_process_filter(interp, process_id, &text, env)?;
+                if string_like(&args[1]).is_none() {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[1]));
+                }
+                internal_default_process_filter(interp, process_id, args[1], env)?;
                 Ok(Value::Nil)
             }
             "process-filter" => {
@@ -3018,21 +3029,53 @@ fn make_process_value(
     {
         parsed.program = Some(resolve_file_name_in_env(interp, env, program));
     }
+    // Fmake_pipe_process always has a buffer: `:buffer', else the one
+    // its name names, created when missing.
+    if parsed.program.is_none() && parsed.buffer_id.is_none() {
+        parsed.buffer_id = process_buffer_target(interp, &parsed.name_value)?;
+    }
+    let buffer = parsed
+        .buffer_id
+        .and_then(|id| interp.buffer_value(id))
+        .unwrap_or(Value::Nil);
+    let (decoding, encoding) = if parsed.program.is_some() {
+        make_process_coding_systems(
+            interp,
+            env,
+            parsed.coding_value,
+            parsed.name_value,
+            buffer,
+            parsed.command,
+        )?
+    } else {
+        connection_coding_systems(
+            interp,
+            env,
+            ConnectionCoding::Pipe,
+            parsed.coding_value,
+            buffer,
+        )?
+    };
+    // create_process's setup_process_coding_systems sets both up.
+    checked_coding_given(interp, &decoding)?;
+    checked_coding_given(interp, &encoding)?;
     // process.c finds the executable before forking; `process-command'
     // keeps the name the caller gave.
     let executable = match parsed.program.as_deref() {
         Some(program) => Some(locate_program_for_exec(interp, env, program, true)?),
         None => None,
     };
+    let arguments = if executable.is_some() {
+        let command = parsed.command.to_vec()?;
+        make_process_arguments(interp, env, command.get(1..).unwrap_or(&[]), encoding)?
+    } else {
+        Vec::new()
+    };
     let runtime = executable.as_ref().map(|command| {
         spawn_persistent_process(
             interp,
             command,
-            &parsed
-                .argv
-                .iter()
-                .map(|arg| arg.as_bytes().to_vec())
-                .collect::<Vec<_>>(),
+            &arguments,
             env,
             parsed.connection_type.as_ref(),
             parsed.stderr_process_id.is_some() || parsed.stderr_buffer_id.is_some(),
@@ -3069,9 +3112,7 @@ fn make_process_value(
     interp.set_process_filter(process_id, parsed.filter)?;
     interp.set_process_sentinel(process_id, parsed.sentinel);
     interp.set_process_stderr(process_id, parsed.stderr_process_id);
-    if let Some((decoding, encoding)) = parsed.coding {
-        interp.set_process_coding_system(process_id, decoding, encoding)?;
-    }
+    interp.set_process_coding_system(process_id, decoding, encoding)?;
     Ok(process)
 }
 

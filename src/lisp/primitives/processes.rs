@@ -948,39 +948,114 @@ pub(crate) fn process_command_parts(value: &Value) -> Result<(String, Vec<String
     ))
 }
 
-pub(crate) fn process_coding_pair(value: &Value) -> Result<(Value, Value), LispError> {
-    // process.c: :coding accepts either one coding system used for both
-    // directions, or a (DECODING . ENCODING) cons.
-    if let Kind::Symbol(_) = value.kind() {
-        return Ok((*value, *value));
-    }
-    if let Some((decoding, encoding)) = value.cons_values() {
-        return Ok((decoding, encoding));
-    }
-    let items = value.to_vec()?;
-    if items.len() == 2 {
-        return Ok((items[0], items[1]));
-    }
-    Err(LispError::WrongTypeArgument("consp".into(), *value))
+/// Which of process.c's connection makers chooses the codings, and what
+/// it asks find-operation-coding-system.
+pub(crate) enum ConnectionCoding {
+    /// Fmake_pipe_process: never asks, falling back on
+    /// `default-process-coding-system'.
+    Pipe,
+    /// set_network_socket_coding_system: `open-network-stream' with NAME,
+    /// the buffer, HOST and SERVICE when both are given.
+    Network {
+        name: Value,
+        host: Value,
+        service: Value,
+    },
+    /// Fmake_serial_process: no fallback at all.
+    Serial,
 }
 
-fn process_creation_coding_systems(
-    interp: &Interpreter,
-    env: &Env,
-    coding: &Value,
-) -> (Value, Value) {
-    if coding.is_nil() {
-        (
-            interp
-                .lookup_var("coding-system-for-read", env)
-                .unwrap_or(Value::Nil),
-            interp
-                .lookup_var("coding-system-for-write", env)
-                .unwrap_or(Value::Nil),
-        )
+/// The codings process.c gives a pipe, network or serial process: CODING's
+/// (its car to decode and cdr to encode when a cons), else
+/// `coding-system-for-read' and `coding-system-for-write', else none for
+/// unibyte text (decoding into a unibyte BUFFER, or with none the default
+/// `enable-multibyte-characters' nil; encoding from a unibyte current
+/// buffer, or for a serial process a unibyte BUFFER), else what KIND's
+/// find-operation-coding-system call answers, else `default-process-
+/// coding-system's.
+pub(crate) fn connection_coding_systems(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    kind: ConnectionCoding,
+    coding: Value,
+    buffer: Value,
+) -> Result<(Value, Value), LispError> {
+    let buffer_unibyte = match buffer.kind() {
+        Kind::Nil => interp
+            .default_value("enable-multibyte-characters")
+            .is_some_and(|value| value.is_nil()),
+        _ => interp
+            .resolve_buffer_id(&buffer)
+            .ok()
+            .and_then(|id| interp.get_buffer_by_id(id))
+            .is_some_and(|buffer| !buffer.is_multibyte()),
+    };
+    let current_unibyte = !interp.buffer.borrow().is_multibyte();
+    let default = interp
+        .lookup_var("default-process-coding-system", env)
+        .and_then(|value| value.cons_values());
+    let mut coding_systems = None;
+    let mut operation_coding = |interp: &mut Interpreter, env: &mut Env| {
+        if let Some(found) = coding_systems {
+            return Ok::<Value, LispError>(found);
+        }
+        let found = match &kind {
+            ConnectionCoding::Network {
+                name,
+                host,
+                service,
+            } if !host.is_nil() && !service.is_nil() => find_operation_coding_system_value(
+                interp,
+                &[
+                    Value::symbol("open-network-stream"),
+                    *name,
+                    buffer,
+                    *host,
+                    *service,
+                ],
+                env,
+            )?,
+            _ => Value::Nil,
+        };
+        coding_systems = Some(found);
+        Ok(found)
+    };
+    let serial = matches!(kind, ConnectionCoding::Serial);
+    let decoding = if !coding.is_nil() {
+        coding
+            .cons_values()
+            .map_or(coding, |(decoding, _)| decoding)
+    } else if let Some(value) = interp
+        .lookup_var("coding-system-for-read", env)
+        .filter(|value| !value.is_nil())
+    {
+        value
+    } else if buffer_unibyte || serial {
+        Value::Nil
     } else {
-        coding.cons_values().unwrap_or((*coding, *coding))
-    }
+        match operation_coding(interp, env)?.cons_values() {
+            Some((found, _)) => found,
+            None => default.map_or(Value::Nil, |(decoding, _)| decoding),
+        }
+    };
+    let encoding = if !coding.is_nil() {
+        coding
+            .cons_values()
+            .map_or(coding, |(_, encoding)| encoding)
+    } else if let Some(value) = interp
+        .lookup_var("coding-system-for-write", env)
+        .filter(|value| !value.is_nil())
+    {
+        value
+    } else if serial || current_unibyte {
+        Value::Nil
+    } else {
+        match operation_coding(interp, env)?.cons_values() {
+            Some((_, found)) => found,
+            None => default.map_or(Value::Nil, |(_, encoding)| encoding),
+        }
+    };
+    Ok((decoding, encoding))
 }
 
 pub(crate) struct MakeProcessArgs {
@@ -989,12 +1064,15 @@ pub(crate) struct MakeProcessArgs {
     pub(crate) argv: Vec<String>,
     pub(crate) filter: Option<Value>,
     pub(crate) sentinel: Option<Value>,
-    pub(crate) coding: Option<(Value, Value)>,
     pub(crate) name: Option<String>,
     pub(crate) stderr_process_id: Option<u64>,
     pub(crate) stderr_buffer_id: Option<u64>,
     pub(crate) query_on_exit_flag: bool,
     pub(crate) connection_type: Option<Value>,
+    /// The `:coding', `:name' and `:command' values as given.
+    pub(crate) coding_value: Value,
+    pub(crate) name_value: Value,
+    pub(crate) command: Value,
 }
 
 pub(crate) fn parse_make_process_args(
@@ -1012,28 +1090,39 @@ pub(crate) fn parse_make_process_args(
     let mut argv = Vec::new();
     let mut filter = None;
     let mut sentinel = None;
-    let mut coding = None;
     let mut name = None;
     let mut stderr_process_id = None;
     let mut stderr_buffer_id = None;
     let mut query_on_exit_flag = true;
     let mut connection_type = None;
+    let mut coding_value = Value::Nil;
+    let mut name_value = Value::Nil;
+    let mut command = Value::Nil;
+    // Fmake_process reads each keyword with plist_get: its first value.
+    let mut seen: Vec<&str> = Vec::new();
 
     for pair in args.as_chunks::<2>().0 {
         let key = pair[0].as_symbol()?;
         let value = &pair[1];
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
         match key {
-            ":name" => name = Some(string_text(value)?),
+            ":name" => {
+                name = Some(string_text(value)?);
+                name_value = *value;
+            }
             ":buffer" => buffer_id = process_buffer_target(interp, value)?,
             ":command" => {
                 let (parsed_program, parsed_argv) = process_command_parts(value)?;
                 program = Some(parsed_program);
                 argv = parsed_argv;
+                command = *value;
             }
             ":filter" => filter = (!value.is_nil()).then_some(*value),
             ":sentinel" => sentinel = (!value.is_nil()).then_some(*value),
-            ":coding" if value.is_nil() => coding = None,
-            ":coding" => coding = Some(process_coding_pair(value)?),
+            ":coding" => coding_value = *value,
             ":stderr" if !value.is_nil() => {
                 if let Ok(process_id) = interp.resolve_process_id(value) {
                     stderr_process_id = Some(process_id);
@@ -1061,23 +1150,133 @@ pub(crate) fn parse_make_process_args(
         argv,
         filter,
         sentinel,
-        coding,
         name,
         stderr_process_id,
         stderr_buffer_id,
         query_on_exit_flag,
         connection_type,
+        coding_value,
+        name_value,
+        command,
     })
+}
+
+/// process.c Fmake_process's codings for a new process: CODING's (its car
+/// to decode and cdr to encode when a cons), else `coding-system-for-read'
+/// and `coding-system-for-write', else, for a process with a program, what
+/// find-operation-coding-system answers for `start-process' with NAME,
+/// BUFFER and the COMMAND's elements, else `default-process-coding-
+/// system's -- left for the first output or input to complete.
+pub(crate) fn make_process_coding_systems(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    coding: Value,
+    name: Value,
+    buffer: Value,
+    command: Value,
+) -> Result<(Value, Value), LispError> {
+    let default = interp
+        .lookup_var("default-process-coding-system", env)
+        .and_then(|value| value.cons_values());
+    let mut coding_systems = None;
+    let mut operation_coding = |interp: &mut Interpreter, env: &mut Env| {
+        if let Some(found) = coding_systems {
+            return Ok(found);
+        }
+        let found = if command.is_nil() {
+            Value::Nil
+        } else {
+            let lookup = [Value::symbol("start-process"), name, buffer]
+                .into_iter()
+                .chain(command.to_vec()?)
+                .collect::<Vec<_>>();
+            find_operation_coding_system_value(interp, &lookup, env)?
+        };
+        coding_systems = Some(found);
+        Ok::<Value, LispError>(found)
+    };
+    let mut decoding = if coding.is_nil() {
+        interp
+            .lookup_var("coding-system-for-read", env)
+            .unwrap_or(Value::Nil)
+    } else {
+        coding
+            .cons_values()
+            .map_or(coding, |(decoding, _)| decoding)
+    };
+    if decoding.is_nil() {
+        decoding = match operation_coding(interp, env)?.cons_values() {
+            Some((found, _)) => found,
+            None => default.map_or(Value::Nil, |(decoding, _)| decoding),
+        };
+    }
+    let mut encoding = if coding.is_nil() {
+        interp
+            .lookup_var("coding-system-for-write", env)
+            .unwrap_or(Value::Nil)
+    } else {
+        coding
+            .cons_values()
+            .map_or(coding, |(_, encoding)| encoding)
+    };
+    if encoding.is_nil() {
+        encoding = match operation_coding(interp, env)?.cons_values() {
+            Some((_, found)) => found,
+            None => default.map_or(Value::Nil, |(_, encoding)| encoding),
+        };
+    }
+    Ok((decoding, encoding))
+}
+
+/// Fmake_process's arguments for the child: each of ARGUMENTS a string, a
+/// multibyte one encoded (code_convert_string_norecord) by ENCODING as
+/// complement_process_encoding_system completes it.
+pub(crate) fn make_process_arguments(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    arguments: &[Value],
+    encoding: Value,
+) -> Result<Vec<Vec<u8>>, LispError> {
+    let mut argument_coding = None;
+    let mut encoded = Vec::with_capacity(arguments.len());
+    for argument in arguments {
+        let Kind::StringObject(state) = argument.kind() else {
+            return Err(LispError::WrongTypeArgument("stringp".into(), *argument));
+        };
+        let multibyte = state.borrow().is_multibyte();
+        let argument = if multibyte {
+            let coding = match argument_coding {
+                Some(coding) => coding,
+                None => {
+                    let coding = complement_process_encoding_system(interp, env, encoding)?;
+                    argument_coding = Some(coding);
+                    coding
+                }
+            };
+            let name = if coding.is_nil() {
+                None
+            } else {
+                Some(checked_coding_symbol(interp, &coding)?)
+            };
+            encode_coding_value_recording(interp, argument, name.as_deref(), false, false, env)?
+        } else {
+            *argument
+        };
+        match argument.kind() {
+            Kind::StringObject(state) => encoded.push(state.borrow().bytes().to_vec()),
+            _ => return Err(LispError::WrongTypeArgument("stringp".into(), argument)),
+        }
+    }
+    Ok(encoded)
 }
 
 pub(crate) fn deliver_process_output_decoded(
     interp: &mut Interpreter,
     process_id: u64,
-    output: &str,
-    multibyte: bool,
+    output: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    if output.is_empty() {
+    if string_like(&output).is_none_or(|text| text.text.is_empty()) {
         return Ok(());
     }
     interp.note_process_output_delivery(process_id);
@@ -1099,19 +1298,11 @@ pub(crate) fn deliver_process_output_decoded(
         // filter which calls set-buffer itself.
         let saved_buffer_id = interp.current_buffer_id();
         // GNU hands the filter an ordinary mutable string; filters such as
-        // eshell's propertize it in place, so the value must carry live
-        // text-property state.
+        // eshell's propertize it in place.
         let result = call_function_value(
             interp,
             &filter,
-            &[
-                interp.record_value(process_id),
-                crate::lisp::primitives::strings::make_shared_string_value_with_multibyte(
-                    output.to_string(),
-                    Vec::new(),
-                    multibyte,
-                ),
-            ],
+            &[interp.record_value(process_id), output],
             env,
         );
         if interp.current_buffer_id() != saved_buffer_id {
@@ -1130,7 +1321,7 @@ pub(crate) fn deliver_process_output_decoded(
 pub(crate) fn internal_default_process_filter(
     interp: &mut Interpreter,
     process_id: u64,
-    output: &str,
+    output: Value,
     env: &mut Env,
 ) -> Result<(), LispError> {
     let target_buffer_id = interp
@@ -1152,10 +1343,31 @@ pub(crate) fn internal_default_process_filter(
         .marker_position(mark_id)
         .unwrap_or_else(|| interp.current_buffer().point_max());
     interp.buffer.borrow_mut().goto_char(insert_at);
-    // process.c inserts with the buffer's read-only flag cleared, through
-    // insdel.c's change protocol.
+    // The text's multibyteness made the buffer's (string-as-unibyte or
+    // string-to-multibyte), then insert_from_string_before_markers, its
+    // properties with it, with the buffer's read-only flag cleared.
+    let multibyte_buffer = interp.buffer.borrow().is_multibyte();
+    let output = match string_like(&output) {
+        Some(text) if text.multibyte && !multibyte_buffer => {
+            call(interp, "string-as-unibyte", &[output], env)?
+        }
+        Some(text) if !text.multibyte && multibyte_buffer => {
+            call(interp, "string-to-multibyte", &[output], env)?
+        }
+        _ => output,
+    };
+    let text = string_like(&output)
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), output))?;
     let inserted = insert_with_read_only_cleared(interp, buffer_id, env, |interp, env| {
-        insert_text_with_hooks(interp, output, &[], &[], false, true, env)
+        insert_text_with_hooks(
+            interp,
+            &text.text,
+            &text.props,
+            &text.extended_chars,
+            false,
+            true,
+            env,
+        )
     });
     let new_pos = interp.buffer.borrow().point();
     let result = inserted.and_then(|()| interp.set_marker(mark_id, Some(new_pos), Some(buffer_id)));
@@ -1612,41 +1824,63 @@ fn decode_process_bytes_at_point(
     Ok((produced, coding_used))
 }
 
+/// process.c read_process_output's decoding of BYTES a process sent:
+/// decode_coding_c_string into a string with the process's decoding
+/// coding (for the default filter into a unibyte buffer the raw-text
+/// form setup_process_coding_systems gives it), produce_charset's
+/// `charset' properties on it; then read_process_output_set_last_coding_
+/// system: the coding settled on is `last-coding-system-used' and, when
+/// it differs, the process's decoding coding, an encoding coding not yet
+/// decided taking it with its eol type completed.
+fn decode_process_output(
+    interp: &mut Interpreter,
+    process_id: u64,
+    bytes: &[u8],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let (decoding, encoding) = interp
+        .process_coding_system(process_id)?
+        .cons_values()
+        .unwrap_or((Value::Nil, Value::Nil));
+    let unibyte_buffer = interp.process_filter(process_id).is_none()
+        && interp
+            .process_buffer_id(process_id)
+            .and_then(|id| interp.get_buffer_by_id(id))
+            .is_some_and(|buffer| !buffer.is_multibyte());
+    let coding = match checked_coding_given(interp, &decoding)? {
+        Some(coding) if unibyte_buffer => raw_text_coding_system(interp, &coding),
+        Some(coding) => coding,
+        None if unibyte_buffer => "raw-text".into(),
+        None => "undecided".into(),
+    };
+    let CodingDecode {
+        decoded,
+        coding: settled,
+        for_unibyte,
+    } = decode_coding_object(interp, env, DecodeSource::Bytes(bytes), &coding, None)?;
+    let props = charset_spans_to_props(decoded.charsets, &decoded.text, None);
+    let text = make_shared_string_value_with_extended_chars(
+        decoded.text,
+        props,
+        !for_unibyte,
+        decoded.extended,
+    );
+    let settled_value = Value::symbol(&settled);
+    interp.set_variable("last-coding-system-used", settled_value, env);
+    if decoding != settled_value {
+        let encoding = if encoding.is_nil() && interp.process_is_live(process_id) {
+            super::file_io::inherit_write_coding_eol(interp, settled_value, Value::Nil)?
+        } else {
+            encoding
+        };
+        interp.set_process_coding_system(process_id, settled_value, encoding)?;
+    }
+    Ok(text)
+}
+
 /// Deliver the two child streams to their GNU process objects.  A `:stderr'
 /// pipe has its own filter/buffer; folding stderr into the primary process
 /// loses that observable routing during synchronous send/EOF drains.
-/// Decode a process's raw output bytes with its own decoding coding
-/// system, as GNU's read_and_dispose_of_process_output does.  Returns the
-/// decoded text and whether the resulting Lisp string is multibyte: a
-/// no-conversion/raw-text decoding yields unibyte raw bytes in GNU, never
-/// U+FFFD replacements.  A nil or undecided decoding keeps the utf-8
-/// behavior the oracle's default process coding produces on this platform.
-fn decode_process_output_bytes(
-    interp: &Interpreter,
-    process_id: u64,
-    bytes: &[u8],
-) -> (String, bool) {
-    let decoding = interp
-        .process_coding_system(process_id)
-        .ok()
-        .and_then(|pair| pair.car_if_list())
-        .and_then(|value| value.symbol_str().map(|name| name.to_string()));
-    let Some(decoding) = decoding.filter(|name| name != "undecided") else {
-        return (String::from_utf8_lossy(bytes).into_owned(), true);
-    };
-    let canonical = interp
-        .coding_system_canonical_name(&decoding)
-        .unwrap_or_else(|| decoding.clone());
-    let kind = interp
-        .coding_system_kind_name(&canonical)
-        .unwrap_or_else(|| canonical.clone());
-    let unibyte = matches!(kind.as_str(), "raw-text" | "no-conversion");
-    match crate::lisp::primitives::coding::decode_text_bytes(interp, bytes, &decoding) {
-        Ok(text) => (text, !unibyte),
-        Err(_) => (String::from_utf8_lossy(bytes).into_owned(), true),
-    }
-}
-
 pub(crate) fn deliver_process_streams(
     interp: &mut Interpreter,
     process_id: u64,
@@ -1656,14 +1890,14 @@ pub(crate) fn deliver_process_streams(
 ) -> Result<bool, LispError> {
     let mut delivered = false;
     if !stdout.is_empty() {
-        let (output, multibyte) = decode_process_output_bytes(interp, process_id, stdout);
-        deliver_process_output_decoded(interp, process_id, &output, multibyte, env)?;
+        let output = decode_process_output(interp, process_id, stdout, env)?;
+        deliver_process_output_decoded(interp, process_id, output, env)?;
         delivered = true;
     }
     if !stderr.is_empty() {
         let stderr_process_id = interp.process_stderr(process_id).unwrap_or(process_id);
-        let (output, multibyte) = decode_process_output_bytes(interp, stderr_process_id, stderr);
-        deliver_process_output_decoded(interp, stderr_process_id, &output, multibyte, env)?;
+        let output = decode_process_output(interp, stderr_process_id, stderr, env)?;
+        deliver_process_output_decoded(interp, stderr_process_id, output, env)?;
         delivered = true;
     }
     Ok(delivered)
@@ -2212,7 +2446,20 @@ pub(crate) fn make_network_process(
             family_ipv6,
         )?);
     }
-    let (decoding, encoding) = process_creation_coding_systems(interp, env, &coding);
+    let buffer = buffer_id
+        .and_then(|id| interp.buffer_value(id))
+        .unwrap_or(Value::Nil);
+    let (decoding, encoding) = connection_coding_systems(
+        interp,
+        env,
+        ConnectionCoding::Network {
+            name: Value::string(&name),
+            host: plist_member_value(args, ":host").unwrap_or(Value::Nil),
+            service: plist_member_value(args, ":service").unwrap_or(Value::Nil),
+        },
+        coding,
+        buffer,
+    )?;
     let name = interp.unique_process_name(&name);
     // GNU keeps the original keyword plist as the process's contact info
     // (p->childp), updating :service and appending the resolved :local /
@@ -2833,7 +3080,9 @@ pub(crate) fn make_serial_process(
     let sentinel = plist_member_value(args, ":sentinel").filter(Value::is_truthy);
     let plist = plist_member_value(args, ":plist").unwrap_or(Value::Nil);
     let coding = plist_member_value(args, ":coding").unwrap_or(Value::Nil);
-    let (decoding, encoding) = process_creation_coding_systems(interp, env, &coding);
+    let buffer_value = interp.buffer_value(buffer_id).unwrap_or(Value::Nil);
+    let (decoding, encoding) =
+        connection_coding_systems(interp, env, ConnectionCoding::Serial, coding, buffer_value)?;
     let noquery = plist_member_value(args, ":noquery").is_some_and(|value| value.is_truthy());
     let stopped = plist_member_value(args, ":stop").is_some_and(|value| value.is_truthy());
     let process = interp.create_serial_process(
@@ -3187,8 +3436,8 @@ fn pump_connection_processes_for(
         let (bytes, closed) = interp.poll_connection_stream(stream_id)?;
         if !bytes.is_empty() {
             progressed = true;
-            let (output, multibyte) = decode_process_output_bytes(interp, stream_id, &bytes);
-            deliver_process_output_decoded(interp, stream_id, &output, multibyte, env)?;
+            let output = decode_process_output(interp, stream_id, &bytes, env)?;
+            deliver_process_output_decoded(interp, stream_id, output, env)?;
         }
         if closed {
             progressed = true;

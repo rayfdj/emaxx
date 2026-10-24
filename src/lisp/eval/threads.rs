@@ -636,6 +636,7 @@ impl Interpreter {
             gnutls: ProcessGnuTlsState::default(),
             contact,
         });
+        self.setup_process_coding_systems(decoding, encoding)?;
         Ok(process)
     }
 
@@ -707,7 +708,22 @@ impl Interpreter {
             gnutls: ProcessGnuTlsState::default(),
             contact,
         });
+        self.setup_process_coding_systems(decoding, encoding)?;
         Ok(process)
+    }
+
+    /// process.c setup_process_coding_systems once a connection has its
+    /// channels: setup_coding_system signals `coding-system-error' for an
+    /// undefined coding, the process staying registered as GNU leaves it.
+    fn setup_process_coding_systems(
+        &self,
+        decoding: Value,
+        encoding: Value,
+    ) -> Result<(), LispError> {
+        use crate::lisp::primitives::coding::checked_coding_given;
+        checked_coding_given(self, &decoding)?;
+        checked_coding_given(self, &encoding)?;
+        Ok(())
     }
 
     /// GNU p->childp (process-contact with KEY t): t for a real child,
@@ -1363,7 +1379,6 @@ impl Interpreter {
         true
     }
 
-    #[cfg(test)]
     pub fn process_is_live(&self, record_id: u64) -> bool {
         // GNU `process-live-p' observes the status last delivered by the
         // process event loop; it does not reap a fast child itself.  Eager

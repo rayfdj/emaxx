@@ -4959,6 +4959,66 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   program, its directory and file names still go through the Rust text
   (ENCODE_FILE); (5) the round 65 items (1) and (2) and the round 64
   items (1) and (5).
+- **Round 67: process.c's codings for subprocesses, pipes, sockets and
+  serial ports, its argument encoding, and the decoding of their
+  output.** `make-process` chooses its codings as Fmake_process does
+  (`:coding`, its car and cdr when a cons; else `coding-system-for-read`
+  and `-write`; else for a process with a program what
+  find-operation-coding-system answers for `start-process` with the name,
+  buffer and command; else `default-process-coding-system`'s), reads each
+  keyword's first value as plist_get does, and has
+  setup_process_coding_systems check them before the child runs
+  (`(coding-system-error X)`); a multibyte argument is encoded by the
+  encoding coding completed by complement_process_encoding_system, a
+  unibyte one passed as its bytes. `make-pipe-process` always has a
+  buffer (`:buffer`, else the one its name names, created when missing)
+  and takes Fmake_pipe_process's codings; network streams take
+  set_network_socket_coding_system's (find-operation-coding-system for
+  `open-network-stream` with the name, buffer, host and service) and
+  serial ports Fmake_serial_process's, each with process.c's "no decoding
+  for unibyte text" rule (a unibyte process buffer, or the default
+  `enable-multibyte-characters` nil without one; a unibyte current buffer
+  for the encoding); once their channels exist, connections, servers,
+  accepted clients and serial ports have setup_process_coding_systems
+  check their codings too, an undefined one signalling with the process
+  left registered, as GNU leaves it. `set-process-coding-system` checks
+  both codings and
+  completes the encoding's eol type (coding_inherit_eol_type: nil becomes
+  `raw-text-unix`). A
+  process's output is decoded as read_process_output decodes it:
+  decode_coding_c_string into a string with the process's decoding coding
+  (raw_text_coding_system's form of it for the default filter into a
+  unibyte buffer), produce_charset's `charset` properties on it, then
+  read_process_output_set_last_coding_system: the settled coding is
+  `last-coding-system-used`, becomes the process's decoding coding when
+  it differs, and an undecided encoding of a live process takes it with
+  its eol completed. The filter receives that string, properties and all;
+  the default filter makes its multibyteness the buffer's
+  (string-as-unibyte or string-to-multibyte) and inserts it with its
+  properties before markers. Before, `undecided` output was read as UTF-8
+  with U+FFFD replacements, other codings without properties, and a
+  network stream without `:coding` had no coding at all. `default-value`
+  of `enable-multibyte-characters` and `buffer-undo-list` reads
+  buffer.c's buffer_defaults (t and nil) rather than the current buffer's
+  value. `default-process-coding-system` starts nil, as coding.c leaves it
+until mule-cmds.el's `set-default-coding-systems` (the bare interpreter
+had `(utf-8-unix . utf-8-unix)`, naming codings it never defines, which
+setup_process_coding_systems's check now refuses). A 13-form
+`make-process` probe (16 differing lines on round 63)
+  and a 13-form pipe, network and serial probe give GNU's output; the
+  process, callproc, eshell, shell, term, compile, vc-git, epg, comint,
+  erc, jsonrpc, eglot, network-stream and server tests give GNU's results
+  (jsonrpc's needs the network streams' `undecided-unix` from
+  `default-process-coding-system`: plain `undecided` converts the CR LF
+  its headers end with). Still open: (1) output is decoded as one block
+  per poll with no carryover: GNU reads `read-process-output-max` bytes at
+  a time, calling the filter for each, and keeps an incomplete trailing
+  sequence (and the coding state) for the next read, which needs every
+  decoder to report where it stopped -- the same machinery `call-process`
+  blocks need; (2) `default-value` of `default-directory` and `mode-name`
+  still gives the startup directory and "Fundamental" (GNU: nil), Emaxx's
+  global bindings of them standing in for buffer_defaults; (3) the round
+  66 items (2) to (5).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -5585,7 +5645,9 @@ passed (run 40090524898); frozen matched 7,926 of 7,928 tests (run
 `bookmark-tests-save/non-ascii-bookmark-name` fail, as the round 64
 bullet's item (4) describes. **On `d99d85c`** (round 64): full Rust gate
 passed (run 40097399568); frozen matched 7,926 of 7,928 tests (run
-40097401438), the same two bookmark tests, which pass after round 65. Run
+40097401438), the same two bookmark tests, which pass after round 65.
+**On `6002362`** (rounds 65 and 66): full Rust gate passed (run
+40113387970), frozen passed on its first attempt (run 40113390272). Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that
 locale. With none set here, `char_charset_family_follows_charset_c` and

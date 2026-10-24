@@ -10476,7 +10476,9 @@ fn make_network_process_ipv6_family_uses_an_ipv6_listener() {
 
 #[test]
 fn make_network_process_coding_precedence_matches_gnu() {
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    // The codings must be defined: connect_network_socket's
+    // setup_process_coding_systems refuses an undefined one.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         r#"
@@ -10731,10 +10733,9 @@ fn process_command_reports_child_argv_and_nil_for_connection_records() {
     assert_eq!(
         call(&mut interp, "process-coding-system", &[child], &mut env,)
             .expect("read child coding systems"),
-        Value::cons(
-            Value::Symbol("utf-8-unix".into()),
-            Value::Symbol("utf-8-unix".into()),
-        )
+        // Fmake_process with no coding asked for and a nil
+        // `default-process-coding-system' (coding.c's initial value).
+        Value::cons(Value::Nil, Value::Nil)
     );
 }
 
@@ -13538,6 +13539,8 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
     let mut server = Server(child);
     wait_for_local_test_server(&mut server.0, port, "GnuTLS test server");
 
+    // The early-Lisp fixture has no mule-conf.el, hence no `binary' alias:
+    // the connections name coding.c's own `no-conversion'.
     let program = format!(
         r#"
         (let* ((buffer (generate-new-buffer " *gnutls-transport*"))
@@ -13547,7 +13550,7 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
                          :host "127.0.0.1"
                          :service {port}
                          :family 'ipv4
-                         :coding 'binary
+                         :coding 'no-conversion
                          :sentinel #'ignore
                          :noquery t)))
           (unwind-protect
@@ -13601,7 +13604,7 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
                          :host "127.0.0.1"
                          :service {port}
                          :family 'ipv4
-                         :coding 'binary
+                         :coding 'no-conversion
                          :sentinel #'ignore
                          :noquery t
                          :nowait t
@@ -23651,7 +23654,8 @@ fn native_network_accept_preserves_binary_bytes_without_listener_buffer() {
     // This is a live loopback contract, not a synthetic call into the output
     // helper.  Bytes above 0x7f expose accidental conversion to multibyte
     // byte8 characters, while the listener buffer exposes whether accepted
-    // children incorrectly keep that buffer alive.
+    // children incorrectly keep that buffer alive.  `no-conversion' is
+    // coding.c's own (the fixture loads no mule-conf.el `binary' alias).
     let program = r#"(progn
                        (setq emaxx-test-tcp-received nil
                              emaxx-test-tcp-accepted nil)
@@ -23667,7 +23671,7 @@ fn native_network_accept_preserves_binary_bytes_without_listener_buffer() {
                               :host "127.0.0.1"
                               :service t
                               :buffer buffer
-                              :coding 'binary
+                              :coding 'no-conversion
                               :filter
                               (lambda (process text)
                                 (setq
@@ -23685,7 +23689,7 @@ fn native_network_accept_preserves_binary_bytes_without_listener_buffer() {
                               :family 'ipv4
                               :host "127.0.0.1"
                               :service (aref local 4)
-                              :coding 'binary
+                              :coding 'no-conversion
                               :sentinel 'ignore
                               :noquery t)))
                          (unwind-protect
