@@ -1382,10 +1382,32 @@ define_dispatch!(
                 Ok(Value::list(frames))
             }
             "regexp-quote" => {
+                // search.c Fregexp_quote: a backslash before each special
+                // byte of STRING's data, the result as multibyte as STRING
+                // (without properties); a copy of STRING when none needs one.
                 need_args(name, args, 1)?;
-                Ok(Value::String(
-                    regexp::regexp_quote_elisp(&string_text(&args[0])?).into(),
-                ))
+                let Kind::StringObject(state) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
+                let (quoted, characters, multibyte) = {
+                    let state = state.borrow();
+                    let mut quoted = Vec::with_capacity(state.bytes().len());
+                    for &byte in state.bytes() {
+                        if matches!(byte, b'[' | b'*' | b'.' | b'\\' | b'?' | b'+' | b'^' | b'$') {
+                            quoted.push(b'\\');
+                        }
+                        quoted.push(byte);
+                    }
+                    let added = quoted.len() - state.bytes().len();
+                    if added == 0 {
+                        drop(state);
+                        return super::call(interp, "copy-sequence", args, env);
+                    }
+                    (quoted, state.len() + added, state.is_multibyte())
+                };
+                StringObjectRef::from_storage(quoted, characters, multibyte)
+                    .map(Value::StringObject)
+                    .map_err(|error| string_storage_error(interp, env, error))
             }
             "kill-all-local-variables" => {
                 need_arg_range(name, args, 0, 1)?;

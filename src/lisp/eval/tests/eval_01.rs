@@ -1398,11 +1398,13 @@ fn aset_mutates_shared_string_identity_without_rebinding_its_variable() {
 fn aset_on_an_ascii_string_keeps_its_properties_multibyteness_and_identity() {
     // The in-place ASCII store (data.c's one-byte case) must leave the text
     // properties, the multibyte flag and the object identity as the general
-    // path does, for a unibyte and for a multibyte ASCII string.
+    // path does, for a unibyte and for a multibyte ASCII string.  (fns.c's
+    // string_to_multibyte copies no properties, so M gets its own.)
+    // Verified against the oracle.
     assert_eq!(
         eval_str(
             r#"(let* ((s (propertize "abc" 'face 'bold))
-                      (m (string-to-multibyte (copy-sequence s)))
+                      (m (propertize (string-to-multibyte "abc") 'face 'bold))
                       (alias s))
                  (aset s 1 ?x)
                  (aset m 2 ?y)

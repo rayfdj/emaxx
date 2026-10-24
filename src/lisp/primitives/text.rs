@@ -278,7 +278,105 @@ pub(crate) fn buffer_line_statistics_value(
     ]))
 }
 
-pub(crate) fn format_char_conversion(arg: &Value) -> Result<String, LispError> {
+/// buffer.h CHARACTER_WIDTH: the columns the character C takes in the
+/// current buffer: 1 for printable ASCII, `char-width-table''s entry
+/// (sanitized) above DEL, the buffer's tab width for TAB, 0 for newline,
+/// and 2 or 4 for another control character as `ctl-arrow' is set.
+pub(crate) fn character_width(interp: &Interpreter, c: u32, env: &Env) -> usize {
+    if (0x20..0x7F).contains(&c) {
+        return 1;
+    }
+    if c > 0x7F {
+        let width = interp
+            .lookup_var("char-width-table", env)
+            .and_then(|table| match table.kind() {
+                Kind::CharTable(table) => interp.char_table_get(table, c),
+                _ => None,
+            })
+            .and_then(|width| width.integer_value())
+            .unwrap_or(0);
+        // sanitize_char_width.
+        return if (0..=1000).contains(&width) {
+            width as usize
+        } else {
+            1000
+        };
+    }
+    if c == u32::from(b'\t') {
+        // SANE_TAB_WIDTH.
+        return interp
+            .lookup_var("tab-width", env)
+            .and_then(|width| width.integer_value())
+            .filter(|width| (1..=1000).contains(width))
+            .unwrap_or(8) as usize;
+    }
+    if c == u32::from(b'\n') {
+        return 0;
+    }
+    if interp
+        .lookup_var("ctl-arrow", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        2
+    } else {
+        4
+    }
+}
+
+/// window.c buffer_display_table: the buffer's `buffer-display-table'
+/// when it is a display table, else `standard-display-table' when that is.
+pub(crate) fn buffer_display_table(
+    interp: &Interpreter,
+    env: &Env,
+) -> Option<crate::lisp::types::CharTableRef> {
+    ["buffer-display-table", "standard-display-table"]
+        .into_iter()
+        .find_map(|name| match interp.lookup_var(name, env)?.kind() {
+            Kind::CharTable(table) if table.has_purpose("display-table") => Some(table),
+            _ => None,
+        })
+}
+
+/// character.c char_width: CHARACTER_WIDTH of C, or, when the display
+/// table DP shows C as a vector, the sum of its glyphs' characters' widths.
+pub(crate) fn display_char_width(
+    interp: &Interpreter,
+    c: u32,
+    dp: Option<crate::lisp::types::CharTableRef>,
+    env: &Env,
+) -> usize {
+    let Some(entry) = dp.and_then(|dp| interp.char_table_get(dp, c)) else {
+        return character_width(interp, c, env);
+    };
+    if !crate::lisp::primitives::interactive::is_vector_value(&entry) {
+        return character_width(interp, c, env);
+    }
+    let glyphs = crate::lisp::primitives::buffers::vector_items(&entry).unwrap_or_default();
+    glyphs
+        .iter()
+        .filter_map(|glyph| match glyph.kind() {
+            // GLYPH_CODE_P and GLYPH_CODE_CHAR: (CHAR . FACE) or the
+            // character in a glyph code's low 22 bits.
+            Kind::Cons(cell) => match (cell.car.get().kind(), cell.cdr.get().kind()) {
+                (Kind::Integer(c), Kind::Integer(face))
+                    if (0..=MAX_CHAR as i64).contains(&c) && face >= 0 =>
+                {
+                    Some(c as u32)
+                }
+                _ => None,
+            },
+            Kind::Integer(code) if code >= 0 => Some((code & 0x3F_FFFF) as u32),
+            _ => None,
+        })
+        .map(|c| character_width(interp, c, env))
+        .sum()
+}
+
+/// editfns.c styled_format's %c: the character, with the side-table
+/// entry a character beyond the Rust text view needs.
+pub(crate) fn format_char_conversion(
+    arg: &Value,
+) -> Result<(String, Vec<(usize, u32)>), LispError> {
     let n = match arg.kind() {
         Kind::Integer(n) => n,
         Kind::BigInteger(n) => n
@@ -291,23 +389,32 @@ pub(crate) fn format_char_conversion(arg: &Value) -> Result<String, LispError> {
             return Err(LispError::WrongTypeArgument("integerp".into(), *arg));
         }
     };
-    char_from_integer(n)
-        .map(|character| character.to_string())
-        .map_err(|_| LispError::Signal(format!("Invalid character: {n}")))
+    if !(0..=MAX_CHAR as i64).contains(&n) {
+        return Err(LispError::Signal(format!("Invalid character: {n}")));
+    }
+    let mut text = String::new();
+    let mut extended = Vec::new();
+    push_character_code(&mut text, &mut extended, 0, n as u32);
+    Ok((text, extended))
 }
 
+/// A conversion's text, its properties and its side table.
+pub(crate) type FormattedText = (String, Vec<TextPropertySpan>, Vec<(usize, u32)>);
+
+/// styled_format's %s: a string argument's text up to PRECISION
+/// characters with its properties and side table, else `princ''s.
 pub(crate) fn format_s_conversion(
     interp: &mut Interpreter,
     arg: &Value,
     precision: Option<usize>,
     env: &mut crate::lisp::types::Env,
-) -> Result<(String, Vec<TextPropertySpan>), LispError> {
+) -> Result<FormattedText, LispError> {
     // A whole string without properties is its text, copied once.
     if precision.is_none()
         && string_without_properties(arg)
         && let Some(text) = with_string_text(arg, str::to_owned)
     {
-        return Ok((text, Vec::new()));
+        return Ok((text, Vec::new(), string_extended_chars(arg)));
     }
     if let Some(string) = string_like(arg) {
         let end = precision
@@ -318,19 +425,25 @@ pub(crate) fn format_s_conversion(
         // add_text_properties_from_list: onto the fresh result, each
         // span's pairs come out reversed (`copied_string_props').
         let props = copied_string_props(&slice_string_props(&string.props, 0, end), 0);
-        return Ok((text, props));
+        let mut extended = string.extended_chars;
+        extended.retain(|(at, _)| *at < end);
+        return Ok((text, props, extended));
     }
     // format.c's %s is print.c's `print_object' with `escapeflag' cleared,
     // which is exactly `princ' -- including for nested elements, so
     // (format "%s" (list "a")) yields `(a)' and not `("a")'.
-    let mut text = match number_to_string(arg) {
-        Ok(number) => number,
-        Err(_) => crate::lisp::primitives::print::render_princ_object(interp, arg, env)?,
+    let (mut text, mut extended) = match number_to_string(arg) {
+        Ok(number) => (number, Vec::new()),
+        Err(_) => {
+            crate::lisp::primitives::print::render_printer_output(interp, arg, env, false, false)?
+                .text_parts()
+        }
     };
     if let Some(precision) = precision {
         text = text.chars().take(precision).collect();
+        extended.retain(|(at, _)| *at < precision);
     }
-    Ok((text, Vec::new()))
+    Ok((text, Vec::new(), extended))
 }
 
 pub(crate) fn bigint_from_truncated_float(value: f64) -> Result<BigInt, LispError> {

@@ -47,6 +47,310 @@ fn replacement_case_action(
     }
 }
 
+/// GNU's RE_NREGS: the registers a search allocates at least, so a
+/// `\\N' or SUBEXP below it names a group whether or not the regexp had it.
+const RE_NREGS: usize = 30;
+
+fn invalid_backslash() -> LispError {
+    LispError::Signal("Invalid use of `\\' in replacement text".into())
+}
+
+/// search.c Freplace_match.
+fn replace_match(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let newtext = args[0];
+    let Kind::StringObject(newtext_ref) = newtext.kind() else {
+        return Err(LispError::WrongTypeArgument("stringp".into(), newtext));
+    };
+    let fixedcase = args.get(1).is_some_and(Value::is_truthy);
+    let string = args.get(3).copied().filter(|value| !value.is_nil());
+    let subexp = args.get(4).copied().filter(|value| !value.is_nil());
+    let source = match string {
+        Some(string) => match string.kind() {
+            Kind::StringObject(source) => Some(source),
+            _ => return Err(LispError::WrongTypeArgument("stringp".into(), string)),
+        },
+        None => None,
+    };
+    // Most replacement texts have no backslash directive: the fast path.
+    let literal =
+        args.get(2).is_some_and(Value::is_truthy) || !newtext_ref.borrow().bytes().contains(&b'\\');
+    let Some(regs) = interp.last_match_data.clone() else {
+        return Err(LispError::Signal(
+            "`replace-match' called before any match found".into(),
+        ));
+    };
+    let num_regs = regs.len().max(RE_NREGS);
+    let sub = match subexp {
+        None => 0,
+        Some(value) => {
+            let n = match value.kind() {
+                Kind::Integer(n) => Some(n),
+                Kind::BigInteger(_) => None,
+                _ => return Err(LispError::WrongTypeArgument("integerp".into(), value)),
+            };
+            match n {
+                Some(n) if (0..num_regs as i64).contains(&n) => n as usize,
+                _ => {
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("args-out-of-range"),
+                        value,
+                        Value::Integer(0),
+                        Value::Integer(num_regs as i64 - 1),
+                    ])));
+                }
+            }
+        }
+    };
+    let group = |index: usize| regs.get(index).copied().flatten();
+    let in_bounds = |(start, end): (usize, usize)| match source {
+        None => {
+            let buffer = interp.buffer.borrow();
+            buffer.point_min() <= start && end <= buffer.point_max()
+        }
+        Some(source) => end <= source.borrow().len(),
+    };
+    let (sub_start, sub_end) = match group(sub) {
+        Some(range) if in_bounds(range) => range,
+        Some((start, end)) => {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("args-out-of-range"),
+                Value::Integer(start as i64),
+                Value::Integer(end as i64),
+            ])));
+        }
+        None => {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("error"),
+                Value::string("replace-match subexpression does not exist"),
+                subexp.unwrap_or(Value::Nil),
+            ])));
+        }
+    };
+    // How to casify, from the matched text.
+    let case_action = if fixedcase {
+        None
+    } else {
+        let matched = match source {
+            Some(source) => regexp::slice_string_chars(&source.borrow().text(), sub_start, sub_end),
+            None => interp
+                .buffer
+                .borrow()
+                .buffer_substring(sub_start, sub_end)
+                .map_err(|error| LispError::Signal(error.to_string()))?,
+        };
+        replacement_case_action(interp, &matched, env)
+    };
+
+    if let Some(source) = source {
+        let substring = |object: &crate::lisp::types::StringObjectRef, from: usize, to: usize| {
+            Value::StringObject(object.borrow().substring(from, to, true))
+        };
+        let source_len = source.borrow().len();
+        let before = substring(&source, 0, sub_start);
+        let after = substring(&source, sub_end, source_len);
+        let mut newtext = newtext;
+        if !literal {
+            // Substitute parts of the match into NEWTEXT, piece by piece
+            // with their properties, as concat3 accumulates them.
+            let codes = string_like(&newtext)
+                .expect("newtext is a string")
+                .character_codes();
+            let mut pieces = Vec::new();
+            let mut lastpos = 0;
+            let mut pos = 0;
+            while pos < codes.len() {
+                let c = codes[pos];
+                pos += 1;
+                let mut substitution = None;
+                let mut delbackslash = false;
+                if c == i64::from(b'\\') {
+                    let Some(&c) = codes.get(pos) else {
+                        return Err(invalid_backslash());
+                    };
+                    pos += 1;
+                    match u8::try_from(c).map(char::from) {
+                        Ok('&') => substitution = Some((sub_start, sub_end)),
+                        Ok(digit @ '1'..='9') => {
+                            let index = digit as usize - '0' as usize;
+                            substitution = Some(if index < num_regs {
+                                group(index).unwrap_or((0, 0))
+                            } else {
+                                (0, 0)
+                            });
+                        }
+                        Ok('\\') => delbackslash = true,
+                        Ok('?') => {}
+                        _ => return Err(invalid_backslash()),
+                    }
+                }
+                if let Some((start, end)) = substitution {
+                    if pos - 2 != lastpos {
+                        pieces.push(substring(&newtext_ref, lastpos, pos - 2));
+                    }
+                    pieces.push(substring(&source, start, end));
+                    lastpos = pos;
+                } else if delbackslash {
+                    pieces.push(substring(&newtext_ref, lastpos, pos - 1));
+                    lastpos = pos;
+                }
+            }
+            if pos != lastpos {
+                pieces.push(substring(&newtext_ref, lastpos, pos));
+            }
+            newtext = super::call(interp, "concat", &pieces, env)?;
+        }
+        if let Some(action) = case_action {
+            newtext = casify_value(interp, &newtext, action, env)?;
+        }
+        return super::call(interp, "concat", &[before, newtext, after], env);
+    }
+
+    // The replacement text, in the buffer's multibyteness when NEWTEXT's
+    // directives rebuild it (and then without properties).
+    let buf_multibyte = interp.buffer.borrow().is_multibyte();
+    let newtext_parts = string_like(&newtext).expect("newtext is a string");
+    let (text, extended, props) = if literal {
+        (
+            newtext_parts.text,
+            newtext_parts.extended_chars,
+            newtext_parts.props,
+        )
+    } else {
+        let str_multibyte = newtext_parts.multibyte;
+        let codes = newtext_parts.character_codes();
+        let to_buffer = |c: u32, after_backslash: bool| -> u32 {
+            if str_multibyte {
+                if !buf_multibyte && !(after_backslash && c < 0x80) {
+                    // CHAR_TO_BYTE8.
+                    if (RAW_BYTE8_BASE + 0x80..=RAW_BYTE8_BASE + 0xFF).contains(&c) {
+                        c - RAW_BYTE8_BASE
+                    } else {
+                        c & 0xFF
+                    }
+                } else {
+                    c
+                }
+            } else if buf_multibyte && c >= 0x80 {
+                // make_char_multibyte.
+                RAW_BYTE8_BASE + c
+            } else {
+                c
+            }
+        };
+        let mut substed = Vec::with_capacity(codes.len());
+        let mut really_changed = false;
+        let mut pos = 0;
+        while pos < codes.len() {
+            let c = to_buffer(codes[pos] as u32, false);
+            pos += 1;
+            if c != u32::from(b'\\') {
+                // CHAR_STRING's bytes: in a unibyte buffer a non-ASCII
+                // character adds its multibyte form's bytes.
+                if buf_multibyte || c < 0x80 {
+                    substed.push(c);
+                } else {
+                    let (bytes, len) = crate::lisp::types::string_data::encode_character(c)?;
+                    substed.extend(bytes[..len].iter().map(|&byte| u32::from(byte)));
+                }
+                continue;
+            }
+            really_changed = true;
+            let Some(&next) = codes.get(pos) else {
+                return Err(invalid_backslash());
+            };
+            pos += 1;
+            let c = to_buffer(next as u32, true);
+            let index = match char::from_u32(c) {
+                Some('&') => Some(sub),
+                Some(digit @ '1'..='9') if (digit as usize - '0' as usize) < num_regs => {
+                    let index = digit as usize - '0' as usize;
+                    group(index).is_some().then_some(index)
+                }
+                Some('\\') => {
+                    substed.push(c);
+                    None
+                }
+                _ => return Err(invalid_backslash()),
+            };
+            if let Some((start, end)) = index.and_then(group) {
+                substed.extend(buffer_region_codes(interp, start, end));
+            }
+        }
+        if really_changed {
+            let (text, extended) = text_from_codes(&substed, buf_multibyte);
+            (text, extended, Vec::new())
+        } else {
+            (
+                newtext_parts.text,
+                newtext_parts.extended_chars,
+                newtext_parts.props,
+            )
+        }
+    };
+    let inschars = text.chars().count();
+    let newpoint = sub_start + inschars;
+    let num_regs_before = regs.len();
+    // replace_range (prepare, no inherit, markers, adjusting the match
+    // data, its own change hooks inhibited); the case conversion follows,
+    // a change of its own, then the replacement's signal_after_change.
+    let length = sub_end - sub_start;
+    modify_current_buffer(
+        interp,
+        sub_start,
+        sub_end,
+        true,
+        env,
+        |interp, from, env| {
+            let to = (from + length)
+                .min(interp.buffer.borrow().point_max())
+                .max(from);
+            let from = interp.replace_range_current_buffer(from, to, &text, &extended);
+            if !props.is_empty() {
+                interp.apply_text_property_change_shared(&|buffer| {
+                    for span in &props {
+                        buffer.graft_text_properties(
+                            from + span.start,
+                            from + span.end,
+                            &span.props,
+                        );
+                    }
+                });
+            }
+            if let Some(match_data) = interp.last_match_data.as_mut() {
+                regexp::update_search_regs(match_data, from, to, from + inschars);
+            }
+            if let Some(action) = case_action {
+                let start = interp
+                    .last_match_data
+                    .as_ref()
+                    .and_then(|match_data| match_data.get(sub).copied().flatten())
+                    .map_or(from, |(start, _)| start);
+                casify_buffer_region(interp, start, newpoint, action, env)?;
+            }
+            if interp
+                .last_match_data
+                .as_ref()
+                .is_none_or(|match_data| match_data.len() != num_regs_before)
+            {
+                return Err(LispError::Signal(
+                    "Match data clobbered by buffer modification hooks".into(),
+                ));
+            }
+            let point = {
+                let buffer = interp.buffer.borrow();
+                newpoint.clamp(buffer.point_min(), buffer.point_max())
+            };
+            interp.buffer.borrow_mut().goto_char(point);
+            Ok((Some(AfterChange::new(sub_start, length, inschars)), ()))
+        },
+    )?;
+    Ok(Value::Nil)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BufferReplacementHunk {
     old_start: usize,
@@ -489,156 +793,8 @@ define_dispatch!(
             }
 
             "replace-match" => {
-                need_args(name, args, 1)?;
-                let replacement = string_text(&args[0])?;
-                let fixedcase = args.get(1).is_some_and(Value::is_truthy);
-                let literal = args.get(2).is_some_and(Value::is_truthy);
-                let replace_index = args
-                    .get(4)
-                    .and_then(|value| value.integer_value())
-                    .unwrap_or(0)
-                    .max(0) as usize;
-                let match_data = interp
-                    .last_match_data
-                    .clone()
-                    .ok_or_else(|| LispError::Signal("No previous search".into()))?;
-                let (start, end) = match_data
-                    .get(replace_index)
-                    .and_then(|entry| *entry)
-                    .or_else(|| match_data.first().and_then(|entry| *entry))
-                    .ok_or_else(|| LispError::Signal("No previous search".into()))?;
-                if let Some(source) = args.get(3).filter(|value| !value.is_nil()) {
-                    let source = string_like(source)
-                        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *source))?;
-                    let matched = regexp::slice_string_chars(&source.text, start, end);
-                    let mut replacement = regexp::expand_replace_match_text(
-                        &replacement,
-                        &match_data,
-                        literal,
-                        &source.text,
-                    )?;
-                    if !fixedcase
-                        && let Some(action) = replacement_case_action(interp, &matched, env)
-                    {
-                        replacement = casify_string(interp, &replacement, action, env)?;
-                    }
-                    let source_len = source.text.chars().count();
-                    let updated = format!(
-                        "{}{}{}",
-                        regexp::slice_string_chars(&source.text, 0, start),
-                        replacement,
-                        regexp::slice_string_chars(&source.text, end, source_len)
-                    );
-                    // The STRING form is non-destructive and GNU returns
-                    // before changing search_regs.  Later replacements must
-                    // continue to see the original match and subexpressions.
-                    // search.c returns concat3 (before, newtext, after): the
-                    // result is multibyte when STRING or NEWTEXT is.
-                    let newtext_multibyte =
-                        string_like(&args[0]).is_some_and(|newtext| newtext.multibyte);
-                    return Ok(make_shared_string_value_with_multibyte(
-                        updated,
-                        Vec::new(),
-                        source.multibyte || newtext_multibyte,
-                    ));
-                }
-                let matched = interp
-                    .buffer
-                    .borrow()
-                    .buffer_substring(start, end)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                // replace_range grafts NEWSTRING's text properties into
-                // the buffer.  A backslash substitution rebuilds the text
-                // through build_string and loses them, so the graft holds
-                // exactly when the inserted text keeps NEWSTRING's length
-                // (literal replacements, case conversion included).
-                let source_spans = string_like(&args[0])
-                    .map(|source| (source.text.chars().count(), source.props))
-                    .unwrap_or((0, Vec::new()));
-                let replacement =
-                    regexp::expand_replace_match(interp, &replacement, &match_data, literal)?;
-                let case_action = if fixedcase {
-                    None
-                } else {
-                    replacement_case_action(interp, &matched, env)
-                };
-                let replacement_len = replacement.chars().count();
-                let saved_markers =
-                    interp.live_marker_positions_for_buffer(interp.current_buffer_id());
-                // insdel.c:replace_range: one change, its start preserved
-                // through the before-change hooks.  Freplace_match inhibits
-                // its signal_after_change and signals the change itself
-                // after the case conversion, a change of its own
-                // (Fupcase_region) nested inside the replacement's.
-                let length = end - start;
-                // The match data keeps the match's own positions (search.c's
-                // sub_start), whatever the hooks did.
-                modify_current_buffer(interp, start, end, true, env, |interp, start, env| {
-                    let end = (start + length)
-                        .min(interp.buffer.borrow().point_max())
-                        .max(start);
-                    interp
-                        .delete_region_current_buffer(start, end)
-                        .map_err(|e| LispError::Signal(e.to_string()))?;
-                    interp.buffer.borrow_mut().goto_char(start);
-                    interp.insert_current_buffer(&replacement);
-                    let (source_len, spans) = &source_spans;
-                    if !spans.is_empty() && *source_len == replacement_len {
-                        interp.apply_text_property_change_shared(&|buffer| {
-                            for span in spans {
-                                buffer.graft_text_properties(
-                                    start + span.start,
-                                    start + span.end,
-                                    &span.props,
-                                );
-                            }
-                        });
-                    }
-                    let removed_len = end.saturating_sub(start);
-                    for (marker_id, original) in saved_markers {
-                        let Some(original_pos) = original else {
-                            continue;
-                        };
-                        let insertion_type =
-                            interp.marker_insertion_type(marker_id).unwrap_or(false);
-                        let new_pos = if original_pos < start {
-                            original_pos
-                        } else if original_pos == start {
-                            start
-                        } else if original_pos < end {
-                            if insertion_type {
-                                start + replacement_len
-                            } else {
-                                start
-                            }
-                        } else {
-                            ((original_pos as isize) + replacement_len as isize
-                                - removed_len as isize)
-                                .max(start as isize) as usize
-                        };
-                        let _ = interp.set_marker(
-                            marker_id,
-                            Some(new_pos),
-                            Some(interp.current_buffer_id()),
-                        );
-                    }
-                    if let Some(action) = case_action {
-                        casify_buffer_region(interp, start, start + replacement_len, action, env)?;
-                    }
-                    Ok((
-                        Some(AfterChange::new(start, removed_len, replacement_len)),
-                        (),
-                    ))
-                })?;
-                interp.last_match_data = Some(regexp::update_match_data_after_replace(
-                    &match_data,
-                    replace_index,
-                    start,
-                    end,
-                    replacement_len,
-                ));
-                interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
-                Ok(Value::Nil)
+                need_arg_range(name, args, 1, 5)?;
+                replace_match(interp, args, env)
             }
 
             "replace-buffer-contents" => {
@@ -735,42 +891,51 @@ define_dispatch!(
                 need_arg_range(name, args, 4, 5)?;
                 let from = position_from_value(interp, &args[0])?;
                 let to = position_from_value(interp, &args[1])?;
-                let old = args[2].as_integer()? as u32;
-                let new = args[3].as_integer()? as u32;
-                let old = char::from_u32(old)
-                    .ok_or_else(|| LispError::Signal("Invalid character".into()))?;
-                let new = char::from_u32(new)
-                    .ok_or_else(|| LispError::Signal("Invalid character".into()))?;
+                let character = |value: Value| match value.kind() {
+                    Kind::Integer(code) if (0..=MAX_CHAR as i64).contains(&code) => Ok(code as u32),
+                    _ => Err(LispError::WrongTypeArgument("characterp".into(), value)),
+                };
+                let fromc = character(args[2])?;
+                let toc = character(args[3])?;
                 let (from, to) = if from <= to { (from, to) } else { (to, from) };
-                let text = interp
-                    .buffer
-                    .borrow()
-                    .buffer_substring(from, to)
-                    .map_err(|e| LispError::Signal(e.to_string()))?;
-                // editfns.c: modify_text from the first FROMCHAR to END,
-                // then a signal of the first to the last substituted.
-                let Some(first) = text.chars().position(|ch| ch == old) else {
+                // editfns.c: in a multibyte buffer the two characters must
+                // be as long; in a unibyte one each stands for its byte.
+                let multibyte = interp.buffer.borrow().is_multibyte();
+                let (fromc, toc) = if multibyte {
+                    if emacs_multibyte_char_len(fromc)? != emacs_multibyte_char_len(toc)? {
+                        return Err(LispError::Signal(
+                            "Characters in `subst-char-in-region' have different byte-lengths"
+                                .into(),
+                        ));
+                    }
+                    (fromc, toc)
+                } else {
+                    (fromc & 0xFF, toc & 0xFF)
+                };
+                // modify_text from the first FROMCHAR to END, then a
+                // signal of the first to the last substituted.
+                let Some(first) = buffer_region_codes(interp, from, to)
+                    .iter()
+                    .position(|&code| code == fromc)
+                else {
                     return Ok(Value::Nil);
                 };
                 let changed = from + first;
                 let noundo = args.get(4).is_some_and(Value::is_truthy);
                 modify_current_buffer(interp, changed, to, false, env, |interp, _, _| {
                     let to = to.min(interp.buffer.borrow().point_max()).max(changed);
-                    let text = interp
-                        .buffer
-                        .borrow()
-                        .buffer_substring(changed, to)
-                        .map_err(|e| LispError::Signal(e.to_string()))?;
-                    let Some(last) = text.chars().enumerate().filter(|(_, ch)| *ch == old).last()
-                    else {
+                    let mut codes = buffer_region_codes(interp, changed, to);
+                    let Some(last) = codes.iter().rposition(|&code| code == fromc) else {
                         return Ok((None, ()));
                     };
-                    let last_changed = changed + last.0 + 1;
-                    let replaced: String = text
-                        .chars()
-                        .take(last.0 + 1)
-                        .map(|ch| if ch == old { new } else { ch })
-                        .collect();
+                    codes.truncate(last + 1);
+                    for code in &mut codes {
+                        if *code == fromc {
+                            *code = toc;
+                        }
+                    }
+                    let last_changed = changed + last + 1;
+                    let (replaced, extended) = text_from_codes(&codes, multibyte);
                     // GNU substitutes characters IN PLACE: text properties
                     // and markers in the region are untouched (fill-region's
                     // newline→space pass must keep erc-button's props intact).
@@ -778,6 +943,7 @@ define_dispatch!(
                         changed,
                         last_changed,
                         &replaced,
+                        &extended,
                         noundo,
                     );
                     let length = last_changed - changed;
@@ -1034,8 +1200,7 @@ define_dispatch!(
                         let old_length = end - start;
                         let new_end = start + text.chars().count();
                         modify_current_buffer(interp, start, end, false, env, |interp, _, _| {
-                            replace_buffer_region_with_text(interp, start, end, &text)?;
-                            interp.set_inserted_extended_chars(start, &extended);
+                            replace_buffer_region_with_text(interp, start, end, &text, &extended)?;
                             // decode_coding counts produced characters even
                             // into a unibyte destination, so the spans keep
                             // their character offsets there.
@@ -1172,12 +1337,22 @@ define_dispatch!(
                 }
                 let (null_object, false_object) = json_serialize_options(&args[1..])?;
                 let serialized = json::serialize(interp, &args[0], &null_object, &false_object)?;
-                let text = if interp.buffer.borrow().is_multibyte() {
-                    &serialized.text
+                // json.c Fjson_insert copies the UTF-8 bytes into the gap: a
+                // multibyte buffer reads them as its own characters, a real
+                // U+E000..U+E0FF included.
+                let (text, extended) = if interp.buffer.borrow().is_multibyte() {
+                    let extended: Vec<(usize, u32)> = serialized
+                        .text
+                        .chars()
+                        .enumerate()
+                        .filter(|(_, ch)| raw_byte_from_regex_char(*ch).is_some())
+                        .map(|(index, ch)| (index, ch as u32))
+                        .collect();
+                    (&serialized.text, extended)
                 } else {
-                    &serialized.bytes_text
+                    (&serialized.bytes_text, Vec::new())
                 };
-                insert_text_with_hooks(interp, text, &[], &[], false, false, env)?;
+                insert_text_with_hooks(interp, text, &[], &extended, false, false, env)?;
                 Ok(Value::Nil)
             }
 

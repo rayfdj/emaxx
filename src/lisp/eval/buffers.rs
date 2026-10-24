@@ -224,6 +224,49 @@ impl Interpreter {
         }
     }
 
+    /// insdel.c:replace_range's change of the current buffer (see
+    /// `Buffer::replace_range'), made through its whole indirect-buffer
+    /// family; another member's point moves as a marker does.
+    pub(crate) fn replace_range_current_buffer(
+        &mut self,
+        from: usize,
+        to: usize,
+        text: &str,
+        extended: &[(usize, u32)],
+    ) -> usize {
+        let current_id = self.current_buffer_id();
+        let related = self.related_buffer_ids(current_id);
+        let (from, to) = {
+            let buffer = self.buffer.borrow();
+            let from = from.max(buffer.point_min());
+            (from, to.min(buffer.point_max()).max(from))
+        };
+        let inschars = text.chars().count();
+        self.buffer
+            .borrow_mut()
+            .replace_range(from, to, text, extended, true);
+        self.adjust_markers_for_replace(current_id, from, to, inschars);
+        for buffer_id in &related {
+            if *buffer_id == current_id {
+                continue;
+            }
+            if let Some(mut buffer) = self.get_buffer_by_id_mut(*buffer_id) {
+                let saved_point = buffer.point();
+                buffer.replace_range(from, to, text, extended, true);
+                let restored = if saved_point >= to {
+                    saved_point + inschars - (to - from)
+                } else if saved_point > from {
+                    from
+                } else {
+                    saved_point
+                };
+                buffer.goto_char(restored);
+            }
+            self.adjust_markers_for_replace(*buffer_id, from, to, inschars);
+        }
+        from
+    }
+
     pub fn delete_region_current_buffer(
         &mut self,
         from: usize,

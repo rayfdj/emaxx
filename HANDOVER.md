@@ -4780,6 +4780,85 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   (`url-http-response-status` void in its filter) and leaves two later
   package tests failing, and `ucs-normalize-part1` fails on U+E0FF, as on
   `9ba4dee`; the frozen run does not include them.
+- **Round 65: characters beyond Unicode and real U+E000..U+E0FF through
+  the Rust text paths.** Lisp strings and buffers keep GNU's internal
+  bytes, but many primitives work on the Rust text view, where a raw byte
+  is a U+E080..U+E0FF marker and a character the view cannot carry (beyond
+  Unicode, a surrogate, a real U+E000..U+E0FF such as the Powerline glyphs
+  U+E0A0..U+E0D4) needs its side-table entry. Every path below now carries
+  it or works on the internal bytes. `read` and `read-positioning-symbols`
+  on a buffer or marker, and `eval-buffer`/`eval-region` (so `load` of a
+  source file), read the region's internal bytes when it holds such a
+  character: a loaded `.el` file with a literal U+E0B0 in a string came
+  back with the raw byte 176. `format` (`%c` checks the code against
+  MAX_CHAR, "Invalid character: N"; `%s`/`%S` keep the side table through
+  padding and precision), `message` and its batch stderr output
+  (xdisp.c message_to_stderr: the internal bytes, or encoded with
+  `coding-system-for-write`/`locale-coding-system`), `write-char`,
+  `char-to-string`, case conversion of strings and regions (each character
+  cased by its code through the case table, words by its syntax),
+  `delete-and-extract-region`, `kill-region`/`yank`, `transpose-chars` and
+  `decode-coding-region`. `replace-match` is search.c's Freplace_match
+  (the literal fast path, `\&`, `\N`, `\\`, `\?` an error in the buffer
+  case, case conversion of the replacement from the matched text,
+  "replace-match subexpression does not exist", args-out-of-range on the
+  bounds, string pieces via concat3 keeping properties) over insdel.c's
+  replace_range (insertion recorded before the deletion in the undo list,
+  markers and overlays adjusted as adjust_markers_for_replace and
+  adjust_overlays_for_insert/delete do, point moved as replace_range moves
+  it, match data updated by update_search_regs, one after-change call);
+  `subst-char-in-region` is editfns.c's (byte-length check in a multibyte
+  buffer, low byte in a unibyte one); `regexp-quote` works on the internal
+  bytes and returns a copy when nothing needs quoting;
+  `string-to-multibyte`, `string-as-multibyte` and `string-make-unibyte`
+  are fns.c's byte conversions (STRING itself when nothing changes, no
+  properties otherwise); `char-width` and `string-width` are character.c's
+  (char-width-table, which now also gives raw bytes width 4, display
+  tables, `ctl-arrow`, tab width). keymap.c's `key-description`,
+  `single-key-description` (push_key_description: a multibyte result, any
+  valid character as itself, `[N]` past MAX_CHAR, map-char-table intervals
+  as `A..B`, Lucid event lists through `event-convert-list`, EVENT_HEAD of
+  other conses, the modifier prefix of a symbol scanned while `i < len -
+  3`, "KEY must be an integer, cons, symbol, or string") and
+  `text-char-description` (`characterp`, a unibyte result for ASCII);
+  `char-syntax` gives word syntax for characters beyond Unicode;
+  base64 encoding takes a multibyte source's eight-bit characters as bytes
+  and rejects any other non-ASCII character ("Multibyte character in data
+  for base64 encoding"); `json-serialize` checks strings as json.c's
+  json_out_string does over the internal bytes (`(wrong-type-argument
+  json-value-p STRING)` for a raw byte, a surrogate or a character beyond
+  Unicode) and requires string hash keys, and `json-insert` keeps a real
+  U+E000..U+E0FF; `file-name-directory`, `file-name-nondirectory`,
+  `file-name-as-directory`, `directory-file-name` and `directory-name-p`
+  work on the internal bytes and keep the name's multibyteness. A reader
+  error in a buffer source is lread.c's invalid_syntax: point stays where
+  reading stopped and the data gains the line and column (`Invalid read
+  syntax: ")", 77, 4`), a stray closer is read before the error and named
+  `)` or `]`, and readevalloop's native path puts a `read` frame on the
+  backtrace while it reads each form, as GNU's call of
+  `load-read-function` does; `eval-buffer` restores point however its
+  forms end. A key-description probe went from 160 differing lines of 160
+  to 6, the replace-match probe (29 lines), the regexp probe and the width
+  probe (22) give GNU's output, and the two 84-line character probes
+  (#x22484C and U+E0B0 through 80 primitives) from 23 and 21 differing
+  lines to 2 each. The bookmark, simple, subr, fns, editfns, search,
+  casefiddle, character, print, lread, buffer, undo, textprop, replace,
+  files, mule, coding, json, keymap, help, bytecomp, fileio, files-x,
+  kmacro, syntax, edebug, elisp-mode, data, minibuf, ls-lisp and dired
+  tests give GNU's results. Still open: (1) a symbol's name keeps no
+  multibyteness: GNU's reader gives a symbol first read from a multibyte
+  source a multibyte name, so `single-key-description` with NO-ANGLES
+  returns a multibyte name there (the 6 key-description lines); (2) buffer
+  names are Rust strings, so `buffer-name` builds a new string on each
+  call (never `eq` to the last, and losing such characters), and
+  `expand-file-name` still works on the text view (the 2 character-probe
+  lines); (3) the reader's escape sequences and `#` syntaxes still signal
+  Emaxx's own conditions and messages where lread.c signals `error` or
+  other text (`\M`, `\C` without `-`, `\x` without a digit, malformed
+  `\u`/`\U`, `\N` without `{`, `#s`, `#&`, `#@`, radix errors, the
+  char-table size): 56 of 117 lines of a reader-error probe over strings,
+  buffers and markers differ, and some end-of-file errors lack
+  `load-true-file-name`; (4) the round 64 items (1) to (3) and (5).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -5404,7 +5483,9 @@ second (run 40087158866). **On `9ba4dee`** (round 63): full Rust gate
 passed (run 40090524898); frozen matched 7,926 of 7,928 tests (run
 40090526570): `bookmark-tests-save/non-ascii-annotation` and
 `bookmark-tests-save/non-ascii-bookmark-name` fail, as the round 64
-bullet's item (4) describes. Run
+bullet's item (4) describes. **On `d99d85c`** (round 64): full Rust gate
+passed (run 40097399568); frozen matched 7,926 of 7,928 tests (run
+40097401438), the same two bookmark tests, which pass after round 65. Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that
 locale. With none set here, `char_charset_family_follows_charset_c` and

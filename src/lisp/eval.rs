@@ -6813,6 +6813,11 @@ impl Interpreter {
             interp
                 .char_table_set_range(table_id, 0x80, 0x9f, Value::Integer(4))
                 .expect("initialize C1 character widths");
+            // character.c also gives raw-byte characters
+            // (MAX_5_BYTE_CHAR + 1 .. MAX_CHAR) width 4.
+            interp
+                .char_table_set_range(table_id, 0x3f_ff80, 0x3f_ffff, Value::Integer(4))
+                .expect("initialize raw-byte character widths");
             interp.define_special_variable("char-width-table", Value::CharTable(table_id));
         }
         let ambiguous_width_chars = interp.make_char_table(None, Value::Nil);

@@ -338,35 +338,69 @@ pub(crate) fn simple_case_char_for_action(
     }
 }
 
+/// The text INPUT cased, with EXTENDED its side table (offsets of the
+/// characters its Rust view cannot carry, which case by their codes);
+/// returns the cased text and its side table.
 pub(crate) fn casify_string(
     interp: &mut Interpreter,
     input: &str,
+    extended: &[(usize, u32)],
     action: CaseAction,
     env: &mut Env,
-) -> Result<String, LispError> {
+) -> Result<(String, Vec<(usize, u32)>), LispError> {
     // GNU prepares the casing context once per operation, never per character.
     let context = CasingContext::prepare(interp, action, env);
-    casify_string_with_context(interp, input, action, env, &context)
+    casify_string_with_context(interp, input, extended, action, env, &context)
 }
 
 fn casify_string_with_context(
     interp: &mut Interpreter,
     input: &str,
+    extended: &[(usize, u32)],
     action: CaseAction,
     env: &mut Env,
     context: &CasingContext,
-) -> Result<String, LispError> {
+) -> Result<(String, Vec<(usize, u32)>), LispError> {
     let case_symbols_as_words = case_symbols_as_words_enabled(interp, env);
     let (down_table, up_table) = current_case_table_ids(interp)?;
     let chars: Vec<char> = input.chars().collect();
+    let code_at = |idx: usize| {
+        extended
+            .binary_search_by_key(&idx, |(at, _)| *at)
+            .ok()
+            .map(|found| extended[found].1)
+    };
+    let word_at = |idx: usize| match code_at(idx) {
+        Some(code) => syntax::current_syntax_word_char(interp, code, case_symbols_as_words),
+        None => case_word_char(interp, chars[idx], case_symbols_as_words),
+    };
     let mut output = String::new();
+    let mut output_extended = Vec::new();
+    let mut output_len = 0;
     let mut in_word = false;
     for (idx, ch) in chars.iter().copied().enumerate() {
-        let is_word = case_word_char(interp, ch, case_symbols_as_words);
-        let next_is_word = chars
-            .get(idx + 1)
-            .copied()
-            .is_some_and(|next| case_word_char(interp, next, case_symbols_as_words));
+        let is_word = word_at(idx);
+        if let Some(code) = code_at(idx) {
+            // casefiddle.c's case_character on the character's code: the
+            // case table's mapping, if any.
+            let table = match action {
+                CaseAction::Up => Some(up_table),
+                CaseAction::Down => Some(down_table),
+                CaseAction::Capitalize | CaseAction::UpcaseInitials if is_word && !in_word => {
+                    Some(up_table)
+                }
+                CaseAction::Capitalize => Some(down_table),
+                CaseAction::UpcaseInitials => None,
+            };
+            let mapped = table
+                .and_then(|table| case_table_mapping(interp, table, code))
+                .unwrap_or(code);
+            push_character_code(&mut output, &mut output_extended, output_len, mapped);
+            output_len += 1;
+            in_word = is_word;
+            continue;
+        }
+        let next_is_word = idx + 1 < chars.len() && word_at(idx + 1);
         let piece = match action {
             CaseAction::Up => full_upcase_string(interp, context, up_table, ch),
             CaseAction::Down => {
@@ -387,10 +421,11 @@ fn casify_string_with_context(
                 }
             }
         };
+        output_len += piece.chars().count();
         output.push_str(&piece);
         in_word = is_word;
     }
-    Ok(output)
+    Ok((output, output_extended))
 }
 
 pub(crate) fn casify_value(
@@ -498,7 +533,14 @@ pub(crate) fn casify_value(
         });
     }
     let input_len = input.text.chars().count();
-    let output = casify_string_with_context(interp, &input.text, action, env, &context)?;
+    let (output, output_extended) = casify_string_with_context(
+        interp,
+        &input.text,
+        &input.extended_chars,
+        action,
+        env,
+        &context,
+    )?;
     // casefiddle.c copies intervals while casing can stay in the source
     // string's character footprint.  A full Unicode mapping that changes
     // the character count (for example, sharp-s -> "SS") takes GNU's
@@ -508,10 +550,11 @@ pub(crate) fn casify_value(
     } else {
         Vec::new()
     };
-    Ok(string_like_value_with_multibyte(
+    Ok(string_like_value_with_extended_chars(
         output,
         props,
         input.multibyte,
+        output_extended,
     ))
 }
 
@@ -520,6 +563,7 @@ pub(crate) fn replace_buffer_region_with_text(
     start: usize,
     end: usize,
     text: &str,
+    extended: &[(usize, u32)],
 ) -> Result<usize, LispError> {
     interp.buffer.borrow_mut().goto_char(start);
     interp
@@ -528,6 +572,10 @@ pub(crate) fn replace_buffer_region_with_text(
         .delete_region(start, end)
         .map_err(|error| LispError::Signal(error.to_string()))?;
     interp.buffer.borrow_mut().insert(text);
+    interp
+        .buffer
+        .borrow_mut()
+        .set_inserted_extended_chars(start, extended);
     Ok(start + text.chars().count())
 }
 
@@ -548,37 +596,56 @@ pub(crate) fn casify_buffer_region(
     // changed, none when none did.
     modify_current_buffer(interp, lo, hi, false, env, |interp, _, env| {
         let hi = hi.min(interp.buffer.borrow().point_max()).max(lo);
-        let text = interp
-            .buffer
-            .borrow()
-            .buffer_substring(lo, hi)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
-        let mapped = casify_string(interp, &text, action, env)?;
-        if mapped == text {
+        let (text, extended) = {
+            let buffer = interp.buffer.borrow();
+            (
+                buffer
+                    .buffer_substring(lo, hi)
+                    .map_err(|error| LispError::Signal(error.to_string()))?,
+                buffer.substring_extended_chars(lo, hi),
+            )
+        };
+        let (mapped, mapped_extended) = casify_string(interp, &text, &extended, action, env)?;
+        if mapped == text && mapped_extended == extended {
             return Ok((None, hi));
         }
+        // The texts compare by character code.
+        let codes = |text: &str, extended: &[(usize, u32)]| {
+            StringLike {
+                text: text.to_owned(),
+                props: Vec::new(),
+                multibyte: true,
+                extended_chars: extended.to_vec(),
+            }
+            .character_codes()
+        };
+        let old_codes = codes(&text, &extended);
+        let new_codes = codes(&mapped, &mapped_extended);
         let old_length = hi - lo;
-        let new_length = mapped.chars().count();
+        let new_length = new_codes.len();
         let new_end = lo + new_length;
-        let unchanged_prefix = text
-            .chars()
-            .zip(mapped.chars())
+        let unchanged_prefix = old_codes
+            .iter()
+            .zip(&new_codes)
             .take_while(|(old, new)| old == new)
             .count();
-        let unchanged_suffix = text
-            .chars()
+        let unchanged_suffix = old_codes
+            .iter()
             .rev()
-            .zip(mapped.chars().rev())
+            .zip(new_codes.iter().rev())
             .take(old_length.min(new_length) - unchanged_prefix)
             .take_while(|(old, new)| old == new)
             .count();
         if new_length == old_length {
-            interp
-                .buffer
-                .borrow_mut()
-                .replace_region_in_place(lo, hi, &mapped, false);
+            interp.buffer.borrow_mut().replace_region_in_place(
+                lo,
+                hi,
+                &mapped,
+                &mapped_extended,
+                false,
+            );
         } else {
-            replace_buffer_region_with_text(interp, lo, hi, &mapped)?;
+            replace_buffer_region_with_text(interp, lo, hi, &mapped, &mapped_extended)?;
         }
         let changed_start = lo + unchanged_prefix;
         Ok((

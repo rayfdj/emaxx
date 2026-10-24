@@ -555,15 +555,18 @@ pub(crate) fn extract_region_with_hooks(
     if from == to {
         return Ok(bytes_to_unibyte_value(&[]));
     }
-    let (text, (props, multibyte)) =
+    let (text, (props, multibyte, extended)) =
         delete_region_with_hooks_then(interp, from, to, env, |interp, from, to| {
             let buffer = interp.buffer.borrow();
             (
                 buffer.substring_property_spans(from, to),
                 buffer.is_multibyte(),
+                buffer.substring_extended_chars(from, to),
             )
         })?;
-    Ok(string_like_value_with_multibyte(text, props, multibyte))
+    Ok(string_like_value_with_extended_chars(
+        text, props, multibyte, extended,
+    ))
 }
 
 fn delete_region_with_hooks_then<R>(

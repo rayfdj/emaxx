@@ -2250,7 +2250,16 @@ impl Buffer {
     /// Replace [from, to) with TEXT of the same character length, in place:
     /// text properties and markers are untouched (GNU subst-char-in-region
     /// substitutes characters without disturbing intervals).
-    pub fn replace_region_in_place(&mut self, from: usize, to: usize, text: &str, noundo: bool) {
+    /// Replace [FROM, TO) by TEXT of the same length in place, EXTENDED
+    /// (offsets into TEXT) the side-table entries of its characters.
+    pub fn replace_region_in_place(
+        &mut self,
+        from: usize,
+        to: usize,
+        text: &str,
+        extended: &[(usize, u32)],
+        noundo: bool,
+    ) {
         let from0 = from - 1;
         let to0 = to - 1;
         if !self.undo_disabled && !noundo {
@@ -2275,6 +2284,10 @@ impl Buffer {
         self.text.insert(from0, text);
         self.extended_chars
             .retain(|(position, _)| *position < from || *position >= to);
+        self.extended_chars
+            .extend(extended.iter().map(|(offset, code)| (from + offset, *code)));
+        self.extended_chars
+            .sort_unstable_by_key(|(position, _)| *position);
         self.invalidate_char_cache();
         self.refresh_marker_byte_positions();
         // insdel.c modify_text.
@@ -2282,6 +2295,117 @@ impl Buffer {
         self.chars_modiff = self.modiff;
         self.log_edit(from, to, to, true);
         self.autosaved = false;
+    }
+
+    /// insdel.c:replace_range's buffer change: [FROM, TO) replaced by
+    /// TEXT (EXTENDED its side table, offsets into TEXT), clamped to the
+    /// accessible region, without the change hooks or text properties
+    /// (the caller grafts the new text's).  The undo list records the
+    /// insertion first, then the deletion, so undoing deletes after it
+    /// reinserts; with MARKERS, markers inside the old text move to FROM
+    /// and those at or after TO shift (adjust_markers_for_replace), and
+    /// overlays take the insertion as if made before markers at TO, then
+    /// the deletion.  Point moves as a marker would.  Returns FROM.
+    pub fn replace_range(
+        &mut self,
+        from: usize,
+        to: usize,
+        text: &str,
+        extended: &[(usize, u32)],
+        markers: bool,
+    ) -> usize {
+        let from = from.max(self.begv);
+        let to = to.min(self.zv).max(from);
+        let nchars_del = to - from;
+        let inschars = text.chars().count();
+        if nchars_del == 0 && inschars == 0 {
+            return from;
+        }
+        let from0 = from - 1;
+        let old_pt = self.pt;
+        let deleted = self.text_range_string(from0, to - 1);
+        if !self.undo_disabled {
+            let props = self.substring_property_spans(from, to);
+            let extended_chars = self.substring_extended_chars(from, to);
+            if inschars > 0 {
+                self.record_point_for_undo(from + nchars_del);
+                self.record_insert_for_undo(from + nchars_del, inschars);
+            }
+            if nchars_del > 0 {
+                self.record_point_for_undo(from);
+                self.push_undo_entry(UndoEntry::Delete {
+                    pos: from,
+                    point_after: old_pt == to,
+                    text: deleted.clone(),
+                    props,
+                    extended_chars,
+                    markers: Vec::new(),
+                });
+            }
+        }
+        let from_byte = self.marker_byte_position(from);
+        let to_byte = self.marker_byte_position(to);
+        if nchars_del > 0 {
+            self.text.remove_text(from0..to - 1, &deleted);
+        }
+        if inschars > 0 {
+            self.text.insert(from0, text);
+        }
+        self.invalidate_char_cache();
+        let new_bytes =
+            crate::lisp::primitives::lisp_string_storage_byte_len(text, self.multibyte, extended);
+        let shift = |position: usize| position + inschars - nchars_del;
+        if markers {
+            match &mut self.mark {
+                BufferMark::Position(mark) => {
+                    if let Some(mark) = mark {
+                        if *mark >= to {
+                            *mark = shift(*mark);
+                        } else if *mark > from {
+                            *mark = from;
+                        }
+                    }
+                }
+                BufferMark::Object { owner, .. } => {
+                    for marker in owner.markers() {
+                        let position = marker.last_position();
+                        if position >= to {
+                            marker.set_positions(
+                                shift(position),
+                                marker.bytepos() + new_bytes - (to_byte - from_byte),
+                            );
+                        } else if position > from {
+                            marker.set_positions(from, from_byte);
+                        }
+                    }
+                }
+            }
+        }
+        if from < old_pt {
+            self.pt = from + inschars + old_pt - old_pt.min(to);
+        }
+        self.overlays.insert_gap(to, inschars, true);
+        if nchars_del > 0 {
+            self.overlays.delete_gap(from, nchars_del);
+        }
+        self.adjust_text_properties_for_delete(from, to);
+        self.adjust_extended_chars_for_delete(from, to);
+        self.adjust_text_properties_for_insert(from, inschars);
+        self.adjust_extended_chars_for_insert(from, inschars);
+        self.extended_chars
+            .extend(extended.iter().map(|(offset, code)| (from + offset, *code)));
+        self.extended_chars
+            .sort_unstable_by_key(|(position, _)| *position);
+        if self.text.len_chars() == 0 {
+            self.interval_tree = false;
+        }
+        self.zv = self.zv + inschars - nchars_del;
+        self.refresh_marker_byte_positions();
+        modiff_incr(&mut self.modiff, nchars_del + inschars);
+        self.chars_modiff = self.modiff;
+        self.log_edit(from, to, from + inschars, true);
+        self.autosaved = false;
+        from
     }
 
     /// Insert a single character at point.
@@ -3887,7 +4011,7 @@ mod tests {
         assert!(!buf.char_cache.borrow().valid);
         assert_eq!(buf.char_at(1502), Some('λ'));
 
-        buf.replace_region_in_place(1502, 1503, "Ω", false);
+        buf.replace_region_in_place(1502, 1503, "Ω", &[], false);
         assert!(!buf.char_cache.borrow().valid);
         assert_eq!(buf.char_at(1502), Some('Ω'));
 

@@ -723,25 +723,29 @@ pub(crate) fn encode_base64_bytes(
     encoded
 }
 
+/// fns.c base64_encode_1's reading of its source: the characters of a
+/// multibyte source as bytes, an eight-bit character as its byte, any other
+/// non-ASCII character failing the encoding.
 pub(crate) fn encode_base64_source_bytes(
-    text: &str,
+    codes: impl IntoIterator<Item = i64>,
     multibyte: bool,
 ) -> Result<Vec<u8>, LispError> {
-    if !multibyte {
-        return encode_raw_text_bytes(text);
-    }
-
-    let mut bytes = Vec::with_capacity(text.chars().count());
-    for ch in text.chars() {
-        if let Some(byte) = raw_byte_from_regex_char(ch) {
-            bytes.push(byte);
-        } else if (ch as u32) <= 0x7F {
-            bytes.push(ch as u8);
-        } else {
-            return Err(LispError::Signal("Character cannot be encoded".into()));
-        }
-    }
-    Ok(bytes)
+    codes
+        .into_iter()
+        .map(|code| {
+            if !multibyte {
+                Ok(code as u8)
+            } else if (0x3F_FF80..=0x3F_FFFF).contains(&code) {
+                Ok((code - 0x3F_FF00) as u8)
+            } else if code >= 128 {
+                Err(LispError::Signal(
+                    "Multibyte character in data for base64 encoding".into(),
+                ))
+            } else {
+                Ok(code as u8)
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn base64_encode_string_value(
@@ -752,7 +756,7 @@ pub(crate) fn base64_encode_string_value(
 ) -> Result<Value, LispError> {
     let string =
         string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
-    let bytes = encode_base64_source_bytes(&string.text, string.multibyte)?;
+    let bytes = encode_base64_source_bytes(string.character_codes_iter(), string.multibyte)?;
     Ok(Value::String(
         encode_base64_bytes(&bytes, line_break, pad, base64url).into(),
     ))
@@ -769,12 +773,9 @@ pub(crate) fn base64_encode_region_value(
 ) -> Result<Value, LispError> {
     let lo = start.min(end);
     let hi = start.max(end);
-    let text = interp
-        .buffer
-        .borrow()
-        .buffer_substring(lo, hi)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    let bytes = encode_base64_source_bytes(&text, interp.buffer.borrow().is_multibyte())?;
+    let codes = buffer_region_codes(interp, lo, hi);
+    let multibyte = interp.buffer.borrow().is_multibyte();
+    let bytes = encode_base64_source_bytes(codes.into_iter().map(i64::from), multibyte)?;
     let encoded = encode_base64_bytes(&bytes, line_break, pad, base64url);
     let inserted = insert_then_delete_region(interp, lo, hi, &encoded, env)?;
     Ok(Value::Integer(inserted as i64))

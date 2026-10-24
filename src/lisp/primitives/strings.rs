@@ -223,6 +223,129 @@ pub(crate) fn string_character_code(multibyte: bool, ch: char) -> i64 {
     }
 }
 
+/// The character codes of the current buffer's text [FROM, TO), as
+/// FETCH_CHAR reads them (bytes in a unibyte buffer).
+pub(crate) fn buffer_region_codes(interp: &Interpreter, from: usize, to: usize) -> Vec<u32> {
+    let buffer = interp.buffer.borrow();
+    StringLike {
+        text: buffer.buffer_substring(from, to).unwrap_or_default(),
+        props: Vec::new(),
+        multibyte: buffer.is_multibyte(),
+        extended_chars: buffer.substring_extended_chars(from, to),
+    }
+    .character_codes_iter()
+    .map(|code| code as u32)
+    .collect()
+}
+
+/// A text view and side table holding CODES, multibyte or (each code a
+/// byte) unibyte.
+pub(crate) fn text_from_codes(codes: &[u32], multibyte: bool) -> (String, Vec<(usize, u32)>) {
+    let mut text = String::with_capacity(codes.len());
+    let mut extended = Vec::new();
+    for (index, &code) in codes.iter().enumerate() {
+        if multibyte {
+            push_character_code(&mut text, &mut extended, index, code);
+        } else if code < 0x80 {
+            text.push(char::from(code as u8));
+        } else {
+            text.push(raw_byte_regex_char(code as u8));
+        }
+    }
+    (text, extended)
+}
+
+/// alloc.c make_specified_string with NCHARS -1: the internal BYTES as a
+/// string of multibyteness MULTIBYTE, its characters counted from them.
+pub(crate) fn make_specified_string(
+    bytes: Vec<u8>,
+    multibyte: bool,
+) -> Result<Value, crate::lisp::types::string_data::StringError> {
+    let characters = if multibyte {
+        let mut offset = 0;
+        let mut count = 0;
+        while offset < bytes.len() {
+            offset +=
+                crate::lisp::types::string_data::multibyte_length(&bytes[offset..], true).max(1);
+            count += 1;
+        }
+        count
+    } else {
+        bytes.len()
+    };
+    StringObjectRef::from_storage(bytes, characters, multibyte).map(Value::StringObject)
+}
+
+/// alloc.c make_string (build_string): multibyte when BYTES hold a
+/// non-ASCII character and parse_str_as_multibyte finds every byte part of
+/// a valid multibyte form (eight-bit forms not counted), else unibyte.
+pub(crate) fn make_string(
+    bytes: Vec<u8>,
+) -> Result<Value, crate::lisp::types::string_data::StringError> {
+    let mut offset = 0;
+    let mut characters = 0;
+    let mut multibyte_bytes = 0;
+    while offset < bytes.len() {
+        match crate::lisp::types::string_data::multibyte_length(&bytes[offset..], false) {
+            0 => {
+                offset += 1;
+                multibyte_bytes += 2;
+            }
+            length => {
+                offset += length;
+                multibyte_bytes += length;
+            }
+        }
+        characters += 1;
+    }
+    let multibyte = characters != bytes.len() && multibyte_bytes == bytes.len();
+    make_specified_string(bytes, multibyte)
+}
+
+/// Append the character CODE to a Rust text view at character INDEX, as
+/// string_data's decode_bytes builds one: a raw byte as its marker, and a
+/// character the view cannot carry (beyond Unicode, a surrogate, a real
+/// U+E000..U+E0FF) as its placeholder with an entry in EXTENDED.
+pub(crate) fn push_character_code(
+    text: &mut String,
+    extended: &mut Vec<(usize, u32)>,
+    index: usize,
+    code: u32,
+) {
+    if (RAW_BYTE8_BASE + 0x80..=RAW_BYTE8_BASE + 0xFF).contains(&code) {
+        text.push(raw_byte_regex_char((code - RAW_BYTE8_BASE) as u8));
+    } else if let Some(ch) = char::from_u32(code) {
+        text.push(ch);
+        if raw_byte_from_regex_char(ch).is_some() {
+            extended.push((index, code));
+        }
+    } else {
+        text.push(crate::lisp::json::INVALID_UNICODE_SENTINEL);
+        extended.push((index, code));
+    }
+}
+
+/// The side table of a string's characters its Rust text view cannot
+/// carry, read in place: empty for a unibyte or ASCII string and for
+/// UTF-8 without a real U+E000..U+E0FF.
+pub(crate) fn string_extended_chars(value: &Value) -> Vec<(usize, u32)> {
+    let Kind::StringObject(state) = value.kind() else {
+        return Vec::new();
+    };
+    let state = state.borrow();
+    let bytes = state.bytes();
+    if !state.is_multibyte() || bytes.is_ascii() {
+        return Vec::new();
+    }
+    if std::str::from_utf8(bytes).is_ok()
+        && !memchr::memchr_iter(0xEE, bytes)
+            .any(|at| matches!(bytes.get(at + 1), Some(0x80..=0x83)))
+    {
+        return Vec::new();
+    }
+    state.text_parts().1
+}
+
 pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
     match value.kind() {
         Kind::StringObject(state) => {

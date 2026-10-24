@@ -1092,6 +1092,18 @@ pub(crate) fn write_printer_output(
     })
 }
 
+/// Write printer OUTPUT, already in the internal encoding, to STREAM.
+pub(crate) fn write_printer_output_codes(
+    interp: &mut Interpreter,
+    output: &PrintOutput,
+    stream: Option<&Value>,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    with_printer_destination(interp, stream, env, |interp, env| {
+        write_prepared_printer_output(interp, output, stream, env)
+    })
+}
+
 fn write_prepared_printer_output(
     interp: &mut Interpreter,
     output: &PrintOutput,

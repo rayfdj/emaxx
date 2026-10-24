@@ -205,6 +205,53 @@ fn redisplay_safe_call(
     result
 }
 
+/// xdisp.c:message_to_stderr: a newline first when stdout was written
+/// since, then MESSAGE's bytes, encoded with `coding-system-for-write' or
+/// else `locale-coding-system' when either is set (without recording
+/// `last-coding-system-used'), then a newline.
+pub(crate) fn message_to_stderr(
+    interp: &mut Interpreter,
+    message: Option<&Value>,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let bytes = match message {
+        Some(message) => {
+            let coding = interp
+                .forwarded_c_value("coding-system-for-write", &Env::new())
+                .filter(|value| !value.is_nil())
+                .or_else(|| interp.forwarded_c_value("locale-coding-system", &Env::new()))
+                .unwrap_or(Value::Nil);
+            let encoded = if coding.is_nil() {
+                *message
+            } else {
+                encode_coding_value_recording(
+                    interp,
+                    message,
+                    Some(coding.as_symbol()?),
+                    false,
+                    false,
+                    env,
+                )?
+            };
+            crate::lisp::primitives::text::internal_string_bytes(
+                &string_like(&encoded).expect("a message is a string"),
+            )?
+        }
+        None => Vec::new(),
+    };
+    let mut stderr = std::io::stderr().lock();
+    if interp.batch_stdout_need_newline {
+        interp.batch_stdout_need_newline = false;
+        stderr
+            .write_all(b"\n")
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+    }
+    stderr
+        .write_all(&bytes)
+        .and_then(|_| stderr.write_all(b"\n"))
+        .map_err(|error| LispError::Signal(error.to_string()))
+}
+
 /// xdisp.c:message_with_string with logging enabled. Unlike Fmessage, its
 /// batch path ignores inhibit-message and neither logs nor calls Lisp message
 /// advice. Encoding is the locale or explicit write coding, without recording
@@ -228,37 +275,7 @@ pub(crate) fn message_with_string(
         env,
     )?;
     if batch {
-        let coding = interp
-            .forwarded_c_value("coding-system-for-write", &Env::new())
-            .filter(|value| !value.is_nil())
-            .or_else(|| interp.forwarded_c_value("locale-coding-system", &Env::new()))
-            .unwrap_or(Value::Nil);
-        let encoded = if coding.is_nil() {
-            message
-        } else {
-            encode_coding_value_recording(
-                interp,
-                &message,
-                Some(coding.as_symbol()?),
-                false,
-                false,
-                env,
-            )?
-        };
-        let bytes = crate::lisp::primitives::text::internal_string_bytes(
-            &string_like(&encoded).expect("formatted and encoded message"),
-        )?;
-        let mut stderr = std::io::stderr().lock();
-        if interp.batch_stdout_need_newline {
-            interp.batch_stdout_need_newline = false;
-            stderr
-                .write_all(b"\n")
-                .map_err(|error| LispError::Signal(error.to_string()))?;
-        }
-        stderr
-            .write_all(&bytes)
-            .and_then(|_| stderr.write_all(b"\n"))
-            .map_err(|error| LispError::Signal(error.to_string()))?;
+        message_to_stderr(interp, Some(&message), env)?;
         return Ok(());
     }
     // The interactive message3 path can run redisplay callbacks. Keep the
@@ -2849,15 +2866,7 @@ define_dispatch!(
                         .lookup_var_key(cached_symbol!("inhibit-message"), env)
                         .is_none_or(|value| value.is_nil())
                 {
-                    let separator = if interp.batch_stdout_need_newline {
-                        "\n"
-                    } else {
-                        ""
-                    };
-                    interp.batch_stdout_need_newline = false;
-                    std::io::stderr()
-                        .write_all(format!("{separator}{text}\n").as_bytes())
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    message_to_stderr(interp, formatted.as_ref(), env)?;
                 }
                 if args.first().is_some_and(Value::is_nil) {
                     Ok(Value::Nil)
@@ -3217,12 +3226,14 @@ define_dispatch!(
             }
             "write-char" => {
                 need_arg_range(name, args, 1, 2)?;
-                let rendered = format_char_conversion(&args[0])?;
+                // print.c Fwrite_char: printchar of the character's code.
+                format_char_conversion(&args[0])?;
+                let code = args[0].as_integer()? as u32;
+                let mut rendered = PrintOutput::default();
+                rendered.push_code(code);
                 let stream = printer_stream_value(interp, env, args.get(1));
-                write_printer_output(interp, &rendered, stream.as_ref(), env)?;
-                if let Some(last) = rendered.chars().last() {
-                    record_batch_standard_output_char(interp, stream.as_ref(), env, last as u32);
-                }
+                write_printer_output_codes(interp, &rendered, stream.as_ref(), env)?;
+                record_batch_standard_output_char(interp, stream.as_ref(), env, code);
                 Ok(args[0])
             }
             "redirect-debugging-output" => {
@@ -3241,7 +3252,7 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let rendered = string_like(&args[0])
                     .map(|value| value.text)
-                    .unwrap_or(format_char_conversion(&args[0])?);
+                    .unwrap_or(format_char_conversion(&args[0])?.0);
                 append_external_debugging_output(interp, &rendered)?;
                 Ok(args[0])
             }
@@ -3325,45 +3336,22 @@ define_dispatch!(
                 Ok(if eq { Value::T } else { Value::Nil })
             }
             "key-description" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(LispError::WrongNumberOfArgs(
-                        "key-description".into(),
-                        args.len(),
-                    ));
-                }
-                let mut parts = Vec::new();
-                if let Some(prefix) = args.get(1) {
-                    // PREFIX and KEYS are one event sequence for display.  In
-                    // particular a trailing ESC in PREFIX combines with the
-                    // first character in KEYS (`ESC' + `v' -> `M-v').
-                    let mut events = key_description_events(prefix)?;
-                    events.extend(key_description_events(&args[0])?);
-                    let sequence = Value::list(
-                        std::iter::once(Value::Symbol("vector-literal".into())).chain(events),
-                    );
-                    append_key_description_parts(&sequence, &mut parts)?;
-                } else {
-                    append_key_description_parts(&args[0], &mut parts)?;
-                }
-                Ok(Value::String(parts.join(" ").into()))
+                need_arg_range(name, args, 1, 2)?;
+                key_description(
+                    interp,
+                    args[0],
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                    env,
+                )
             }
             "single-key-description" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(LispError::WrongNumberOfArgs(
-                        "single-key-description".into(),
-                        args.len(),
-                    ));
-                }
+                need_arg_range(name, args, 1, 2)?;
                 let no_angles = args.get(1).is_some_and(Value::is_truthy);
-                Ok(Value::String(
-                    single_key_description_text(&args[0], no_angles)?.into(),
-                ))
+                single_key_description(interp, args[0], no_angles, env)
             }
             "text-char-description" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(
-                    text_char_description_text(args[0].as_integer()?)?.into(),
-                ))
+                text_char_description(interp, &args[0], env)
             }
 
             // ── More buffer ops ──
@@ -6302,6 +6290,198 @@ pub(crate) fn mark_echo_area_roots(mark: &mut dyn FnMut(&Value)) {
             mark(value);
         }
     });
+}
+
+/// keymap.c Fkey_description: the single-key descriptions of PREFIX and
+/// KEYS joined by spaces, a `meta-prefix-char' event folded into the meta
+/// bit of the character event after it.
+fn key_description(
+    interp: &mut Interpreter,
+    keys: Value,
+    prefix: Value,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let nkeys = sequence_length_value(interp, &keys)?;
+    let nprefix = sequence_length_value(interp, &prefix)?;
+    let meta_prefix_char = interp
+        .lookup_var("meta-prefix-char", env)
+        .unwrap_or(Value::Integer(KEY_DESCRIPTION_META_PREFIX));
+    let sep = Value::String(" ".into());
+    let mut args = Vec::new();
+    let mut add_meta = false;
+    for (list, listlen) in [(prefix, nprefix), (keys, nkeys)] {
+        let events: Vec<Value> = if let Kind::StringObject(state) = list.kind() {
+            let string = string_like(&list).expect("a string object");
+            let multibyte = state.borrow().is_multibyte();
+            string
+                .character_codes()
+                .into_iter()
+                .map(|code| {
+                    if !multibyte && code & 0o200 != 0 {
+                        Value::Integer(code ^ (0o200 | KEY_DESCRIPTION_META_BIT))
+                    } else {
+                        Value::Integer(code)
+                    }
+                })
+                .collect()
+        } else if is_vector_value(&list) {
+            vector_items(&list)?
+        } else if matches!(list.kind(), Kind::Nil | Kind::Cons(_)) {
+            list.to_vec()?
+        } else {
+            return Err(wrong_type_argument("arrayp", list));
+        };
+        for mut key in events.into_iter().take(listlen as usize) {
+            if add_meta {
+                let fixnum = match key.kind() {
+                    Kind::Integer(code) => Some(code),
+                    _ => None,
+                };
+                if fixnum.is_none_or(|code| code & KEY_DESCRIPTION_META_BIT != 0)
+                    || values_eq_plain(&key, &meta_prefix_char)
+                {
+                    args.push(single_key_description(
+                        interp,
+                        meta_prefix_char,
+                        false,
+                        env,
+                    )?);
+                    args.push(sep);
+                    if values_eq_plain(&key, &meta_prefix_char) {
+                        continue;
+                    }
+                } else if let Some(code) = fixnum {
+                    key = Value::Integer(code | KEY_DESCRIPTION_META_BIT);
+                }
+                add_meta = false;
+            } else if values_eq_plain(&key, &meta_prefix_char) {
+                add_meta = true;
+                continue;
+            }
+            args.push(single_key_description(interp, key, false, env)?);
+            args.push(sep);
+        }
+    }
+    if add_meta {
+        args.push(single_key_description(
+            interp,
+            meta_prefix_char,
+            false,
+            env,
+        )?);
+    } else if args.is_empty() {
+        return Ok(Value::String("".into()));
+    } else {
+        args.pop();
+    }
+    StringObjectRef::concatenate(&args)
+        .map(Value::StringObject)
+        .map_err(|error| string_storage_error(interp, env, error))
+}
+
+/// keymap.c Fsingle_key_description.
+pub(crate) fn single_key_description(
+    interp: &mut Interpreter,
+    key: Value,
+    no_angles: bool,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let mut key = key;
+    if matches!(key.kind(), Kind::Cons(_)) && lucid_event_type_list_p(&key) {
+        key = event_convert_list_value(interp, &key)?;
+    }
+    if let Some((start, end)) = key.cons_values()
+        && matches!(start.kind(), Kind::Integer(_))
+        && matches!(end.kind(), Kind::Integer(_))
+    {
+        // An interval from a map-char-table.
+        let start = single_key_description(interp, start, no_angles, env)?;
+        let end = single_key_description(interp, end, no_angles, env)?;
+        return StringObjectRef::concatenate(&[start, Value::String("..".into()), end])
+            .map(Value::StringObject)
+            .map_err(|error| string_storage_error(interp, env, error));
+    }
+    // EVENT_HEAD.
+    if matches!(key.kind(), Kind::Cons(_)) {
+        key = key.car()?;
+    }
+    match key.kind() {
+        // Normal character.
+        Kind::Integer(code) => {
+            let mut bytes = Vec::new();
+            push_key_description(code, &mut bytes);
+            make_specified_string(bytes, true)
+                .map_err(|error| string_storage_error(interp, env, error))
+        }
+        // Function key or event-symbol.
+        Kind::Nil | Kind::T | Kind::Symbol(_) => {
+            let name = super::misc_keymaps::direct_symbol_name(interp, &[key], env)?;
+            if no_angles {
+                return Ok(name);
+            }
+            let Kind::StringObject(state) = name.kind() else {
+                return Ok(name);
+            };
+            let sym = state.borrow().bytes().to_vec();
+            let len = sym.len() as isize;
+            // Find the extent of the modifier prefix, like "C-M-"; strchr
+            // also finds the terminating NUL.
+            let mut i = 0isize;
+            while i < len - 3
+                && sym[i as usize + 1] == b'-'
+                && (sym[i as usize] == 0 || b"CMSsHA".contains(&sym[i as usize]))
+            {
+                i += 2;
+            }
+            // First I bytes of SYM are modifiers; put <> around the rest.
+            let i = i as usize;
+            let mut buffer = Vec::with_capacity(sym.len() + 2);
+            buffer.extend_from_slice(&sym[..i]);
+            buffer.push(b'<');
+            buffer.extend_from_slice(&sym[i..]);
+            buffer.push(b'>');
+            // build_string reads up to the first NUL.
+            if let Some(nul) = buffer.iter().position(|&byte| byte == 0) {
+                buffer.truncate(nul);
+            }
+            make_string(buffer).map_err(|error| string_storage_error(interp, env, error))
+        }
+        // Buffer names in the menubar.
+        Kind::StringObject(_) => copy_sequence_value(interp, &key),
+        _ => Err(LispError::Signal(
+            "KEY must be an integer, cons, symbol, or string".into(),
+        )),
+    }
+}
+
+/// keymap.c Ftext_char_description: "^C" for a control character, the
+/// character itself otherwise.
+fn text_char_description(
+    interp: &Interpreter,
+    character: &Value,
+    env: &Env,
+) -> Result<Value, LispError> {
+    let code = match character.kind() {
+        Kind::Integer(code)
+            if (0..=i64::from(crate::lisp::primitives::coding::MAX_CHAR)).contains(&code) =>
+        {
+            code
+        }
+        _ => return Err(wrong_type_argument("characterp", *character)),
+    };
+    let result = if code >= 0x80 {
+        let (bytes, length) = crate::lisp::types::string_data::encode_character(code as u32)?;
+        make_specified_string(bytes[..length].to_vec(), true)
+    } else {
+        // push_text_char_description.
+        let desc = match code as u8 {
+            byte @ 0..0o40 => vec![b'^', byte + 64],
+            0o177 => b"^?".to_vec(),
+            byte => vec![byte],
+        };
+        make_string(desc)
+    };
+    result.map_err(|error| string_storage_error(interp, env, error))
 }
 
 #[cfg(test)]

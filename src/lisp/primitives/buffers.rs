@@ -401,6 +401,7 @@ fn replace_character_in_place(
             pos,
             pos + 1,
             character.encode_utf8(&mut text),
+            &[],
             false,
         );
         return Ok(());

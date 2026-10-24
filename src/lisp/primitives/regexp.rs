@@ -1,21 +1,5 @@
 use super::*;
 
-pub(super) fn regexp_quote_elisp(pattern: &str) -> String {
-    // GNU search.c Fregexp_quote: exactly [ * . \ ? + ^ $ get a
-    // backslash; ( ) { } | ] are literal in elisp regexp syntax.
-    let mut quoted = String::new();
-    for ch in pattern.chars() {
-        match ch {
-            '[' | '*' | '.' | '\\' | '?' | '+' | '^' | '$' => {
-                quoted.push('\\');
-                quoted.push(ch);
-            }
-            _ => quoted.push(ch),
-        }
-    }
-    quoted
-}
-
 pub(super) fn string_match_impl(
     interp: &mut Interpreter,
     args: &[Value],
@@ -380,112 +364,6 @@ pub(super) fn buffer_regex_search(
     super::search::search_command(interp, env, args, if forward { 1 } else { -1 }, true, posix)
 }
 
-pub(super) fn expand_replace_match(
-    interp: &Interpreter,
-    replacement: &str,
-    match_data: &[Option<(usize, usize)>],
-    literal: bool,
-) -> Result<String, LispError> {
-    if literal {
-        return Ok(replacement.to_string());
-    }
-    let chars: Vec<char> = replacement.chars().collect();
-    let mut expanded = String::new();
-    let mut index = 0;
-    while index < chars.len() {
-        if chars[index] == '\\'
-            && let Some(next) = chars.get(index + 1).copied()
-        {
-            match next {
-                '&' => expanded.push_str(&match_text_from_buffer(interp, match_data, 0)?),
-                '1'..='9' => {
-                    let capture_index = next.to_digit(10).unwrap_or(0) as usize;
-                    expanded.push_str(&match_text_from_buffer(interp, match_data, capture_index)?);
-                }
-                '\\' => expanded.push('\\'),
-                _ => {
-                    return Err(LispError::Signal(
-                        "Invalid use of `\\' in replacement text".into(),
-                    ));
-                }
-            }
-            index += 2;
-            continue;
-        }
-        expanded.push(chars[index]);
-        index += 1;
-    }
-    Ok(expanded)
-}
-
-pub(super) fn expand_replace_match_text(
-    replacement: &str,
-    match_data: &[Option<(usize, usize)>],
-    literal: bool,
-    source: &str,
-) -> Result<String, LispError> {
-    if literal {
-        return Ok(replacement.to_string());
-    }
-    let chars: Vec<char> = replacement.chars().collect();
-    let mut expanded = String::new();
-    let mut index = 0;
-    while index < chars.len() {
-        if chars[index] == '\\'
-            && let Some(next) = chars.get(index + 1).copied()
-        {
-            match next {
-                '&' => expanded.push_str(&match_text_from_string(source, match_data, 0)),
-                '1'..='9' => {
-                    let capture_index = next.to_digit(10).unwrap_or(0) as usize;
-                    expanded.push_str(&match_text_from_string(source, match_data, capture_index));
-                }
-                '\\' => expanded.push('\\'),
-                '?' => {
-                    expanded.push('\\');
-                    expanded.push('?');
-                }
-                _ => {
-                    return Err(LispError::Signal(
-                        "Invalid use of `\\' in replacement text".into(),
-                    ));
-                }
-            }
-            index += 2;
-            continue;
-        }
-        expanded.push(chars[index]);
-        index += 1;
-    }
-    Ok(expanded)
-}
-
-fn match_text_from_buffer(
-    interp: &Interpreter,
-    match_data: &[Option<(usize, usize)>],
-    index: usize,
-) -> Result<String, LispError> {
-    let Some((start, end)) = match_data.get(index).and_then(|entry| *entry) else {
-        return Ok(String::new());
-    };
-    interp
-        .buffer
-        .borrow()
-        .buffer_substring(start, end)
-        .map_err(|error| LispError::Signal(error.to_string()))
-}
-
-fn match_text_from_string(
-    source: &str,
-    match_data: &[Option<(usize, usize)>],
-    index: usize,
-) -> String {
-    let Some((start, end)) = match_data.get(index).and_then(|entry| *entry) else {
-        return String::new();
-    };
-    slice_string_chars(source, start, end)
-}
-
 pub(super) fn slice_string_chars(source: &str, start: usize, end: usize) -> String {
     source
         .chars()
@@ -494,57 +372,30 @@ pub(super) fn slice_string_chars(source: &str, start: usize, end: usize) -> Stri
         .collect()
 }
 
-pub(super) fn update_match_data_after_replace(
-    match_data: &[Option<(usize, usize)>],
-    replace_index: usize,
-    start: usize,
-    end: usize,
-    replacement_len: usize,
-) -> Vec<Option<(usize, usize)>> {
-    let new_end = start + replacement_len;
-    let delta = replacement_len as isize - end.saturating_sub(start) as isize;
-    match_data
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| {
-            let Some((group_start, group_end)) = entry else {
-                return None;
-            };
-            if index == replace_index {
-                return Some((start, new_end));
-            }
-            if *group_start == *group_end && *group_start == start && start == end {
-                return Some((start, new_end));
-            }
-            if start == end && *group_start == start && *group_end > end {
-                return Some((start, group_end.saturating_add_signed(delta)));
-            }
-            if start == end && *group_end == start && *group_start < start {
-                return Some((*group_start, group_end.saturating_add_signed(delta)));
-            }
-            if *group_end <= start {
-                return Some((*group_start, *group_end));
-            }
-            if *group_start >= end {
-                return Some((
-                    group_start.saturating_add_signed(delta),
-                    group_end.saturating_add_signed(delta),
-                ));
-            }
-            if *group_start >= start && *group_end <= end {
-                return Some((start, new_end));
-            }
-            let updated_start = if *group_start > start {
-                start
+/// search.c update_search_regs, which replace_range runs for
+/// `replace-match': [OLDSTART, OLDEND) became [OLDSTART, NEWEND).  A
+/// start before or at OLDSTART stays (the replaced group is taken to
+/// enclose it), one inside goes to OLDSTART and one after shifts; an end
+/// at or after OLDEND shifts and one inside goes to OLDSTART.
+pub(super) fn update_search_regs(
+    match_data: &mut [Option<(usize, usize)>],
+    oldstart: usize,
+    oldend: usize,
+    newend: usize,
+) {
+    let shift = |position: usize| position + newend - oldend;
+    for (start, end) in match_data.iter_mut().flatten() {
+        if *start > oldstart {
+            *start = if *start >= oldend {
+                shift(*start)
             } else {
-                *group_start
+                oldstart
             };
-            let updated_end = if *group_end < end {
-                new_end
-            } else {
-                group_end.saturating_add_signed(delta)
-            };
-            Some((updated_start, updated_end))
-        })
-        .collect()
+        }
+        if *end >= oldend {
+            *end = shift(*end);
+        } else if *end > oldstart {
+            *end = oldstart;
+        }
+    }
 }

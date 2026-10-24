@@ -744,33 +744,60 @@ define_dispatch!(
                     substitute_in_file_name_in_env(interp, env, &string_text(&args[0])?).into(),
                 ))
             }
+            // fileio.c's file name syntax works on the string's internal
+            // bytes and keeps its multibyteness (make_specified_string),
+            // without its properties.
             "file-name-directory" => {
                 need_args(name, args, 1)?;
-                Ok(file_name_directory(&string_text(&args[0])?)
-                    .map(|value| Value::String(value.into()))
-                    .unwrap_or(Value::Nil))
+                let (bytes, multibyte) = file_name_bytes(&args[0])?;
+                let mut p = bytes.len();
+                while p != 0 && bytes[p - 1] != b'/' {
+                    p -= 1;
+                }
+                if p == 0 {
+                    return Ok(Value::Nil);
+                }
+                make_specified_string(bytes[..p].to_vec(), multibyte)
+                    .map_err(|error| string_storage_error(interp, env, error))
             }
             "file-name-nondirectory" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(
-                    file_name_nondirectory(&string_text(&args[0])?).into(),
-                ))
+                let (bytes, multibyte) = file_name_bytes(&args[0])?;
+                let mut p = bytes.len();
+                while p != 0 && bytes[p - 1] != b'/' {
+                    p -= 1;
+                }
+                make_specified_string(bytes[p..].to_vec(), multibyte)
+                    .map_err(|error| string_storage_error(interp, env, error))
             }
             "file-name-as-directory" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(
-                    file_name_as_directory(&string_text(&args[0])?).into(),
-                ))
+                let (mut bytes, multibyte) = file_name_bytes(&args[0])?;
+                if bytes.is_empty() {
+                    bytes.extend_from_slice(b"./");
+                } else if bytes.last() != Some(&b'/') {
+                    bytes.push(b'/');
+                }
+                make_specified_string(bytes, multibyte)
+                    .map_err(|error| string_storage_error(interp, env, error))
             }
             "directory-file-name" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(
-                    directory_file_name(&string_text(&args[0])?).into(),
-                ))
+                let (mut bytes, multibyte) = file_name_bytes(&args[0])?;
+                // Remove any final slashes; leave "/" and "//" alone and
+                // treat "///" and longer as "/".
+                if !(bytes.len() == 2 && bytes[0] == b'/') {
+                    while bytes.len() > 1 && bytes.last() == Some(&b'/') {
+                        bytes.pop();
+                    }
+                }
+                make_specified_string(bytes, multibyte)
+                    .map_err(|error| string_storage_error(interp, env, error))
             }
             "directory-name-p" => {
                 need_args(name, args, 1)?;
-                Ok(if directory_name_p(&string_text(&args[0])?) {
+                let (bytes, _) = file_name_bytes(&args[0])?;
+                Ok(if bytes.last() == Some(&b'/') {
                     Value::T
                 } else {
                     Value::Nil
@@ -3434,3 +3461,14 @@ const SO_BINDTODEVICE: libc::c_int = libc::SO_BINDTODEVICE;
 /// macOS sys/socket.h:190.  The libc crate does not expose this for Darwin.
 #[cfg(not(target_os = "linux"))]
 const SO_BINDTODEVICE: libc::c_int = 0x1134;
+
+/// CHECK_STRING, then the string's internal bytes and multibyteness.
+fn file_name_bytes(value: &Value) -> Result<(Vec<u8>, bool), LispError> {
+    match value.kind() {
+        Kind::StringObject(state) => {
+            let state = state.borrow();
+            Ok((state.bytes().to_vec(), state.is_multibyte()))
+        }
+        _ => Err(wrong_type_argument("stringp", *value)),
+    }
+}

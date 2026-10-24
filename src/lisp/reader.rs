@@ -260,6 +260,20 @@ impl<'a> Reader<'a> {
         reader
     }
 
+    /// `read-positioning-symbols' on an encoded source: each symbol
+    /// occurrence gets its character position, offset by BASE.
+    pub(crate) fn from_encoded_positioned(
+        bytes: &'a [u8],
+        multibyte: bool,
+        symbol_shorthands: Vec<(String, String)>,
+        position_base: i64,
+    ) -> Self {
+        let mut reader = Self::from_encoded(bytes, multibyte, symbol_shorthands);
+        reader.locate_symbols = true;
+        reader.position_base = position_base;
+        reader
+    }
+
     pub(crate) fn characters_consumed(&mut self) -> usize {
         (self.character_position() - self.position_base) as usize
     }
@@ -423,8 +437,13 @@ impl<'a> Reader<'a> {
             None => Ok(None),
             Some(b'(') => self.read_list(),
             Some(b'[') => self.read_vector(),
-            Some(b')') => Err(LispError::ReadError("unexpected ')'".into())),
-            Some(b']') => Err(LispError::ReadError("unexpected ']'".into())),
+            // read0 reads the stray closer before invalid_syntax.
+            Some(close @ (b')' | b']')) => {
+                self.advance()?;
+                Err(LispError::ReadError(
+                    if close == b')' { ")" } else { "]" }.into(),
+                ))
+            }
             Some(b'"') => self.read_string(),
             Some(b'\'') => self.read_quote("quote"),
             Some(b'`') => self.read_quote("backquote"),

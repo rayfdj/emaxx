@@ -1259,6 +1259,26 @@ impl Interpreter {
         }
     }
 
+    /// insdel.c adjust_markers_for_replace for the window points of
+    /// BUFFER_ID: inside [FROM, TO) to FROM, at or after TO shifted.
+    pub fn adjust_markers_for_replace(
+        &mut self,
+        buffer_id: u64,
+        from: usize,
+        to: usize,
+        inschars: usize,
+    ) {
+        self.adjust_window_point_slots(buffer_id, |position| {
+            if position >= to {
+                position + inschars - (to - from)
+            } else if position > from {
+                from
+            } else {
+                position
+            }
+        });
+    }
+
     pub fn adjust_markers_for_delete(&mut self, buffer_id: u64, from: usize, to: usize) {
         if from >= to {
             return;

@@ -754,96 +754,81 @@ pub(crate) fn describe_symbolic_key(symbol: &str, no_angles: bool) -> String {
     format!("{}<{}>", &symbol[..prefix_len], &symbol[prefix_len..])
 }
 
-pub(crate) fn describe_key_code(code: i64) -> String {
-    let mut text = String::new();
-    let mut code = code & (KEY_DESCRIPTION_META_BIT | !-KEY_DESCRIPTION_META_BIT);
-    let base = code & !KEY_DESCRIPTION_MODIFIER_MASK;
-    let Some(_) = char::from_u32(base as u32) else {
-        return format!("[{code}]");
-    };
-
-    let tab_as_ci = base == '\t' as i64 && code & KEY_DESCRIPTION_META_BIT != 0;
-
-    if code & KEY_DESCRIPTION_ALT_BIT != 0 {
-        text.push_str("A-");
-        code &= !KEY_DESCRIPTION_ALT_BIT;
+/// keymap.c push_key_description: append the description of character
+/// event CH to P as internal multibyte bytes.
+pub(crate) fn push_key_description(ch: i64, p: &mut Vec<u8>) {
+    // Clear all the meaningless bits above the meta bit.
+    let mut c = ch & (KEY_DESCRIPTION_META_BIT | !-KEY_DESCRIPTION_META_BIT);
+    let c2 = c & !KEY_DESCRIPTION_MODIFIER_MASK;
+    if !(0..=i64::from(super::coding::MAX_CHAR)).contains(&c2) {
+        p.extend_from_slice(format!("[{c}]").as_bytes());
+        return;
     }
-    if code & KEY_DESCRIPTION_CTRL_BIT != 0
-        || (base < ' ' as i64
-            && base != KEY_DESCRIPTION_META_PREFIX
-            && base != '\t' as i64
-            && base != '\r' as i64)
+    let tab_as_ci = c2 == '\t' as i64 && c & KEY_DESCRIPTION_META_BIT != 0;
+    if c & KEY_DESCRIPTION_ALT_BIT != 0 {
+        p.extend_from_slice(b"A-");
+        c -= KEY_DESCRIPTION_ALT_BIT;
+    }
+    if c & KEY_DESCRIPTION_CTRL_BIT != 0
+        || (c2 < ' ' as i64 && c2 != 27 && c2 != '\t' as i64 && c2 != '\r' as i64)
         || tab_as_ci
     {
-        text.push_str("C-");
-        code &= !KEY_DESCRIPTION_CTRL_BIT;
+        p.extend_from_slice(b"C-");
+        c &= !KEY_DESCRIPTION_CTRL_BIT;
     }
-    if code & KEY_DESCRIPTION_HYPER_BIT != 0 {
-        text.push_str("H-");
-        code &= !KEY_DESCRIPTION_HYPER_BIT;
+    if c & KEY_DESCRIPTION_HYPER_BIT != 0 {
+        p.extend_from_slice(b"H-");
+        c -= KEY_DESCRIPTION_HYPER_BIT;
     }
-    if code & KEY_DESCRIPTION_META_BIT != 0 {
-        text.push_str("M-");
-        code &= !KEY_DESCRIPTION_META_BIT;
+    if c & KEY_DESCRIPTION_META_BIT != 0 {
+        p.extend_from_slice(b"M-");
+        c -= KEY_DESCRIPTION_META_BIT;
     }
-    if code & KEY_DESCRIPTION_SHIFT_BIT != 0 {
-        text.push_str("S-");
-        code &= !KEY_DESCRIPTION_SHIFT_BIT;
+    if c & KEY_DESCRIPTION_SHIFT_BIT != 0 {
+        p.extend_from_slice(b"S-");
+        c -= KEY_DESCRIPTION_SHIFT_BIT;
     }
-    if code & KEY_DESCRIPTION_SUPER_BIT != 0 {
-        text.push_str("s-");
-        code &= !KEY_DESCRIPTION_SUPER_BIT;
+    if c & KEY_DESCRIPTION_SUPER_BIT != 0 {
+        p.extend_from_slice(b"s-");
+        c -= KEY_DESCRIPTION_SUPER_BIT;
     }
-
-    match code {
-        0x00..=0x1F => {
-            if code == KEY_DESCRIPTION_META_PREFIX {
-                text.push_str("ESC");
-            } else if tab_as_ci {
-                text.push('i');
-            } else if code == '\t' as i64 {
-                text.push_str("TAB");
-            } else if code == '\r' as i64 {
-                text.push_str("RET");
-            } else if (1..=26).contains(&code) {
-                text.push((code as u8 + b'`') as char);
-            } else {
-                text.push((code as u8 + b'@') as char);
-            }
+    if c < 0o40 {
+        if c == 0o33 {
+            p.extend_from_slice(b"ESC");
+        } else if tab_as_ci {
+            p.push(b'i');
+        } else if c == '\t' as i64 {
+            p.extend_from_slice(b"TAB");
+        } else if c == '\r' as i64 {
+            p.extend_from_slice(b"RET");
+        } else if c > 0 && c <= 26 {
+            // `C-' already added above.
+            p.push(c as u8 + 0o140);
+        } else {
+            p.push(c as u8 + 0o100);
         }
-        0x20 => text.push_str("SPC"),
-        0x7F => text.push_str("DEL"),
-        0x21..=0x7E => text.push(char::from_u32(code as u32).expect("ascii codepoint is valid")),
-        _ => {
-            if let Some(ch) = char::from_u32(code as u32) {
-                text.push(ch);
-            } else {
-                return format!("[{code}]");
-            }
-        }
+    } else if c == 0o177 {
+        p.extend_from_slice(b"DEL");
+    } else if c == ' ' as i64 {
+        p.extend_from_slice(b"SPC");
+    } else if c < 128 {
+        p.push(c as u8);
+    } else {
+        // Now we are sure that C is a valid character code.
+        let (bytes, length) = crate::lisp::types::string_data::encode_character(c as u32)
+            .expect("a character code below MAX_CHAR encodes");
+        p.extend_from_slice(&bytes[..length]);
     }
-
-    text
 }
 
-pub(crate) fn text_char_description_text(code: i64) -> Result<String, LispError> {
-    if !(0..=0x3F_FFFF).contains(&code) || code & KEY_DESCRIPTION_MODIFIER_MASK != 0 {
-        return Err(LispError::Signal("Invalid character".into()));
-    }
-
-    if code > 0x7F {
-        return char::from_u32(code as u32)
-            .map(|ch| ch.to_string())
-            .ok_or_else(|| LispError::Signal("Invalid character".into()));
-    }
-
-    Ok(match code {
-        0x00..=0x1F => format!("^{}", char::from_u32((code + 64) as u32).unwrap_or('@')),
-        0x7F => "^?".into(),
-        _ => char::from_u32(code as u32)
-            .ok_or_else(|| LispError::Signal("Invalid character".into()))?
-            .to_string(),
-    })
+/// The description of character event CODE in Emaxx's text view, for the
+/// keymap listings that build Rust text.
+pub(crate) fn describe_key_code(code: i64) -> String {
+    let mut bytes = Vec::new();
+    push_key_description(code, &mut bytes);
+    crate::lisp::types::string_data::decode_bytes(&bytes, true)
+        .map(|(text, _)| text)
+        .expect("push_key_description writes valid multibyte text")
 }
 
 pub(crate) fn auto_save_path_for_buffer(buffer: &crate::buffer::Buffer) -> String {
