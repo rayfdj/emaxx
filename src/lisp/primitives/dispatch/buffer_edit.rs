@@ -142,10 +142,6 @@ fn buffer_text_property_at_insertion(
     (!inherited.is_nil()).then_some(inherited)
 }
 
-fn search_noerror_moves(noerror: Option<&Value>) -> bool {
-    noerror.is_some_and(|value| value.is_truthy() && !matches!(value.kind(), Kind::T))
-}
-
 fn character_byte_value(character: Option<char>, multibyte: bool) -> Result<Value, LispError> {
     let Some(character) = character else {
         // GNU exposes the terminating NUL at point-max and at the end of an
@@ -3004,141 +3000,8 @@ fn search_named(
     if args.is_empty() || args.len() > 4 {
         return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
     }
-    let needle = string_text(&args[0])?;
-    // GNU folds case whenever `case-fold-search' is non-nil; fold
-    // per character so char counts stay aligned with the buffer.
-    let case_fold = interp
-        .lookup_var("case-fold-search", env)
-        .is_some_and(|value| value.is_truthy());
-    let fold = |text: &str| -> String {
-        text.chars()
-            .map(|ch| ch.to_lowercase().next().unwrap_or(ch))
-            .collect()
-    };
-    let needle_key = if case_fold {
-        fold(&needle)
-    } else {
-        needle.clone()
-    };
-    let noerror = args.get(2).is_some_and(Value::is_truthy);
-    let move_on_failure = search_noerror_moves(args.get(2));
-    let original_point = interp.buffer.borrow().point();
-    // GNU repeats the search COUNT times; a negative COUNT searches
-    // in the opposite direction (viper's `F' calls search-forward
-    // with -1).
-    let count = match args.get(3) {
-        Some(value) if !value.is_nil() => value.as_integer()?,
-        _ => 1,
-    };
-    let forward = (name == "search-forward") == (count >= 0);
-    let limit = match args.get(1).map(|v| v.kind()) {
-        // GNU clamps a BOUND outside the accessible region
-        // (loaddefs-gen searches backward with (- (point-max) 1000)).
-        Some(Kind::Integer(pos)) if pos < interp.buffer.borrow().point_min() as i64 => {
-            interp.buffer.borrow().point_min()
-        }
-        Some(value) if !value.value().is_nil() => position_from_value(interp, &value.value())?,
-        _ if forward => interp.buffer.borrow().point_max(),
-        _ => interp.buffer.borrow().point_min(),
-    };
-    // search.c's simple search scans the buffer text from point
-    // and stops at the first match; folding and copying the
-    // whole rest of the buffer first made a search that matches
-    // at once cost the buffer's length (330 us for 80 KB).  The
-    // text is read in windows of `SEARCH_WINDOW_CHARS' that
-    // overlap by a needle's length less one, so no match is
-    // split between two windows; each window is folded as the
-    // whole text was.
-    const SEARCH_WINDOW_CHARS: usize = 4096;
-    let needle_chars = needle.chars().count();
-    let window_chars = SEARCH_WINDOW_CHARS.max(2 * needle_chars);
-    let overlap = needle_chars.saturating_sub(1);
-    let mut result = None;
-    for _ in 0..count.unsigned_abs().max(1) {
-        let point = interp.buffer.borrow().point();
-        result = if forward {
-            let limit = limit.min(interp.buffer.borrow().point_max());
-            if limit < point {
-                None
-            } else {
-                let mut from = point;
-                loop {
-                    let to = limit.min(from + window_chars);
-                    let window = interp
-                        .buffer
-                        .borrow()
-                        .buffer_substring(from, to)
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
-                    let window = if case_fold { fold(&window) } else { window };
-                    if let Some(found) = window.find(&needle_key) {
-                        let start = from + window[..found].chars().count();
-                        break Some((start, start + needle_chars));
-                    }
-                    if to >= limit {
-                        break None;
-                    }
-                    from = to - overlap.min(to - from);
-                }
-            }
-        } else {
-            let limit = limit.max(interp.buffer.borrow().point_min());
-            if limit > point {
-                None
-            } else {
-                let mut to = point;
-                loop {
-                    let from = limit.max(to.saturating_sub(window_chars));
-                    let window = interp
-                        .buffer
-                        .borrow()
-                        .buffer_substring(from, to)
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
-                    let window = if case_fold { fold(&window) } else { window };
-                    if let Some(found) = window.rfind(&needle_key) {
-                        let start = from + window[..found].chars().count();
-                        break Some((start, start + needle_chars));
-                    }
-                    if from <= limit {
-                        break None;
-                    }
-                    to = from + overlap.min(to - from);
-                }
-            }
-        };
-        match result {
-            Some((start, end)) => {
-                interp
-                    .buffer
-                    .borrow_mut()
-                    .goto_char(if forward { end } else { start });
-            }
-            None => break,
-        }
-    }
-    match result {
-        Some((start, end)) => {
-            interp.last_match_data = Some(vec![Some((start, end))]);
-            interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
-            let point = if forward { end } else { start };
-            interp.buffer.borrow_mut().goto_char(point);
-            Ok(Value::Integer(point as i64))
-        }
-        None if noerror => {
-            interp.buffer.borrow_mut().goto_char(if move_on_failure {
-                limit
-            } else {
-                original_point
-            });
-            Ok(Value::Nil)
-        }
-        None => {
-            interp.buffer.borrow_mut().goto_char(original_point);
-            Err(LispError::SignalValue(Value::list([
-                Value::Symbol("search-failed".into()),
-                Value::String(needle.into()),
-            ])))
-        }
-    }
+    let direction = if name == "search-forward" { 1 } else { -1 };
+    crate::lisp::primitives::search::search_command(interp, env, args, direction, false, false)
 }
 
 /// The `search-forward' primitive, callable directly (a subr's function pointer).

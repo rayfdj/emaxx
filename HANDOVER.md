@@ -4339,6 +4339,68 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   signals for too. The anti-cheat tests pass single-threaded, as CI runs
   them; run with several threads they can panic in the shared vector
   allocator while interpreters are built in parallel.
+- **Round 55: search.c's plain-string search and decode_coding_gap's
+  ASCII optimization, ported.** `describe-function` was 2.4 times GNU's
+  (five calls 0.51 s against 0.216): `help-fns--first-release` reads
+  every etc/NEWS* file, and Emaxx took 0.31 s for what GNU reads in
+  0.07. Three causes. `search-forward` was no port of search.c: it
+  copied the buffer in 4,096-character windows and lowercased each with
+  Rust's `to_lowercase` (300 million instructions for
+  `sgml-html-meta-auto-coding-function`'s case-folded `<html` search
+  over the auto-coding work buffers), ignored
+  `inhibit-changing-match-data`, folded with Unicode's mapping instead of
+  the buffer's case tables, signalled with a copy of the string and
+  accepted a bound on the wrong side. `primitives/search/non_re.rs` now
+  ports `search_buffer_non_re` (the pattern converted to the buffer's
+  multibyteness, translated through `case-canon-table`, and
+  `boyer_moore_ok` decided from `case-eqv-table` as GNU does, so `ſ` or
+  the KELVIN SIGN sends a pattern to `simple_search`), `simple_search`
+  and `boyer_moore` (the stride table, `simple_translate` and the
+  last-byte translation test from `char_base`'s leading bytes, the
+  20,000-byte clumps with a quit check each, the short-clump loop, and
+  match data set at each occurrence, so a count that runs out leaves the
+  last one found, while `simple_search` leaves the match data alone), and
+  `search_command`/`search_buffer` are shared with the regexp commands:
+  a trivial regexp with no `search-spaces-regexp` is searched as its
+  string, as GNU does. The comparisons are on the rope's stored form,
+  which is GNU's internal form for every character to U+10FFFF; a
+  pattern character with no stored form of its own, or a raw byte where
+  the text has a side table, makes the search compare characters. A
+  unibyte buffer's bytes are read a chunk at a time. Second, the NEWS
+  file that is pure ASCII declares `us-ascii`, a charset coding: each
+  byte asked the charset's dimension and code space by name through its
+  plist (44 ms a read against GNU's 0.3). `decode_coding_gap`'s ASCII
+  optimization is ported for `insert-file-contents` (an ASCII-compatible
+  coding with no post-read conversion and no decoding translation
+  table, `disable-ascii-optimization` nil, and only ASCII bytes: the
+  bytes are the text). It also removes a divergence: a pure-ASCII file
+  read as `iso-latin-1`, `koi8-r` or `windows-1252` got a `charset` text
+  property GNU never gives it. Third, the raw-text copy of a file for
+  the auto-coding functions went byte by byte, and inserting into a
+  buffer with markers walked every character to compute GNU's byte
+  length; both now copy ASCII runs or scan for the one lead byte
+  (0xEE) whose characters differ, with the same results. Wall, GNU /
+  Emaxx before / after: five `describe-function` calls 0.216 / 0.51 /
+  0.25 to 0.29 s; reading every etc/NEWS* five times 0.065 to 0.078 /
+  0.31 to 0.36 / 0.083 to 0.099 s. A differential probe of
+  `search-forward` and `search-backward` (four texts, multibyte and
+  unibyte, 28 patterns including raw bytes, case folding on and off,
+  counts nil, 2, -1 and 3: 3,603 lines) gives GNU's output, as do the
+  bound, noerror, empty-string, zero-count, inhibited-match-data,
+  narrowing and trivial-regexp cases and the file-reading probe of
+  codings, `charset` properties and `last-coding-system-used`. New test:
+  `plain_string_searches_are_search_c_simple_and_boyer_moore`;
+  `case_folded_patterns_ignore_writes_to_tables_that_are_not_case_tables`
+  now searches `fo+`, since `foo`, a trivial regexp, is no longer
+  compiled. Fifteen GNU test files (search, coding, fileio, help-fns,
+  replace, isearch, mule, mule-util, casefiddle, subr, files, subr-x,
+  fill, elisp-mode, thingatpt) give GNU's results (this container's GNU
+  fails two help-fns tests for want of subr.el, which Emaxx passes);
+  locally (gate profile, `--test-threads=1`, four shards) 420 search,
+  coding, file, keymap, marker and anti-cheat tests pass but the two
+  known container failures. Still to do: the charset functions read their attributes by name from plists
+  (`decode_charset_code` scans a map charset's whole table for each
+  code), which wants charset.c's `struct charset` table.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4946,7 +5008,9 @@ all from the loader's oversized `forward-comment` count (bullet "Round
 **On `1b61c83`** (round 52): full Rust gate passed (run 40056463837),
 frozen passed on its first attempt (run 40056465430). **On `d1a3230`**
 (round 53): full Rust gate passed (run 40058055258), frozen passed on its
-first attempt (run 40058057152). Locally,
+first attempt (run 40058057152). **On `d3b2ee3`** (round 54): full Rust
+gate passed (run 40063298332), frozen passed on its first attempt (run
+40063300298). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -5250,9 +5314,9 @@ and failures are still recorded.
    `forward-word` is 1.2 times. Round 51's frozen run (gate profile)
    puts the slowest files where GNU takes 100 ms or more at keymap-tests
    11.6 times (1.5 since round 53 ported `describe_vector`), data-tests
-   3.6, marker-tests 3.2, help-fns-tests 3.1 (`describe-function` reads
-   all of etc/DOC for each docstring, and the Latin-1 NEWS decoder asks
-   a charset's dimension by name for every byte) and simple-tests 2.75,
+   3.6, marker-tests 3.2, help-fns-tests 3.1 (round 55 took
+   `describe-function` from 2.4 to about 1.2 times GNU's; `documentation`
+   is still four times GNU's, 0.9 ms a call) and simple-tests 2.75,
    summed test time at 1.21 times and setup at 2.30; then process start
    (0.19 s against 0.08 s; `shell-command` tests that start Emacs fifty
    times are 2.5 times slower for it), and text properties kept in one

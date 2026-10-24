@@ -13,6 +13,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+mod non_re;
+
 /// REGEXP_CACHE_SIZE.
 const REGEXP_CACHE_SIZE: usize = 20;
 
@@ -32,6 +34,10 @@ struct CacheEntry {
     pattern: Pattern,
 }
 
+/// A canonicalization table read at a char-table store epoch: the
+/// table's identity, the epoch and its entries.
+type CanonSlot = Option<(usize, u64, Rc<Canon>)>;
+
 thread_local! {
     /// The cache, most recently used first.  A pattern in use is taken out
     /// (GNU's `busy'), so a search Lisp code runs inside the matcher
@@ -39,7 +45,10 @@ thread_local! {
     /// list.
     #[allow(clippy::vec_box)]
     static SEARCHBUFS: RefCell<Vec<Box<CacheEntry>>> = const { RefCell::new(Vec::new()) };
-    static CANON_CACHE: RefCell<Option<(usize, u64, Rc<Canon>)>> = const { RefCell::new(None) };
+    /// The canonicalization tables last read, with the char-table store
+    /// epoch they were read at: a search folding case reads the
+    /// case_canon_table and its case_eqv_table.
+    static CANON_CACHE: RefCell<[CanonSlot; 2]> = const { RefCell::new([None, None]) };
 }
 
 #[cfg(test)]
@@ -215,14 +224,20 @@ fn canon_for(table: CharTableRef) -> Rc<Canon> {
     let epoch = crate::lisp::alloc::vectors::char_tables::char_table_store_epoch();
     CANON_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if let Some((id, at, canon)) = cache.as_ref()
-            && *id == table.identity()
-            && *at == epoch
-        {
-            return canon.clone();
+        for (index, slot) in cache.iter().enumerate() {
+            if let Some((id, at, canon)) = slot
+                && *id == table.identity()
+                && *at == epoch
+            {
+                let canon = canon.clone();
+                // Most recently used first.
+                cache.swap(0, index);
+                return canon;
+            }
         }
         let canon = Rc::new(Canon::new(table));
-        *cache = Some((table.identity(), epoch, canon.clone()));
+        cache.swap(0, 1);
+        cache[0] = Some((table.identity(), epoch, canon.clone()));
         canon
     })
 }
@@ -927,16 +942,18 @@ pub(super) fn string_match_1(
     Ok(Value::Integer(to_char(start) as i64))
 }
 
-/// search_command for a regexp (`re-search-forward' and the others):
-/// DIRECTION is 1 or -1.
-pub(super) fn re_search_command(
+/// search_command: `search-forward', `re-search-forward' and the others.
+/// DIRECTION is 1 or -1; RE says STRING is a regexp, POSIX that it is
+/// matched with POSIX backtracking.
+pub(super) fn search_command(
     interp: &mut Interpreter,
     env: &mut Env,
     args: &[Value],
     direction: i64,
+    re: bool,
     posix: bool,
 ) -> Result<Value, LispError> {
-    let regexp = args[0];
+    let string = args[0];
     let bound = args.get(1).copied().unwrap_or(Value::Nil);
     let noerror = args.get(2).copied().unwrap_or(Value::Nil);
     let count = args.get(3).copied().unwrap_or(Value::Nil);
@@ -947,8 +964,8 @@ pub(super) fn re_search_command(
         };
         n *= count;
     }
-    if !matches!(regexp.kind(), Kind::StringObject(_)) {
-        return Err(LispError::WrongTypeArgument("stringp".into(), regexp));
+    if !matches!(string.kind(), Kind::StringObject(_)) {
+        return Err(LispError::WrongTypeArgument("stringp".into(), string));
     }
     let (pt, begv, zv) = {
         let buffer = interp.buffer.borrow();
@@ -979,12 +996,12 @@ pub(super) fn re_search_command(
         lim.clamp(begv as i64, zv as i64) as usize
     };
 
-    let np = search_buffer_re(interp, env, &regexp, pt, lim, n, posix)?;
+    let np = search_buffer(interp, env, &string, pt, lim, n, re, posix)?;
     if np <= 0 {
         if noerror.is_nil() {
             return Err(LispError::SignalValue(Value::list([
                 Value::symbol("search-failed"),
-                regexp,
+                string,
             ])));
         }
         if noerror != Value::T {
@@ -996,8 +1013,61 @@ pub(super) fn re_search_command(
     Ok(Value::Integer(np))
 }
 
-/// search_buffer for a regexp: the position after the Nth match (before
-/// it, searching backward), or -X when X matches remain unfound.
+/// search_buffer: search for the Nth occurrence of STRING in the current
+/// buffer from position POS until LIM, forward when N is positive (LIM
+/// past POS), else backward.  RE says to look for matches against the
+/// regular expression STRING, POSIX to backtrack as POSIX does.  The
+/// position at the end (searching forward) or the beginning (backward) of
+/// the Nth occurrence, or -X if there are X remaining occurrences.
+#[allow(clippy::too_many_arguments)]
+fn search_buffer(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    string: &Value,
+    pos: usize,
+    lim: usize,
+    n: i64,
+    re: bool,
+    posix: bool,
+) -> Result<i64, LispError> {
+    let (bytes, _, chars) = string_bytes(string)
+        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *string))?;
+    // Searching 0 times means don't move.  Null string is found at
+    // starting position.
+    if n == 0 || chars == 0 {
+        if modify_match_data_allowed(interp) {
+            interp.last_match_data = Some(vec![Some((pos, pos))]);
+            interp.last_match_data_buffer_id = Some(interp.current_buffer_id());
+        }
+        return Ok(pos as i64);
+    }
+    if re
+        && !(non_re::trivial_regexp_p(bytes)
+            && interp
+                .symbol_value_key(cached_symbol!("search-spaces-regexp"))
+                .is_none_or(|value| value.is_nil()))
+    {
+        return search_buffer_re(interp, env, string, pos, lim, n, posix);
+    }
+    let tables = interp
+        .case_fold_search_active(env)
+        .then(|| interp.current_case_tables());
+    let trt = tables.map(|tables| canon_for(tables.canon));
+    let inverse_trt = tables.map(|tables| canon_for(tables.eqv));
+    non_re::search_buffer_non_re(
+        interp,
+        env,
+        string,
+        pos,
+        lim,
+        n,
+        re,
+        trt.as_deref(),
+        inverse_trt.as_deref(),
+    )
+}
+
+/// search_buffer_re: search_buffer for a regexp that is not trivial.
 fn search_buffer_re(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -1009,17 +1079,6 @@ fn search_buffer_re(
 ) -> Result<i64, LispError> {
     let preserve_match_data = modify_match_data_allowed(interp);
     let buffer_id = interp.current_buffer_id();
-    let regexp_chars = string_bytes(regexp).map_or(0, |(_, _, chars)| chars);
-    // Searching 0 times means don't move; the null string is found at the
-    // starting position.
-    if n == 0 || regexp_chars == 0 {
-        if preserve_match_data {
-            interp.last_match_data = Some(vec![Some((pos, pos))]);
-            interp.last_match_data_buffer_id = Some(buffer_id);
-        }
-        return Ok(pos as i64);
-    }
-
     let case_table = interp
         .case_fold_search_active(env)
         .then(|| interp.current_case_tables().canon);

@@ -17287,6 +17287,64 @@ fn keymaps_resolve_through_symbols_and_autoloads_as_get_keymap_does() {
 }
 
 #[test]
+fn plain_string_searches_are_search_c_simple_and_boyer_moore() {
+    // search.c:search_buffer_non_re: with case folding, a pattern whose
+    // characters' case-equivalents all share a group is searched by
+    // boyer_moore (CAFÉ, foo), any other by simple_search (straße has
+    // `ſ', kelvin the KELVIN SIGN); a count that runs out leaves
+    // boyer_moore's last occurrence as the match data and simple_search's
+    // none; a trivial regexp is searched as its string; a unibyte buffer
+    // compares bytes.  The oracle's answer.
+    let program = r#"
+(let (out)
+  (with-temp-buffer
+    (insert "Straße STRASSE ſtraße Kelvin Kelvin café CAFÉ foo foo")
+    (dolist (cf '(nil t))
+      (let ((case-fold-search cf))
+        (dolist (p '("straße" "kelvin" "CAFÉ" "foo"))
+          (goto-char (point-min))
+          (let (hits)
+            (while (search-forward p nil t) (push (point) hits))
+            (push (nreverse hits) out))
+          (goto-char (point-max))
+          (let (hits)
+            (while (search-backward p nil t) (push (point) hits))
+            (push (nreverse hits) out)))))
+    ;; A count that runs out: boyer_moore keeps the occurrences it found
+    ;; as the match data, simple_search none.
+    (goto-char (point-min))
+    (push (list (search-forward "foo" nil t 3) (list (match-beginning 0) (match-end 0))) out)
+    (goto-char (point-min))
+    (let ((case-fold-search t))
+      (push (list (search-forward "kelvin" nil t 3) (list (match-beginning 0) (match-end 0)) (point)) out))
+    (goto-char (point-min))
+    (push (list (re-search-forward "f\\oo" nil t 2) (list (match-beginning 0) (match-end 0))) out)
+    (push (condition-case err (search-forward "foo" 5) (error err)) out))
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert "ab\351cd AB\351CD")
+    (let ((case-fold-search t))
+      (goto-char (point-min))
+      (push (list (search-forward "b\351c" nil t) (search-forward "B\351C" nil t)) out)))
+  (prin1-to-string (nreverse out)))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("search contract should parse")
+        .expect("search contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("search contract should evaluate");
+    assert_eq!(
+        value,
+        Value::string(
+            "(nil nil nil nil (46) (42) (50 54) (51 47) (7) (1) (29) (23) (41 46) (42 37) (50 54) (51 47) (nil (51 54)) (nil (23 29) 1) (54 (51 54)) (error \"Invalid search bound (wrong side of point)\") (5 11))"
+        )
+    );
+}
+
+#[test]
 fn help_describe_vector_describes_each_run_of_a_char_table_once() {
     // keymap.c:describe_vector: char_table_ref_and_range gives each run of
     // characters bound to one object, which is looked up in SHADOW and the

@@ -134,6 +134,23 @@ pub(crate) fn lisp_string_storage_byte_len(
     if !multibyte {
         return text.chars().count();
     }
+    if extended_chars.is_empty() {
+        // A character takes as many bytes as its UTF-8 but for those of
+        // U+E000..U+E0FF, read as raw-byte codes below: two bytes for
+        // U+E080..U+E0FF, five for U+E000..U+E07F.  Their UTF-8 is three
+        // bytes led by 0xEE, which leads no other character's bytes but
+        // U+E100..U+EFFF's.
+        let bytes = text.as_bytes();
+        let mut len = bytes.len();
+        for at in memchr::memchr_iter(0xEE, bytes) {
+            match bytes.get(at + 1) {
+                Some(0x80 | 0x81) => len += 2,
+                Some(0x82 | 0x83) => len -= 1,
+                _ => {}
+            }
+        }
+        return len;
+    }
     text.chars()
         .enumerate()
         .map(|(index, ch)| {

@@ -1566,7 +1566,7 @@ pub(crate) fn decode_file_contents(
         {
             let (detected, normalized) =
                 auto_detect_coding_for(interp, bytes, None, &requested, env);
-            let decoded = decode_text_bytes_annotated(interp, &normalized, &detected)?;
+            let decoded = decode_coding_gap(interp, env, &normalized, &detected)?;
             *charset_props = charset_runs_to_props(decoded.charsets);
             return Ok((decoded.text, detected));
         }
@@ -1640,12 +1640,12 @@ pub(crate) fn decode_file_contents(
             let (_, bomless) = strip_utf8_bom(&normalized);
             return Ok((decode_utf8_bytes(bomless), detected));
         }
-        let decoded = decode_text_bytes_annotated(interp, &normalized, &requested)?;
+        let decoded = decode_coding_gap(interp, env, &normalized, &requested)?;
         *charset_props = charset_runs_to_props(decoded.charsets);
         return Ok((decoded.text, detected));
     }
     let (detected, normalized) = auto_detect_coding_for(interp, bytes, None, "undecided", env);
-    let decoded = decode_text_bytes_annotated(interp, &normalized, &detected)?;
+    let decoded = decode_coding_gap(interp, env, &normalized, &detected)?;
     *charset_props = charset_runs_to_props(decoded.charsets);
     Ok((decoded.text, detected))
 }

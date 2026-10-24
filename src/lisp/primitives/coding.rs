@@ -1725,16 +1725,24 @@ pub(crate) fn decode_big5_bytes(interp: &Interpreter, bytes: &[u8], coding: &str
 }
 
 pub(crate) fn decode_raw_text_bytes(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte| {
-            if *byte <= 0x7F {
-                char::from(*byte)
-            } else {
-                raw_byte_regex_char(*byte)
-            }
-        })
-        .collect()
+    // The ASCII runs are copied as they are; each other byte becomes its
+    // raw-byte character.
+    let mut text = String::with_capacity(bytes.len());
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let ascii = rest
+            .iter()
+            .position(|byte| !byte.is_ascii())
+            .unwrap_or(rest.len());
+        // SAFETY: ASCII is UTF-8.
+        text.push_str(unsafe { std::str::from_utf8_unchecked(&rest[..ascii]) });
+        rest = &rest[ascii..];
+        if let Some((&byte, after)) = rest.split_first() {
+            text.push(raw_byte_regex_char(byte));
+            rest = after;
+        }
+    }
+    text
 }
 
 pub(crate) fn decode_latin_bytes(bytes: &[u8]) -> String {
@@ -2311,6 +2319,72 @@ pub(crate) fn charset_valids(interp: &Interpreter, coding: &str) -> Vec<Option<V
         }
     }
     valids
+}
+
+/// coding.c:get_translation_table for decoding, as far as whether there
+/// is one: none while `enable-character-translation' is nil; else the
+/// coding's `:decode-translation-table' (a symbol naming its
+/// `translation-table' property, a list of tables, or the table) with
+/// `standard-translation-table-for-decode' after it.
+fn decode_translation_table_p(interp: &Interpreter, coding: &str, env: &Env) -> bool {
+    if interp
+        .lookup_var("enable-character-translation", env)
+        .is_none_or(|value| value.is_nil())
+    {
+        return false;
+    }
+    let standard = interp
+        .lookup_var("standard-translation-table-for-decode", env)
+        .unwrap_or(Value::Nil);
+    let table =
+        coding_system_property(interp, coding, ":decode-translation-table").unwrap_or(Value::Nil);
+    if table.is_nil() {
+        return !standard.is_nil();
+    }
+    if !standard.is_nil() {
+        return true;
+    }
+    match table.kind() {
+        Kind::Symbol(name) => interp
+            .get_symbol_property(&name, "translation-table")
+            .is_some_and(|table| !table.is_nil()),
+        Kind::T => interp
+            .get_symbol_property("t", "translation-table")
+            .is_some_and(|table| !table.is_nil()),
+        // A list stays a list after its symbols are resolved.
+        _ => true,
+    }
+}
+
+/// decode_coding_gap: the BYTES a file read left in the gap as the text
+/// CODING decodes them to, with the charsets its decoder annotates.  When
+/// CODING is ASCII compatible with no post-read conversion and no
+/// translation table, and every byte is ASCII, the bytes are the text as
+/// they are (`disable-ascii-optimization' turns this off).  EOL
+/// conversion is the caller's, before.
+pub(crate) fn decode_coding_gap(
+    interp: &Interpreter,
+    env: &Env,
+    bytes: &[u8],
+    coding: &str,
+) -> Result<DecodedText, LispError> {
+    if bytes.is_ascii()
+        && interp
+            .lookup_var("disable-ascii-optimization", env)
+            .is_none_or(|value| value.is_nil())
+        && coding_system_is_ascii_compatible(interp, coding)
+        && coding_system_property(interp, coding, ":post-read-conversion")
+            .is_none_or(|value| value.is_nil())
+        && !decode_translation_table_p(interp, coding, env)
+    {
+        // SAFETY: ASCII is UTF-8.
+        let text = unsafe { String::from_utf8_unchecked(bytes.to_vec()) };
+        return Ok(DecodedText {
+            text,
+            charsets: Vec::new(),
+        });
+    }
+    decode_text_bytes_annotated(interp, bytes, coding)
 }
 
 pub(crate) fn decode_text_bytes_annotated(
