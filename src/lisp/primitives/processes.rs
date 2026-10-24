@@ -99,6 +99,19 @@ fn vfork_error(error: &std::io::Error) -> LispError {
     ))
 }
 
+/// The child's arguments on COMMAND as the C strings it reads: each one's
+/// bytes up to its first NUL.
+fn add_command_arguments(command: &mut Command, argv: &[Vec<u8>]) {
+    let arguments = argv.iter().map(|arg| c_string_bytes(arg));
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        command.args(arguments.map(std::ffi::OsStr::from_bytes));
+    }
+    #[cfg(not(unix))]
+    command.args(arguments.map(|arg| String::from_utf8_lossy(arg).into_owned()));
+}
+
 /// Everything the child-side exec needs, prepared before the fork so the
 /// child touches no allocator.
 #[cfg(unix)]
@@ -131,7 +144,13 @@ unsafe impl Sync for ExecImage {}
 /// deliver the child-side diagnostic through the process PTY, so the macOS
 /// path mirrors that observable contract.
 #[cfg(unix)]
-fn exec_like_gnu(command: &mut Command, program: &str, argv: &[String], pty: bool) {
+fn exec_like_gnu(
+    command: &mut Command,
+    program: &str,
+    argv: &[Vec<u8>],
+    environment: Vec<Vec<u8>>,
+    pty: bool,
+) {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::process::CommandExt;
@@ -142,19 +161,14 @@ fn exec_like_gnu(command: &mut Command, program: &str, argv: &[String], pty: boo
     };
     strings.push(path);
     for arg in argv {
-        let Ok(arg) = CString::new(arg.as_str()) else {
+        let Ok(arg) = CString::new(c_string_bytes(arg)) else {
             return;
         };
         strings.push(arg);
     }
     let argv_end = strings.len();
-    for (name, value) in command.get_envs() {
-        let Some(value) = value else {
-            continue;
-        };
-        let mut entry = name.as_bytes().to_vec();
-        entry.push(b'=');
-        entry.extend_from_slice(value.as_bytes());
+    for entry in environment {
+        // make_environment_block cut every entry at its first NUL.
         let Ok(entry) = CString::new(entry) else {
             return;
         };
@@ -313,10 +327,142 @@ pub(crate) fn call_process_status(status: &std::process::ExitStatus) -> Value {
     Value::Integer(1)
 }
 
+/// coding.c preferred_coding_system: the coding system standing for the
+/// category first in detection priority.
+fn preferred_coding_system(interp: &Interpreter) -> Value {
+    interp
+        .coding_category_priorities
+        .first()
+        .and_then(|&category| interp.coding_category_representatives.get(category))
+        .and_then(Option::as_deref)
+        .map_or(Value::Nil, Value::symbol)
+}
+
+/// coding.c complement_process_encoding_system: CODING with the text
+/// conversion and the eol type it leaves open taken from the cdr of
+/// `default-process-coding-system', then from the preferred coding
+/// system.
+pub(crate) fn complement_process_encoding_system(
+    interp: &Interpreter,
+    env: &Env,
+    coding: Value,
+) -> Result<Value, LispError> {
+    let default = interp
+        .lookup_var("default-process-coding-system", env)
+        .and_then(|value| value.cons_values())
+        .map_or(Value::Nil, |(_, encoding)| encoding);
+    let candidates = [coding, default, preferred_coding_system(interp)];
+    let mut coding_base = Value::Nil;
+    let mut eol_base = Value::Nil;
+    let mut complete_at = candidates.len();
+    for (index, candidate) in candidates.iter().enumerate() {
+        let Some(name) = candidate.symbol_str().filter(|_| !candidate.is_nil()) else {
+            continue;
+        };
+        let Some(canonical) = interp.coding_system_canonical_name(name) else {
+            continue;
+        };
+        if coding_base.is_nil()
+            && interp.coding_system_kind_name(&canonical).as_deref() != Some("undecided")
+        {
+            coding_base = interp
+                .coding_system_base_name(name)
+                .map_or(Value::Nil, |base| Value::symbol(&base));
+        }
+        if eol_base.is_nil() && interp.coding_system_eol_type_value(name).is_some() {
+            eol_base = *candidate;
+        }
+        if !coding_base.is_nil() && !eol_base.is_nil() {
+            complete_at = index;
+            break;
+        }
+    }
+    if complete_at == 0 {
+        return Ok(coding);
+    }
+    super::file_io::inherit_write_coding_eol(interp, coding_base, eol_base)
+}
+
+/// callproc.c call_process's arguments for the child: ARGUMENTS (each a
+/// string) encoded by the coding `coding-system-for-write' names, else,
+/// when one of them is multibyte, the cdr of what find-operation-coding-
+/// system answers for `call-process' with OPERATION_ARGS, else raw-text;
+/// complemented by complement_process_encoding_system and made raw-text
+/// when not ASCII compatible.  CODING_REQUIRE_ENCODING holds for every
+/// multibyte argument, and the encode_coding_string macro passes a
+/// unibyte one through as its bytes.
+pub(crate) fn call_process_arguments(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    operation_args: &[Value],
+    arguments: &[Value],
+) -> Result<Vec<Vec<u8>>, LispError> {
+    if arguments.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut must_encode = false;
+    for argument in arguments {
+        let Kind::StringObject(state) = argument.kind() else {
+            return Err(LispError::WrongTypeArgument("stringp".into(), *argument));
+        };
+        must_encode |= state.borrow().is_multibyte();
+    }
+    let coding_for_write = interp
+        .lookup_var("coding-system-for-write", env)
+        .unwrap_or(Value::Nil);
+    // Unibyte arguments alone pass through as they are, whatever raw-text
+    // completes to.
+    if coding_for_write.is_nil() && !must_encode {
+        return arguments
+            .iter()
+            .map(|argument| match argument.kind() {
+                Kind::StringObject(state) => Ok(state.borrow().bytes().to_vec()),
+                _ => Err(LispError::WrongTypeArgument("stringp".into(), *argument)),
+            })
+            .collect();
+    }
+    let coding = if !coding_for_write.is_nil() {
+        coding_for_write
+    } else if !must_encode {
+        Value::symbol("raw-text")
+    } else {
+        let mut lookup = Vec::with_capacity(operation_args.len() + 1);
+        lookup.push(Value::symbol("call-process"));
+        lookup.extend_from_slice(operation_args);
+        find_operation_coding_system_value(interp, &lookup, env)?
+            .cons_values()
+            .map_or(Value::Nil, |(_, encoding)| encoding)
+    };
+    let coding = complement_process_encoding_system(interp, env, coding)?;
+    let mut coding = checked_coding_symbol(interp, &coding)?;
+    let canonical = interp
+        .coding_system_canonical_name(&coding)
+        .unwrap_or_else(|| coding.clone());
+    if !coding_system_is_ascii_compatible(interp, &canonical) {
+        coding = raw_text_coding_system(interp, &coding);
+    }
+    arguments
+        .iter()
+        .map(|argument| {
+            let multibyte = matches!(argument.kind(), Kind::StringObject(state)
+                if state.borrow().is_multibyte());
+            let argument = if multibyte {
+                encode_coding_value_recording(interp, argument, Some(&coding), true, false, env)?
+            } else {
+                *argument
+            };
+            match argument.kind() {
+                Kind::StringObject(state) => Ok(state.borrow().bytes().to_vec()),
+                _ => Err(LispError::WrongTypeArgument("stringp".into(), argument)),
+            }
+        })
+        .collect()
+}
+
 pub(crate) fn run_external_process(
     interp: &mut Interpreter,
     program: &str,
-    argv: &[String],
+    argv: &[Vec<u8>],
     input: Option<&[u8]>,
     stderr: ExternalStderr,
     env: &mut Env,
@@ -326,12 +472,12 @@ pub(crate) fn run_external_process(
 
     let program = locate_program_for_exec(interp, env, program, false)?;
     let mut command = Command::new(&program);
-    command.args(argv);
-    configure_external_command(interp, env, &mut command)?;
+    add_command_arguments(&mut command, argv);
+    let environment = configure_external_command(interp, env, &mut command)?;
     #[cfg(unix)]
     configure_emacs_spawn(&mut command, false);
     #[cfg(unix)]
-    exec_like_gnu(&mut command, &program, argv, false);
+    exec_like_gnu(&mut command, &program, argv, environment, false);
     command.stdin(if input.is_some() {
         Stdio::piped()
     } else {
@@ -429,7 +575,8 @@ pub(crate) fn configure_external_command(
     interp: &mut Interpreter,
     env: &mut Env,
     command: &mut Command,
-) -> Result<(), LispError> {
+) -> Result<Vec<Vec<u8>>, LispError> {
+    let mut current_dir = None;
     if let Some(default_directory) = interp
         .lookup_var("default-directory", env)
         .and_then(|value| string_like(&value).map(|string| string.text))
@@ -471,16 +618,37 @@ pub(crate) fn configure_external_command(
                 &default_directory,
             )));
         }
-        command.current_dir(directory);
+        command.current_dir(&directory);
+        current_dir = Some(directory.into_bytes());
     }
-    apply_process_environment(interp, env, command);
-    Ok(())
+    let current_dir = current_dir.unwrap_or_else(|| {
+        let directory = std::env::current_dir().unwrap_or_default();
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            directory.into_os_string().into_vec()
+        }
+        #[cfg(not(unix))]
+        directory.to_string_lossy().into_owned().into_bytes()
+    });
+    let block = make_environment_block(interp, env, &current_dir);
+    #[cfg(not(unix))]
+    {
+        command.env_clear();
+        for entry in &block {
+            let entry = String::from_utf8_lossy(entry);
+            if let Some((name, value)) = entry.split_once('=') {
+                command.env(name, value);
+            }
+        }
+    }
+    Ok(block)
 }
 
 pub(crate) fn spawn_persistent_process(
     interp: &mut Interpreter,
     program: &str,
-    argv: &[String],
+    argv: &[Vec<u8>],
     env: &mut Env,
     connection_type: Option<&Value>,
     separate_stderr: bool,
@@ -489,8 +657,8 @@ pub(crate) fn spawn_persistent_process(
     crate::test_support::mark_process_test();
 
     let mut command = Command::new(program);
-    command.args(argv);
-    configure_external_command(interp, env, &mut command)?;
+    add_command_arguments(&mut command, argv);
+    let environment = configure_external_command(interp, env, &mut command)?;
 
     let default_pty = interp
         .lookup_var("process-connection-type", env)
@@ -577,7 +745,13 @@ pub(crate) fn spawn_persistent_process(
     #[cfg(unix)]
     configure_emacs_spawn(&mut command, input_pty);
     #[cfg(unix)]
-    exec_like_gnu(&mut command, program, argv, pty_slave_name.is_some());
+    exec_like_gnu(
+        &mut command,
+        program,
+        argv,
+        environment,
+        pty_slave_name.is_some(),
+    );
 
     let child = command.spawn().map_err(|error| vfork_error(&error))?;
     // Put the child under RunningProcess's terminate-and-reap Drop guard
@@ -1074,69 +1248,159 @@ pub(crate) fn internal_default_process_sentinel(
     result
 }
 
-pub(crate) fn apply_process_environment(interp: &Interpreter, env: &Env, command: &mut Command) {
-    let Some(process_environment) = interp.lookup_var("process-environment", env) else {
-        return;
-    };
-    let Ok(entries) = process_environment_entries(&process_environment) else {
-        return;
-    };
-    command.env_clear();
-    // Lisp environment lists are first-match-wins (`getenv-internal').
-    // Apply them back-to-front so duplicate names have the same precedence
-    // when materialized in the host command environment.
-    for entry in entries.into_iter().rev() {
-        if let Some((name, value)) = entry.split_once('=') {
-            command.env(name, value);
+/// SSDATA of a string as C code reads it: the internal bytes up to the
+/// first NUL.
+fn c_string_bytes(bytes: &[u8]) -> &[u8] {
+    memchr::memchr(0, bytes).map_or(bytes, |end| &bytes[..end])
+}
+
+/// callproc.c add_env: STRING joins BLOCK unless an earlier entry already
+/// names the variable STRING defines.  A lone name is kept for now, as the
+/// placeholder that keeps later definitions of its variable out.
+fn add_env(block: &mut Vec<Vec<u8>>, string: Vec<u8>) {
+    let defined = block.iter().any(|existing| {
+        for (index, &q) in string.iter().enumerate() {
+            match existing.get(index) {
+                Some(&p) if p != q => return false,
+                Some(_) => {}
+                // An earlier lone name: the same variable when STRING's
+                // name ends here too.
+                None => return q == b'=',
+            }
+            if q == b'=' {
+                return true;
+            }
         }
+        false
+    });
+    if !defined {
+        block.push(string);
     }
 }
 
-pub(crate) fn process_environment_entries(value: &Value) -> Result<Vec<String>, LispError> {
-    let environment = match value.cons_values().map(|(a0, a1)| (a0.kind(), a1)) {
-        Some((Kind::Symbol(symbol), entries)) if symbol == "environment" => entries,
-        _ => *value,
-    };
-    environment
-        .to_vec()?
-        .into_iter()
-        .map(|item| string_text(&item))
-        .collect()
+/// callproc.c make_environment_block: the child's environment in GNU's
+/// order.  PWD, when the Lisp environment has one, comes first and names
+/// CURRENT_DIR without its trailing slashes; DISPLAY comes from the
+/// selected frame or `initial-environment' when `process-environment'
+/// lacks it; then the strings of `process-environment' up to its first
+/// non-string, each left out when an earlier entry names its variable.
+/// The lone names are dropped last.
+pub(crate) fn make_environment_block(
+    interp: &Interpreter,
+    env: &Env,
+    current_dir: &[u8],
+) -> Vec<Vec<u8>> {
+    let process_environment = interp
+        .lookup_var("process-environment", env)
+        .unwrap_or(Value::Nil);
+    let mut strings = Vec::new();
+    let mut cursor = process_environment;
+    while let Some((entry, rest)) = cursor.cons_values() {
+        let Kind::StringObject(state) = entry.kind() else {
+            break;
+        };
+        strings.push(c_string_bytes(state.borrow().bytes()).to_vec());
+        cursor = rest;
+    }
+    let mut block = Vec::with_capacity(strings.len() + 2);
+    if getenv_internal(interp, env, b"PWD", &Value::Nil)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        let mut length = current_dir.len();
+        while length > 2 && current_dir[length - 1] == b'/' {
+            length -= 1;
+        }
+        let mut pwd = b"PWD=".to_vec();
+        pwd.extend_from_slice(c_string_bytes(&current_dir[..length]));
+        block.push(pwd);
+    }
+    let display_specified = strings.iter().any(|string| {
+        string
+            .strip_prefix(b"DISPLAY")
+            .is_some_and(|rest| rest.first().is_none_or(|&byte| byte == b'='))
+    });
+    if !display_specified {
+        let mut display = super::dispatch::frame_display_parameter(interp, &Value::Nil)
+            .ok()
+            .and_then(|display| string_object_bytes(&display));
+        if display.is_none() {
+            let initial = interp
+                .lookup_var("initial-environment", env)
+                .unwrap_or(Value::Nil);
+            if initial.is_cons() {
+                display = getenv_internal_1(b"DISPLAY", initial).flatten();
+            }
+        }
+        if let Some(display) = display {
+            let mut entry = b"DISPLAY=".to_vec();
+            entry.extend_from_slice(c_string_bytes(&display));
+            add_env(&mut block, entry);
+        }
+    }
+    for string in strings {
+        add_env(&mut block, string);
+    }
+    block.retain(|string| string.contains(&b'='));
+    block
 }
 
-pub(crate) fn getenv_in_environment(
-    variable: &str,
-    environment: &Value,
-    negative_entry_is_truthy: bool,
-) -> Result<Option<Value>, LispError> {
-    // callproc.c:getenv_internal_1 walks the list comparing each entry in
-    // place; copying every entry into a vector first cost more than the
-    // lookup (a `getenv' of the last of 140 entries).
-    let environment = match environment.cons_values().map(|(a0, a1)| (a0.kind(), a1)) {
-        Some((Kind::Symbol(symbol), entries)) if symbol == "environment" => entries,
-        _ => *environment,
-    };
+fn string_object_bytes(value: &Value) -> Option<Vec<u8>> {
+    match value.kind() {
+        Kind::StringObject(state) => Some(state.borrow().bytes().to_vec()),
+        _ => None,
+    }
+}
+
+/// callproc.c getenv_internal_1: the first string entry of ENVIRONMENT
+/// whose bytes start with VARIABLE's.  `VARIABLE=VALUE' gives VALUE's
+/// bytes and a lone `VARIABLE' (a negative entry) `Some(None)'; entries of
+/// other types are passed over and an improper tail ends the walk.
+pub(crate) fn getenv_internal_1(variable: &[u8], environment: Value) -> Option<Option<Vec<u8>>> {
     let mut cursor = environment;
-    while let Some((item, rest)) = cursor.cons_values() {
-        let entry = item.as_string()?;
-        if let Some(value) = entry
-            .strip_prefix(variable)
-            .and_then(|rest| rest.strip_prefix('='))
-        {
-            return Ok(Some(Value::String(value.to_string().into())));
-        }
-        if entry == variable {
-            return Ok(Some(if negative_entry_is_truthy {
-                Value::T
-            } else {
-                Value::Nil
-            }));
+    while let Some((entry, rest)) = cursor.cons_values() {
+        if let Kind::StringObject(state) = entry.kind() {
+            let state = state.borrow();
+            if let Some(tail) = state.bytes().strip_prefix(variable) {
+                match tail.split_first() {
+                    Some((b'=', value)) => return Some(Some(value.to_vec())),
+                    None => return Some(None),
+                    Some(_) => {}
+                }
+            }
         }
         cursor = rest;
     }
-    if !cursor.is_nil() {
-        // An improper list: the error `to_vec' reports.
-        environment.to_vec()?;
+    None
+}
+
+/// callproc.c getenv_internal: VARIABLE's value in `process-environment'
+/// (none for a negative entry), else, for DISPLAY, FRAME's display
+/// parameter (FRAME nil: the selected frame's) or `initial-environment's.
+pub(crate) fn getenv_internal(
+    interp: &Interpreter,
+    env: &Env,
+    variable: &[u8],
+    frame: &Value,
+) -> Result<Option<Vec<u8>>, LispError> {
+    let process_environment = interp
+        .lookup_var("process-environment", env)
+        .unwrap_or(Value::Nil);
+    if let Some(value) = getenv_internal_1(variable, process_environment) {
+        return Ok(value);
+    }
+    if variable == b"DISPLAY" {
+        let display = super::dispatch::frame_display_parameter(interp, frame)?;
+        if let Some(display) = string_object_bytes(&display) {
+            return Ok(Some(display));
+        }
+        let initial = interp
+            .lookup_var("initial-environment", env)
+            .unwrap_or(Value::Nil);
+        if let Some(value) = getenv_internal_1(variable, initial) {
+            return Ok(value);
+        }
     }
     Ok(None)
 }
@@ -1210,6 +1474,97 @@ pub(crate) fn append_process_bytes_to_buffer(
         Some(coding) => coding,
         None => "undecided".into(),
     };
+    let result = if bytes.is_empty() {
+        // Nothing read: no insertion and no change hooks, the coding as
+        // set up recorded.
+        decode_coding_object(
+            interp,
+            env,
+            DecodeSource::Bytes(bytes),
+            &coding,
+            Some(multibyte),
+        )
+        .map(|outcome| outcome.coding)
+    } else {
+        insert_process_output(interp, bytes, &coding, multibyte, env)
+    };
+    let result = result.map(|coding_used| {
+        interp.set_variable(
+            "last-coding-system-used",
+            Value::Symbol(coding_used.into()),
+            env,
+        );
+    });
+    if target_id != original_id {
+        interp.set_current_buffer_id(original_id)?;
+    }
+    result
+}
+
+/// callproc.c's insertion of a bufferful the child wrote, at point:
+/// prepare_to_modify_buffer there, then either the bytes as they are (a
+/// unibyte buffer whose coding needs no decoding: insert_1_both) or
+/// decode_coding_c_string into the buffer with the modification hooks
+/// inhibited -- its `charset' annotations and post-read conversion
+/// included, point left before the text -- after which point moves over
+/// the characters produced and signal_after_change reports them.  The
+/// whole output is one bufferful; the coding settled on is the value.
+fn insert_process_output(
+    interp: &mut Interpreter,
+    bytes: &[u8],
+    coding: &str,
+    multibyte: bool,
+    env: &mut Env,
+) -> Result<String, LispError> {
+    let canonical = interp
+        .coding_system_canonical_name(coding)
+        .unwrap_or_else(|| coding.to_string());
+    let inhibit_eol_conversion = interp
+        .lookup_var("inhibit-eol-conversion", env)
+        .is_some_and(|value| value.is_truthy());
+    // CODING_MAY_REQUIRE_DECODING: every coding but a raw-text one with a
+    // unix eol and no post-read conversion requires decoding or detection.
+    let requires_decoding = interp.coding_system_kind_name(&canonical).as_deref()
+        != Some("raw-text")
+        || !(inhibit_eol_conversion || coding_eol_type(interp, &canonical) == Some(0))
+        || coding_system_property(interp, &canonical, ":post-read-conversion")
+            .is_some_and(|function| !function.is_nil());
+    let point = interp.buffer.borrow().point();
+    modify_current_buffer(interp, point, point, false, env, |interp, _, env| {
+        let start = interp.buffer.borrow().point();
+        if !multibyte && !requires_decoding {
+            interp.insert_current_buffer(&decode_raw_text_bytes(bytes));
+            return Ok((
+                Some(AfterChange::new(start, 0, bytes.len())),
+                coding.to_string(),
+            ));
+        }
+        let restore = interp.bind_special_dynamic("inhibit-modification-hooks", Value::T, env)?;
+        let decoded = decode_process_bytes_at_point(interp, bytes, coding, multibyte, env);
+        let restored = interp.restore_special_dynamic(restore, env);
+        let (produced, coding_used) = decoded?;
+        restored?;
+        // Point moves over the characters produced from where the decoding
+        // (a post-read conversion included) left it.
+        let point = interp.buffer.borrow().point();
+        interp.buffer.borrow_mut().goto_char(point + produced);
+        Ok((Some(AfterChange::new(point, 0, produced)), coding_used))
+    })
+}
+
+/// decode_coding_object of BYTES into the current buffer at point, which
+/// stays before the text: the characters with produce_charset's
+/// annotations, then the coding's post-read conversion called through
+/// safe_calln with undo off, point left where it leaves it.  The
+/// characters produced (the conversion's additions counted) and the
+/// coding settled on.
+fn decode_process_bytes_at_point(
+    interp: &mut Interpreter,
+    bytes: &[u8],
+    coding: &str,
+    multibyte: bool,
+    env: &mut Env,
+) -> Result<(usize, String), LispError> {
     let CodingDecode {
         decoded,
         coding: coding_used,
@@ -1218,23 +1573,43 @@ pub(crate) fn append_process_bytes_to_buffer(
         interp,
         env,
         DecodeSource::Bytes(bytes),
-        &coding,
+        coding,
         Some(multibyte),
     )?;
-    if !decoded.text.is_empty() {
-        let insert_at = interp.buffer.borrow().point();
-        interp.insert_current_buffer(&decoded.text);
-        interp.set_inserted_extended_chars(insert_at, &decoded.extended);
-    }
-    interp.set_variable(
-        "last-coding-system-used",
-        Value::Symbol(coding_used.into()),
+    let mut produced = decoded.char_count();
+    let props = charset_spans_to_props(decoded.charsets, &decoded.text, None);
+    insert_text_before_point(
+        interp,
+        &decoded.text,
+        &props,
+        &decoded.extended,
+        produced,
         env,
-    );
-    if target_id != original_id {
-        interp.set_current_buffer_id(original_id)?;
+    )?;
+    let post_read = coding_system_property(
+        interp,
+        &interp
+            .coding_system_canonical_name(&coding_used)
+            .unwrap_or_else(|| coding_used.clone()),
+        ":post-read-conversion",
+    )
+    .filter(|function| !function.is_nil());
+    if let Some(function) = post_read {
+        let prev_z = interp.buffer.borrow().size_total();
+        let undo_list = interp
+            .lookup_var("buffer-undo-list", env)
+            .unwrap_or(Value::Nil);
+        interp.set_variable("buffer-undo-list", Value::T, env);
+        let result = interp.safe_funcall(function, &[Value::Integer(produced as i64)], env);
+        interp.set_variable("buffer-undo-list", undo_list, env);
+        let value = result?;
+        if value.integer_value().is_none_or(|count| count < 0) {
+            return Err(LispError::WrongTypeArgument("wholenump".into(), value));
+        }
+        let z = interp.buffer.borrow().size_total();
+        produced = (produced as i64 + z as i64 - prev_z as i64).max(0) as usize;
     }
-    Ok(())
+    Ok((produced, coding_used))
 }
 
 /// Deliver the two child streams to their GNU process objects.  A `:stderr'
@@ -1356,8 +1731,8 @@ pub(crate) fn write_process_output(
     };
     if let Some(path) = &output_path {
         write_process_bytes_to_file(path, output, false)?;
-    } else if !discard {
-        append_process_bytes_to_buffer(
+    } else if !discard
+        && let Err(error) = append_process_bytes_to_buffer(
             interp,
             &buffer,
             output,
@@ -1365,7 +1740,17 @@ pub(crate) fn write_process_output(
             operation,
             operation_args,
             env,
+        )
+    {
+        // call_process_cleanup: leaving the read loop early kills and
+        // reaps the child, announcing the wait.
+        super::dispatch::display::message1(
+            interp,
+            "Waiting for process to die...(type C-g again to kill it instantly)",
+            env,
         )?;
+        super::dispatch::display::message1(interp, "Waiting for process to die...done", env)?;
+        return Err(error);
     }
     if let Some(path) = &error_path {
         write_process_bytes_to_file(path, stderr, false)?;

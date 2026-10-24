@@ -584,6 +584,7 @@ fn read_eval_buffer_forms(
         let form = match read_next_eval_form(interp, &source, &mut offset, env) {
             Ok(form) => form,
             Err(error) => {
+                let error = reader_end_of_file(interp, error, env);
                 let error = if matches!(error.kind(), LispErrorKind::ReadError(_)) {
                     if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
                         buffer.goto_char((start + source.characters_before(offset)).min(end));
@@ -1040,7 +1041,7 @@ fn record_native_source(
 /// (load_warn_unescaped_character_literals).  The eval-buffer path
 /// `load-with-code-conversion' takes reads with its own reader, so its
 /// literals are added here.
-fn record_unescaped_character_literals(
+pub(crate) fn record_unescaped_character_literals(
     interp: &mut Interpreter,
     literals: impl IntoIterator<Item = i64>,
     env: &mut Env,

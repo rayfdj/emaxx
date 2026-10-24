@@ -274,7 +274,7 @@ fn coding_system_consumes_bom(interp: &Interpreter, coding: &str) -> bool {
     coding_system_requires_bom(interp, coding) || coding_system_auto_detects_bom(interp, coding)
 }
 
-fn coding_system_is_ascii_compatible(interp: &Interpreter, coding: &str) -> bool {
+pub(crate) fn coding_system_is_ascii_compatible(interp: &Interpreter, coding: &str) -> bool {
     coding_system_property(interp, coding, ":ascii-compatible-p")
         .is_some_and(|value| value.is_truthy())
 }
@@ -3223,7 +3223,7 @@ fn eol_removed_prefix(staged: &str, crlf: bool) -> Vec<usize> {
 }
 
 /// The `charset' runs as text property spans on the converted text.
-fn charset_spans_to_props(
+pub(crate) fn charset_spans_to_props(
     charsets: Vec<(usize, usize, String)>,
     staged: &str,
     crlf_conversion: Option<bool>,

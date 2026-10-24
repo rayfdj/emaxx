@@ -99,6 +99,20 @@ fn frame_parameter_value(
         .unwrap_or(Value::Nil)
 }
 
+/// Fframe_parameter (FRAME, Qdisplay) as callproc.c asks it for the
+/// child's DISPLAY: FRAME nil is the selected frame.
+pub(crate) fn frame_display_parameter(
+    interp: &Interpreter,
+    frame: &Value,
+) -> Result<Value, LispError> {
+    let id = decode_frame(interp, Some(frame), true, false)?;
+    Ok(if interp.frame_is_live(id) {
+        frame_parameter_value(interp, id, "display")
+    } else {
+        Value::Nil
+    })
+}
+
 fn store_frame_parameter(
     interp: &mut Interpreter,
     id: crate::lisp::types::FrameRef,

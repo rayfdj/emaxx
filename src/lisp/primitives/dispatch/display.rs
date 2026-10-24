@@ -317,6 +317,29 @@ pub(crate) fn message_with_string(
 // Fmessage, message3 and add_to_log all reach. This is deliberately separate
 // from message's echo/capture/stderr path, as xdisp.c:add_to_log requires.
 // Creating the log buffer does not yet call `messages-buffer-mode'.
+/// xdisp.c:message1 (message3): TEXT logged in *Messages*, then shown
+/// unless `inhibit-message' -- in batch on stderr.
+pub(crate) fn message1(
+    interp: &mut Interpreter,
+    text: &str,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    let batch = interp
+        .forwarded_c_value("noninteractive", &Env::new())
+        .is_some_and(|v| v.is_truthy());
+    if !batch {
+        return message_with_string(interp, "%s", Value::string(text), env);
+    }
+    log_message_text(interp, text, env);
+    if interp
+        .forwarded_c_value("inhibit-message", &Env::new())
+        .is_some_and(|value| value.is_truthy())
+    {
+        return Ok(());
+    }
+    message_to_stderr(interp, Some(&Value::string(text)), env)
+}
+
 pub(crate) fn log_message_text(interp: &mut Interpreter, text: &str, _env: &Env) {
     // message_dolog reads the two C variables (DEFVAR_LISP, so never
     // lexically bound) by their symbols.

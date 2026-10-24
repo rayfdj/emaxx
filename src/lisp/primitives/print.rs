@@ -1597,6 +1597,27 @@ pub(crate) fn render_prin1_ephemeral(
 
 /// lread.c:end_of_file_error: `(end-of-file FILE)' while a file is being
 /// loaded (`load-true-file-name' a string), else `(end-of-file)'.
+/// A reader's end-of-input as lread.c's end_of_file_error signals it;
+/// any other error is ERROR.
+pub(crate) fn reader_end_of_file(interp: &Interpreter, error: LispError, env: &Env) -> LispError {
+    if matches!(error.kind(), LispErrorKind::EndOfInput) {
+        end_of_file_error(interp, env)
+    } else {
+        error
+    }
+}
+
+/// Whether ERROR is an `end-of-file' signal.
+pub(crate) fn is_end_of_file_error(error: &LispError) -> bool {
+    match error.kind() {
+        LispErrorKind::EndOfInput => true,
+        LispErrorKind::SignalValue(data) => {
+            matches!(data.car().map(|head| head.kind()), Ok(Kind::Symbol(name)) if name == "end-of-file")
+        }
+        _ => false,
+    }
+}
+
 fn end_of_file_error(interp: &Interpreter, env: &Env) -> LispError {
     match interp
         .lookup_var("load-true-file-name", env)
@@ -1654,7 +1675,7 @@ fn read_one_from_reader(
     // would first intern a private name in the standard table and leak it.
     let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
     let shorthands = read_symbol_shorthands_in_env(interp, env)?;
-    let (value, needs_materialization, unescaped, consumed) = {
+    let read = (|| {
         let mut resolve_symbol = |name: &str| intern_in_obarray(interp, &obarray, name);
         let reader = match input {
             LispReaderInput::Text(text) => {
@@ -1676,13 +1697,15 @@ fn read_one_from_reader(
             .unescaped_character_literals()
             .map(Value::Integer)
             .collect::<Vec<_>>();
-        (
+        Ok((
             value,
             reader.emitted_reader_forms(),
             unescaped,
             reader.characters_consumed(),
-        )
-    };
+        ))
+    })();
+    let (value, needs_materialization, unescaped, consumed) =
+        read.map_err(|error| reader_end_of_file(interp, error, env))?;
     let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
     // Allocate identity-bearing literals before resolving references into them.
     let value = if needs_materialization {
@@ -1690,9 +1713,11 @@ fn read_one_from_reader(
     } else {
         value
     };
-    interp.set_variable(
-        "lread--unescaped-character-literals",
-        Value::list(unescaped),
+    // read_char_literal conses each new literal onto the variable, which
+    // `load' (or the caller) binds; `read' itself never resets it.
+    record_unescaped_character_literals(
+        interp,
+        unescaped.iter().filter_map(Value::integer_value),
         env,
     );
     Ok((value, consumed))
@@ -1822,7 +1847,7 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
                 read_one_positioned_form(interp, env, text.input(), start as i64, &mut stopped);
             let consumed = match result.as_ref().map_err(LispError::kind) {
                 Ok((_, consumed)) => *consumed,
-                Err(LispErrorKind::EndOfInput) => end - start,
+                Err(_) if result.as_ref().is_err_and(is_end_of_file_error) => end - start,
                 Err(_) => stopped,
             };
             if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
@@ -1855,7 +1880,7 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
             let result = read_one_positioned_form(interp, env, text.input(), 0, &mut stopped);
             let consumed = match result.as_ref().map_err(LispError::kind) {
                 Ok((_, consumed)) => *consumed,
-                Err(LispErrorKind::EndOfInput) => end - start,
+                Err(_) if result.as_ref().is_err_and(is_end_of_file_error) => end - start,
                 Err(_) => stopped,
             };
             interp.set_marker(id, Some((start + consumed).min(end)), Some(buffer_id))?;
@@ -1886,7 +1911,7 @@ fn read_one_positioned_form(
     // the enclosing defun's position instead of the offending form's).
     let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
     let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
-    let (value, consumed, unescaped) = {
+    let read = (|| {
         let mut resolve_symbol = |name: &str| intern_in_obarray(interp, &obarray, name);
         let reader = match input {
             LispReaderInput::Text(text) => crate::lisp::reader::Reader::with_positioned_symbols(
@@ -1916,12 +1941,16 @@ fn read_one_positioned_form(
             .unescaped_character_literals()
             .map(Value::Integer)
             .collect::<Vec<_>>();
-        (value, consumed, unescaped)
-    };
+        Ok((value, consumed, unescaped))
+    })();
+    let (value, consumed, unescaped) =
+        read.map_err(|error| reader_end_of_file(interp, error, env))?;
     let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
-    interp.set_variable(
-        "lread--unescaped-character-literals",
-        Value::list(unescaped),
+    // read_char_literal conses each new literal onto the variable, which
+    // `load' (or the caller) binds; `read' itself never resets it.
+    record_unescaped_character_literals(
+        interp,
+        unescaped.iter().filter_map(Value::integer_value),
         env,
     );
     // GNU's reader constructs `#s(...)', `#^[...]', and bool-vector objects
@@ -2055,9 +2084,11 @@ fn read_callable_source(
         (value, unescaped, reader.emitted_reader_forms())
     };
     let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
-    interp.set_variable(
-        "lread--unescaped-character-literals",
-        Value::list(unescaped),
+    // read_char_literal conses each new literal onto the variable, which
+    // `load' (or the caller) binds; `read' itself never resets it.
+    record_unescaped_character_literals(
+        interp,
+        unescaped.iter().filter_map(Value::integer_value),
         env,
     );
     if needs_materialization {
@@ -2125,7 +2156,7 @@ fn materialize_char_table_literals_inner(
                     ..=crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_SLOTS)
                     .contains(&fields.len())
                 {
-                    return Err(LispError::ReadError("invalid size char-table".into()));
+                    return Err(LispError::ReadError("Invalid size char-table".into()));
                 }
                 (
                     Value::CharTable(crate::lisp::types::CharTableRef::new(
@@ -2356,7 +2387,7 @@ fn read_from_lisp_source_raw(
             let result = read_one_from_reader(interp, text.input(), &mut stopped, env);
             let consumed = match result.as_ref().map_err(LispError::kind) {
                 Ok((_, consumed)) => *consumed,
-                Err(LispErrorKind::EndOfInput) => end - start,
+                Err(_) if result.as_ref().is_err_and(is_end_of_file_error) => end - start,
                 Err(_) => stopped,
             };
             if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
@@ -2387,7 +2418,7 @@ fn read_from_lisp_source_raw(
             let result = read_one_from_reader(interp, text.input(), &mut stopped, env);
             let consumed = match result.as_ref().map_err(LispError::kind) {
                 Ok((_, consumed)) => *consumed,
-                Err(LispErrorKind::EndOfInput) => end - start,
+                Err(_) if result.as_ref().is_err_and(is_end_of_file_error) => end - start,
                 Err(_) => stopped,
             };
             interp.set_marker(id, Some((start + consumed).min(end)), Some(buffer_id))?;

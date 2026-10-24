@@ -1261,10 +1261,12 @@ pub(crate) fn lisp_environment_string(
     env: &Env,
     variable: &str,
 ) -> Option<String> {
-    let environment = interp.lookup_var("process-environment", env)?;
-    getenv_in_environment(variable, &environment, false)
+    // egetenv: getenv_internal's bytes, read back as make_string reads them.
+    let value = getenv_internal(interp, env, variable.as_bytes(), &Value::Nil)
         .ok()
-        .flatten()
+        .flatten()?;
+    make_string(value)
+        .ok()
         .and_then(|value| string_like(&value).map(|string| string.text))
 }
 

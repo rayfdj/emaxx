@@ -1929,12 +1929,7 @@ define_dispatch!(
                     _ => None,
                 };
                 let destination = args.get(2).unwrap_or(&Value::Nil);
-                let argv = args
-                    .get(4..)
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(string_text)
-                    .collect::<Result<Vec<_>, _>>()?;
+                let argv = call_process_arguments(interp, env, args, args.get(4..).unwrap_or(&[]))?;
                 let process_output = run_external_process(
                     interp,
                     &program,
@@ -2631,52 +2626,104 @@ define_dispatch!(
                 }
             }
             "call-process-region" => {
+                // callproc.c Fcall_process_region: the input written as
+                // create_temp_file writes it, the region deleted before the
+                // child runs, then call_process with INFILE in DELETE's place.
                 if args.len() < 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let (start, end) = if args[0].is_nil() && args[1].is_nil() {
-                    (
-                        interp.buffer.borrow().point_min(),
-                        interp.buffer.borrow().point_max(),
-                    )
+                let (mut start, mut end) = (args[0], args[1]);
+                let empty_input = if let Some(string) = string_like(&start) {
+                    string.text.is_empty()
+                } else if start.is_nil() {
+                    interp.buffer.borrow().size_total() == 0
                 } else {
-                    (
-                        position_from_value(interp, &args[0])?,
-                        position_from_value(interp, &args[1])?,
-                    )
+                    let from = position_from_value(interp, &start)?;
+                    let to = position_from_value(interp, &end)?;
+                    let (from, to) = (from.min(to), from.max(to));
+                    let (begv, zv) = {
+                        let buffer = interp.buffer.borrow();
+                        (buffer.point_min(), buffer.point_max())
+                    };
+                    if from < begv || to > zv {
+                        return Err(LispError::SignalValue(Value::list([
+                            Value::symbol("args-out-of-range"),
+                            Value::Buffer(interp.buffer),
+                            start,
+                            end,
+                        ])));
+                    }
+                    start = Value::Integer(from as i64);
+                    end = Value::Integer(to as i64);
+                    from == to
                 };
-                let input = interp
-                    .buffer
-                    .borrow()
-                    .buffer_substring(start, end)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                let program = string_text(&args[2])?;
-                let delete_region = args.get(3).is_some_and(Value::is_truthy);
-                let destination = args.get(4).unwrap_or(&Value::Nil);
-                let argv = args
-                    .get(6..)
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(string_text)
-                    .collect::<Result<Vec<_>, _>>()?;
+                let input = if empty_input {
+                    None
+                } else {
+                    let coding = interp
+                        .lookup_var("coding-system-for-write", env)
+                        .unwrap_or(Value::Nil);
+                    let coding = if !coding.is_nil() {
+                        coding
+                    } else if !interp.buffer.borrow().is_multibyte() {
+                        Value::symbol("raw-text")
+                    } else {
+                        let lookup = std::iter::once(Value::symbol(name))
+                            .chain(args.iter().copied())
+                            .collect::<Vec<_>>();
+                        find_operation_coding_system_value(interp, &lookup, env)?
+                            .cons_values()
+                            .map_or(Value::Nil, |(_, encoding)| encoding)
+                    };
+                    let coding = complement_process_encoding_system(interp, env, coding)?;
+                    Some(crate::lisp::primitives::file_io::encode_process_input(
+                        interp, start, end, coding, env,
+                    )?)
+                };
+                if args.get(3).is_some_and(Value::is_truthy) {
+                    if start.is_nil() {
+                        let buffer_id = interp.current_buffer_id();
+                        interp.restore_labeled_restrictions(buffer_id, Vec::new());
+                        interp.buffer.borrow_mut().widen();
+                        let (beg, z) = {
+                            let buffer = interp.buffer.borrow();
+                            (buffer.point_min(), buffer.point_max())
+                        };
+                        delete_region_with_hooks(interp, beg, z, env)?;
+                    } else {
+                        let from = position_from_value(interp, &start)?;
+                        let to = position_from_value(interp, &end)?;
+                        delete_region_with_hooks(interp, from, to, env)?;
+                    }
+                }
+                // PROGRAM INFILE BUFFER DISPLAY ARGS...
+                let call_args = std::iter::once(args[2])
+                    .chain(std::iter::once(Value::Nil))
+                    .chain(args.get(4..).unwrap_or(&[]).iter().copied())
+                    .collect::<Vec<_>>();
+                let program = string_text(&call_args[0])?;
+                let destination = call_args.get(2).copied().unwrap_or(Value::Nil);
+                let argv = call_process_arguments(
+                    interp,
+                    env,
+                    &call_args,
+                    call_args.get(4..).unwrap_or(&[]),
+                )?;
                 let process_output = run_external_process(
                     interp,
                     &program,
                     &argv,
-                    Some(input.as_bytes()),
-                    external_stderr_for_destination(destination),
+                    input.as_deref(),
+                    external_stderr_for_destination(&destination),
                     env,
                 )?;
-                if delete_region {
-                    delete_region_with_hooks(interp, start, end, env)?;
-                }
                 write_process_output(
                     interp,
-                    destination,
+                    &destination,
                     &process_output.stdout,
                     &process_output.stderr,
-                    "call-process-region",
-                    args,
+                    "call-process",
+                    &call_args,
                     env,
                 )?;
                 Ok(call_process_status(&process_output.status))
@@ -2981,7 +3028,11 @@ fn make_process_value(
         spawn_persistent_process(
             interp,
             command,
-            &parsed.argv,
+            &parsed
+                .argv
+                .iter()
+                .map(|arg| arg.as_bytes().to_vec())
+                .collect::<Vec<_>>(),
             env,
             parsed.connection_type.as_ref(),
             parsed.stderr_process_id.is_some() || parsed.stderr_buffer_id.is_some(),

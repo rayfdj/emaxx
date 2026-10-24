@@ -555,7 +555,7 @@ pub(crate) fn coding_tag_from_bytes(bytes: &[u8]) -> Option<String> {
 
 // coding.c:coding_inherit_eol_type preserves an already specified alias;
 // otherwise it selects the actual subsidiary, with Unix as the host default.
-fn inherit_write_coding_eol(
+pub(crate) fn inherit_write_coding_eol(
     interp: &Interpreter,
     coding: Value,
     parent: Value,
@@ -784,6 +784,95 @@ pub(crate) fn write_region_value_with_logical_path(
     );
     interp.restore_restriction_state(saved);
     result
+}
+
+/// callproc.c create_temp_file: the input `call-process-region' gives
+/// its child, START..END (START a string, or nil for the whole buffer)
+/// as write_region writes them with `coding-system-for-write' bound to
+/// CODING and no file name handlers -- the coding recorded in
+/// `last-coding-system-used'.
+pub(crate) fn encode_process_input(
+    interp: &mut Interpreter,
+    start: Value,
+    end: Value,
+    coding: Value,
+    env: &mut Env,
+) -> Result<Vec<u8>, LispError> {
+    let restore_coding = interp.bind_special_dynamic("coding-system-for-write", coding, env)?;
+    let result = match interp.bind_special_dynamic("file-name-handler-alist", Value::Nil, env) {
+        Ok(restore_handlers) => {
+            let saved = interp.save_restriction_state();
+            interp.restore_labeled_restrictions(interp.current_buffer_id(), Vec::new());
+            if start.is_nil() {
+                interp.buffer.borrow_mut().widen();
+            }
+            let result = encode_region_for_write(interp, start, end, env);
+            interp.restore_restriction_state(saved);
+            let restored = interp.restore_special_dynamic(restore_handlers, env);
+            result.and_then(|bytes| restored.map(|()| bytes))
+        }
+        Err(error) => Err(error),
+    };
+    let restored = interp.restore_special_dynamic(restore_coding, env);
+    result.and_then(|bytes| restored.map(|()| bytes))
+}
+
+/// write_region's coding choice and e_write's encoding of START..END,
+/// without the file.
+fn encode_region_for_write(
+    interp: &mut Interpreter,
+    start: Value,
+    end: Value,
+    env: &mut Env,
+) -> Result<Vec<u8>, LispError> {
+    let mut args = [
+        start,
+        end,
+        Value::string(""),
+        Value::Nil,
+        Value::symbol("lambda"),
+        Value::Nil,
+        Value::Nil,
+    ];
+    if start.is_nil() {
+        args[0] = Value::Integer(interp.buffer.borrow().point_min() as i64);
+        args[1] = Value::Integer(interp.buffer.borrow().point_max() as i64);
+    }
+    let coding = choose_write_coding(interp, &args, env)?;
+    let coding_name = coding.as_symbol()?;
+    set_last_coding_system_used(interp, coding_name, env);
+    let selective_display = !args[0].is_string()
+        && interp
+            .lookup_var("selective-display", env)
+            .is_some_and(|value| value.eq_value(Value::T));
+    let source = if let Some(string) = string_like(&args[0]) {
+        string
+    } else {
+        let start = position_from_value(interp, &args[0])?;
+        let end = position_from_value(interp, &args[1])?;
+        let (start, end) = (start.min(end), start.max(end));
+        let buffer = interp.buffer.borrow();
+        StringLike {
+            text: buffer
+                .buffer_substring(start, end)
+                .map_err(|error| LispError::Signal(error.to_string()))?,
+            props: Vec::new(),
+            multibyte: buffer.is_multibyte(),
+            extended_chars: buffer.substring_extended_chars(start, end),
+        }
+    };
+    let inhibit_eol_conversion = interp
+        .lookup_var("inhibit-eol-conversion", env)
+        .is_some_and(|value| value.is_truthy());
+    let translation = encode_translation_tables(interp, coding_name, env)?;
+    encode_text_bytes(
+        interp,
+        &source,
+        coding_name,
+        inhibit_eol_conversion,
+        selective_display,
+        &translation,
+    )
 }
 
 fn write_region_with_coding(

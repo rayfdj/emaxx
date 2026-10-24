@@ -1846,6 +1846,15 @@ define_dispatch!(
                 let coding = args[0].as_symbol()?;
                 let mnemonic = args[1].as_integer()?;
                 let kind = args[2].as_symbol()?;
+                // coding.c: a translation table is a char-table, a list or
+                // a symbol, and each conversion a symbol.
+                for table in &args[5..7] {
+                    if !matches!(table.kind(), Kind::CharTable(_) | Kind::Cons(_)) {
+                        table.as_symbol()?;
+                    }
+                }
+                args[7].as_symbol()?;
+                args[8].as_symbol()?;
                 // coding.c derives public attributes from the validated codec
                 // shape and prepends them to the Lisp-supplied plist.  Dumped
                 // mule.el reads these properties back to decide display and
@@ -1901,7 +1910,7 @@ define_dispatch!(
                     default_char,
                     args.get(13..).unwrap_or(&[]).to_vec(),
                 )?;
-                Ok(Value::Symbol(coding.to_string().into()))
+                Ok(Value::Nil)
             }
             "define-coding-system-alias" => {
                 need_args(name, args, 2)?;

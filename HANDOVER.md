@@ -4859,6 +4859,106 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   char-table size): 56 of 117 lines of a reader-error probe over strings,
   buffers and markers differ, and some end-of-file errors lack
   `load-true-file-name`; (4) the round 64 items (1) to (3) and (5).
+- **Round 66: lread.c's reader; callproc.c's environment, arguments,
+  input and output.** The reader is lread.c's over character codes:
+  read_char_escape for strings and character literals (the control,
+  meta, shift, hyper, alt and super modifiers with `Invalid escape char
+  syntax: \C not followed by -` and its kin, `\x` with any number of hex
+  digits and "Hex character out of range", `\u`/`\U` with exactly four and
+  eight and "Malformed Unicode escape" or "Non-Unicode character",
+  `\N{NAME}` and `\N{U+X}` with `Expected opening brace after \N`,
+  "Empty character name", "Character name too long" and "Invalid
+  character U+X in character name", a backslash-newline an error in a
+  character literal), read_char_literal (modifier bits on any code, so
+  `?\x8000041` reads; an unescaped `?(`, `?)`, `?[`, `?]`, `?"` or `?;`
+  consed onto `lread--unescaped-character-literals` for the warning),
+  read_string_literal (each character entered as push_string_character
+  does, the string's multibyteness from what it holds, "Invalid modifier
+  in string"),
+  `#(` through string_props_from_rev_list ("Invalid string property
+  list"), read_integer for `#b`/`#o`/`#x`/`#NrDIGITS` ("integer, radix N"),
+  bool vectors, `#s(...)`, char-tables and sub-char-tables ("Invalid size
+  char-table", "Invalid depth in sub-char-table", "Invalid minimum
+  character in sub-char-table", "Invalid size in sub-char-table"), `#[`
+  ("Invalid byte-code object"), `#@N` (in a buffer or string skipping to
+  the next `\037`), `#&`, `#:`, `#_`, `##`, `#'` and `#N=`/`#N#` (which
+  stay readable whatever `read-circle` says, where GNU rejects `#1=` with
+  it nil; `#$` as before), with INVALID_SYNTAX_WITH_BUFFER's line and
+  column for a buffer source, and end_of_file_error naming
+  `load-true-file-name` while loading. The 230-line escape and `#` probe
+  and the 117-line reader-error probe (56 differing lines on round 65)
+  give GNU's output, as do the lread and print tests.
+  `getenv-internal` is callproc.c's over the entries' internal bytes (a
+  non-string entry passed over, an improper tail ending the walk; a list
+  ENV searched instead, its negative entry t; any other ENV the frame
+  whose `display` parameter answers DISPLAY ahead of
+  `initial-environment`), its value make_string's, so valid multibyte
+  bytes come back multibyte; egetenv's HOME reads go through it. A
+  child's environment is make_environment_block's, handed to execve in
+  its order: PWD, when the Lisp environment has one, naming the child's
+  directory without trailing slashes, DISPLAY from the frame or
+  `initial-environment` when `process-environment` lacks it, then
+  `process-environment`'s strings up to its first non-string as their
+  internal bytes cut at a NUL, each left out when an earlier entry names
+  its variable (a lone name keeps later definitions out), the lone names
+  dropped last. Before, the entries reached the child as Rust text (a raw
+  byte as its marker's UTF-8) applied last-first, and a lone name had no
+  effect. `call-process` output goes in as callproc.c inserts a
+  bufferful: prepare_to_modify_buffer at point (the before-change
+  functions), then the bytes as they are for a unibyte buffer whose
+  coding needs no decoding (insert_1_both) or decode_coding_c_string with
+  `inhibit-modification-hooks` bound (produce_charset's `charset`
+  properties, one insertion in the undo list, the post-read conversion
+  through safe_calln with undo off, its errors muted into `*Messages*`),
+  point moved over the characters produced and signal_after_change for
+  them; before, no change hook ran and no `charset` property was put. An
+  error out of the insertion has call_process_cleanup announce "Waiting
+  for process to die...(type C-g again to kill it instantly)" and
+  "...done" (xdisp.c message1) first. Its arguments are callproc.c's:
+  checked as strings, the coding `coding-system-for-write`, else for a
+  multibyte argument the cdr of find-operation-coding-system's answer,
+  else raw-text, completed by coding.c's complement_process_encoding_system
+  (the cdr of `default-process-coding-system`, then the preferred coding
+  system) and made raw-text when not ASCII compatible; the
+  encode_coding_string macro encodes a multibyte argument and passes a
+  unibyte one as its bytes, and the child reads each up to its first NUL
+  (before: the UTF-8 of the Rust text, and a "nul byte found" error).
+  `call-process-region` is Fcall_process_region: START a string, nil
+  (the whole buffer, empty when BEG = Z) or a region checked as
+  validate_region checks it (`args-out-of-range` with the buffer), the
+  input written as create_temp_file writes it (write_region's coding
+  choice with `coding-system-for-write` bound to the completed
+  `coding-system-for-write`, raw-text for a unibyte buffer or the cdr of
+  find-operation-coding-system's answer for `call-process-region`, and
+  recorded in `last-coding-system-used`), the region deleted before the
+  child runs, the null device as stdin for an empty input, and the
+  output read as call_process reads it for `call-process` with INFILE in
+  DELETE's place. `define-coding-system-internal` checks its translation
+  tables (a char-table, a list or a symbol) and conversions (symbols) as
+  coding.c does and returns nil. `tramp-test42-utf8`, failing on
+  `9ba4dee` and before, passes. The round 64 process probe (60 differing
+  lines of 162) gives GNU's output but for the temporary file names, as
+  do a 15-form environment probe, a change-hook probe, a 22-form argument
+  and region probe and a post-read probe but for one value: GNU leaves
+  point past the end of the buffer (8 in a 5-character one) when a
+  post-read conversion inserts before point, where Emaxx's buffer keeps
+  it in range. The callproc, process, env, files, eshell (proc, var, cmd,
+  unix, eshell), shell, term, compile, simple, tramp-archive, vc, vc-git,
+  dired, dired-aux, ls-lisp, grep, dbus, fileio, coding, mule, epg and man
+  tests give GNU's results. Still open: (1) `make-process` takes its
+  codings from `:coding` or `default-process-coding-system` only (not
+  `coding-system-for-read`/`-write` or find-operation-coding-system for
+  `start-process`), passes its arguments as the UTF-8 of their Rust text
+  where GNU encodes a multibyte one with the completed encoding, and its
+  filter reads `undecided` output as UTF-8; (2) `call-process` takes the
+  child's whole output as one bufferful, where GNU reads 16 to 64 KB
+  blocks at the sizes the pipe gives, with a change-hook pair for each
+  and detection settled on the first (carryover keeps the text the
+  same); (3) post-read conversions of strings and regions propagate their
+  errors where decode_coding_object's safe_calln mutes them; (4) the
+  program, its directory and file names still go through the Rust text
+  (ENCODE_FILE); (5) the round 65 items (1) and (2) and the round 64
+  items (1) and (5).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
