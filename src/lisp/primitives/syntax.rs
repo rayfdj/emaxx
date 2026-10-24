@@ -123,34 +123,6 @@ pub(super) fn parse_syntax_spec(spec: &str) -> Option<SyntaxEntry> {
     Some(entry)
 }
 
-#[cfg(test)]
-mod syntax_spec_tests {
-    use super::{SyntaxClass, parse_syntax_spec};
-
-    #[test]
-    fn parses_matching_characters_and_flags_without_changing_the_grammar() {
-        let entry = parse_syntax_spec("(λ1np").expect("valid open-delimiter syntax");
-        assert_eq!(entry.class, SyntaxClass::OpenParen);
-        assert_eq!(entry.matching, Some('λ'));
-        assert!(entry.start_first);
-        assert!(entry.nested);
-        assert!(entry.prefix);
-
-        let word = parse_syntax_spec("w 2c").expect("valid word syntax");
-        assert_eq!(word.class, SyntaxClass::Word);
-        assert!(word.start_second);
-        assert!(word.style_c);
-        assert_eq!(
-            parse_syntax_spec("-")
-                .expect("dash is GNU whitespace syntax")
-                .class,
-            SyntaxClass::Whitespace
-        );
-        assert!(parse_syntax_spec("").is_none());
-        assert!(parse_syntax_spec("?").is_none());
-    }
-}
-
 fn syntax_entry_code(entry: SyntaxEntry) -> i64 {
     let mut code = entry.class as i64;
     if entry.start_first {
@@ -387,10 +359,6 @@ pub(super) fn current_syntax_word_char(
     class == SyntaxClass::Word || (include_symbols && class == SyntaxClass::Symbol)
 }
 
-fn syntax_entry_for_char(interp: &Interpreter, table_id: CharTableRef, ch: char) -> SyntaxEntry {
-    syntax_entry_for_code(interp, table_id, ch as u32)
-}
-
 fn syntax_entry_from_value(value: &Value) -> Option<SyntaxEntry> {
     match value.kind() {
         Kind::Integer(code) => {
@@ -453,208 +421,30 @@ fn syntax_class_from_code(code: i64) -> Option<SyntaxClass> {
     }
 }
 
-// syntax.h's gl_state, per scan: `parse-sexp-lookup-properties' is read
-// once at setup (GNU reads a C global, never a per-character variable),
-// and for property-armed scans the effective syntax source is resolved
-// once per text-property interval -- UPDATE_SYNTAX_TABLE's
-// b_property/e_property bounds -- instead of per character.  An ASCII
-// memo stands in for GNU's SYNTAX(c) array indexing, since this
-// runtime's tables store descriptors that would otherwise be re-decoded
-// per character.  A mid-scan table or property mutation is observed at
-// the next interval crossing, exactly as in GNU.
-pub(super) struct SyntaxScan {
-    table_id: CharTableRef,
-    use_properties: bool,
-    b_property: usize,
-    e_property: usize,
-    effective: EffectiveSyntax,
-    ascii_memo: [Option<SyntaxEntry>; 128],
-}
+#[cfg(test)]
+mod syntax_spec_tests {
+    use super::{SyntaxClass, parse_syntax_spec};
 
-#[derive(Clone, Copy)]
-enum EffectiveSyntax {
-    Table(CharTableRef),
-    Direct(SyntaxEntry),
-}
+    #[test]
+    fn parses_matching_characters_and_flags_without_changing_the_grammar() {
+        let entry = parse_syntax_spec("(λ1np").expect("valid open-delimiter syntax");
+        assert_eq!(entry.class, SyntaxClass::OpenParen);
+        assert_eq!(entry.matching, Some('λ'));
+        assert!(entry.start_first);
+        assert!(entry.nested);
+        assert!(entry.prefix);
 
-impl SyntaxScan {
-    pub(super) fn new(interp: &Interpreter, table_id: CharTableRef) -> Self {
-        // syntax.c:253 (SETUP_SYNTAX_TABLE): the property machinery arms
-        // only when `parse-sexp-lookup-properties' is non-nil.
-        let use_properties = interp
-            .lookup_var_key(
-                cached_symbol!("parse-sexp-lookup-properties"),
-                &crate::lisp::types::Env::new(),
-            )
-            .is_some_and(|value| value.is_truthy());
-        SyntaxScan {
-            table_id,
-            use_properties,
-            b_property: 1,
-            e_property: 0, // empty interval: first query refreshes
-            effective: EffectiveSyntax::Table(table_id),
-            ascii_memo: [None; 128],
-        }
+        let word = parse_syntax_spec("w 2c").expect("valid word syntax");
+        assert_eq!(word.class, SyntaxClass::Word);
+        assert!(word.start_second);
+        assert!(word.style_c);
+        assert_eq!(
+            parse_syntax_spec("-")
+                .expect("dash is GNU whitespace syntax")
+                .class,
+            SyntaxClass::Whitespace
+        );
+        assert!(parse_syntax_spec("").is_none());
+        assert!(parse_syntax_spec("?").is_none());
     }
-
-    fn refresh(&mut self, interp: &Interpreter, pos: usize) {
-        let (start, end) = interp.buffer.borrow().text_property_interval_around(pos);
-        self.b_property = start;
-        self.e_property = end.max(pos + 1);
-        let property = syntax_table_property_at(interp, pos);
-        self.effective = match property.kind() {
-            Kind::CharTable(property_table_id) => EffectiveSyntax::Table(property_table_id),
-            Kind::Nil => EffectiveSyntax::Table(self.table_id),
-            property => syntax_entry_from_value(&property.value())
-                .map(EffectiveSyntax::Direct)
-                .unwrap_or(EffectiveSyntax::Table(self.table_id)),
-        };
-        self.ascii_memo = [None; 128];
-    }
-
-    pub(super) fn entry_at(&mut self, interp: &Interpreter, ch: char, pos: usize) -> SyntaxEntry {
-        if !self.use_properties {
-            return self.table_entry(interp, self.table_id, ch);
-        }
-        if pos < self.b_property || pos >= self.e_property {
-            self.refresh(interp, pos);
-        }
-        match self.effective {
-            EffectiveSyntax::Table(id) => self.table_entry(interp, id, ch),
-            EffectiveSyntax::Direct(entry) => entry,
-        }
-    }
-
-    /// The syntax class of character code CODE at POS: `entry_at' for a
-    /// character, and for a code beyond Unicode's scalars (a raw byte) the
-    /// effective table read by code.
-    pub(super) fn class_at_code(
-        &mut self,
-        interp: &Interpreter,
-        code: u32,
-        pos: usize,
-    ) -> SyntaxClass {
-        if let Some(ch) = char::from_u32(code) {
-            return self.entry_at(interp, ch, pos).class;
-        }
-        if !self.use_properties {
-            return syntax_entry_for_code(interp, self.table_id, code).class;
-        }
-        if pos < self.b_property || pos >= self.e_property {
-            self.refresh(interp, pos);
-        }
-        match self.effective {
-            EffectiveSyntax::Table(id) => syntax_entry_for_code(interp, id, code).class,
-            EffectiveSyntax::Direct(entry) => entry.class,
-        }
-    }
-
-    fn table_entry(
-        &mut self,
-        interp: &Interpreter,
-        table_id: CharTableRef,
-        ch: char,
-    ) -> SyntaxEntry {
-        let index = ch as usize;
-        if index < 128 {
-            if let Some(entry) = self.ascii_memo[index] {
-                return entry;
-            }
-            let entry = syntax_entry_for_char(interp, table_id, ch);
-            self.ascii_memo[index] = Some(entry);
-            return entry;
-        }
-        syntax_entry_for_char(interp, table_id, ch)
-    }
-}
-
-/// syntax.c:374 (update_syntax_table): the property comes off the
-/// interval plist with `textget' -- buffer text properties (with category
-/// indirection) only; overlays never feed syntax scans.  interval_of finds
-/// no interval in a buffer without intervals or at its end, and then no
-/// property applies, `default-text-properties' included.
-fn syntax_table_property_at(interp: &Interpreter, pos: usize) -> Value {
-    let buffer = interp.buffer.borrow();
-    if !buffer.has_interval_tree() || pos >= buffer.point_max() {
-        return Value::Nil;
-    }
-    crate::lisp::primitives::strings::buffer_property_at_with_category(
-        interp,
-        &buffer,
-        pos,
-        "syntax-table",
-    )
-    .unwrap_or(Value::Nil)
-}
-
-fn syntax_entry_at_buffer_position(
-    interp: &Interpreter,
-    table_id: CharTableRef,
-    ch: char,
-    pos: usize,
-) -> SyntaxEntry {
-    // One-shot form for cold callers -- no scan state, no memo array;
-    // hot loops hold a SyntaxScan instead.
-    if !interp
-        .lookup_var_key(
-            cached_symbol!("parse-sexp-lookup-properties"),
-            &crate::lisp::types::Env::new(),
-        )
-        .is_some_and(|value| value.is_truthy())
-    {
-        return syntax_entry_for_char(interp, table_id, ch);
-    }
-    let property = syntax_table_property_at(interp, pos);
-    match property.kind() {
-        Kind::CharTable(property_table_id) => {
-            Some(syntax_entry_for_char(interp, property_table_id, ch))
-        }
-        Kind::Nil => None,
-        property => syntax_entry_from_value(&property.value()),
-    }
-    .unwrap_or_else(|| syntax_entry_for_char(interp, table_id, ch))
-}
-
-fn syntax_entry_class_matches(entry: SyntaxEntry, class: char) -> bool {
-    match class {
-        // GNU accepts both ` ' and `-' as the whitespace class designator.
-        ' ' | '-' => entry.class == SyntaxClass::Whitespace,
-        'w' => entry.class == SyntaxClass::Word,
-        '_' => entry.class == SyntaxClass::Symbol,
-        '.' => entry.class == SyntaxClass::Punctuation,
-        '(' => entry.class == SyntaxClass::OpenParen,
-        ')' => entry.class == SyntaxClass::CloseParen,
-        '"' => entry.class == SyntaxClass::StringQuote,
-        '\\' => entry.class == SyntaxClass::Escape,
-        '\'' => entry.class == SyntaxClass::Quote,
-        '<' => entry.class == SyntaxClass::CommentStart,
-        '>' => entry.class == SyntaxClass::CommentEnd,
-        '$' => entry.class == SyntaxClass::PairedDelimiter,
-        '/' => entry.class == SyntaxClass::CharQuote,
-        '@' => entry.class == SyntaxClass::Inherit,
-        '!' => entry.class == SyntaxClass::GenericCommentDelimiter,
-        '|' => entry.class == SyntaxClass::GenericStringDelimiter,
-        _ => false,
-    }
-}
-
-pub(super) fn syntax_class_at_buffer_position_matches(
-    interp: &Interpreter,
-    env: &Env,
-    position: usize,
-    class: char,
-) -> bool {
-    let Some(ch) = interp.buffer.borrow().char_at(position) else {
-        return false;
-    };
-    let table_id = interp.current_syntax_table_id();
-    let entry = if interp
-        .lookup_var_key(cached_symbol!("parse-sexp-lookup-properties"), env)
-        .is_some_and(|value| value.is_truthy())
-    {
-        syntax_entry_at_buffer_position(interp, table_id, ch, position)
-    } else {
-        syntax_entry_for_char(interp, table_id, ch)
-    };
-    syntax_entry_class_matches(entry, class)
 }

@@ -13,6 +13,8 @@ impl MatchEnv for TestEnv {
             .map_or(c, |lower| lower as u32)
     }
 
+    fn setup_syntax(&mut self, _at: usize) {}
+
     fn syntax(&mut self, c: u32, _at: usize) -> u8 {
         self.buffer_syntax(c)
     }
@@ -64,6 +66,10 @@ impl MatchEnv for TestEnv {
 
     fn point(&self) -> Option<usize> {
         self.point
+    }
+
+    fn translate_stamp(&self) -> u64 {
+        0
     }
 
     fn side_table_char(&mut self, _at: usize) -> Option<u32> {

@@ -13,7 +13,7 @@
 //! `syntax-ppss'), since GNU signals when either changes the text.
 
 use super::*;
-use crate::buffer::PropertyInterval;
+use crate::buffer::{PropertyInterval, PropertyIntervals, PropertySpan};
 use crate::lisp::regex_emacs as rx;
 use crate::lisp::types::{CharTableRef, Kind};
 
@@ -79,7 +79,7 @@ fn flags_comment_style(flags: i32, other_flags: i32) -> i32 {
 /// SYNTAX_WITH_FLAGS of a syntax-table entry: a descriptor's car, and
 /// whitespace for anything that is not a cons.
 #[inline]
-fn entry_flags(entry: Value) -> i32 {
+pub(super) fn entry_flags(entry: Value) -> i32 {
     if !entry.is_cons() {
         return SWHITESPACE;
     }
@@ -109,7 +109,7 @@ fn args_out_of_range(values: impl IntoIterator<Item = Value>) -> LispError {
 }
 
 /// CHECK_FIXNUM.
-fn check_fixnum(value: &Value) -> Result<i64, LispError> {
+pub(super) fn check_fixnum(value: &Value) -> Result<i64, LispError> {
     match value.kind() {
         Kind::Integer(n) => Ok(n),
         _ => Err(LispError::WrongTypeArgument("fixnump".into(), *value)),
@@ -298,9 +298,21 @@ impl<'r> Text<'r> {
     }
 }
 
-/// syntax.h's gl_state for a scan of the current buffer, with SYNTAX's
-/// ASCII entries of the table in use.  An interval is held by its bounds.
-struct GlState {
+/// gl_state.object: what the scan's text and its properties belong to.
+#[derive(Clone, Copy)]
+pub(super) enum GlObject {
+    /// nil: the current buffer, propertized just in time.
+    Buffer,
+    /// A string, with its own text properties.
+    String(Value),
+    /// t: text without properties (a C string).
+    Plain,
+}
+
+/// syntax.h's gl_state, with SYNTAX's ASCII entries of the table in use.
+/// An interval is held by its bounds.
+pub(super) struct GlState {
+    object: GlObject,
     start: usize,
     stop: usize,
     use_global: bool,
@@ -316,16 +328,25 @@ struct GlState {
     backward_i: Option<(usize, usize)>,
     /// The buffer's own syntax table (BVAR (current_buffer, syntax_table)).
     buffer_table: CharTableRef,
+    /// parse_sexp_lookup_properties.
+    lookup_properties: bool,
+    /// syntax_propertize__done.
+    propertize_done: i64,
+    /// Whether `internal--syntax-propertize' has run since this was last
+    /// cleared: what a scan read of Lisp state is then stale.
+    ran_lisp: bool,
     /// SYNTAX_WITH_FLAGS of the ASCII characters in `current_syntax_table'
-    /// read so far.  Entries change only through Lisp, after which the
-    /// scanner clears these.
+    /// read so far.  Entries change only through Lisp, after which these
+    /// are cleared.
     ascii: [i32; 128],
     ascii_known: u128,
 }
 
 impl GlState {
-    fn new(buffer_table: CharTableRef) -> Self {
-        GlState {
+    fn new(interp: &Interpreter) -> Self {
+        let buffer_table = interp.current_syntax_table_id();
+        let mut gl = GlState {
+            object: GlObject::Buffer,
             start: 0,
             stop: 0,
             use_global: false,
@@ -338,9 +359,28 @@ impl GlState {
             forward_i: None,
             backward_i: None,
             buffer_table,
+            lookup_properties: false,
+            propertize_done: -1,
+            ran_lisp: false,
             ascii: [0; 128],
             ascii_known: 0,
-        }
+        };
+        gl.read_state(interp);
+        gl
+    }
+
+    /// Read what Lisp may have changed: the buffer's syntax table and the
+    /// C variables; SYNTAX's entries are read afresh.
+    fn read_state(&mut self, interp: &Interpreter) {
+        self.buffer_table = interp.current_syntax_table_id();
+        self.ascii_known = 0;
+        self.lookup_properties = interp
+            .symbol_value_key(cached_symbol!("parse-sexp-lookup-properties"))
+            .is_some_and(|value| value.is_truthy());
+        self.propertize_done = interp
+            .symbol_value_key(cached_symbol!("syntax-propertize--done"))
+            .and_then(|value| value.integer_value())
+            .unwrap_or(-1);
     }
 
     fn set_table(&mut self, table: CharTableRef) {
@@ -382,6 +422,106 @@ impl GlState {
         flags
     }
 
+    /// SETUP_SYNTAX_TABLE: gl_state for a scan of the current buffer from
+    /// FROM in the direction of COUNT.
+    fn setup_syntax_table(
+        &mut self,
+        interp: &mut Interpreter,
+        env: &mut Env,
+        from: usize,
+        count: i64,
+    ) -> Result<(), LispError> {
+        self.setup_buffer_syntax_table();
+        let (begv, zv) = {
+            let buffer = interp.buffer.borrow();
+            (buffer.point_min(), buffer.point_max())
+        };
+        self.b_property = begv;
+        self.e_property = zv + 1;
+        self.object = GlObject::Buffer;
+        if self.lookup_properties {
+            if count > 0 {
+                self.update_syntax_table_forward(interp, env, from, true)?;
+            } else if from > begv {
+                self.update_syntax_table(interp, from - 1, count, true)?;
+                self.parse_sexp_propertize(interp, env, from - 1)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// update_syntax_table_forward.
+    fn update_syntax_table_forward(
+        &mut self,
+        interp: &mut Interpreter,
+        env: &mut Env,
+        charpos: usize,
+        init: bool,
+    ) -> Result<(), LispError> {
+        if self.e_property_truncated {
+            self.parse_sexp_propertize(interp, env, charpos)
+        } else {
+            self.update_syntax_table(interp, charpos, 1, init)?;
+            if matches!(self.object, GlObject::Buffer)
+                && self.e_property as i64 > self.propertize_done
+            {
+                self.parse_sexp_propertize(interp, env, charpos)?;
+            }
+            Ok(())
+        }
+    }
+
+    /// parse_sexp_propertize: run `internal--syntax-propertize' when
+    /// CHARPOS is past what `syntax-propertize' has done, else keep
+    /// gl_state from reading past it.
+    fn parse_sexp_propertize(
+        &mut self,
+        interp: &mut Interpreter,
+        env: &mut Env,
+        charpos: usize,
+    ) -> Result<(), LispError> {
+        let zv = interp.buffer.borrow().point_max() as i64;
+        let pos = charpos as i64;
+        if self.propertize_done <= pos && self.propertize_done < zv {
+            // A runtime without syntax.el has nothing to propertize with.
+            if !interp.has_lisp_function("internal--syntax-propertize") {
+                self.propertize_done = i64::MAX;
+                return Ok(());
+            }
+            let modiffs = interp.buffer.borrow().chars_modified_tick();
+            // safe_calln: an error in the propertizer is not the scan's.
+            let _ = interp.call_function_value(
+                Value::Symbol("internal--syntax-propertize".into()),
+                Some("internal--syntax-propertize"),
+                &[Value::Integer(zv.min(1 + pos))],
+                env,
+            );
+            self.ran_lisp = true;
+            if modiffs != interp.buffer.borrow().chars_modified_tick() {
+                return Err(error("internal--syntax-propertize modified the buffer!"));
+            }
+            self.read_state(interp);
+            if self.propertize_done <= pos && self.propertize_done < zv {
+                return Err(error(
+                    "internal--syntax-propertize did not move syntax-propertize--done",
+                ));
+            }
+            self.setup_syntax_table(interp, env, charpos, 1)
+        } else if self.e_property as i64 > self.propertize_done {
+            self.e_property = self.propertize_done.max(0) as usize;
+            self.e_property_truncated = true;
+            Ok(())
+        } else if self.e_property_truncated && (self.e_property as i64) < self.propertize_done {
+            // When moving backward, e_property might be set without
+            // resetting e_property_truncated, so the flag may occasionally
+            // be left raised spuriously.
+            self.e_property_truncated = false;
+            self.update_syntax_table_forward(interp, env, charpos, false)
+        } else {
+            Ok(())
+        }
+    }
+
     /// update_syntax_table: make gl_state good for CHARPOS, which lies
     /// in the direction of COUNT from the interval held or in it; with
     /// INIT, start from the bounds alone.
@@ -392,8 +532,45 @@ impl GlState {
         count: i64,
         init: bool,
     ) -> Result<(), LispError> {
-        let buffer = interp.buffer.borrow();
-        let intervals = buffer.property_intervals();
+        match self.object {
+            GlObject::Buffer => {
+                let buffer = interp.buffer.borrow();
+                let bounds = (buffer.point_min(), buffer.point_max());
+                let intervals = buffer.property_intervals();
+                self.update_in(interp, intervals, Some(bounds), charpos, count, init)
+            }
+            GlObject::String(string) => {
+                let Kind::StringObject(state) = string.kind() else {
+                    unreachable!("gl_state's string object is a string");
+                };
+                let state = state.borrow();
+                let len = state.len();
+                let intervals = (state.props.has_intervals() && len > 0)
+                    .then(|| PropertyIntervals::new(&state.props[..], 0, len));
+                self.update_in(interp, intervals, Some((0, len)), charpos, count, init)
+            }
+            GlObject::Plain => self.update_in(
+                interp,
+                None::<PropertyIntervals<'_, crate::buffer::TextPropertySpan>>,
+                None,
+                charpos,
+                count,
+                init,
+            ),
+        }
+    }
+
+    /// update_syntax_table over the object's INTERVALS, BOUNDS its
+    /// accessible text (none for t, which has no intervals).
+    fn update_in<S: PropertySpan>(
+        &mut self,
+        interp: &Interpreter,
+        intervals: Option<PropertyIntervals<'_, S>>,
+        bounds: Option<(usize, usize)>,
+        charpos: usize,
+        count: i64,
+        init: bool,
+    ) -> Result<(), LispError> {
         let mut invalidate = true;
         let mut i;
         if init {
@@ -401,18 +578,22 @@ impl GlState {
             self.start = self.b_property;
             self.stop = self.e_property;
             // interval_of.
-            let (begv, zv) = (buffer.point_min(), buffer.point_max());
-            if !(begv <= charpos && charpos <= zv) {
-                return Err(args_out_of_range([
-                    Value::Integer(charpos as i64),
-                    Value::Integer(charpos as i64),
-                ]));
-            }
-            let found = intervals
-                .as_ref()
-                .filter(|_| begv != zv)
-                .map(|intervals| intervals.find(charpos));
-            self.forward_i = found.as_ref().and_then(bounds);
+            let found = match bounds {
+                None => None,
+                Some((beg, end)) => {
+                    if !(beg <= charpos && charpos <= end) {
+                        return Err(args_out_of_range([
+                            Value::Integer(charpos as i64),
+                            Value::Integer(charpos as i64),
+                        ]));
+                    }
+                    intervals
+                        .as_ref()
+                        .filter(|_| beg != end)
+                        .map(|intervals| intervals.find(charpos))
+                }
+            };
+            self.forward_i = found.as_ref().and_then(bounds_of);
             self.backward_i = self.forward_i;
             invalidate = false;
             let Some(found) = found else {
@@ -440,7 +621,7 @@ impl GlState {
                 i = intervals.find(charpos);
                 if i.end != self.b_property {
                     invalidate = false;
-                    self.forward_i = bounds(&i);
+                    self.forward_i = bounds_of(&i);
                     self.e_property = i.end;
                 }
             } else if charpos >= i.end {
@@ -450,7 +631,7 @@ impl GlState {
                 i = intervals.find(charpos);
                 if i.start != self.e_property {
                     invalidate = false;
-                    self.backward_i = bounds(&i);
+                    self.backward_i = bounds_of(&i);
                     self.b_property = i.start;
                 }
             }
@@ -463,10 +644,10 @@ impl GlState {
         }
         if invalidate {
             if count > 0 {
-                self.backward_i = bounds(&i);
+                self.backward_i = bounds_of(&i);
                 self.b_property = i.start;
             } else {
-                self.forward_i = bounds(&i);
+                self.forward_i = bounds_of(&i);
                 self.e_property = i.end;
             }
         }
@@ -497,10 +678,10 @@ impl GlState {
             if cnt != 0 && textget(interp, i.plist).word() != tmp_table.word() {
                 if count > 0 {
                     self.e_property = i.start;
-                    self.forward_i = bounds(&i);
+                    self.forward_i = bounds_of(&i);
                 } else {
                     self.b_property = i.end;
-                    self.backward_i = bounds(&i);
+                    self.backward_i = bounds_of(&i);
                 }
                 return Ok(());
             } else if cnt == INTERVALS_AT_ONCE {
@@ -509,10 +690,10 @@ impl GlState {
                     // INC(from);UPDATE_SYNTAX_TABLE_FORWARD needs no check
                     // for the end in between.
                     self.e_property = i.end + usize::from(intervals.next(&i).is_none());
-                    self.forward_i = bounds(&i);
+                    self.forward_i = bounds_of(&i);
                 } else {
                     self.b_property = i.start;
-                    self.backward_i = bounds(&i);
+                    self.backward_i = bounds_of(&i);
                 }
                 return Ok(());
             }
@@ -532,10 +713,80 @@ impl GlState {
         }
         Ok(())
     }
+
+    /// RE_SETUP_SYNTAX_TABLE_FOR_OBJECT: gl_state for a regexp match in
+    /// OBJECT starting at the character position CHARPOS gives (read only
+    /// when properties are looked up, as RE_SYNTAX_TABLE_BYTE_TO_CHAR).
+    pub(super) fn for_regexp(
+        interp: &Interpreter,
+        object: GlObject,
+        charpos: impl FnOnce() -> usize,
+    ) -> (Self, Option<LispError>) {
+        let mut gl = GlState::new(interp);
+        gl.setup_buffer_syntax_table();
+        gl.object = object;
+        (gl.b_property, gl.e_property) = match object {
+            GlObject::Buffer => (1, interp.buffer.borrow().point_max()),
+            GlObject::Plain => (0, usize::MAX),
+            GlObject::String(string) => (0, 1 + string_chars(&string)),
+        };
+        let error = if gl.lookup_properties {
+            gl.update_syntax_table(interp, charpos(), 1, true).err()
+        } else {
+            None
+        };
+        (gl, error)
+    }
+
+    /// Whether `parse-sexp-lookup-properties' is in force.
+    #[inline]
+    pub(super) fn lookup_properties(&self) -> bool {
+        self.lookup_properties
+    }
+
+    /// UPDATE_SYNTAX_TABLE: make gl_state good for CHARPOS.  After an
+    /// error no more properties are looked up.
+    pub(super) fn update(
+        &mut self,
+        interp: &mut Interpreter,
+        env: &mut Env,
+        charpos: usize,
+    ) -> Result<(), LispError> {
+        let result = if self.lookup_properties && charpos < self.b_property {
+            self.update_syntax_table(interp, charpos, -1, false)
+        } else {
+            Ok(())
+        };
+        let result = result.and_then(|()| {
+            if self.lookup_properties && charpos >= self.e_property {
+                self.update_syntax_table_forward(interp, env, charpos, false)
+            } else {
+                Ok(())
+            }
+        });
+        if result.is_err() {
+            self.lookup_properties = false;
+        }
+        result
+    }
+
+    /// SYNTAX through gl_state.
+    #[inline]
+    pub(super) fn syntax(&mut self, c: u32) -> u8 {
+        (self.syntax_with_flags(c) & 0xff) as u8
+    }
+}
+
+/// SCHARS of a string object.
+fn string_chars(string: &Value) -> usize {
+    match string.kind() {
+        Kind::StringObject(state) => state.borrow().len(),
+        _ => 0,
+    }
 }
 
 /// An interval as gl_state holds it.
-fn bounds(i: &PropertyInterval<'_>) -> Option<(usize, usize)> {
+fn bounds_of(i: &PropertyInterval<'_>) -> Option<(usize, usize)> {
     Some((i.start, i.end))
 }
 
@@ -547,6 +798,14 @@ fn textget(interp: &Interpreter, plist: &[(crate::lisp::types::PropertyName, Val
         cached_symbol!("syntax-table"),
     )
     .unwrap_or(Value::Nil)
+}
+
+/// How scan_words ended: at a position (None for GNU's 0, the accessible
+/// text ending first), or with COUNT words left from FROM after a Lisp call
+/// changed the text read.
+enum Words {
+    Done(Option<usize>),
+    Changed { from: usize, count: i64 },
 }
 
 /// lisp_parse_state.
@@ -608,15 +867,14 @@ struct Scanner<'a, 'r> {
     begv_byte: usize,
     zv: usize,
     zv_byte: usize,
-    /// parse_sexp_lookup_properties.
-    lookup_properties: bool,
-    /// syntax_propertize__done.
-    propertize_done: i64,
     parse_sexp_ignore_comments: Option<bool>,
     comment_end_can_be_escaped: Option<bool>,
     multibyte_syntax_as_symbol: Option<bool>,
     open_paren_in_column_0_is_defun_start: Option<bool>,
     comment_use_syntax_ppss: Option<bool>,
+    /// The current category table and the variables word_boundary_p
+    /// reads.
+    categories: Option<(CharTableRef, super::search::WordBoundaryVars)>,
     quit_count: u16,
 }
 
@@ -635,23 +893,22 @@ impl<'a, 'r> Scanner<'a, 'r> {
             Vec::new()
         };
         drop(buffer);
-        let table = interp.current_syntax_table_id();
+        let gl = GlState::new(interp);
         let mut scanner = Scanner {
             interp,
             env,
             text: Text::new(rope, multibyte, extended),
-            gl: GlState::new(table),
+            gl,
             begv: 0,
             begv_byte: 0,
             zv: 0,
             zv_byte: 0,
-            lookup_properties: false,
-            propertize_done: -1,
             parse_sexp_ignore_comments: None,
             comment_end_can_be_escaped: None,
             multibyte_syntax_as_symbol: None,
             open_paren_in_column_0_is_defun_start: None,
             comment_use_syntax_ppss: None,
+            categories: None,
             quit_count: 0,
         };
         scanner.read_state();
@@ -673,24 +930,18 @@ impl<'a, 'r> Scanner<'a, 'r> {
             self.zv = zv;
             self.zv_byte = self.text.char_to_byte(zv);
         }
-        self.gl.buffer_table = self.interp.current_syntax_table_id();
-        self.gl.ascii_known = 0;
-        self.lookup_properties = self.bool_variable(cached_symbol!("parse-sexp-lookup-properties"));
-        self.propertize_done = self
-            .interp
-            .lookup_var_key(cached_symbol!("syntax-propertize--done"), self.env)
-            .and_then(|value| value.integer_value())
-            .unwrap_or(-1);
+        self.gl.read_state(self.interp);
         self.parse_sexp_ignore_comments = None;
         self.comment_end_can_be_escaped = None;
         self.multibyte_syntax_as_symbol = None;
         self.open_paren_in_column_0_is_defun_start = None;
         self.comment_use_syntax_ppss = None;
+        self.categories = None;
     }
 
     fn bool_variable(&self, symbol: crate::lisp::types::symbols::SymbolKey) -> bool {
         self.interp
-            .lookup_var_key(symbol, self.env)
+            .symbol_value_key(symbol)
             .is_some_and(|value| value.is_truthy())
     }
 
@@ -810,7 +1061,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
     /// UPDATE_SYNTAX_TABLE_FORWARD.
     #[inline]
     fn update_forward(&mut self, charpos: usize) -> Result<(), LispError> {
-        if self.lookup_properties && charpos >= self.gl.e_property {
+        if self.gl.lookup_properties && charpos >= self.gl.e_property {
             self.update_syntax_table_forward(charpos, false)?;
         }
         Ok(())
@@ -819,7 +1070,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
     /// UPDATE_SYNTAX_TABLE_BACKWARD.
     #[inline]
     fn update_backward(&mut self, charpos: usize) -> Result<(), LispError> {
-        if self.lookup_properties && charpos < self.gl.b_property {
+        if self.gl.lookup_properties && charpos < self.gl.b_property {
             self.gl
                 .update_syntax_table(&*self.interp, charpos, -1, false)?;
         }
@@ -834,78 +1085,27 @@ impl<'a, 'r> Scanner<'a, 'r> {
 
     /// SETUP_SYNTAX_TABLE.
     fn setup_syntax_table(&mut self, from: usize, count: i64) -> Result<(), LispError> {
-        self.gl.setup_buffer_syntax_table();
-        self.gl.b_property = self.begv;
-        self.gl.e_property = self.zv + 1;
-        if self.lookup_properties {
-            if count > 0 {
-                self.update_syntax_table_forward(from, true)?;
-            } else if from > self.begv {
-                self.gl
-                    .update_syntax_table(&*self.interp, from - 1, count, true)?;
-                self.parse_sexp_propertize(from - 1)?;
-            }
-        }
-        Ok(())
+        let result = self
+            .gl
+            .setup_syntax_table(self.interp, self.env, from, count);
+        self.after_propertize();
+        result
     }
 
     /// update_syntax_table_forward.
     fn update_syntax_table_forward(&mut self, charpos: usize, init: bool) -> Result<(), LispError> {
-        if self.gl.e_property_truncated {
-            self.parse_sexp_propertize(charpos)
-        } else {
-            self.gl
-                .update_syntax_table(&*self.interp, charpos, 1, init)?;
-            if self.gl.e_property as i64 > self.propertize_done {
-                self.parse_sexp_propertize(charpos)?;
-            }
-            Ok(())
-        }
+        let result = self
+            .gl
+            .update_syntax_table_forward(self.interp, self.env, charpos, init);
+        self.after_propertize();
+        result
     }
 
-    /// parse_sexp_propertize: run `internal--syntax-propertize' when
-    /// CHARPOS is past what `syntax-propertize' has done, else keep
-    /// gl_state from reading past it.
-    fn parse_sexp_propertize(&mut self, charpos: usize) -> Result<(), LispError> {
-        let zv = self.zv as i64;
-        let pos = charpos as i64;
-        if self.propertize_done <= pos && self.propertize_done < zv {
-            // A runtime without syntax.el has nothing to propertize with.
-            if !self.interp.has_lisp_function("internal--syntax-propertize") {
-                self.propertize_done = i64::MAX;
-                return Ok(());
-            }
-            let modiffs = self.interp.buffer.borrow().chars_modified_tick();
-            // safe_calln: an error in the propertizer is not the scan's.
-            let _ = self.interp.call_function_value(
-                Value::Symbol("internal--syntax-propertize".into()),
-                Some("internal--syntax-propertize"),
-                &[Value::Integer(zv.min(1 + pos))],
-                self.env,
-            );
-            if modiffs != self.interp.buffer.borrow().chars_modified_tick() {
-                return Err(error("internal--syntax-propertize modified the buffer!"));
-            }
+    /// What the scan read of Lisp state, read again once the propertizer
+    /// has run.
+    fn after_propertize(&mut self) {
+        if std::mem::take(&mut self.gl.ran_lisp) {
             self.read_state();
-            if self.propertize_done <= pos && self.propertize_done < self.zv as i64 {
-                return Err(error(
-                    "internal--syntax-propertize did not move syntax-propertize--done",
-                ));
-            }
-            self.setup_syntax_table(charpos, 1)
-        } else if self.gl.e_property as i64 > self.propertize_done {
-            self.gl.e_property = self.propertize_done.max(0) as usize;
-            self.gl.e_property_truncated = true;
-            Ok(())
-        } else if self.gl.e_property_truncated && (self.gl.e_property as i64) < self.propertize_done
-        {
-            // When moving backward, e_property might be set without
-            // resetting e_property_truncated, so the flag may occasionally
-            // be left raised spuriously.
-            self.gl.e_property_truncated = false;
-            self.update_syntax_table_forward(charpos, false)
-        } else {
-            Ok(())
         }
     }
 
@@ -2024,6 +2224,176 @@ impl<'a, 'r> Scanner<'a, 'r> {
         Ok(Value::Integer(from as i64))
     }
 
+    /// `words-include-escapes'.
+    fn words_include_escapes(&self) -> bool {
+        self.bool_variable(cached_symbol!("words-include-escapes"))
+    }
+
+    /// The `find-word-boundary-function-table' function for C, when
+    /// `fboundp' (which checks it is a symbol) finds one.
+    fn word_boundary_function(&mut self, c: u32) -> Result<Option<Value>, LispError> {
+        let table = self
+            .interp
+            .symbol_value_key(cached_symbol!("find-word-boundary-function-table"));
+        let func = match table.map(|table| table.kind()) {
+            Some(Kind::CharTable(table)) => table.get(c),
+            _ => Value::Nil,
+        };
+        // nil's function cell is always void.
+        if func.is_nil() {
+            return Ok(None);
+        }
+        let bound = super::call(self.interp, "fboundp", &[func], self.env)?;
+        Ok(bound.is_truthy().then_some(func))
+    }
+
+    /// word_boundary_p with the current category table.
+    fn word_boundary_p(&mut self, c1: u32, c2: u32) -> bool {
+        let (table, vars) = match self.categories {
+            Some(read) => read,
+            None => {
+                let read = (
+                    super::search::current_category_table(self.interp),
+                    super::search::WordBoundaryVars::read(self.interp),
+                );
+                self.categories = Some(read);
+                read
+            }
+        };
+        super::search::word_boundary_p_with(self.interp, vars, table, c1, c2)
+    }
+
+    /// scan_words: COUNT words from FROM.  A word-boundary function that
+    /// changes the text ends the scan with what remains of it.
+    fn scan_words(&mut self, from: usize, count: i64) -> Result<Words, LispError> {
+        let beg = self.begv;
+        let end = self.zv;
+        let mut from = from;
+        let mut from_byte = self.text.char_to_byte(from);
+        let mut count = count;
+        let escape = |escapes: bool, code: i32| escapes && (code == SESCAPE || code == SCHARQUOTE);
+
+        self.setup_syntax_table(from, count)?;
+        let mut escapes = self.words_include_escapes();
+
+        while count > 0 {
+            let mut ch0;
+            loop {
+                if from == end {
+                    return Ok(Words::Done(None));
+                }
+                self.update_forward(from)?;
+                ch0 = self.fetch(from_byte);
+                let code = self.syntax(ch0);
+                self.inc(&mut from, &mut from_byte);
+                if escape(escapes, code) || code == SWORD {
+                    break;
+                }
+                self.rarely_quit()?;
+            }
+            // Now CH0 is a character which begins a word and FROM is the
+            // position of the next character.
+            if let Some(func) = self.word_boundary_function(ch0)? {
+                let modiff = self.interp.buffer.borrow().chars_modified_tick();
+                let pos = self.interp.call_function_value(
+                    func,
+                    None,
+                    &[Value::Integer(from as i64 - 1), Value::Integer(end as i64)],
+                    self.env,
+                )?;
+                let zv = self.interp.buffer.borrow().point_max();
+                if let Kind::Integer(pos) = pos.kind()
+                    && (from as i64) < pos
+                    && pos <= zv as i64
+                {
+                    from = pos as usize;
+                }
+                count -= 1;
+                if modiff != self.interp.buffer.borrow().chars_modified_tick() {
+                    return Ok(Words::Changed { from, count });
+                }
+                self.read_state();
+                escapes = self.words_include_escapes();
+                from_byte = self.text.char_to_byte(from);
+                continue;
+            }
+            loop {
+                if from == end {
+                    break;
+                }
+                self.update_forward(from)?;
+                let ch1 = self.fetch(from_byte);
+                let code = self.syntax(ch1);
+                if (code != SWORD && !escape(escapes, code)) || self.word_boundary_p(ch0, ch1) {
+                    break;
+                }
+                self.inc(&mut from, &mut from_byte);
+                ch0 = ch1;
+                self.rarely_quit()?;
+            }
+            count -= 1;
+        }
+        while count < 0 {
+            let mut ch1;
+            loop {
+                if from == beg {
+                    return Ok(Words::Done(None));
+                }
+                self.dec(&mut from, &mut from_byte);
+                self.update_backward(from)?;
+                ch1 = self.fetch(from_byte);
+                let code = self.syntax(ch1);
+                if escape(escapes, code) || code == SWORD {
+                    break;
+                }
+                self.rarely_quit()?;
+            }
+            // Now CH1 is a character which ends a word and FROM is the
+            // position of it.
+            if let Some(func) = self.word_boundary_function(ch1)? {
+                let modiff = self.interp.buffer.borrow().chars_modified_tick();
+                let pos = self.interp.call_function_value(
+                    func,
+                    None,
+                    &[Value::Integer(from as i64), Value::Integer(beg as i64)],
+                    self.env,
+                )?;
+                let begv = self.interp.buffer.borrow().point_min();
+                if let Kind::Integer(pos) = pos.kind()
+                    && begv as i64 <= pos
+                    && pos < from as i64
+                {
+                    from = pos as usize;
+                }
+                count += 1;
+                if modiff != self.interp.buffer.borrow().chars_modified_tick() {
+                    return Ok(Words::Changed { from, count });
+                }
+                self.read_state();
+                escapes = self.words_include_escapes();
+                from_byte = self.text.char_to_byte(from);
+                continue;
+            }
+            loop {
+                if from == beg {
+                    break;
+                }
+                self.dec(&mut from, &mut from_byte);
+                self.update_backward(from)?;
+                let ch0 = self.fetch(from_byte);
+                let code = self.syntax(ch0);
+                if (code != SWORD && !escape(escapes, code)) || self.word_boundary_p(ch0, ch1) {
+                    self.inc(&mut from, &mut from_byte);
+                    break;
+                }
+                ch1 = ch0;
+                self.rarely_quit()?;
+            }
+            count += 1;
+        }
+        Ok(Words::Done(Some(from)))
+    }
+
     /// Fbackward_prefix_chars.
     fn backward_prefix_chars(&mut self) -> Result<Value, LispError> {
         let beg = self.begv;
@@ -2089,7 +2459,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
                     if pos.trailing_zeros() >= 16 {
                         self.interp.maybe_quit(self.env)?;
                     }
-                    if self.lookup_properties && pos >= self.gl.e_property {
+                    if self.gl.lookup_properties && pos >= self.gl.e_property {
                         break;
                     }
                 }
@@ -2651,6 +3021,69 @@ pub(super) fn scan_sexps(
     let count = check_fixnum(count)?;
     let rope = interp.buffer.borrow().text_rope();
     Scanner::new(interp, env, &rope).scan_lists(from, count, 0, true)
+}
+
+/// scan_words: the position COUNT words from FROM, None (GNU's 0) when
+/// the accessible text ends first.
+pub(super) fn scan_words(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    from: usize,
+    count: i64,
+) -> Result<Option<usize>, LispError> {
+    let (mut from, mut count) = (from, count);
+    loop {
+        let rope = interp.buffer.borrow().text_rope();
+        match Scanner::new(interp, env, &rope).scan_words(from, count)? {
+            Words::Done(pos) => return Ok(pos),
+            Words::Changed {
+                from: at,
+                count: left,
+            } => (from, count) = (at, left),
+        }
+    }
+}
+
+/// `forward-word'.
+pub(super) fn forward_word(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    arg: Option<&Value>,
+) -> Result<Value, LispError> {
+    let count = match arg {
+        Some(arg) if !arg.is_nil() => check_fixnum(arg)?,
+        _ => 1,
+    };
+    let point = interp.buffer.borrow().point();
+    let orig_val = scan_words(interp, env, point, count)?;
+    let val = orig_val.unwrap_or_else(|| {
+        let buffer = interp.buffer.borrow();
+        if count > 0 {
+            buffer.point_max()
+        } else {
+            buffer.point_min()
+        }
+    });
+    // Avoid jumping out of an input field.
+    let tmp = super::call(
+        interp,
+        "constrain-to-field",
+        &[
+            Value::Integer(val as i64),
+            Value::Integer(point as i64),
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ],
+        env,
+    )?;
+    let val = check_fixnum(&tmp)? as usize;
+    interp.buffer.borrow_mut().goto_char(val);
+    Ok(if Some(val) == orig_val {
+        Value::T
+    } else {
+        Value::Nil
+    })
 }
 
 /// `backward-prefix-chars'.

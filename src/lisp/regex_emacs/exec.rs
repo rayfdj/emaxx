@@ -93,18 +93,85 @@ struct MatchState {
     best_regend: Vec<isize>,
 }
 
-impl MatchState {
-    fn new(num_regs: usize) -> Self {
-        MatchState {
-            stack: Vec::new(),
-            frame: 0,
-            regstart: vec![UNSET; num_regs],
-            regend: vec![UNSET; num_regs],
-            best_regstart: vec![UNSET; num_regs],
-            best_regend: vec![UNSET; num_regs],
-        }
-    }
+thread_local! {
+    /// The arrays of finished searches, reused as GNU reuses its failure
+    /// stack's allocation instead of allocating for every search.
+    static SPARE_STATES: std::cell::RefCell<Vec<MatchState>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
 
+/// The failure stack length above which a finished search's stack is not
+/// kept for the next one.
+const SPARE_STACK_LIMIT: usize = 1 << 16;
+
+/// A search's MatchState, given back to SPARE_STATES when it ends.
+struct PooledState(MatchState);
+
+impl std::ops::Deref for PooledState {
+    type Target = MatchState;
+    fn deref(&self) -> &MatchState {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for PooledState {
+    fn deref_mut(&mut self) -> &mut MatchState {
+        &mut self.0
+    }
+}
+
+impl Drop for PooledState {
+    fn drop(&mut self) {
+        if self.0.stack.capacity() > SPARE_STACK_LIMIT {
+            return;
+        }
+        let state = MatchState {
+            stack: std::mem::take(&mut self.0.stack),
+            frame: 0,
+            regstart: std::mem::take(&mut self.0.regstart),
+            regend: std::mem::take(&mut self.0.regend),
+            best_regstart: std::mem::take(&mut self.0.best_regstart),
+            best_regend: std::mem::take(&mut self.0.best_regend),
+        };
+        let _ = SPARE_STATES.try_with(|spare| {
+            let mut spare = spare.borrow_mut();
+            if spare.len() < 4 {
+                spare.push(state);
+            }
+        });
+    }
+}
+
+impl PooledState {
+    /// A MatchState for NUM_REGS registers, a finished search's arrays
+    /// when one is spare.
+    fn new(num_regs: usize) -> Self {
+        let mut st = SPARE_STATES
+            .with(|spare| spare.borrow_mut().pop())
+            .unwrap_or_else(|| MatchState {
+                stack: Vec::new(),
+                frame: 0,
+                regstart: Vec::new(),
+                regend: Vec::new(),
+                best_regstart: Vec::new(),
+                best_regend: Vec::new(),
+            });
+        st.stack.clear();
+        st.frame = 0;
+        for regs in [
+            &mut st.regstart,
+            &mut st.regend,
+            &mut st.best_regstart,
+            &mut st.best_regend,
+        ] {
+            regs.clear();
+            regs.resize(num_regs, UNSET);
+        }
+        PooledState(st)
+    }
+}
+
+impl MatchState {
     fn reset(&mut self) {
         self.stack.clear();
         self.frame = 0;
@@ -892,8 +959,9 @@ pub(crate) fn re_match<E: MatchEnv + ?Sized>(
     stop: usize,
     env: &mut E,
 ) -> Result<Option<Registers>, MatchError> {
+    env.setup_syntax(pos);
     let num_regs = pattern.re_nsub + 1;
-    let mut st = MatchState::new(num_regs);
+    let mut st = PooledState::new(num_regs);
     let mut rd = Reader::new(text);
     Ok(
         re_match_2_internal(pattern, text, &mut rd, pos, stop, &mut st, env)?
@@ -913,6 +981,17 @@ fn fastmap_admits<E: MatchEnv + ?Sized>(
     env: &mut E,
 ) -> bool {
     let (code, _) = code_at(rd, d, has_side, env);
+    code_admits(pattern, code, target_multibyte, env)
+}
+
+/// Whether character CODE of a text, translated, can start a match.
+#[inline]
+fn code_admits<E: MatchEnv + ?Sized>(
+    pattern: &Pattern,
+    code: u32,
+    target_multibyte: bool,
+    env: &mut E,
+) -> bool {
     let lead = if target_multibyte {
         let c = if pattern.translate {
             env.translate(code)
@@ -933,6 +1012,27 @@ fn fastmap_admits<E: MatchEnv + ?Sized>(
         leading_byte(c)
     };
     pattern.fastmap[usize::from(lead)]
+}
+
+/// `code_admits' of each ASCII character, as PATTERN keeps it for the
+/// current translation.
+fn ascii_admits<E: MatchEnv + ?Sized>(
+    pattern: &mut Pattern,
+    target_multibyte: bool,
+    env: &mut E,
+) -> u128 {
+    let stamp = env.translate_stamp();
+    if let Some((at, multibyte, bits)) = pattern.ascii_admits
+        && at == stamp
+        && multibyte == target_multibyte
+    {
+        return bits;
+    }
+    let bits = (0..128u32)
+        .filter(|&c| code_admits(pattern, c, target_multibyte, env))
+        .fold(0u128, |bits, c| bits | 1 << c);
+    pattern.ascii_admits = Some((stamp, target_multibyte, bits));
+    bits
 }
 
 /// re_search_2: the first match of PATTERN starting between STARTPOS and
@@ -985,8 +1085,9 @@ pub(crate) fn re_search<E: MatchEnv + ?Sized>(
         re_compile_fastmap(pattern, env);
     }
     let anchored_start = first_op == Some(op::BEGLINE);
+    env.setup_syntax(startpos as usize);
     let num_regs = pattern.re_nsub + 1;
-    let mut st = MatchState::new(num_regs);
+    let mut st = PooledState::new(num_regs);
     let mut rd = Reader::new(text);
     // With no translation, the scan tests bytes: a fastmap entry is set
     // only for a character's first byte, never a continuation byte, and a
@@ -1039,12 +1140,37 @@ pub(crate) fn re_search<E: MatchEnv + ?Sized>(
                             }
                         }
                     } else {
-                        while d < limit {
-                            if fastmap_admits(pattern, &mut rd, d, target_multibyte, has_side, env)
-                            {
-                                break;
+                        // Each character translated and tested, an ASCII
+                        // one by its verdict.
+                        let admits = ascii_admits(pattern, target_multibyte, env);
+                        'scan: while d < limit {
+                            let rest = rd.rest(d);
+                            let n = rest.len().min(limit - d);
+                            let mut i = 0;
+                            while i < n {
+                                let byte = rest[i];
+                                if byte < 0x80 {
+                                    if admits & (1 << byte) != 0 {
+                                        d += i;
+                                        break 'scan;
+                                    }
+                                    i += 1;
+                                } else {
+                                    if fastmap_admits(
+                                        pattern,
+                                        &mut rd,
+                                        d + i,
+                                        target_multibyte,
+                                        has_side,
+                                        env,
+                                    ) {
+                                        d += i;
+                                        break 'scan;
+                                    }
+                                    i += bytes_by_char_head(byte);
+                                }
                             }
-                            d += bytes_by_char_head(rd.byte(d));
+                            d += i;
                         }
                     }
                     let skipped = d as isize - startpos;

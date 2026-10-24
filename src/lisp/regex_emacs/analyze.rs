@@ -375,6 +375,7 @@ pub(super) fn re_compile_fastmap<E: MatchEnv + ?Sized>(pattern: &mut Pattern, en
     };
     pattern.fastmap = fastmap;
     pattern.fastmap_accurate = true;
+    pattern.ascii_admits = None;
     pattern.can_be_null = !safe;
 }
 

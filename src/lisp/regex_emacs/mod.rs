@@ -164,6 +164,10 @@ pub(crate) struct Pattern {
     pub(crate) multibyte: bool,
     /// Whether matching translates text characters (case folding).
     pub(crate) translate: bool,
+    /// The fastmap's verdict on each ASCII character of a text, for a
+    /// translation stamp and a multibyte or unibyte text: bit B is set
+    /// when B, translated, can start a match.
+    pub(crate) ascii_admits: Option<(u64, bool, u128)>,
 }
 
 /// The largest compiled pattern: jump offsets are two-byte numbers.
@@ -368,6 +372,12 @@ impl<'a> Text<'a> {
 pub(crate) trait MatchEnv {
     /// RE_TRANSLATE with the pattern's table (case canonicalization).
     fn translate(&mut self, c: u32) -> u32;
+    /// A count that changes whenever `translate' may map a character
+    /// differently.
+    fn translate_stamp(&self) -> u64;
+    /// RE_SETUP_SYNTAX_TABLE_FOR_OBJECT: ready `syntax' for a match or
+    /// search starting at byte offset AT.
+    fn setup_syntax(&mut self, at: usize);
     /// SYNTAX: the syntax class of C, the character at byte offset AT, with
     /// syntax-table properties when `parse-sexp-lookup-properties' is set
     /// (UPDATE_SYNTAX_TABLE).

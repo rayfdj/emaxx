@@ -62,6 +62,7 @@ const KEY_NAMES: &[&str] = &[
     "multibyte-syntax-as-symbol",
     "open-paren-in-column-0-is-defun-start",
     "comment-use-syntax-ppss",
+    "words-include-escapes",
     "cache-long-scans",
     "char-property-alias-alist",
     "default-text-properties",

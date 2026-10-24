@@ -4902,6 +4902,120 @@ fn scans_read_a_unibyte_buffer_as_raw_bytes_and_skip_syntax_as_bytes() {
 }
 
 #[test]
+fn regexps_read_syntax_table_properties_of_strings_and_buffers() {
+    // regex-emacs.c's SYNTAX goes through gl_state, which
+    // RE_SETUP_SYNTAX_TABLE_FOR_OBJECT points at the string or buffer
+    // matched, so `syntax-table' properties of either apply under
+    // `parse-sexp-lookup-properties'.  The oracle's values.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(let ((s (copy-sequence "ab-cd ef")))
+                 (put-text-property 2 3 'syntax-table '(2) s)
+                 (list (let ((parse-sexp-lookup-properties t)) (string-match "\\w+" s) (match-end 0))
+                       (let ((parse-sexp-lookup-properties nil)) (string-match "\\w+" s) (match-end 0))
+                       (with-temp-buffer
+                         (insert "foo-bar baz")
+                         (put-text-property 4 5 'syntax-table '(2))
+                         (put-text-property 9 10 'syntax-table '(1))
+                         (set (make-local-variable 'parse-sexp-lookup-properties) t)
+                         (goto-char 1)
+                         (list (re-search-forward "\\_<\\w+\\_>" nil t)
+                               (progn (goto-char (point-max)) (re-search-backward "\\bba" nil t))
+                               (progn (goto-char 1) (looking-at "\\sw+") (match-end 0))))))"#,
+        )
+        .to_string(),
+        "(5 2 (8 nil 8))"
+    );
+}
+
+#[test]
+fn regexp_searches_propertize_only_past_their_property_bounds() {
+    // A search's gl_state starts with the interval run around its start
+    // and runs `internal--syntax-propertize' only when a SYNTAX lookup
+    // crosses e_property with the text past `syntax-propertize--done'
+    // (update_syntax_table_forward); scan_words propertizes as the other
+    // scans do.  The oracle's calls.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(progn
+                 (defvar r52-calls nil)
+                 (fset 'internal--syntax-propertize
+                       (lambda (pos)
+                         (push pos r52-calls)
+                         (setq syntax-propertize--done (+ pos 9))))
+                 (with-temp-buffer
+                   (insert "aa bb cc dd ee ff gg hh ii jj kk ll mm nn")
+                   (put-text-property 7 8 'syntax-table '(1))
+                   (put-text-property 20 21 'syntax-table '(1))
+                   (set (make-local-variable 'parse-sexp-lookup-properties) t)
+                   (setq syntax-propertize--done 1)
+                   (list (progn (goto-char 1) (re-search-forward "\\bkk" nil t))
+                         (reverse r52-calls)
+                         syntax-propertize--done
+                         (progn (setq r52-calls nil) (goto-char 1) (forward-word 3))
+                         (point) (reverse r52-calls))))"#,
+        )
+        .to_string(),
+        "(33 (31) 40 t 9 nil)"
+    );
+}
+
+#[test]
+fn word_motion_and_case_commands_follow_scan_words() {
+    // syntax.c:scan_words with `words-include-escapes', a
+    // `find-word-boundary-function-table' function (checked with
+    // `fboundp', so a non-symbol signals) and the accessible text's end,
+    // Fforward_word's value, and casefiddle.c's casify_word moving point
+    // to the cased region's end for either sign.  The oracle's values.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(with-temp-buffer
+                 (insert "one tw\\o three-four  fi_ve")
+                 (let ((table (make-char-table nil)))
+                   (defvar r52-calls nil)
+                   (list (progn (goto-char 1) (list (forward-word 2) (point)))
+                         (progn (set (make-local-variable 'words-include-escapes) t)
+                                (goto-char 1) (list (forward-word 2) (point)))
+                         (progn (goto-char (point-max)) (list (forward-word -2) (point)))
+                         (progn (goto-char 1) (list (forward-word 10) (point)))
+                         (progn (aset table ?t "not a symbol")
+                                (set (make-local-variable 'find-word-boundary-function-table) table)
+                                (goto-char 1)
+                                (condition-case err (forward-word 2) (error err)))
+                         (progn (fset 'r52-wb (lambda (pos limit)
+                                                (push (list pos limit) r52-calls)
+                                                (if (< pos limit) (+ pos 2) (- pos 2))))
+                                (aset table ?t 'r52-wb)
+                                (goto-char 1)
+                                (list (forward-word 2) (point) (forward-word -1) (point)
+                                      (reverse r52-calls))))))"#,
+        )
+        .to_string(),
+        r#"((t 7) (t 9) (t 22) (nil 27) (wrong-type-argument symbolp "not a symbol") (t 7 t 5 ((5 27))))"#
+    );
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(with-temp-buffer
+                 (insert "one TWO three")
+                 (goto-char 1) (upcase-word 1)
+                 (let ((a (list (point) (buffer-string))))
+                   (goto-char (point-max)) (capitalize-word -2)
+                   (list a (point) (buffer-string)
+                         (progn (goto-char 5) (downcase-word 5) (list (point) (buffer-string))))))"#,
+        )
+        .to_string(),
+        r#"((4 "ONE TWO three") 14 "ONE Two Three" (14 "ONE two three"))"#
+    );
+}
+
+#[test]
 fn patterns_holding_syntax_classes_compile_per_table_and_after_syntax_edits() {
     // regex-emacs.c fills `[[:space:]]' for ASCII from the syntax table
     // while compiling (`used_syntax'); search.c's cache then keys the

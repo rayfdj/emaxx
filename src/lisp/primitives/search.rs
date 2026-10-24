@@ -32,20 +32,14 @@ struct CacheEntry {
     pattern: Pattern,
 }
 
-/// A syntax table's entries for the ASCII characters, as read.
-type AsciiEntries = [Option<Value>; 128];
-
 thread_local! {
     /// The cache, most recently used first.  A pattern in use is taken out
     /// (GNU's `busy'), so a search Lisp code runs inside the matcher
-    /// compiles its own copy.
-    static SEARCHBUFS: RefCell<Vec<CacheEntry>> = const { RefCell::new(Vec::new()) };
+    /// compiles its own copy.  Entries move by pointer, as GNU relinks its
+    /// list.
+    #[allow(clippy::vec_box)]
+    static SEARCHBUFS: RefCell<Vec<Box<CacheEntry>>> = const { RefCell::new(Vec::new()) };
     static CANON_CACHE: RefCell<Option<(usize, u64, Rc<Canon>)>> = const { RefCell::new(None) };
-    /// The ASCII entries of a syntax table as its slots held them at a
-    /// char-table store count: a store or a new table changes the count, so
-    /// while it holds, each entry is still the table's (and alive with it).
-    static SYNTAX_CACHE: RefCell<Option<(usize, u64, AsciiEntries)>> =
-        const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -157,17 +151,17 @@ enum Object<'t> {
         rope: ropey::RopeSlice<'t>,
         /// BEGV, the position of the text's first character.
         begv: usize,
-        zv: usize,
         /// Point's byte offset in the text.
         point: usize,
         /// The text is ASCII: byte offsets are character offsets.
         ascii: bool,
-        /// `syntax-propertize--done' as last read.
-        propertized: Option<i64>,
     },
     String {
         rope: ropey::RopeSlice<'t>,
         extended: &'t [(usize, u32)],
+        /// The string object (`re_match_object'), None for text without
+        /// one (GNU's t).
+        string: Option<Value>,
     },
 }
 
@@ -240,13 +234,10 @@ pub(super) struct LispMatchEnv<'a, 't> {
     env: &'a mut Env,
     canon: Option<Rc<Canon>>,
     syntax_table: CharTableRef,
-    syntax_epoch: u64,
-    /// The ASCII entries read from SYNTAX_TABLE, for SYNTAX_CACHE.
-    syntax_ascii: AsciiEntries,
-    syntax_learned: bool,
-    /// `parse-sexp-lookup-properties', read at the first syntax lookup.
-    properties: Option<bool>,
-    scan: Option<super::syntax::SyntaxScan>,
+    /// gl_state as RE_SETUP_SYNTAX_TABLE_FOR_OBJECT leaves it, when
+    /// `parse-sexp-lookup-properties' is set; without it SYNTAX reads the
+    /// buffer's table.
+    gl: Option<Box<super::syntax_scan::GlState>>,
     object: Object<'t>,
     /// An error from `internal--syntax-propertize', raised at the next
     /// quit check.
@@ -260,135 +251,22 @@ impl<'a, 't> LispMatchEnv<'a, 't> {
     fn new(interp: &'a mut Interpreter, env: &'a mut Env, canon: Option<CharTableRef>) -> Self {
         let canon = canon.map(canon_for);
         let syntax_table = interp.current_syntax_table_id();
-        let syntax_epoch = crate::lisp::alloc::vectors::char_tables::char_table_store_epoch();
-        let syntax_ascii = SYNTAX_CACHE.with(|cache| match cache.borrow().as_ref() {
-            Some((id, epoch, entries))
-                if *id == syntax_table.identity() && *epoch == syntax_epoch =>
-            {
-                *entries
-            }
-            _ => [None; 128],
-        });
         LispMatchEnv {
             interp,
             env,
             canon,
             syntax_table,
-            syntax_epoch,
-            syntax_ascii,
-            syntax_learned: false,
-            properties: None,
-            scan: None,
+            gl: None,
             object: Object::None,
             error: None,
             categories: None,
         }
     }
 
-    /// The syntax class of C in the buffer's own table.  An ASCII entry
-    /// comes from the table once per store count, and its class is read
-    /// from it each time, as SYNTAX reads the entry's car: a descriptor
-    /// changed in place (`setcar') is seen at once.
-    fn plain_class(&mut self, c: u32) -> u8 {
-        if c < 128 {
-            let entry = match self.syntax_ascii[c as usize] {
-                Some(entry) => entry,
-                None => {
-                    let entry = self.syntax_table.get(c);
-                    self.syntax_ascii[c as usize] = Some(entry);
-                    self.syntax_learned = true;
-                    entry
-                }
-            };
-            let code = match entry.kind() {
-                Kind::Nil => Some(0),
-                Kind::Integer(code) => Some(code),
-                Kind::Cons(_) => entry.car().ok().and_then(|car| car.integer_value()),
-                _ => None,
-            };
-            // Inherit (13) and malformed entries take the general path.
-            if let Some(class) = code.map(|code| code & 0xffff)
-                && (0..16).contains(&class)
-                && class != 13
-            {
-                return class as u8;
-            }
-        }
-        super::syntax::syntax_entry_for_code(self.interp, self.syntax_table, c).class as u8
-    }
-
-    fn lookup_properties(&mut self) -> bool {
-        *self.properties.get_or_insert_with(|| {
-            self.interp
-                .lookup_var_key(cached_symbol!("parse-sexp-lookup-properties"), self.env)
-                .is_some_and(|value| value.is_truthy())
-        })
-    }
-
-    /// parse_sexp_propertize: run `internal--syntax-propertize' when
-    /// CHARPOS is past what `syntax-propertize' has done.
-    fn propertize(&mut self, charpos: usize) {
-        let Object::Buffer {
-            zv, propertized, ..
-        } = &mut self.object
-        else {
-            return;
-        };
-        let zv = *zv as i64;
-        let done = match *propertized {
-            Some(done) => done,
-            None => {
-                let done = self
-                    .interp
-                    .lookup_var("syntax-propertize--done", self.env)
-                    .and_then(|value| value.integer_value())
-                    .unwrap_or(i64::MAX);
-                *propertized = Some(done);
-                done
-            }
-        };
-        let charpos = charpos as i64;
-        if !(done <= charpos && done < zv) {
-            return;
-        }
-        if !self.interp.has_lisp_function("internal--syntax-propertize") {
-            if let Object::Buffer { propertized, .. } = &mut self.object {
-                *propertized = Some(i64::MAX);
-            }
-            return;
-        }
-        let modiffs = self.interp.buffer.borrow().chars_modified_tick();
-        // safe_calln: an error in the propertizer is not the search's.
-        let _ = self.interp.call_function_value(
-            Value::Symbol("internal--syntax-propertize".into()),
-            Some("internal--syntax-propertize"),
-            &[Value::Integer(zv.min(charpos + 1))],
-            self.env,
-        );
-        if modiffs != self.interp.buffer.borrow().chars_modified_tick() {
-            self.error = Some(LispError::Signal(
-                "internal--syntax-propertize modified the buffer!".into(),
-            ));
-        }
-        let done = self
-            .interp
-            .lookup_var("syntax-propertize--done", self.env)
-            .and_then(|value| value.integer_value())
-            .unwrap_or(i64::MAX);
-        if let Object::Buffer { propertized, .. } = &mut self.object {
-            // A propertizer that did not move would be asked again at
-            // every position; GNU signals.
-            *propertized = Some(if done <= charpos && done < zv {
-                self.error.get_or_insert(LispError::Signal(
-                    "internal--syntax-propertize did not move syntax-propertize--done".into(),
-                ));
-                i64::MAX
-            } else {
-                done
-            });
-        }
-        // The property intervals may have changed.
-        self.scan = None;
+    /// BUFFER_SYNTAX: the syntax class of C in the buffer's own table.
+    #[inline]
+    fn plain_class(&self, c: u32) -> u8 {
+        (super::syntax_scan::entry_flags(self.syntax_table.get(c)) & 0xff) as u8
     }
 
     /// The character position of byte offset AT in the text.
@@ -412,26 +290,9 @@ impl<'a, 't> LispMatchEnv<'a, 't> {
         if let Some(table) = self.categories {
             return table;
         }
-        let interp = &mut *self.interp;
-        let table = interp
-            .initialized_current_category_table_id()
-            .unwrap_or_else(|| interp.ensure_standard_category_table());
+        let table = current_category_table(self.interp);
         self.categories = Some(table);
         table
-    }
-
-    /// CATEGORY_MEMBER of a category set (a bool-vector).
-    fn category_member(&self, set: &Value, category: u8) -> bool {
-        match set.kind() {
-            Kind::Record(id) => self.interp.find_record(id).is_some_and(|record| {
-                record.kind == crate::lisp::eval::RecordKind::BoolVector
-                    && record
-                        .slots
-                        .get(usize::from(category))
-                        .is_some_and(Value::is_truthy)
-            }),
-            _ => false,
-        }
     }
 
     /// The `unicode-category-table' value for C, GNU's general category
@@ -439,7 +300,7 @@ impl<'a, 't> LispMatchEnv<'a, 't> {
     fn general_category(&self, c: u32) -> Option<i64> {
         let table = self
             .interp
-            .lookup_var_key(cached_symbol!("unicode-category-table"), self.env)?;
+            .symbol_value_key(cached_symbol!("unicode-category-table"))?;
         match table.kind() {
             Kind::CharTable(table) => table.get(c).integer_value(),
             _ => None,
@@ -447,18 +308,115 @@ impl<'a, 't> LispMatchEnv<'a, 't> {
     }
 }
 
-impl Drop for LispMatchEnv<'_, '_> {
-    fn drop(&mut self) {
-        if self.syntax_learned {
-            SYNTAX_CACHE.with(|cache| {
-                *cache.borrow_mut() = Some((
-                    self.syntax_table.identity(),
-                    self.syntax_epoch,
-                    self.syntax_ascii,
-                ));
-            });
+/// The current buffer's category table.
+pub(super) fn current_category_table(interp: &mut Interpreter) -> CharTableRef {
+    interp
+        .initialized_current_category_table_id()
+        .unwrap_or_else(|| interp.ensure_standard_category_table())
+}
+
+/// CATEGORY_MEMBER of a category set (a bool-vector).
+pub(super) fn category_member(interp: &Interpreter, set: &Value, category: u8) -> bool {
+    match set.kind() {
+        Kind::Record(id) => interp.find_record(id).is_some_and(|record| {
+            record.kind == crate::lisp::eval::RecordKind::BoolVector
+                && record
+                    .slots
+                    .get(usize::from(category))
+                    .is_some_and(Value::is_truthy)
+        }),
+        _ => false,
+    }
+}
+
+/// The variables category.c's word_boundary_p reads:
+/// `char-script-table', `word-separating-categories' and
+/// `word-combining-categories'.
+#[derive(Clone, Copy)]
+pub(super) struct WordBoundaryVars {
+    scripts: Option<CharTableRef>,
+    separating: Value,
+    combining: Value,
+}
+
+impl WordBoundaryVars {
+    pub(super) fn read(interp: &Interpreter) -> Self {
+        let scripts = match interp
+            .symbol_value_key(cached_symbol!("char-script-table"))
+            .map(|value| value.kind())
+        {
+            Some(Kind::CharTable(table)) => Some(table),
+            _ => None,
+        };
+        let list = |key| interp.symbol_value_key(key).unwrap_or(Value::Nil);
+        WordBoundaryVars {
+            scripts,
+            separating: list(cached_symbol!("word-separating-categories")),
+            combining: list(cached_symbol!("word-combining-categories")),
         }
     }
+}
+
+/// category.c's word_boundary_p, TABLE the current category table.
+pub(super) fn word_boundary_p(interp: &Interpreter, table: CharTableRef, c1: u32, c2: u32) -> bool {
+    word_boundary_p_with(interp, WordBoundaryVars::read(interp), table, c1, c2)
+}
+
+/// word_boundary_p with the variables VARS read.
+pub(super) fn word_boundary_p_with(
+    interp: &Interpreter,
+    vars: WordBoundaryVars,
+    table: CharTableRef,
+    c1: u32,
+    c2: u32,
+) -> bool {
+    let same_script = match vars.scripts {
+        Some(scripts) => scripts.get(c1).word() == scripts.get(c2).word(),
+        None => true,
+    };
+    let (tail, default_result) = if same_script {
+        (vars.separating, false)
+    } else {
+        (vars.combining, true)
+    };
+    let set1 = table.get(c1);
+    if set1.is_nil() {
+        return default_result;
+    }
+    let set2 = table.get(c2);
+    if set2.is_nil() {
+        return default_result;
+    }
+    let category = |value: Value| {
+        value
+            .integer_value()
+            .filter(|code| (0x20..0x7F).contains(code))
+            .map(|code| code as u8)
+    };
+    let mut tail = tail;
+    while let Ok(elt) = tail.car() {
+        if let (Ok(first), Ok(second)) = (elt.car(), elt.cdr())
+            && elt.is_cons()
+        {
+            let first_ok = first.is_nil()
+                || category(first).is_some_and(|cat| {
+                    category_member(interp, &set1, cat) && !category_member(interp, &set2, cat)
+                });
+            let second_ok = second.is_nil()
+                || category(second).is_some_and(|cat| {
+                    !category_member(interp, &set1, cat) && category_member(interp, &set2, cat)
+                });
+            if first_ok && second_ok {
+                return !default_result;
+            }
+        }
+        let Ok(next) = tail.cdr() else { break };
+        if !next.is_cons() {
+            break;
+        }
+        tail = next;
+    }
+    default_result
 }
 
 /// character.h's general categories the predicates test.
@@ -490,17 +448,54 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
         }
     }
 
-    fn syntax(&mut self, c: u32, at: usize) -> u8 {
-        if !matches!(self.object, Object::Buffer { .. }) || !self.lookup_properties() {
-            return self.plain_class(c);
+    fn translate_stamp(&self) -> u64 {
+        match &self.canon {
+            // The canonicalization is read again when any char-table
+            // changes.
+            Some(_) => crate::lisp::alloc::vectors::char_tables::char_table_store_epoch(),
+            None => 0,
         }
-        let charpos = self.charpos(at);
-        self.propertize(charpos);
-        let interp = &*self.interp;
-        let table = self.syntax_table;
-        self.scan
-            .get_or_insert_with(|| super::syntax::SyntaxScan::new(interp, table))
-            .class_at_code(interp, c, charpos) as u8
+    }
+
+    fn setup_syntax(&mut self, at: usize) {
+        use super::syntax_scan::{GlObject, GlState};
+        let object = match &self.object {
+            Object::Buffer { .. } => GlObject::Buffer,
+            Object::String {
+                string: Some(string),
+                ..
+            } => GlObject::String(*string),
+            Object::String { string: None, .. } => GlObject::Plain,
+            Object::None => return,
+        };
+        self.gl = None;
+        if !self
+            .interp
+            .symbol_value_key(cached_symbol!("parse-sexp-lookup-properties"))
+            .is_some_and(|value| value.is_truthy())
+        {
+            return;
+        }
+        let (gl, error) = GlState::for_regexp(self.interp, object, || self.charpos(at));
+        if let Some(error) = error {
+            self.error.get_or_insert(error);
+        }
+        self.gl = Some(Box::new(gl));
+    }
+
+    fn syntax(&mut self, c: u32, at: usize) -> u8 {
+        let Some(lookup) = self.gl.as_ref().map(|gl| gl.lookup_properties()) else {
+            return self.plain_class(c);
+        };
+        if lookup {
+            // RE_SYNTAX_TABLE_BYTE_TO_CHAR and UPDATE_SYNTAX_TABLE.
+            let charpos = self.charpos(at);
+            let gl = self.gl.as_mut().expect("gl_state was set up");
+            if let Err(error) = gl.update(self.interp, self.env, charpos) {
+                self.error.get_or_insert(error);
+            }
+        }
+        self.gl.as_mut().expect("gl_state was set up").syntax(c)
     }
 
     fn buffer_syntax(&mut self, c: u32) -> u8 {
@@ -510,70 +505,12 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
     fn has_category(&mut self, c: u32, category: u8) -> bool {
         let table = self.category_table();
         let set = table.get(c);
-        self.category_member(&set, category)
+        category_member(self.interp, &set, category)
     }
 
-    /// category.c's word_boundary_p.
     fn word_boundary_p(&mut self, c1: u32, c2: u32) -> bool {
-        let scripts = self
-            .interp
-            .lookup_var_key(cached_symbol!("char-script-table"), self.env);
-        let same_script = match scripts.map(|value| value.kind()) {
-            Some(Kind::CharTable(table)) => table.get(c1) == table.get(c2),
-            _ => true,
-        };
-        let (tail, default_result) = if same_script {
-            (
-                self.interp
-                    .lookup_var_key(cached_symbol!("word-separating-categories"), self.env),
-                false,
-            )
-        } else {
-            (
-                self.interp
-                    .lookup_var_key(cached_symbol!("word-combining-categories"), self.env),
-                true,
-            )
-        };
         let table = self.category_table();
-        let set1 = table.get(c1);
-        if set1.is_nil() {
-            return default_result;
-        }
-        let set2 = table.get(c2);
-        if set2.is_nil() {
-            return default_result;
-        }
-        let category = |value: Value| {
-            value
-                .integer_value()
-                .filter(|code| (0x20..0x7F).contains(code))
-                .map(|code| code as u8)
-        };
-        let mut tail = tail.unwrap_or(Value::Nil);
-        while let Ok(elt) = tail.car() {
-            if let (Ok(first), Ok(second)) = (elt.car(), elt.cdr())
-                && elt.is_cons()
-            {
-                let first_ok = first.is_nil()
-                    || category(first).is_some_and(|cat| {
-                        self.category_member(&set1, cat) && !self.category_member(&set2, cat)
-                    });
-                let second_ok = second.is_nil()
-                    || category(second).is_some_and(|cat| {
-                        !self.category_member(&set1, cat) && self.category_member(&set2, cat)
-                    });
-                if first_ok && second_ok {
-                    return !default_result;
-                }
-            }
-            let Ok(next) = tail.cdr() else { break };
-            if !next.is_cons() {
-                break;
-            }
-            tail = next;
-        }
-        default_result
+        word_boundary_p(self.interp, table, c1, c2)
     }
 
     fn alphabeticp(&mut self, c: u32) -> bool {
@@ -674,14 +611,14 @@ fn compile_pattern(
     menv: &mut LispMatchEnv<'_, '_>,
     regexp: &Value,
     posix: bool,
-) -> Result<CacheEntry, LispError> {
+) -> Result<Box<CacheEntry>, LispError> {
     let (bytes, multibyte, _) = string_bytes(regexp)
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *regexp))?;
     let translate = menv.canon.as_ref().map(|canon| canon.table.identity());
     let fold = translate.is_some();
     let whitespace = menv
         .interp
-        .lookup_var_key(cached_symbol!("search-spaces-regexp"), menv.env)
+        .symbol_value_key(cached_symbol!("search-spaces-regexp"))
         .filter(|value| matches!(value.kind(), Kind::StringObject(_)));
     let whitespace_bytes = whitespace
         .as_ref()
@@ -726,7 +663,7 @@ fn compile_pattern(
     )
     .map_err(|error| invalid_regexp(error.message()))?;
     let used_syntax = pattern.used_syntax;
-    Ok(CacheEntry {
+    Ok(Box::new(CacheEntry {
         regexp: bytes.to_vec(),
         multibyte,
         translate,
@@ -734,7 +671,7 @@ fn compile_pattern(
         whitespace: whitespace_bytes.map(|(bytes, multibyte)| (bytes.to_vec(), multibyte)),
         syntax_table: used_syntax.then_some(syntax_table),
         pattern,
-    })
+    }))
 }
 
 /// search.c:clear_regexp_cache, after a syntax table changes: every
@@ -749,7 +686,7 @@ pub(crate) fn clear_regexp_cache() {
 }
 
 /// Return a pattern to the cache as its most recently used entry.
-fn release_pattern(entry: CacheEntry) {
+fn release_pattern(entry: Box<CacheEntry>) {
     SEARCHBUFS.with(|cache| {
         let mut cache = cache.borrow_mut();
         cache.insert(0, entry);
@@ -762,7 +699,6 @@ fn release_pattern(entry: CacheEntry) {
 struct BufferSnapshot {
     rope: ropey::Rope,
     begv: usize,
-    zv: usize,
     begv_byte: usize,
     zv_byte: usize,
     point: usize,
@@ -776,17 +712,23 @@ impl BufferSnapshot {
         let buffer = interp.buffer.borrow();
         let rope = buffer.text_rope();
         let (begv, zv) = (buffer.point_min(), buffer.point_max());
-        let begv_byte = rope.char_to_byte(begv - 1);
-        let zv_byte = rope.char_to_byte(zv - 1);
+        let ascii = rope.len_bytes() == rope.len_chars();
+        let byte = |pos: usize| {
+            if ascii {
+                pos - 1
+            } else {
+                rope.char_to_byte(pos - 1)
+            }
+        };
+        let (begv_byte, zv_byte) = (byte(begv), byte(zv));
         BufferSnapshot {
             begv,
-            zv,
             begv_byte,
             zv_byte,
             point: buffer.point(),
             multibyte: buffer.is_multibyte(),
             side: buffer.has_extended_chars_in(begv, zv),
-            ascii: rope.len_bytes() == rope.len_chars(),
+            ascii,
             rope,
         }
     }
@@ -813,22 +755,21 @@ impl BufferSnapshot {
         }
     }
 
-    fn object(&self) -> Object<'_> {
+    /// The matcher's object for the text TEXT, this snapshot's `slice'.
+    fn object<'s>(&'s self, text: ropey::RopeSlice<'s>) -> Object<'s> {
         Object::Buffer {
-            rope: self.slice(),
+            rope: text,
             begv: self.begv,
-            zv: self.zv,
             point: self.offset(self.point),
             ascii: self.ascii,
-            propertized: None,
         }
     }
 }
 
 /// Whether match data may change (`inhibit-changing-match-data' nil).
-fn modify_match_data_allowed(interp: &Interpreter, env: &Env) -> bool {
+fn modify_match_data_allowed(interp: &Interpreter) -> bool {
     !interp
-        .lookup_var_key(cached_symbol!("inhibit-changing-match-data"), env)
+        .symbol_value_key(cached_symbol!("inhibit-changing-match-data"))
         .is_some_and(|value| value.is_truthy())
 }
 
@@ -862,7 +803,7 @@ pub(super) fn looking_at_1(
     if !matches!(regexp.kind(), Kind::StringObject(_)) {
         return Err(LispError::WrongTypeArgument("stringp".into(), *regexp));
     }
-    let modify_match_data = modify_match_data_allowed(interp, env) && modify_data;
+    let modify_match_data = modify_match_data_allowed(interp) && modify_data;
     let case_table = interp
         .case_fold_search_active(env)
         .then(|| interp.current_case_tables().canon);
@@ -875,9 +816,10 @@ pub(super) fn looking_at_1(
         release_pattern(entry);
         return Err(error);
     }
-    let text = Text::from_rope(snapshot.slice(), snapshot.multibyte, snapshot.side)
+    let slice = snapshot.slice();
+    let text = Text::from_rope(slice, snapshot.multibyte, snapshot.side)
         .with_latin1_bytes(!snapshot.multibyte && !snapshot.ascii);
-    menv.object = snapshot.object();
+    menv.object = snapshot.object(slice);
     let pos = snapshot.offset(snapshot.point);
     let result = rx::re_match(&mut entry.pattern, &text, pos, text.len(), &mut menv);
     let pending = menv.error.take();
@@ -910,7 +852,7 @@ pub(super) fn string_match_1(
     posix: bool,
     modify_data: bool,
 ) -> Result<Value, LispError> {
-    let modify_match_data = modify_match_data_allowed(interp, env) && modify_data;
+    let modify_match_data = modify_match_data_allowed(interp) && modify_data;
     if !matches!(regexp.kind(), Kind::StringObject(_)) {
         return Err(LispError::WrongTypeArgument("stringp".into(), *regexp));
     }
@@ -956,6 +898,7 @@ pub(super) fn string_match_1(
     menv.object = Object::String {
         rope,
         extended: string_text.extended(),
+        string: Some(*string),
     };
     let result = rx::re_search(
         &mut entry.pattern,
@@ -1064,7 +1007,7 @@ fn search_buffer_re(
     mut n: i64,
     posix: bool,
 ) -> Result<i64, LispError> {
-    let preserve_match_data = modify_match_data_allowed(interp, env);
+    let preserve_match_data = modify_match_data_allowed(interp);
     let buffer_id = interp.current_buffer_id();
     let regexp_chars = string_bytes(regexp).map_or(0, |(_, _, chars)| chars);
     // Searching 0 times means don't move; the null string is found at the
@@ -1083,9 +1026,10 @@ fn search_buffer_re(
     let snapshot = BufferSnapshot::take(interp);
     let mut menv = LispMatchEnv::new(interp, env, case_table);
     let mut entry = compile_pattern(&mut menv, regexp, posix)?;
-    let text = Text::from_rope(snapshot.slice(), snapshot.multibyte, snapshot.side)
+    let slice = snapshot.slice();
+    let text = Text::from_rope(slice, snapshot.multibyte, snapshot.side)
         .with_latin1_bytes(!snapshot.multibyte && !snapshot.ascii);
-    menv.object = snapshot.object();
+    menv.object = snapshot.object(slice);
     let lim_byte = snapshot.offset(lim);
     let mut pos_byte = snapshot.offset(pos);
     let mut pos = pos;
@@ -1194,10 +1138,11 @@ pub(crate) fn fast_string_match(
     };
     let string_text = StringText::new(string).expect("a string");
     let extended = string_text.extended().to_vec();
-    fast_text_match(
+    text_match(
         interp,
         env,
         regexp,
+        Some(*string),
         string_text.text(),
         &extended,
         multibyte,
@@ -1208,7 +1153,8 @@ pub(crate) fn fast_string_match(
 
 /// `fast_string_match' on a string's text as Emaxx renders it: raw bytes
 /// as U+E080..U+E0FF, characters beyond Unicode as the placeholder EXTENDED
-/// lists by character index.
+/// lists by character index.  The text has no string object, so no text
+/// properties (GNU's t as `re_match_object').
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fast_text_match(
     interp: &mut Interpreter,
@@ -1220,11 +1166,41 @@ pub(crate) fn fast_text_match(
     case_table: Option<CharTableRef>,
     signal_overflow: bool,
 ) -> Result<Option<usize>, LispError> {
+    text_match(
+        interp,
+        env,
+        regexp,
+        None,
+        haystack,
+        extended,
+        multibyte,
+        case_table,
+        signal_overflow,
+    )
+}
+
+/// fast_string_match_internal on HAYSTACK, the text of STRING when given.
+#[allow(clippy::too_many_arguments)]
+fn text_match(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    regexp: &Value,
+    string: Option<Value>,
+    haystack: &str,
+    extended: &[(usize, u32)],
+    multibyte: bool,
+    case_table: Option<CharTableRef>,
+    signal_overflow: bool,
+) -> Result<Option<usize>, LispError> {
     let rope = ropey::RopeSlice::from(haystack);
     let text = Text::from_str(haystack, multibyte, !extended.is_empty());
     let mut menv = LispMatchEnv::new(interp, env, case_table);
     let mut entry = compile_pattern(&mut menv, regexp, false)?;
-    menv.object = Object::String { rope, extended };
+    menv.object = Object::String {
+        rope,
+        extended,
+        string,
+    };
     let result = rx::re_search(
         &mut entry.pattern,
         &text,
@@ -1278,6 +1254,7 @@ pub(crate) fn fast_c_string_match_ignore_case(
     menv.object = Object::String {
         rope: ropey::RopeSlice::from(haystack.as_str()),
         extended: &[],
+        string: None,
     };
     let result = rx::re_search(
         &mut entry.pattern,
@@ -1305,11 +1282,12 @@ pub(crate) fn fast_looking_at(
 ) -> Result<Option<usize>, LispError> {
     if string.is_nil() {
         let snapshot = BufferSnapshot::take(interp);
-        let text = Text::from_rope(snapshot.slice(), snapshot.multibyte, snapshot.side)
+        let slice = snapshot.slice();
+        let text = Text::from_rope(slice, snapshot.multibyte, snapshot.side)
             .with_latin1_bytes(!snapshot.multibyte && !snapshot.ascii);
         let mut menv = LispMatchEnv::new(interp, env, None);
         let mut entry = compile_pattern(&mut menv, regexp, false)?;
-        menv.object = snapshot.object();
+        menv.object = snapshot.object(slice);
         let start = snapshot.offset(pos);
         let result = rx::re_match(
             &mut entry.pattern,
@@ -1346,6 +1324,7 @@ pub(crate) fn fast_looking_at(
     menv.object = Object::String {
         rope,
         extended: string_text.extended(),
+        string: Some(*string),
     };
     let result = rx::re_match(&mut entry.pattern, &text, byte(pos), byte(limit), &mut menv);
     drop(menv);

@@ -4167,6 +4167,69 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   reading went wrong. They pass the buffer's size plus one, a fixnum, and
   cl-generic, cl-macs, edebug, gv and testcover tests give GNU's results
   again, as do the 13 eval-region, eval-buffer and load tests.
+- **Round 52: the matcher's syntax lookups on gl_state, `scan_words`,
+  and a matcher call's fixed cost.** The matcher still asked syntax
+  classes of round 50's `SyntaxScan`, which refreshed per interval,
+  decoded integer and string `syntax-table` values GNU reads as
+  whitespace, looked at buffers only and ran `internal--syntax-propertize`
+  before every lookup. It now does as regex-emacs.c does:
+  `RE_SETUP_SYNTAX_TABLE_FOR_OBJECT` when `re_search_2` or `re_match_2`
+  starts, for the current buffer (GNU's nil), a string with its own text
+  properties, or text without an object (GNU's t, the `&str` callers);
+  `UPDATE_SYNTAX_TABLE` before each `SYNTAX` of the text; and
+  propertizing only where `update_syntax_table_forward` does, when a
+  lookup in the buffer crosses `e_property` past
+  `syntax-propertize--done`. `syntax_scan.rs`'s `GlState` serves both:
+  `update_syntax_table` walks a buffer's or a string's intervals, and
+  `SETUP_SYNTAX_TABLE`, `update_syntax_table_forward` and
+  `parse_sexp_propertize` moved into it from the scanner (which reads its
+  own state again after the propertizer runs). `BUFFER_SYNTAX` reads the
+  entry's car, whitespace for a non-cons. `forward-word` and the `-word`
+  case commands are syntax.c's `scan_words` (with
+  `words-include-escapes`, a `find-word-boundary-function-table`
+  function checked with `fboundp`, so a non-symbol signals, and
+  category.c's `word_boundary_p` over `char-script-table` and the
+  separating and combining categories), `Fforward_word` (a fixnum count,
+  BEGV or ZV when the text ends first, `constrain-to-field`, t only when
+  the count was reached) and casefiddle.c's `casify_word` (point at the
+  cased region's end for either sign; `case-symbols-as-words` is not
+  word motion's). The old `forward_word`, which had none of these, and
+  `case_word_region` are gone, as are `SyntaxScan` and syntax.rs's
+  one-shot property lookups. A matcher call's fixed cost: the pattern
+  cache moved whole entries (pattern, fastmap and all) to its front at
+  every call and now moves pointers; the 128 ASCII syntax entries copied
+  into and out of every call are gone (a char-table read is cheap);
+  variables C reads are read as C reads them (`symbol_value_key`, no
+  lexical walk); an ASCII buffer's snapshot needs no rope walk and is
+  sliced once; the failure stack and registers are reused across calls;
+  and a case-folded fastmap scan tests ASCII bytes against a verdict
+  table the pattern keeps per char-table store count instead of decoding
+  and translating each character. Instructions (GNU's in brackets): five
+  case-folded `\bbar\b` passes over 4,000 lines, `re-search-forward`
+  328.5M before, 111.3M after [106.3M]; 200,000 `looking-at` calls
+  1,337.6M, 420.1M [152.1M]; 20,000 `(forward-word 10)` 347M of
+  `scan_words`, 269M [110M]. Wall on an idle host, GNU / Emaxx: twenty
+  case-folded `\bbar\b` passes 0.040 / 0.041 s, `\_<foo-[0-9]+\_>`
+  0.044 / 0.052, `\<defun\>` 0.042 / 0.043; a million `looking-at` 0.54
+  / 0.58 s and `string-match` 0.69 / 0.69 to 0.73; a million
+  `looking-at-p` 0.53 / 0.66 (the call into byte code); 100,000
+  `(forward-word 10)` 0.117 / 0.139 (`word_boundary_p`'s four char-table
+  reads a character pair). Differential probes identical to GNU's: 776
+  results of forward and backward searches, `looking-at` at every
+  position and `string-match` with and without
+  `parse-sexp-lookup-properties` over text with cons and char-table
+  `syntax-table` properties, `forward-word` by 1, 2, -1 and -3 at every
+  position with and without `words-include-escapes`, a boundary function,
+  fields and the case commands with seven counts at five positions; and
+  24 with the propertizer's calls logged for searches both ways,
+  `looking-at` and word motion over text with `syntax-table` intervals,
+  and propertizers that change the text or never move. New tests with
+  the oracle's answers: `regexps_read_syntax_table_properties_of_strings_and_buffers`,
+  `regexp_searches_propertize_only_past_their_property_bounds` and
+  `word_motion_and_case_commands_follow_scan_words`. Twenty GNU test
+  files (syntax, regex-emacs, search, casefiddle, subword, thingatpt, rx,
+  simple, python, ruby, cperl, sh-script, css, lisp-mode, elisp-mode,
+  js, fill, octave, sgml, nxml) give GNU's results.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -5065,12 +5128,16 @@ and failures are still recorded.
    font-lock is at GNU's time for subr.el since round 51 ported
    syntax.c's scanners, 1.1 to 1.5 times in simple.el and python.el,
    1.6 to 1.9 times in C mode (cc-engine's Lisp: the interpreter, the
-   byte-code VM and the matcher); search.rs still asks syntax classes of
-   round 50's `SyntaxScan` (a per-interval refresh that decodes integer
-   and string entries GNU reads as whitespace) where regex-emacs.c uses
-   gl_state, the next to port onto `syntax_scan.rs`'s; then a
-   case-folded `\b` (2.8 times)
-   and `looking-at`'s cost a call (1.7 times), process start (0.19 s against 0.08 s; `shell-command` tests that
+   byte-code VM and the matcher); round 52 put the matcher's syntax
+   lookups on the same gl_state and brought case-folded `\b` searches
+   and `looking-at` to GNU's time (its instructions are still 2.8 times
+   GNU's under an interpreter loop that dominates both: rope slicing and
+   chunk lookups, the buffer-local `parse-sexp-lookup-properties` read);
+   `forward-word` is 1.2 times. Round 51's frozen run (gate profile)
+   puts the slowest files where GNU takes 100 ms or more at keymap-tests
+   11.6 times, data-tests 3.6, marker-tests 3.2, help-fns-tests 3.1 and
+   simple-tests 2.75, summed test time at 1.21 times and setup at 2.30;
+   then process start (0.19 s against 0.08 s; `shell-command` tests that
    start Emacs fifty times are 2.5 times slower for it), text
    properties kept in one flat vector of spans (each edit shifts it;
    GNU keeps intervals), keymap description
