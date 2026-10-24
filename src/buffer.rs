@@ -272,6 +272,10 @@ struct BufferText {
     store: TextStore,
     chars: usize,
     bytes: usize,
+    /// The raw-byte markers (U+E080..U+E0FF) in the text, whose stored
+    /// form is a byte longer than GNU's: a marker's byte position needs
+    /// their count before it only when there are any.
+    raw_markers: usize,
     /// A small text's rope for `text_rope', built when a scan asks for
     /// one and dropped by the next change.
     rope_view: RefCell<Option<Rope>>,
@@ -292,6 +296,14 @@ impl Default for TextStore {
 /// The longest text kept as one string: about ropey's leaf size.
 const SMALL_TEXT: usize = 1024;
 
+/// The raw-byte markers U+E080..U+E0FF (EE 82 80 .. EE 83 BF) in BYTES,
+/// which hold whole characters.
+fn count_raw_markers(bytes: &[u8]) -> usize {
+    memchr::memchr_iter(0xEE, bytes)
+        .filter(|&at| matches!(bytes.get(at + 1), Some(0x82 | 0x83)))
+        .count()
+}
+
 impl BufferText {
     fn from_str(text: &str) -> Self {
         Self {
@@ -302,7 +314,42 @@ impl BufferText {
             },
             chars: ropey::str_utils::byte_to_char_idx(text, text.len()),
             bytes: text.len(),
+            raw_markers: count_raw_markers(text.as_bytes()),
             rope_view: RefCell::new(None),
+        }
+    }
+
+    /// The raw-byte markers in the first BYTES bytes of the text.
+    fn raw_markers_before(&self, bytes: usize) -> usize {
+        if self.raw_markers == 0 {
+            return 0;
+        }
+        match &self.store {
+            TextStore::Small(text) => count_raw_markers(&text.as_bytes()[..bytes]),
+            TextStore::Rope(rope) => rope
+                .byte_slice(..bytes)
+                .chunks()
+                .map(|chunk| count_raw_markers(chunk.as_bytes()))
+                .sum(),
+        }
+    }
+
+    /// The raw-byte markers among the characters of RANGE.
+    fn raw_markers_in(&self, range: std::ops::Range<usize>) -> usize {
+        if self.raw_markers == 0 {
+            return 0;
+        }
+        match &self.store {
+            TextStore::Small(text) => {
+                let start = ropey::str_utils::char_to_byte_idx(text, range.start);
+                let end = ropey::str_utils::char_to_byte_idx(text, range.end);
+                count_raw_markers(&text.as_bytes()[start..end])
+            }
+            TextStore::Rope(rope) => rope
+                .slice(range)
+                .chunks()
+                .map(|chunk| count_raw_markers(chunk.as_bytes()))
+                .sum(),
         }
     }
 
@@ -463,11 +510,13 @@ impl BufferText {
         }
         self.chars += added;
         self.bytes += text.len();
+        self.raw_markers += count_raw_markers(text.as_bytes());
         *self.rope_view.get_mut() = None;
         self.check_counts();
     }
 
     fn remove(&mut self, range: std::ops::Range<usize>) {
+        self.raw_markers -= self.raw_markers_in(range.clone());
         let bytes = match &mut self.store {
             TextStore::Small(_) if self.chars == self.bytes => range.len(),
             TextStore::Small(text) => {
@@ -489,6 +538,7 @@ impl BufferText {
 
     /// `remove' for a caller that already holds the removed text.
     fn remove_text(&mut self, range: std::ops::Range<usize>, removed: &str) {
+        self.raw_markers -= count_raw_markers(removed.as_bytes());
         self.remove_bytes(range, removed.len());
     }
 
@@ -531,6 +581,13 @@ impl BufferText {
                 TextStore::Rope(rope) => (rope.len_chars(), rope.len_bytes()),
             };
             assert_eq!((self.chars, self.bytes), (chars, bytes));
+            // Recounting a rope's raw-byte markers walks all its text,
+            // which at every edit made a million insertions quadratic
+            // (undo-tests' flush-lines buffer); a small text's are
+            // recounted.
+            if let TextStore::Small(text) = &self.store {
+                assert_eq!(self.raw_markers, count_raw_markers(text.as_bytes()));
+            }
         }
     }
 }
@@ -1448,26 +1505,27 @@ impl Buffer {
         }
     }
 
+    /// GNU's byte position of character position POSITION
+    /// (buf_charpos_to_bytepos): the stored text's byte offset, less a byte
+    /// for each raw byte before it (stored in three bytes, two in GNU), and
+    /// adjusted for each character the side table holds: one beyond
+    /// Unicode is a three-byte placeholder for GNU's four or five bytes, a
+    /// genuine U+E080..U+E0FF counted as a raw byte is three in both.
     pub(crate) fn marker_byte_position(&self, position: usize) -> usize {
         if !self.multibyte || self.text.len_bytes() == self.text.len_chars() {
             return position;
         }
-        let mut extended = self.extended_chars.iter().peekable();
-        1 + self
-            .text
-            .slice(0..position - 1)
-            .chars()
-            .enumerate()
-            .map(|(index, ch)| {
-                let code = if extended.peek().is_some_and(|(pos, _)| *pos == index + 1) {
-                    extended.next().expect("matching extended character").1
-                } else {
-                    crate::lisp::primitives::string_character_code(true, ch) as u32
-                };
-                crate::lisp::primitives::emacs_multibyte_char_len(code)
-                    .expect("valid buffer character")
-            })
-            .sum::<usize>()
+        let stored = self.text.char_to_byte(position - 1);
+        let mut bytes = stored - self.text.raw_markers_before(stored);
+        for &(at, code) in &self.extended_chars {
+            if at >= position {
+                break;
+            }
+            let length = crate::lisp::primitives::emacs_multibyte_char_len(code)
+                .expect("valid buffer character");
+            bytes = bytes + length + usize::from((0xE080..=0xE0FF).contains(&code)) - 3;
+        }
+        1 + bytes
     }
 
     fn refresh_marker_byte_positions(&self) {

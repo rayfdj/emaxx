@@ -1006,10 +1006,6 @@ impl Interpreter {
         id
     }
 
-    pub(crate) fn initialized_standard_category_table_id(&self) -> Option<CharTableRef> {
-        self.standard_category_table_id
-    }
-
     pub(crate) fn initialized_current_category_table_id(&self) -> Option<CharTableRef> {
         self.buffer_local_value_key(self.current_buffer_id(), cached_symbol!("category-table"))
             .and_then(|value| match value.kind() {
@@ -1020,8 +1016,14 @@ impl Interpreter {
     }
 
     pub fn ensure_standard_case_table(&mut self) -> CharTableRef {
-        if let Some(id) = self.standard_case_table_id {
-            return id;
+        self.standard_case_tables().down
+    }
+
+    /// casetab.c's Vascii_downcase_table and its three companions, made
+    /// by init_casetab_once at the first use.
+    pub(crate) fn standard_case_tables(&mut self) -> CaseTables {
+        if let Some(tables) = self.standard_case_tables {
+            return tables;
         }
         let make = |interp: &mut Self| {
             let Kind::CharTable(id) = interp
@@ -1059,39 +1061,48 @@ impl Interpreter {
         }
         self.set_char_table_extra_slot(canonical_id, 2, Value::CharTable(equivalent_id))
             .expect("initial canonical equivalence slot");
-        self.standard_case_table_id = Some(down_id);
-        down_id
+        let tables = CaseTables {
+            down: down_id,
+            up: up_id,
+            canon: canonical_id,
+            eqv: equivalent_id,
+        };
+        self.standard_case_tables = Some(tables);
+        tables
     }
 
+    /// BVAR (current_buffer, downcase_table).
     pub fn current_case_table_id(&mut self) -> CharTableRef {
-        self.initialized_current_case_table_id()
-            .unwrap_or_else(|| self.ensure_standard_case_table())
+        self.current_case_tables().down
     }
 
-    pub(crate) fn initialized_current_case_table_id(&self) -> Option<CharTableRef> {
-        if let Some((_, id)) = self
-            .buffer_case_tables
-            .iter()
-            .rev()
-            .find(|(buffer_id, _)| *buffer_id == self.current_buffer_id())
-        {
-            Some(*id)
-        } else {
-            self.standard_case_table_id
+    /// The current buffer's four case tables.
+    pub(crate) fn current_case_tables(&mut self) -> CaseTables {
+        match self.buffer_case_tables(self.current_buffer_id()) {
+            Some(tables) => tables,
+            None => self.standard_case_tables(),
         }
     }
 
-    pub fn set_current_case_table(&mut self, id: CharTableRef) {
-        let current_buffer_id = self.current_buffer_id();
-        if let Some((_, slot)) = self
-            .buffer_case_tables
-            .iter_mut()
-            .rev()
-            .find(|(buffer_id, _)| *buffer_id == current_buffer_id)
-        {
-            *slot = id;
+    /// The current buffer's four case tables, unless none exist yet.
+    pub(crate) fn initialized_current_case_tables(&self) -> Option<CaseTables> {
+        self.buffer_case_tables(self.current_buffer_id())
+            .or(self.standard_case_tables)
+    }
+
+    /// casetab.c:set_case_table's final stores for the current buffer.
+    pub(crate) fn set_current_case_tables(&mut self, tables: CaseTables) {
+        let buffer_id = self.current_buffer_id();
+        self.set_buffer_case_tables(buffer_id, tables);
+    }
+
+    /// BUFFER's four slots set to TABLES; a buffer holding the standard
+    /// four keeps no entry.
+    pub(crate) fn set_buffer_case_tables(&mut self, buffer_id: u64, tables: CaseTables) {
+        if Some(tables) == self.standard_case_tables {
+            self.buffer_case_tables.retain(|(id, _)| *id != buffer_id);
         } else {
-            self.buffer_case_tables.push((current_buffer_id, id));
+            self.install_buffer_case_tables(buffer_id, tables);
         }
     }
 
@@ -1099,8 +1110,25 @@ impl Interpreter {
         self.ensure_standard_case_table()
     }
 
-    pub fn set_standard_case_table(&mut self, id: CharTableRef) {
-        self.standard_case_table_id = Some(id);
+    /// casetab.c:set_case_table's stores for the standard tables.  Each
+    /// live buffer holding the old standard four keeps them, as its slots
+    /// in GNU do, now as an entry of its own.
+    pub(crate) fn set_standard_case_tables(&mut self, tables: CaseTables) {
+        if let Some(old) = self.standard_case_tables
+            && old != tables
+        {
+            let holders = self
+                .buffer_list
+                .iter()
+                .map(|(id, _)| *id)
+                .filter(|id| self.buffer_case_tables(*id).is_none())
+                .collect::<Vec<_>>();
+            for id in holders {
+                self.buffer_case_tables.push((id, old));
+            }
+        }
+        self.standard_case_tables = Some(tables);
+        self.buffer_case_tables.retain(|(_, held)| *held != tables);
     }
 
     pub fn standard_syntax_table_id(&self) -> CharTableRef {
@@ -1290,5 +1318,32 @@ impl Interpreter {
             .flat_map(|buffer| buffer.markers())
             .map(|marker| (marker, marker.position()))
             .collect()
+    }
+}
+
+/// A buffer's four case tables (buffer.h's downcase_table, upcase_table,
+/// case_canon_table and case_eqv_table), or casetab.c's four
+/// Vascii_*_table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CaseTables {
+    pub(crate) down: CharTableRef,
+    pub(crate) up: CharTableRef,
+    pub(crate) canon: CharTableRef,
+    pub(crate) eqv: CharTableRef,
+}
+
+impl CaseTables {
+    pub(crate) fn each(&self) -> [CharTableRef; 4] {
+        [self.down, self.up, self.canon, self.eqv]
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn map(self, mut f: impl FnMut(CharTableRef) -> CharTableRef) -> Self {
+        CaseTables {
+            down: f(self.down),
+            up: f(self.up),
+            canon: f(self.canon),
+            eqv: f(self.eqv),
+        }
     }
 }

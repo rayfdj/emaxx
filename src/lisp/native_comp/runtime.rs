@@ -7325,7 +7325,7 @@ mod tests {
         let bindings = crate::lisp::primitives::keymap_direct_bindings(&interpreter, &keymap)
             .expect("direct reader sees the native store");
         assert_eq!(bindings.len(), 1);
-        assert_eq!(bindings[0].value, definition);
+        assert_eq!(bindings[0].1, definition);
         assert_eq!(
             crate::lisp::primitives::call(
                 &mut interpreter,

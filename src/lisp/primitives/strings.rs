@@ -206,15 +206,6 @@ pub(crate) fn string_character_code(multibyte: bool, ch: char) -> i64 {
     }
 }
 
-/// A transient Rust text view of canonical bytes. It is never retained as
-/// mutable string state; consumers needing characters or bytes use the payload.
-pub(crate) fn borrowed_text(value: &Value) -> Option<std::borrow::Cow<'_, str>> {
-    match value.kind() {
-        Kind::StringObject(state) => Some(std::borrow::Cow::Owned(state.borrow().text())),
-        _ => None,
-    }
-}
-
 pub(crate) fn string_like(value: &Value) -> Option<StringLike> {
     match value.kind() {
         Kind::StringObject(state) => {

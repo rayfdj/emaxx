@@ -409,8 +409,9 @@ fn safe_to_load_version(
             let pattern = interp
                 .forwarded_c_value("bytecomp-version-regexp", &Env::new())
                 .unwrap_or(Value::Nil);
-            if !super::super::regexp::fast_c_string_match_ignore_case(
+            if !super::super::search::fast_c_string_match_ignore_case(
                 interp,
+                env,
                 &pattern,
                 &header[newline..count],
             )? {

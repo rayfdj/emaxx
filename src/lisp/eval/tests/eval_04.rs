@@ -6500,13 +6500,17 @@ fn regexp_word_class_does_not_cache_mutable_syntax_table_entries() {
 fn regexp_encoding_classes_preserve_membership_under_case_folding() {
     // Checked against GNU 30.2: these classes use bitmap/BIT_MULTIBYTE
     // membership, including when syntax properties encode the haystack.
+    // Folding `\u00c9' and `\u017f' needs characters.el's case table, so
+    // the forms run in the batch image; `case-fold-search' is let-bound, as
+    // a lambda parameter of that name is lexical there.
     assert_eq!(
-        eval_str(
+        eval_str_with_upstream_batch(
             r#"
             (not
              (memq nil
               (mapcar
-               (lambda (case-fold-search)
+               (lambda (fold)
+                 (let ((case-fold-search fold))
                  (and
                   (equal
                    (mapcar
@@ -6539,7 +6543,7 @@ fn regexp_encoding_classes_preserve_membership_under_case_folding() {
                              (looking-at-p (concat "[[:" class ":]]\\s|")))
                            '(1 2 3)))
                         '("ascii" "nonascii" "multibyte" "unibyte"))
-                       '((t nil t) (nil t nil) (nil t nil) (t nil t)))))))
+                       '((t nil t) (nil t nil) (nil t nil) (t nil t))))))))
                '(nil t))))
             "#,
         ),

@@ -2493,12 +2493,9 @@ fn syntax_ppss_reports_negative_depth_for_extra_closing_parens() {
             Value::Nil,
             Value::Nil,
             Value::Nil,
-            Value::list([
-                Value::Nil,
-                Value::Nil,
-                Value::Integer(-1),
-                Value::Integer(-1),
-            ]),
+            // Element 10, the syntax of a last character that may start
+            // a two-character construct: none here.
+            Value::Nil,
         ])
     );
 }

@@ -28,143 +28,6 @@ fn widen_current_buffer(interp: &Interpreter) {
     }
 }
 
-fn word_syntax_at(interp: &Interpreter, env: &Env, position: usize) -> bool {
-    super::super::syntax::syntax_class_at_buffer_position_matches(interp, env, position, 'w')
-}
-
-fn word_boundary_function(
-    interp: &Interpreter,
-    env: &Env,
-    character: char,
-) -> Option<(Value, String)> {
-    let Kind::CharTable(table_id) =
-        (interp.lookup_var_key(cached_symbol!("find-word-boundary-function-table"), env)?).kind()
-    else {
-        return None;
-    };
-    let entry = interp.char_table_get(table_id, character as u32)?;
-    // A nil entry names no function: nil's function cell is always void.
-    if entry.is_nil() {
-        return None;
-    }
-    let function_name = entry.as_symbol().ok()?.to_owned();
-    let function = interp.lookup_function(&function_name, env).ok()?;
-    Some((function, function_name))
-}
-
-fn call_word_boundary_function(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    function: Value,
-    function_name: &str,
-    position: usize,
-    limit: usize,
-) -> Result<Option<usize>, LispError> {
-    let result = interp.call_function_value(
-        function,
-        Some(function_name),
-        &[
-            Value::Integer(position as i64),
-            Value::Integer(limit as i64),
-        ],
-        env,
-    )?;
-    Ok(match result.kind() {
-        Kind::Integer(position) => usize::try_from(position).ok(),
-        _ => None,
-    })
-}
-
-fn move_forward_one_word(interp: &mut Interpreter, env: &mut Env) -> Result<bool, LispError> {
-    let end = interp.buffer.borrow().point_max();
-    while interp.buffer.borrow().point() < end
-        && !word_syntax_at(interp, env, interp.buffer.borrow().point())
-    {
-        let _ = interp.buffer.borrow_mut().forward_char(1);
-    }
-    if interp.buffer.borrow().point() == end {
-        return Ok(false);
-    }
-
-    let first = interp.buffer.borrow().point();
-    let character = interp
-        .buffer
-        .borrow()
-        .char_at(first)
-        .expect("point before point-max has a character");
-    let _ = interp.buffer.borrow_mut().forward_char(1);
-    if let Some((function, function_name)) = word_boundary_function(interp, env, character) {
-        let after_first = interp.buffer.borrow().point();
-        let boundary =
-            call_word_boundary_function(interp, env, function, &function_name, first, end)?
-                .filter(|boundary| after_first < *boundary && *boundary <= end)
-                .unwrap_or(after_first);
-        interp.buffer.borrow_mut().goto_char(boundary);
-    } else {
-        while interp.buffer.borrow().point() < end
-            && word_syntax_at(interp, env, interp.buffer.borrow().point())
-        {
-            let _ = interp.buffer.borrow_mut().forward_char(1);
-        }
-    }
-    Ok(true)
-}
-
-fn move_backward_one_word(interp: &mut Interpreter, env: &mut Env) -> Result<bool, LispError> {
-    let beginning = interp.buffer.borrow().point_min();
-    while interp.buffer.borrow().point() > beginning {
-        let previous = interp.buffer.borrow().point() - 1;
-        if word_syntax_at(interp, env, previous) {
-            break;
-        }
-        let _ = interp.buffer.borrow_mut().forward_char(-1);
-    }
-    if interp.buffer.borrow().point() == beginning {
-        return Ok(false);
-    }
-
-    let _ = interp.buffer.borrow_mut().forward_char(-1);
-    let last = interp.buffer.borrow().point();
-    let character = interp
-        .buffer
-        .borrow()
-        .char_at(last)
-        .expect("point at a word character has a character");
-    if let Some((function, function_name)) = word_boundary_function(interp, env, character) {
-        let boundary =
-            call_word_boundary_function(interp, env, function, &function_name, last, beginning)?
-                .filter(|boundary| beginning <= *boundary && *boundary < last)
-                .unwrap_or(last);
-        interp.buffer.borrow_mut().goto_char(boundary);
-    } else {
-        while interp.buffer.borrow().point() > beginning {
-            let previous = interp.buffer.borrow().point() - 1;
-            if !word_syntax_at(interp, env, previous) {
-                break;
-            }
-            let _ = interp.buffer.borrow_mut().forward_char(-1);
-        }
-    }
-    Ok(true)
-}
-
-fn forward_word(interp: &mut Interpreter, count: i64, env: &mut Env) -> Result<Value, LispError> {
-    let forward = count >= 0;
-    let mut remaining = count.unsigned_abs();
-    while remaining > 0 {
-        let moved = if forward {
-            move_forward_one_word(interp, env)?
-        } else {
-            move_backward_one_word(interp, env)?
-        };
-        if !moved {
-            return Ok(Value::Nil);
-        }
-        remaining -= 1;
-    }
-    Ok(Value::T)
-}
-
 fn stickiness_names_property(setting: &Value, prop: impl PropertyKey) -> bool {
     match setting.kind() {
         Kind::T => true,
@@ -588,12 +451,7 @@ define_dispatch!(
             "forward-char" => direct_forward_char(interp, args, env),
             "forward-word" => {
                 need_arg_range(name, args, 0, 1)?;
-                let n = if args.is_empty() || args[0].is_nil() {
-                    1
-                } else {
-                    args[0].as_integer()?
-                };
-                forward_word(interp, n, env)
+                super::super::syntax_scan::forward_word(interp, env, args.first())
             }
             "skip-chars-forward" => direct_skip_chars_forward(interp, args, env),
             "skip-chars-backward" => direct_skip_chars_backward(interp, args, env),
@@ -638,49 +496,24 @@ define_dispatch!(
             "posix-search-forward" => regexp::buffer_regex_search(interp, args, env, true, true),
             "posix-search-backward" => regexp::buffer_regex_search(interp, args, env, false, true),
             "forward-comment" => {
-                if args.len() > 1 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                syntax::forward_comment_impl(interp, args.first(), env)
+                need_arg_range(name, args, 1, 1)?;
+                syntax_scan::forward_comment(interp, env, &args[0])
             }
-            "scan-lists" => syntax::scan_lists_impl(interp, args, env),
+            "scan-lists" => {
+                need_arg_range(name, args, 3, 3)?;
+                syntax_scan::scan_lists(interp, env, &args[0], &args[1], &args[2])
+            }
             "scan-sexps" => {
-                need_args(name, args, 2)?;
-                let from = position_from_value(interp, &args[0])?;
-                let count = args[1].as_integer()?;
-                Ok(
-                    syntax::scan_sexps_position_for_scan_sexps(interp, env, from, count)?
-                        .map(|position| Value::Integer(position as i64))
-                        .unwrap_or(Value::Nil),
-                )
+                need_arg_range(name, args, 2, 2)?;
+                syntax_scan::scan_sexps(interp, env, &args[0], &args[1])
             }
             "backward-prefix-chars" => {
-                need_args(name, args, 0)?;
-                syntax::backward_prefix_chars(interp)
+                need_arg_range(name, args, 0, 0)?;
+                syntax_scan::backward_prefix_chars(interp, env)
             }
             "parse-partial-sexp" => {
-                if args.len() < 2 || args.len() > 6 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let from = position_from_value(interp, &args[0])?;
-                let to = position_from_value(interp, &args[1])?;
-                let target_depth = match args.get(2).map(|v| v.kind()) {
-                    Some(Kind::Nil) | None => None,
-                    Some(value) => Some(value.value().as_integer()?),
-                };
-                let stopbefore = args.get(3).is_some_and(Value::is_truthy);
-                let oldstate = args.get(4).filter(|value| !value.is_nil());
-                let commentstop = syntax::CommentStop::from_value(args.get(5));
-                syntax::parse_forward(
-                    interp,
-                    from,
-                    to,
-                    target_depth,
-                    stopbefore,
-                    oldstate,
-                    commentstop,
-                    env,
-                )
+                need_arg_range(name, args, 2, 6)?;
+                syntax_scan::parse_partial_sexp(interp, env, args)
             }
             "buffer-string" => Ok(string_like_value_with_extended_chars(
                 interp.buffer.borrow().buffer_string(),
@@ -1059,15 +892,20 @@ define_dispatch!(
                     "downcase-word" => CaseAction::Down,
                     _ => CaseAction::Capitalize,
                 };
-                let count = args[0].as_integer()?;
+                // casefiddle.c's casify_word.
+                let count = super::super::syntax_scan::check_fixnum(&args[0])?;
                 let point = interp.buffer.borrow().point();
-                let (start, end) = case_word_region(interp, point, count, env);
-                let new_end = casify_buffer_region(interp, start, end, action, env)?;
-                if count >= 0 {
-                    interp.buffer.borrow_mut().goto_char(new_end);
-                } else {
-                    interp.buffer.borrow_mut().goto_char(point);
-                }
+                let farend = super::super::syntax_scan::scan_words(interp, env, point, count)?
+                    .unwrap_or_else(|| {
+                        let buffer = interp.buffer.borrow();
+                        if count <= 0 {
+                            buffer.point_min()
+                        } else {
+                            buffer.point_max()
+                        }
+                    });
+                let new_end = casify_buffer_region(interp, point, farend, action, env)?;
+                interp.buffer.borrow_mut().goto_char(new_end);
                 Ok(Value::Nil)
             }
             "current-column" => {
@@ -1265,7 +1103,9 @@ define_dispatch!(
                 // GNU's `pos-bol' ignores fields; only `line-beginning-position'
                 // constrains (with ESCAPE-FROM-EDGE only after actual line
                 // motion and ONLY-IN-LINE set; see Fline_beginning_position).
-                if name == "line-beginning-position" && buffer_has_field_property(interp) {
+                if name == "line-beginning-position"
+                    && super::buffer_meta::field_near(interp, result, saved)
+                {
                     result = super::call(
                         interp,
                         "constrain-to-field",
@@ -1306,7 +1146,9 @@ define_dispatch!(
                 interp.buffer.borrow_mut().goto_char(saved);
                 // GNU's `pos-eol' ignores fields; `line-end-position'
                 // constrains with ONLY-IN-LINE set (Fline_end_position).
-                if name == "line-end-position" && buffer_has_field_property(interp) {
+                if name == "line-end-position"
+                    && super::buffer_meta::field_near(interp, result, saved)
+                {
                     result = super::call(
                         interp,
                         "constrain-to-field",
@@ -2074,10 +1916,6 @@ define_dispatch!(
         }
     }
 );
-
-fn buffer_has_field_property(interp: &Interpreter) -> bool {
-    interp.buffer.borrow().has_text_property_named("field")
-}
 
 /// Column width of a display spec form: integers are columns, one-element
 /// lists are pixels (one per column on the batch frame), symbols are
@@ -2924,7 +2762,7 @@ pub(super) fn direct_skip_syntax_forward(
     if args.is_empty() || args.len() > 2 {
         return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
     }
-    syntax::skip_syntax_impl(interp, &args[0], args.get(1), true, env)
+    syntax_scan::skip_syntaxes(interp, env, true, &args[0], args.get(1))
 }
 
 /// The `skip-syntax-backward' primitive, callable directly (a subr's function pointer).
@@ -2937,7 +2775,7 @@ pub(super) fn direct_skip_syntax_backward(
     if args.is_empty() || args.len() > 2 {
         return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
     }
-    syntax::skip_syntax_impl(interp, &args[0], args.get(1), false, env)
+    syntax_scan::skip_syntaxes(interp, env, false, &args[0], args.get(1))
 }
 
 /// The `beginning-of-line' primitive, callable directly (a subr's function pointer).
@@ -2971,8 +2809,8 @@ pub(super) fn direct_beginning_of_line(
     if !crossed_to_unterminated_eob {
         interp.buffer.borrow_mut().beginning_of_line();
     }
-    if buffer_has_field_property(interp) {
-        let new_pos = interp.buffer.borrow().point();
+    let new_pos = interp.buffer.borrow().point();
+    if super::buffer_meta::field_near(interp, new_pos, old_pos) {
         let constrained = super::call(
             interp,
             "constrain-to-field",

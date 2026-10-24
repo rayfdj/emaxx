@@ -138,6 +138,9 @@ pub(crate) struct CasingContext {
 impl CasingContext {
     /// Mirror of casefiddle.c:70-85, including which tables each action nils.
     pub(crate) fn prepare(interp: &mut Interpreter, action: CaseAction, env: &mut Env) -> Self {
+        // A table that is not a case table any more keeps its slots, as
+        // GNU's upcase/downcase go on reading them.
+        let _ = super::casetab::prepare_case_tables(interp);
         let capitalizing = matches!(action, CaseAction::Capitalize | CaseAction::UpcaseInitials);
         let table = |interp: &mut Interpreter, property: &str, env: &mut Env| {
             crate::lisp::primitives::dispatch::strings::uniprop_table_id(interp, property, env)
@@ -182,12 +185,9 @@ impl CasingContext {
 pub(crate) fn current_case_table_ids(
     interp: &mut Interpreter,
 ) -> Result<(CharTableRef, CharTableRef), LispError> {
-    let down = interp.current_case_table_id();
-    let up = match interp.char_table_extra_slot(down, 0).map(|v| v.kind()) {
-        Some(Kind::CharTable(id)) => id,
-        _ => down,
-    };
-    Ok((down, up))
+    // BVAR (current_buffer, downcase_table) and upcase_table.
+    let tables = interp.current_case_tables();
+    Ok((tables.down, tables.up))
 }
 
 pub(crate) fn case_table_mapping(
@@ -215,18 +215,13 @@ pub(crate) fn case_table_mapping(
 /// buffer.h: uppercasep and lowercasep use the current case tables, not
 /// Unicode character properties. A character can belong to only one class.
 pub(crate) fn current_case_classes(interp: &Interpreter, code: u32) -> (bool, bool) {
-    let Some(down) = interp.initialized_current_case_table_id() else {
+    let Some(tables) = interp.initialized_current_case_tables() else {
         return (matches!(code, 0x61..=0x7a), matches!(code, 0x41..=0x5a));
     };
     let original = normalize_case_key(code);
-    let uppercase = case_table_mapping(interp, down, code).unwrap_or(original) != original;
-    let lowercase = !uppercase
-        && match interp.char_table_extra_slot(down, 0).map(|v| v.kind()) {
-            Some(Kind::CharTable(up)) => {
-                case_table_mapping(interp, up, code).unwrap_or(original) != original
-            }
-            _ => false,
-        };
+    let uppercase = case_table_mapping(interp, tables.down, code).unwrap_or(original) != original;
+    let lowercase =
+        !uppercase && case_table_mapping(interp, tables.up, code).unwrap_or(original) != original;
     (lowercase, uppercase)
 }
 
@@ -617,57 +612,4 @@ pub(crate) fn parse_region_bounds(value: &Value) -> Result<Vec<(usize, usize)>, 
         }
     }
     Err(LispError::Signal("Invalid region bounds".into()))
-}
-
-pub(crate) fn case_word_region(
-    interp: &Interpreter,
-    point: usize,
-    count: i64,
-    env: &Env,
-) -> (usize, usize) {
-    let case_symbols_as_words = case_symbols_as_words_enabled(interp, env);
-    let is_word = |ch: char| case_word_char(interp, ch, case_symbols_as_words);
-    let mut cursor = point;
-    let mut remaining = count.unsigned_abs();
-    if count >= 0 {
-        while remaining > 0 {
-            while let Some(ch) = interp.buffer.borrow().char_at(cursor) {
-                if is_word(ch) {
-                    break;
-                }
-                cursor += 1;
-            }
-            while let Some(ch) = interp.buffer.borrow().char_at(cursor) {
-                if !is_word(ch) {
-                    break;
-                }
-                cursor += 1;
-            }
-            remaining -= 1;
-        }
-        (point, cursor)
-    } else {
-        while remaining > 0 {
-            while cursor > interp.buffer.borrow().point_min() {
-                let Some(ch) = interp.buffer.borrow().char_at(cursor - 1) else {
-                    break;
-                };
-                if is_word(ch) {
-                    break;
-                }
-                cursor -= 1;
-            }
-            while cursor > interp.buffer.borrow().point_min() {
-                let Some(ch) = interp.buffer.borrow().char_at(cursor - 1) else {
-                    break;
-                };
-                if !is_word(ch) {
-                    break;
-                }
-                cursor -= 1;
-            }
-            remaining -= 1;
-        }
-        (cursor, point)
-    }
 }

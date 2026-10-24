@@ -419,38 +419,11 @@ fn inhibit_auto_composition(interp: &Interpreter, env: &Env) -> bool {
     false
 }
 
-fn target_min(interp: &Interpreter, string: &Value) -> usize {
-    if string.is_nil() {
-        interp.buffer.borrow().point_min()
-    } else {
-        0
-    }
-}
-
 fn target_char_at(interp: &Interpreter, string: &Value, pos: usize) -> Option<char> {
     if string.is_nil() {
         interp.buffer.borrow().char_at(pos)
     } else {
         string_like(string)?.text.chars().nth(pos)
-    }
-}
-
-fn target_text(
-    interp: &Interpreter,
-    string: &Value,
-    from: usize,
-    to: usize,
-) -> Result<String, LispError> {
-    if string.is_nil() {
-        interp
-            .buffer
-            .borrow()
-            .buffer_substring(from, to)
-            .map_err(|error| LispError::Signal(error.to_string()))
-    } else {
-        Ok(string_like(string)
-            .map(|text| text.text.chars().skip(from).take(to - from).collect())
-            .unwrap_or_default())
     }
 }
 
@@ -522,13 +495,11 @@ fn autocmp_chars_inner(
     let len = if pattern_value.is_nil() {
         1
     } else {
-        let Some(pattern) = string_like(pattern_value) else {
+        if !pattern_value.is_string() {
             // Non-string, non-nil PATTERN: the rule matches nothing.
             return Ok(Value::Nil);
-        };
-        let haystack = target_text(interp, string, charpos, limit)?;
-        let at_absolute_start = charpos == target_min(interp, string);
-        match regexp::fast_looking_at_chars(interp, &pattern, &haystack, at_absolute_start)? {
+        }
+        match search::fast_looking_at(interp, env, pattern_value, charpos, limit, string)? {
             Some(len) if len > 0 => len,
             _ => return Ok(Value::Nil),
         }

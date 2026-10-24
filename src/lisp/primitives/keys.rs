@@ -405,30 +405,6 @@ pub(crate) fn normalize_lucid_key_events(
     Ok(Value::list(converted))
 }
 
-/// keymap.c's Fdefine_key: a DEF vector whose first element is a cons "is
-/// apparently an XEmacs-style keyboard macro" -- every Lucid event
-/// description in it is converted through Fevent_convert_list.
-pub(crate) fn normalize_xemacs_macro_definition(
-    interp: &mut Interpreter,
-    def: &Value,
-) -> Result<Value, LispError> {
-    let Ok(events) = vector_items(def) else {
-        return Ok(*def);
-    };
-    if !matches!(events.first().map(|v| v.kind()), Some(Kind::Cons(_))) {
-        return Ok(*def);
-    }
-    let mut converted = vec![Value::Symbol("vector-literal".into())];
-    for event in events {
-        converted.push(if lucid_event_type_list_p(&event) {
-            event_convert_list_value(interp, &event)?
-        } else {
-            event
-        });
-    }
-    Ok(Value::list(converted))
-}
-
 /// keyboard.c's lucid_event_type_list_p: a proper list of fixnums and
 /// symbols whose head is not one of the posn-bearing pseudo-event kinds.
 pub(crate) fn lucid_event_type_list_p(event: &Value) -> bool {
@@ -462,10 +438,6 @@ pub(crate) fn lucid_event_type_list_p(event: &Value) -> bool {
 /// events, just as they do in GNU.
 pub(crate) fn key_sequence_keymap_parts(value: &Value) -> Result<Vec<Value>, LispError> {
     key_sequence_event_parts(value, false)
-}
-
-pub(crate) fn key_sequence_definition_parts(value: &Value) -> Result<Vec<Value>, LispError> {
-    key_sequence_event_parts(value, true)
 }
 
 fn key_sequence_event_parts(value: &Value, defining: bool) -> Result<Vec<Value>, LispError> {
@@ -956,66 +928,6 @@ pub(crate) fn count_backward_line_moves(buffer: &crate::buffer::Buffer) -> usize
     count
 }
 
-/// keymap.c get_keymap (OBJECT, error_if_not_keymap = true, autoload =
-/// false): a `(keymap ...)' list is itself, a symbol whose function
-/// indirection is one yields that keymap, and anything else is
-/// `(wrong-type-argument keymapp OBJECT)'.
-pub(crate) fn resolve_keymap_without_autoload(
-    interp: &mut Interpreter,
-    object: &Value,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    resolve_keymap(interp, object, false, env)
-}
-
-pub(crate) fn resolve_keymap_with_autoload(
-    interp: &mut Interpreter,
-    object: &Value,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    resolve_keymap(interp, object, true, env)
-}
-
-fn resolve_keymap(
-    interp: &mut Interpreter,
-    object: &Value,
-    autoload: bool,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    let is_keymap_list = |value: &Value| matches!(value.car().map(|v| v.kind()), Ok(Kind::Symbol(head)) if head == "keymap");
-    if is_keymap_list(object) {
-        return Ok(*object);
-    }
-    if object.as_symbol().is_ok() {
-        let mut function = call(
-            interp,
-            "indirect-function",
-            std::slice::from_ref(object),
-            env,
-        )?;
-        // keymap.c:get_keymap loads only stubs whose fifth element is
-        // `keymap'. autoload-do-load retains its ordinary failure checks.
-        while autoload
-            && function
-                .car()
-                .is_ok_and(|head| head.eq_value(Value::symbol("autoload")))
-            && function
-                .cdr()?
-                .cdr()?
-                .cdr()?
-                .cdr()?
-                .car()?
-                .eq_value(Value::symbol("keymap"))
-        {
-            function = call(interp, "autoload-do-load", &[function, *object], env)?;
-        }
-        if is_keymap_list(&function) {
-            return Ok(function);
-        }
-    }
-    Err(LispError::WrongTypeArgument("keymapp".into(), *object))
-}
-
 /// keymap.c copy_keymap_1: a fresh `(keymap ...)' spine whose char-table
 /// and vector elements are copied with their items sent through
 /// `copy_keymap_item', whose nested `(keymap ...)' elements are copied,
@@ -1041,7 +953,7 @@ fn copy_keymap_1(
             "Possible infinite recursion when copying keymap".into(),
         ));
     }
-    let keymap = resolve_keymap_without_autoload(interp, keymap, env)?;
+    let keymap = get_keymap(interp, *keymap, true, false, env)?;
     let mut items = Vec::new();
     let mut tail = keymap.cdr()?;
     while let Some((elt, rest)) = tail.cons_values() {

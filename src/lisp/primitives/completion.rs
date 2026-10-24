@@ -652,18 +652,23 @@ pub(crate) fn completion_strings_equal(left: &str, right: &str, ignore_case: boo
     }
 }
 
+/// minibuf.c's match_regexps for one regexp of `completion-regexp-list':
+/// whether PATTERN matches CANDIDATE, folding case with CASE_TABLE's
+/// canonicalization when given.
 pub(crate) fn completion_regex_matches(
-    interp: &Interpreter,
-    env: &Env,
+    interp: &mut Interpreter,
+    env: &mut Env,
     candidate: &str,
     pattern: &Value,
+    case_table: Option<crate::lisp::types::CharTableRef>,
 ) -> Result<bool, LispError> {
-    let pattern = string_like(pattern)
-        .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *pattern))?;
-    let regex = regexp::compile_elisp_regex(interp, &pattern, env, "", true)?;
-    regex
-        .is_match(candidate)
-        .map_err(|error| LispError::Signal(error.to_string()))
+    if !pattern.is_string() {
+        return Err(LispError::WrongTypeArgument("stringp".into(), *pattern));
+    }
+    Ok(
+        search::fast_text_match(interp, env, pattern, candidate, &[], true, case_table, true)?
+            .is_some(),
+    )
 }
 
 pub(crate) fn filtered_completion_matches(
@@ -674,6 +679,8 @@ pub(crate) fn filtered_completion_matches(
     env: &mut Env,
 ) -> Result<Vec<CompletionCandidate>, LispError> {
     let ignore_case = completion_ignores_case(interp, env);
+    // minibuf.c match_regexps folds with the buffer's canonical table.
+    let case_table = ignore_case.then(|| interp.current_case_tables().canon);
     let regexp_list = interp
         .lookup_var("completion-regexp-list", env)
         .and_then(|value| value.to_vec().ok())
@@ -712,7 +719,7 @@ pub(crate) fn filtered_completion_matches(
         }
         let mut regex_match = true;
         for pattern in &regexp_list {
-            if !completion_regex_matches(interp, env, &candidate.name, pattern)? {
+            if !completion_regex_matches(interp, env, &candidate.name, pattern, case_table)? {
                 regex_match = false;
                 break;
             }
@@ -898,6 +905,8 @@ pub(crate) fn test_completion(
         return Ok(result);
     }
     let ignore_case = completion_ignores_case(interp, env);
+    // minibuf.c match_regexps folds with the buffer's canonical table.
+    let case_table = ignore_case.then(|| interp.current_case_tables().canon);
     let regexp_list = interp
         .lookup_var("completion-regexp-list", env)
         .and_then(|value| value.to_vec().ok())
@@ -909,7 +918,7 @@ pub(crate) fn test_completion(
         }
         let mut matches_regexps = true;
         for pattern in &regexp_list {
-            if !completion_regex_matches(interp, env, &candidate.name, pattern)? {
+            if !completion_regex_matches(interp, env, &candidate.name, pattern, case_table)? {
                 matches_regexps = false;
                 break;
             }

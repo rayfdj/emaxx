@@ -5257,9 +5257,11 @@ fn compiled_regexp_introspection_preserves_the_real_backend_boundary() {
          (condition-case error-data
              (re--describe-compiled "a" t)
            (error error-data)))"#;
-    let unavailable =
-        "(error \"Compiled regexp introspection is unavailable from the fancy-regex backend\")";
-    let boundary_expected = format!("((1 . 2) invalid-regexp {unavailable} {unavailable})");
+    // search.c:Fre__describe_compiled: GNU without --enable-checking
+    // refuses the description but returns the raw bytecode (exactn 1 ?a,
+    // succeed).
+    let boundary_expected = "((1 . 2) invalid-regexp \
+         (error \"Not available: rebuild with --enable-checking\") \"\\2\\1a\\1\")";
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(boundary_program)
@@ -5269,7 +5271,7 @@ fn compiled_regexp_introspection_preserves_the_real_backend_boundary() {
     let actual = interp
         .eval(&form, &mut env)
         .expect("compiled-regexp boundary should be catchable");
-    let expected = Reader::new(&boundary_expected)
+    let expected = Reader::new(boundary_expected)
         .read()
         .expect("compiled-regexp boundary expectation should parse")
         .expect("compiled-regexp boundary expectation should contain a form");
@@ -5805,47 +5807,37 @@ fn project_does_not_ship_lisp_compatibility_facades() {
     );
 }
 
+/// Patterns from GNU's own Lisp (the resource helpers, a hyphen class,
+/// empty shy groups) compile and match as regex-emacs.c does.  In
+/// `[\-[:alnum:]]' a backslash is an ordinary character: `\-[' is a
+/// reversed (empty) range, `:alnum:' are plain members and the class
+/// closes before a literal `]', which `--tofu-policy=' lacks.
 #[test]
-fn regex_resource_helper_patterns_compile() {
-    for literal in [
-        r#""\\(?:^\\|[^\\]\\)\\(?:\\\\\\\\\\)*\\\\""#,
-        r#""\\(?:^\\|[^\\]\\)\\(?:\\\\\\\\\\)*\\\\.\\=""#,
+fn regex_helper_and_rx_patterns_match_like_gnu() {
+    let mut interp = Interpreter::new();
+    let mut env = crate::lisp::types::Env::new();
+    for (pattern, text, expected) in [
+        (r"\(?:^\|[^\]\)\(?:\\\\\)*\\", r"ab\\\c", Value::Integer(1)),
+        (r"\(?:^\|[^\]\)\(?:\\\\\)*\\.\=", r"x\y", Value::Nil),
+        (
+            r"-\(?:[\-[:alnum:]]\)+\(?:=\)?",
+            "--tofu-policy=",
+            Value::Nil,
+        ),
+        (r"\(?:\)?x\(?:\)*", "x", Value::Integer(0)),
     ] {
-        let pattern = Reader::new(literal)
-            .read()
-            .expect("pattern literal should parse")
-            .expect("pattern literal should contain a value");
-        let pattern = string_text(&pattern).expect("pattern literal should be a string");
-        let translated = regexp::translate_elisp_regex(&pattern);
-        let rendered = format!("(?m:{translated})");
-        assert!(
-            FancyRegex::new(&rendered).is_ok(),
-            "failed to compile `{pattern}` as `{rendered}`"
+        assert_eq!(
+            call(
+                &mut interp,
+                "string-match",
+                &[Value::String(pattern.into()), Value::String(text.into())],
+                &mut env,
+            )
+            .expect("match a GNU Lisp pattern"),
+            expected,
+            "{pattern} against {text}"
         );
     }
-}
-
-#[test]
-fn translate_elisp_regex_handles_rx_generated_hyphen_classes() {
-    let pattern = r"-\(?:[\-[:alnum:]]\)+\(?:=\)?";
-    let translated = regexp::translate_elisp_regex(pattern);
-    let rendered = format!("(?m:{translated})");
-    let regex = FancyRegex::new(&rendered).expect("translated regex should compile");
-    assert!(
-        regex
-            .is_match("--tofu-policy=")
-            .expect("match result should be available"),
-        "translated `{pattern}` into `{translated}`"
-    );
-}
-
-#[test]
-fn translate_elisp_regex_elides_repeated_empty_shy_groups() {
-    let pattern = r"\(?:\)?x\(?:\)*";
-    let translated = regexp::translate_elisp_regex(pattern);
-    let rendered = format!("(?m:{translated})");
-    let regex = FancyRegex::new(&rendered).expect("translated regexp should compile");
-    assert!(regex.is_match("x").expect("match should complete"));
 }
 
 #[test]
@@ -8273,13 +8265,12 @@ fn unicode_property_internal_encoders_follow_gnu_decision_table() {
 }
 
 #[test]
-fn plain_regexp_cache_hits_skip_syntax_table_rendering() {
+fn plain_regexp_cache_hits_match_repeatedly() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     let pattern = Value::String("-[0-9A-F]+\\'".into());
     let haystack = Value::String("CJK IDEOGRAPH-4E00".into());
 
-    regexp::reset_regexp_syntax_class_render_count();
     for _ in 0..10_000 {
         assert_eq!(
             call(&mut interp, "string-match", &[pattern, haystack], &mut env,)
@@ -8287,19 +8278,13 @@ fn plain_regexp_cache_hits_skip_syntax_table_rendering() {
             Value::Integer(13)
         );
     }
-    assert_eq!(
-        regexp::regexp_syntax_class_render_count(),
-        0,
-        "plain compiled-regexp cache hits must not rebuild syntax-table classes"
-    );
 }
 
 #[test]
-fn syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation() {
+fn syntax_word_classes_follow_table_mutation() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
 
-    regexp::reset_regexp_syntax_class_render_count();
     for pattern in ["\\w", "\\W", "[[:word:]]", "\\sw"] {
         call(
             &mut interp,
@@ -8309,11 +8294,6 @@ fn syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation() {
         )
         .expect("match a syntax-table-dependent regexp");
     }
-    assert_eq!(
-        regexp::regexp_syntax_class_render_count(),
-        1,
-        "different patterns must share one current-table word-class rendering"
-    );
 
     call(
         &mut interp,
@@ -8332,18 +8312,12 @@ fn syntax_word_class_rendering_is_shared_and_invalidated_at_table_mutation() {
         .expect("match through the updated syntax table"),
         Value::Integer(0)
     );
-    assert_eq!(
-        regexp::regexp_syntax_class_render_count(),
-        2,
-        "any table mutation must invalidate the derived rendering"
-    );
 }
 
-/// A rendering keys on the tables it read, the current syntax table and
-/// its parents, not on every syntax table in the process: cc-mode writes
-/// tables of its own while its largest patterns run under another.
+/// Syntax classes in a pattern read the current syntax table and its
+/// parents at match time, not any other table in the process.
 #[test]
-fn syntax_class_rendering_survives_writes_to_tables_outside_its_chain() {
+fn syntax_classes_read_only_the_current_table_chain() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     let word_match = |interp: &mut Interpreter, env: &mut Env, text: &str| {
@@ -8356,12 +8330,10 @@ fn syntax_class_rendering_survives_writes_to_tables_outside_its_chain() {
         .expect("match a syntax-table-dependent regexp")
     };
 
-    regexp::reset_regexp_syntax_class_render_count();
     assert_eq!(
         word_match(&mut interp, &mut env, "word!"),
         Value::Integer(0)
     );
-    assert_eq!(regexp::regexp_syntax_class_render_count(), 1);
 
     // subr.el's `make-syntax-table' is not loaded in a bare interpreter:
     // the same char table with the standard table as parent.
@@ -8388,20 +8360,10 @@ fn syntax_class_rendering_survives_writes_to_tables_outside_its_chain() {
     )
     .expect("write a table the current one does not inherit from");
     assert_eq!(word_match(&mut interp, &mut env, "!"), Value::Nil);
-    assert_eq!(
-        regexp::regexp_syntax_class_render_count(),
-        1,
-        "a write to a table outside the current chain must not re-render"
-    );
 
     let child = make_syntax_table(&mut interp, &mut env);
     call(&mut interp, "set-syntax-table", &[child], &mut env).expect("select the child table");
     assert_eq!(word_match(&mut interp, &mut env, "word"), Value::Integer(0));
-    assert_eq!(
-        regexp::regexp_syntax_class_render_count(),
-        2,
-        "another current table renders once"
-    );
     call(
         &mut interp,
         "modify-syntax-entry",
@@ -8418,41 +8380,11 @@ fn syntax_class_rendering_survives_writes_to_tables_outside_its_chain() {
         Value::Integer(0),
         "the child inherits the parent's new entry"
     );
-    assert_eq!(
-        regexp::regexp_syntax_class_render_count(),
-        3,
-        "a write to a parent in the chain must re-render"
-    );
 }
 
-/// GNU runs `X\{m,n\}' as a counted loop; a large bound over one bracket
-/// expression is translated so fancy-regex loops too instead of the regex
-/// crate unrolling n copies of the class (see loop_large_bounded_repeat).
+/// GNU runs `X\{m,n\}' as a counted loop (succeed_n/jump_n).
 #[test]
-fn large_bounded_repeats_over_a_bracket_expression_become_counted_loops() {
-    let looped = regexp::translate_elisp_regex("[a-z]\\{,1000\\}");
-    assert!(
-        looped.starts_with("(?>[") && looped.ends_with("){0,1000}"),
-        "a large bound over a class wraps the class atomically: {looped}"
-    );
-    let exact = regexp::translate_elisp_regex("[a-z]\\{64\\}");
-    assert!(
-        exact.starts_with("(?>[") && exact.ends_with("){64}"),
-        "{exact}"
-    );
-    for unchanged in [
-        "[a-z]\\{,8\\}",
-        "\\(?:ab\\)\\{,1000\\}",
-        "a\\{,1000\\}",
-        "[a-z]\\{4,\\}",
-    ] {
-        let translated = regexp::translate_elisp_regex(unchanged);
-        assert!(
-            !translated.contains("(?>"),
-            "{unchanged} must keep the regex crate's form: {translated}"
-        );
-    }
-
+fn large_bounded_repeats_over_a_bracket_expression_match_like_gnu() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     for (pattern, text, expected) in [
@@ -12184,6 +12116,9 @@ fn char_table_parameterized_key_events_keep_physical_slots_without_a_dump() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
     let mut interp = Interpreter::new();
     let mut env = Env::new();
+    // where-is-internal searches the global map subr.el installs.
+    let global = call(&mut interp, "make-keymap", &[], &mut env).expect("global map");
+    call(&mut interp, "use-global-map", &[global], &mut env).expect("use-global-map");
     let form = Reader::new(program)
         .read_all()
         .expect("read parameterized key events")
@@ -17279,6 +17214,133 @@ fn map_keymap_internal_visits_only_direct_bindings_and_returns_the_parent() {
 }
 
 #[test]
+fn keymaps_resolve_through_symbols_and_autoloads_as_get_keymap_does() {
+    // keymap.c:get_keymap: KEYMAPP holds for a prefix command and for a
+    // keymap autoload without loading it; lookup-key and define-key load it;
+    // accessible-keymaps (no autoload) signals for it, while
+    // where-is-internal's command-remapping lookup loads it first.
+    // Fdefine_key's errors, store_in_keymap's ranges and its char-table
+    // removal, get_keyelt's `(FILTER 'DEFN)' evaluation, and keyboard.c's
+    // special-event-map entries.  The oracle's answer.
+    let program = r#"
+(let* ((file (make-temp-file "r54map" nil ".el"
+               "(defvar r54-map (let ((m (make-sparse-keymap))) (define-key m \"a\" 'forward-char) m))\n(fset 'r54-map r54-map)\n"))
+       (stub (lambda () (fset 'r54-map nil) (makunbound 'r54-map)
+               (autoload 'r54-map file nil nil 'keymap)))
+       (r nil))
+  (unwind-protect
+      (progn
+        (define-prefix-command 'r54-prefix)
+        (funcall stub)
+        (push (list (keymapp 'r54-map) (keymapp 'r54-prefix) (keymap-prompt 'r54-map)
+                    (autoloadp (symbol-function 'r54-map)))
+              r)
+        (push (lookup-key 'r54-map "a") r)
+        (funcall stub)
+        (push (condition-case e (accessible-keymaps 'r54-map) (error e)) r)
+        (push (where-is-internal 'forward-char (list 'r54-map)) r)
+        (funcall stub)
+        (push (let ((m (make-sparse-keymap)))
+                (define-key m "x" 'r54-map)
+                (define-key m "xc" 'ignore)
+                (lookup-key r54-map "c"))
+              r)
+        (let ((m (make-sparse-keymap)))
+          (define-key m "a" 'x)
+          (push (list (condition-case e (define-key m "ab" 'y) (error e))
+                      (condition-case e (define-key m [keymap] 'y) (error e))
+                      (condition-case e (define-key m [1.5] 'y) (error e))
+                      (condition-case e (define-key m [(97 . 98) 99] 'y) (error e)))
+                r))
+        (let ((m (make-sparse-keymap)))
+          (define-key m [(48 . 57)] 'digit)
+          (define-key m [(48 . 48)] 'zero)
+          (push (list (length m) (char-table-p (nth 1 m)) (lookup-key m "5") (lookup-key m "0")) r))
+        (let ((m (make-keymap)))
+          (define-key m "a" 'x)
+          (define-key m "a" nil t)
+          (push (list (aref (nth 1 m) ?a) (lookup-key m "a")) r))
+        (push (list (keymap--get-keyelt '(menu-item "x" foo :filter (function ignore)) t)
+                    (keymap--get-keyelt '(menu-item "x" foo :enable t :filter (lambda (d) (list 'f d))) t)
+                    (keymap--get-keyelt '(menu-item "x" . foo) t))
+              r)
+        (push (mapcar (lambda (e) (lookup-key special-event-map (vector e)))
+                      '(delete-frame select-window focus-in focus-out move-frame ns-put-working-text))
+              r)
+        (prin1-to-string (nreverse r)))
+    (delete-file file)))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("keymap contract should parse")
+        .expect("keymap contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("keymap contract should evaluate");
+    assert_eq!(
+        value,
+        Value::string(
+            "((t t nil t) forward-char (wrong-type-argument keymapp r54-map) ([97]) ignore ((error \"Key sequence a b starts with non-prefix key a\") (error \"`keymap' is reserved for embedded parent maps\") (wrong-type-argument stringp 1.5) (wrong-type-argument stringp (97 . 98))) (2 t digit zero) (nil nil) (nil (f foo) foo) (handle-delete-frame nil handle-focus-in handle-focus-out handle-move-frame ns-put-working-text))"
+        )
+    );
+}
+
+#[test]
+fn help_describe_vector_describes_each_run_of_a_char_table_once() {
+    // keymap.c:describe_vector: char_table_ref_and_range gives each run of
+    // characters bound to one object, which is looked up in SHADOW and the
+    // entire map at its first character only; a vector's consecutive
+    // `equal' elements merge, and VECTOR must be a vector or a char-table.
+    // The oracle's text.
+    let program = r#"
+        (let ((map (make-keymap)) (shadow (make-sparse-keymap)))
+          (define-key map "a" 'forward-char)
+          (define-key map "b" 'forward-char)
+          (define-key map "c" 'backward-char)
+          (set-char-table-range (nth 1 map) '(#x100 . #x2ff) 'self-insert-command)
+          (define-key shadow "b" 'next-line)
+          (list
+           (with-temp-buffer
+             (help--describe-vector (nth 1 map) nil (lambda (d) (insert (format "%S\n" d)))
+                                    nil (list shadow) map nil)
+             (buffer-substring-no-properties 1 (point-max)))
+           (with-temp-buffer
+             (help--describe-vector (nth 1 map) [?\C-x] (lambda (d) (insert (format "%S\n" d)))
+                                    nil (list shadow) map t)
+             (buffer-substring-no-properties 1 (point-max)))
+           (with-temp-buffer
+             (help--describe-vector (vector 'a 'a nil 'b 'b 'b) [?\C-c]
+                                    (lambda (d) (insert (format "%S\n" d))) nil nil nil nil)
+             (buffer-substring-no-properties 1 (point-max)))
+           (condition-case e (help--describe-vector 'x nil #'ignore nil nil nil nil) (error e))))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("describe-vector contract should parse")
+        .expect("describe-vector contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("describe-vector contract should evaluate");
+    let expected = Value::list([
+        Value::string(
+            "\na .. bforward-char\ncbackward-char\n\u{100} .. \u{2ff}self-insert-command\n",
+        ),
+        Value::string(
+            "\nC-x a .. C-x bforward-char\nC-x cbackward-char\nC-x \u{100} .. C-x \u{2ff}self-insert-command\n",
+        ),
+        Value::string("\nC-c C-@ .. C-c C-aa\nC-c C-c .. C-c C-eb\n"),
+        Value::list([
+            Value::symbol("wrong-type-argument"),
+            Value::symbol("vector-or-char-table-p"),
+            Value::symbol("x"),
+        ]),
+    ]);
+    assert_eq!(value, expected);
+}
+
+#[test]
 fn describe_vector_groups_equal_ranges_and_shares_standard_output_with_describers() {
     let program = r#"
         (let ((table (make-char-table nil nil)))
@@ -18838,20 +18900,18 @@ fn keymap_set_where_is_internal_preserves_control_prefixes() {
     )
     .expect("keymap-set should accept control-prefixed textual specs");
     assert_eq!(
-        where_is_internal(
+        where_is_internal_command(
             &mut interp,
-            &Value::Symbol("keymap-tests-command".into()),
-            &[keymap],
+            Value::symbol("keymap-tests-command"),
+            Value::list([keymap]),
+            Value::Nil,
             false,
             false,
             &mut env,
         )
-        .expect("where-is-internal should find control-prefixed binding"),
-        vec![Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Integer(3),
-            Value::Integer('g' as i64),
-        ])]
+        .expect("where-is-internal should find control-prefixed binding")
+        .to_string(),
+        "([3 103])"
     );
 }
 
@@ -24923,6 +24983,10 @@ fn command_remapping_finds_fresh_remap_bindings() {
     )
     .expect("command-remapping resolves");
     assert_eq!(remapped, Value::Symbol("bar".into()));
+    // A keymap's where-is-internal also searches the global map, which
+    // subr.el installs; GNU's current_global_map is nil before it.
+    let global = call(&mut interp, "make-keymap", &[], &mut env).expect("global map");
+    call(&mut interp, "use-global-map", &[global], &mut env).expect("use-global-map");
     let where_is = call(
         &mut interp,
         "where-is-internal",

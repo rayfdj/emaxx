@@ -22,6 +22,14 @@ use crate::lisp::types::Kind;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
+        "where_is_cache",
+        "keymap.c's staticpro'd where_is_cache is a memo of where_is_internal for menu-less lookups, used only while Fequal finds the keymaps it was built for in where_is_cache_keymaps and flushed by every store_in_keymap and Fset_keymap_parent; the image starts without one and the next such lookup rebuilds it",
+    ),
+    (
+        "where_is_cache_keymaps",
+        "the keymaps where_is_cache was built for (t while none is complete); reset with where_is_cache",
+    ),
+    (
         "modules",
         "emacs-module.c: local handles belong to active foreign frames; pdumper.c refuses PVEC_MODULE_FUNCTION, PVEC_USER_PTR and PVEC_OTHER global references, so a dumped runtime has no live module state",
     ),
@@ -126,8 +134,12 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
         "written per buffer with the local bindings",
     ),
     (
+        "buffer_syntax_tables",
+        "actual CharTableRef roots, written in dump_buffer's BUFFER_SYNTAX_TABLE slot and restored by load_buffer through install_buffer_syntax_table",
+    ),
+    (
         "buffer_case_tables",
-        "actual CharTableRef roots, written in dump_buffer's BUFFER_CASE_TABLE slot and restored by load_buffer through install_buffer_case_table",
+        "actual CharTableRef roots, written in dump_buffer's BUFFER_CASE_TABLE, BUFFER_UPCASE_TABLE, BUFFER_CASE_CANON_TABLE and BUFFER_CASE_EQV_TABLE slots and restored by load_buffer through install_buffer_case_tables",
     ),
     (
         "standard_obarray_id",
@@ -230,7 +242,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "terminal.c resets its allocation counter for the new process; restored nilled terminals advance it",
     ),
     ("next_buffer_id", "carried in the remembered scalars"),
-    ("regexp_syntax_class_cache", "a cache"),
     ("syntax_segment_cache", "a cache"),
     (
         "loaded_bindings",
@@ -286,7 +297,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "image_reconstruction_handoff",
         "the startup reconstruction's flag",
     ),
-    ("buffer_syntax_tables", "written per buffer record"),
     (
         "next_special_binding_id",
         "carried in the remembered scalars",
@@ -576,10 +586,13 @@ impl Interpreter {
             self.standard_category_table_id
                 .map_or(Value::Nil, Value::CharTable),
         ));
+        // casetab.c's Vascii_downcase_table, Vascii_upcase_table,
+        // Vascii_canon_table and Vascii_eqv_table.
         groups.push((
             RootSlot::StandardCaseTable,
-            self.standard_case_table_id
-                .map_or(Value::Nil, Value::CharTable),
+            self.standard_case_tables.map_or(Value::Nil, |tables| {
+                Value::vector(tables.each().into_iter().map(Value::CharTable))
+            }),
         ));
         groups.push((
             RootSlot::SyntaxWordChars,
@@ -1061,8 +1074,21 @@ mod install {
                         opt_of(value, |v| expect_char_table(v, "standard category table"))?;
                 }
                 RootSlot::StandardCaseTable => {
-                    self.standard_case_table_id =
-                        opt_of(value, |v| expect_char_table(v, "standard case table"))?;
+                    self.standard_case_tables = opt_of(value, |v| {
+                        let tables = expect_vector(v, "standard case tables")?
+                            .iter()
+                            .map(|table| expect_char_table(table, "standard case table"))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let [down, up, canon, eqv] = tables[..] else {
+                            return Err("standard case tables: not four tables".into());
+                        };
+                        Ok(coding::CaseTables {
+                            down,
+                            up,
+                            canon,
+                            eqv,
+                        })
+                    })?;
                 }
                 RootSlot::UnicodeMenuCaseTable => {
                     crate::lisp::primitives::restore_unicode_menu_case_table(self, *value)?;

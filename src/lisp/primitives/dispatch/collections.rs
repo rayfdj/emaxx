@@ -1148,19 +1148,10 @@ define_dispatch!(
             }
             "case-table-p" => {
                 need_args(name, args, 1)?;
-                let Kind::CharTable(id) = args[0].kind() else {
-                    return Ok(Value::Nil);
-                };
-                if !id.has_purpose("case-table") {
-                    return Ok(Value::Nil);
-                }
-                let up = interp.char_table_extra_slot(id, 0).unwrap_or(Value::Nil);
-                let canon = interp.char_table_extra_slot(id, 1).unwrap_or(Value::Nil);
-                let equivalences = interp.char_table_extra_slot(id, 2).unwrap_or(Value::Nil);
-                let valid = matches!(up.kind(), Kind::Nil | Kind::CharTable(_))
-                    && ((canon.is_nil() && equivalences.is_nil())
-                        || (matches!(canon.kind(), Kind::CharTable(_))
-                            && matches!(equivalences.kind(), Kind::Nil | Kind::CharTable(_))));
+                let valid = matches!(
+                    args[0].kind(),
+                    Kind::CharTable(id) if crate::lisp::primitives::casetab::case_table_p(id)
+                );
                 Ok(if valid { Value::T } else { Value::Nil })
             }
             "syntax-table-p" => {
@@ -1285,20 +1276,12 @@ define_dispatch!(
 
             "set-case-table" => {
                 need_args(name, args, 1)?;
-                let Kind::CharTable(id) = args[0].kind() else {
-                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
-                };
-                interp.set_current_case_table(id);
-                Ok(args[0])
+                crate::lisp::primitives::casetab::set_case_table(interp, args[0], false)
             }
 
             "set-standard-case-table" => {
                 need_args(name, args, 1)?;
-                let Kind::CharTable(id) = args[0].kind() else {
-                    return Err(LispError::WrongTypeArgument("char-table-p".into(), args[0]));
-                };
-                interp.set_standard_case_table(id);
-                Ok(args[0])
+                crate::lisp::primitives::casetab::set_case_table(interp, args[0], true)
             }
 
             "copy-syntax-table" => {
@@ -1383,6 +1366,10 @@ define_dispatch!(
                         );
                     }
                 }
+                // "We clear the regexp cache, since character classes can
+                // now have different values from those in the compiled
+                // regexps."
+                crate::lisp::primitives::search::clear_regexp_cache();
                 Ok(Value::Nil)
             }
 

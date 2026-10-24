@@ -3911,6 +3911,434 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   build. Mapcar's instructions a unit are Emaxx 32.9 million to GNU's 46.4
   million; its wall ratio near 0.9 is memory traffic, 100,000 new conses a
   unit, not instructions.
+- **Beyond the sixteen workloads** (round 47's profile-guided build;
+  GNU's own ERT files, each run in both editors at once). Of the 230
+  files under `test/src`, `test/lisp` and `test/lisp/emacs-lisp`, 226
+  ran in both: their tests took 166.1 s in GNU and 239.6 s in Emaxx
+  (1.44; 1.51 with process start). Of the 70 files whose tests take
+  0.3 s or more in GNU, the median ratio is 1.63, 12 run faster in Emaxx
+  and 18 at least twice as slow: keymap-tests 7.36
+  (`describe-buffer-bindings` takes 0.72 s a call against 0.026 s,
+  spread over the keymap code's lookups of symbols by name and its
+  `RootedVec` records), cl-seq-tests 4.21 (`nthcdr`, round 48),
+  ls-lisp 3.75, dired-aux 3.43, regex-emacs 3.33, help-fns 3.30, dabbrev
+  3.05 and simple 2.70 (two `shell-command` tests, 11.2 s against
+  4.4 s). In callgrind, 70% of dired-aux-tests is `beginning-of-line`
+  and copies: each `beginning-of-line` scans every text-property span
+  for a `field` (265,000 instructions a call), a search after an edit
+  or over another range copies the searched text into a fresh string
+  (`buffer_regexp_haystack`: 7,419 copies, 168 KB on average) and an
+  edit shifts the vector of spans; 35% of help-fns-tests
+  is fancy-regex's backtracking VM, lookaround patterns over NEWS files.
+  info-xref-tests had not finished after 400 s (GNU 49 s);
+  autorevert-tests timed out once at 300 s and ran in 17 s the next time,
+  its remote tests failing; comp-tests timed out in GNU. Starting
+  `-Q --batch` takes 0.19 s against 0.08 s: 508 million instructions
+  against 166 million, about 260 million of them loading the image and
+  140 million compiling regexps (73 regex-automata builds and one
+  fancy-regex build of 41 million, a lookaround under Unicode case
+  folding). A regexp compiled afresh costs about 42 µs against GNU's
+  1 µs (2,000 distinct `string-match` patterns: 0.084 s against
+  0.002 s). In a 5 MB buffer plain searches run 3 to 30 times faster
+  than GNU's, but `\_<...\_>` runs 10 times slower, a case-folded `\b` 9
+  times and a back-reference 1.5 times. Building an 8-million-cell list
+  takes 2.2 times GNU's time and 1.8 times its memory.
+- **Round 48: `nthcdr` counts down as fns.c does.** Above 127, `nthcdr`
+  (and `nth`, list `elt` and `last`, which walk through it) kept every
+  cell it passed in a `HashMap` and counted down in a `BigInt`, about
+  400 ns a cell: 3.2 s for an 8-million-cell list against GNU's 0.044 s,
+  and `cl-seq-test-bug24264`, whose `last` calls walk such lists, took
+  25 s against 10.7 s. It is now Fnthcdr: an `i64` count (a positive
+  bignum counts down from `i64::MAX`, and the cycle reduction adds back
+  the difference), FOR_EACH_TAIL_SAFE's tortoise counted as lisp.h counts
+  `li.q` and `li.n`, the cycle's length taken from where the tortoise
+  last moved, and `rarely_quit` each 2^16 cells. `proper-list-p` counts
+  the tails in place (it copied the list into a vector), and list `elt`
+  reads the head before it checks for a `vector-literal` list (it copied
+  every list first). On 8 million cells, against GNU: `nthcdr` 0.75,
+  `nth` 0.78, `last` 0.90 and `proper-list-p` 0.92 (73, 80, 54 and 3.3
+  before); cl-seq-tests 3.7 s against round 47's 16.1 s (GNU about 9 s).
+  `nthcdr_large_counts_match_a_plain_walk_past_a_prefix` checks fixnum
+  and bignum counts on a cycle reached after a prefix against a plain
+  walk (GNU gives the same answers) and a count that ends at a dotted
+  tail. Validation: 387 list, keymap, sequence, `cl-`, `apply`,
+  membership and circular-list tests pass (gate profile, one thread a
+  process), the new one with them; GNU's fns, subr, cl-seq, seq, cl-lib,
+  data and subr-x test files pass on the release build. Clippy
+  `-D warnings`, rustfmt and `git diff --check` pass; the full Rust gate
+  runs in CI.
+- **Round 49: line motion looks for a field only where it moves.**
+  `beginning-of-line`, `line-beginning-position` and `line-end-position`
+  asked `constrain-to-field` for their result only when the buffer had a
+  `field` property anywhere, found by scanning every text-property span
+  and comparing its names: 265,000 instructions a `beginning-of-line` in
+  dired-aux-tests, whose listings put properties on every line. They now
+  test the gate Fconstrain_to_field opens with, a `field` at or just
+  before the new or the old position (`field_near`, four lookups, which
+  `constrain-to-field` itself now uses); past a failed gate the call
+  returned the new position anyway. dired-aux-tests 2.50 s -> 1.75 s
+  (GNU 0.88 s), ls-lisp-tests 2.38 s -> 1.43 s (GNU 0.66 s), round 47's
+  profile-guided build against this round's release build. Validation:
+  109 field, line-motion, minibuffer and comint tests pass (gate
+  profile, one thread a process); GNU's editfns, simple, minibuffer,
+  comint, subr and subr-x test files give the results they gave before.
+  Clippy `-D warnings`, rustfmt and `git diff --check` pass.
+- **Round 50: regex-emacs.c and search.c, ported; casetab.c's case
+  tables.** Elisp regexps were translated to `fancy-regex`/`regex`
+  syntax, with syntax classes, categories and case folding rendered into
+  the translated pattern and the haystack copied out of the buffer for
+  each search; a syntax-table or `syntax-table` property change
+  re-rendered both. Font-lock over subr.el took 24.7 s (GNU 0.27 s), a
+  new pattern 38 µs to compile (GNU 2.5 µs), `\_<defun\_>` over a 5 MB
+  buffer 0.32 s (GNU 0.020 s). `src/lisp/regex_emacs/` is now
+  regex-emacs.c: `regex_compile` into GNU's opcodes (exactn in the
+  buffer's storage form, charset bitmaps with range tables, `succeed_n`
+  counters, `on_failure_jump_smart` rewritten by `mutually_exclusive_p`),
+  the fastmap by stored lead byte (`analyze_first`), and
+  `re_match_2_internal` with GNU's failure stack (40,000 × 20 items,
+  "Stack overflow in regexp matcher") reading the rope's chunks in place,
+  with the syntax class, category and case translation of each character
+  asked of the buffer or string at that position (`syntax-table`
+  properties and `syntax-propertize` included). `src/lisp/primitives/
+  search.rs` is search.c's side: the 20-entry pattern cache keyed as
+  `compile_pattern` keys it (the pattern, its translate table, posix,
+  `search-spaces-regexp`, and the syntax table only for a pattern that
+  read one while compiling, `[[:space:]]` and `[[:word:]]`), cleared of
+  those by `modify-syntax-entry` (`clear_regexp_cache`), `looking-at`,
+  `string-match`, the four searches, `re--describe-compiled` (RAW gives
+  GNU's bytecode) and the `fast_*` entry points the C code uses (file
+  name handlers, `directory-files`, completion, compositions,
+  tree-sitter predicates, coding-system lookups). The old translator
+  and its caches (6,200 lines, `fancy-regex` and `regex-automata` with
+  them) are gone. Case folding needed casetab.c: `set-case-table` and
+  `set-standard-case-table` now complete a table (the upcase table by
+  `set_identity` and `shuffle`, the canonicalization DOWN[UP[DOWN[c]]],
+  the equivalences) and store all four tables in the buffer's slots,
+  as buffer.h keeps them; a buffer keeps the four it was given when the
+  standard ones change, `kill-all-local-variables` and a new buffer
+  take the standard ones (completing an invalidated standard table
+  first), `upcase`/`downcase` reinstall a table whose canonicalization
+  was cleared, and the image carries the four per buffer and the
+  standard four. A folded search keys its pattern on the buffer's
+  canonicalization, as GNU's translate table, so a store into another
+  char-table (`regexp-opt`'s charset table) compiles nothing again.
+  `marker_byte_position` counted the bytes before a position by walking
+  the text (O(n) per call in a non-ASCII buffer, which made the new
+  matcher's match data cost 58 times GNU's fontification); the text now
+  keeps a count of its raw-byte markers, so a byte position is the rope's
+  byte offset adjusted by that count and the side table. A unibyte
+  buffer stores the bytes 0x80 to 0xFF as U+0080 to U+00FF where strings
+  keep raw-byte markers; the matcher reads them as the raw-byte
+  characters (a unibyte buffer's `\220` had matched nothing). Against
+  GNU, over the 5 MB elisp.info (GNU / Emaxx / round 47's profile-guided
+  build): `\*note` 0.0140 / 0.0065 / 0.0036 s, node separators 0.0150 /
+  0.0039 / 0.0026, `[ \t]+$` 0.170 / 0.127 / 0.0097, `\_<defun\_>`
+  0.0199 / 0.0157 / 0.324, folded `\bfunction\b` 0.0425 / 0.120 /
+  0.860, `\(\w+\) \1` 0.714 / 0.700 / 0.936, folded xref 0.0345 /
+  0.0552 / 0.0107, 200,000 `looking-at` 0.201 / 0.350 / 0.202, 200,000
+  `string-match` 0.402 / 0.449 / 0.319, 2,000 distinct patterns 0.0050
+  / 0.0030 / 0.0757. Font-lock: subr.el 0.265 / 0.500 / 24.7 s, forty
+  edits each refontified 0.086 / 1.19 / 14.9 s; xdisp.c 10.9 / 22.3 s
+  (GNU / Emaxx); two hundred edits refontified in subr.el 0.36 / 5.2 s,
+  simple.el 0.33 / 7.2 s, python.el 0.32 / 4.6 s, xdisp.c 4.4 / 10.6 s.
+  The refontification gap is syntax scanning (`syntax-ppss`,
+  `parse-partial-sexp`), the next round's. Tests: the old engine's
+  count tests (renderings, encodings, compiles) are GNU results now,
+  with a test-only compile counter asserting compile_pattern's reuse,
+  `clear_regexp_cache`, and that a folded pattern survives stores into
+  other tables and into the downcase table;
+  `set_case_table_completes_a_table_and_buffers_keep_the_tables_they_were_given`
+  checks casetab.c's tables and a buffer's kept canonicalization
+  against the oracle; `src/lisp/regex_emacs/tests.rs` has fourteen
+  matcher tests with GNU's answers. Two old expectations were not
+  GNU's: `[\-[:alnum:]]` is `\-[` (an empty range) plus `:alnum:` and
+  closes before a literal `]` (it matched `--tofu-policy=`), and a
+  lambda parameter named `case-fold-search` is lexical in the batch
+  image (the test let-binds it now). Syntax lookups read each entry's
+  class from the entry, as SYNTAX does, so a descriptor changed in place
+  is seen at once. A POSIX pattern ends without a final `succeed` (GNU
+  reads past its buffer when a loop's tail runs to the end); the
+  first-character walk takes the end as matching the empty string.
+  Validation: the regex, search, case, syntax, completion, marker,
+  match, dump, image, case-table, compile-count, POSIX and anti-cheat
+  filters pass (gate profile, one thread a process,
+  `RUST_MIN_STACK=134217728` as CI sets it), but for
+  `batch_startup_image_round_trip_or_explicit_native_image_limit`, which
+  fails in this container as before (below); thirty GNU test files
+  (regex-emacs, search, rx, regexp-opt, syntax, casefiddle, subr,
+  subr-x, simple, replace, thingatpt, isearch, minibuffer, minibuf,
+  files, dired, fill, font-lock, elisp-mode, python, ruby, css, cc-mode,
+  buffer, editfns, fns, character, coding, mule-util, lisp) pass on the
+  release build. Clippy `-D warnings`, rustfmt and `git diff --check`
+  pass.
+- **Round 51: syntax.c's scanners, ported.** After round 50,
+  refontifying after edits was 12 to 15 times GNU's, and the cause was a
+  divergence, not a slow loop: `scan-lists`, `scan-sexps` and
+  `forward-comment` called `syntax-propertize` to `point-max` before
+  scanning, where GNU propertizes just in time as a scan reaches
+  `syntax-propertize--done`. Through
+  `lisp-font-lock-syntactic-face-function`'s `forward-sexp` that made
+  `elisp-mode-syntax-propertize` run `syntax-ppss` over the rest of the
+  buffer at each refontification: 1,517 `parse-partial-sexp` calls over
+  4,545,728 characters against GNU's 941 over 540,267 for ten edits of
+  subr.el. The scanners also read the buffer through a decoded
+  `Vec<char>` chunk and re-decoded every syntax descriptor, and
+  `parse-partial-sexp` returned a private element 10 (the state of its
+  own parser) where GNU returns the previous character's syntax.
+  `src/lisp/primitives/syntax_scan.rs` is now syntax.c's scanning core:
+  gl_state (`SETUP_SYNTAX_TABLE`, `update_syntax_table` over the
+  buffer's intervals, merging up to ten with an `eq` property,
+  `update_syntax_table_forward`, `parse_sexp_propertize` calling
+  `internal--syntax-propertize` with one past the position about to be
+  read, and `e_property_truncated`), `char_quoted`, `find_defun_start`
+  with its cache, `prev_char_comend_first`, `back_comment` with its
+  lossage path, `forw_comment`, `Fforward_comment`, `scan_lists`,
+  `Fbackward_prefix_chars`, `skip_syntaxes`, `in_2char_comment_start`,
+  `scan_sexps_forward`, `internalize_parse_state` and
+  `Fparse_partial_sexp`. Positions travel as GNU's (charpos, bytepos)
+  pairs over a snapshot of the rope read in place a chunk at a time
+  (bytes count Emaxx's UTF-8 and never leave the module); the snapshot
+  holds through the Lisp a scan calls because GNU signals when
+  `internal--syntax-propertize` or `syntax-ppss` changes the text.
+  SYNTAX reads the descriptor's car as GNU does (whitespace for a
+  non-cons); ASCII entries are remembered per table and forgotten after
+  any Lisp call, the only way an entry can change mid-scan. The C
+  variables (`parse-sexp-lookup-properties`, `syntax-propertize--done`,
+  `parse-sexp-ignore-comments`, `comment-end-can-be-escaped`,
+  `multibyte-syntax-as-symbol`, `open-paren-in-column-0-is-defun-start`,
+  `comment-use-syntax-ppss`) are read when first needed and again after
+  each Lisp call, which is when GNU's live reads could see them change.
+  A unibyte buffer's bytes read as raw-byte characters for the scans and
+  as themselves for `skip-syntax-*`, as FETCH_CHAR_AS_MULTIBYTE and
+  skip_syntaxes's `*p` do (Emaxx stores such a byte either as U+0080..
+  U+00FF or as a raw-byte marker). A runtime without syntax.el treats
+  `comment-use-syntax-ppss` as nil and has nothing to propertize with.
+  The old scanners (2,260 lines of syntax.rs) are gone. Against GNU (GNU /
+  Emaxx; round 50's Emaxx after the slash): font-lock over subr.el 0.268
+  / 0.273 s (0.500), two hundred edits refontified 0.403 / 0.397 s (5.2);
+  simple.el 0.338 / 0.375 and 0.318 / 0.428 s (7.2); python.el 0.175 /
+  0.236 and 0.251 / 0.380 s (4.6); xdisp.c in C mode 9.29 / 14.4 and 3.29
+  / 6.20 s (22.3 and 10.6). Ten edits of subr.el refontified: 0.016 /
+  0.026 s. What is left in C mode is cc-engine's Lisp, not scanning. A
+  differential probe of every position of buffers in Emacs Lisp, C,
+  Python, a Haskell-like table (nested `{- -}`, `--` comments, comment
+  and string fences, math, prefix flags, `comment-end-can-be-escaped`,
+  `parse-sexp-ignore-comments` nil), `syntax-table` properties (cons
+  and char table), narrowing, multibyte text with and without
+  `multibyte-syntax-as-symbol`, a unibyte buffer and unbalanced text
+  with `comment-use-syntax-ppss` on and off (8,130 results of
+  `parse-partial-sexp` from 1 and in `syntax-table` steps, `scan-sexps`
+  both ways, `scan-lists` up, `forward-comment` 1, -1 and to either end,
+  `skip-syntax-*`, `backward-prefix-chars` and `syntax-ppss`) is
+  identical to GNU's. New tests with the oracle's answers:
+  `parse_partial_sexp_state_carries_the_syntax_a_two_char_construct_started_with`
+  (element 10 and resuming inside `#|`), `scans_propertize_only_as_far_as_they_read`
+  (the propertizer's calls for `scan-sexps`, `forward-comment` and
+  `parse-partial-sexp`) and
+  `scans_read_a_unibyte_buffer_as_raw_bytes_and_skip_syntax_as_bytes`;
+  `syntax_ppss_reports_negative_depth_for_extra_closing_parens` expected
+  the old private element 10 and now expects GNU's nil. Validation: the
+  133 tests that call the scanners or the modes built on them pass
+  (gate profile, one thread a process, `RUST_MIN_STACK=134217728`), but
+  for the image round trip that fails in this container (below), as do
+  the syntax, comment, paren, ppss, prefix, sexp, skip and scan-list
+  filters but for the as-root `save_buffer_skips_unmodified_and_unchanged_files`
+  (below); thirty-three GNU test files (syntax and emacs-lisp/syntax,
+  elisp-mode, lisp-mode, lisp, python, cc-mode, ruby, js, css, sh-script,
+  perl, cperl, octave, f90, sql, scheme, opascal, pascal, tcl, ps-mode,
+  bat-mode, sgml, paragraphs, fill, newcomment, electric, hideshow,
+  thingatpt, simple, grep, xref, package) give GNU's results on the
+  release build, and the probe and fifteen of them on the gate build
+  (overflow checks on), but for package-tests' three asynchronous archive
+  tests, which fail the same way on round 50's build in this container
+  (its HTTP proxy settings meet the tests' local server) and passed in
+  round 50's CI. Round 50's frozen run (below) stopped at
+  `src/undo-tests.el`: `BufferText::check_counts`, a debug-build check
+  CI's gate profile runs, recounted the raw-byte markers of the whole
+  text at every edit since round 50, which made undo-test4's million
+  insertions quadratic (over 180 s, killed). It now recounts a small
+  text's only (at most 1 KB); on the gate build undo-tests take 2.2 s
+  and the three files after them (xdisp, xfaces, xml) give GNU's
+  results. Clippy `-D warnings`, rustfmt and `git diff --check` pass.
+  Round 51's CI then found the loader's `eval-region` and `eval-buffer`
+  skipping the whitespace between forms with `forward-comment` of
+  `i64::MAX / 2`, a bignum here, which the ported count check rejects as
+  CHECK_FIXNUM does; the error was dropped, so edebug's and testcover's
+  reading went wrong. They pass the buffer's size plus one, a fixnum, and
+  cl-generic, cl-macs, edebug, gv and testcover tests give GNU's results
+  again, as do the 13 eval-region, eval-buffer and load tests.
+- **Round 52: the matcher's syntax lookups on gl_state, `scan_words`,
+  and a matcher call's fixed cost.** The matcher still asked syntax
+  classes of round 50's `SyntaxScan`, which refreshed per interval,
+  decoded integer and string `syntax-table` values GNU reads as
+  whitespace, looked at buffers only and ran `internal--syntax-propertize`
+  before every lookup. It now does as regex-emacs.c does:
+  `RE_SETUP_SYNTAX_TABLE_FOR_OBJECT` when `re_search_2` or `re_match_2`
+  starts, for the current buffer (GNU's nil), a string with its own text
+  properties, or text without an object (GNU's t, the `&str` callers);
+  `UPDATE_SYNTAX_TABLE` before each `SYNTAX` of the text; and
+  propertizing only where `update_syntax_table_forward` does, when a
+  lookup in the buffer crosses `e_property` past
+  `syntax-propertize--done`. `syntax_scan.rs`'s `GlState` serves both:
+  `update_syntax_table` walks a buffer's or a string's intervals, and
+  `SETUP_SYNTAX_TABLE`, `update_syntax_table_forward` and
+  `parse_sexp_propertize` moved into it from the scanner (which reads its
+  own state again after the propertizer runs). `BUFFER_SYNTAX` reads the
+  entry's car, whitespace for a non-cons. `forward-word` and the `-word`
+  case commands are syntax.c's `scan_words` (with
+  `words-include-escapes`, a `find-word-boundary-function-table`
+  function checked with `fboundp`, so a non-symbol signals, and
+  category.c's `word_boundary_p` over `char-script-table` and the
+  separating and combining categories), `Fforward_word` (a fixnum count,
+  BEGV or ZV when the text ends first, `constrain-to-field`, t only when
+  the count was reached) and casefiddle.c's `casify_word` (point at the
+  cased region's end for either sign; `case-symbols-as-words` is not
+  word motion's). The old `forward_word`, which had none of these, and
+  `case_word_region` are gone, as are `SyntaxScan` and syntax.rs's
+  one-shot property lookups. A matcher call's fixed cost: the pattern
+  cache moved whole entries (pattern, fastmap and all) to its front at
+  every call and now moves pointers; the 128 ASCII syntax entries copied
+  into and out of every call are gone (a char-table read is cheap);
+  variables C reads are read as C reads them (`symbol_value_key`, no
+  lexical walk); an ASCII buffer's snapshot needs no rope walk and is
+  sliced once; the failure stack and registers are reused across calls;
+  and a case-folded fastmap scan tests ASCII bytes against a verdict
+  table the pattern keeps per char-table store count instead of decoding
+  and translating each character. Instructions (GNU's in brackets): five
+  case-folded `\bbar\b` passes over 4,000 lines, `re-search-forward`
+  328.5M before, 111.3M after [106.3M]; 200,000 `looking-at` calls
+  1,337.6M, 420.1M [152.1M]; 20,000 `(forward-word 10)` 347M of
+  `scan_words`, 269M [110M]. Wall on an idle host, GNU / Emaxx: twenty
+  case-folded `\bbar\b` passes 0.040 / 0.041 s, `\_<foo-[0-9]+\_>`
+  0.044 / 0.052, `\<defun\>` 0.042 / 0.043; a million `looking-at` 0.54
+  / 0.58 s and `string-match` 0.69 / 0.69 to 0.73; a million
+  `looking-at-p` 0.53 / 0.66 (the call into byte code); 100,000
+  `(forward-word 10)` 0.117 / 0.139 (`word_boundary_p`'s four char-table
+  reads a character pair). Differential probes identical to GNU's: 776
+  results of forward and backward searches, `looking-at` at every
+  position and `string-match` with and without
+  `parse-sexp-lookup-properties` over text with cons and char-table
+  `syntax-table` properties, `forward-word` by 1, 2, -1 and -3 at every
+  position with and without `words-include-escapes`, a boundary function,
+  fields and the case commands with seven counts at five positions; and
+  24 with the propertizer's calls logged for searches both ways,
+  `looking-at` and word motion over text with `syntax-table` intervals,
+  and propertizers that change the text or never move. New tests with
+  the oracle's answers: `regexps_read_syntax_table_properties_of_strings_and_buffers`,
+  `regexp_searches_propertize_only_past_their_property_bounds` and
+  `word_motion_and_case_commands_follow_scan_words`. Twenty GNU test
+  files (syntax, regex-emacs, search, casefiddle, subword, thingatpt, rx,
+  simple, python, ruby, cperl, sh-script, css, lisp-mode, elisp-mode,
+  js, fill, octave, sgml, nxml) give GNU's results.
+- **Round 53: keymap.c's `describe_vector`, ported.** Emaxx's
+  `help--describe-vector` expanded a char-table into its characters
+  (`char_table_effective_ranges`, then every code of every range), looked
+  each one up in ENTIRE-MAP and SHADOW with full key lookups, and merged
+  neighbours afterwards: `describe-buffer-bindings` of the global map ran
+  4.19 million lookups for the 4 million characters bound to
+  `self-insert-command`. It is now keymap.c's loop: `char_table_ref_and_range`
+  (`CharTable::ref_and_range`, a run of `eq` values within the bounds GNU
+  passes, with `range_value` its first value) gives each run once, split at
+  `MAX_5_BYTE_CHAR` as GNU's STOP; the run's first character alone is
+  checked against SHADOW (`shadow_lookup`, defaults accepted, no
+  remapping, a binding `eq` to the definition not shadowing it) and
+  ENTIRE-MAP (`Flookup_key` with defaults, `eq`); `get_keyelt` without
+  autoloading; a vector's following elements are merged while `equal`;
+  `describe-bindings-check-shadowing-in-ranges` (with `ignore-self-insert`)
+  shortens a char-table run at the first character whose shadowing
+  binding differs, C's live `j <= i` included; keys are
+  `describe_key_maybe_fontify` (`key-description` with the prefix, then
+  `font-lock-face help-key-binding` over the whole description); the
+  shadow note goes before the describer's newline; and a char-table's
+  default is described last. `standard-output` is bound to the current
+  buffer for the whole call, and a non-array signals
+  `(wrong-type-argument vector-or-char-table-p ...)`. Wall (GNU / Emaxx
+  before / after): `describe-buffer-bindings` three times 0.12 / 2.03 /
+  0.13 s; keymap-tests 0.36 / 3.13 / 0.53 s. Differential probe
+  (`describe-buffer-bindings` of the global map, emacs-lisp-mode and the
+  `C-x` prefix, and `help--describe-vector` over a char-table with
+  ranges, a default, shadowing with and without MENTION-SHADOW, a plain
+  vector with a prefix and `describe-bindings-check-shadowing-in-ranges`):
+  identical to GNU's except where they already differed. Those are (a)
+  `key-description` of codes past the Unicode range, which Emaxx prints
+  as `[4194175]` where GNU prints the raw-byte character (Emaxx keeps such
+  characters as a placeholder plus a side table), and the column widths
+  that follow from it; (b) touch-screen and `XF86WakeUp` bindings, which
+  this container's GNU has because it was built with X and loadup loads
+  touch-screen.el under `(featurep 'x)`; and (c) prefix commands
+  (`C-c`, `C-h`, `C-x`, `ESC`, `<f1>`, `<f2>`, `<help>`) that Emaxx lists
+  and help.el's `describe-map` drops, because `keymapp` answers nil for a
+  symbol whose function is a keymap (fixed in round 54). New test:
+  `help_describe_vector_describes_each_run_of_a_char_table_once`. 239
+  keymap, key-description, menu, help and `where-is` Rust tests pass, and
+  six GNU test files (keymap, help, help-fns, help-mode, kmacro, subr)
+  give GNU's results, apart from two help-fns tests that this container's
+  GNU itself fails.
+- **Round 54: keymap.c's accessors and mutators, ported.** `keymapp`
+  answered nil for a symbol whose function is a keymap (every prefix
+  command: `Control-X-prefix`, `mode-specific-command-prefix`), so help.el
+  listed prefix commands that GNU drops (bullet "Round 53"), and no
+  primitive followed a keymap autoload: `lookup-key`, `keymap-parent`,
+  `map-keymap`, `use-local-map` and others signalled for an autoloaded
+  map, or answered nil, where GNU loads it (20 of 24 probes differed).
+  The cause was a reimplementation that matched bindings through key
+  descriptions and approximated parts. `primitives/keymap.rs` now ports
+  keymap.c: `get_keymap` (a list, a symbol's function indirection, an
+  autoload of TYPE `keymap` loaded when asked and otherwise itself, so
+  KEYMAPP holds for it), `access_keymap_1` (Qunbound as `Value::Unbound`,
+  T_OK, NOINHERIT and AUTOLOAD threaded through, the meta-prefix-char
+  mapping, composed submaps, vectors and char-tables), `get_keyelt` (a
+  menu item's `:filter` evaluated as the form `(FILTER 'DEFN)` under an
+  error handler, so `#'f` gives nil as in GNU), `lookup_key_1`,
+  `Fdefine_key` with `store_in_keymap` and `define_as_prefix` (Lucid
+  event lists, ranges as leaves, the meta bit by key type, `[keymap]`
+  reserved, `message_with_string`'s CHECK_STRING for invalid events,
+  "Key sequence %s starts with non-prefix key %s%s", removal from a
+  char-table storing nil, character ranges into a new char-table instead
+  of the old code's broken spine), `silly_event_symbol_error`,
+  `keymap_parent`, `Fset_keymap_parent` (the parent not loaded, cycles
+  checked through `keymap_memberp`), `map_keymap`, `Fkeymap_prompt`,
+  `Fuse_local_map` and `Fuse_global_map` (storing the resolved map),
+  `Faccessible_keymaps` with `accessible_keymaps_1` (breadth first, cycles
+  by prefix, metized sequences right after their parent), and
+  `Fwhere_is_internal` with `where_is_internal`, `where_is_internal_1`,
+  `shadow_lookup` and `preferred_sequence_p`, including keymap.c's
+  `where_is_cache` for menu-less lookups (two interpreter fields, rooted,
+  flushed by `store_in_keymap` and `set-keymap-parent`, reset in an image
+  copy). keyboard.c's `reorder_modifiers` keeps `parse_modifiers`'
+  `event-symbol-element-mask` and `apply_modifiers`' `modifier-cache`
+  as GNU does, and a wheel event is a click unless double or triple, as
+  `parse_modifiers_uncached` says. The bootstrap `special-event-map` now
+  has keyboard.c's `keys_of_keyboard` entries (`ns-put-working-text`,
+  `focus-in`, `focus-out`, `move-frame`, `file-notify`; not the
+  commented-out `select-window`), and `visual-line-mode-map` has no
+  prompt string. The old helpers (`keymap_define_binding_with_placement`,
+  exact-parts lookups, the where-is collector) are gone. Wall, GNU /
+  Emaxx before / after: 60,000 `define-key` 0.376 / 0.818 / 0.461 s;
+  60,000 `lookup-key` 0.038 / 0.090 / 0.045 s; 200 `where-is-internal`
+  of `find-file` 0.035 / 0.164 / 0.067 s (one `get_keymap` a binding cost
+  137 instructions until the list case stopped going through the symbol
+  key table and `==` on values stopped being `equal`). Probes identical
+  to GNU's: autoloaded keymaps through 24 primitives, 17 `define-key`
+  cases, `keymap--get-keyelt` with filters, and `describe-buffer-bindings`
+  apart from the X build's bindings and raw-byte key descriptions. New
+  test: `keymaps_resolve_through_symbols_and_autoloads_as_get_keymap_does`.
+  Twenty-three GNU test files (keymap, keyboard, cmds, minibuf, help,
+  help-fns, help-mode, kmacro, subr, simple, minibuffer, repeat, tab-bar,
+  isearch, edmacro, which-key, xt-mouse, mouse, easy-mmode, use-package,
+  electric, buff-menu, dired) give GNU's results. Locally (gate profile,
+  `--test-threads=1` in four shards) 779 keymap, key, menu, where-is,
+  help, minibuffer, event, image, dump and collection tests pass, apart
+  from the image round trip that fails in this container and
+  `subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`,
+  whose child exited before `process-live-p` under the shards' load and
+  which passes alone three times out of three. Two tests that call
+  `where-is-internal` with a keymap in a bare interpreter now install a
+  global map first: keymap.c's `list2 (keymap, current_global_map)`
+  meets nil there, which GNU (whose `global-map` comes from subr.el)
+  signals for too. The anti-cheat tests pass single-threaded, as CI runs
+  them; run with several threads they can panic in the shared vector
+  allocator while interpreters are built in parallel.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4500,7 +4928,25 @@ them. **On `626d1eb`** (round 45): full Rust gate passed (run
 39639732639), frozen passed on its first attempt (run 39639736946).
 **On `eb8e009`** (rounds 46 and 47, pushed together): full Rust gate
 passed (run 39682876524), frozen passed on its first attempt (run
-39682879871). Locally,
+39682879871). **On `445cc7d`** (round 48): full Rust gate passed (run
+39986757981); frozen matched 7,927 of 7,928 with the one unexpected
+outcome on GNU's side (run 39986763116), and its re-run passed. **On
+`1695c05`** (round 49): full Rust gate passed (run 39989914863),
+frozen passed on its first attempt (run 39989919866). **On `8e2b9f8`**
+(round 50): full Rust gate passed (run 40021014339); frozen (run
+40021018468) stopped at `src/undo-tests.el`, which the gate build took
+over 180 s to run (bullet "Round 51"), after every earlier file had
+given its expected results. **On `d658dad`** (round 51): the Rust gate
+(run 40034219662) failed `eval_region_preserves_point_and_uses_the_supplied_reader`
+in its `primitives` group, and frozen (run 40034222838) failed 77 of
+7,928 outcomes in cl-generic, cl-macs, edebug, gv and testcover tests,
+all from the loader's oversized `forward-comment` count (bullet "Round
+51"). **On `2ff27af`** (the fix): full Rust gate passed (run
+40053413052), frozen passed on its first attempt (run 40053415013).
+**On `1b61c83`** (round 52): full Rust gate passed (run 40056463837),
+frozen passed on its first attempt (run 40056465430). **On `d1a3230`**
+(round 53): full Rust gate passed (run 40058055258), frozen passed on its
+first attempt (run 40058057152). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -4790,7 +5236,28 @@ and failures are still recorded.
 
 1. Merge PR87 after its macOS closing items; then validate and merge the
    counter branch.
-2. **Performance, worst ratios first.** The host is a different machine
+2. **Performance, worst ratios first.** Outside the locked sixteen
+   (bullet "Beyond the sixteen workloads") the gaps are larger than any
+   workload's margin, so they come first now: syntax scanning under
+   font-lock is at GNU's time for subr.el since round 51 ported
+   syntax.c's scanners, 1.1 to 1.5 times in simple.el and python.el,
+   1.6 to 1.9 times in C mode (cc-engine's Lisp: the interpreter, the
+   byte-code VM and the matcher); round 52 put the matcher's syntax
+   lookups on the same gl_state and brought case-folded `\b` searches
+   and `looking-at` to GNU's time (its instructions are still 2.8 times
+   GNU's under an interpreter loop that dominates both: rope slicing and
+   chunk lookups, the buffer-local `parse-sexp-lookup-properties` read);
+   `forward-word` is 1.2 times. Round 51's frozen run (gate profile)
+   puts the slowest files where GNU takes 100 ms or more at keymap-tests
+   11.6 times (1.5 since round 53 ported `describe_vector`), data-tests
+   3.6, marker-tests 3.2, help-fns-tests 3.1 (`describe-function` reads
+   all of etc/DOC for each docstring, and the Latin-1 NEWS decoder asks
+   a charset's dimension by name for every byte) and simple-tests 2.75,
+   summed test time at 1.21 times and setup at 2.30; then process start
+   (0.19 s against 0.08 s; `shell-command` tests that start Emacs fifty
+   times are 2.5 times slower for it), and text properties kept in one
+   flat vector of spans (each edit shifts it; GNU keeps intervals).
+   The host is a different machine
    since `aa68c68` (bullet "The host changed under the session"). On it,
    with round 25's jump padding, the contract's comparison of the
    profile-guided build reads: undo 1.042 [0.876, 1.110],

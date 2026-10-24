@@ -3066,15 +3066,11 @@ pub(crate) fn find_operation_coding_system_value(
         };
         let matches = match (pattern.kind(), operation_target.kind()) {
             (Kind::Integer(pattern), Kind::Integer(target)) => pattern == target,
-            (pattern, target) => {
-                let (Ok(pattern), Ok(target)) =
-                    (string_text(&pattern.value()), string_text(&target.value()))
-                else {
-                    continue;
-                };
-                Regex::new(&regexp::translate_elisp_regex(&pattern))
-                    .is_ok_and(|regex| regex.is_match(&target))
+            (Kind::StringObject(_), Kind::StringObject(_)) => {
+                search::fast_string_match(interp, env, &pattern, &operation_target, None, false)?
+                    .is_some()
             }
+            _ => continue,
         };
         if !matches {
             continue;

@@ -276,14 +276,22 @@ impl CharTableRef {
     /// chartab.c:char_table_ref_and_range reads this tree and its default,
     /// without following the parent or consulting the ASCII cache.
     pub(crate) fn range_value(&self, from: u32, to: u32) -> Value {
+        self.ref_and_range(from, from, to).0
+    }
+
+    /// chartab.c:char_table_ref_and_range: the value for CHARACTER, read
+    /// from this tree and its default (not the parent), with the run of
+    /// characters around it within [FROM, TO] whose value is the same
+    /// object.
+    pub(crate) fn ref_and_range(&self, character: u32, from: u32, to: u32) -> (Value, u32, u32) {
         let mut query = RangeQuery {
             from,
             to,
             default: self.default(),
             uniprop: self.is_uniprop(),
         };
-        let index = (from >> SHIFTS[0]) as usize;
-        let value = query.value(self.slot(CONTENTS + index), from);
+        let index = (character >> SHIFTS[0]) as usize;
+        let value = query.value(self.slot(CONTENTS + index), character);
         let mut left = index;
         while query.from < (left as u32) << SHIFTS[0] {
             let character = ((left as u32) << SHIFTS[0]) - 1;
@@ -300,12 +308,11 @@ impl CharTableRef {
             let character = (right as u32) << SHIFTS[0];
             let next = query.value(self.slot(CONTENTS + right), character);
             if !next.eq_value(value) {
-                // The Lisp primitive discards the final bounds. Recursive
-                // subtable scans still propagate theirs to stop this walk.
+                query.to = character - 1;
                 break;
             }
         }
-        value
+        (value, query.from, query.to)
     }
 
     pub(crate) fn set(&self, character: u32, value: Value) {

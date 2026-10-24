@@ -2,6 +2,26 @@ use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
+/// editfns.c:Fconstrain_to_field's gate: distinct positions with a
+/// `field' property at or just before either.  Past a failed gate the
+/// constraint returns NEW_POS untouched, so line motion tests it first:
+/// four lookups, where scanning the buffer's whole span list for a `field'
+/// made each `beginning-of-line' as long as that list.
+pub(super) fn field_near(interp: &Interpreter, new_pos: usize, old_pos: usize) -> bool {
+    let buffer = interp.buffer.borrow();
+    let point_min = buffer.point_min();
+    let field_at = |pos: usize| {
+        buffer
+            .text_property_at(pos, "field")
+            .is_some_and(|value| !value.is_nil())
+    };
+    new_pos != old_pos
+        && (field_at(new_pos)
+            || field_at(old_pos)
+            || (new_pos > point_min && field_at(new_pos - 1))
+            || (old_pos > point_min && field_at(old_pos - 1)))
+}
+
 fn plist_property_is_truthy(plist: &Value, property: &str) -> bool {
     let Ok(items) = plist.to_vec() else {
         return false;
@@ -134,26 +154,12 @@ define_dispatch!(
             }
             "compare-buffer-substrings" => {
                 need_args(name, args, 6)?;
-                // GNU editfns.c consults `case-fold-search' in the current
-                // buffer, even when either substring belongs to another
-                // buffer.  Its canonical table is extra slot one of the
-                // current downcase table; Emaxx's lazily initialized standard
-                // table has the same effective mapping in the downcase table
-                // until a materialized canonical slot exists.
-                let canonical_table = if interp.case_fold_search_active(env) {
-                    let downcase_table = interp.current_case_table_id();
-                    Some(
-                        match interp
-                            .char_table_extra_slot(downcase_table, 1)
-                            .map(|v| v.kind())
-                        {
-                            Some(Kind::CharTable(canonical_table)) => canonical_table,
-                            _ => downcase_table,
-                        },
-                    )
-                } else {
-                    None
-                };
+                // GNU editfns.c consults `case-fold-search' and the
+                // case_canon_table of the current buffer, even when either
+                // substring belongs to another buffer.
+                let canonical_table = interp
+                    .case_fold_search_active(env)
+                    .then(|| interp.current_case_tables().canon);
                 // Both operands are read in place, as editfns.c reads the
                 // buffer text; neither is copied.
                 let interp = &*interp;
@@ -377,21 +383,7 @@ define_dispatch!(
                     .is_some_and(|value| value.is_truthy());
                 let mut constrained = new_pos;
                 let fwd = new_pos > old_pos;
-                let point_min = interp.buffer.borrow().point_min();
-                // GNU's gate: any field property at or just before either
-                // position makes the positions candidates for constraining.
-                let field_at = |interp: &Interpreter, pos: usize| -> Option<Value> {
-                    interp
-                        .buffer
-                        .borrow()
-                        .text_property_at(pos, "field")
-                        .filter(|value| !value.is_nil())
-                };
-                let near_field = field_at(interp, new_pos).is_some()
-                    || field_at(interp, old_pos).is_some()
-                    || (new_pos > point_min && field_at(interp, new_pos - 1).is_some())
-                    || (old_pos > point_min && field_at(interp, old_pos - 1).is_some());
-                if !inhibit_motion && new_pos != old_pos && near_field {
+                if !inhibit_motion && field_near(interp, new_pos, old_pos) {
                     let escape = args.get(2).cloned().unwrap_or(Value::Nil);
                     let field_bound = if fwd {
                         super::call(

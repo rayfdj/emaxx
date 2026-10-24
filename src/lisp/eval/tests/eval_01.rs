@@ -4120,24 +4120,17 @@ fn file_name_handler_lookup_preserves_results_across_unrelated_writes() {
 }
 
 #[test]
-fn syntax_property_haystack_encoding_is_shared_across_a_buffer_state() {
-    // Under `parse-sexp-lookup-properties', every `looking-at' over the
-    // same buffer state shares one encoding of the haystack; a
-    // syntax-table change makes the next search encode again, while a
-    // `syntax-table' property write or an edit is followed from the edit
-    // log (`syntax_property_encoding_follows_edits_without_encoding_again'
-    // counts those).  The match results are GNU's.
+fn syntax_property_matches_follow_property_and_table_changes() {
+    // Under `parse-sexp-lookup-properties', `\sw' and `\s(' read the
+    // `syntax-table' property at each position (regex-emacs.c's SYNTAX
+    // after UPDATE_SYNTAX_TABLE); a property write, a syntax-table change
+    // and an edit are all seen by the next search.  The match results are
+    // GNU's.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    crate::lisp::primitives::reset_syntax_encoding_scan_count();
-    let mut step = |form: &str, expected: Value, scans: usize| {
+    let mut step = |form: &str, expected: Value| {
         let form =
             format!("(with-current-buffer (get-buffer-create \"*syntax-encoding-probe*\") {form})");
         assert_eq!(eval_str_with(&mut interp, &form), expected, "{form}");
-        assert_eq!(
-            crate::lisp::primitives::syntax_encoding_scan_count(),
-            scans,
-            "{form}"
-        );
     };
     step(
         r#"(progn
@@ -4157,30 +4150,25 @@ fn syntax_property_haystack_encoding_is_shared_across_a_buffer_state() {
             Value::T,
             Value::Integer(14),
         ]),
-        1,
     );
     step(
         r#"(progn (put-text-property 13 14 'syntax-table '(2))
                   (goto-char 13)
                   (list (looking-at "\\sw+") (match-end 0)))"#,
         Value::list([Value::T, Value::Integer(17)]),
-        1,
     );
-    step(r#"(progn (goto-char 1) (looking-at "\\sw+"))"#, Value::T, 1);
+    step(r#"(progn (goto-char 1) (looking-at "\\sw+"))"#, Value::T);
     step(
         r#"(progn (modify-syntax-entry ?q "." (syntax-table))
                   (goto-char 14)
                   (looking-at "\\sw+"))"#,
         Value::Nil,
-        2,
     );
 
     // `internal--set-buffer-modified-tick' moves the Lisp-visible tick
-    // backwards; an edit then reuses an old tick value.  The cache keys on
-    // the buffer's monotonic edit serial, so the new text is rendered (here
-    // by replaying the insertion), not served from the entry the old tick
-    // named.  (buffer.c's primitive; `primitive-undo' and
-    // `restore-buffer-modified-p' use it.)
+    // backwards; an edit then reuses an old tick value, and the search
+    // still sees the new text.  (buffer.c's primitive; `primitive-undo'
+    // and `restore-buffer-modified-p' use it.)
     step(
         r#"(let ((tick (buffer-modified-tick)))
              (goto-char 5)
@@ -4189,36 +4177,20 @@ fn syntax_property_haystack_encoding_is_shared_across_a_buffer_state() {
              (goto-char 5)
              (looking-at "\\s("))"#,
         Value::T,
-        2,
     );
-    step(r#"(progn (goto-char 5) (looking-at "\\s("))"#, Value::T, 2);
+    step(r#"(progn (goto-char 5) (looking-at "\\s("))"#, Value::T);
 }
 
 #[test]
-fn syntax_property_encoding_follows_edits_without_encoding_again() {
-    // After an edit, the encoding of the same range follows the buffer's
-    // edit log (the characters whose text or properties changed are
-    // rendered again, the rest shift) instead of being built from the
-    // whole buffer; a text-property write that is not `syntax-table' is
-    // an edit like any other.  The log holds 64 edits: more than that
-    // since the entry's state, or a swap of buffer texts (which no record
-    // describes), encodes afresh.  Every replay in a test build is
-    // compared with a fresh encoding by `replay_syntax_encoding' itself;
-    // the match results are GNU's.
+fn syntax_property_matches_follow_edits_and_buffer_text_swaps() {
+    // Edits before and inside the propertized range, writes of other text
+    // properties, many edits in a row and `buffer-swap-text' are all seen
+    // by the next `looking-at'; the match results are GNU's.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
-    crate::lisp::primitives::reset_syntax_encoding_scan_count();
-    let mut step = |form: &str, expected: Value, scans: usize, replays: usize| {
+    let mut step = |form: &str, expected: Value| {
         let form =
             format!("(with-current-buffer (get-buffer-create \"*syntax-replay-probe*\") {form})");
         assert_eq!(eval_str_with(&mut interp, &form), expected, "{form}");
-        assert_eq!(
-            (
-                crate::lisp::primitives::syntax_encoding_scan_count(),
-                crate::lisp::primitives::syntax_encoding_replay_count()
-            ),
-            (scans, replays),
-            "(scans, replays) after {form}"
-        );
     };
     let matched = |end: i64| Value::list([Value::T, Value::Integer(end)]);
     step(
@@ -4231,53 +4203,39 @@ fn syntax_property_encoding_follows_edits_without_encoding_again() {
              (goto-char 1)
              (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(8),
-        1,
-        0,
     );
     step(
         r#"(progn (goto-char 1) (insert "x") (goto-char 1)
                   (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(9),
-        1,
-        1,
     );
     step(
         r#"(progn (put-text-property 14 15 'syntax-table '(2)) (goto-char 14)
                   (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(18),
-        1,
-        2,
     );
     step(
         r#"(progn (goto-char 1) (delete-char 1) (goto-char 13)
                   (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(17),
-        1,
-        3,
     );
-    // 100 edits since the entry's state: past the log.
+    // 100 edits in a row.
     step(
         r#"(let ((i 0))
              (while (< i 50) (insert "y") (delete-char -1) (setq i (1+ i)))
              (goto-char 1)
              (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(8),
-        2,
-        3,
     );
     step(
         r#"(progn (put-text-property 1 3 'face 'bold) (goto-char 1)
                   (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(8),
-        2,
-        4,
     );
     step(
         r#"(progn (put-text-property 4 5 'syntax-table '(1)) (goto-char 1)
                   (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(4),
-        2,
-        5,
     );
     step(
         r#"(progn (with-current-buffer (get-buffer-create "*syntax-replay-other*")
@@ -4288,8 +4246,6 @@ fn syntax_property_encoding_follows_edits_without_encoding_again() {
                   (goto-char 1)
                   (list (looking-at "\\sw+") (match-end 0)))"#,
         matched(3),
-        3,
-        5,
     );
 }
 
@@ -4664,12 +4620,13 @@ fn region_modification_checks_without_intervals_still_see_the_buffer_flag() {
 
 #[test]
 fn string_matches_reuse_the_last_compiled_pattern_under_its_key() {
-    // search.c keeps the most recently used compiled patterns in front of
-    // its cache; the front here is checked by exactly the fields the table
-    // key compares, so a repeated `string-match' compiles nothing and a
-    // change to what the translation read -- the current syntax table for
-    // a `\\s-' pattern, `case-fold-search' for any -- compiles again.
-    // Match positions are GNU's.
+    // search.c:compile_pattern keeps the most recently used compiled
+    // patterns in its cache, found by the pattern, its translate table and,
+    // for a pattern holding syntax-table contents, that table: a repeated
+    // `string-match' compiles nothing, `\\s-' reads the syntax table only
+    // while matching (no compile in another buffer's table), and
+    // `case-fold-search' changes the translate table.  Match positions are
+    // GNU's.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut step = |form: &str, expected: Value, compiles_delta: usize| {
         crate::lisp::primitives::reset_elisp_regex_compile_count();
@@ -4692,7 +4649,7 @@ fn string_matches_reuse_the_last_compiled_pattern_under_its_key() {
              (modify-syntax-entry ?_ " ")
              (string-match "b\\s-c" "ab_cd"))"#,
         Value::Integer(1),
-        1,
+        0,
     );
     step(
         r#"(let ((case-fold-search nil)) (list (string-match "B" "abc") (string-match "B" "aBc")))"#,
@@ -4708,15 +4665,12 @@ fn string_matches_reuse_the_last_compiled_pattern_under_its_key() {
 
 #[test]
 fn syntax_patterns_compile_once_across_buffers_with_like_tables() {
-    // search.c's compile_pattern cache keys on the syntax table object;
-    // the regex crate's compile costs milliseconds where GNU's costs
-    // microseconds, so the compiled-regexp cache keys on what the
-    // translation reads instead: the hash of the table's class
-    // renderings, and the thread's sentinel registry (one character per
-    // (character, class) pair, kept).  A mode that copies its table into
-    // every buffer (cperl-mode) and puts `syntax-table' properties in
-    // each then compiles a pattern once, not once per buffer; a table
-    // that renders differently compiles again.  Match results are GNU's.
+    // search.c's compile_pattern cache keys a pattern on its syntax table
+    // only when compiling read the table (`used_syntax'); `\\sw' reads it
+    // while matching, so a mode that copies its table into every buffer
+    // (cperl-mode) and puts `syntax-table' properties in each compiles the
+    // pattern once, and `modify-syntax-entry''s clear_regexp_cache keeps
+    // it.  Match results are GNU's.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut step = |form: &str, expected: Value, compiles_delta: usize| {
         crate::lisp::primitives::reset_elisp_regex_compile_count();
@@ -4758,7 +4712,7 @@ fn syntax_patterns_compile_once_across_buffers_with_like_tables() {
              (goto-char 9)
              (list (looking-at "\\sw+") (match-end 0)))"#,
         Value::list([Value::T, Value::Integer(12)]),
-        1,
+        0,
     );
     step(
         r#"(with-current-buffer "*like-a*"
@@ -4772,12 +4726,11 @@ fn syntax_patterns_compile_once_across_buffers_with_like_tables() {
 #[test]
 fn case_folded_patterns_ignore_writes_to_tables_that_are_not_case_tables() {
     // search.c's compile_pattern keys a case-folded pattern on the
-    // buffer's case-canon table object.  The compiled-regexp cache keys
-    // it on a generation the case tables' writes advance: a write to a
-    // char-table of another purpose (`regexp-opt' building its charset
-    // table, a script table, a display table) is not a case-table write
-    // and compiles nothing again; a write to the case table does.
-    // Match results are GNU's.
+    // buffer's case_canon_table object: a write to a char-table of
+    // another purpose (`regexp-opt' building its charset table, a script
+    // table, a display table) compiles nothing again, and neither does a
+    // write to the downcase table, whose canonicalization `set-case-table'
+    // computed before.  Match results are GNU's.
     let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
     let mut step = |form: &str, expected: Value, compiles_delta: usize| {
         crate::lisp::primitives::reset_elisp_regex_compile_count();
@@ -4810,7 +4763,305 @@ fn case_folded_patterns_ignore_writes_to_tables_that_are_not_case_tables() {
     step(
         &format!("(progn (aset (standard-case-table) ?Z ?z) {search})"),
         Value::list([Value::Integer(4), Value::Integer(4)]),
+        0,
+    );
+}
+
+#[test]
+fn set_case_table_completes_a_table_and_buffers_keep_the_tables_they_were_given() {
+    // casetab.c:set_case_table computes a missing upcase table (identity,
+    // then shuffle), canonicalization (DOWN[UP[DOWN[c]]]) and equivalences
+    // and stores all four in the buffer: clearing the table's slots later
+    // leaves the buffer folding with the canonicalization it was given,
+    // and casefiddle.c's prepare_casing_context installs the table again.
+    // The oracle's values.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(let ((tbl (make-char-table 'case-table)))
+                 (dotimes (i 26) (aset tbl (+ ?A i) (+ ?a i)) (aset tbl (+ ?a i) (+ ?a i)))
+                 (aset tbl ?\u00C9 ?\u00E9) (aset tbl ?\u00E9 ?\u00E9)
+                 (with-temp-buffer
+                   (set-case-table tbl)
+                   (list (char-table-p (char-table-extra-slot tbl 0))
+                         (char-table-p (char-table-extra-slot tbl 1))
+                         (char-table-p (char-table-extra-slot tbl 2))
+                         (eq (char-table-extra-slot (char-table-extra-slot tbl 1) 2)
+                             (char-table-extra-slot tbl 2))
+                         (mapcar (lambda (c) (aref (char-table-extra-slot tbl 0) c))
+                                 '(?A ?a ?1 ?\u00E9 ?\u00C9))
+                         (mapcar (lambda (c) (aref (char-table-extra-slot tbl 1) c))
+                                 '(?A ?a ?1 ?\u00E9 ?\u00C9))
+                         (mapcar (lambda (c) (aref (char-table-extra-slot tbl 2) c))
+                                 '(?A ?a ?1 ?\u00E9 ?\u00C9))
+                         (progn (set-char-table-extra-slot tbl 1 nil)
+                                (set-char-table-extra-slot tbl 2 nil)
+                                (let ((case-fold-search t)) (string-match "x" "X")))
+                         (progn (aset tbl ?Q ?z)
+                                (let ((case-fold-search t)) (string-match "q" "Q")))
+                         (char-table-extra-slot tbl 1)
+                         (progn (upcase "abc") (char-table-p (char-table-extra-slot tbl 1)))
+                         (let ((case-fold-search t)) (string-match "q" "Q"))
+                         (let ((case-fold-search t)) (string-match "z" "Q")))))"#,
+        )
+        .to_string(),
+        "(t t t t (97 65 nil 201 233) (97 97 nil 233 233) (97 65 nil 201 233) 0 0 nil t 0 0)"
+    );
+}
+
+#[test]
+fn parse_partial_sexp_state_carries_the_syntax_a_two_char_construct_started_with() {
+    // syntax.c:scan_sexps_forward's state element 10 is the syntax of the
+    // last character when it may start a two-character construct (here
+    // the `#' of `#|', the escape before `e'), else nil, and
+    // internalize_parse_state resumes from it: parsing to the middle of a
+    // comment opener and on from that state gives the parse of the whole.
+    // The oracle's values.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(with-temp-buffer
+                 (let ((st (make-syntax-table)))
+                   (modify-syntax-entry ?# ". 14" st)
+                   (modify-syntax-entry ?| ". 23n" st)
+                   (modify-syntax-entry ?\\ "\\" st)
+                   (set-syntax-table st)
+                   (insert "(a #|b #|c|# d|# \\e)")
+                   (let* ((s4 (parse-partial-sexp 1 5))
+                          (rest (parse-partial-sexp 5 (point-max) nil nil s4))
+                          (whole (parse-partial-sexp 1 (point-max)))
+                          (q (parse-partial-sexp 1 19))
+                          (q2 (parse-partial-sexp 19 (point-max) nil nil q)))
+                     (list s4 (equal rest whole) whole q q2 (point)))))"#,
+        )
+        .to_string(),
+        "((1 1 2 nil nil nil 0 nil nil (1) 589825) t (0 nil 1 nil nil nil 0 nil nil nil nil) \
+         (1 1 2 nil nil t 0 nil nil (1) 9) (0 nil 1 nil nil nil 0 nil nil nil nil) 21)"
+    );
+}
+
+#[test]
+fn scans_propertize_only_as_far_as_they_read() {
+    // syntax.c:parse_sexp_propertize: a scan under
+    // `parse-sexp-lookup-properties' calls `internal--syntax-propertize'
+    // with one past the position it is about to read, each time it reaches
+    // `syntax-propertize--done', and never past where it stops.  The
+    // oracle's calls.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(progn
+                 (defvar r51-calls nil)
+                 (fset 'internal--syntax-propertize
+                       (lambda (pos)
+                         (push pos r51-calls)
+                         (setq syntax-propertize--done (+ pos 9))))
+                 (with-temp-buffer
+                   (insert "(a b) (c d) (e f) (g h) (i j) (k l) (m n) (o p) ; z\n(q)")
+                   (set (make-local-variable 'parse-sexp-lookup-properties) t)
+                   (setq syntax-propertize--done 1)
+                   (list (scan-sexps 1 2) (reverse r51-calls)
+                         (progn (setq r51-calls nil) (goto-char 30) (forward-comment 1) (point))
+                         (reverse r51-calls)
+                         (progn (setq r51-calls nil) (parse-partial-sexp 1 40))
+                         (reverse r51-calls)
+                         syntax-propertize--done)))"#,
+        )
+        .to_string(),
+        "(12 (2 12) 31 (31) (1 37 38 nil nil nil 0 nil nil (37) nil) nil 40)"
+    );
+}
+
+#[test]
+fn scans_read_a_unibyte_buffer_as_raw_bytes_and_skip_syntax_as_bytes() {
+    // FETCH_CHAR_AS_MULTIBYTE makes a unibyte buffer's byte 0351 the
+    // raw-byte character, whose syntax the sexp scan reads, while
+    // skip_syntaxes looks the byte itself up (as the character 0351).
+    // The oracle's values.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(with-temp-buffer
+                 (set-buffer-multibyte nil)
+                 (insert "(a \351\352 b)")
+                 (let ((st (make-syntax-table)))
+                   (modify-syntax-entry ?\351 "." st)
+                   (set-syntax-table st)
+                   (list (scan-sexps 4 1)
+                         (progn (goto-char 4) (skip-syntax-forward "w") (point))
+                         (progn (modify-syntax-entry (unibyte-char-to-multibyte ?\351) "." st)
+                                (scan-sexps 4 1)))))"#,
+        )
+        .to_string(),
+        "(6 4 6)"
+    );
+}
+
+#[test]
+fn regexps_read_syntax_table_properties_of_strings_and_buffers() {
+    // regex-emacs.c's SYNTAX goes through gl_state, which
+    // RE_SETUP_SYNTAX_TABLE_FOR_OBJECT points at the string or buffer
+    // matched, so `syntax-table' properties of either apply under
+    // `parse-sexp-lookup-properties'.  The oracle's values.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(let ((s (copy-sequence "ab-cd ef")))
+                 (put-text-property 2 3 'syntax-table '(2) s)
+                 (list (let ((parse-sexp-lookup-properties t)) (string-match "\\w+" s) (match-end 0))
+                       (let ((parse-sexp-lookup-properties nil)) (string-match "\\w+" s) (match-end 0))
+                       (with-temp-buffer
+                         (insert "foo-bar baz")
+                         (put-text-property 4 5 'syntax-table '(2))
+                         (put-text-property 9 10 'syntax-table '(1))
+                         (set (make-local-variable 'parse-sexp-lookup-properties) t)
+                         (goto-char 1)
+                         (list (re-search-forward "\\_<\\w+\\_>" nil t)
+                               (progn (goto-char (point-max)) (re-search-backward "\\bba" nil t))
+                               (progn (goto-char 1) (looking-at "\\sw+") (match-end 0))))))"#,
+        )
+        .to_string(),
+        "(5 2 (8 nil 8))"
+    );
+}
+
+#[test]
+fn regexp_searches_propertize_only_past_their_property_bounds() {
+    // A search's gl_state starts with the interval run around its start
+    // and runs `internal--syntax-propertize' only when a SYNTAX lookup
+    // crosses e_property with the text past `syntax-propertize--done'
+    // (update_syntax_table_forward); scan_words propertizes as the other
+    // scans do.  The oracle's calls.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(progn
+                 (defvar r52-calls nil)
+                 (fset 'internal--syntax-propertize
+                       (lambda (pos)
+                         (push pos r52-calls)
+                         (setq syntax-propertize--done (+ pos 9))))
+                 (with-temp-buffer
+                   (insert "aa bb cc dd ee ff gg hh ii jj kk ll mm nn")
+                   (put-text-property 7 8 'syntax-table '(1))
+                   (put-text-property 20 21 'syntax-table '(1))
+                   (set (make-local-variable 'parse-sexp-lookup-properties) t)
+                   (setq syntax-propertize--done 1)
+                   (list (progn (goto-char 1) (re-search-forward "\\bkk" nil t))
+                         (reverse r52-calls)
+                         syntax-propertize--done
+                         (progn (setq r52-calls nil) (goto-char 1) (forward-word 3))
+                         (point) (reverse r52-calls))))"#,
+        )
+        .to_string(),
+        "(33 (31) 40 t 9 nil)"
+    );
+}
+
+#[test]
+fn word_motion_and_case_commands_follow_scan_words() {
+    // syntax.c:scan_words with `words-include-escapes', a
+    // `find-word-boundary-function-table' function (checked with
+    // `fboundp', so a non-symbol signals) and the accessible text's end,
+    // Fforward_word's value, and casefiddle.c's casify_word moving point
+    // to the cased region's end for either sign.  The oracle's values.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(with-temp-buffer
+                 (insert "one tw\\o three-four  fi_ve")
+                 (let ((table (make-char-table nil)))
+                   (defvar r52-calls nil)
+                   (list (progn (goto-char 1) (list (forward-word 2) (point)))
+                         (progn (set (make-local-variable 'words-include-escapes) t)
+                                (goto-char 1) (list (forward-word 2) (point)))
+                         (progn (goto-char (point-max)) (list (forward-word -2) (point)))
+                         (progn (goto-char 1) (list (forward-word 10) (point)))
+                         (progn (aset table ?t "not a symbol")
+                                (set (make-local-variable 'find-word-boundary-function-table) table)
+                                (goto-char 1)
+                                (condition-case err (forward-word 2) (error err)))
+                         (progn (fset 'r52-wb (lambda (pos limit)
+                                                (push (list pos limit) r52-calls)
+                                                (if (< pos limit) (+ pos 2) (- pos 2))))
+                                (aset table ?t 'r52-wb)
+                                (goto-char 1)
+                                (list (forward-word 2) (point) (forward-word -1) (point)
+                                      (reverse r52-calls))))))"#,
+        )
+        .to_string(),
+        r#"((t 7) (t 9) (t 22) (nil 27) (wrong-type-argument symbolp "not a symbol") (t 7 t 5 ((5 27))))"#
+    );
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            r#"(with-temp-buffer
+                 (insert "one TWO three")
+                 (goto-char 1) (upcase-word 1)
+                 (let ((a (list (point) (buffer-string))))
+                   (goto-char (point-max)) (capitalize-word -2)
+                   (list a (point) (buffer-string)
+                         (progn (goto-char 5) (downcase-word 5) (list (point) (buffer-string))))))"#,
+        )
+        .to_string(),
+        r#"((4 "ONE TWO three") 14 "ONE Two Three" (14 "ONE two three"))"#
+    );
+}
+
+#[test]
+fn patterns_holding_syntax_classes_compile_per_table_and_after_syntax_edits() {
+    // regex-emacs.c fills `[[:space:]]' for ASCII from the syntax table
+    // while compiling (`used_syntax'); search.c's cache then keys the
+    // pattern on that table, and syntax.c:Fmodify_syntax_entry's
+    // clear_regexp_cache drops every such pattern.  Match results are
+    // GNU's.
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut step = |form: &str, expected: Value, compiles_delta: usize| {
+        crate::lisp::primitives::reset_elisp_regex_compile_count();
+        assert_eq!(eval_str_with(&mut interp, form), expected, "{form}");
+        assert_eq!(
+            crate::lisp::primitives::elisp_regex_compile_count(),
+            compiles_delta,
+            "compiles during {form}"
+        );
+    };
+    step(
+        r#"(list (string-match "x[[:space:]]y" "x_y x y")
+                 (string-match "x[[:space:]]y" "x_y x y"))"#,
+        Value::list([Value::Integer(4), Value::Integer(4)]),
         1,
+    );
+    step(
+        r#"(with-current-buffer (get-buffer-create "*space-b*")
+             (set-syntax-table (make-syntax-table))
+             (modify-syntax-entry ?_ " ")
+             (string-match "x[[:space:]]y" "x_y x y"))"#,
+        Value::Integer(0),
+        1,
+    );
+    step(
+        r#"(string-match "x[[:space:]]y" "x_y x y")"#,
+        Value::Integer(4),
+        1,
+    );
+    step(
+        r#"(with-current-buffer "*space-b*"
+             (modify-syntax-entry ?_ "_")
+             (string-match "x[[:space:]]y" "x_y x y"))"#,
+        Value::Integer(4),
+        1,
+    );
+    step(
+        r#"(with-current-buffer "*space-b*" (string-match "x[[:space:]]y" "x_y x y"))"#,
+        Value::Integer(4),
+        0,
     );
 }
 

@@ -281,7 +281,7 @@ define_dispatch!(
             }
             "keymapp" => {
                 need_args(name, args, 1)?;
-                Ok(if is_keymap_value(interp, &args[0]) {
+                Ok(if keymapp(interp, args[0], env) {
                     Value::T
                 } else {
                     Value::Nil
@@ -412,17 +412,16 @@ define_dispatch!(
             }
             "where-is-internal" => {
                 need_arg_range(name, args, 1, 5)?;
-                let first_only = args.get(2).is_some_and(Value::is_truthy);
-                let nomenus = first_only
-                    && !matches!(args.get(2).map(|v| v.kind()), Some(Kind::Symbol(mode)) if mode == "non-ascii");
-                let keymaps = where_is_internal_maps(interp, args.get(1), env)?;
-                let matches =
-                    where_is_internal(interp, &args[0], &keymaps, first_only, nomenus, env)?;
-                if first_only {
-                    Ok(matches.into_iter().next().unwrap_or(Value::Nil))
-                } else {
-                    Ok(Value::list(matches))
-                }
+                let arg = |index: usize| args.get(index).copied().unwrap_or(Value::Nil);
+                where_is_internal_command(
+                    interp,
+                    args[0],
+                    arg(1),
+                    arg(2),
+                    arg(3).is_truthy(),
+                    arg(4).is_truthy(),
+                    env,
+                )
             }
             "default-boundp" => {
                 need_args(name, args, 1)?;
