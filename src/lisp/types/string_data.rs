@@ -629,6 +629,17 @@ impl SharedStringState {
         Some(offset)
     }
 
+    /// Every character as fetch_string_char_advance reads it: a unibyte
+    /// string's bytes, a multibyte one's characters.
+    pub(crate) fn codes(&self) -> Vec<u32> {
+        let mut codes = Vec::with_capacity(self.len());
+        let mut offset = 0;
+        while let Some(code) = self.character_advance(&mut offset) {
+            codes.push(code as u32);
+        }
+        codes
+    }
+
     /// character.h:fetch_string_char_advance: the character at byte
     /// OFFSET, a unibyte string's byte as itself, advancing the cursor.
     pub(crate) fn character_advance(&self, offset: &mut usize) -> Option<i64> {

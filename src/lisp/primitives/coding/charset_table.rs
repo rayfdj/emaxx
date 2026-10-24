@@ -340,7 +340,7 @@ impl CharsetInfo {
             CharsetBuiltin::EightBit => {
                 return (0x80..=0xff)
                     .contains(&code)
-                    .then_some(RAW_BYTE_REGEX_BASE + code);
+                    .then_some(RAW_BYTE8_BASE + code);
             }
             CharsetBuiltin::None => {}
         }

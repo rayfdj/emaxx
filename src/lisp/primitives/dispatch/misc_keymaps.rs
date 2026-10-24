@@ -120,14 +120,10 @@ fn lookup_key_value(
                                 .char_table_get(table, code as u32)
                                 .filter(|value| !value.is_nil())
                                 .map_or(Ok(code), |value| value.as_integer())?;
-                            match char_from_integer(mapped) {
-                                Ok(ch) => text.push(ch),
-                                Err(_) if (0..=0x3f_ffff).contains(&mapped) => {
-                                    extended.push((position, mapped as u32));
-                                    text.push(crate::lisp::json::INVALID_UNICODE_SENTINEL);
-                                }
-                                Err(error) => return Err(error),
+                            if !(0..=0x3f_ffff).contains(&mapped) {
+                                return Err(LispError::Signal("Invalid character".into()));
                             }
+                            push_character_code(&mut text, &mut extended, position, mapped as u32);
                         }
                         make_shared_string_value_with_extended_chars(
                             text,

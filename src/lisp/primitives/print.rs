@@ -849,8 +849,7 @@ pub(crate) fn render_prin1_symbol(
 pub(crate) fn charset_text_properties_print(
     interp: &Interpreter,
     env: &Env,
-    text: &str,
-    multibyte: bool,
+    codes: &[u32],
     props: &[StringPropertySpan],
 ) -> bool {
     let setting = interp
@@ -864,7 +863,6 @@ pub(crate) fn charset_text_properties_print(
     }
     let ordered = interp.charset_priority_list();
     let head = interp.charset_non_preferred_head();
-    let chars: Vec<char> = text.chars().collect();
     props.iter().any(|span| {
         span.props.iter().any(|(name, value)| {
             if name != "charset" {
@@ -876,23 +874,17 @@ pub(crate) fn charset_text_properties_print(
             let expected = interp
                 .charset_canonical_name(charset)
                 .unwrap_or_else(|| charset.to_string());
-            chars
+            // CODES as fetch_string_char_advance reads them: a unibyte
+            // string's bytes (0xE9 is U+00E9 there), a multibyte one's
+            // characters, raw bytes included.
+            codes
                 .iter()
                 .skip(span.start)
                 .take(span.end.saturating_sub(span.start))
-                .any(|ch| {
-                    if ch.is_ascii() {
-                        return false;
-                    }
-                    // fetch_string_char_advance: a unibyte string yields
-                    // its bytes as characters (0xE9 is U+00E9 there), a
-                    // multibyte one its characters, raw bytes included.
-                    let code = match raw_byte_from_regex_char(*ch) {
-                        Some(byte) if !multibyte => u32::from(byte),
-                        Some(byte) => RAW_BYTE_REGEX_BASE + u32::from(byte),
-                        None => *ch as u32,
-                    };
-                    char_charset_ordered(interp, &ordered, head.as_deref(), code).0 != expected
+                .any(|&code| {
+                    code >= 0x80
+                        && char_charset_ordered(interp, &ordered, head.as_deref(), code).0
+                            != expected
                 })
         })
     })
@@ -1132,13 +1124,7 @@ pub(crate) fn render_prin1_body(
                 let keep_charset = props
                     .iter()
                     .any(|span| span.props.iter().any(|(name, _)| name == "charset"))
-                    && charset_text_properties_print(
-                        interp,
-                        env,
-                        &state.text(),
-                        state.is_multibyte(),
-                        &props,
-                    );
+                    && charset_text_properties_print(interp, env, &state.codes(), &props);
                 (literal, props, keep_charset)
             };
             if props.is_empty() {

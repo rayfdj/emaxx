@@ -2038,17 +2038,38 @@ pub(crate) fn default_charset_plist(name: &str, interp: &Interpreter) -> Option<
 /// charset.c find_charsets_in_text: the charset CHAR_CHARSET picks for
 /// each character (a raw byte is `eight-bit'), listed in charset id
 /// order as Ffind_charset_region conses them.
-pub(crate) fn charsets_for_text(text: &str, interp: &Interpreter) -> Vec<Value> {
-    let ordered = interp.charset_priority_list();
-    let head = interp.charset_non_preferred_head();
+/// charset.c:find_charsets_in_text over CODES, the characters of a text
+/// (a unibyte text's bytes): the charsets they belong to, in charset id
+/// order.  A multibyte text of ASCII alone (as many characters as bytes)
+/// is `ascii' without a look at TABLE; otherwise each character goes
+/// through TABLE (translate_char) first, a unibyte one then counting as
+/// `ascii' or `eight-bit'.
+pub(crate) fn find_charsets_in_text(
+    interp: &Interpreter,
+    codes: &[u32],
+    multibyte: bool,
+    table: &Value,
+) -> Vec<Value> {
     let mut names: Vec<String> = Vec::new();
-    for ch in text.chars() {
-        let code = raw_byte_from_regex_char(ch)
-            .map(|byte| RAW_BYTE_REGEX_BASE + u32::from(byte))
-            .unwrap_or(ch as u32);
-        let (charset, _) = char_charset_ordered(interp, &ordered, head.as_deref(), code);
-        if !names.contains(&charset) {
-            names.push(charset);
+    let mut note = |name: String| {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    };
+    let all_ascii = codes.iter().all(|&c| c < 0x80);
+    if multibyte && all_ascii {
+        note("ascii".into());
+    } else if !multibyte {
+        for &c in codes {
+            let c = translate_char(interp, table, c);
+            note(if c < 0x80 { "ascii" } else { "eight-bit" }.into());
+        }
+    } else {
+        let ordered = interp.charset_priority_list();
+        let head = interp.charset_non_preferred_head();
+        for &c in codes {
+            let c = translate_char(interp, table, c);
+            note(char_charset_ordered(interp, &ordered, head.as_deref(), c).0);
         }
     }
     names.sort_by_key(|name| interp.charset_id(name).unwrap_or(i64::MAX));

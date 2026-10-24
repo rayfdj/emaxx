@@ -658,37 +658,3 @@ pub(crate) fn casify_buffer_region(
         ))
     })
 }
-
-pub(crate) fn parse_region_bound(value: &Value) -> Result<(usize, usize), LispError> {
-    let Some((start, end)) = value.cons_values() else {
-        return Err(LispError::Signal("Invalid region bounds".into()));
-    };
-    let start = start
-        .as_integer()
-        .map_err(|_| LispError::Signal("Invalid region bounds".into()))?;
-    let end = end
-        .as_integer()
-        .map_err(|_| LispError::Signal("Invalid region bounds".into()))?;
-    if start < 0 || end < 0 {
-        return Err(LispError::Signal("Invalid region bounds".into()));
-    }
-    Ok((start as usize, end as usize))
-}
-
-pub(crate) fn parse_region_bounds(value: &Value) -> Result<Vec<(usize, usize)>, LispError> {
-    let mut cursor = *value;
-    let mut bounds = Vec::new();
-    for _ in 0..1024 {
-        match cursor.kind() {
-            Kind::Nil => return Ok(bounds),
-            Kind::Cons(cons_cell) => {
-                let car = &cons_cell.car;
-                let cdr = &cons_cell.cdr;
-                bounds.push(parse_region_bound(&car.get())?);
-                cursor = cdr.get();
-            }
-            _ => return Err(LispError::Signal("Invalid region bounds".into())),
-        }
-    }
-    Err(LispError::Signal("Invalid region bounds".into()))
-}

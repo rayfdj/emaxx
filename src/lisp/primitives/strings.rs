@@ -325,6 +325,28 @@ pub(crate) fn push_character_code(
     }
 }
 
+/// Append character CODE as a buffer holds it: in a multibyte buffer as
+/// push_character_code does, in a unibyte one as the byte CHAR_TO_BYTE8
+/// makes of it (a raw byte's own, else the code's low byte).
+pub(crate) fn push_buffer_character(
+    text: &mut String,
+    extended: &mut Vec<(usize, u32)>,
+    index: usize,
+    code: u32,
+    multibyte: bool,
+) {
+    if multibyte {
+        push_character_code(text, extended, index, code);
+    } else {
+        let byte = if (RAW_BYTE8_BASE + 0x80..=RAW_BYTE8_BASE + 0xFF).contains(&code) {
+            code - RAW_BYTE8_BASE
+        } else {
+            code & 0xFF
+        };
+        text.push(raw_byte_regex_char(byte as u8));
+    }
+}
+
 /// The side table of a string's characters its Rust text view cannot
 /// carry, read in place: empty for a unibyte or ASCII string and for
 /// UTF-8 without a real U+E000..U+E0FF.

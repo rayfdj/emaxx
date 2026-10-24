@@ -116,26 +116,6 @@ pub(super) fn check_fixnum(value: &Value) -> Result<i64, LispError> {
     }
 }
 
-/// buffer.c's fix_position.
-fn fix_position(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
-    match value.kind() {
-        Kind::Integer(n) => Ok(n),
-        Kind::Marker(id) => interp
-            .marker_position(id)
-            .map(|pos| pos as i64)
-            .ok_or_else(|| error("Marker does not point anywhere")),
-        Kind::BigInteger(n) => Ok(if n.sign() == num_bigint::Sign::Minus {
-            i64::MIN
-        } else {
-            i64::MAX
-        }),
-        _ => Err(LispError::WrongTypeArgument(
-            "integer-or-marker-p".into(),
-            *value,
-        )),
-    }
-}
-
 /// CHECK_FIXNUM_COERCE_MARKER.
 fn fixnum_coerce_marker(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
     match value.kind() {
@@ -3221,19 +3201,7 @@ pub(super) fn parse_partial_sexp(
         return Err(error("End position is smaller than start position"));
     }
 
-    // validate_region.
-    let (mut beg, mut end) = (fix_position(interp, &from)?, fix_position(interp, &to)?);
-    if end < beg {
-        std::mem::swap(&mut beg, &mut end);
-    }
-    {
-        let buffer = interp.buffer.borrow();
-        if !(buffer.point_min() as i64 <= beg && end <= buffer.point_max() as i64) {
-            drop(buffer);
-            return Err(args_out_of_range([Value::Buffer(interp.buffer), from, to]));
-        }
-    }
-    let (from, to) = (beg as usize, end as usize);
+    let (from, to) = validate_region(interp, &from, &to)?;
 
     let mut state = internalize_parse_state(arg(4))?;
     let commentstop = match arg(5) {

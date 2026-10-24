@@ -507,6 +507,50 @@ fn strtoimax(input: &[u8]) -> (i64, &[u8]) {
 /// Printing to the `t' stream in an interactive session displays in the
 /// echo area (GNU's print_string to Qt); consecutive prints of one
 /// sequence — eval-expression's value then its print format — append.
+/// dispnew.c:ring_bell: `ring-bell-function' when set, called with the
+/// variable nil meanwhile so that an error in it is not repeated, else
+/// the terminal's bell.
+pub(crate) fn ring_bell(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
+    let function = interp
+        .lookup_var("ring-bell-function", env)
+        .unwrap_or(Value::Nil);
+    if function.is_nil() {
+        use std::io::Write as _;
+        let mut output = crate::lisp::eval::terminal::output()
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        return output
+            .write_all(b"\x07")
+            .and_then(|()| output.flush())
+            .map_err(|error| LispError::Signal(error.to_string()));
+    }
+    interp.set_variable("ring-bell-function", Value::Nil, env);
+    interp.call_function_value(function, None, &[], env)?;
+    interp.set_variable("ring-bell-function", function, env);
+    Ok(())
+}
+
+/// dispnew.c:bitch_at_user: in batch a BEL on stdout; while a keyboard
+/// macro runs, the user-error that ends it; else the bell.
+pub(crate) fn bitch_at_user(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
+    if interp
+        .forwarded_c_value("noninteractive", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return crate::lisp::primitives::batch_stdout::write(b"\x07")
+            .map_err(|error| LispError::Signal(error.to_string()));
+    }
+    if interp
+        .lookup_var("executing-kbd-macro", env)
+        .is_some_and(|value| value.is_truthy())
+    {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("user-error"),
+            Value::string("Keyboard macro terminated by a command ringing the bell"),
+        ])));
+    }
+    ring_bell(interp, env)
+}
+
 pub(crate) fn echo_area_print(text: &str) {
     let appending = ECHO_FROM_PRINT.with(std::cell::Cell::get);
     bump_echo_message_tick();
@@ -3052,7 +3096,25 @@ define_dispatch!(
                 )?;
                 Ok(Value::Nil)
             }
-            "ding" => Ok(Value::Nil),
+            "ding" => {
+                need_arg_range(name, args, 0, 1)?;
+                // dispnew.c:Fding: ARG non-nil rings the bell without
+                // ending a keyboard macro (a BEL on stdout in batch).
+                if args.first().is_some_and(Value::is_truthy) {
+                    if interp
+                        .forwarded_c_value("noninteractive", env)
+                        .is_some_and(|value| value.is_truthy())
+                    {
+                        crate::lisp::primitives::batch_stdout::write(b"\x07")
+                            .map_err(|error| LispError::Signal(error.to_string()))?;
+                    } else {
+                        ring_bell(interp, env)?;
+                    }
+                } else {
+                    bitch_at_user(interp, env)?;
+                }
+                Ok(Value::Nil)
+            }
             "sleep-for" => {
                 need_arg_range(name, args, 1, 2)?;
                 let duration = wait_duration(args)?;
@@ -4331,12 +4393,76 @@ define_dispatch!(
                 Ok(display_property_value(&display, property).unwrap_or(Value::Nil))
             }
             "bidi-find-overridden-directionality" => {
-                need_args(name, args, 2)?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
-                Ok(find_bidi_override(interp, start, end)
-                    .map(|pos| Value::Integer(pos as i64))
-                    .unwrap_or(Value::Nil))
+                need_arg_range(name, args, 3, 4)?;
+                // xdisp.c: OBJECT a string, or a buffer (a window's, nil
+                // for the current one); a unibyte one, or a buffer without
+                // `bidi-display-reordering', has nothing overridden.  A
+                // string's FROM and TO are validate_subarray's, a buffer's
+                // validate_region's in that buffer, and FROM at the end
+                // finds nothing.
+                let object = args[2];
+                let right_to_left =
+                    args.get(3).and_then(Value::symbol_str) == Some("right-to-left");
+                if let Kind::StringObject(state) = object.kind() {
+                    let (text, multibyte, length) = {
+                        let state = state.borrow();
+                        (state.text(), state.is_multibyte(), state.len())
+                    };
+                    if !multibyte {
+                        return Ok(Value::Nil);
+                    }
+                    let (from, to) = validate_subarray(object, args[0], args[1], length)?;
+                    if from >= length {
+                        return Ok(Value::Nil);
+                    }
+                    return Ok(find_bidi_override(&text, 0, from, to, right_to_left)
+                        .map(|pos| Value::Integer(pos as i64))
+                        .unwrap_or(Value::Nil));
+                }
+                let buffer_id = match object.kind() {
+                    Kind::Nil => interp.current_buffer_id(),
+                    Kind::Buffer(_) => interp.resolve_buffer_id(&object)?,
+                    _ if crate::lisp::primitives::window::window_buffer_id(interp, &object)
+                        .is_some() =>
+                    {
+                        crate::lisp::primitives::window::window_buffer_id(interp, &object)
+                            .expect("a live window's buffer")
+                    }
+                    _ => return Err(wrong_type_argument("stringp", object)),
+                };
+                let saved = interp.current_buffer_id();
+                interp.set_current_buffer_id(buffer_id)?;
+                let result = (|| {
+                    if !interp
+                        .lookup_var("bidi-display-reordering", env)
+                        .is_some_and(|value| value.is_truthy())
+                        || !interp.buffer.borrow().is_multibyte()
+                    {
+                        return Ok(Value::Nil);
+                    }
+                    let (from, to) = validate_region(interp, &args[0], &args[1])?;
+                    let buffer = interp.buffer.borrow();
+                    if from >= buffer.point_max() {
+                        return Ok(Value::Nil);
+                    }
+                    // The paragraph starts after the newline before FROM.
+                    let mut paragraph = from;
+                    while paragraph > buffer.point_min()
+                        && buffer.char_at(paragraph - 1) != Some('\n')
+                    {
+                        paragraph -= 1;
+                    }
+                    let text = buffer
+                        .buffer_substring(paragraph, to)
+                        .map_err(|error| LispError::Signal(error.to_string()))?;
+                    Ok(
+                        find_bidi_override(&text, paragraph, from, to, right_to_left)
+                            .map(|pos| Value::Integer(pos as i64))
+                            .unwrap_or(Value::Nil),
+                    )
+                })();
+                interp.set_current_buffer_id(saved)?;
+                result
             }
             "current-bidi-paragraph-direction" => {
                 need_arg_range(name, args, 0, 1)?;

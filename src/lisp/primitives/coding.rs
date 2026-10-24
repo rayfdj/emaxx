@@ -189,11 +189,6 @@ pub(crate) fn make_charset_character(
     let character = info
         .decode(interp, code)
         .ok_or_else(|| LispError::Signal("Invalid code(s)".into()))?;
-    let character = if RAW_BYTE_MARKERS.contains(&character) {
-        RAW_BYTE8_BASE + character - RAW_BYTE_REGEX_BASE
-    } else {
-        character
-    };
     Ok(Value::Integer(i64::from(character)))
 }
 
@@ -215,12 +210,9 @@ pub(crate) fn encode_charset_char(
     charset: &str,
     character: u32,
 ) -> Option<u32> {
-    // CHARACTER may be a Rust-internal char (a raw byte spelled in the
-    // regex-internal range) or GNU's own character number (a raw byte at
-    // #x3fff80..#x3fffff, as `encode-char' and `char-charset' receive
-    // it); both spellings name the same raw byte, which no code space but
-    // `eight-bit' contains.
-    encode_charset_character_number(interp, charset, gnu_character_number(character))
+    // CHARACTER is GNU's character number: a raw byte is #x3fff80..#x3fffff,
+    // which no code space but `eight-bit' contains.
+    encode_charset_character_number(interp, charset, character)
 }
 
 /// Charset membership for an actual Emacs character number. Canonical
@@ -2322,16 +2314,13 @@ impl CharsetRuns {
 /// Unicode character answering `unicode' once the non-preferred part of
 /// the order is reached, and `eight-bit' is the fallback.  ORDERED and
 /// NON_PREFERRED_HEAD come from the interpreter (a caller working over a
-/// text fetches them once).
+/// text fetches them once).  CH is GNU's character number.
 pub(crate) fn char_charset_ordered(
     interp: &Interpreter,
     ordered: &[String],
     non_preferred_head: Option<&str>,
     ch: u32,
 ) -> (String, u32) {
-    // CH may carry a raw byte in its Rust-internal spelling; GNU's
-    // character number decides the MAX_UNICODE_CHAR test below.
-    let ch = gnu_character_number(ch);
     if ch <= 0x7F {
         return ("ascii".into(), ch);
     }
@@ -2353,16 +2342,6 @@ pub(crate) fn char_charset_ordered(
         ("emacs".into(), ch)
     } else {
         ("eight-bit".into(), ch - RAW_BYTE8_BASE)
-    }
-}
-
-/// GNU's number for CH: a raw byte spelled in the Rust-internal regex
-/// range becomes #x3fff80..#x3fffff; every other value is its own number.
-pub(crate) fn gnu_character_number(ch: u32) -> u32 {
-    if (RAW_BYTE_REGEX_BASE + 0x80..=RAW_BYTE_REGEX_BASE + 0xff).contains(&ch) {
-        RAW_BYTE8_BASE + ch - RAW_BYTE_REGEX_BASE
-    } else {
-        ch
     }
 }
 
@@ -2599,29 +2578,8 @@ pub(crate) fn unencodable_char_position_value(
     let string = args.get(4).copied().filter(|value| !value.is_nil());
     let (codes, from) = match string {
         None => {
-            // validate_region.
-            let mut start = position_from_value(interp, &args[0])?;
-            let mut end = position_from_value(interp, &args[1])?;
-            if start > end {
-                std::mem::swap(&mut start, &mut end);
-            }
-            let (begv, zv, multibyte) = {
-                let buffer = interp.buffer.borrow();
-                (
-                    buffer.point_min(),
-                    buffer.point_max(),
-                    buffer.is_multibyte(),
-                )
-            };
-            if !(begv <= start && end <= zv) {
-                return Err(LispError::SignalValue(Value::list([
-                    Value::symbol("args-out-of-range"),
-                    Value::Buffer(interp.buffer),
-                    Value::Integer(start as i64),
-                    Value::Integer(end as i64),
-                ])));
-            }
-            if !multibyte {
+            let (start, end) = validate_region(interp, &args[0], &args[1])?;
+            if !interp.buffer.borrow().is_multibyte() {
                 return Ok(Value::Nil);
             }
             (buffer_character_codes(interp, start, end), start)
@@ -2899,26 +2857,6 @@ fn emacs_mule_char_runs_out(layout: &EmacsMuleLayout, src: &[u8], eol_dos: bool)
             })
 }
 
-pub(crate) fn text_from_region_or_string(
-    interp: &Interpreter,
-    start_or_string: &Value,
-    end: Option<&Value>,
-) -> Result<String, LispError> {
-    if let Some(string) = string_like(start_or_string) {
-        return Ok(string.text);
-    }
-    let start = position_from_value(interp, start_or_string)?;
-    let end = end
-        .map(|value| position_from_value(interp, value))
-        .transpose()?
-        .unwrap_or(start);
-    interp
-        .buffer
-        .borrow()
-        .buffer_substring(start, end)
-        .map_err(|error| LispError::Signal(error.to_string()))
-}
-
 fn detected_names_value(names: Vec<String>, highest: bool) -> Value {
     if highest {
         names
@@ -2958,7 +2896,13 @@ pub(crate) fn detect_coding_region_value(
     highest: Option<&Value>,
     env: &Env,
 ) -> Result<Value, LispError> {
-    let text = text_from_region_or_string(interp, start, Some(end))?;
+    // coding.c:Fdetect_coding_region: validate_region, then the text.
+    let (start, end) = validate_region(interp, start, end)?;
+    let text = interp
+        .buffer
+        .borrow()
+        .buffer_substring(start, end)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
     let highest = highest.is_some_and(Value::is_truthy);
     let src = DetectSource::from_text(&text, interp.buffer.borrow().is_multibyte());
     Ok(detected_names_value(

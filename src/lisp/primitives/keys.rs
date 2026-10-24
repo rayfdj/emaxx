@@ -621,19 +621,6 @@ pub(crate) fn string_sequence_values(string: &StringLike) -> Vec<Value> {
         .collect()
 }
 
-pub(crate) fn string_sequence_value(string: &StringLike, ch: char) -> Value {
-    let code = if let Some(byte) = raw_byte_from_regex_char(ch) {
-        if string.multibyte {
-            RAW_BYTE8_BASE as i64 + byte as i64
-        } else {
-            i64::from(byte)
-        }
-    } else {
-        ch as i64
-    };
-    Value::Integer(code)
-}
-
 pub(crate) fn sequence_string_like(value: &Value) -> Option<StringLike> {
     match value.kind() {
         Kind::StringObject(_) => string_like(value),

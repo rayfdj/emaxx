@@ -2548,6 +2548,8 @@ define_dispatch!(
                 // Fprocess_send_region: the region's text with the current
                 // buffer as the object, encoded as its multibyteness says.
                 let process_id = interp.resolve_process_id(&args[0])?;
+                // validate_region, then the region's text.
+                validate_region(interp, &args[1], &args[2])?;
                 let text = super::buffer_edit::direct_buffer_substring_no_properties(
                     interp,
                     &[args[1], args[2]],
@@ -2563,8 +2565,8 @@ define_dispatch!(
             }
             "zlib-decompress-region" => {
                 need_arg_range(name, args, 2, 3)?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
+                // decompress.c: validate_region, then the unibyte check.
+                let (start, end) = validate_region(interp, &args[0], &args[1])?;
                 if interp.buffer.borrow().is_multibyte() {
                     return Err(LispError::Signal(
                         "This function can be called only in unibyte buffers".into(),
@@ -2618,21 +2620,17 @@ define_dispatch!(
             }
             "libxml-parse-xml-region" | "libxml-parse-html-region" => {
                 need_arg_range(name, args, 0, 4)?;
-                let start = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => interp.buffer.borrow().point_min(),
-                    Some(start) => position_from_value(interp, &start.value())?,
+                // xml.c:parse_region: nil bounds are point-min and
+                // point-max, then validate_region.
+                let start = match args.first().filter(|value| !value.is_nil()) {
+                    Some(start) => *start,
+                    None => Value::Integer(interp.buffer.borrow().point_min() as i64),
                 };
-                let end = match args.get(1).map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => interp.buffer.borrow().point_max(),
-                    Some(end) => position_from_value(interp, &end.value())?,
+                let end = match args.get(1).filter(|value| !value.is_nil()) {
+                    Some(end) => *end,
+                    None => Value::Integer(interp.buffer.borrow().point_max() as i64),
                 };
-                // GNU's `validate_region' canonicalizes reversed bounds before
-                // handing the bytes to libxml2.
-                let (start, end) = if start <= end {
-                    (start, end)
-                } else {
-                    (end, start)
-                };
+                let (start, end) = validate_region(interp, &start, &end)?;
                 if let Some(base_url) = args.get(2)
                     && !base_url.is_nil()
                     && string_like(base_url).is_none()
@@ -2664,21 +2662,7 @@ define_dispatch!(
                 } else if start.is_nil() {
                     interp.buffer.borrow().size_total() == 0
                 } else {
-                    let from = position_from_value(interp, &start)?;
-                    let to = position_from_value(interp, &end)?;
-                    let (from, to) = (from.min(to), from.max(to));
-                    let (begv, zv) = {
-                        let buffer = interp.buffer.borrow();
-                        (buffer.point_min(), buffer.point_max())
-                    };
-                    if from < begv || to > zv {
-                        return Err(LispError::SignalValue(Value::list([
-                            Value::symbol("args-out-of-range"),
-                            Value::Buffer(interp.buffer),
-                            start,
-                            end,
-                        ])));
-                    }
+                    let (from, to) = validate_region(interp, &start, &end)?;
                     start = Value::Integer(from as i64);
                     end = Value::Integer(to as i64);
                     from == to

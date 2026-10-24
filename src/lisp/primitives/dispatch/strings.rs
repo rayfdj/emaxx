@@ -212,19 +212,19 @@ define_dispatch!(
                 if !string.multibyte {
                     return Ok(args[0]);
                 }
-                let mut text = String::new();
-                for (index, ch) in string.text.chars().enumerate() {
-                    if let Some(byte) = raw_case_byte(ch as u32) {
-                        text.push(raw_byte_regex_char(byte as u8));
-                    } else if (ch as u32) <= 0x7F {
-                        text.push(ch);
+                let mut bytes = Vec::new();
+                for (index, code) in string.character_codes_iter().enumerate() {
+                    if code <= 0x7F {
+                        bytes.push(code as u8);
+                    } else if (0x3F_FF80..=0x3F_FFFF).contains(&code) {
+                        bytes.push((code - 0x3F_FF00) as u8);
                     } else {
                         return Err(LispError::Signal(format!(
                             "Cannot convert character at index {index} to unibyte"
                         )));
                     }
                 }
-                Ok(string_like_value_with_multibyte(text, Vec::new(), false))
+                Ok(bytes_to_unibyte_value(&bytes))
             }
             "string-to-multibyte" => {
                 // fns.c string_to_multibyte: STRING itself when multibyte,
@@ -780,15 +780,15 @@ define_dispatch!(
             }
             "base64-encode-region" => {
                 need_arg_range(name, args, 2, 3)?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
+                // fns.c's validate_region.
+                let (start, end) = validate_region(interp, &args[0], &args[1])?;
                 let no_line_break = args.get(2).is_some_and(Value::is_truthy);
                 base64_encode_region_value(interp, start, end, !no_line_break, true, false, env)
             }
             "base64url-encode-region" => {
                 need_arg_range(name, args, 2, 3)?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
+                // fns.c's validate_region.
+                let (start, end) = validate_region(interp, &args[0], &args[1])?;
                 let no_pad = args.get(2).is_some_and(Value::is_truthy);
                 base64_encode_region_value(interp, start, end, false, !no_pad, true, env)
             }
@@ -804,8 +804,8 @@ define_dispatch!(
             }
             "base64-decode-region" => {
                 need_arg_range(name, args, 2, 4)?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
+                // fns.c's validate_region.
+                let (start, end) = validate_region(interp, &args[0], &args[1])?;
                 let base64url = args.get(2).is_some_and(Value::is_truthy);
                 let ignore_invalid = args.get(3).is_some_and(Value::is_truthy);
                 base64_decode_region_value(interp, start, end, base64url, ignore_invalid, env)
@@ -830,14 +830,12 @@ define_dispatch!(
             }
             "string-to-char" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
-                Ok(string
-                    .text
-                    .chars()
-                    .next()
-                    .map(|ch| string_sequence_value(&string, ch))
-                    .unwrap_or(Value::Integer(0)))
+                // editfns.c:Fstring_to_char: CHECK_STRING, the first
+                // character (a unibyte string's byte), 0 for "".
+                let Kind::StringObject(state) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
+                Ok(Value::Integer(state.borrow().character_at(0).unwrap_or(0)))
             }
             "char-syntax" => {
                 need_args(name, args, 1)?;

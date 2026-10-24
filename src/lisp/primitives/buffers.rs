@@ -189,6 +189,75 @@ pub(crate) fn overlay_covers_position(
         || (beg == end && beg == pos && !overlay.front_advance() && overlay.rear_advance())
 }
 
+/// character.c:translate_char: C through TABLE, a char-table whose entry
+/// for C replaces it when a character, or a list of tables applied in
+/// turn; any other TABLE leaves C as it is.
+pub(crate) fn translate_char(interp: &Interpreter, table: &Value, c: u32) -> u32 {
+    match table.kind() {
+        Kind::CharTable(id) => match interp.char_table_get(id, c).map(|value| value.kind()) {
+            Some(Kind::Integer(ch)) if (0..=0x3F_FFFF).contains(&ch) => ch as u32,
+            _ => c,
+        },
+        Kind::Cons(_) => {
+            let mut c = c;
+            let mut tail = *table;
+            while let Kind::Cons(cell) = tail.kind() {
+                c = translate_char(interp, &cell.car.get(), c);
+                tail = cell.cdr.get();
+            }
+            c
+        }
+        _ => c,
+    }
+}
+
+/// buffer.c:fix_position: a fixnum as itself, a marker as its position
+/// (one pointing nowhere an error), a bignum as the most positive or
+/// negative fixnum, anything else not an integer-or-marker.
+pub(crate) fn fix_position(interp: &Interpreter, value: &Value) -> Result<i64, LispError> {
+    match value.kind() {
+        Kind::Integer(n) => Ok(n),
+        Kind::Marker(id) => interp
+            .marker_position(id)
+            .map(|pos| pos as i64)
+            .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into())),
+        Kind::BigInteger(n) => Ok(if n.sign() == num_bigint::Sign::Minus {
+            i64::MIN
+        } else {
+            i64::MAX
+        }),
+        _ => Err(LispError::WrongTypeArgument(
+            "integer-or-marker-p".into(),
+            *value,
+        )),
+    }
+}
+
+/// buffer.c:validate_region: B and E as positions in order, within the
+/// current buffer's accessible portion, or args-out-of-range with the
+/// buffer and B and E as given.
+pub(crate) fn validate_region(
+    interp: &Interpreter,
+    b: &Value,
+    e: &Value,
+) -> Result<(usize, usize), LispError> {
+    let (beg, end) = (fix_position(interp, b)?, fix_position(interp, e)?);
+    let (beg, end) = if end < beg { (end, beg) } else { (beg, end) };
+    let (begv, zv) = {
+        let buffer = interp.buffer.borrow();
+        (buffer.point_min() as i64, buffer.point_max() as i64)
+    };
+    if !(begv <= beg && end <= zv) {
+        return Err(LispError::SignalValue(Value::list([
+            Value::symbol("args-out-of-range"),
+            Value::Buffer(interp.buffer),
+            *b,
+            *e,
+        ])));
+    }
+    Ok((beg as usize, end as usize))
+}
+
 pub(crate) fn position_from_value(interp: &Interpreter, value: &Value) -> Result<usize, LispError> {
     match value.kind() {
         // GNU clamps an ordinary fixnum position below point-min at the
@@ -393,7 +462,7 @@ fn replace_character_in_place(
     nc: u32,
 ) -> Result<(), LispError> {
     if let Some(character) = char::from_u32(nc)
-        && !(RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xff).contains(&nc)
+        && raw_byte_from_regex_char(character).is_none()
         && interp.buffer.borrow().extended_char_at(pos).is_none()
     {
         let mut text = [0u8; 4];
@@ -406,15 +475,15 @@ fn replace_character_in_place(
         );
         return Ok(());
     }
-    // A character outside Unicode's scalars lives in the extended sidecar:
-    // replaced as deleted and inserted text.
+    // A raw byte, or a character the text view keeps in the extended
+    // sidecar: replaced as deleted and inserted text.
     replace_characters_unsignalled(interp, pos, pos + 1, &[nc])
 }
 
 /// insdel.c:replace_range over [FROM, TO) by the characters REPLACEMENT,
 /// with its own prepare_to_modify_buffer and signal_after_change; point
 /// moves as a marker would.
-fn replace_range_with_hooks(
+pub(crate) fn replace_range_with_hooks(
     interp: &mut Interpreter,
     from: usize,
     to: usize,
@@ -440,11 +509,11 @@ fn replace_characters_unsignalled(
     to: usize,
     replacement: &[u32],
 ) -> Result<(), LispError> {
+    let multibyte = interp.buffer.borrow().is_multibyte();
     let mut text = String::new();
-    let mut props = Vec::new();
     let mut extended_chars = Vec::new();
-    for &character in replacement {
-        append_public_buffer_character(&mut text, &mut props, &mut extended_chars, character);
+    for (index, &character) in replacement.iter().enumerate() {
+        push_buffer_character(&mut text, &mut extended_chars, index, character, multibyte);
     }
     let point = interp.buffer.borrow().point();
     interp
@@ -465,28 +534,11 @@ fn replace_characters_unsignalled(
     Ok(())
 }
 
-fn append_public_buffer_character(
-    text: &mut String,
-    _props: &mut Vec<TextPropertySpan>,
-    extended_chars: &mut Vec<(usize, u32)>,
-    character: u32,
-) {
-    if (RAW_BYTE8_BASE..=RAW_BYTE8_BASE + 0xff).contains(&character) {
-        text.push(raw_byte_regex_char((character - RAW_BYTE8_BASE) as u8));
-    } else if let Some(character) = char::from_u32(character) {
-        text.push(character);
-    } else if character <= 0x3f_ffff {
-        let offset = text.chars().count();
-        text.push(RAW_CHAR_SENTINEL);
-        extended_chars.push((offset, character));
-    }
-}
-
 fn translation_characters(value: &Value) -> Option<Vec<u32>> {
     if let Ok(character) = value.as_integer() {
         return u32::try_from(character)
             .ok()
-            .filter(|character| char::from_u32(*character).is_some())
+            .filter(|character| *character <= 0x3F_FFFF)
             .map(|character| vec![character]);
     }
     let items = value.to_vec().ok()?;
@@ -504,7 +556,7 @@ fn translation_characters(value: &Value) -> Option<Vec<u32>> {
                 .as_integer()
                 .ok()
                 .and_then(|character| u32::try_from(character).ok())
-                .filter(|character| char::from_u32(*character).is_some())
+                .filter(|character| *character <= 0x3F_FFFF)
         })
         .collect()
 }

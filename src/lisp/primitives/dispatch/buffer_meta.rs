@@ -1126,14 +1126,7 @@ define_dispatch!(
                 let code = u32::try_from(args[1].as_integer()?)
                     .map_err(|_| LispError::Signal("Invalid charset code-point".into()))?;
                 Ok(decode_charset_code(interp, charset, code)
-                    .map(|character| {
-                        let public = if RAW_BYTE_MARKERS.contains(&character) {
-                            RAW_BYTE8_BASE + character - RAW_BYTE_REGEX_BASE
-                        } else {
-                            character
-                        };
-                        Value::Integer(public.into())
-                    })
+                    .map(|character| Value::Integer(character.into()))
                     .unwrap_or(Value::Nil))
             }
             "encode-char" => {
@@ -1283,43 +1276,46 @@ define_dispatch!(
                 }
             }
             "charset-after" => {
-                if args.len() > 1 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let pos = args
-                    .first()
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(interp.buffer.borrow().point() as i64);
-                Ok(match interp.buffer.borrow().char_at(pos as usize) {
-                    Some(ch) => {
-                        let code = raw_byte_from_regex_char(ch)
-                            .map(|byte| RAW_BYTE_REGEX_BASE + u32::from(byte))
-                            .unwrap_or(ch as u32);
-                        Value::Symbol(char_charset(interp, code).0.into())
+                need_arg_range(name, args, 0, 1)?;
+                // charset.c:Fcharset_after: CHAR_CHARSET of the character
+                // Fchar_after finds, nil where it finds none.
+                let ch = super::buffer_edit::direct_char_after(interp, args, env)?;
+                Ok(match ch.kind() {
+                    Kind::Integer(code) => {
+                        Value::Symbol(char_charset(interp, code as u32).0.into())
                     }
-                    None => Value::Nil,
+                    _ => ch,
                 })
             }
             "find-charset-string" => {
-                need_args(name, args, 1)?;
-                Ok(Value::list(charsets_for_text(
-                    &string_text(&args[0])?,
-                    interp,
+                need_arg_range(name, args, 1, 2)?;
+                // charset.c:Ffind_charset_string: CHECK_STRING, then the
+                // string's characters (a unibyte one's bytes).
+                let Kind::StringObject(state) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
+                let (codes, multibyte) = {
+                    let state = state.borrow();
+                    (state.codes(), state.is_multibyte())
+                };
+                let table = args.get(1).copied().unwrap_or(Value::Nil);
+                Ok(Value::list(find_charsets_in_text(
+                    interp, &codes, multibyte, &table,
                 )))
             }
             "find-charset-region" => {
-                need_args(name, args, 2)?;
-                let from = args[0].as_integer()?;
-                let to = args[1].as_integer()?;
-                let (start, end) = clamp_overlay_range(&interp.buffer.borrow(), from, to);
-                let mut text = String::new();
-                for pos in start..end {
-                    if let Some(ch) = interp.buffer.borrow().char_at(pos) {
-                        text.push(ch);
-                    }
-                }
-                Ok(Value::list(charsets_for_text(&text, interp)))
+                need_arg_range(name, args, 2, 3)?;
+                // charset.c:Ffind_charset_region: validate_region, then the
+                // region's characters (a unibyte buffer's bytes).
+                let (start, end) = validate_region(interp, &args[0], &args[1])?;
+                let codes = (start..end)
+                    .map(|pos| public_buffer_char_code_at(interp, pos).unwrap_or(0) as u32)
+                    .collect::<Vec<_>>();
+                let multibyte = interp.buffer.borrow().is_multibyte();
+                let table = args.get(2).copied().unwrap_or(Value::Nil);
+                Ok(Value::list(find_charsets_in_text(
+                    interp, &codes, multibyte, &table,
+                )))
             }
             "map-charset-chars" => {
                 if args.len() < 2 || args.len() > 5 {

@@ -8033,7 +8033,7 @@ fn charset_helpers_cover_ascii_unicode_and_priority_mutation() {
         vec!["ascii", "unicode", "iso-8859-1", "emacs", "eight-bit"]
     );
     assert_eq!(
-        charsets_for_text("Aあ", &interp),
+        find_charsets_in_text(&interp, &['A' as u32, 'あ' as u32], true, &Value::Nil),
         vec![
             Value::Symbol("ascii".into()),
             Value::Symbol("unicode".into())
@@ -19006,15 +19006,7 @@ fn bidi_override_positions_match_upstream_cases() {
     ];
 
     for (index, (text, expected_exact)) in cases.into_iter().enumerate() {
-        let interp = Interpreter::new();
-        interp
-            .buffer
-            .replace_state(crate::buffer::Buffer::from_text("*test*", text));
-        let found = find_bidi_override(
-            &interp,
-            interp.buffer.borrow().point_min(),
-            interp.buffer.borrow().point_max(),
-        );
+        let found = find_bidi_override(text, 1, 1, text.chars().count() + 1, false);
         if let Some(expected) = expected_exact {
             assert_eq!(found, Some(expected));
         } else {
@@ -19030,16 +19022,8 @@ fn bidi_override_positions_match_upstream_cases() {
     // before asking the primitive, so exercise the exact balanced shape that
     // previously produced a false positive.
     let balanced = "אבגד \u{2067}שונה\u{2069} מרגילa1א:!";
-    let interp = Interpreter::new();
-    interp
-        .buffer
-        .replace_state(crate::buffer::Buffer::from_text("*test*", balanced));
     assert_eq!(
-        find_bidi_override(
-            &interp,
-            interp.buffer.borrow().point_min(),
-            interp.buffer.borrow().point_max(),
-        ),
+        find_bidi_override(balanced, 1, 1, balanced.chars().count() + 1, false),
         None
     );
 }

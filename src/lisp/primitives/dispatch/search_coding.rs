@@ -889,15 +889,13 @@ define_dispatch!(
             "subst-char-in-region" => {
                 // (subst-char-in-region START END FROMCHAR TOCHAR &optional NOUNDO)
                 need_arg_range(name, args, 4, 5)?;
-                let from = position_from_value(interp, &args[0])?;
-                let to = position_from_value(interp, &args[1])?;
+                let (from, to) = validate_region(interp, &args[0], &args[1])?;
                 let character = |value: Value| match value.kind() {
                     Kind::Integer(code) if (0..=MAX_CHAR as i64).contains(&code) => Ok(code as u32),
                     _ => Err(LispError::WrongTypeArgument("characterp".into(), value)),
                 };
                 let fromc = character(args[2])?;
                 let toc = character(args[3])?;
-                let (from, to) = if from <= to { (from, to) } else { (to, from) };
                 // editfns.c: in a multibyte buffer the two characters must
                 // be as long; in a unibyte one each stands for its byte.
                 let multibyte = interp.buffer.borrow().is_multibyte();
@@ -998,16 +996,9 @@ define_dispatch!(
                 if args.len() < 4 || args.len() > 5 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let mut start1 = position_from_value(interp, &args[0])?;
-                let mut end1 = position_from_value(interp, &args[1])?;
-                let mut start2 = position_from_value(interp, &args[2])?;
-                let mut end2 = position_from_value(interp, &args[3])?;
-                if start1 > end1 {
-                    std::mem::swap(&mut start1, &mut end1);
-                }
-                if start2 > end2 {
-                    std::mem::swap(&mut start2, &mut end2);
-                }
+                // editfns.c:Ftranspose_regions validates each region.
+                let (mut start1, mut end1) = validate_region(interp, &args[0], &args[1])?;
+                let (mut start2, mut end2) = validate_region(interp, &args[2], &args[3])?;
                 if start2 < end1 {
                     std::mem::swap(&mut start1, &mut start2);
                     std::mem::swap(&mut end1, &mut end2);
@@ -1033,6 +1024,10 @@ define_dispatch!(
                         .buffer
                         .borrow()
                         .substring_property_spans(start1, end1);
+                    let region1_extended = interp
+                        .buffer
+                        .borrow()
+                        .substring_extended_chars(start1, end1);
                     let region2_text = interp
                         .buffer
                         .borrow()
@@ -1042,6 +1037,10 @@ define_dispatch!(
                         .buffer
                         .borrow()
                         .substring_property_spans(start2, end2);
+                    let region2_extended = interp
+                        .buffer
+                        .borrow()
+                        .substring_extended_chars(start2, end2);
                     let gap = interp
                         .buffer
                         .borrow()
@@ -1056,6 +1055,7 @@ define_dispatch!(
                         .map_err(|e| LispError::Signal(e.to_string()))?;
                     interp.buffer.borrow_mut().goto_char(start1);
                     interp.insert_current_buffer(&region2_text);
+                    interp.set_inserted_extended_chars(start1, &region2_extended);
                     for span in &region2_props {
                         interp.buffer.borrow_mut().graft_text_properties(
                             start1 + span.start,
@@ -1066,6 +1066,7 @@ define_dispatch!(
                     let insert_region1_at = start1 + region2_text.chars().count() + gap_len;
                     interp.buffer.borrow_mut().goto_char(insert_region1_at);
                     interp.insert_current_buffer(&region1_text);
+                    interp.set_inserted_extended_chars(insert_region1_at, &region1_extended);
                     for span in &region1_props {
                         interp.buffer.borrow_mut().graft_text_properties(
                             insert_region1_at + span.start,
@@ -1110,13 +1111,27 @@ define_dispatch!(
                 if args.len() < 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
                 // GNU records the coding under the symbol the caller gave
                 // (the euc-jp alias stays `euc-jp'); canonicalization is the
                 // codec's business, not last-coding-system-used's.
                 let coding = checked_coding_name(interp, &args[2])?
                     .map(|_| args[2].as_symbol().expect("validated symbol").to_string());
+                enum Destination {
+                    Replace,
+                    Return,
+                    Buffer(u64),
+                }
+                // coding.c:code_convert_region: CHECK_BUFFER of a
+                // destination other than nil and t, then validate_region.
+                let destination = match args.get(3).map(|v| v.kind()) {
+                    None | Some(Kind::Nil) => Destination::Replace,
+                    Some(Kind::T) => Destination::Return,
+                    Some(Kind::Buffer(_)) => {
+                        Destination::Buffer(interp.resolve_buffer_id(&args[3])?)
+                    }
+                    Some(_) => return Err(LispError::WrongTypeArgument("bufferp".into(), args[3])),
+                };
+                let (start, end) = validate_region(interp, &args[0], &args[1])?;
                 // The region as encode_coding_object and decode_coding_object
                 // read it: its characters (those beyond Unicode included)
                 // and, for encoding, the `charset' properties the ISO-2022
@@ -1137,16 +1152,6 @@ define_dispatch!(
                         buffer.is_multibyte(),
                         buffer.substring_extended_chars(start, end),
                     )
-                };
-                enum Destination {
-                    Replace,
-                    Return,
-                    Buffer(u64),
-                }
-                let destination = match args.get(3).map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => Destination::Replace,
-                    Some(Kind::T) => Destination::Return,
-                    Some(buffer) => Destination::Buffer(interp.resolve_buffer_id(&buffer.value())?),
                 };
                 let return_string = matches!(destination, Destination::Return);
                 let transformed = if name == "encode-coding-region" {

@@ -5151,6 +5151,92 @@ setup_process_coding_systems's check now refuses). A 13-form
   text view's marker for one -- strings carry such characters in their
   side table, these paths do not -- which fails ucs-normalize-tests'
   `ucs-normalize-part1` (on round 66's build too).
+- **Round 70: buffer.c's validate_region at its callers, characters as
+  GNU numbers in the text views, cmds.c's self-insert.** validate_region
+  (fix_position for each bound: a marker pointing nowhere "Marker does not
+  point anywhere", a bignum the most positive or negative fixnum, else
+  `integer-or-marker-p`; then the bounds in order, within BEGV..ZV, else
+  `(args-out-of-range BUFFER B E)` with the bounds as given) is what
+  `buffer-substring` and its `-no-properties`, `delete-region`,
+  `delete-and-extract-region`, `subst-char-in-region`, `translate-region`
+  (a char-table not a translation table "Not a translation table", other
+  non-strings `stringp`), `transpose-regions` (each region; characters
+  outside Unicode's scalars carried across with the text),
+  `upcase-region` and the other casify_region commands (a region list
+  walked as FOR_EACH_TAIL walks it, a cycle `circular-list`),
+  `find-charset-region`, `detect-coding-region`,
+  `unencodable-char-position`, `encode-coding-region` and
+  `decode-coding-region` (a destination other than nil and t
+  `bufferp` first), `compose-region-internal` (a unibyte buffer
+  checked first), `composition-get-gstring`,
+  `zlib-decompress-region`, `write-region`, the base64 region
+  functions, `process-send-region`, `parse-partial-sexp`,
+  `bidi-find-overridden-directionality` and `libxml-parse-*-region`
+  (nil bounds point-min and point-max) call; they clamped an out-of-range
+  region before (round 69's item (2)). Characters are GNU's numbers
+  through the text views: a buffer or string holds a raw byte as its
+  private-use stand-in and any other character not a Unicode scalar, or
+  U+E080..U+E0FF itself, in the extended side table (push_character_code),
+  so `insert`, `insert-char`, `insert-and-inherit`, `insert-before-markers`,
+  `insert-byte`, `translate-region`, `subst-char-in-region`,
+  `lookup-key`'s keyboard translation and the region replacements store
+  U+E080..U+E0FF as the character it is (round 69's item (3);
+  ucs-normalize-tests' `ucs-normalize-part1` passes). editfns.c's
+  general_insert_function inserts each argument by itself with its own
+  change hooks, a character in a unibyte buffer as CHAR_TO_BYTE8's byte,
+  an empty string with no change at all, anything else
+  `char-or-string-p`; `insert-byte` checks 0..255 and makes a byte from
+  128 the raw-byte character in a multibyte buffer. The charset
+  functions take characters as GNU numbers (`eight-bit` 0x3FFF80 and up):
+  `charset-after`, `find-charset-string` and `find-charset-region`
+  (through the translation table, a unibyte text's bytes `ascii` or
+  `eight-bit`), `print`'s charset-property pruning. `delete` on a string
+  drops the characters ELT names (none when ELT is not a character) and
+  returns the string itself when nothing goes, a vector too;
+  `string-to-char` reads a unibyte string's byte; `string-to-unibyte`
+  keeps raw bytes and signals for other non-ASCII. cmds.c's
+  Fself_insert_command and internal_self_insert are ported: N checked,
+  the character through `translation-table-for-input`, overwrite mode
+  replacing the character after point with the columns kept (a tab kept
+  before point, spaces filling), abbrev expansion under GNU's conditions
+  (a `no-self-insert` hook ending the insertion), auto-fill after a
+  space or newline, `post-self-insert-hook`, the amalgamating undo
+  boundary, and the 0/1/2 return value; a non-character is
+  bitch_at_user: in batch a BEL on stdout, while a keyboard macro runs
+  the user-error that ends it, else `ring-bell-function` (bound to nil
+  while it runs) or the bell. `ding` with ARG rings without ending a
+  macro. `bidi-find-overridden-directionality` takes a string (FROM and
+  TO as validate_subarray's) or a buffer, a unibyte one or one without
+  `bidi-display-reordering` finding nothing, and starts its paragraph
+  after the newline before FROM. Probes of 57 private-use and raw-byte
+  insertions and conversions, 25 insertion cases and 15 charset lookups
+  give GNU's output, as do 71 of 98 region-validation cases; the other
+  27 are item (1) below. The GNU cmds, editfns,
+  buffer, textprop, casefiddle (11 tests; the circular region list hung
+  before), coding, charset, character, fns, decompress, undo, xml,
+  simple, abbrev, electric, kmacro, mule, ucs-normalize, mule-util, ccl,
+  textsec, subr, fill, subr-x, seq, cl-seq, sort, thingatpt, replace,
+  minibuffer, elisp-mode, files, ert-x, python, css-mode, process,
+  callproc, esh-proc, shell and comint test files give GNU's results.
+  Still open: (1) textprop.c's validate_interval_range: the property
+  primitives (`put-text-property`, `set-text-properties`,
+  `add-text-properties`, `remove-text-properties`,
+  `remove-list-of-text-properties`, `add-face-text-property`,
+  `text-properties-at`, `get-text-property`, the property-change
+  scanners, on buffers and strings) return nil or t for an out-of-range
+  range where GNU signals `(args-out-of-range BEGIN END)`, and
+  `get-char-property`, `get-pos-property`, `field-string`,
+  `constrain-to-field` and `char-property-alias`'s lookup where GNU
+  signals `(args-out-of-range POS)`; `insert-buffer-substring` and its
+  `-no-properties` clamp where GNU signals; `secure-hash` of a buffer
+  clamps the region (`md5` signals already); an overlay made or moved
+  in a buffer since killed prints its id, GNU `#<overlay in no buffer>`;
+  (2) `intern` of a name with a raw byte gives a symbol `eq` to the one
+  named by the private-use stand-in: symbol names do not carry the side
+  table; (3) bidi.c is not ported: the overridden-directionality search
+  uses unicode-bidi's levels, which agree with GNU on textsec's and
+  bidi's cases; (4) `ring_bell` ignores `visible-bell`; (5) round 68's
+  item (1).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -5787,7 +5873,9 @@ gate failed `text_conversion_detached_state_matches_gnu` and
 primitives group (run 40123867987; the groups after it did not run):
 round 68's `buffer-local-variables` read the `text-conversion-style` slot
 through the symbol, which `makunbound` had made plain; fixed in round 69.
-Frozen passed on its first attempt (run 40123869891). Run
+Frozen passed on its first attempt (run 40123869891). **On `13dfb41`**
+(round 69): the full Rust gate and frozen runs are dispatched with it;
+their results go in the next round's record. Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that
 locale. With none set here, `char_charset_family_follows_charset_c` and
