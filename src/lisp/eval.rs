@@ -4250,6 +4250,8 @@ impl Interpreter {
         }
         mark(&self.syntax_code_objects);
         mark(&self.unicode_menu_case_table);
+        mark(&self.where_is_cache);
+        mark(&self.where_is_cache_keymaps);
         mark(&Value::CharTable(self.standard_syntax_table_id));
         for table in self.standard_category_table_id.into_iter().chain(
             self.standard_case_tables
@@ -4718,6 +4720,9 @@ impl Interpreter {
             };
             clone.syntax_code_objects = c.copy(&clone.syntax_code_objects);
             clone.unicode_menu_case_table = c.copy(&clone.unicode_menu_case_table);
+            // A reverse-map cache is rebuilt on demand.
+            clone.where_is_cache = Value::Nil;
+            clone.where_is_cache_keymaps = Value::T;
             clone.standard_syntax_table_id = copy_table(c, clone.standard_syntax_table_id);
             clone.standard_category_table_id = clone
                 .standard_category_table_id
@@ -5439,6 +5444,12 @@ pub struct InterpreterState {
     /// keymap.c's staticpro'd unicode_case_table belongs to one editor.
     /// Keeping it with that state also isolates successive embedded editors.
     pub(crate) unicode_menu_case_table: Value,
+    /// keymap.c's staticpro'd where_is_cache (a hash table from bindings to
+    /// their sequences, for where-is-internal without menus) and
+    /// where_is_cache_keymaps (the keymaps it was built for, t while it is
+    /// being filled).
+    pub(crate) where_is_cache: Value,
+    pub(crate) where_is_cache_keymaps: Value,
     standard_syntax_table_id: CharTableRef,
     // lread.c:Vload_path is a rooted Lisp_Objfwd slot, not a host-side
     // directory vector from which reads reconstruct new Lisp objects.
@@ -5546,20 +5557,22 @@ pub(crate) enum ActiveHandler {
 }
 
 fn make_visual_line_mode_map(interp: &mut Interpreter) -> Value {
-    let map = primitives::make_runtime_keymap(interp, Value::string("visual-line-mode-map"));
+    // simple.el: (define-key map [remap COMMAND] REPLACEMENT) in a sparse
+    // keymap.
+    let map = primitives::make_runtime_keymap(interp, Value::Nil);
     for (command, replacement) in [
         ("kill-line", "kill-visual-line"),
         ("move-beginning-of-line", "beginning-of-visual-line"),
         ("move-end-of-line", "end-of-visual-line"),
     ] {
-        let parts = vec![Value::symbol("remap"), Value::symbol(command)];
-        let _ = primitives::keymap_define_binding_with_placement(
+        let key = Value::vector([Value::symbol("remap"), Value::symbol(command)]);
+        let _ = primitives::define_key(
             interp,
-            &map,
-            &format!("<remap> <{command}>"),
-            Some(parts),
-            Value::Symbol(replacement.into()),
-            true,
+            map,
+            key,
+            Value::symbol(replacement),
+            false,
+            &mut crate::lisp::types::Env::new(),
         );
     }
     map
@@ -6162,6 +6175,8 @@ impl Interpreter {
             syntax_word_chars: Vec::new(),
             syntax_code_objects,
             unicode_menu_case_table: Value::Nil,
+            where_is_cache: Value::Nil,
+            where_is_cache_keymaps: Value::T,
             standard_syntax_table_id,
             load_path: Value::Nil,
             loads_in_progress: Value::Nil,
@@ -6700,37 +6715,43 @@ impl Interpreter {
         let function_key_map = interp
             .lookup_var("function-key-map", &empty_env)
             .expect("initial function-key-map");
-        primitives::set_keymap_parent_value(
-            &interp,
+        primitives::set_keymap_parent(
+            &mut interp,
             local_function_key_map,
             function_key_map,
-            &empty_env,
+            &mut crate::lisp::types::Env::new(),
         )
         .expect("fresh local-function-key-map parent");
         interp.define_special_variable("local-function-key-map", local_function_key_map);
-        // keyboard.c syms_of_keyboard's initial_define_lispy_key entries for
-        // the events the input reader executes itself (the oracle has no
-        // D-Bus or NS, so their keys are absent there too).
+        // keyboard.c keys_of_keyboard's initial_define_lispy_key entries, in
+        // its order: no D-Bus (HAVE_DBUS) or w32 events, threads and inotify
+        // file notification as in this build, and no `select-window' (GNU
+        // keeps that one commented out).
         if let Some(special_event_map) =
             interp.lookup_var("special-event-map", &crate::lisp::types::Env::new())
         {
             for (event, command) in [
                 ("delete-frame", "handle-delete-frame"),
+                ("ns-put-working-text", "ns-put-working-text"),
+                ("ns-unput-working-text", "ns-unput-working-text"),
                 ("iconify-frame", "ignore"),
                 ("make-frame-visible", "ignore"),
-                ("select-window", "handle-select-window"),
                 ("save-session", "handle-save-session"),
                 ("thread-event", "thread-handle-event"),
+                ("file-notify", "file-notify-handle-event"),
                 ("config-changed-event", "ignore"),
+                ("focus-in", "handle-focus-in"),
+                ("focus-out", "handle-focus-out"),
+                ("move-frame", "handle-move-frame"),
             ] {
-                let part = format!("<{event}>");
-                let _ = primitives::keymap_define_binding_with_placement(
+                // initial_define_lispy_key: store_in_keymap of the event.
+                let _ = primitives::store_in_keymap(
                     &mut interp,
-                    &special_event_map,
-                    &part,
-                    Some(vec![Value::symbol(event)]),
-                    Value::Symbol(command.into()),
-                    true,
+                    special_event_map,
+                    Value::symbol(event),
+                    Value::symbol(command),
+                    false,
+                    &crate::lisp::types::Env::new(),
                 );
             }
         }

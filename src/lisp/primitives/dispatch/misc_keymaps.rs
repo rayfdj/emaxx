@@ -22,6 +22,9 @@ pub(crate) fn restore_unicode_menu_case_table(
     Ok(())
 }
 
+/// keymap.c:lookup_key_1 for Flookup_key: KEYMAP resolved (and loaded)
+/// unless it is a list or nil, KEY checked, an empty KEY answering KEYMAP
+/// before possibly_translate_key_sequence.
 fn lookup_key_once(
     interp: &mut Interpreter,
     keymap: Value,
@@ -29,62 +32,19 @@ fn lookup_key_once(
     accept_default: bool,
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let keymap = if keymap.is_nil() || matches!(keymap.kind(), Kind::Cons(_)) {
-        keymap
+    let keymap = if !keymap.is_cons() && !keymap.is_nil() {
+        get_keymap(interp, keymap, true, true, env)?
     } else {
-        keymap_reference_map(interp, &keymap, env)
-            .ok_or_else(|| LispError::WrongTypeArgument("keymapp".into(), keymap))?
+        keymap
     };
-    // lookup_key_1 checks the original sequence after resolving the map,
-    // before translation or the empty-sequence shortcut.
     if !is_vector_value(&key) && !key.is_string() {
         return Err(LispError::WrongTypeArgument("arrayp".into(), key));
     }
     interp.with_lisp_stack_roots(&(keymap, key), |interp| {
-        // keymap.c:possibly_translate_key_sequence delegates the ["C-x"]
-        // syntax to unchanged key-valid-p/key-parse, including redefinition
-        // and invalid descriptions that must remain literal string events.
-        let translated = if let Kind::Vector(vector) = key.kind()
-            && vector.len() == 1
-            && let Some(description) = vector.get(0).filter(|value| value.is_string())
-        {
-            if interp.lookup_function("key-valid-p", env).is_err() {
-                return Err(LispError::SignalValue(Value::list([
-                    Value::symbol("error"),
-                    Value::string("`key-valid-p' is not defined, so this syntax can't be used: %s"),
-                    key,
-                ])));
-            }
-            let valid = interp.call_function_value(
-                Value::symbol("key-valid-p"),
-                Some("key-valid-p"),
-                &[description],
-                env,
-            )?;
-            if valid.is_nil() {
-                key
-            } else {
-                let parsed = interp.call_function_value(
-                    Value::symbol("key-parse"),
-                    Some("key-parse"),
-                    &[description],
-                    env,
-                )?;
-                if !is_vector_value(&parsed) && !parsed.is_string() {
-                    return Err(LispError::WrongTypeArgument("arrayp".into(), parsed));
-                }
-                if sequence_length_value(interp, &parsed)? == 0 {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::symbol("error"),
-                        Value::string("Invalid `key-parse' syntax: %S"),
-                        parsed,
-                    ])));
-                }
-                parsed
-            }
-        } else {
-            key
-        };
+        if sequence_length_value(interp, &key)? == 0 {
+            return Ok(keymap);
+        }
+        let translated = possibly_translate_key_sequence(interp, key, env)?;
         keymap_lookup_live_sequence_value(interp, &keymap, translated, accept_default, env)
     })
 }
@@ -306,27 +266,6 @@ fn map_keymap_direct_value(
     })
 }
 
-fn map_keymap_value(
-    interp: &mut Interpreter,
-    function: &Value,
-    keymap: &Value,
-    env: &mut Env,
-    visited: &mut std::collections::HashSet<usize>,
-) -> Result<(), LispError> {
-    let Some(identity) = keymap_value_identity(interp, keymap) else {
-        return Ok(());
-    };
-    if !visited.insert(identity) {
-        return Ok(());
-    }
-
-    map_keymap_direct_value(interp, function, keymap, env)?;
-    for parent in keymap_parent_values(interp, keymap) {
-        map_keymap_value(interp, function, &parent, env, visited)?;
-    }
-    Ok(())
-}
-
 fn vector_index_description(index: u32) -> Result<String, LispError> {
     key_sequence_binding_text(&Value::list([
         Value::Symbol("vector-literal".into()),
@@ -441,75 +380,14 @@ define_dispatch!(
         match name {
             "define-key" => {
                 need_arg_range(name, args, 3, 4)?;
-                let map = resolve_keymap_with_autoload(interp, &args[0], env)?;
-                if !is_vector_value(&args[1]) && !args[1].is_string() {
-                    return Err(LispError::WrongTypeArgument("arrayp".into(), args[1]));
-                }
-                if let Ok(events) = vector_items(&args[1])
-                    && let [event] = events.as_slice()
-                    && !lucid_event_type_list_p(event)
-                    && let Some((start, end)) = event.cons_values()
-                    && let Kind::Integer(start) = start.kind()
-                    && (0..=0x3f_ffff).contains(&start)
-                {
-                    let end = match end.kind() {
-                        Kind::Integer(end) if (0..=0x3f_ffff).contains(&end) => end,
-                        _ => return Err(wrong_type_argument("characterp", end)),
-                    };
-                    keymap_define_character_range(
-                        interp,
-                        &map,
-                        start,
-                        end,
-                        args[2],
-                        args.get(3).is_some_and(Value::is_truthy),
-                    )?;
-                    return Ok(args[2]);
-                }
-                // keymap.c:Fdefine_key converts Lucid-style event lists in
-                // KEY through Fevent_convert_list, and a DEF vector opening
-                // with a cons ("an XEmacs-style keyboard macro") gets the
-                // same conversion, so `[(control meta shift kp-9)]' and
-                // `[C-M-S-kp-9]' name one binding.
-                let normalized_key = normalize_lucid_key_events(interp, &args[1], env)?;
-                let def = normalize_xemacs_macro_definition(interp, &args[2])?;
-                // keymap.c:define-key passes every symbolic vector event
-                // through silly_event_symbol_error, whose first operation
-                // is parse_modifiers.  Besides validation, that populates
-                // the event-symbol-elements cache consumed by subr.el's
-                // event-basic-type (notably for mouse-N events).
-                if let Ok(events) = vector_items(&normalized_key) {
-                    for event in events {
-                        let bare_event = if event.is_symbol() {
-                            Some(event)
-                        } else if symbols_with_pos_enabled(interp, env) {
-                            symbol_with_pos_parts(interp, &event).map(|(symbol, _)| symbol)
-                        } else {
-                            None
-                        };
-                        if let Some(bare_event) = bare_event {
-                            parse_event_symbol_modifiers(interp, &bare_event)?;
-                        }
-                    }
-                }
-                let key_parts = key_sequence_definition_parts(&normalized_key)?;
-                if key_parts.is_empty() {
-                    return Ok(Value::Nil);
-                }
-                let key = key_sequence_binding_text(&key_parts_to_sequence_value(&key_parts))?;
-                if args.get(3).is_some_and(Value::is_truthy) {
-                    keymap_remove_binding(interp, &map, &key_parts)?;
-                } else {
-                    keymap_define_binding_with_placement(
-                        interp,
-                        &map,
-                        &key,
-                        Some(key_parts),
-                        def,
-                        false,
-                    )?;
-                }
-                Ok(def)
+                define_key(
+                    interp,
+                    args[0],
+                    args[1],
+                    args[2],
+                    args.get(3).is_some_and(Value::is_truthy),
+                    env,
+                )
             }
             "lookup-key" => {
                 need_arg_range(name, args, 2, 3)?;
@@ -521,7 +399,15 @@ define_dispatch!(
                     env,
                 )
             }
-            "accessible-keymaps" => accessible_keymaps(interp, args, env),
+            "accessible-keymaps" => {
+                need_arg_range(name, args, 1, 2)?;
+                accessible_keymaps(
+                    interp,
+                    args[0],
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                    env,
+                )
+            }
             "current-minor-mode-maps" => {
                 need_args(name, args, 0)?;
                 Ok(Value::list(
@@ -548,7 +434,7 @@ define_dispatch!(
                         continue;
                     }
                     let entry = Value::cons(Value::Symbol(mode.into()), binding);
-                    if keymap_reference_map(interp, &binding, env).is_some() {
+                    if keymapp(interp, binding, env) {
                         prefix_bindings.push(entry);
                     } else if prefix_bindings.is_empty() {
                         return Ok(Value::list([entry]));
@@ -575,17 +461,7 @@ define_dispatch!(
             }
             "keymap-prompt" => {
                 need_args(name, args, 1)?;
-                if let Ok(items) = args[0].to_vec()
-                    && matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(symbol)) if symbol == "keymap")
-                {
-                    return Ok(items
-                        .iter()
-                        .skip(1)
-                        .find(|item| string_like(item).is_some())
-                        .cloned()
-                        .unwrap_or(Value::Nil));
-                }
-                Err(LispError::WrongTypeArgument("keymapp".into(), args[0]))
+                keymap_prompt(interp, args[0], env)
             }
             "command-remapping" => {
                 need_arg_range(name, args, 1, 3)?;
@@ -599,18 +475,11 @@ define_dispatch!(
             }
             "keymap-parent" => {
                 need_args(name, args, 1)?;
-                let map = resolve_keymap_without_autoload(interp, &args[0], env)?;
-                Ok(keymap_parent_value(interp, map, env))
+                keymap_parent(interp, args[0], true, env)
             }
             "set-keymap-parent" => {
                 need_args(name, args, 2)?;
-                let map = resolve_keymap_without_autoload(interp, &args[0], env)?;
-                let parent = if args[1].is_nil() {
-                    Value::Nil
-                } else {
-                    resolve_keymap_without_autoload(interp, &args[1], env)?
-                };
-                set_keymap_parent_value(interp, map, parent, env)
+                set_keymap_parent(interp, args[0], args[1], env)
             }
             "map-keymap" => {
                 need_arg_range(name, args, 2, 3)?;
@@ -622,38 +491,43 @@ define_dispatch!(
                         env,
                     );
                 }
-                // GNU map-keymap also reports bindings inherited from parent
-                // keymaps (the parent is spliced into the keymap's tail).
-                let mut visited = std::collections::HashSet::new();
-                map_keymap_value(interp, &args[0], &args[1], env, &mut visited)?;
+                let function = args[0];
+                map_keymap(
+                    interp,
+                    args[1],
+                    &mut |interp, key, value, env| {
+                        interp.call_function_value(function, None, &[key, value], env)?;
+                        Ok(())
+                    },
+                    true,
+                    env,
+                )?;
                 Ok(Value::Nil)
             }
             "map-keymap-internal" => {
                 need_args(name, args, 2)?;
-                if !is_keymap_value(interp, &args[1]) {
-                    return Err(LispError::WrongTypeArgument("keymapp".into(), args[1]));
-                }
-                map_keymap_direct_value(interp, &args[0], &args[1], env)
+                let keymap = get_keymap(interp, args[1], true, true, env)?;
+                map_keymap_direct_value(interp, &args[0], &keymap, env)
             }
             "describe-vector" => describe_vector_value(interp, args, env),
             "use-local-map" => {
                 need_args(name, args, 1)?;
-                if !args[0].is_nil() && !is_keymap_value(interp, &args[0]) {
-                    return Err(LispError::WrongTypeArgument("keymapp".into(), args[0]));
-                }
+                let keymap = if args[0].is_nil() {
+                    Value::Nil
+                } else {
+                    get_keymap(interp, args[0], true, true, env)?
+                };
                 interp.set_buffer_local_value(
                     interp.current_buffer_id(),
                     "current-local-map",
-                    args[0],
+                    keymap,
                 );
                 Ok(Value::Nil)
             }
             "use-global-map" => {
                 need_args(name, args, 1)?;
-                if !is_keymap_value(interp, &args[0]) {
-                    return Err(LispError::WrongTypeArgument("keymapp".into(), args[0]));
-                }
-                interp.set_current_global_map_value(args[0]);
+                let keymap = get_keymap(interp, args[0], true, true, env)?;
+                interp.set_current_global_map_value(keymap);
                 Ok(Value::Nil)
             }
             "current-local-map" => {

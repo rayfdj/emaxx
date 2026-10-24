@@ -2296,19 +2296,19 @@ impl Interpreter {
 }
 
 impl Interpreter {
-    /// keyboard.c:menu_item_eval_property establishes its error handler
-    /// before evaluating a menu filter. Ordinary errors mean no binding;
-    /// quit and other nonlocal exits still propagate.
-    pub(crate) fn call_menu_item_filter(
+    /// keyboard.c:menu_item_eval_property: SEXPR evaluated as eval_dyn
+    /// does, with `inhibit-redisplay' bound to t and the error handler
+    /// established first. Ordinary errors mean nil; quit and other
+    /// nonlocal exits still propagate.
+    pub(crate) fn menu_item_eval_property(
         &mut self,
-        function: Value,
-        definition: Value,
+        sexpr: Value,
         env: &mut Env,
     ) -> Result<Value, LispError> {
         let restore = self.bind_special_dynamic("inhibit-redisplay", Value::T, env)?;
         let handlers = self.push_condition_case_handler(vec![Value::symbol("error")]);
         let depth = env.len();
-        let result = self.call_function_value(function, None, &[definition], env);
+        let result = crate::lisp::primitives::call(self, "eval", &[sexpr, Value::Nil], env);
         self.pop_handler_bindings(handlers);
         env.truncate(depth);
         let result = match result {

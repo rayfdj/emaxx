@@ -4268,12 +4268,77 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   touch-screen.el under `(featurep 'x)`; and (c) prefix commands
   (`C-c`, `C-h`, `C-x`, `ESC`, `<f1>`, `<f2>`, `<help>`) that Emaxx lists
   and help.el's `describe-map` drops, because `keymapp` answers nil for a
-  symbol whose function is a keymap (round 54). New test:
+  symbol whose function is a keymap (fixed in round 54). New test:
   `help_describe_vector_describes_each_run_of_a_char_table_once`. 239
   keymap, key-description, menu, help and `where-is` Rust tests pass, and
   six GNU test files (keymap, help, help-fns, help-mode, kmacro, subr)
   give GNU's results, apart from two help-fns tests that this container's
   GNU itself fails.
+- **Round 54: keymap.c's accessors and mutators, ported.** `keymapp`
+  answered nil for a symbol whose function is a keymap (every prefix
+  command: `Control-X-prefix`, `mode-specific-command-prefix`), so help.el
+  listed prefix commands that GNU drops (bullet "Round 53"), and no
+  primitive followed a keymap autoload: `lookup-key`, `keymap-parent`,
+  `map-keymap`, `use-local-map` and others signalled for an autoloaded
+  map, or answered nil, where GNU loads it (20 of 24 probes differed).
+  The cause was a reimplementation that matched bindings through key
+  descriptions and approximated parts. `primitives/keymap.rs` now ports
+  keymap.c: `get_keymap` (a list, a symbol's function indirection, an
+  autoload of TYPE `keymap` loaded when asked and otherwise itself, so
+  KEYMAPP holds for it), `access_keymap_1` (Qunbound as `Value::Unbound`,
+  T_OK, NOINHERIT and AUTOLOAD threaded through, the meta-prefix-char
+  mapping, composed submaps, vectors and char-tables), `get_keyelt` (a
+  menu item's `:filter` evaluated as the form `(FILTER 'DEFN)` under an
+  error handler, so `#'f` gives nil as in GNU), `lookup_key_1`,
+  `Fdefine_key` with `store_in_keymap` and `define_as_prefix` (Lucid
+  event lists, ranges as leaves, the meta bit by key type, `[keymap]`
+  reserved, `message_with_string`'s CHECK_STRING for invalid events,
+  "Key sequence %s starts with non-prefix key %s%s", removal from a
+  char-table storing nil, character ranges into a new char-table instead
+  of the old code's broken spine), `silly_event_symbol_error`,
+  `keymap_parent`, `Fset_keymap_parent` (the parent not loaded, cycles
+  checked through `keymap_memberp`), `map_keymap`, `Fkeymap_prompt`,
+  `Fuse_local_map` and `Fuse_global_map` (storing the resolved map),
+  `Faccessible_keymaps` with `accessible_keymaps_1` (breadth first, cycles
+  by prefix, metized sequences right after their parent), and
+  `Fwhere_is_internal` with `where_is_internal`, `where_is_internal_1`,
+  `shadow_lookup` and `preferred_sequence_p`, including keymap.c's
+  `where_is_cache` for menu-less lookups (two interpreter fields, rooted,
+  flushed by `store_in_keymap` and `set-keymap-parent`, reset in an image
+  copy). keyboard.c's `reorder_modifiers` keeps `parse_modifiers`'
+  `event-symbol-element-mask` and `apply_modifiers`' `modifier-cache`
+  as GNU does, and a wheel event is a click unless double or triple, as
+  `parse_modifiers_uncached` says. The bootstrap `special-event-map` now
+  has keyboard.c's `keys_of_keyboard` entries (`ns-put-working-text`,
+  `focus-in`, `focus-out`, `move-frame`, `file-notify`; not the
+  commented-out `select-window`), and `visual-line-mode-map` has no
+  prompt string. The old helpers (`keymap_define_binding_with_placement`,
+  exact-parts lookups, the where-is collector) are gone. Wall, GNU /
+  Emaxx before / after: 60,000 `define-key` 0.376 / 0.818 / 0.461 s;
+  60,000 `lookup-key` 0.038 / 0.090 / 0.045 s; 200 `where-is-internal`
+  of `find-file` 0.035 / 0.164 / 0.067 s (one `get_keymap` a binding cost
+  137 instructions until the list case stopped going through the symbol
+  key table and `==` on values stopped being `equal`). Probes identical
+  to GNU's: autoloaded keymaps through 24 primitives, 17 `define-key`
+  cases, `keymap--get-keyelt` with filters, and `describe-buffer-bindings`
+  apart from the X build's bindings and raw-byte key descriptions. New
+  test: `keymaps_resolve_through_symbols_and_autoloads_as_get_keymap_does`.
+  Twenty-three GNU test files (keymap, keyboard, cmds, minibuf, help,
+  help-fns, help-mode, kmacro, subr, simple, minibuffer, repeat, tab-bar,
+  isearch, edmacro, which-key, xt-mouse, mouse, easy-mmode, use-package,
+  electric, buff-menu, dired) give GNU's results. Locally (gate profile,
+  `--test-threads=1` in four shards) 779 keymap, key, menu, where-is,
+  help, minibuffer, event, image, dump and collection tests pass, apart
+  from the image round trip that fails in this container and
+  `subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`,
+  whose child exited before `process-live-p` under the shards' load and
+  which passes alone three times out of three. Two tests that call
+  `where-is-internal` with a keymap in a bare interpreter now install a
+  global map first: keymap.c's `list2 (keymap, current_global_map)`
+  meets nil there, which GNU (whose `global-map` comes from subr.el)
+  signals for too. The anti-cheat tests pass single-threaded, as CI runs
+  them; run with several threads they can panic in the shared vector
+  allocator while interpreters are built in parallel.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -4878,8 +4943,10 @@ in its `primitives` group, and frozen (run 40034222838) failed 77 of
 all from the loader's oversized `forward-comment` count (bullet "Round
 51"). **On `2ff27af`** (the fix): full Rust gate passed (run
 40053413052), frozen passed on its first attempt (run 40053415013).
-**On `1b61c83`** (round 52): the Rust gate (run 40056463837) and frozen
-(run 40056465430) are dispatched; round 54 records them. Locally,
+**On `1b61c83`** (round 52): full Rust gate passed (run 40056463837),
+frozen passed on its first attempt (run 40056465430). **On `d1a3230`**
+(round 53): full Rust gate passed (run 40058055258), frozen passed on its
+first attempt (run 40058057152). Locally,
 `batch_startup_image_round_trip_or_explicit_native_image_limit`
 fails in this container on `4008098` already (the restored image's first
 native function in `mapatoms` order differs) and passes in CI, like the
@@ -5190,9 +5257,7 @@ and failures are still recorded.
    (0.19 s against 0.08 s; `shell-command` tests that start Emacs fifty
    times are 2.5 times slower for it), and text properties kept in one
    flat vector of spans (each edit shifts it; GNU keeps intervals).
-   `keymapp` and the keymap primitives do not resolve a symbol's
-   function or a keymap autoload as keymap.c's `get_keymap` does (bullet
-   "Round 53"). The host is a different machine
+   The host is a different machine
    since `aa68c68` (bullet "The host changed under the session"). On it,
    with round 25's jump padding, the contract's comparison of the
    profile-guided build reads: undo 1.042 [0.876, 1.110],

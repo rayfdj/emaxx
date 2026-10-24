@@ -22,6 +22,14 @@ use crate::lisp::types::Kind;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
+        "where_is_cache",
+        "keymap.c's staticpro'd where_is_cache is a memo of where_is_internal for menu-less lookups, used only while Fequal finds the keymaps it was built for in where_is_cache_keymaps and flushed by every store_in_keymap and Fset_keymap_parent; the image starts without one and the next such lookup rebuilds it",
+    ),
+    (
+        "where_is_cache_keymaps",
+        "the keymaps where_is_cache was built for (t while none is complete); reset with where_is_cache",
+    ),
+    (
         "modules",
         "emacs-module.c: local handles belong to active foreign frames; pdumper.c refuses PVEC_MODULE_FUNCTION, PVEC_USER_PTR and PVEC_OTHER global references, so a dumped runtime has no live module state",
     ),

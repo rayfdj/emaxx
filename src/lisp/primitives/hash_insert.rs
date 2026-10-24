@@ -279,133 +279,6 @@ pub(crate) fn sweep_weak_hash_tables(
     interp.modules.collect(&live);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn overlay_collection_follows_buffer_and_lisp_ownership() {
-        let mut interp = Interpreter::new();
-        let mut env = Env::new();
-        let table = json::make_hash_table(&mut interp, "eq", Vec::new());
-        let Kind::HashTable(table_id) = table.kind() else {
-            panic!("hash table is not a record");
-        };
-        table_id.set_weakness(1);
-        interp.set_global_binding("overlay-weak-table", table);
-        #[inline(never)]
-        fn exercise_reachable(
-            interp: &mut Interpreter,
-            table_id: crate::lisp::types::HashTableRef,
-            env: &mut Env,
-        ) {
-            let overlay = call(
-                interp,
-                "make-overlay",
-                &[Value::Integer(1), Value::Integer(1)],
-                env,
-            )
-            .expect("make overlay");
-            let Kind::Overlay(id) = overlay.kind() else {
-                panic!("not an overlay");
-            };
-            assert!(interp.equal_hash_put(table_id, overlay, Value::T, env));
-            call(interp, "garbage-collect", &[], env).expect("collect attached overlay");
-            assert_eq!(table_id.count(), 1);
-
-            interp.set_global_binding("overlay-root", overlay);
-            // A self-cycle does not make the detached object an independent root.
-            call(
-                interp,
-                "overlay-put",
-                &[overlay, Value::symbol("self"), overlay],
-                env,
-            )
-            .expect("set cycle");
-            call(interp, "delete-overlay", &[overlay], env).expect("detach");
-            call(interp, "garbage-collect", &[], env).expect("collect rooted detached overlay");
-            assert!(id.is_dead());
-            assert_eq!(
-                id.get_symbol_prop("self").expect("surviving plist").word(),
-                overlay.word()
-            );
-            assert_eq!(table_id.count(), 1);
-        }
-        // No overlay address escapes this frame; retain the attached and
-        // detached live-root checks before testing eventual reclamation.
-        exercise_reachable(&mut interp, table_id, &mut env);
-        let retained_bytes = crate::lisp::alloc::vectors::live_overlay_node_bytes();
-        interp.set_global_binding("overlay-root", Value::Nil);
-        crate::lisp::alloc::clobber_stack();
-        call(&mut interp, "garbage-collect", &[], &mut env).expect("collect unreachable cycle");
-        assert_eq!(
-            crate::lisp::alloc::vectors::live_overlay_node_bytes(),
-            retained_bytes - 80,
-            "the unreachable object's separately owned interval was reclaimed"
-        );
-        assert!((table_id.count() == 0));
-    }
-
-    #[test]
-    fn weak_key_collection_uses_reachability() {
-        let mut interp = Interpreter::new();
-        let mut env = Env::new();
-        let table = json::make_hash_table(&mut interp, "equal", Vec::new());
-        let Kind::HashTable(id) = table.kind() else {
-            panic!("hash table is not a record");
-        };
-        id.set_weakness(1);
-
-        // The unrooted key is consed in a frame of its own and the stack
-        // under the test cleared: a string's address in a local of a
-        // scanned frame keeps it (a C local's object).
-        #[inline(never)]
-        fn insert_keys(
-            interp: &mut Interpreter,
-            id: crate::lisp::types::HashTableRef,
-            env: &Env,
-        ) -> Value {
-            let rooted_key = Value::string("rooted key");
-            let unrooted_key = Value::string("unrooted key");
-            assert!(interp.equal_hash_put(id, rooted_key, Value::Integer(1), env));
-            assert!(interp.equal_hash_put(id, unrooted_key, Value::Integer(2), env));
-            interp.set_global_binding("weak-key-root", Value::cons(rooted_key, Value::Nil));
-            rooted_key
-        }
-        let rooted_key = insert_keys(&mut interp, id, &env);
-        interp.set_global_binding("weak-table-root", table);
-        crate::lisp::alloc::clobber_stack();
-
-        crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
-            .expect("collect weak table through the ordinary C-owned entry point");
-        let entries = id
-            .entries()
-            .map(|(_, key, value)| (key, value))
-            .collect::<Vec<_>>();
-        assert_eq!(entries.len(), 1);
-        assert!(crate::lisp::primitives::values_equal(
-            &interp,
-            &entries[0].0,
-            &rooted_key,
-        ));
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct RuntimeKeymapBinding {
-    pub(crate) key: String,
-    pub(crate) parts: Option<Vec<Value>>,
-    pub(crate) value: Value,
-}
-
-pub(crate) fn keymap_entry_key_value(parts: &[Value], key: &str) -> Value {
-    if let [event] = parts {
-        *event
-    } else {
-        Value::String(key.into())
-    }
-}
-
 pub(crate) fn set_hash_table_entries(
     interp: &mut Interpreter,
     table: &Value,
@@ -826,4 +699,116 @@ pub(crate) fn combine_insert_args(args: &[Value]) -> Result<StringLike, LispErro
         props: merge_string_props(props),
         extended_chars,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_collection_follows_buffer_and_lisp_ownership() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let table = json::make_hash_table(&mut interp, "eq", Vec::new());
+        let Kind::HashTable(table_id) = table.kind() else {
+            panic!("hash table is not a record");
+        };
+        table_id.set_weakness(1);
+        interp.set_global_binding("overlay-weak-table", table);
+        #[inline(never)]
+        fn exercise_reachable(
+            interp: &mut Interpreter,
+            table_id: crate::lisp::types::HashTableRef,
+            env: &mut Env,
+        ) {
+            let overlay = call(
+                interp,
+                "make-overlay",
+                &[Value::Integer(1), Value::Integer(1)],
+                env,
+            )
+            .expect("make overlay");
+            let Kind::Overlay(id) = overlay.kind() else {
+                panic!("not an overlay");
+            };
+            assert!(interp.equal_hash_put(table_id, overlay, Value::T, env));
+            call(interp, "garbage-collect", &[], env).expect("collect attached overlay");
+            assert_eq!(table_id.count(), 1);
+
+            interp.set_global_binding("overlay-root", overlay);
+            // A self-cycle does not make the detached object an independent root.
+            call(
+                interp,
+                "overlay-put",
+                &[overlay, Value::symbol("self"), overlay],
+                env,
+            )
+            .expect("set cycle");
+            call(interp, "delete-overlay", &[overlay], env).expect("detach");
+            call(interp, "garbage-collect", &[], env).expect("collect rooted detached overlay");
+            assert!(id.is_dead());
+            assert_eq!(
+                id.get_symbol_prop("self").expect("surviving plist").word(),
+                overlay.word()
+            );
+            assert_eq!(table_id.count(), 1);
+        }
+        // No overlay address escapes this frame; retain the attached and
+        // detached live-root checks before testing eventual reclamation.
+        exercise_reachable(&mut interp, table_id, &mut env);
+        let retained_bytes = crate::lisp::alloc::vectors::live_overlay_node_bytes();
+        interp.set_global_binding("overlay-root", Value::Nil);
+        crate::lisp::alloc::clobber_stack();
+        call(&mut interp, "garbage-collect", &[], &mut env).expect("collect unreachable cycle");
+        assert_eq!(
+            crate::lisp::alloc::vectors::live_overlay_node_bytes(),
+            retained_bytes - 80,
+            "the unreachable object's separately owned interval was reclaimed"
+        );
+        assert!((table_id.count() == 0));
+    }
+
+    #[test]
+    fn weak_key_collection_uses_reachability() {
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let table = json::make_hash_table(&mut interp, "equal", Vec::new());
+        let Kind::HashTable(id) = table.kind() else {
+            panic!("hash table is not a record");
+        };
+        id.set_weakness(1);
+
+        // The unrooted key is consed in a frame of its own and the stack
+        // under the test cleared: a string's address in a local of a
+        // scanned frame keeps it (a C local's object).
+        #[inline(never)]
+        fn insert_keys(
+            interp: &mut Interpreter,
+            id: crate::lisp::types::HashTableRef,
+            env: &Env,
+        ) -> Value {
+            let rooted_key = Value::string("rooted key");
+            let unrooted_key = Value::string("unrooted key");
+            assert!(interp.equal_hash_put(id, rooted_key, Value::Integer(1), env));
+            assert!(interp.equal_hash_put(id, unrooted_key, Value::Integer(2), env));
+            interp.set_global_binding("weak-key-root", Value::cons(rooted_key, Value::Nil));
+            rooted_key
+        }
+        let rooted_key = insert_keys(&mut interp, id, &env);
+        interp.set_global_binding("weak-table-root", table);
+        crate::lisp::alloc::clobber_stack();
+
+        crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env)
+            .expect("collect weak table through the ordinary C-owned entry point");
+        let entries = id
+            .entries()
+            .map(|(_, key, value)| (key, value))
+            .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1);
+        assert!(crate::lisp::primitives::values_equal(
+            &interp,
+            &entries[0].0,
+            &rooted_key,
+        ));
+    }
 }

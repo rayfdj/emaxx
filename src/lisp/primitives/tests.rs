@@ -12116,6 +12116,9 @@ fn char_table_parameterized_key_events_keep_physical_slots_without_a_dump() {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
     let mut interp = Interpreter::new();
     let mut env = Env::new();
+    // where-is-internal searches the global map subr.el installs.
+    let global = call(&mut interp, "make-keymap", &[], &mut env).expect("global map");
+    call(&mut interp, "use-global-map", &[global], &mut env).expect("use-global-map");
     let form = Reader::new(program)
         .read_all()
         .expect("read parameterized key events")
@@ -17211,6 +17214,79 @@ fn map_keymap_internal_visits_only_direct_bindings_and_returns_the_parent() {
 }
 
 #[test]
+fn keymaps_resolve_through_symbols_and_autoloads_as_get_keymap_does() {
+    // keymap.c:get_keymap: KEYMAPP holds for a prefix command and for a
+    // keymap autoload without loading it; lookup-key and define-key load it;
+    // accessible-keymaps (no autoload) signals for it, while
+    // where-is-internal's command-remapping lookup loads it first.
+    // Fdefine_key's errors, store_in_keymap's ranges and its char-table
+    // removal, get_keyelt's `(FILTER 'DEFN)' evaluation, and keyboard.c's
+    // special-event-map entries.  The oracle's answer.
+    let program = r#"
+(let* ((file (make-temp-file "r54map" nil ".el"
+               "(defvar r54-map (let ((m (make-sparse-keymap))) (define-key m \"a\" 'forward-char) m))\n(fset 'r54-map r54-map)\n"))
+       (stub (lambda () (fset 'r54-map nil) (makunbound 'r54-map)
+               (autoload 'r54-map file nil nil 'keymap)))
+       (r nil))
+  (unwind-protect
+      (progn
+        (define-prefix-command 'r54-prefix)
+        (funcall stub)
+        (push (list (keymapp 'r54-map) (keymapp 'r54-prefix) (keymap-prompt 'r54-map)
+                    (autoloadp (symbol-function 'r54-map)))
+              r)
+        (push (lookup-key 'r54-map "a") r)
+        (funcall stub)
+        (push (condition-case e (accessible-keymaps 'r54-map) (error e)) r)
+        (push (where-is-internal 'forward-char (list 'r54-map)) r)
+        (funcall stub)
+        (push (let ((m (make-sparse-keymap)))
+                (define-key m "x" 'r54-map)
+                (define-key m "xc" 'ignore)
+                (lookup-key r54-map "c"))
+              r)
+        (let ((m (make-sparse-keymap)))
+          (define-key m "a" 'x)
+          (push (list (condition-case e (define-key m "ab" 'y) (error e))
+                      (condition-case e (define-key m [keymap] 'y) (error e))
+                      (condition-case e (define-key m [1.5] 'y) (error e))
+                      (condition-case e (define-key m [(97 . 98) 99] 'y) (error e)))
+                r))
+        (let ((m (make-sparse-keymap)))
+          (define-key m [(48 . 57)] 'digit)
+          (define-key m [(48 . 48)] 'zero)
+          (push (list (length m) (char-table-p (nth 1 m)) (lookup-key m "5") (lookup-key m "0")) r))
+        (let ((m (make-keymap)))
+          (define-key m "a" 'x)
+          (define-key m "a" nil t)
+          (push (list (aref (nth 1 m) ?a) (lookup-key m "a")) r))
+        (push (list (keymap--get-keyelt '(menu-item "x" foo :filter (function ignore)) t)
+                    (keymap--get-keyelt '(menu-item "x" foo :enable t :filter (lambda (d) (list 'f d))) t)
+                    (keymap--get-keyelt '(menu-item "x" . foo) t))
+              r)
+        (push (mapcar (lambda (e) (lookup-key special-event-map (vector e)))
+                      '(delete-frame select-window focus-in focus-out move-frame ns-put-working-text))
+              r)
+        (prin1-to-string (nreverse r)))
+    (delete-file file)))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("keymap contract should parse")
+        .expect("keymap contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("keymap contract should evaluate");
+    assert_eq!(
+        value,
+        Value::string(
+            "((t t nil t) forward-char (wrong-type-argument keymapp r54-map) ([97]) ignore ((error \"Key sequence a b starts with non-prefix key a\") (error \"`keymap' is reserved for embedded parent maps\") (wrong-type-argument stringp 1.5) (wrong-type-argument stringp (97 . 98))) (2 t digit zero) (nil nil) (nil (f foo) foo) (handle-delete-frame nil handle-focus-in handle-focus-out handle-move-frame ns-put-working-text))"
+        )
+    );
+}
+
+#[test]
 fn help_describe_vector_describes_each_run_of_a_char_table_once() {
     // keymap.c:describe_vector: char_table_ref_and_range gives each run of
     // characters bound to one object, which is looked up in SHADOW and the
@@ -18824,20 +18900,18 @@ fn keymap_set_where_is_internal_preserves_control_prefixes() {
     )
     .expect("keymap-set should accept control-prefixed textual specs");
     assert_eq!(
-        where_is_internal(
+        where_is_internal_command(
             &mut interp,
-            &Value::Symbol("keymap-tests-command".into()),
-            &[keymap],
+            Value::symbol("keymap-tests-command"),
+            Value::list([keymap]),
+            Value::Nil,
             false,
             false,
             &mut env,
         )
-        .expect("where-is-internal should find control-prefixed binding"),
-        vec![Value::list([
-            Value::Symbol("vector-literal".into()),
-            Value::Integer(3),
-            Value::Integer('g' as i64),
-        ])]
+        .expect("where-is-internal should find control-prefixed binding")
+        .to_string(),
+        "([3 103])"
     );
 }
 
@@ -24909,6 +24983,10 @@ fn command_remapping_finds_fresh_remap_bindings() {
     )
     .expect("command-remapping resolves");
     assert_eq!(remapped, Value::Symbol("bar".into()));
+    // A keymap's where-is-internal also searches the global map, which
+    // subr.el installs; GNU's current_global_map is nil before it.
+    let global = call(&mut interp, "make-keymap", &[], &mut env).expect("global map");
+    call(&mut interp, "use-global-map", &[global], &mut env).expect("use-global-map");
     let where_is = call(
         &mut interp,
         "where-is-internal",
