@@ -3,26 +3,25 @@ use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
 /// Drain a non-blocking stream: bytes read plus whether the peer closed.
-fn drain_nonblocking<R: std::io::Read>(stream: &mut R) -> (Vec<u8>, bool) {
-    let mut out = Vec::new();
-    let mut closed = false;
-    let mut chunk = [0u8; 4096];
+/// emacs_read of at most LIMIT bytes from a nonblocking STREAM (retried
+/// when interrupted): the bytes read, or the end of the stream (an error
+/// other than EAGAIN counting as one).
+fn read_chunk<R: std::io::Read>(stream: &mut R, limit: usize) -> (Vec<u8>, bool) {
+    let mut chunk = vec![0u8; limit];
     loop {
         match stream.read(&mut chunk) {
-            Ok(0) => {
-                closed = true;
-                break;
+            Ok(0) => return (Vec::new(), true),
+            Ok(n) => {
+                chunk.truncate(n);
+                return (chunk, false);
             }
-            Ok(n) => out.extend_from_slice(&chunk[..n]),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => {
-                closed = true;
-                break;
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                return (Vec::new(), false);
             }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return (Vec::new(), true),
         }
     }
-    (out, closed)
 }
 
 fn record_child_exit(process: &mut ProcessState, status: std::process::ExitStatus) {
@@ -518,6 +517,7 @@ impl Interpreter {
             ProcessKind::Pipe
         };
         let thread_id = Some(self.active_thread_id);
+        let readmax = self.process_readmax();
         self.process_states.push(ProcessState {
             record_id: record_id.id,
             kind,
@@ -555,6 +555,11 @@ impl Interpreter {
             plist: Value::Nil,
             gnutls: ProcessGnuTlsState::default(),
             contact: Value::T,
+            readmax,
+            decoder: Default::default(),
+            stdout_eof: false,
+            stderr_eof: false,
+            encoder: Default::default(),
         });
         Ok(process)
     }
@@ -598,6 +603,7 @@ impl Interpreter {
             buffer_id.and_then(|id| self.get_buffer_by_id(id).map(|buffer| buffer.point_max()));
         self.set_marker(mark_marker_id, initial_position, buffer_id)?;
         let thread_id = Some(self.active_thread_id);
+        let readmax = self.process_readmax();
         self.process_states.push(ProcessState {
             record_id: record_id.id,
             kind: ProcessKind::Network,
@@ -635,6 +641,11 @@ impl Interpreter {
             plist,
             gnutls: ProcessGnuTlsState::default(),
             contact,
+            readmax,
+            decoder: Default::default(),
+            stdout_eof: false,
+            stderr_eof: false,
+            encoder: Default::default(),
         });
         self.setup_process_coding_systems(decoding, encoding)?;
         Ok(process)
@@ -670,6 +681,7 @@ impl Interpreter {
             .map(|buffer| buffer.point_max());
         self.set_marker(mark_marker_id, initial_position, Some(buffer_id))?;
         let thread_id = Some(self.active_thread_id);
+        let readmax = self.process_readmax();
         self.process_states.push(ProcessState {
             record_id: record_id.id,
             kind: ProcessKind::Serial,
@@ -707,6 +719,11 @@ impl Interpreter {
             plist,
             gnutls: ProcessGnuTlsState::default(),
             contact,
+            readmax,
+            decoder: Default::default(),
+            stdout_eof: false,
+            stderr_eof: false,
+            encoder: Default::default(),
         });
         self.setup_process_coding_systems(decoding, encoding)?;
         Ok(process)
@@ -1135,67 +1152,243 @@ impl Interpreter {
 
     /// Non-blocking read of a network or serial connection. Returns the bytes
     /// read and whether the peer/device closed the connection.
+    /// make_process: p->readmax = clip_to_bounds (1,
+    /// read_process_output_max, INT_MAX).
+    fn process_readmax(&self) -> usize {
+        let max = self
+            .forwarded_c_value("read-process-output-max", &Env::new())
+            .and_then(|value| value.integer_value())
+            .unwrap_or(65_536);
+        max.clamp(1, i64::from(i32::MAX)) as usize
+    }
+
+    /// read_process_output's read on a connection: one read of at most
+    /// p->readmax bytes, and whether it found the end of the stream.  The
+    /// connection stays open; close_connection_stream acts on that end.
     pub fn poll_connection_stream(&mut self, record_id: u64) -> Result<(Vec<u8>, bool), LispError> {
         let Some(process) = self.find_process_state_mut(record_id) else {
             return Ok((Vec::new(), false));
         };
-        let (out, closed) = if let Some(session) = process.gnutls.session.as_mut() {
-            session.receive()?
-        } else {
-            match process.network.as_mut() {
-                Some(NetworkRuntime::Stream(stream)) => drain_nonblocking(stream),
-                Some(NetworkRuntime::UnixStream(stream)) => drain_nonblocking(stream),
-                Some(NetworkRuntime::Datagram { socket, remote }) => {
-                    let mut bytes = vec![0; 65_535];
+        let readmax = process.readmax;
+        if let Some(session) = process.gnutls.session.as_mut() {
+            return session.receive(readmax);
+        }
+        Ok(match process.network.as_mut() {
+            Some(NetworkRuntime::Stream(stream)) => read_chunk(stream, readmax),
+            Some(NetworkRuntime::UnixStream(stream)) => read_chunk(stream, readmax),
+            Some(NetworkRuntime::Datagram { socket, remote }) => {
+                // recvfrom of at most readmax bytes: a longer datagram is
+                // truncated.
+                let mut bytes = vec![0; readmax];
+                loop {
                     match socket.recv_from(&mut bytes) {
                         Ok((length, peer)) => {
                             bytes.truncate(length);
                             *remote = Some(peer);
-                            (bytes, false)
+                            break (bytes, false);
                         }
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            (Vec::new(), false)
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
-                            (Vec::new(), false)
-                        }
-                        Err(_) => (Vec::new(), false),
-                    }
-                }
-                _ => {
-                    let Some(serial) = process.serial.as_mut() else {
-                        return Ok((Vec::new(), false));
-                    };
-                    let mut bytes = vec![0; 65_535];
-                    match serial.port.read(&mut bytes) {
-                        Ok(0) => (Vec::new(), true),
-                        Ok(length) => {
-                            bytes.truncate(length);
-                            (bytes, false)
-                        }
-                        Err(error)
-                            if matches!(
-                                error.kind(),
-                                ErrorKind::WouldBlock
-                                    | ErrorKind::TimedOut
-                                    | ErrorKind::Interrupted
-                            ) =>
-                        {
-                            (Vec::new(), false)
-                        }
-                        Err(_) => (Vec::new(), true),
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(_) => break (Vec::new(), false),
                     }
                 }
             }
-        };
-        if closed {
+            _ => {
+                let Some(serial) = process.serial.as_mut() else {
+                    return Ok((Vec::new(), false));
+                };
+                let mut bytes = vec![0; readmax];
+                match serial.port.read(&mut bytes) {
+                    Ok(0) => (Vec::new(), true),
+                    Ok(length) => {
+                        bytes.truncate(length);
+                        (bytes, false)
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                        ) =>
+                    {
+                        (Vec::new(), false)
+                    }
+                    Err(_) => (Vec::new(), true),
+                }
+            }
+        })
+    }
+
+    /// wait_reading_process_output at a connection's end of stream:
+    /// deactivate_process, the status `(exit 256)' process-status shows
+    /// as `closed'.
+    pub fn close_connection_stream(&mut self, record_id: u64) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
             process.gnutls.session = None;
             process.gnutls.active = false;
             process.status = ProcessStatus::Closed;
+            process.exit_code = Some(256);
             process.network = None;
             process.serial = None;
         }
-        Ok((out, closed))
+    }
+
+    /// Whether a read of the process's output pipe (or its stderr pipe)
+    /// found the end since last asked: read_process_output's first zero
+    /// read, which flushes the decoder's carryover.
+    pub(crate) fn take_process_pipe_eof(&mut self, record_id: u64) -> (bool, bool) {
+        self.find_process_state_mut(record_id)
+            .map_or((false, false), |process| {
+                (
+                    std::mem::take(&mut process.stdout_eof),
+                    std::mem::take(&mut process.stderr_eof),
+                )
+            })
+    }
+
+    /// Vprocess_alist membership (in_process_alist): until status_notify
+    /// removes the process, its channel is still read.
+    pub(crate) fn process_in_alist(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id)
+            .is_some_and(Self::in_process_alist)
+    }
+
+    /// Put bytes read from the process's channel back, unread, ahead of
+    /// anything pending: its output stopped before they were handled.
+    pub(crate) fn unread_process_output(&mut self, record_id: u64, bytes: &[u8]) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            let mut pending = bytes.to_vec();
+            pending.append(&mut process.pending_stdout);
+            process.pending_stdout = pending;
+        }
+    }
+
+    /// process.c status_message for the process's status.
+    fn process_status_message(process: &ProcessState) -> String {
+        match process.status {
+            ProcessStatus::Signal => {
+                signal_event_message(process.exit_signal.or(process.exit_code).unwrap_or(9))
+            }
+            ProcessStatus::Stop => {
+                #[cfg(unix)]
+                let stop = libc::SIGSTOP;
+                #[cfg(not(unix))]
+                let stop = 19;
+                signal_event_message(process.exit_signal.unwrap_or(stop))
+            }
+            ProcessStatus::Exit | ProcessStatus::Closed => {
+                let code = process.exit_code.unwrap_or(0);
+                if matches!(process.kind, ProcessKind::Network | ProcessKind::Serial) {
+                    if code == 0 {
+                        "deleted\n".into()
+                    } else {
+                        "connection broken by remote peer\n".into()
+                    }
+                } else if code == 0 {
+                    "finished\n".into()
+                } else {
+                    format!("exited abnormally with code {code}\n")
+                }
+            }
+            ProcessStatus::Failed => {
+                format!("failed with code {}\n", process.exit_code.unwrap_or(0))
+            }
+            ProcessStatus::Run | ProcessStatus::Open | ProcessStatus::Connect => "run".into(),
+            ProcessStatus::Listen => "listen".into(),
+        }
+    }
+
+    /// send_process's and Fprocess_send_eof's check that the process
+    /// runs: "Process NAME not running: STATUS-MESSAGE".
+    pub(crate) fn process_send_check(&self, record_id: u64) -> Result<(), LispError> {
+        let process = self
+            .find_process_state(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
+        if matches!(
+            process.status,
+            ProcessStatus::Run | ProcessStatus::Open | ProcessStatus::Connect
+        ) {
+            return Ok(());
+        }
+        Err(LispError::Signal(format!(
+            "Process {} not running: {}",
+            process.name,
+            Self::process_status_message(process)
+        )))
+    }
+
+    pub(crate) fn take_process_encoder(
+        &mut self,
+        record_id: u64,
+    ) -> crate::lisp::primitives::coding::EncoderSpec {
+        self.find_process_state_mut(record_id)
+            .map(|process| std::mem::take(&mut process.encoder))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn restore_process_encoder(
+        &mut self,
+        record_id: u64,
+        encoder: crate::lisp::primitives::coding::EncoderSpec,
+    ) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.encoder = encoder;
+        }
+    }
+
+    /// pset_encode_coding_system alone.
+    pub(crate) fn set_process_encoding(&mut self, record_id: u64, encoding: Value) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.encoding = encoding;
+        }
+    }
+
+    /// setup_process_coding_systems: the coding structs set up afresh
+    /// with the process's codings (spec state and CODING_MODE_LAST_BLOCK
+    /// gone); the decoding carryover in p->decoding_buf stays.
+    pub(crate) fn reset_process_coding_structs(&mut self, record_id: u64) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.decoder.reset_keeping_carryover();
+            process.encoder = Default::default();
+        }
+    }
+
+    /// p->readmax.
+    pub(crate) fn process_read_max(&self, record_id: u64) -> usize {
+        self.find_process_state(record_id)
+            .map_or(65_536, |process| process.readmax)
+    }
+
+    /// Take the process's decoder state (proc_decode_coding_system[] and
+    /// its carryover) for one block's decoding.
+    pub(crate) fn take_process_decoder(
+        &mut self,
+        record_id: u64,
+    ) -> crate::lisp::primitives::coding::BlockDecoder {
+        self.find_process_state_mut(record_id)
+            .map(|process| std::mem::take(&mut process.decoder))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn restore_process_decoder(
+        &mut self,
+        record_id: u64,
+        decoder: crate::lisp::primitives::coding::BlockDecoder,
+    ) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.decoder = decoder;
+        }
+    }
+
+    /// read_process_output at the first end of stream: set
+    /// CODING_MODE_LAST_BLOCK unless it is already set, and say whether it
+    /// was (the read is then the end) and how many bytes are carried over
+    /// for the flush.
+    pub(crate) fn mark_process_last_block(&mut self, record_id: u64) -> (bool, usize) {
+        let Some(process) = self.find_process_state_mut(record_id) else {
+            return (true, 0);
+        };
+        let was = process.decoder.last_block;
+        process.decoder.last_block = true;
+        (was, process.decoder.carryover.len())
     }
 
     pub fn connection_send(&mut self, record_id: u64, input: &[u8]) -> Result<(), LispError> {
@@ -1267,7 +1460,7 @@ impl Interpreter {
                     }
                     if let Some(pty) = runtime.pty_output.as_mut() {
                         let mut tail = Vec::new();
-                        let _ = read_nonblocking_pipe(pty, &mut tail);
+                        let _ = read_nonblocking_pipe(pty, &mut tail, None);
                         process.pending_stdout.extend(tail);
                     }
                     drop(runtime.pty_slave_guard.take());
@@ -1766,9 +1959,11 @@ impl Interpreter {
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
-        if !process.status.is_live() {
-            return Err(LispError::Signal("Process is not running".into()));
-        }
+        let _ = process;
+        self.process_send_check(record_id)?;
+        let process = self
+            .find_process_state_mut(record_id)
+            .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
         if matches!(process.kind, ProcessKind::Network | ProcessKind::Serial) {
             self.connection_send(record_id, input)?;
             return Ok((Vec::new(), Vec::new()));
@@ -1883,12 +2078,10 @@ impl Interpreter {
         // GNU reaps child status in its event loop.  Polling again here can
         // invalidate Eshell's immediately preceding `process-live-p' check
         // and turn normal pipeline teardown into a spurious race error.
+        self.process_send_check(record_id)?;
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
-        if !process.status.is_live() {
-            return Err(LispError::Signal("Process is not running".into()));
-        }
         let Some(runtime) = process.runtime.as_mut() else {
             return Ok((Vec::new(), Vec::new()));
         };
@@ -1934,9 +2127,12 @@ impl Interpreter {
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
+        let readmax = Some(process.readmax);
         if let Some((reader, _)) = process.module_pipe.as_mut() {
             let mut output = std::mem::take(&mut process.pending_stdout);
-            read_nonblocking_pipe(reader, &mut output)?;
+            if read_nonblocking_pipe(reader, &mut output, readmax)? {
+                process.stdout_eof = true;
+            }
             return Ok((output, std::mem::take(&mut process.pending_stderr)));
         }
         let Some(runtime) = process.runtime.as_mut() else {
@@ -1949,14 +2145,20 @@ impl Interpreter {
         let mut stdout = std::mem::take(&mut process.pending_stdout);
         let mut stderr = std::mem::take(&mut process.pending_stderr);
         let before = (stdout.len(), stderr.len());
-        if let Some(pipe) = runtime.child.stdout.as_mut() {
-            read_nonblocking_pipe(pipe, &mut stdout)?;
+        // read_process_output: one read of at most p->readmax bytes from
+        // each channel.
+        if let Some(pipe) = runtime.child.stdout.as_mut()
+            && read_nonblocking_pipe(pipe, &mut stdout, readmax)?
+        {
+            process.stdout_eof = true;
         }
-        if let Some(pipe) = runtime.child.stderr.as_mut() {
-            read_nonblocking_pipe(pipe, &mut stderr)?;
+        if let Some(pipe) = runtime.child.stderr.as_mut()
+            && read_nonblocking_pipe(pipe, &mut stderr, readmax)?
+        {
+            process.stderr_eof = true;
         }
         if let Some(pty) = runtime.pty_output.as_mut() {
-            read_nonblocking_pipe(pty, &mut stdout)?;
+            read_nonblocking_pipe(pty, &mut stdout, readmax)?;
         }
         if std::env::var_os("EMAXX_DEBUG_PROCESS_IO").is_some()
             && (stdout.len() > before.0 || stderr.len() > before.1)
@@ -1979,14 +2181,20 @@ impl Interpreter {
                     // and status polling.  Drain once more after observing
                     // exit: all pipe writers are closed now, so this owns the
                     // final bytes before dropping the runtime.
-                    if let Some(pipe) = runtime.child.stdout.as_mut() {
-                        read_nonblocking_pipe(pipe, &mut stdout)?;
+                    // status_notify then reads "any output that remains"
+                    // a read at a time; the caller delivers it so.
+                    if let Some(pipe) = runtime.child.stdout.as_mut()
+                        && read_nonblocking_pipe(pipe, &mut stdout, None)?
+                    {
+                        process.stdout_eof = true;
                     }
-                    if let Some(pipe) = runtime.child.stderr.as_mut() {
-                        read_nonblocking_pipe(pipe, &mut stderr)?;
+                    if let Some(pipe) = runtime.child.stderr.as_mut()
+                        && read_nonblocking_pipe(pipe, &mut stderr, None)?
+                    {
+                        process.stderr_eof = true;
                     }
                     if let Some(pty) = runtime.pty_output.as_mut() {
-                        read_nonblocking_pipe(pty, &mut stdout)?;
+                        read_nonblocking_pipe(pty, &mut stdout, None)?;
                     }
                     drop(runtime.pty_slave_guard.take());
                     record_child_exit(process, status);
@@ -4213,21 +4421,30 @@ fn file_notify_fingerprint(path: &str) -> FileNotifyFingerprint {
     }
 }
 
-fn read_nonblocking_pipe<T: Read>(pipe: &mut T, output: &mut Vec<u8>) -> Result<bool, LispError> {
-    let mut read_any = false;
-    let mut buffer = [0u8; 4096];
+/// Read a nonblocking child pipe into OUTPUT: one emacs_read of at most
+/// LIMIT bytes, or with no limit everything until it would block.  Whether
+/// the pipe reached its end (a read of zero bytes; a pty's EIO is not one,
+/// as process.c reads it).
+fn read_nonblocking_pipe<T: Read>(
+    pipe: &mut T,
+    output: &mut Vec<u8>,
+    limit: Option<usize>,
+) -> Result<bool, LispError> {
+    let mut buffer = vec![0u8; limit.unwrap_or(4096)];
     loop {
         match pipe.read(&mut buffer) {
-            Ok(0) => break,
+            Ok(0) => return Ok(true),
             Ok(read) => {
                 output.extend_from_slice(&buffer[..read]);
-                read_any = true;
+                if limit.is_some() {
+                    return Ok(false);
+                }
             }
-            Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+            Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(false),
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
             #[cfg(unix)]
-            Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
+            Err(error) if error.raw_os_error() == Some(libc::EIO) => return Ok(false),
             Err(error) => return Err(LispError::Signal(error.to_string())),
         }
     }
-    Ok(read_any)
 }

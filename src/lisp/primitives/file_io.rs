@@ -1047,35 +1047,143 @@ fn write_region_with_coding(
     Ok(Value::Nil)
 }
 
-pub(crate) fn append_external_debugging_output(
+/// print.c printchar_to_stream onto stderr: CH, or the characters among
+/// the elements of the vector `standard-display-table' shows it as; an
+/// ASCII character as its byte, any other as its multibyte form, encoded
+/// by `coding-system-for-write', else `locale-coding-system', when either
+/// is set (code_convert_string_norecord).
+pub(crate) fn printchar_to_stderr(
     interp: &mut Interpreter,
-    text: &str,
+    ch: u32,
+    env: &mut Env,
 ) -> Result<(), LispError> {
-    match interp.external_debugging_output_target.as_deref() {
-        Some(path) => {
-            let mut file = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .map_err(|error| LispError::Signal(error.to_string()))?;
-            file.write_all(text.as_bytes())
-                .map_err(|error| LispError::Signal(error.to_string()))?;
-            Ok(())
+    let mut chars = vec![ch];
+    if ch <= MAX_CHAR
+        && let Some(Kind::CharTable(table)) = interp
+            .symbol_value_key(cached_symbol!("standard-display-table"))
+            .map(|value| value.kind())
+        && table.has_purpose("display-table")
+        && let Some(entry) = interp.char_table_get(table, ch)
+        && crate::lisp::primitives::interactive::is_vector_value(&entry)
+    {
+        chars = crate::lisp::primitives::buffers::vector_items(&entry)?
+            .iter()
+            .filter_map(|element| match element.kind() {
+                Kind::Integer(c) if (0..=i64::from(MAX_CHAR)).contains(&c) => Some(c as u32),
+                _ => None,
+            })
+            .collect();
+    }
+    let coding = interp
+        .forwarded_c_value("coding-system-for-write", env)
+        .filter(|value| !value.is_nil())
+        .or_else(|| interp.forwarded_c_value("locale-coding-system", env))
+        .filter(|value| !value.is_nil());
+    let mut bytes = Vec::new();
+    for c in chars {
+        if c < 0x80 {
+            bytes.push(c as u8);
+            continue;
         }
-        None => {
-            let buffer_id = interp
-                .find_buffer(" *external-debugging-output*")
-                .map(|(id, _)| id)
-                .unwrap_or_else(|| interp.create_buffer(" *external-debugging-output*").0);
-            let mut buffer = interp
-                .get_buffer_by_id_mut(buffer_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-            let end = buffer.point_max();
-            buffer.goto_char(end);
-            buffer.insert(text);
-            Ok(())
+        // CHAR_STRING's multibyte form.
+        let mut one = PrintOutput::default();
+        one.push_code(c);
+        let Some(coding) = &coding else {
+            bytes.extend_from_slice(one.bytes());
+            continue;
+        };
+        let string = one.into_value(interp, env)?;
+        let encoded = encode_coding_value_recording(
+            interp,
+            &string,
+            Some(coding.as_symbol()?),
+            true,
+            false,
+            env,
+        )?;
+        bytes.extend(crate::lisp::primitives::text::internal_string_bytes(
+            &string_like(&encoded).expect("an encoded string"),
+        )?);
+    }
+    std::io::stderr()
+        .lock()
+        .write_all(&bytes)
+        .map_err(|error| LispError::Signal(error.to_string()))
+}
+
+/// print.c Fredirect_debugging_output's stderr_dup: STDERR_FILENO until
+/// the first redirection duplicates the original stderr (close-on-exec).
+#[cfg(unix)]
+static STDERR_DUP: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(libc::STDERR_FILENO);
+
+/// print.c Fredirect_debugging_output: point the stderr descriptor at FILE
+/// (expanded), truncated unless APPEND, or back at the original stderr
+/// for nil.
+#[cfg(unix)]
+pub(crate) fn redirect_debugging_output(
+    interp: &mut Interpreter,
+    file: &Value,
+    append: bool,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    use std::sync::atomic::Ordering;
+    // fileio.c report_file_error: the errno's condition and text, then
+    // the file when there is one.
+    let report = |operation: &str, file: Value| {
+        let error = std::io::Error::last_os_error();
+        LispError::SignalValue(match string_like(&file) {
+            Some(name) => file_operation_error_value(operation, &error, &name.text),
+            None => file_operation_error_value_without_file(operation, &error),
+        })
+    };
+    let mut fd = STDERR_DUP.load(Ordering::Relaxed);
+    let mut file = *file;
+    if !file.is_nil() {
+        let name = string_like(&file)
+            .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), file))?
+            .text;
+        let expanded = super::system::expand_file_name_runtime(interp, env, &name, None)?;
+        file = Value::string(&expanded);
+        if fd == libc::STDERR_FILENO {
+            // SAFETY: fcntl on the process's own stderr descriptor.
+            let n = unsafe {
+                libc::fcntl(
+                    libc::STDERR_FILENO,
+                    libc::F_DUPFD_CLOEXEC,
+                    libc::STDERR_FILENO + 1,
+                )
+            };
+            if n < 0 {
+                return Err(report("dup", file));
+            }
+            STDERR_DUP.store(n, Ordering::Relaxed);
+        }
+        let path = std::ffi::CString::new(expanded.as_bytes())
+            .map_err(|_| LispError::WrongTypeArgument("filenamep".into(), file))?;
+        let flags = libc::O_WRONLY
+            | libc::O_CREAT
+            | if append {
+                libc::O_APPEND
+            } else {
+                libc::O_TRUNC
+            };
+        // SAFETY: PATH is a NUL-terminated name.
+        fd = unsafe { libc::open(path.as_ptr(), flags | libc::O_CLOEXEC, 0o666) };
+        if fd < 0 {
+            return Err(report("Cannot open debugging output stream", file));
         }
     }
+    let _ = std::io::stderr().lock().flush();
+    // SAFETY: FD is open; dup2 replaces the stderr descriptor.
+    if unsafe { libc::dup2(fd, libc::STDERR_FILENO) } < 0 {
+        return Err(report("dup2", file));
+    }
+    if fd != STDERR_DUP.load(Ordering::Relaxed) {
+        // SAFETY: FD was opened above and is no longer needed.
+        unsafe { libc::close(fd) };
+    }
+    Ok(())
 }
 
 pub(crate) fn print_object_to_stream(
@@ -1220,34 +1328,6 @@ fn write_prepared_printer_output(
         None | Some(Kind::Nil | Kind::Buffer(_) | Kind::Marker(_)) => {
             let (text, extended) = output.text_parts();
             insert_text_with_hooks(interp, &text, &[], &extended, false, false, env)
-        }
-        Some(Kind::Symbol(name)) if name == "external-debugging-output" => {
-            match interp.external_debugging_output_target.as_deref() {
-                Some(path) => {
-                    let mut file = fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(path)
-                        .map_err(|error| LispError::Signal(error.to_string()))?;
-                    file.write_all(output.bytes())
-                        .map_err(|error| LispError::Signal(error.to_string()))
-                }
-                None => {
-                    let buffer_id = interp
-                        .find_buffer(" *external-debugging-output*")
-                        .map(|(id, _)| id)
-                        .unwrap_or_else(|| interp.create_buffer(" *external-debugging-output*").0);
-                    let mut buffer = interp.get_buffer_by_id_mut(buffer_id).ok_or_else(|| {
-                        LispError::Signal(format!("No buffer with id {buffer_id}"))
-                    })?;
-                    let end = buffer.point_max();
-                    buffer.goto_char(end);
-                    let (text, extended) = output.text_parts();
-                    buffer.insert(&text);
-                    buffer.set_inserted_extended_chars(end, &extended);
-                    Ok(())
-                }
-            }
         }
         Some(_) => {
             let function = *stream.expect("matched Some");
@@ -1487,28 +1567,12 @@ pub(crate) fn printer_stream_at_line_start(
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
             Ok(buffer_position_at_line_start(&buffer, position))
         }
-        Some(Kind::Symbol(name)) if name == "external-debugging-output" => {
-            let Some(buffer) = external_debugging_output_buffer(interp) else {
-                return Ok(false);
-            };
-            let empty = buffer.point_min() == buffer.point_max();
-            Ok(!empty && buffer_position_at_line_start(&buffer, buffer.point()))
-        }
         Some(Kind::Symbol(_) | Kind::BuiltinFunc(_) | Kind::Closure(_)) => Ok(false),
         Some(other) => Err(LispError::TypeError(
             "output-stream".into(),
             other.value().type_name(),
         )),
     }
-}
-
-pub(crate) fn external_debugging_output_buffer(
-    interp: &Interpreter,
-) -> Option<std::cell::Ref<'_, crate::buffer::Buffer>> {
-    let buffer_id = interp
-        .find_buffer(" *external-debugging-output*")
-        .map(|(id, _)| id)?;
-    interp.get_buffer_by_id(buffer_id)
 }
 
 pub(crate) fn buffer_position_at_line_start(

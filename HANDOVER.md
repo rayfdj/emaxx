@@ -5079,6 +5079,78 @@ setup_process_coding_systems's check now refuses). A 13-form
   linear search of the all-buffers list, quadratic in the buffers one
   collection frees (39.4K a buffer once the cells made collections
   rarer); the list is an address set now.
+- **Round 69: process.c's reads and sends by the process's codings,
+  callproc.c's blocks, print.c's debugging output.** read_process_output
+  reads at most p->readmax bytes at a time (`read-process-output-max`
+  when the process is made, clipped to 1..INT_MAX) and decodes them with
+  the carryover the last read left (p->decoding_buf, up to 64 bytes); the
+  end of file is a read of nothing of its own, which decodes the carryover
+  as the last block (CODING_MODE_LAST_BLOCK), and a read that returned
+  carried bytes is not yet the end. A network peer's end of file
+  deactivates the connection (status `closed`, exit 256) with "connection
+  broken by remote peer\n"; GnuTLS reads one record of up to readmax.
+  `accept-process-output` for a process keeps reading while a pass finds
+  output, a process deleted or stopped meanwhile keeping the rest. Before,
+  each poll drained a pipe into one string decoded whole, so a character
+  split across reads came out as raw bytes, a dos CR ending a read became
+  a newline, and a filter saw more than `read-process-output-max` at once.
+  coding.c's decoders without CODING_MODE_LAST_BLOCK stop before an
+  incomplete character and leave it as the carryover: UTF-8 (by its lead
+  byte's count, 5 after a non-leader), UTF-16 (the surrogate kept in the
+  coding struct, GNU's stale-surrogate quirk included, a dos CR waiting
+  for two more bytes), Shift-JIS, Big5, charset, emacs-mule, raw-text's
+  dos CR, and ISO-2022 with its designations, shifts and composition kept
+  across blocks; the BOM is looked for in the first block only, and the
+  last block flushes what remains as raw bytes. emacs-mule's invalid bytes
+  carry no charset annotation but a lone 0x9E or 0x9F (eight-bit).
+  `call-process` and the other callproc.c readers read 16K blocks (64K once
+  32 have been read) less 1024 bytes for the carryover, and each block is
+  its own prepare_to_modify_buffer, decode and signal_after_change, so the
+  change hooks run per block as in GNU. send_process encodes by the
+  process's coding struct, which persists from send to send:
+  `last-coding-system-used` is its coding; multibyte text complements
+  p->encode_coding_system and sets the struct up again when it differs;
+  unibyte text sets up raw-text of the coding last used (an ISO-2022 or CCL
+  coding's flush first, send_process of t, which encodes and sends
+  nothing); text is encoded only when CODING_REQUIRE_ENCODING; no send is
+  a last block, so ISO-2022 designations and a UTF-16 BOM written stay
+  written for the next send. `process-send-eof` flushes, and
+  `set-process-coding-system` makes fresh coding structs keeping the
+  decoding carryover. A send to a dead process signals "Process NAME not
+  running: STATUS"; `process-send-string` checks its string first;
+  `process-send-region` sends the region encoded as its buffer's
+  multibyteness says. Before, every send went out as UTF-8 whatever the
+  process's coding. `external-debugging-output` takes a fixnum and writes
+  it to stderr as printchar_to_stream does (a `standard-display-table`
+  vector expanded, other non-ASCII encoded by `coding-system-for-write` or
+  `locale-coding-system`); it wrote into a buffer. `redirect-debugging-output`
+  dup2s stderr to the file (appending or truncating), nil restoring the
+  saved stderr, and returns nil. Also fixed: round 68's two red gate tests
+  (below): `buffer-local-variables` reads the `text-conversion-style` slot
+  itself, as FOR_EACH_PER_BUFFER_OBJECT_AT does, so a variable `makunbound`
+  left plain still lists its slot, and an ordinary local made after that
+  is listed besides. Probes of decoding tails, carryover across process
+  reads (UTF-8, UTF-16, dos CRs, ISO-2022-JP), `call-process`'s per-block
+  hooks, emacs-mule annotations and 31 sends across 18 codings
+  (ISO-2022 designations and the UTF-16 and UTF-8 BOMs across sends,
+  unibyte sends, dos and mac eols, `inhibit-eol-conversion`, a 70,000
+  character send, a network connection, errors) give GNU's output but
+  for an out-of-range `process-send-region` (item (2) below); the
+  process, callproc, coding, print, editfns, fileio, comint, shell, term,
+  erc, jsonrpc, eglot, network-stream, socks, package (all 38; three
+  failed before), mule, mule-util, server, vc-git, 23 eshell and 10 url
+  test files give GNU's results. Still open: (1) round 68's item (1);
+  (2) primitives that clamp an out-of-range region where validate_region
+  signals `args-out-of-range`: `buffer-substring` and its
+  `-no-properties`, `delete-region`, `delete-and-extract-region`,
+  `put-text-property`, `upcase-region`, `insert-buffer-substring`,
+  `subst-char-in-region`, `translate-region` and `encode-coding-region`
+  among 16 probed (`process-send-region` with them); (3) a character
+  U+E080..U+E0FF inserted as an integer (`insert`, `insert-char`,
+  `insert-and-inherit`, `translate-region`) is stored as a raw byte, the
+  text view's marker for one -- strings carry such characters in their
+  side table, these paths do not -- which fails ucs-normalize-tests'
+  `ucs-normalize-part1` (on round 66's build too).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -5709,7 +5781,13 @@ passed (run 40097399568); frozen matched 7,926 of 7,928 tests (run
 **On `6002362`** (rounds 65 and 66): full Rust gate passed (run
 40113387970), frozen passed on its first attempt (run 40113390272).
 **On `183603d`** (round 67): full Rust gate passed (run 40117891134),
-frozen passed on its first attempt (run 40117893169). Run
+frozen passed on its first attempt (run 40117893169). **On `1610718`** (round 68): the Rust
+gate failed `text_conversion_detached_state_matches_gnu` and
+`text_conversion_native_store_matches_gnu_without_localizing` in its
+primitives group (run 40123867987; the groups after it did not run):
+round 68's `buffer-local-variables` read the `text-conversion-style` slot
+through the symbol, which `makunbound` had made plain; fixed in round 69.
+Frozen passed on its first attempt (run 40123869891). Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that
 locale. With none set here, `char_charset_family_follows_charset_c` and

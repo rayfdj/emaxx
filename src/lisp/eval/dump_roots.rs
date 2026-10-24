@@ -206,10 +206,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ),
     ("minibuffer_activation_count", "minibuffer state, as above"),
     (
-        "external_debugging_output_target",
-        "the running process's debug output",
-    ),
-    (
         "native_compiler",
         "the registry is rebuilt by the late relocations (each dumped unit reopened) and the very late ones (each dumped function resolved); the compiler context and the runtime are process state, as comp.c's comp_t and freloc are",
     ),

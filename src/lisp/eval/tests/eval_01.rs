@@ -53,10 +53,10 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
     // gnutls.c:emacs_gnutls_read returns EAGAIN before GNUTLS_STAGE_READY.
     // Even a server ready to finish negotiation must not move the handshake
     // behind process.c's back when ordinary output polling asks for bytes.
-    assert_eq!(session.receive().unwrap(), (Vec::new(), false));
+    assert_eq!(session.receive(65_536).unwrap(), (Vec::new(), false));
     assert_eq!((transport.handshakes, transport.reads), (0, 0));
     assert_eq!(session.handshake(false).unwrap(), 0);
-    assert_eq!(session.receive().unwrap(), (Vec::new(), false));
+    assert_eq!(session.receive(65_536).unwrap(), (Vec::new(), false));
     assert_eq!((transport.handshakes, transport.reads), (1, 1));
 }
 

@@ -383,6 +383,145 @@ pub(crate) fn complement_process_encoding_system(
     super::file_io::inherit_write_coding_eol(interp, coding_base, eol_base)
 }
 
+/// process.c send_process's encoding of TEXT (a string, or a buffer
+/// region's text with MULTIBYTE the buffer's) for PROCESS_ID, after
+/// send_process's status check.  `last-coding-system-used' becomes the
+/// coding the output coding struct is set up with.  Multibyte text sends
+/// with the process's encoding completed by
+/// complement_process_encoding_system (set up afresh when the struct had
+/// another); unibyte text with the raw-text form of the struct's coding
+/// when that requires encoding (a coding that requires flushing ends its
+/// last block first).  A struct that requires encoding encodes the text
+/// as a block that is not the last; any other sends its bytes.
+pub(crate) fn encode_process_input(
+    interp: &mut Interpreter,
+    process_id: u64,
+    text: &Value,
+    multibyte: bool,
+    env: &mut Env,
+) -> Result<Vec<u8>, LispError> {
+    interp.process_send_check(process_id)?;
+    let encoding = interp
+        .process_coding_system(process_id)?
+        .cons_values()
+        .map_or(Value::Nil, |(_, encoding)| encoding);
+    let mut encoder = interp.take_process_encoder(process_id);
+    let result = encode_process_input_with(
+        interp,
+        process_id,
+        text,
+        multibyte,
+        encoding,
+        &mut encoder,
+        env,
+    );
+    interp.restore_process_encoder(process_id, encoder);
+    result
+}
+
+fn encode_process_input_with(
+    interp: &mut Interpreter,
+    process_id: u64,
+    text: &Value,
+    multibyte: bool,
+    encoding: Value,
+    encoder: &mut super::coding::EncoderSpec,
+    env: &mut Env,
+) -> Result<Vec<u8>, LispError> {
+    use super::coding::{EncoderSpec, coding_requires_encoding, coding_requires_flushing};
+    let name = |coding: Value| {
+        if coding.is_nil() {
+            Value::symbol("undecided")
+        } else {
+            coding
+        }
+    };
+    // Vlast_coding_system_used = CODING_ID_NAME (coding->id).
+    let mut coding = name(encoder.coding.unwrap_or(encoding));
+    let mut last_used = coding;
+    if multibyte {
+        let complemented = name(complement_process_encoding_system(interp, env, encoding)?);
+        interp.set_process_encoding(process_id, complemented);
+        if coding.symbol_str() != complemented.symbol_str() {
+            *encoder = EncoderSpec::default();
+            coding = complemented;
+            last_used = complemented;
+        }
+        encoder.coding = Some(coding);
+    } else if coding_requires_encoding(interp, &coding, env) {
+        let symbol = coding.as_symbol()?.to_string();
+        if coding_requires_flushing(interp, &symbol) {
+            // The flush, send_process (proc, "", 0, Qt): its object is
+            // neither a buffer nor a string, so nothing is encoded or
+            // sent; only the multibyte arm's complement takes effect.
+            let complemented = name(complement_process_encoding_system(interp, env, encoding)?);
+            interp.set_process_encoding(process_id, complemented);
+            if last_used.symbol_str() != complemented.symbol_str() {
+                last_used = complemented;
+            }
+        }
+        let raw_text = raw_text_coding_system(interp, last_used.as_symbol()?);
+        *encoder = EncoderSpec::default();
+        encoder.coding = Some(Value::symbol(&raw_text));
+    }
+    interp.set_variable("last-coding-system-used", last_used, env);
+    send_process_bytes(interp, text, encoder, env)
+}
+
+/// send_process after the coding struct is set up: TEXT encoded by it
+/// when it requires encoding, else TEXT's bytes.
+fn send_process_bytes(
+    interp: &mut Interpreter,
+    text: &Value,
+    encoder: &mut super::coding::EncoderSpec,
+    env: &mut Env,
+) -> Result<Vec<u8>, LispError> {
+    let coding = encoder.coding.unwrap_or(Value::Nil);
+    if super::coding::coding_requires_encoding(interp, &coding, env) {
+        let symbol = coding.as_symbol()?.to_string();
+        super::coding::encode_process_block(interp, text, &symbol, encoder, env)
+    } else {
+        let string = string_like(text)
+            .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *text))?;
+        super::text::internal_string_bytes(&string)
+    }
+}
+
+/// Fprocess_send_eof's flush of an output coding that requires flushing:
+/// send_process of an empty unibyte text, which sets up raw-text and
+/// sends nothing.
+pub(crate) fn flush_process_encoder(
+    interp: &mut Interpreter,
+    process_id: u64,
+    env: &mut Env,
+) -> Result<(), LispError> {
+    interp.process_send_check(process_id)?;
+    let encoding = interp
+        .process_coding_system(process_id)?
+        .cons_values()
+        .map_or(Value::Nil, |(_, encoding)| encoding);
+    let mut encoder = interp.take_process_encoder(process_id);
+    let coding = encoder.coding.unwrap_or(encoding);
+    let result = if coding.symbol_str().is_some_and(|symbol| {
+        !coding.is_nil() && super::coding::coding_requires_flushing(interp, symbol)
+    }) {
+        encode_process_input_with(
+            interp,
+            process_id,
+            &Value::string(""),
+            false,
+            encoding,
+            &mut encoder,
+            env,
+        )
+        .map(drop)
+    } else {
+        Ok(())
+    };
+    interp.restore_process_encoder(process_id, encoder);
+    result
+}
+
 /// callproc.c call_process's arguments for the child: ARGUMENTS (each a
 /// string) encoded by the coding `coding-system-for-write' names, else,
 /// when one of them is multibyte, the cdr of what find-operation-coding-
@@ -1686,20 +1825,7 @@ pub(crate) fn append_process_bytes_to_buffer(
         Some(coding) => coding,
         None => "undecided".into(),
     };
-    let result = if bytes.is_empty() {
-        // Nothing read: no insertion and no change hooks, the coding as
-        // set up recorded.
-        decode_coding_object(
-            interp,
-            env,
-            DecodeSource::Bytes(bytes),
-            &coding,
-            Some(multibyte),
-        )
-        .map(|outcome| outcome.coding)
-    } else {
-        insert_process_output(interp, bytes, &coding, multibyte, env)
-    };
+    let result = insert_process_output(interp, bytes, &coding, multibyte, env);
     let result = result.map(|coding_used| {
         interp.set_variable(
             "last-coding-system-used",
@@ -1741,31 +1867,80 @@ fn insert_process_output(
         || !(inhibit_eol_conversion || coding_eol_type(interp, &canonical) == Some(0))
         || coding_system_property(interp, &canonical, ":post-read-conversion")
             .is_some_and(|function| !function.is_nil());
-    let point = interp.buffer.borrow().point();
-    modify_current_buffer(interp, point, point, false, env, |interp, _, env| {
-        let start = interp.buffer.borrow().point();
-        if !multibyte && !requires_decoding {
-            interp.insert_current_buffer(&decode_raw_text_bytes(bytes));
-            return Ok((
-                Some(AfterChange::new(start, 0, bytes.len())),
-                coding.to_string(),
-            ));
+    // call_process's read loop over the child's output: BUFSIZE bytes a
+    // block (CALLPROC_BUFFER_SIZE_MIN, doubling up to the MAX as the
+    // output grows), the reads filling all but the last 1024 bytes of it
+    // after the carryover, a read of nothing setting
+    // CODING_MODE_LAST_BLOCK.  Each block runs the change hooks once and
+    // is decoded after what the last one carried over, with the coding
+    // the last one settled on.
+    const CALLPROC_BUFFER_SIZE_MIN: usize = 16 * 1024;
+    const CALLPROC_BUFFER_SIZE_MAX: usize = 4 * CALLPROC_BUFFER_SIZE_MIN;
+    let mut bufsize = CALLPROC_BUFFER_SIZE_MIN;
+    let mut total_read = 0usize;
+    let mut offset = 0usize;
+    let mut decoder = super::coding::BlockDecoder::default();
+    let mut coding_used = coding.to_string();
+    loop {
+        let mut nread = decoder.carryover.len();
+        let start = offset;
+        while nread < bufsize - 1024 {
+            let this_read = (bytes.len() - offset).min(bufsize - nread);
+            if this_read == 0 {
+                decoder.last_block = true;
+                break;
+            }
+            offset += this_read;
+            nread += this_read;
+            total_read += this_read;
         }
-        let restore = interp.bind_special_dynamic("inhibit-modification-hooks", Value::T, env)?;
-        let decoded = decode_process_bytes_at_point(interp, bytes, coding, multibyte, env);
-        let restored = interp.restore_special_dynamic(restore, env);
-        let (produced, coding_used) = decoded?;
-        restored?;
-        // Point moves over the characters produced from where the decoding
-        // (a post-read conversion included) left it.
-        let point = interp.buffer.borrow().point();
-        interp.buffer.borrow_mut().goto_char(point + produced);
-        Ok((Some(AfterChange::new(point, 0, produced)), coding_used))
-    })
+        let block = &bytes[start..offset];
+        if nread > 0 {
+            let point = interp.buffer.borrow().point();
+            coding_used =
+                modify_current_buffer(interp, point, point, false, env, |interp, _, env| {
+                    let start = interp.buffer.borrow().point();
+                    if !multibyte && !requires_decoding {
+                        interp.insert_current_buffer(&decode_raw_text_bytes(block));
+                        return Ok((
+                            Some(AfterChange::new(start, 0, block.len())),
+                            coding_used.clone(),
+                        ));
+                    }
+                    let restore =
+                        interp.bind_special_dynamic("inhibit-modification-hooks", Value::T, env)?;
+                    let decoded = decode_process_bytes_at_point(
+                        interp,
+                        block,
+                        &coding_used,
+                        multibyte,
+                        &mut decoder,
+                        env,
+                    );
+                    let restored = interp.restore_special_dynamic(restore, env);
+                    let (produced, settled) = decoded?;
+                    restored?;
+                    // Point moves over the characters produced from where
+                    // the decoding (a post-read conversion included) left
+                    // it.
+                    let point = interp.buffer.borrow().point();
+                    interp.buffer.borrow_mut().goto_char(point + produced);
+                    Ok((Some(AfterChange::new(point, 0, produced)), settled))
+                })?;
+        }
+        if decoder.last_block {
+            break;
+        }
+        if bufsize < CALLPROC_BUFFER_SIZE_MAX && total_read > 32 * bufsize {
+            bufsize = (bufsize * 2).min(CALLPROC_BUFFER_SIZE_MAX);
+        }
+    }
+    Ok(coding_used)
 }
 
-/// decode_coding_object of BYTES into the current buffer at point, which
-/// stays before the text: the characters with produce_charset's
+/// decode_coding_c_string of the block BYTES, after what DECODER carried
+/// over, into the current buffer at point, which stays before the text:
+/// the characters with produce_charset's
 /// annotations, then the coding's post-read conversion called through
 /// safe_calln with undo off, point left where it leaves it.  The
 /// characters produced (the conversion's additions counted) and the
@@ -1775,19 +1950,14 @@ fn decode_process_bytes_at_point(
     bytes: &[u8],
     coding: &str,
     multibyte: bool,
+    decoder: &mut super::coding::BlockDecoder,
     env: &mut Env,
 ) -> Result<(usize, String), LispError> {
     let CodingDecode {
         decoded,
         coding: coding_used,
         ..
-    } = decode_coding_object(
-        interp,
-        env,
-        DecodeSource::Bytes(bytes),
-        coding,
-        Some(multibyte),
-    )?;
+    } = super::coding::decode_coding_block(interp, env, bytes, coding, Some(multibyte), decoder)?;
     let mut produced = decoded.char_count();
     let props = charset_spans_to_props(decoded.charsets, &decoded.text, None);
     insert_text_before_point(
@@ -1853,11 +2023,18 @@ fn decode_process_output(
         None if unibyte_buffer => "raw-text".into(),
         None => "undecided".into(),
     };
+    // decode_coding_c_string through the process's coding struct: the
+    // carryover and decoder state the last read left, the read's bytes,
+    // and CODING_MODE_LAST_BLOCK once a read found the end.
+    let mut decoder = interp.take_process_decoder(process_id);
+    let decoded =
+        super::coding::decode_coding_block(interp, env, bytes, &coding, None, &mut decoder);
+    interp.restore_process_decoder(process_id, decoder);
     let CodingDecode {
         decoded,
         coding: settled,
         for_unibyte,
-    } = decode_coding_object(interp, env, DecodeSource::Bytes(bytes), &coding, None)?;
+    } = decoded?;
     let props = charset_spans_to_props(decoded.charsets, &decoded.text, None);
     let text = make_shared_string_value_with_extended_chars(
         decoded.text,
@@ -1888,19 +2065,67 @@ pub(crate) fn deliver_process_streams(
     stderr: &[u8],
     env: &mut Env,
 ) -> Result<bool, LispError> {
-    let mut delivered = false;
-    if !stdout.is_empty() {
-        let output = decode_process_output(interp, process_id, stdout, env)?;
-        deliver_process_output_decoded(interp, process_id, output, env)?;
-        delivered = true;
+    let stderr_process_id = interp.process_stderr(process_id).unwrap_or(process_id);
+    let mut delivered = deliver_process_reads(interp, process_id, stdout, env)?;
+    delivered |= deliver_process_reads(interp, stderr_process_id, stderr, env)?;
+    // A read that found a pipe's end: read_process_output sets
+    // CODING_MODE_LAST_BLOCK and decodes what was carried over.
+    let (stdout_eof, stderr_eof) = interp.take_process_pipe_eof(process_id);
+    if stdout_eof {
+        delivered |= flush_process_decoder(interp, process_id, env)?.1;
     }
-    if !stderr.is_empty() {
-        let stderr_process_id = interp.process_stderr(process_id).unwrap_or(process_id);
-        let output = decode_process_output(interp, stderr_process_id, stderr, env)?;
-        deliver_process_output_decoded(interp, stderr_process_id, output, env)?;
-        delivered = true;
+    if stderr_eof {
+        delivered |= flush_process_decoder(interp, stderr_process_id, env)?.1;
     }
     Ok(delivered)
+}
+
+/// read_process_output for each p->readmax bytes of BYTES, read from
+/// PROCESS_ID's channel: decoded after the carryover and handed to the
+/// filter.  A filter that ends the process stops the reading -- its
+/// channel is closed -- and one that stops its output leaves the rest
+/// unread for when it resumes.
+fn deliver_process_reads(
+    interp: &mut Interpreter,
+    process_id: u64,
+    bytes: &[u8],
+    env: &mut Env,
+) -> Result<bool, LispError> {
+    let readmax = interp.process_read_max(process_id);
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let (read, after) = rest.split_at(rest.len().min(readmax));
+        let output = decode_process_output(interp, process_id, read, env)?;
+        deliver_process_output_decoded(interp, process_id, output, env)?;
+        rest = after;
+        if rest.is_empty() || !interp.process_in_alist(process_id) {
+            break;
+        }
+        if interp.process_output_paused(process_id) {
+            interp.unread_process_output(process_id, rest);
+            break;
+        }
+    }
+    Ok(!bytes.is_empty())
+}
+
+/// read_process_output's read of zero bytes: the first sets
+/// CODING_MODE_LAST_BLOCK and decodes the carryover, the decoder flushing
+/// what it cannot finish, for the filter.  Whether the read was already
+/// the end (CODING_MODE_LAST_BLOCK set, or nothing carried over), and
+/// whether anything was delivered.
+fn flush_process_decoder(
+    interp: &mut Interpreter,
+    process_id: u64,
+    env: &mut Env,
+) -> Result<(bool, bool), LispError> {
+    let (was_last, carried) = interp.mark_process_last_block(process_id);
+    if was_last {
+        return Ok((true, false));
+    }
+    let output = decode_process_output(interp, process_id, &[], env)?;
+    deliver_process_output_decoded(interp, process_id, output, env)?;
+    Ok((carried == 0, carried > 0))
 }
 
 pub(crate) fn write_process_bytes_to_file(
@@ -3199,7 +3424,14 @@ pub(crate) fn wait_pumping_processes(
         let requested_process_delivered = target_process_id.is_some_and(|process_id| {
             interp.process_output_delivery_count(process_id) != target_start
         });
-        if return_on_delivery && target_process_id.is_some() && requested_process_delivered {
+        // process.c: once WAIT_PROC has read something, the wait reads
+        // what else is available without waiting, and returns when a pass
+        // finds nothing.
+        if return_on_delivery
+            && target_process_id.is_some()
+            && requested_process_delivered
+            && !progressed
+        {
             break;
         }
         let now = std::time::Instant::now();
@@ -3433,15 +3665,21 @@ fn pump_connection_processes_for(
         if interp.process_output_paused(stream_id) {
             continue;
         }
-        let (bytes, closed) = interp.poll_connection_stream(stream_id)?;
+        let (bytes, eof) = interp.poll_connection_stream(stream_id)?;
         if !bytes.is_empty() {
             progressed = true;
             let output = decode_process_output(interp, stream_id, &bytes, env)?;
             deliver_process_output_decoded(interp, stream_id, output, env)?;
-        }
-        if closed {
+        } else if eof {
             progressed = true;
-            run_process_sentinel(interp, stream_id, "connection broken by remote peer\n", env)?;
+            // A read that returns the flushed carryover is not the end
+            // yet; the next one is.
+            if flush_process_decoder(interp, stream_id, env)?.0 {
+                // wait_reading_process_output: deactivate_process, status
+                // (exit 256), and status_notify's sentinel.
+                interp.close_connection_stream(stream_id);
+                run_process_sentinel(interp, stream_id, "connection broken by remote peer\n", env)?;
+            }
         }
     }
 

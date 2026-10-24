@@ -2253,33 +2253,38 @@ impl ProcessGnuTlsSession {
         }
     }
 
-    pub(crate) fn receive(&mut self) -> Result<(Vec<u8>, bool), LispError> {
+    /// gnutls.c emacs_gnutls_read: one gnutls_record_recv of at most
+    /// NBYTE bytes (retried when interrupted); the bytes it read, or EOF
+    /// for a closed peer or a fatal error.
+    pub(crate) fn receive(&mut self, nbyte: usize) -> Result<(Vec<u8>, bool), LispError> {
         if !self.ready {
             // gnutls.c:emacs_gnutls_read reports EAGAIN until negotiation
             // is complete. The process event loop owns the handshake and
             // must update initstage and run the open sentinel together.
             return Ok((Vec::new(), false));
         }
-        let mut output = Vec::new();
-        let mut chunk = [0_u8; 16_384];
+        let mut chunk = vec![0_u8; nbyte];
         loop {
             // SAFETY: STATE is live and CHUNK is writable for its full length.
             let result = unsafe {
                 (self.api.record_recv)(self.state, chunk.as_mut_ptr().cast(), chunk.len())
             };
             match result {
-                0 => return Ok((output, true)),
-                length if length > 0 => output.extend_from_slice(&chunk[..length as usize]),
+                0 => return Ok((Vec::new(), true)),
+                length if length > 0 => {
+                    chunk.truncate(length as usize);
+                    return Ok((chunk, false));
+                }
                 -52 => continue,
-                -28 => return Ok((output, false)),
-                -9 => return Ok((output, true)),
+                -28 => return Ok((Vec::new(), false)),
+                -9 => return Ok((Vec::new(), true)),
                 error => {
                     // GNU turns fatal record-layer failures into EOF and
                     // leaves other repairable conditions for the next poll.
                     // SAFETY: Every C integer is accepted by this classifier.
                     let closed =
                         unsafe { (self.api.error_is_fatal)(error as std::ffi::c_int) } != 0;
-                    return Ok((output, closed));
+                    return Ok((Vec::new(), closed));
                 }
             }
         }
@@ -2419,6 +2424,12 @@ impl Clone for ProcessState {
             plist: self.plist,
             gnutls: self.gnutls.clone(),
             contact: self.contact,
+            readmax: self.readmax,
+            // A template's processes have no channel left to read.
+            decoder: Default::default(),
+            stdout_eof: self.stdout_eof,
+            stderr_eof: self.stderr_eof,
+            encoder: Default::default(),
         }
     }
 }
@@ -2491,6 +2502,19 @@ struct ProcessState {
     /// it, with :service resolved and :local/:remote address vectors
     /// appended (process-contact with KEY t).
     contact: Value,
+    /// GNU p->readmax: `read-process-output-max' when the process was
+    /// made, the most one read takes.
+    readmax: usize,
+    /// proc_decode_coding_system[] for the process's input channel with
+    /// p->decoding_buf: the decoder state and carryover one read leaves
+    /// the next.
+    decoder: crate::lisp::primitives::coding::BlockDecoder,
+    /// A read of the output (stderr) pipe found its end, and the decoder's
+    /// carryover is yet to be flushed.
+    stdout_eof: bool,
+    stderr_eof: bool,
+    /// proc_encode_coding_system[] for the output channel.
+    encoder: crate::lisp::primitives::coding::EncoderSpec,
 }
 
 #[derive(Clone, Debug)]
@@ -5233,10 +5257,6 @@ pub struct InterpreterState {
     /// ` *Minibuf-N*' buffer, so grow-only height does not leak between
     /// consecutive or nested reads.
     minibuffer_activation_count: u64,
-    /// Destination installed by the native `redirect-debugging-output'
-    /// primitive.  GNU keeps this in C state; it must not leak through a
-    /// project-private Lisp variable.
-    pub(crate) external_debugging_output_target: Option<String>,
     /// Scoped module handles, global references and retained libraries.
     pub(crate) modules: crate::lisp::modules::ModuleState,
     /// The live libgccjit arena and runtime ABI state owned by GNU's `comp.c`
@@ -5974,7 +5994,6 @@ impl Interpreter {
             command_loop_recursion_depth: 0,
             minibuffer_runtime: MinibufferRuntimeState::default(),
             minibuffer_activation_count: 0,
-            external_debugging_output_target: None,
             modules: crate::lisp::modules::ModuleState::default(),
             native_compiler: crate::lisp::native_comp::NativeCompilerState::default(),
             default_file_modes: initial_default_file_modes(),

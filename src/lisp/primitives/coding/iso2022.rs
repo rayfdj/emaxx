@@ -324,19 +324,51 @@ fn finish_composition(out: &mut Output, cmp: &mut CompositionStatus) {
     cmp.state = ComposingState::No;
 }
 
-pub(crate) fn decode(interp: &Interpreter, bytes: &[u8], coding: &str) -> DecodedText {
+/// coding->spec.iso_2022 as decode_coding_iso_2022 leaves it for the next
+/// block: the designations and invocations, the composition in progress,
+/// what is left of a compound-text extended segment, and whether embedded
+/// UTF-8 is passing through.
+pub(crate) struct Iso2022Carry {
+    state: IsoState,
+    cmp: CompositionStatus,
+    extsegment_len: usize,
+    embedded_utf_8: bool,
+}
+
+/// coding.c decode_coding_iso_2022 over one block: the decoder resumes in
+/// the state BLOCK's spec carries, and a block that is not the last leaves
+/// it there, the composition in progress included, with the sequence it
+/// could not finish unconsumed.
+pub(crate) fn decode(
+    interp: &Interpreter,
+    bytes: &[u8],
+    coding: &str,
+    block: &mut DecodeBlock,
+) -> DecodedText {
     let Some(attrs) = iso_attributes(interp, coding) else {
-        return decode_coding_raw_text(bytes);
+        return decode_coding_raw_text_block(bytes, block);
     };
     let flags = attrs.flags;
-    let mut state = IsoState::new(&attrs);
+    let Iso2022Carry {
+        mut state,
+        mut cmp,
+        mut extsegment_len,
+        mut embedded_utf_8,
+    } = block
+        .spec
+        .iso2022
+        .take()
+        .map(|carry| *carry)
+        .unwrap_or_else(|| Iso2022Carry {
+            state: IsoState::new(&attrs),
+            cmp: CompositionStatus::new(),
+            extsegment_len: 0,
+            embedded_utf_8: false,
+        });
     let mut charset_id_0 = state.invoked_charset(0);
     let mut charset_id_1 = state.invoked_charset(1);
     let mut runs = CharsetRuns::new();
-    let mut cmp = CompositionStatus::new();
     let mut out = DecodedText::new();
-    let mut extsegment_len = 0usize;
-    let mut embedded_utf_8 = false;
     let use_roman = flags & ISO_FLAG_USE_ROMAN != 0;
     let use_oldjis = flags & ISO_FLAG_USE_OLDJIS != 0;
     let roman = interp.charset_canonical_name("latin-jisx0201");
@@ -524,6 +556,10 @@ pub(crate) fn decode(interp: &Interpreter, bytes: &[u8], coding: &str) -> Decode
                         ISO_CODE_CSI => b'[',
                         _ => {
                             // ISO_control_0.
+                            if block.eol_dos && c1 == b'\r' && p == end {
+                                // ONE_MORE_BYTE (byte_after_cr) ran out.
+                                break 'main;
+                            }
                             finish_composition(&mut out, &mut cmp);
                             out.push_byte(c1);
                             break 'step;
@@ -895,13 +931,22 @@ pub(crate) fn decode(interp: &Interpreter, bytes: &[u8], coding: &str) -> Decode
             charset_id_0 = Some("ascii".into());
         }
     }
-    // no_more_source with the last block: an unfinished composition is
-    // invalid, and decode_coding flushes the unconsumed tail as bytes.
-    // The last charset run closes there too, before the tail.
-    finish_composition(&mut out, &mut cmp);
+    // no_more_source: with the last block an unfinished composition is
+    // invalid and decode_coding flushes the unconsumed tail as bytes;
+    // another block keeps the composition for the next.  The last charset
+    // run closes there, before the tail.
+    if block.last {
+        finish_composition(&mut out, &mut cmp);
+    }
     out.charsets = runs.finish(out.char_count());
-    for &byte in &bytes[src_base..] {
-        out.push_byte(byte);
+    block.finish(&mut out, bytes, src_base);
+    if !block.last {
+        block.spec.iso2022 = Some(Box::new(Iso2022Carry {
+            state,
+            cmp,
+            extsegment_len,
+            embedded_utf_8,
+        }));
     }
     out
 }
@@ -1096,12 +1141,25 @@ impl Encoder<'_> {
 /// which already carry the eol convention; EOL_TYPE says which (2 = mac,
 /// whose CR ends a line).  PREFERRED holds, per code, the `charset' text
 /// property GNU would have consumed as an annotation.
+/// coding->spec.iso_2022 as encode_coding_iso_2022 leaves it when the
+/// block is not the last: the designations, invocations and CODING_ISO_BOL
+/// the next block's encoding resumes with.
+pub(crate) struct Iso2022EncodeCarry {
+    state: IsoState,
+}
+
+/// coding.c encode_coding_iso_2022.  CARRY holds the state a stream's
+/// last block left (none for a fresh coding struct) and takes this one's
+/// unless LAST, whose end resets the planes and registers under
+/// ISO_FLAG_RESET_AT_EOL.
 pub(crate) fn encode(
     interp: &Interpreter,
     chars: &[u32],
     coding: &str,
     eol_type: Option<i64>,
     preferred: &[Option<String>],
+    carry: &mut Option<Box<Iso2022EncodeCarry>>,
+    last: bool,
 ) -> Result<Vec<u8>, LispError> {
     let Some(attrs) = iso_attributes(interp, coding) else {
         return super::encode_coding_raw_text(chars, true);
@@ -1109,9 +1167,12 @@ pub(crate) fn encode(
     let flags = attrs.flags;
     let ascii_compatible =
         attrs.ascii_compatible && flags & (ISO_FLAG_DESIGNATION | ISO_FLAG_LOCKING_SHIFT) == 0;
+    let state = carry
+        .take()
+        .map_or_else(|| IsoState::new(&attrs), |carry| carry.state);
     let mut encoder = Encoder {
         interp,
-        state: IsoState::new(&attrs),
+        state,
         attrs: &attrs,
         out: Vec::with_capacity(chars.len()),
     };
@@ -1177,8 +1238,15 @@ pub(crate) fn encode(
             }
         }
     }
-    if flags & ISO_FLAG_RESET_AT_EOL != 0 {
+    if last && flags & ISO_FLAG_RESET_AT_EOL != 0 {
         encoder.reset_plane_and_register();
+    }
+    // CODING_ISO_BOL (coding) = bol_designation.
+    encoder.state.bol = bol_designation;
+    if !last {
+        *carry = Some(Box::new(Iso2022EncodeCarry {
+            state: encoder.state,
+        }));
     }
     Ok(encoder.out)
 }

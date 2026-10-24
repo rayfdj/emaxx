@@ -641,9 +641,20 @@ impl Interpreter {
 
     /// Every local binding of BUFFER_ID in first-binding order; a void
     /// local carries `Value::Unbound'.
+    #[cfg(test)]
     pub fn buffer_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
-        let mut values: Vec<_> = self
-            .buffer_locals
+        let mut values = self.buffer_alist_local_variables(buffer_id);
+        if let Some(style) = self.text_conversion_style_slot(buffer_id) {
+            values.insert(0, ("text-conversion-style".into(), style));
+        }
+        values
+    }
+
+    /// The cells of BUFFER_ID's local_var_alist and the slots kept with
+    /// them, in first-binding order, without the `text-conversion-style'
+    /// field.
+    pub(crate) fn buffer_alist_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
+        self.buffer_locals
             .get(&buffer_id)
             .map(|locals| {
                 locals
@@ -651,16 +662,19 @@ impl Interpreter {
                     .map(|(name, value)| (name.as_str().to_owned(), value))
                     .collect()
             })
-            .unwrap_or_default();
-        if let Some(buffer) = self.get_buffer_by_id(buffer_id)
-            && buffer.text_conversion_style_is_local
-        {
-            values.insert(
-                0,
-                ("text-conversion-style".into(), buffer.text_conversion_style),
-            );
-        }
-        values
+            .unwrap_or_default()
+    }
+
+    /// BUFFER_ID's `text-conversion-style' field while its local flag is
+    /// set, whatever the symbol's redirect: makunbound leaves a forwarded
+    /// symbol plain (data.c:set_internal's voide case) but the slot and
+    /// its flag as they were.
+    pub(crate) fn text_conversion_style_slot(&self, buffer_id: u64) -> Option<Value> {
+        self.get_buffer_by_id(buffer_id).and_then(|buffer| {
+            buffer
+                .text_conversion_style_is_local
+                .then_some(buffer.text_conversion_style)
+        })
     }
 
     /// `blv->local_if_set = 1' (data.c:Fmake_variable_buffer_local).

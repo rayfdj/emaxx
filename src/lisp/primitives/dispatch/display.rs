@@ -3261,22 +3261,23 @@ define_dispatch!(
             }
             "redirect-debugging-output" => {
                 need_arg_range(name, args, 1, 2)?;
-                let target = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => Value::Nil,
-                    Some(value) => Value::String(string_text(&value.value())?.into()),
-                };
-                interp.external_debugging_output_target = match target.kind() {
-                    Kind::StringObject(path) => Some(path.borrow().text()),
-                    _ => None,
-                };
-                Ok(target)
+                #[cfg(unix)]
+                super::super::file_io::redirect_debugging_output(
+                    interp,
+                    &args[0],
+                    args.get(1).is_some_and(Value::is_truthy),
+                    env,
+                )?;
+                Ok(Value::Nil)
             }
             "external-debugging-output" => {
                 need_args(name, args, 1)?;
-                let rendered = string_like(&args[0])
-                    .map(|value| value.text)
-                    .unwrap_or(format_char_conversion(&args[0])?.0);
-                append_external_debugging_output(interp, &rendered)?;
+                // print.c: CHECK_FIXNUM, then printchar_to_stream of the
+                // code as an unsigned int.
+                let Kind::Integer(code) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));
+                };
+                super::super::file_io::printchar_to_stderr(interp, code as u32, env)?;
                 Ok(args[0])
             }
             "print--preprocess" => {

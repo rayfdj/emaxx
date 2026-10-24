@@ -725,17 +725,27 @@ define_dispatch!(
                     Value::Symbol("buffer-undo-list".into()),
                     undo_list,
                 )];
+                // FOR_EACH_PER_BUFFER_OBJECT_AT reads each slot, whatever
+                // its symbol's redirect: a variable makunbound leaves plain
+                // keeps its slot and flag, and an ordinary local made for
+                // it after that is an alist cell listed besides.
                 for name in crate::lisp::eval::BUFFER_LOCAL_VARIABLES_ORDER {
-                    if let Some(local) = interp.buffer_local_binding(buffer_id, name) {
+                    let local = if *name == "text-conversion-style" {
+                        interp.text_conversion_style_slot(buffer_id).map(Some)
+                    } else {
+                        interp.buffer_local_binding(buffer_id, name)
+                    };
+                    if let Some(local) = local {
                         vars.push(entry(name, local.unwrap_or(Value::Unbound)));
                     }
                 }
                 vars.extend(
                     interp
-                        .buffer_local_variables(buffer_id)
+                        .buffer_alist_local_variables(buffer_id)
                         .into_iter()
                         .filter(|(name, _)| {
-                            crate::lisp::eval::native_per_buffer_slot(name).is_none()
+                            name == "text-conversion-style"
+                                || crate::lisp::eval::native_per_buffer_slot(name).is_none()
                         })
                         .map(|(name, value)| entry(&name, value)),
                 );

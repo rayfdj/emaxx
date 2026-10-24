@@ -2045,6 +2045,7 @@ define_dispatch!(
                     Value::Nil,
                 )?;
                 interp.set_process_coding_system(process_id, decoding, encoding)?;
+                interp.reset_process_coding_structs(process_id);
                 Ok(Value::Nil)
             }
             "internal-default-process-filter" => {
@@ -2516,32 +2517,46 @@ define_dispatch!(
                     _ => call(interp, "get-buffer-process", &[Value::Nil], env)?,
                 };
                 let process_id = interp.resolve_process_id(&process)?;
+                // Fprocess_send_eof: a coding that requires flushing is
+                // flushed first.
+                crate::lisp::primitives::processes::flush_process_encoder(interp, process_id, env)?;
                 let (stdout, stderr) = interp.process_send_eof(process_id)?;
                 deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
                 Ok(process)
             }
             "process-send-string" => {
                 need_args(name, args, 2)?;
+                // Fprocess_send_string: CHECK_STRING, get_process, then
+                // send_process with the string as the object it encodes.
+                let Some(string) = string_like(&args[1]) else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[1]));
+                };
                 let process_id = interp.resolve_process_id(&args[0])?;
-                let input = string_text(&args[1])?;
-                // GNU encodes eight-bit (raw byte) characters as their single
-                // byte value; epg pipes binary signatures to gpg this way.
-                let encoded = crate::lisp::primitives::encode_utf8_bytes(&input, false)?;
+                let encoded = crate::lisp::primitives::processes::encode_process_input(
+                    interp,
+                    process_id,
+                    &args[1],
+                    string.multibyte,
+                    env,
+                )?;
                 let (stdout, stderr) = interp.process_send_string(process_id, &encoded)?;
                 deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
                 Ok(Value::Nil)
             }
             "process-send-region" => {
                 need_args(name, args, 3)?;
+                // Fprocess_send_region: the region's text with the current
+                // buffer as the object, encoded as its multibyteness says.
                 let process_id = interp.resolve_process_id(&args[0])?;
-                let start = position_from_value(interp, &args[1])?;
-                let end = position_from_value(interp, &args[2])?;
-                let input = interp
-                    .buffer
-                    .borrow()
-                    .buffer_substring(start, end)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                let encoded = crate::lisp::primitives::encode_utf8_bytes(&input, false)?;
+                let text = super::buffer_edit::direct_buffer_substring_no_properties(
+                    interp,
+                    &[args[1], args[2]],
+                    env,
+                )?;
+                let multibyte = interp.buffer.borrow().is_multibyte();
+                let encoded = crate::lisp::primitives::processes::encode_process_input(
+                    interp, process_id, &text, multibyte, env,
+                )?;
                 let (stdout, stderr) = interp.process_send_string(process_id, &encoded)?;
                 deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
                 Ok(Value::Nil)
