@@ -206,10 +206,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ),
     ("minibuffer_activation_count", "minibuffer state, as above"),
     (
-        "external_debugging_output_target",
-        "the running process's debug output",
-    ),
-    (
         "native_compiler",
         "the registry is rebuilt by the late relocations (each dumped unit reopened) and the very late ones (each dumped function resolved); the compiler context and the runtime are process state, as comp.c's comp_t and freloc are",
     ),
@@ -577,6 +573,7 @@ impl Interpreter {
         let [behind, in_front] = self.interval_insert_hooks;
         groups.push((RootSlot::IntervalInsertBehindHooks, behind));
         groups.push((RootSlot::IntervalInsertInFrontHooks, in_front));
+        groups.push((RootSlot::FundamentalModeName, self.fundamental_mode_name));
         groups.push((
             RootSlot::StandardSyntaxTable,
             Value::CharTable(self.standard_syntax_table_id),
@@ -1107,6 +1104,7 @@ mod install {
                 }
                 RootSlot::IntervalInsertBehindHooks => self.interval_insert_hooks[0] = *value,
                 RootSlot::IntervalInsertInFrontHooks => self.interval_insert_hooks[1] = *value,
+                RootSlot::FundamentalModeName => self.fundamental_mode_name = *value,
                 RootSlot::SyntaxWordChars => {
                     let mut codes = Vec::new();
                     for entry in expect_vector(value, "syntax word chars")? {

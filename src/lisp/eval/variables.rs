@@ -207,6 +207,126 @@ impl Interpreter {
             .unwrap_or(Value::Nil)
     }
 
+    /// The always-local slot NAME names that the buffer record holds.
+    fn buffer_field_slot_named(&self, name: &str) -> Option<BufferFieldSlot> {
+        buffer_field_slot(name).filter(|_| self.globals.has_flag_by_name(name, ALWAYS_LOCAL))
+    }
+
+    /// `buffer_field_slot_named' for a symbol in hand: the flag first.
+    fn buffer_field_slot_of(&self, symbol: &SymbolName) -> Option<BufferFieldSlot> {
+        if !self.globals.has_flag(symbol, ALWAYS_LOCAL) {
+            return None;
+        }
+        buffer_field_slot(symbol.as_str())
+    }
+
+    /// BVAR (BUFFER, SLOT); None for no live buffer.
+    fn buffer_field_value(&self, buffer_id: u64, slot: BufferFieldSlot) -> Option<Value> {
+        let buffer = self.get_buffer_by_id(buffer_id)?;
+        let file = |name: &Option<String>| {
+            name.clone()
+                .map_or(Value::Nil, |name| Value::String(name.into()))
+        };
+        Some(match slot {
+            BufferFieldSlot::FileName => file(&buffer.file),
+            BufferFieldSlot::FileTruename => file(&buffer.file_truename),
+            BufferFieldSlot::MarkActive => buffer.mark_active_value(),
+            BufferFieldSlot::Multibyte => {
+                if buffer.is_multibyte() {
+                    Value::T
+                } else {
+                    Value::Nil
+                }
+            }
+        })
+    }
+
+    /// bset_* of SLOT in BUFFER.  `enable-multibyte-characters' is a
+    /// constant only `set-buffer-multibyte' changes.
+    fn set_buffer_field_value(&mut self, buffer_id: u64, slot: BufferFieldSlot, value: Value) {
+        let text = || match value.kind() {
+            Kind::Nil => None,
+            Kind::StringObject(state) => Some(state.borrow().text()),
+            other => Some(other.to_string()),
+        };
+        if matches!(value.kind(), Kind::Unbound) {
+            return;
+        }
+        let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) else {
+            return;
+        };
+        match slot {
+            BufferFieldSlot::FileName => buffer.file = text(),
+            BufferFieldSlot::FileTruename => buffer.file_truename = text(),
+            BufferFieldSlot::MarkActive => buffer.set_mark_active_value(value),
+            BufferFieldSlot::Multibyte => {}
+        }
+    }
+
+    /// buffer.c reset_buffer and reset_buffer_local_variables: the always-
+    /// local slots (buffer_local_flags index -1) a buffer starts with, each
+    /// its own from the start, DIRECTORY the creating buffer's; the slots
+    /// on the buffer record are reset with it.
+    pub(crate) fn reset_always_local_slots(&mut self, buffer_id: u64, directory: Value) {
+        const SLOTS: [crate::lisp::types::symbols::SymbolKey; 14] = [
+            cached_symbol!("default-directory"),
+            cached_symbol!("buffer-backed-up"),
+            cached_symbol!("buffer-saved-size"),
+            cached_symbol!("buffer-auto-save-file-name"),
+            cached_symbol!("buffer-read-only"),
+            cached_symbol!("major-mode"),
+            cached_symbol!("local-minor-modes"),
+            cached_symbol!("mode-name"),
+            cached_symbol!("buffer-file-format"),
+            cached_symbol!("buffer-auto-save-file-format"),
+            cached_symbol!("point-before-scroll"),
+            cached_symbol!("buffer-invisibility-spec"),
+            cached_symbol!("buffer-display-count"),
+            cached_symbol!("buffer-display-time"),
+        ];
+        // A buffer just made has no bindings yet: its cells go in at once.
+        let fresh = !self.buffer_locals.contains_key(&buffer_id);
+        let mut cells = super::LocalCells::with_capacity(SLOTS.len());
+        for key in SLOTS {
+            let symbol = key.with(Clone::clone);
+            let value = match symbol.as_str() {
+                "default-directory" => directory,
+                "buffer-saved-size" | "buffer-display-count" => Value::Integer(0),
+                "major-mode" => {
+                    Value::Symbol(cached_symbol!("fundamental-mode").with(Clone::clone))
+                }
+                "mode-name" => self.fundamental_mode_name,
+                "buffer-auto-save-file-format" | "buffer-invisibility-spec" => Value::T,
+                _ => Value::Nil,
+            };
+            if fresh {
+                self.globals.set_flag(&symbol, LOCALIZED);
+                cells.insert_fresh(&symbol, value);
+            } else {
+                self.set_buffer_local_value_symbol(buffer_id, &symbol, value);
+            }
+        }
+        if fresh {
+            self.buffer_locals.insert(buffer_id, cells);
+        }
+    }
+
+    /// reset_buffer_local_variables's own assignments, which every
+    /// `kill-all-local-variables' repeats.
+    pub(crate) fn reset_major_mode_slots(&mut self, buffer_id: u64) {
+        for (key, value) in [
+            (
+                cached_symbol!("major-mode"),
+                Value::Symbol(cached_symbol!("fundamental-mode").with(Clone::clone)),
+            ),
+            (cached_symbol!("mode-name"), self.fundamental_mode_name),
+            (cached_symbol!("buffer-invisibility-spec"), Value::T),
+        ] {
+            let symbol = key.with(Clone::clone);
+            self.set_buffer_local_value_symbol(buffer_id, &symbol, value);
+        }
+    }
+
     fn reset_buffer_text_conversion_style(&mut self, buffer_id: u64) {
         let default = self.native_text_conversion_style_default();
         if let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id) {
@@ -222,6 +342,9 @@ impl Interpreter {
             return self
                 .get_buffer_by_id(buffer_id)
                 .map(|buffer| buffer.text_conversion_style);
+        }
+        if let Some(slot) = self.buffer_field_slot_named(name) {
+            return self.buffer_field_value(buffer_id, slot);
         }
         self.buffer_locals
             .get(&buffer_id)
@@ -241,6 +364,9 @@ impl Interpreter {
                     .get_buffer_by_id(buffer_id)
                     .map(|buffer| buffer.text_conversion_style);
             }
+            if let Some(slot) = self.buffer_field_slot_of(symbol) {
+                return self.buffer_field_value(buffer_id, slot);
+            }
             self.buffer_locals
                 .get(&buffer_id)
                 .and_then(|locals| locals.binding(symbol))
@@ -257,6 +383,9 @@ impl Interpreter {
                     .text_conversion_style_is_local
                     .then_some(Some(buffer.text_conversion_style))
             });
+        }
+        if let Some(slot) = self.buffer_field_slot_named(name) {
+            return self.buffer_field_value(buffer_id, slot).map(Some);
         }
         self.buffer_locals
             .get(&buffer_id)
@@ -279,6 +408,9 @@ impl Interpreter {
                     .text_conversion_style_is_local
                     .then_some(Some(buffer.text_conversion_style))
             });
+        }
+        if let Some(slot) = self.buffer_field_slot_of(symbol) {
+            return self.buffer_field_value(buffer_id, slot).map(Some);
         }
         // Each buffer-local cell is made after its symbol is flagged
         // LOCALIZED (make-local-variable's SYMBOL_LOCALIZED), so a symbol
@@ -306,6 +438,10 @@ impl Interpreter {
                 buffer.text_conversion_style = value;
                 buffer.text_conversion_style_is_local = true;
             }
+            return;
+        }
+        if let Some(slot) = self.buffer_field_slot_named(name) {
+            self.set_buffer_field_value(buffer_id, slot, value);
             return;
         }
         self.globals.set_flag_by_name(name, LOCALIZED);
@@ -341,6 +477,10 @@ impl Interpreter {
             self.set_buffer_local_value(buffer_id, symbol.as_str(), value);
             return;
         }
+        if let Some(slot) = self.buffer_field_slot_of(symbol) {
+            self.set_buffer_field_value(buffer_id, slot, value);
+            return;
+        }
         self.globals.set_flag(symbol, LOCALIZED);
         let value = if matches!(value.kind(), Kind::Unbound) {
             value
@@ -364,6 +504,11 @@ impl Interpreter {
     pub fn remove_buffer_local_value(&mut self, buffer_id: u64, name: &str) {
         if self.has_native_text_conversion_style(name) {
             self.reset_buffer_text_conversion_style(buffer_id);
+        }
+        // A slot on the buffer record is never unmade (buffer_local_flags
+        // index -1: always local).
+        if self.buffer_field_slot_named(name).is_some() {
+            return;
         }
         let state = &mut **self;
         let remove_buffer = state
@@ -496,9 +641,20 @@ impl Interpreter {
 
     /// Every local binding of BUFFER_ID in first-binding order; a void
     /// local carries `Value::Unbound'.
+    #[cfg(test)]
     pub fn buffer_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
-        let mut values: Vec<_> = self
-            .buffer_locals
+        let mut values = self.buffer_alist_local_variables(buffer_id);
+        if let Some(style) = self.text_conversion_style_slot(buffer_id) {
+            values.insert(0, ("text-conversion-style".into(), style));
+        }
+        values
+    }
+
+    /// The cells of BUFFER_ID's local_var_alist and the slots kept with
+    /// them, in first-binding order, without the `text-conversion-style'
+    /// field.
+    pub(crate) fn buffer_alist_local_variables(&self, buffer_id: u64) -> Vec<(String, Value)> {
+        self.buffer_locals
             .get(&buffer_id)
             .map(|locals| {
                 locals
@@ -506,16 +662,19 @@ impl Interpreter {
                     .map(|(name, value)| (name.as_str().to_owned(), value))
                     .collect()
             })
-            .unwrap_or_default();
-        if let Some(buffer) = self.get_buffer_by_id(buffer_id)
-            && buffer.text_conversion_style_is_local
-        {
-            values.insert(
-                0,
-                ("text-conversion-style".into(), buffer.text_conversion_style),
-            );
-        }
-        values
+            .unwrap_or_default()
+    }
+
+    /// BUFFER_ID's `text-conversion-style' field while its local flag is
+    /// set, whatever the symbol's redirect: makunbound leaves a forwarded
+    /// symbol plain (data.c:set_internal's voide case) but the slot and
+    /// its flag as they were.
+    pub(crate) fn text_conversion_style_slot(&self, buffer_id: u64) -> Option<Value> {
+        self.get_buffer_by_id(buffer_id).and_then(|buffer| {
+            buffer
+                .text_conversion_style_is_local
+                .then_some(buffer.text_conversion_style)
+        })
     }
 
     /// `blv->local_if_set = 1' (data.c:Fmake_variable_buffer_local).
@@ -1372,6 +1531,7 @@ impl Interpreter {
         let resolved = self.resolve_variable_symbol(symbol)?;
         Ok(self
             .global_binding_value_symbol(&resolved)
+            .or_else(|| buffer_defaults_value(resolved.as_str()))
             .or_else(|| self.builtin_symbol_value(&resolved)))
     }
 
@@ -3694,6 +3854,55 @@ impl Brent {
             self.steps = 0;
         }
         false
+    }
+}
+
+/// buffer.c init_buffer_once's buffer_defaults slots of the always-local
+/// per-buffer variables no global binding stands for: data.c
+/// default_value reads per_buffer_default, not the current buffer's.
+/// (`mode-name' is nil there: reset_buffer_local_variables runs on
+/// buffer_defaults before QSFundamental is made.)
+fn buffer_defaults_value(name: &str) -> Option<Value> {
+    match name {
+        "buffer-file-name"
+        | "default-directory"
+        | "buffer-backed-up"
+        | "buffer-auto-save-file-name"
+        | "buffer-read-only"
+        | "local-minor-modes"
+        | "mode-name"
+        | "buffer-undo-list"
+        | "mark-active"
+        | "buffer-file-format"
+        | "point-before-scroll"
+        | "buffer-file-truename"
+        | "buffer-display-time" => Some(Value::Nil),
+        "buffer-saved-size" | "buffer-display-count" => Some(Value::Integer(0)),
+        "major-mode" => Some(Value::symbol("fundamental-mode")),
+        "enable-multibyte-characters"
+        | "buffer-auto-save-file-format"
+        | "buffer-invisibility-spec" => Some(Value::T),
+        _ => None,
+    }
+}
+
+/// The always-local slots Emaxx keeps on the buffer record rather than as
+/// a cell in each buffer's local bindings.
+#[derive(Clone, Copy)]
+enum BufferFieldSlot {
+    FileName,
+    FileTruename,
+    MarkActive,
+    Multibyte,
+}
+
+fn buffer_field_slot(name: &str) -> Option<BufferFieldSlot> {
+    match name {
+        "buffer-file-name" => Some(BufferFieldSlot::FileName),
+        "buffer-file-truename" => Some(BufferFieldSlot::FileTruename),
+        "mark-active" => Some(BufferFieldSlot::MarkActive),
+        "enable-multibyte-characters" => Some(BufferFieldSlot::Multibyte),
+        _ => None,
     }
 }
 

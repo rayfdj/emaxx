@@ -744,33 +744,60 @@ define_dispatch!(
                     substitute_in_file_name_in_env(interp, env, &string_text(&args[0])?).into(),
                 ))
             }
+            // fileio.c's file name syntax works on the string's internal
+            // bytes and keeps its multibyteness (make_specified_string),
+            // without its properties.
             "file-name-directory" => {
                 need_args(name, args, 1)?;
-                Ok(file_name_directory(&string_text(&args[0])?)
-                    .map(|value| Value::String(value.into()))
-                    .unwrap_or(Value::Nil))
+                let (bytes, multibyte) = file_name_bytes(&args[0])?;
+                let mut p = bytes.len();
+                while p != 0 && bytes[p - 1] != b'/' {
+                    p -= 1;
+                }
+                if p == 0 {
+                    return Ok(Value::Nil);
+                }
+                make_specified_string(bytes[..p].to_vec(), multibyte)
+                    .map_err(|error| string_storage_error(interp, env, error))
             }
             "file-name-nondirectory" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(
-                    file_name_nondirectory(&string_text(&args[0])?).into(),
-                ))
+                let (bytes, multibyte) = file_name_bytes(&args[0])?;
+                let mut p = bytes.len();
+                while p != 0 && bytes[p - 1] != b'/' {
+                    p -= 1;
+                }
+                make_specified_string(bytes[p..].to_vec(), multibyte)
+                    .map_err(|error| string_storage_error(interp, env, error))
             }
             "file-name-as-directory" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(
-                    file_name_as_directory(&string_text(&args[0])?).into(),
-                ))
+                let (mut bytes, multibyte) = file_name_bytes(&args[0])?;
+                if bytes.is_empty() {
+                    bytes.extend_from_slice(b"./");
+                } else if bytes.last() != Some(&b'/') {
+                    bytes.push(b'/');
+                }
+                make_specified_string(bytes, multibyte)
+                    .map_err(|error| string_storage_error(interp, env, error))
             }
             "directory-file-name" => {
                 need_args(name, args, 1)?;
-                Ok(Value::String(
-                    directory_file_name(&string_text(&args[0])?).into(),
-                ))
+                let (mut bytes, multibyte) = file_name_bytes(&args[0])?;
+                // Remove any final slashes; leave "/" and "//" alone and
+                // treat "///" and longer as "/".
+                if !(bytes.len() == 2 && bytes[0] == b'/') {
+                    while bytes.len() > 1 && bytes.last() == Some(&b'/') {
+                        bytes.pop();
+                    }
+                }
+                make_specified_string(bytes, multibyte)
+                    .map_err(|error| string_storage_error(interp, env, error))
             }
             "directory-name-p" => {
                 need_args(name, args, 1)?;
-                Ok(if directory_name_p(&string_text(&args[0])?) {
+                let (bytes, _) = file_name_bytes(&args[0])?;
+                Ok(if bytes.last() == Some(&b'/') {
                     Value::T
                 } else {
                     Value::Nil
@@ -1902,12 +1929,7 @@ define_dispatch!(
                     _ => None,
                 };
                 let destination = args.get(2).unwrap_or(&Value::Nil);
-                let argv = args
-                    .get(4..)
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(string_text)
-                    .collect::<Result<Vec<_>, _>>()?;
+                let argv = call_process_arguments(interp, env, args, args.get(4..).unwrap_or(&[]))?;
                 let process_output = run_external_process(
                     interp,
                     &program,
@@ -2010,17 +2032,29 @@ define_dispatch!(
             }
             "set-process-coding-system" => {
                 need_arg_range(name, args, 1, 3)?;
+                // process.c Fset_process_coding_system: both checked, the
+                // encoding's eol completed (coding_inherit_eol_type).
                 let process_id = interp.resolve_process_id(&args[0])?;
                 let decoding = args.get(1).cloned().unwrap_or(Value::Nil);
                 let encoding = args.get(2).cloned().unwrap_or(Value::Nil);
+                checked_coding_given(interp, &decoding)?;
+                checked_coding_given(interp, &encoding)?;
+                let encoding = crate::lisp::primitives::file_io::inherit_write_coding_eol(
+                    interp,
+                    encoding,
+                    Value::Nil,
+                )?;
                 interp.set_process_coding_system(process_id, decoding, encoding)?;
+                interp.reset_process_coding_structs(process_id);
                 Ok(Value::Nil)
             }
             "internal-default-process-filter" => {
                 need_args(name, args, 2)?;
                 let process_id = interp.resolve_process_id(&args[0])?;
-                let text = string_text(&args[1])?;
-                internal_default_process_filter(interp, process_id, &text, env)?;
+                if string_like(&args[1]).is_none() {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[1]));
+                }
+                internal_default_process_filter(interp, process_id, args[1], env)?;
                 Ok(Value::Nil)
             }
             "process-filter" => {
@@ -2483,40 +2517,56 @@ define_dispatch!(
                     _ => call(interp, "get-buffer-process", &[Value::Nil], env)?,
                 };
                 let process_id = interp.resolve_process_id(&process)?;
+                // Fprocess_send_eof: a coding that requires flushing is
+                // flushed first.
+                crate::lisp::primitives::processes::flush_process_encoder(interp, process_id, env)?;
                 let (stdout, stderr) = interp.process_send_eof(process_id)?;
                 deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
                 Ok(process)
             }
             "process-send-string" => {
                 need_args(name, args, 2)?;
+                // Fprocess_send_string: CHECK_STRING, get_process, then
+                // send_process with the string as the object it encodes.
+                let Some(string) = string_like(&args[1]) else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[1]));
+                };
                 let process_id = interp.resolve_process_id(&args[0])?;
-                let input = string_text(&args[1])?;
-                // GNU encodes eight-bit (raw byte) characters as their single
-                // byte value; epg pipes binary signatures to gpg this way.
-                let encoded = crate::lisp::primitives::encode_utf8_bytes(&input, false)?;
+                let encoded = crate::lisp::primitives::processes::encode_process_input(
+                    interp,
+                    process_id,
+                    &args[1],
+                    string.multibyte,
+                    env,
+                )?;
                 let (stdout, stderr) = interp.process_send_string(process_id, &encoded)?;
                 deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
                 Ok(Value::Nil)
             }
             "process-send-region" => {
                 need_args(name, args, 3)?;
+                // Fprocess_send_region: the region's text with the current
+                // buffer as the object, encoded as its multibyteness says.
                 let process_id = interp.resolve_process_id(&args[0])?;
-                let start = position_from_value(interp, &args[1])?;
-                let end = position_from_value(interp, &args[2])?;
-                let input = interp
-                    .buffer
-                    .borrow()
-                    .buffer_substring(start, end)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                let encoded = crate::lisp::primitives::encode_utf8_bytes(&input, false)?;
+                // validate_region, then the region's text.
+                validate_region(interp, &args[1], &args[2])?;
+                let text = super::buffer_edit::direct_buffer_substring_no_properties(
+                    interp,
+                    &[args[1], args[2]],
+                    env,
+                )?;
+                let multibyte = interp.buffer.borrow().is_multibyte();
+                let encoded = crate::lisp::primitives::processes::encode_process_input(
+                    interp, process_id, &text, multibyte, env,
+                )?;
                 let (stdout, stderr) = interp.process_send_string(process_id, &encoded)?;
                 deliver_process_streams(interp, process_id, &stdout, &stderr, env)?;
                 Ok(Value::Nil)
             }
             "zlib-decompress-region" => {
                 need_arg_range(name, args, 2, 3)?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
+                // decompress.c: validate_region, then the unibyte check.
+                let (start, end) = validate_region(interp, &args[0], &args[1])?;
                 if interp.buffer.borrow().is_multibyte() {
                     return Err(LispError::Signal(
                         "This function can be called only in unibyte buffers".into(),
@@ -2570,21 +2620,17 @@ define_dispatch!(
             }
             "libxml-parse-xml-region" | "libxml-parse-html-region" => {
                 need_arg_range(name, args, 0, 4)?;
-                let start = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => interp.buffer.borrow().point_min(),
-                    Some(start) => position_from_value(interp, &start.value())?,
+                // xml.c:parse_region: nil bounds are point-min and
+                // point-max, then validate_region.
+                let start = match args.first().filter(|value| !value.is_nil()) {
+                    Some(start) => *start,
+                    None => Value::Integer(interp.buffer.borrow().point_min() as i64),
                 };
-                let end = match args.get(1).map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => interp.buffer.borrow().point_max(),
-                    Some(end) => position_from_value(interp, &end.value())?,
+                let end = match args.get(1).filter(|value| !value.is_nil()) {
+                    Some(end) => *end,
+                    None => Value::Integer(interp.buffer.borrow().point_max() as i64),
                 };
-                // GNU's `validate_region' canonicalizes reversed bounds before
-                // handing the bytes to libxml2.
-                let (start, end) = if start <= end {
-                    (start, end)
-                } else {
-                    (end, start)
-                };
+                let (start, end) = validate_region(interp, &start, &end)?;
                 if let Some(base_url) = args.get(2)
                     && !base_url.is_nil()
                     && string_like(base_url).is_none()
@@ -2604,52 +2650,90 @@ define_dispatch!(
                 }
             }
             "call-process-region" => {
+                // callproc.c Fcall_process_region: the input written as
+                // create_temp_file writes it, the region deleted before the
+                // child runs, then call_process with INFILE in DELETE's place.
                 if args.len() < 3 {
                     return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
                 }
-                let (start, end) = if args[0].is_nil() && args[1].is_nil() {
-                    (
-                        interp.buffer.borrow().point_min(),
-                        interp.buffer.borrow().point_max(),
-                    )
+                let (mut start, mut end) = (args[0], args[1]);
+                let empty_input = if let Some(string) = string_like(&start) {
+                    string.text.is_empty()
+                } else if start.is_nil() {
+                    interp.buffer.borrow().size_total() == 0
                 } else {
-                    (
-                        position_from_value(interp, &args[0])?,
-                        position_from_value(interp, &args[1])?,
-                    )
+                    let (from, to) = validate_region(interp, &start, &end)?;
+                    start = Value::Integer(from as i64);
+                    end = Value::Integer(to as i64);
+                    from == to
                 };
-                let input = interp
-                    .buffer
-                    .borrow()
-                    .buffer_substring(start, end)
-                    .map_err(|error| LispError::Signal(error.to_string()))?;
-                let program = string_text(&args[2])?;
-                let delete_region = args.get(3).is_some_and(Value::is_truthy);
-                let destination = args.get(4).unwrap_or(&Value::Nil);
-                let argv = args
-                    .get(6..)
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(string_text)
-                    .collect::<Result<Vec<_>, _>>()?;
+                let input = if empty_input {
+                    None
+                } else {
+                    let coding = interp
+                        .lookup_var("coding-system-for-write", env)
+                        .unwrap_or(Value::Nil);
+                    let coding = if !coding.is_nil() {
+                        coding
+                    } else if !interp.buffer.borrow().is_multibyte() {
+                        Value::symbol("raw-text")
+                    } else {
+                        let lookup = std::iter::once(Value::symbol(name))
+                            .chain(args.iter().copied())
+                            .collect::<Vec<_>>();
+                        find_operation_coding_system_value(interp, &lookup, env)?
+                            .cons_values()
+                            .map_or(Value::Nil, |(_, encoding)| encoding)
+                    };
+                    let coding = complement_process_encoding_system(interp, env, coding)?;
+                    Some(crate::lisp::primitives::file_io::encode_process_input(
+                        interp, start, end, coding, env,
+                    )?)
+                };
+                if args.get(3).is_some_and(Value::is_truthy) {
+                    if start.is_nil() {
+                        let buffer_id = interp.current_buffer_id();
+                        interp.restore_labeled_restrictions(buffer_id, Vec::new());
+                        interp.buffer.borrow_mut().widen();
+                        let (beg, z) = {
+                            let buffer = interp.buffer.borrow();
+                            (buffer.point_min(), buffer.point_max())
+                        };
+                        delete_region_with_hooks(interp, beg, z, env)?;
+                    } else {
+                        let from = position_from_value(interp, &start)?;
+                        let to = position_from_value(interp, &end)?;
+                        delete_region_with_hooks(interp, from, to, env)?;
+                    }
+                }
+                // PROGRAM INFILE BUFFER DISPLAY ARGS...
+                let call_args = std::iter::once(args[2])
+                    .chain(std::iter::once(Value::Nil))
+                    .chain(args.get(4..).unwrap_or(&[]).iter().copied())
+                    .collect::<Vec<_>>();
+                let program = string_text(&call_args[0])?;
+                let destination = call_args.get(2).copied().unwrap_or(Value::Nil);
+                let argv = call_process_arguments(
+                    interp,
+                    env,
+                    &call_args,
+                    call_args.get(4..).unwrap_or(&[]),
+                )?;
                 let process_output = run_external_process(
                     interp,
                     &program,
                     &argv,
-                    Some(input.as_bytes()),
-                    external_stderr_for_destination(destination),
+                    input.as_deref(),
+                    external_stderr_for_destination(&destination),
                     env,
                 )?;
-                if delete_region {
-                    delete_region_with_hooks(interp, start, end, env)?;
-                }
                 write_process_output(
                     interp,
-                    destination,
+                    &destination,
                     &process_output.stdout,
                     &process_output.stderr,
-                    "call-process-region",
-                    args,
+                    "call-process",
+                    &call_args,
                     env,
                 )?;
                 Ok(call_process_status(&process_output.status))
@@ -2944,17 +3028,53 @@ fn make_process_value(
     {
         parsed.program = Some(resolve_file_name_in_env(interp, env, program));
     }
+    // Fmake_pipe_process always has a buffer: `:buffer', else the one
+    // its name names, created when missing.
+    if parsed.program.is_none() && parsed.buffer_id.is_none() {
+        parsed.buffer_id = process_buffer_target(interp, &parsed.name_value)?;
+    }
+    let buffer = parsed
+        .buffer_id
+        .and_then(|id| interp.buffer_value(id))
+        .unwrap_or(Value::Nil);
+    let (decoding, encoding) = if parsed.program.is_some() {
+        make_process_coding_systems(
+            interp,
+            env,
+            parsed.coding_value,
+            parsed.name_value,
+            buffer,
+            parsed.command,
+        )?
+    } else {
+        connection_coding_systems(
+            interp,
+            env,
+            ConnectionCoding::Pipe,
+            parsed.coding_value,
+            buffer,
+        )?
+    };
+    // create_process's setup_process_coding_systems sets both up.
+    checked_coding_given(interp, &decoding)?;
+    checked_coding_given(interp, &encoding)?;
     // process.c finds the executable before forking; `process-command'
     // keeps the name the caller gave.
     let executable = match parsed.program.as_deref() {
         Some(program) => Some(locate_program_for_exec(interp, env, program, true)?),
         None => None,
     };
+    let arguments = if executable.is_some() {
+        let command = parsed.command.to_vec()?;
+        make_process_arguments(interp, env, command.get(1..).unwrap_or(&[]), encoding)?
+    } else {
+        Vec::new()
+    };
     let runtime = executable.as_ref().map(|command| {
         spawn_persistent_process(
             interp,
             command,
-            &parsed.argv,
+            &arguments,
             env,
             parsed.connection_type.as_ref(),
             parsed.stderr_process_id.is_some() || parsed.stderr_buffer_id.is_some(),
@@ -2991,9 +3111,7 @@ fn make_process_value(
     interp.set_process_filter(process_id, parsed.filter)?;
     interp.set_process_sentinel(process_id, parsed.sentinel);
     interp.set_process_stderr(process_id, parsed.stderr_process_id);
-    if let Some((decoding, encoding)) = parsed.coding {
-        interp.set_process_coding_system(process_id, decoding, encoding)?;
-    }
+    interp.set_process_coding_system(process_id, decoding, encoding)?;
     Ok(process)
 }
 
@@ -3434,3 +3552,14 @@ const SO_BINDTODEVICE: libc::c_int = libc::SO_BINDTODEVICE;
 /// macOS sys/socket.h:190.  The libc crate does not expose this for Darwin.
 #[cfg(not(target_os = "linux"))]
 const SO_BINDTODEVICE: libc::c_int = 0x1134;
+
+/// CHECK_STRING, then the string's internal bytes and multibyteness.
+fn file_name_bytes(value: &Value) -> Result<(Vec<u8>, bool), LispError> {
+    match value.kind() {
+        Kind::StringObject(state) => {
+            let state = state.borrow();
+            Ok((state.bytes().to_vec(), state.is_multibyte()))
+        }
+        _ => Err(wrong_type_argument("stringp", *value)),
+    }
+}

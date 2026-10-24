@@ -436,11 +436,7 @@ impl Interpreter {
                 self.buffer_local_value(self.current_buffer_id(), "buffer-file-coding-system")
                     .unwrap_or(Value::Nil),
             ),
-            "mark-active" => Some(if self.buffer.borrow().mark_active() {
-                Value::T
-            } else {
-                Value::Nil
-            }),
+            "mark-active" => Some(self.buffer.borrow().mark_active_value()),
             "buffer-invisibility-spec" => Some(
                 self.buffer_local_value(self.current_buffer_id(), "buffer-invisibility-spec")
                     .unwrap_or(Value::T),
@@ -667,7 +663,9 @@ impl Interpreter {
                     .unwrap_or_else(|| "unknown".into())
                     .into(),
             )),
-            "default-directory" => Some(Value::String(primitives::default_directory().into())),
+            // buffer_defaults' slot; init_buffer gives the first buffer
+            // (and the minibuffer) the working directory.
+            "default-directory" => Some(Value::Nil),
             "window-system" => Some(Value::Nil),
             "initial-window-system" => Some(Value::Nil),
             "left-margin" => Some(Value::Integer(0)),
@@ -1152,7 +1150,7 @@ impl Interpreter {
             return;
         }
         if resolved == "mark-active" {
-            self.buffer.borrow_mut().set_mark_active(value.is_truthy());
+            self.buffer.borrow_mut().set_mark_active_value(value);
             return;
         }
         if resolved == "buffer-undo-list" {

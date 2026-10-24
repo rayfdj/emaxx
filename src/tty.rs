@@ -1726,13 +1726,11 @@ impl<'a> CharacterDisplayContext<'a> {
         // against the same coding implementation used by Lisp conversion.
         let encodable = character.is_ascii()
             || crate::lisp::primitives::raw_byte_from_regex_char(character).is_some()
-            || crate::lisp::primitives::string_unencodable_positions(
-                &character.to_string(),
-                &self.terminal_coding,
+            || crate::lisp::primitives::terminal_char_encodable(
                 self.interpreter,
-            )
-            .expect("the validated terminal coding system remains registered")
-            .is_empty();
+                &self.terminal_coding,
+                character as u32,
+            );
         if encodable {
             return None;
         }

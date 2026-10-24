@@ -1334,7 +1334,7 @@ impl Loader<'_> {
             text,
             pt: word(self, BUFFER_PT)? as usize,
             mark: position(word(self, BUFFER_MARK)?),
-            mark_active: flags & BUFFER_FLAG_MARK_ACTIVE != 0,
+            mark_active: self.value_at(offset + 8 * BUFFER_MARK_ACTIVE)?,
             modiff: word(self, BUFFER_MODIFF)? as i64,
             chars_modiff: word(self, BUFFER_CHARS_MODIFF)? as i64,
             save_modiff: word(self, BUFFER_SAVE_MODIFF)? as i64,

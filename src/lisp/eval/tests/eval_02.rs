@@ -5233,9 +5233,13 @@ fn modified_state_transitions_and_buffer_kill_release_owned_file_locks() {
 
 #[test]
 fn char_width_matches_string_width_for_single_characters() {
+    // character.c's char_width reads `char-width-table'; characters.el,
+    // which this bare interpreter does not load, gives East Asian wide
+    // characters their 2 there, so the table entry is set here.
     assert_eq!(
         eval_str(
             "(let ((tab-width 4))
+                   (set-char-table-range char-width-table ?界 2)
                    (list (char-width ?a)
                          (char-width ?\t)
                          (string-width \"\t\")

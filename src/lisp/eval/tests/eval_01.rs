@@ -53,10 +53,10 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
     // gnutls.c:emacs_gnutls_read returns EAGAIN before GNUTLS_STAGE_READY.
     // Even a server ready to finish negotiation must not move the handshake
     // behind process.c's back when ordinary output polling asks for bytes.
-    assert_eq!(session.receive().unwrap(), (Vec::new(), false));
+    assert_eq!(session.receive(65_536).unwrap(), (Vec::new(), false));
     assert_eq!((transport.handshakes, transport.reads), (0, 0));
     assert_eq!(session.handshake(false).unwrap(), 0);
-    assert_eq!(session.receive().unwrap(), (Vec::new(), false));
+    assert_eq!(session.receive(65_536).unwrap(), (Vec::new(), false));
     assert_eq!((transport.handshakes, transport.reads), (1, 1));
 }
 
@@ -1398,11 +1398,13 @@ fn aset_mutates_shared_string_identity_without_rebinding_its_variable() {
 fn aset_on_an_ascii_string_keeps_its_properties_multibyteness_and_identity() {
     // The in-place ASCII store (data.c's one-byte case) must leave the text
     // properties, the multibyte flag and the object identity as the general
-    // path does, for a unibyte and for a multibyte ASCII string.
+    // path does, for a unibyte and for a multibyte ASCII string.  (fns.c's
+    // string_to_multibyte copies no properties, so M gets its own.)
+    // Verified against the oracle.
     assert_eq!(
         eval_str(
             r#"(let* ((s (propertize "abc" 'face 'bold))
-                      (m (string-to-multibyte (copy-sequence s)))
+                      (m (propertize (string-to-multibyte "abc") 'face 'bold))
                       (alias s))
                  (aset s 1 ?x)
                  (aset m 2 ?y)
@@ -6207,10 +6209,8 @@ fn process_runtime_defaults_match_dumped_process_c_state() {
         ),
         Value::list([
             Value::T,
-            Value::cons(
-                Value::Symbol("utf-8-unix".into()),
-                Value::Symbol("utf-8-unix".into()),
-            ),
+            // coding.c leaves it nil until mule-cmds.el sets it.
+            Value::Nil,
             Value::T,
             Value::T,
             Value::Nil,
@@ -6266,6 +6266,19 @@ fn new_buffers_inherit_default_directory_but_not_read_only() {
             Value::Nil,
         ])
     );
+}
+
+#[test]
+fn buffer_local_variables_order_lists_every_native_slot_once() {
+    let mut ordered = crate::lisp::eval::BUFFER_LOCAL_VARIABLES_ORDER.to_vec();
+    let mut manifest = GNU_NATIVE_PER_BUFFER_VARIABLES
+        .iter()
+        .map(|variable| variable.name)
+        .filter(|name| !matches!(*name, "buffer-undo-list" | "syntax-propertize--done"))
+        .collect::<Vec<_>>();
+    ordered.sort_unstable();
+    manifest.sort_unstable();
+    assert_eq!(ordered, manifest);
 }
 
 #[test]

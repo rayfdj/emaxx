@@ -157,6 +157,12 @@ impl<'a> UnibyteBytes<'a> {
     fn load(&mut self, at: usize) {
         let (chunk, _, start, _) = self.rope.chunk_at_char(at);
         self.bytes.clear();
+        if chunk.is_ascii() {
+            // An ASCII chunk is its own bytes.
+            self.bytes.extend_from_slice(chunk.as_bytes());
+            self.start = start;
+            return;
+        }
         self.bytes.extend(chunk.chars().map(|ch| {
             let code = code_of_stored(ch);
             crate::lisp::regex_emacs::char_to_unibyte(code).unwrap_or(code & 0xFF) as u8

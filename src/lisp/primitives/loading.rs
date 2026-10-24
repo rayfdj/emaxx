@@ -1,6 +1,7 @@
 use super::*;
 use crate::lisp::types::EnvFrame;
 use crate::lisp::types::Kind;
+use crate::lisp::types::LispErrorKind;
 
 mod file;
 mod search;
@@ -389,25 +390,25 @@ pub(crate) fn eval_region_impl(
                 eval_env,
             );
         }
-        let text = interp
-            .buffer
-            .borrow()
-            .buffer_substring(start, end)
-            .map_err(|error| LispError::Signal(error.to_string()))?;
-        let mut offset = 0;
-        let mut result = Value::Nil;
-        while let Some(form) = read_next_eval_form(interp, &text, &mut offset, eval_env)? {
-            result = eager_expand_eval(interp, &form, eval_env)?;
-            if !print_flag.is_nil() {
-                let _ = crate::lisp::primitives::call(
-                    interp,
-                    "print",
-                    &[result, print_flag],
-                    eval_env,
-                )?;
-            }
-        }
-        Ok(result)
+        read_eval_buffer_forms(
+            interp,
+            buffer_id,
+            start,
+            end,
+            eval_env,
+            |interp, form, eval_env| {
+                let result = eager_expand_eval(interp, &form, eval_env)?;
+                if !print_flag.is_nil() {
+                    let _ = crate::lisp::primitives::call(
+                        interp,
+                        "print",
+                        &[result, print_flag],
+                        eval_env,
+                    )?;
+                }
+                Ok(result)
+            },
+        )
     });
 
     if interp.current_buffer_id() == buffer_id {
@@ -529,27 +530,91 @@ fn eval_buffer_forms(
             )
         });
     }
-    with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
-        let mut offset = 0;
-        let mut result = Value::Nil;
-        while let Some(form) = read_next_eval_form(interp, &text, &mut offset, eval_env)? {
-            result = if eager_macroexpand {
-                eager_expand_eval(interp, &form, eval_env)?
-            } else {
-                interp.eval(&form, eval_env)?
-            };
-        }
-        Ok(result)
-    })
+    let (start, end, saved_point) = {
+        let buffer = interp
+            .get_buffer_by_id(buffer_id)
+            .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+        (buffer.point_min(), buffer.point_max(), buffer.point())
+    };
+    let result = with_fresh_eval_environment(interp, lexical, |interp, eval_env| {
+        read_eval_buffer_forms(
+            interp,
+            buffer_id,
+            start,
+            end,
+            eval_env,
+            |interp, form, eval_env| {
+                if eager_macroexpand {
+                    eager_expand_eval(interp, &form, eval_env)
+                } else {
+                    interp.eval(&form, eval_env)
+                }
+            },
+        )
+    });
+    // Feval_buffer's record_unwind_protect_excursion: point comes back
+    // however the forms end, a read error's position included.
+    if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+        let point = saved_point.min(buffer.point_max());
+        buffer.goto_char(point);
+    }
+    result
+}
+
+/// readevalloop with the built-in `read': the forms of the buffer from
+/// START to END, each read by `read' on the buffer (its frame on the
+/// backtrace while the reader runs) and handed to EVAL, the last value
+/// returned.  The reader takes the buffer's characters as lread.c's
+/// readchar does; an `invalid-read-syntax' leaves point where reading
+/// stopped and carries that line and column.
+fn read_eval_buffer_forms(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    start: usize,
+    end: usize,
+    env: &mut Env,
+    mut eval: impl FnMut(&mut Interpreter, Value, &mut Env) -> Result<Value, LispError>,
+) -> Result<Value, LispError> {
+    let source = BufferReadSource::new(interp, buffer_id, start, end)?;
+    let readcharfun = interp.buffer_value(buffer_id).expect("live buffer object");
+    let mut offset = 0;
+    let mut result = Value::Nil;
+    loop {
+        interp.push_backtrace_frame(Value::symbol("read"), &[readcharfun]);
+        let form = match read_next_eval_form(interp, &source, &mut offset, env) {
+            Ok(form) => form,
+            Err(error) => {
+                let error = reader_end_of_file(interp, error, env);
+                let error = if matches!(error.kind(), LispErrorKind::ReadError(_)) {
+                    if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
+                        buffer.goto_char((start + source.characters_before(offset)).min(end));
+                    }
+                    invalid_syntax_in_buffer(interp, buffer_id, error, env)
+                } else {
+                    error
+                };
+                let settled = interp.settle_frame_error(error, env);
+                interp.pop_backtrace_frame();
+                return settled;
+            }
+        };
+        interp.pop_backtrace_frame();
+        let Some(form) = form else {
+            return Ok(result);
+        };
+        result = eval(interp, form, env)?;
+    }
 }
 
 /// lread.c:readevalloop reads one form in the currently selected obarray,
 /// then evaluates it before reading the next. Parsing the whole file in the
 /// standard namespace first can leak private names and misses obarray changes
 /// made by earlier forms. The text slice shares the same input allocation.
+/// Read the next form of SOURCE from byte OFFSET, advancing OFFSET past
+/// it; on an error OFFSET is where the reader stopped.
 fn read_next_eval_form(
     interp: &mut Interpreter,
-    text: &str,
+    source: &BufferReadSource,
     offset: &mut usize,
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
@@ -557,10 +622,22 @@ fn read_next_eval_form(
     let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
     let (value, consumed, needs_materialization, unescaped) = {
         let mut resolve_symbol = |name: &str| intern_in_obarray(interp, &obarray, name);
-        let mut reader =
-            crate::lisp::reader::Reader::with_symbol_shorthands(&text[*offset..], shorthands)
-                .with_symbol_resolver(&mut resolve_symbol);
-        let value = reader.read()?;
+        let reader = match source.input_from(*offset) {
+            LispReaderInput::Text(text) => {
+                crate::lisp::reader::Reader::with_symbol_shorthands(text, shorthands)
+            }
+            LispReaderInput::Encoded(bytes, multibyte) => {
+                crate::lisp::reader::Reader::from_encoded(bytes, multibyte, shorthands)
+            }
+        };
+        let mut reader = reader.with_symbol_resolver(&mut resolve_symbol);
+        let value = match reader.read() {
+            Ok(value) => value,
+            Err(error) => {
+                *offset += reader.position();
+                return Err(error);
+            }
+        };
         (
             value,
             reader.position(),
@@ -964,7 +1041,7 @@ fn record_native_source(
 /// (load_warn_unescaped_character_literals).  The eval-buffer path
 /// `load-with-code-conversion' takes reads with its own reader, so its
 /// literals are added here.
-fn record_unescaped_character_literals(
+pub(crate) fn record_unescaped_character_literals(
     interp: &mut Interpreter,
     literals: impl IntoIterator<Item = i64>,
     env: &mut Env,

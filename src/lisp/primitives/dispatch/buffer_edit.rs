@@ -5,15 +5,249 @@ use crate::lisp::types::{Kind, PropertyKey, PropertyName};
 // their undo with a preceding run of the same command when the count's
 // magnitude is below 2 -- through simple.el's own `undo-auto-amalgamate',
 // reached as an ordinary Lisp call.
-fn call_undo_auto_amalgamate(interp: &mut Interpreter, env: &mut Env) {
+/// call0 (Qundo_auto_amalgamate), once simple.el has defined it.
+fn call_undo_auto_amalgamate(interp: &mut Interpreter, env: &mut Env) -> Result<(), LispError> {
     if interp.lookup_function("undo-auto-amalgamate", env).is_ok() {
-        let _ = interp.call_function_value(
+        interp.call_function_value(
             Value::Symbol("undo-auto-amalgamate".into()),
             Some("undo-auto-amalgamate"),
             &[],
             env,
-        );
+        )?;
     }
+    Ok(())
+}
+
+/// cmds.c:Fself_insert_command: N a fixnum, C (nil for
+/// `last-command-event', otherwise stored there) a character through
+/// `translation-table-for-input', or the bell.
+fn self_insert_command(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    need_arg_range("self-insert-command", args, 1, 2)?;
+    let n = match args[0].kind() {
+        Kind::Integer(n) => n,
+        _ => return Err(LispError::WrongTypeArgument("fixnump".into(), args[0])),
+    };
+    let c = match args.get(1).filter(|value| !value.is_nil()) {
+        Some(c) => {
+            interp.set_variable("last-command-event", *c, env);
+            *c
+        }
+        None => interp
+            .lookup_var("last-command-event", env)
+            .unwrap_or(Value::Nil),
+    };
+    if n < 0 {
+        return Err(LispError::Signal(format!(
+            "Negative repetition argument {n}"
+        )));
+    }
+    if n < 2 {
+        call_undo_auto_amalgamate(interp, env)?;
+    }
+    match c.kind() {
+        Kind::Integer(code) if (0..=0x3F_FFFF).contains(&code) => {
+            let table = interp
+                .lookup_var("translation-table-for-input", env)
+                .unwrap_or(Value::Nil);
+            let character = translate_char(interp, &table, code as u32);
+            if internal_self_insert(interp, character, n, env)? == 2 {
+                interp.set_variable("undo-auto--this-command-amalgamating", Value::Nil, env);
+            }
+        }
+        _ => super::display::bitch_at_user(interp, env)?,
+    }
+    Ok(Value::Nil)
+}
+
+/// cmds.c:internal_self_insert: N copies of C at point, with overwrite
+/// mode's replacement, abbrev expansion, auto-fill and
+/// `post-self-insert-hook'.  0 for a simple insertion, 1 for one that
+/// may not have been, 2 for one that calls for an undo boundary.
+fn internal_self_insert(
+    interp: &mut Interpreter,
+    c: u32,
+    n: i64,
+    env: &mut Env,
+) -> Result<i32, LispError> {
+    const MOST_POSITIVE_FIXNUM: i64 = (1 << 61) - 1;
+    let truthy = |interp: &Interpreter, env: &Env, name: &str| {
+        interp
+            .lookup_var(name, env)
+            .is_some_and(|value| value.is_truthy())
+    };
+    let mut hairy = 0;
+    let overwrite = interp
+        .lookup_var("overwrite-mode", env)
+        .unwrap_or(Value::Nil);
+    if truthy(interp, env, "before-change-functions")
+        || truthy(interp, env, "after-change-functions")
+    {
+        hairy = 1;
+    }
+    let multibyte = interp.buffer.borrow().is_multibyte();
+    let mut chars_to_delete: i64 = 0;
+    let mut spaces_to_insert: i64 = 0;
+    let (pt, zv) = {
+        let buffer = interp.buffer.borrow();
+        (buffer.point(), buffer.point_max())
+    };
+    if !overwrite.is_nil() && pt < zv {
+        // In overwrite mode C replaces the character after point (C2),
+        // with spaces filling for a narrower C and more characters
+        // deleted for a wider one, so that the rest of the line keeps
+        // its columns.
+        let c2 = public_buffer_char_code_at(interp, pt).unwrap_or(0);
+        if overwrite.symbol_str() == Some("overwrite-mode-binary") {
+            chars_to_delete = n;
+        } else if c != u32::from(b'\n') && c2 != i64::from(b'\n') {
+            let cwidth = super::call(interp, "char-width", &[Value::Integer(c.into())], env)?
+                .as_integer()?;
+            if cwidth != 0 {
+                let curcol = super::call(interp, "current-column", &[], env)?.as_integer()?;
+                if n <= (MOST_POSITIVE_FIXNUM - curcol) / cwidth {
+                    let target_clm = curcol + n * cwidth;
+                    let actual_clm = super::call(
+                        interp,
+                        "move-to-column",
+                        &[Value::Integer(target_clm), Value::Nil],
+                        env,
+                    )?
+                    .as_integer()?;
+                    let now = interp.buffer.borrow().point();
+                    chars_to_delete = now as i64 - pt as i64;
+                    if actual_clm > target_clm {
+                        // Too many columns would go: keep a tab before
+                        // point, else fill with spaces.
+                        if interp.buffer.borrow().char_before() == Some('\t') {
+                            chars_to_delete -= 1;
+                        } else {
+                            spaces_to_insert = actual_clm - target_clm;
+                        }
+                    }
+                    interp.buffer.borrow_mut().goto_char(pt);
+                }
+            }
+        }
+        hairy = 2;
+    }
+
+    let syntax_class = |interp: &Interpreter, code: u32| {
+        syntax::syntax_entry_for_code(interp, interp.current_syntax_table_id(), code).class
+    };
+    let point = interp.buffer.borrow().point();
+    if truthy(interp, env, "abbrev-mode")
+        && syntax_class(interp, c) != syntax::SyntaxClass::Word
+        && !truthy(interp, env, "buffer-read-only")
+        && point > interp.buffer.borrow().point_min()
+        && syntax_class(interp, {
+            // Fprevious_char, a unibyte buffer's byte as UNIBYTE_TO_CHAR.
+            let previous = public_buffer_char_code_at(interp, point - 1).unwrap_or(0) as u32;
+            if !multibyte && previous >= 0x80 {
+                previous + RAW_BYTE8_BASE
+            } else {
+                previous
+            }
+        }) == syntax::SyntaxClass::Word
+    {
+        let modiff = interp.buffer.borrow().modified_tick();
+        let sym = interp.call_function_value(
+            Value::Symbol("expand-abbrev".into()),
+            Some("expand-abbrev"),
+            &[],
+            env,
+        )?;
+        // An abbrev whose hook is a symbol with a non-nil
+        // `no-self-insert' property is all there is to insert.
+        if let Kind::Symbol(abbrev) = sym.kind() {
+            let hook = super::call(interp, "symbol-function", &[Value::Symbol(abbrev)], env)?;
+            if !hook.is_nil()
+                && hook.is_symbol()
+                && super::call(
+                    interp,
+                    "get",
+                    &[hook, Value::Symbol("no-self-insert".into())],
+                    env,
+                )?
+                .is_truthy()
+            {
+                return Ok(1);
+            }
+        }
+        if interp.buffer.borrow().modified_tick() != modiff {
+            hairy = 2;
+        }
+    }
+
+    if chars_to_delete > 0 {
+        let mc = if !multibyte && (0x80..0x100).contains(&c) {
+            c + RAW_BYTE8_BASE
+        } else {
+            c
+        };
+        let mut codes = vec![mc; n as usize];
+        codes.extend(std::iter::repeat_n(
+            u32::from(b' '),
+            spaces_to_insert.max(0) as usize,
+        ));
+        let from = interp.buffer.borrow().point();
+        let to = (from as i64).saturating_add(chars_to_delete) as usize;
+        let to = to.min(interp.buffer.borrow().point_max());
+        replace_range_with_hooks(interp, from, to, &codes, env)?;
+        let point = interp.buffer.borrow().point();
+        interp.buffer.borrow_mut().goto_char(point + n as usize);
+    } else if n > 0 {
+        let mut text = String::new();
+        let mut extended_chars = Vec::new();
+        for offset in 0..n as usize {
+            push_buffer_character(&mut text, &mut extended_chars, offset, c, multibyte);
+        }
+        insert_text_with_hooks(interp, &text, &[], &extended_chars, true, false, env)?;
+    }
+
+    let auto_fill_character = match interp
+        .lookup_var("auto-fill-chars", env)
+        .map(|value| value.kind())
+    {
+        Some(Kind::CharTable(table)) => interp
+            .char_table_get(table, c)
+            .is_some_and(|value| value.is_truthy()),
+        _ => c == u32::from(b' ') || c == u32::from(b'\n'),
+    };
+    if auto_fill_character && truthy(interp, env, "auto-fill-function") {
+        // After a newline, fill the line it ends, with the newline in
+        // place already.
+        if c == u32::from(b'\n') {
+            let point = interp.buffer.borrow().point();
+            interp.buffer.borrow_mut().goto_char(point - 1);
+        }
+        let result = interp.call_function_value(
+            Value::Symbol("internal-auto-fill".into()),
+            Some("internal-auto-fill"),
+            &[],
+            env,
+        )?;
+        if c == u32::from(b'\n') {
+            let point = interp.buffer.borrow().point();
+            if point < interp.buffer.borrow().point_max() {
+                interp.buffer.borrow_mut().goto_char(point + 1);
+            }
+        }
+        if !result.is_nil() {
+            hairy = 2;
+        }
+    }
+
+    run_named_hooks(
+        interp,
+        "post-self-insert-hook",
+        env,
+        Some(interp.current_buffer_id()),
+    )?;
+    Ok(hairy)
 }
 
 /// editfns.c:Fwiden: the whole buffer accessible, or as much of it as the
@@ -253,149 +487,31 @@ define_dispatch!(
             "insert" => direct_insert(interp, args, env),
             "insert-and-inherit" => insert_impl(interp, args, env, true, false),
             "insert-char" => insert_char_impl(interp, args, env),
-            "self-insert-command" => {
-                need_arg_range(name, args, 1, 2)?;
-                let amalgamating = args
-                    .first()
-                    .filter(|value| !value.is_nil())
-                    .map_or(1, |value| value.as_integer().unwrap_or(1))
-                    .abs()
-                    < 2;
-                if amalgamating {
-                    call_undo_auto_amalgamate(interp, env);
-                }
-                let event = args
-                    .get(1)
-                    .filter(|value| !value.is_nil())
-                    .cloned()
-                    .or_else(|| interp.lookup_var("last-command-event", env))
-                    .unwrap_or(Value::Nil);
-                interp.set_variable("last-command-event", event, env);
-                let ch = match event.kind() {
-                    Kind::Integer(code) => char::from_u32(code as u32),
-                    Kind::Symbol(symbol) if symbol.chars().count() == 1 => symbol.chars().next(),
-                    Kind::StringObject(text) if text.borrow().len() == 1 => {
-                        text.borrow().text().chars().next()
-                    }
-                    _ => None,
-                }
-                .ok_or_else(|| LispError::Signal("No self-insert character".into()))?;
-                let count = args
-                    .first()
-                    .filter(|value| !value.is_nil())
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(1);
-                if count < 0 {
-                    return Err(LispError::Signal(format!(
-                        "Negative repetition argument {count}"
-                    )));
-                }
-                let count = count as usize;
-
-                // GNU expands an active word abbrev before inserting a
-                // non-word character.  Keep the expansion policy in abbrev.el;
-                // this primitive owns only the same syntax-trigger boundary as
-                // cmds.c's `internal_self_insert'.
-                let expands_abbrev = count > 0
-                    && interp
-                        .lookup_var("abbrev-mode", env)
-                        .is_some_and(|value| value.is_truthy())
-                    && syntax::syntax_entry_for_code(
-                        interp,
-                        interp.current_syntax_table_id(),
-                        ch as u32,
-                    )
-                    .class
-                        != syntax::SyntaxClass::Word
-                    && interp
-                        .buffer
-                        .borrow()
-                        .char_before()
-                        .is_some_and(|previous| {
-                            syntax::syntax_entry_for_code(
-                                interp,
-                                interp.current_syntax_table_id(),
-                                previous as u32,
-                            )
-                            .class
-                                == syntax::SyntaxClass::Word
-                        });
-                if expands_abbrev && let Ok(function) = interp.lookup_function("expand-abbrev", env)
-                {
-                    let expanded =
-                        interp.call_function_value(function, Some("expand-abbrev"), &[], env)?;
-                    if let Kind::Symbol(abbrev) = expanded.kind() {
-                        let hook =
-                            super::call(interp, "symbol-function", &[Value::Symbol(abbrev)], env)?;
-                        if matches!(hook.kind(), Kind::Symbol(_))
-                            && super::call(
-                                interp,
-                                "get",
-                                &[hook, Value::Symbol("no-self-insert".into())],
-                                env,
-                            )?
-                            .is_truthy()
-                        {
-                            return Ok(Value::Nil);
-                        }
-                    }
-                }
-                let text: String = std::iter::repeat_n(ch, count).collect();
-                insert_text_with_hooks(interp, &text, &[], &[], true, false, env)?;
-
-                let auto_fill_character =
-                    match interp.lookup_var("auto-fill-chars", env).map(|v| v.kind()) {
-                        Some(Kind::CharTable(table_id)) => interp
-                            .char_table_get(table_id, ch as u32)
-                            .is_some_and(|value| value.is_truthy()),
-                        _ => matches!(ch, ' ' | '\n'),
-                    };
-                if auto_fill_character
-                    && interp
-                        .lookup_var("auto-fill-function", env)
-                        .is_some_and(|value| value.is_truthy())
-                {
-                    // cmds.c calls the dumped Elisp orchestration function,
-                    // not the mode-specific callback directly.  For a newly
-                    // inserted newline it temporarily visits the preceding
-                    // line so filling sees the completed line boundary.
-                    if ch == '\n' {
-                        let point = interp.buffer.borrow().point();
-                        interp
-                            .buffer
-                            .borrow_mut()
-                            .goto_char(point.saturating_sub(1));
-                    }
-                    let function = interp.lookup_function("internal-auto-fill", env)?;
-                    interp.call_function_value(function, Some("internal-auto-fill"), &[], env)?;
-                    if ch == '\n'
-                        && interp.buffer.borrow().point() < interp.buffer.borrow().point_max()
-                    {
-                        let point = interp.buffer.borrow().point();
-                        interp.buffer.borrow_mut().goto_char(point + 1);
-                    }
-                }
-                run_named_hooks(
-                    interp,
-                    "post-self-insert-hook",
-                    env,
-                    Some(interp.current_buffer_id()),
-                )?;
-                Ok(Value::Nil)
-            }
+            "self-insert-command" => self_insert_command(interp, args, env),
             "insert-byte" => {
-                need_args(name, args, 2)?;
-                let byte = args[0].as_integer()?;
+                need_arg_range(name, args, 2, 3)?;
+                // editfns.c:Finsert_byte: CHECK_FIXNUM, 0..255 or
+                // args-out-of-range, a byte from 128 the raw-byte character
+                // in a multibyte buffer, then Finsert_char.
+                let byte = match args[0].kind() {
+                    Kind::Integer(byte) => byte,
+                    _ => return Err(LispError::WrongTypeArgument("fixnump".into(), args[0])),
+                };
                 if !(0..=255).contains(&byte) {
-                    return Err(LispError::Signal("Byte value out of range".into()));
+                    return Err(LispError::SignalValue(Value::list([
+                        Value::symbol("args-out-of-range"),
+                        args[0],
+                        Value::Integer(0),
+                        Value::Integer(255),
+                    ])));
                 }
-                let count = args[1].as_integer()?.max(0) as usize;
-                let c = char::from_u32(byte as u32)
-                    .ok_or_else(|| LispError::Signal(format!("Invalid byte: {}", byte)))?;
-                let text: String = std::iter::repeat_n(c, count).collect();
-                insert_text_with_hooks(interp, &text, &[], &[], false, false, env)?;
-                Ok(Value::Nil)
+                let character = if byte >= 128 && interp.buffer.borrow().is_multibyte() {
+                    byte + RAW_BYTE8_BASE as i64
+                } else {
+                    byte
+                };
+                let inherit = args.get(2).copied().unwrap_or(Value::Nil);
+                insert_char_impl(interp, &[Value::Integer(character), args[1], inherit], env)
             }
             "insert-buffer-substring" => {
                 if args.is_empty() || args.len() > 3 {
@@ -796,8 +912,7 @@ define_dispatch!(
             "delete-region" => direct_delete_region(interp, args, env),
             "delete-and-extract-region" => {
                 need_args(name, args, 2)?;
-                let from = position_from_value(interp, &args[0])?;
-                let to = position_from_value(interp, &args[1])?;
+                let (from, to) = validate_region(interp, &args[0], &args[1])?;
                 extract_region_with_hooks(interp, from, to, env)
             }
             "delete-char" => {
@@ -807,7 +922,7 @@ define_dispatch!(
                     args[0].as_integer()?
                 };
                 if n.abs() < 2 {
-                    call_undo_auto_amalgamate(interp, env);
+                    call_undo_auto_amalgamate(interp, env)?;
                 }
                 let point = interp.buffer.borrow().point();
                 if n >= 0 {
@@ -870,13 +985,44 @@ define_dispatch!(
                         &[Value::Symbol("bounds".into())],
                         env,
                     )?;
-                    for (start, end) in parse_region_bounds(&bounds)? {
+                    // casefiddle.c:casify_pnc_region: each bound a cons,
+                    // validated as casify_region's own region, the list
+                    // walked as FOR_EACH_TAIL walks it (Brent's check for a
+                    // cycle) and proper.
+                    let mut tail = bounds;
+                    let mut tortoise = bounds;
+                    let (mut steps, mut limit) = (0_usize, 2_usize);
+                    while let Kind::Cons(cell) = tail.kind() {
+                        let bound = cell.car.get();
+                        let Kind::Cons(range) = bound.kind() else {
+                            return Err(LispError::WrongTypeArgument("consp".into(), bound));
+                        };
+                        let (start, end) =
+                            validate_region(interp, &range.car.get(), &range.cdr.get())?;
                         casify_buffer_region(interp, start, end, action, env)?;
+                        tail = cell.cdr.get();
+                        steps += 1;
+                        if steps == limit {
+                            tortoise = tail;
+                            steps = 0;
+                            limit *= 2;
+                        } else if let (Kind::Cons(current), Kind::Cons(lagging)) =
+                            (tail.kind(), tortoise.kind())
+                            && crate::lisp::types::SharedCons::ptr_eq(&current, &lagging)
+                        {
+                            return Err(LispError::SignalValue(Value::list([
+                                Value::symbol("circular-list"),
+                                bounds,
+                            ])));
+                        }
+                    }
+                    if !tail.is_nil() {
+                        return Err(LispError::WrongTypeArgument("listp".into(), bounds));
                     }
                     Ok(Value::Nil)
                 } else {
-                    let start = position_from_value(interp, &args[0])?;
-                    let end = position_from_value(interp, &args[1])?;
+                    // casefiddle.c:casify_region's validate_region.
+                    let (start, end) = validate_region(interp, &args[0], &args[1])?;
                     casify_buffer_region(interp, start, end, action, env)?;
                     Ok(Value::Nil)
                 }
@@ -2983,8 +3129,7 @@ pub(super) fn direct_delete_region(
 ) -> Result<Value, LispError> {
     let name = "delete-region";
     need_args(name, args, 2)?;
-    let from = position_from_value(interp, &args[0])?;
-    let to = position_from_value(interp, &args[1])?;
+    let (from, to) = validate_region(interp, &args[0], &args[1])?;
     delete_region_with_hooks(interp, from, to, env)?;
     Ok(Value::Nil)
 }
@@ -3031,9 +3176,7 @@ fn buffer_substring_named(
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     need_args(name, args, 2)?;
-    let from = position_from_value(interp, &args[0])?;
-    let to = position_from_value(interp, &args[1])?;
-    let (start, end) = if from <= to { (from, to) } else { (to, from) };
+    let (start, end) = validate_region(interp, &args[0], &args[1])?;
     match interp.buffer.borrow().buffer_substring(start, end) {
         Ok(s) => {
             if name == "buffer-substring" {

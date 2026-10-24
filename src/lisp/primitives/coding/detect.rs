@@ -71,6 +71,9 @@ struct DetectInfo {
     checked: u32,
     found: u32,
     rejected: u32,
+    /// coding->detected_utf8_bytes: how far detect_coding_utf_8 read the
+    /// source when it accepted it.
+    utf8_bytes: Option<usize>,
 }
 
 /// The text under detection, as coding.c's byte reader sees it.
@@ -78,6 +81,15 @@ pub(crate) struct DetectSource {
     units: Vec<i32>,
     src_bytes: usize,
     src_chars: usize,
+    /// The units of a UTF-8 signature at the head, which
+    /// detect_coding_utf_8 tests on the raw source (EF BB BF followed by
+    /// more text): the three bytes of a unibyte source, or a multibyte
+    /// one's U+FEFF character, whose internal sequence they are.
+    bom_units: usize,
+    /// CODING_MODE_LAST_BLOCK: the source ends here, so a sequence cut
+    /// short by its end (or a UTF-16 text of an odd length) is rejected.
+    /// decode_coding_gap detects before it sets the flag.
+    last_block: bool,
 }
 
 impl DetectSource {
@@ -86,6 +98,12 @@ impl DetectSource {
             units: bytes.iter().map(|byte| i32::from(*byte)).collect(),
             src_bytes: bytes.len(),
             src_chars: bytes.len(),
+            bom_units: if bytes.len() > 3 && bytes[..3] == [0xEF, 0xBB, 0xBF] {
+                3
+            } else {
+                0
+            },
+            last_block: true,
         }
     }
 
@@ -112,11 +130,52 @@ impl DetectSource {
                 src_bytes += ch.len_utf8();
             }
         }
+        let bom_units = usize::from(units.first() == Some(&-0xFEFF) && src_bytes > 3);
         DetectSource {
             units,
             src_bytes,
             src_chars,
+            bom_units,
+            last_block: true,
         }
+    }
+
+    /// A multibyte text's characters (CODES, eight-bit ones as
+    /// #x3FFF80..#x3FFFFF) as the byte reader sees their internal
+    /// sequences: ASCII and eight-bit characters as their bytes, any other
+    /// as a negative unit.
+    pub(crate) fn from_codes(codes: impl Iterator<Item = i64>) -> Self {
+        let mut units = Vec::new();
+        let mut src_bytes = 0;
+        let mut src_chars = 0;
+        for code in codes {
+            src_chars += 1;
+            let (unit, width) = match code {
+                0..0x80 => (code as i32, 1),
+                0x80..0x800 => (-(code as i32), 2),
+                0x800..0x10000 => (-(code as i32), 3),
+                0x10000..0x20_0000 => (-(code as i32), 4),
+                0x3F_FF80.. => ((code - 0x3F_FF00) as i32, 2),
+                _ => (-(code as i32), 5),
+            };
+            units.push(unit);
+            src_bytes += width;
+        }
+        let bom_units = usize::from(units.first() == Some(&-0xFEFF) && src_bytes > 3);
+        DetectSource {
+            units,
+            src_bytes,
+            src_chars,
+            bom_units,
+            last_block: true,
+        }
+    }
+
+    /// The source as decode_coding_gap's detect_coding sees it, without
+    /// CODING_MODE_LAST_BLOCK.
+    pub(crate) fn not_last_block(mut self) -> Self {
+        self.last_block = false;
+        self
     }
 
     /// The internal bytes, for the eol scans that read raw octets.
@@ -193,9 +252,9 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
     let mut nchars = head_ascii;
     let mut bom_found = false;
     info.checked |= MASK_UTF_8;
-    if p == 0 && p + 3 < end && units[0] == 0xEF && units[1] == 0xBB && units[2] == 0xBF {
+    if p == 0 && src.bom_units > 0 {
         bom_found = true;
-        p += 3;
+        p += src.bom_units;
         nchars += 1;
     }
     let src_base;
@@ -270,11 +329,12 @@ fn detect_utf_8(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) ->
         info.rejected |= MASK_UTF_8;
         return false;
     }
-    // no_more_source (always the last block).
-    if src_base < p {
+    // no_more_source.
+    if src_base < p && src.last_block {
         info.rejected |= MASK_UTF_8;
         return false;
     }
+    info.utf8_bytes = Some(src_base);
     if bom_found {
         info.found |= MASK_UTF_8_AUTO | MASK_UTF_8_SIG | MASK_UTF_8_NOSIG;
     } else {
@@ -305,7 +365,7 @@ fn detect_utf_16(src: &DetectSource, info: &mut DetectInfo) -> bool {
     let units = &src.units;
     let mut p = 0usize;
     info.checked |= MASK_UTF_16;
-    if src.src_chars & 1 == 1 {
+    if src.last_block && src.src_chars & 1 == 1 {
         info.rejected |= MASK_UTF_16;
         return false;
     }
@@ -435,7 +495,7 @@ fn detect_emacs_mule(
             found = MASK_EMACS_MULE;
         }
     }
-    if src_base < p {
+    if src_base < p && src.last_block {
         info.rejected |= MASK_EMACS_MULE;
         return false;
     }
@@ -482,7 +542,7 @@ fn detect_sjis(
             return false;
         }
     }
-    if src_base < p {
+    if src_base < p && src.last_block {
         info.rejected |= MASK_SJIS;
         return false;
     }
@@ -522,7 +582,7 @@ fn detect_big5(src: &DetectSource, head_ascii: usize, info: &mut DetectInfo) -> 
             return false;
         }
     }
-    if src_base < p {
+    if src_base < p && src.last_block {
         info.rejected |= MASK_BIG5;
         return false;
     }
@@ -1037,6 +1097,18 @@ impl<'a> Detector<'a> {
         let mut i = 0usize;
         while i < units.len() {
             let c = units[i];
+            if (0x20..0x80).contains(&c) {
+                // A run of printable ASCII changes nothing but head_ascii.
+                let start = i;
+                i += 1;
+                while i < units.len() && (0x20..0x80).contains(&units[i]) {
+                    i += 1;
+                }
+                if !eight_bit_found {
+                    head_ascii += i - start;
+                }
+                continue;
+            }
             if c < 0 || c & 0x80 != 0 {
                 eight_bit_found = true;
                 if null_byte_found {
@@ -1427,156 +1499,239 @@ pub(crate) fn detect_coding_system(
     }
 }
 
+/// What coding.c's detect_coding leaves behind for decode_coding_gap.
+#[derive(Default)]
+pub(crate) struct DetectOutcome {
+    /// The coding system the text decodes with; None when nothing decided
+    /// anything and the requested coding stands.
+    pub(crate) found: Option<String>,
+    /// coding->head_ascii was set (by undecided detection's head scan or
+    /// check_ascii), with the eol bits seen then; None leaves both to
+    /// decode_coding_gap's own check_ascii.
+    pub(crate) eol_seen: Option<u8>,
+    /// detect_coding_utf_8 accepted the source up to its end
+    /// (detected_utf8_bytes == src_bytes).
+    pub(crate) utf8_whole: bool,
+}
+
 /// coding.c detect_coding, the decode-time detection: the coding system
 /// the text decodes with (None when nothing decided anything, so the
-/// requested coding stands) and the eol bits the head scan saw.
+/// requested coding stands).
 pub(crate) fn detect_coding(
     interp: &Interpreter,
     src: &DetectSource,
     coding: &str,
     env: &Env,
 ) -> Option<String> {
+    detect_coding_outcome(interp, src, coding, env).found
+}
+
+/// check_ascii's eol bits over the ASCII head of SRC: only LF when
+/// INHIBIT (`inhibit-eol-conversion', or a settled eol) holds.
+fn check_ascii_eol(src: &DetectSource, inhibit: bool) -> u8 {
+    let mut seen = EOL_SEEN_NONE;
+    let units = &src.units;
+    let mut i = 0;
+    while let Some(&c) = units.get(i) {
+        if !(0..0x80).contains(&c) {
+            break;
+        }
+        i += 1;
+        if c == i32::from(b'\n') {
+            seen |= EOL_SEEN_LF;
+        } else if c == i32::from(b'\r') && !inhibit {
+            if units.get(i) == Some(&i32::from(b'\n')) {
+                seen |= EOL_SEEN_CRLF;
+                i += 1;
+            } else {
+                seen |= EOL_SEEN_CR;
+            }
+        }
+    }
+    seen
+}
+
+/// detect_coding with what it records for decode_coding_gap.
+pub(crate) fn detect_coding_outcome(
+    interp: &Interpreter,
+    src: &DetectSource,
+    coding: &str,
+    env: &Env,
+) -> DetectOutcome {
     let canonical = interp
         .coding_system_canonical_name(coding)
         .unwrap_or_else(|| coding.to_string());
-    let state = interp.coding_system(&canonical)?;
+    let Some(state) = interp.coding_system(&canonical) else {
+        return DetectOutcome::default();
+    };
     let detector = Detector::new(interp, env);
     let categories = &detector.categories;
     match state.kind.as_str() {
         "undecided" => {}
         _ if state.category == CODING_CATEGORY_UTF_8_AUTO => {
-            // An auto-BOM utf-8: the BOM decides between the pair.
+            // An auto-BOM utf-8: the BOM decides between the pair, after
+            // check_ascii (whose eol bits the gap's fast path uses).
             let mut info = DetectInfo::default();
-            let pair = coding_system_property(interp, &canonical, ":bom")
+            let inhibit =
+                truthy_var(interp, "inhibit-eol-conversion", env) || state.eol_type.is_some();
+            let mut outcome = DetectOutcome {
+                eol_seen: Some(check_ascii_eol(src, inhibit)),
+                ..DetectOutcome::default()
+            };
+            let Some(pair) = coding_system_property(interp, &canonical, ":bom")
                 .and_then(|bom| bom.cons_values())
                 .and_then(|(sig, nosig)| {
                     Some((
                         sig.symbol_str()?.to_string(),
                         nosig.symbol_str()?.to_string(),
                     ))
-                })?;
+                })
+            else {
+                return outcome;
+            };
             let ascii = src.units.iter().all(|unit| (0..0x80).contains(unit));
-            return Some(if ascii {
-                pair.1
+            outcome.found = if ascii {
+                Some(pair.1)
             } else if detect_utf_8(src, 0, &mut info) {
-                if info.found & MASK_UTF_8_SIG != 0 {
+                outcome.utf8_whole = info.utf8_bytes == Some(src.units.len());
+                Some(if info.found & MASK_UTF_8_SIG != 0 {
                     pair.0
                 } else {
                     pair.1
-                }
+                })
             } else {
-                return None;
-            });
+                None
+            };
+            return outcome;
         }
         _ if state.category == CODING_CATEGORY_UTF_16_AUTO => {
             let mut info = DetectInfo::default();
-            let pair = coding_system_property(interp, &canonical, ":bom")
+            let mut outcome = DetectOutcome {
+                eol_seen: Some(EOL_SEEN_NONE),
+                ..DetectOutcome::default()
+            };
+            let Some(pair) = coding_system_property(interp, &canonical, ":bom")
                 .and_then(|bom| bom.cons_values())
                 .and_then(|(le, be)| {
                     Some((le.symbol_str()?.to_string(), be.symbol_str()?.to_string()))
-                })?;
+                })
+            else {
+                return outcome;
+            };
             if detect_utf_16(src, &mut info) {
                 if info.found & MASK_UTF_16_LE != 0 {
-                    return Some(pair.0);
+                    outcome.found = Some(pair.0);
                 } else if info.found & MASK_UTF_16_BE != 0 {
-                    return Some(pair.1);
+                    outcome.found = Some(pair.1);
                 }
             }
-            return None;
+            return outcome;
         }
-        _ => return None,
+        _ => return DetectOutcome::default(),
     }
     let spec = undecided_spec(interp, &canonical, env);
     let mut info = DetectInfo::default();
     let track_eol = !truthy_var(interp, "disable-ascii-optimization", env)
         && !truthy_var(interp, "inhibit-eol-conversion", env);
-    let (head_ascii, null_byte_found, eight_bit_found, _eol_seen) =
+    let (head_ascii, null_byte_found, eight_bit_found, eol_seen) =
         detector.head_scan(src, &spec, &mut info, track_eol);
-    if !(null_byte_found || eight_bit_found || head_ascii < src.src_bytes || info.found != 0) {
-        return None;
-    }
-    let mut category = CODING_CATEGORY_UNDECIDED;
-    let mut this: Option<String> = None;
-    let mut i = 0usize;
-    if head_ascii == src.src_bytes {
-        while i < CODING_CATEGORY_RAW_TEXT {
-            category = categories.priorities[i];
-            this = categories.representative(category).map(str::to_string);
-            if info.found & mask(category) != 0 {
-                break;
-            }
-            i += 1;
+    let found = (|| {
+        if !(null_byte_found || eight_bit_found || head_ascii < src.src_bytes || info.found != 0) {
+            return None;
         }
-    } else {
-        if null_byte_found {
-            info.checked |= !MASK_UTF_16;
-            info.rejected |= !MASK_UTF_16;
-        } else if spec.prefer_utf_8 && detect_utf_8(src, head_ascii, &mut info) {
-            info.checked |= !MASK_UTF_8;
-            info.rejected |= !MASK_UTF_8;
-        }
-        while i < CODING_CATEGORY_RAW_TEXT {
-            category = categories.priorities[i];
-            this = categories.representative(category).map(str::to_string);
-            let Some(representative) = this.clone() else {
-                info.rejected |= mask(category);
-                i += 1;
-                continue;
-            };
-            if info.checked & mask(category) != 0 {
+        let mut category = CODING_CATEGORY_UNDECIDED;
+        let mut this: Option<String> = None;
+        let mut i = 0usize;
+        if head_ascii == src.src_bytes {
+            while i < CODING_CATEGORY_RAW_TEXT {
+                category = categories.priorities[i];
+                this = categories.representative(category).map(str::to_string);
                 if info.found & mask(category) != 0 {
                     break;
                 }
-            } else if detector.run_detector(category, src, head_ascii, &representative, &mut info)
-                && info.found & mask(category) != 0
-            {
-                break;
+                i += 1;
             }
-            i += 1;
-        }
-    }
-    if i < CODING_CATEGORY_RAW_TEXT {
-        let this = this?;
-        if category == CODING_CATEGORY_UTF_8_AUTO {
-            if let Some((sig, nosig)) =
-                coding_system_property(interp, &this, ":bom").and_then(|bom| bom.cons_values())
-            {
-                let pick = if info.found & MASK_UTF_8_SIG != 0 {
-                    sig
-                } else {
-                    nosig
-                };
-                return pick.symbol_str().map(str::to_string).or(Some(this));
-            }
-            Some(this)
-        } else if category == CODING_CATEGORY_UTF_16_AUTO {
-            if let Some((le, be)) =
-                coding_system_property(interp, &this, ":bom").and_then(|bom| bom.cons_values())
-            {
-                let pick = if info.found & MASK_UTF_16_LE != 0 {
-                    Some(le)
-                } else if info.found & MASK_UTF_16_BE != 0 {
-                    Some(be)
-                } else {
-                    None
-                };
-                return pick.and_then(|value| value.symbol_str().map(str::to_string));
-            }
-            Some(this)
         } else {
-            Some(this)
+            if null_byte_found {
+                info.checked |= !MASK_UTF_16;
+                info.rejected |= !MASK_UTF_16;
+            } else if spec.prefer_utf_8 && detect_utf_8(src, head_ascii, &mut info) {
+                info.checked |= !MASK_UTF_8;
+                info.rejected |= !MASK_UTF_8;
+            }
+            while i < CODING_CATEGORY_RAW_TEXT {
+                category = categories.priorities[i];
+                this = categories.representative(category).map(str::to_string);
+                let Some(representative) = this.clone() else {
+                    info.rejected |= mask(category);
+                    i += 1;
+                    continue;
+                };
+                if info.checked & mask(category) != 0 {
+                    if info.found & mask(category) != 0 {
+                        break;
+                    }
+                } else if detector.run_detector(
+                    category,
+                    src,
+                    head_ascii,
+                    &representative,
+                    &mut info,
+                ) && info.found & mask(category) != 0
+                {
+                    break;
+                }
+                i += 1;
+            }
         }
-    } else if null_byte_found {
-        Some("no-conversion".into())
-    } else if info.rejected & MASK_ANY == MASK_ANY {
-        Some("raw-text".into())
-    } else if info.rejected != 0 {
-        categories.priorities[..CODING_CATEGORY_RAW_TEXT]
-            .iter()
-            .find(|category| info.rejected & mask(**category) == 0)
-            .and_then(|category| categories.representative(*category))
-            .map(str::to_string)
-    } else {
-        None
+        if i < CODING_CATEGORY_RAW_TEXT {
+            let this = this?;
+            if category == CODING_CATEGORY_UTF_8_AUTO {
+                if let Some((sig, nosig)) =
+                    coding_system_property(interp, &this, ":bom").and_then(|bom| bom.cons_values())
+                {
+                    let pick = if info.found & MASK_UTF_8_SIG != 0 {
+                        sig
+                    } else {
+                        nosig
+                    };
+                    return pick.symbol_str().map(str::to_string).or(Some(this));
+                }
+                Some(this)
+            } else if category == CODING_CATEGORY_UTF_16_AUTO {
+                if let Some((le, be)) =
+                    coding_system_property(interp, &this, ":bom").and_then(|bom| bom.cons_values())
+                {
+                    let pick = if info.found & MASK_UTF_16_LE != 0 {
+                        Some(le)
+                    } else if info.found & MASK_UTF_16_BE != 0 {
+                        Some(be)
+                    } else {
+                        None
+                    };
+                    return pick.and_then(|value| value.symbol_str().map(str::to_string));
+                }
+                Some(this)
+            } else {
+                Some(this)
+            }
+        } else if null_byte_found {
+            Some("no-conversion".into())
+        } else if info.rejected & MASK_ANY == MASK_ANY {
+            Some("raw-text".into())
+        } else if info.rejected != 0 {
+            categories.priorities[..CODING_CATEGORY_RAW_TEXT]
+                .iter()
+                .find(|category| info.rejected & mask(**category) == 0)
+                .and_then(|category| categories.representative(*category))
+                .map(str::to_string)
+        } else {
+            None
+        }
+    })();
+    DetectOutcome {
+        found,
+        eol_seen: Some(eol_seen),
+        utf8_whole: info.utf8_bytes == Some(src.units.len()),
     }
 }

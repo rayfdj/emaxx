@@ -849,8 +849,7 @@ pub(crate) fn render_prin1_symbol(
 pub(crate) fn charset_text_properties_print(
     interp: &Interpreter,
     env: &Env,
-    text: &str,
-    multibyte: bool,
+    codes: &[u32],
     props: &[StringPropertySpan],
 ) -> bool {
     let setting = interp
@@ -864,7 +863,6 @@ pub(crate) fn charset_text_properties_print(
     }
     let ordered = interp.charset_priority_list();
     let head = interp.charset_non_preferred_head();
-    let chars: Vec<char> = text.chars().collect();
     props.iter().any(|span| {
         span.props.iter().any(|(name, value)| {
             if name != "charset" {
@@ -876,23 +874,17 @@ pub(crate) fn charset_text_properties_print(
             let expected = interp
                 .charset_canonical_name(charset)
                 .unwrap_or_else(|| charset.to_string());
-            chars
+            // CODES as fetch_string_char_advance reads them: a unibyte
+            // string's bytes (0xE9 is U+00E9 there), a multibyte one's
+            // characters, raw bytes included.
+            codes
                 .iter()
                 .skip(span.start)
                 .take(span.end.saturating_sub(span.start))
-                .any(|ch| {
-                    if ch.is_ascii() {
-                        return false;
-                    }
-                    // fetch_string_char_advance: a unibyte string yields
-                    // its bytes as characters (0xE9 is U+00E9 there), a
-                    // multibyte one its characters, raw bytes included.
-                    let code = match raw_byte_from_regex_char(*ch) {
-                        Some(byte) if !multibyte => u32::from(byte),
-                        Some(byte) => RAW_BYTE_REGEX_BASE + u32::from(byte),
-                        None => *ch as u32,
-                    };
-                    char_charset_ordered(interp, &ordered, head.as_deref(), code).0 != expected
+                .any(|&code| {
+                    code >= 0x80
+                        && char_charset_ordered(interp, &ordered, head.as_deref(), code).0
+                            != expected
                 })
         })
     })
@@ -1132,13 +1124,7 @@ pub(crate) fn render_prin1_body(
                 let keep_charset = props
                     .iter()
                     .any(|span| span.props.iter().any(|(name, _)| name == "charset"))
-                    && charset_text_properties_print(
-                        interp,
-                        env,
-                        &state.text(),
-                        state.is_multibyte(),
-                        &props,
-                    );
+                    && charset_text_properties_print(interp, env, &state.codes(), &props);
                 (literal, props, keep_charset)
             };
             if props.is_empty() {
@@ -1576,6 +1562,16 @@ pub(crate) fn render_princ_object(
     render_printer_object(interp, value, env, false, false)
 }
 
+/// `prin1' of VALUE as a Rust text view and its side table.
+pub(crate) fn render_prin1_parts_ephemeral(
+    interp: &mut Interpreter,
+    value: &Value,
+    env: &crate::lisp::types::Env,
+) -> Result<(String, Vec<(usize, u32)>), LispError> {
+    let mut env = env.clone();
+    render_prin1_output(interp, value, &mut env).map(|output| output.text_parts())
+}
+
 pub(crate) fn render_prin1_ephemeral(
     interp: &mut Interpreter,
     value: &Value,
@@ -1587,6 +1583,27 @@ pub(crate) fn render_prin1_ephemeral(
 
 /// lread.c:end_of_file_error: `(end-of-file FILE)' while a file is being
 /// loaded (`load-true-file-name' a string), else `(end-of-file)'.
+/// A reader's end-of-input as lread.c's end_of_file_error signals it;
+/// any other error is ERROR.
+pub(crate) fn reader_end_of_file(interp: &Interpreter, error: LispError, env: &Env) -> LispError {
+    if matches!(error.kind(), LispErrorKind::EndOfInput) {
+        end_of_file_error(interp, env)
+    } else {
+        error
+    }
+}
+
+/// Whether ERROR is an `end-of-file' signal.
+pub(crate) fn is_end_of_file_error(error: &LispError) -> bool {
+    match error.kind() {
+        LispErrorKind::EndOfInput => true,
+        LispErrorKind::SignalValue(data) => {
+            matches!(data.car().map(|head| head.kind()), Ok(Kind::Symbol(name)) if name == "end-of-file")
+        }
+        _ => false,
+    }
+}
+
 fn end_of_file_error(interp: &Interpreter, env: &Env) -> LispError {
     match interp
         .lookup_var("load-true-file-name", env)
@@ -1615,24 +1632,21 @@ pub(crate) fn reader_string_source_text(source: &Value) -> Result<String, LispEr
         .collect())
 }
 
-pub(crate) fn read_one_form_in_env(
-    interp: &mut Interpreter,
-    text: &str,
-    env: &mut Env,
-) -> Result<(Value, usize), LispError> {
-    read_one_from_reader(interp, LispReaderInput::Text(text), env)
-}
-
 pub(crate) fn read_encoded_form_in_env(
     interp: &mut Interpreter,
     bytes: &[u8],
     multibyte: bool,
     env: &mut Env,
 ) -> Result<(Value, usize), LispError> {
-    read_one_from_reader(interp, LispReaderInput::Encoded(bytes, multibyte), env)
+    read_one_from_reader(
+        interp,
+        LispReaderInput::Encoded(bytes, multibyte),
+        &mut 0,
+        env,
+    )
 }
 
-enum LispReaderInput<'a> {
+pub(crate) enum LispReaderInput<'a> {
     Text(&'a str),
     Encoded(&'a [u8], bool),
 }
@@ -1640,13 +1654,14 @@ enum LispReaderInput<'a> {
 fn read_one_from_reader(
     interp: &mut Interpreter,
     input: LispReaderInput<'_>,
+    stopped: &mut usize,
     env: &mut Env,
 ) -> Result<(Value, usize), LispError> {
     // lread.c resolves each atom in the selected obarray. A post-read walk
     // would first intern a private name in the standard table and leak it.
     let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
     let shorthands = read_symbol_shorthands_in_env(interp, env)?;
-    let (value, needs_materialization, unescaped, consumed) = {
+    let read = (|| {
         let mut resolve_symbol = |name: &str| intern_in_obarray(interp, &obarray, name);
         let reader = match input {
             LispReaderInput::Text(text) => {
@@ -1657,18 +1672,26 @@ fn read_one_from_reader(
             }
         };
         let mut reader = reader.with_symbol_resolver(&mut resolve_symbol);
-        let value = reader.read()?;
+        let value = match reader.read() {
+            Ok(value) => value,
+            Err(error) => {
+                *stopped = reader.characters_consumed();
+                return Err(error);
+            }
+        };
         let unescaped = reader
             .unescaped_character_literals()
             .map(Value::Integer)
             .collect::<Vec<_>>();
-        (
+        Ok((
             value,
             reader.emitted_reader_forms(),
             unescaped,
             reader.characters_consumed(),
-        )
-    };
+        ))
+    })();
+    let (value, needs_materialization, unescaped, consumed) =
+        read.map_err(|error| reader_end_of_file(interp, error, env))?;
     let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
     // Allocate identity-bearing literals before resolving references into them.
     let value = if needs_materialization {
@@ -1676,12 +1699,118 @@ fn read_one_from_reader(
     } else {
         value
     };
-    interp.set_variable(
-        "lread--unescaped-character-literals",
-        Value::list(unescaped),
+    // read_char_literal conses each new literal onto the variable, which
+    // `load' (or the caller) binds; `read' itself never resets it.
+    record_unescaped_character_literals(
+        interp,
+        unescaped.iter().filter_map(Value::integer_value),
         env,
     );
     Ok((value, consumed))
+}
+
+/// A buffer's text from START to END as the reader reads it, the way
+/// lread.c's readchar takes each character from the buffer.  The Rust
+/// text view serves unless the range holds a character it cannot carry
+/// (one beyond Unicode, or a real U+E000..U+E0FF): then the reader takes
+/// the range's internal multibyte bytes.
+pub(crate) enum BufferReadSource {
+    Text(String),
+    Encoded(Vec<u8>),
+}
+
+impl BufferReadSource {
+    pub(crate) fn new(
+        interp: &Interpreter,
+        buffer_id: u64,
+        start: usize,
+        end: usize,
+    ) -> Result<Self, LispError> {
+        let buffer = interp
+            .get_buffer_by_id(buffer_id)
+            .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
+        let text = buffer
+            .buffer_substring(start, end)
+            .map_err(|error| LispError::Signal(error.to_string()))?;
+        if !buffer.has_extended_chars_in(start, end) {
+            return Ok(Self::Text(text));
+        }
+        let extended = buffer.substring_extended_chars(start, end);
+        Ok(Self::Encoded(crate::lisp::types::string_data::encode_text(
+            &text, true, &extended,
+        )?))
+    }
+
+    pub(crate) fn input(&self) -> LispReaderInput<'_> {
+        match self {
+            Self::Text(text) => LispReaderInput::Text(text),
+            Self::Encoded(bytes) => LispReaderInput::Encoded(bytes, true),
+        }
+    }
+
+    /// The source from byte OFFSET on.
+    pub(crate) fn input_from(&self, offset: usize) -> LispReaderInput<'_> {
+        match self {
+            Self::Text(text) => LispReaderInput::Text(&text[offset..]),
+            Self::Encoded(bytes) => LispReaderInput::Encoded(&bytes[offset..], true),
+        }
+    }
+
+    /// The characters before byte OFFSET.
+    pub(crate) fn characters_before(&self, offset: usize) -> usize {
+        match self {
+            Self::Text(text) => text[..offset].chars().count(),
+            Self::Encoded(bytes) => {
+                let mut position = 0;
+                let mut count = 0;
+                while position < offset {
+                    position +=
+                        crate::lisp::types::string_data::multibyte_length(&bytes[position..], true)
+                            .max(1);
+                    count += 1;
+                }
+                count
+            }
+        }
+    }
+}
+
+/// lread.c invalid_syntax_lisp with a buffer READCHARFUN: the data of
+/// an `invalid-read-syntax' gains the line and column of the buffer's
+/// point, where reading stopped (count_lines from BEGV, plus one, and
+/// current_column, both in that buffer).  Any other error is ERROR.
+pub(crate) fn invalid_syntax_in_buffer(
+    interp: &mut Interpreter,
+    buffer_id: u64,
+    error: LispError,
+    env: &mut Env,
+) -> LispError {
+    let LispErrorKind::ReadError(message) = error.kind() else {
+        return error;
+    };
+    let message = message.clone();
+    let current = interp.current_buffer_id();
+    if current != buffer_id && interp.set_current_buffer_id(buffer_id).is_err() {
+        return error;
+    }
+    let line = {
+        let buffer = interp.buffer.borrow();
+        buffer
+            .buffer_substring(buffer.point_min(), buffer.point())
+            .map(|text| text.matches('\n').count())
+            .unwrap_or(0)
+            + 1
+    };
+    let column = call(interp, "current-column", &[], env).unwrap_or(Value::Integer(0));
+    if current != buffer_id {
+        let _ = interp.set_current_buffer_id(current);
+    }
+    LispError::SignalValue(Value::list([
+        Value::Symbol("invalid-read-syntax".into()),
+        Value::String(message.into()),
+        Value::Integer(line as i64),
+        column,
+    ]))
 }
 
 pub(crate) fn read_positioning_symbols_from_lisp_source(
@@ -1692,30 +1821,27 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
     match source.kind() {
         Kind::Buffer(_) => {
             let buffer_id = interp.resolve_buffer_id(source)?;
-            let (start, end, text) = {
+            let (start, end) = {
                 let buffer = interp
                     .get_buffer_by_id(buffer_id)
                     .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-                let start = buffer.point();
-                let end = buffer.point_max();
-                (
-                    start,
-                    end,
-                    buffer
-                        .buffer_substring(start, end)
-                        .map_err(|error| LispError::Signal(error.to_string()))?,
-                )
+                (buffer.point(), buffer.point_max())
             };
-            let result = read_one_positioned_form(interp, env, &text, start as i64);
+            let text = BufferReadSource::new(interp, buffer_id, start, end)?;
+            let mut stopped = 0;
+            let result =
+                read_one_positioned_form(interp, env, text.input(), start as i64, &mut stopped);
             let consumed = match result.as_ref().map_err(LispError::kind) {
                 Ok((_, consumed)) => *consumed,
-                Err(LispErrorKind::EndOfInput) => text.chars().count(),
-                Err(_) => 0,
+                Err(_) if result.as_ref().is_err_and(is_end_of_file_error) => end - start,
+                Err(_) => stopped,
             };
             if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
                 buffer.goto_char((start + consumed).min(end));
             }
-            result.map(|(value, _)| value)
+            result
+                .map(|(value, _)| value)
+                .map_err(|error| invalid_syntax_in_buffer(interp, buffer_id, error, env))
         }
         Kind::Marker(id) => {
             let (buffer_id, start) = {
@@ -1733,25 +1859,23 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
                 .get_buffer_by_id(buffer_id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
                 .point_max();
-            let text = interp
-                .get_buffer_by_id(buffer_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
-                .buffer_substring(start, end)
-                .map_err(|error| LispError::Signal(error.to_string()))?;
+            let text = BufferReadSource::new(interp, buffer_id, start, end)?;
             // lread.c:read_internal_start uses an absolute base only for
             // BUFFERP. Marker streams count from zero for each read.
-            let result = read_one_positioned_form(interp, env, &text, 0);
+            let mut stopped = 0;
+            let result = read_one_positioned_form(interp, env, text.input(), 0, &mut stopped);
             let consumed = match result.as_ref().map_err(LispError::kind) {
                 Ok((_, consumed)) => *consumed,
-                Err(LispErrorKind::EndOfInput) => text.chars().count(),
-                Err(_) => 0,
+                Err(_) if result.as_ref().is_err_and(is_end_of_file_error) => end - start,
+                Err(_) => stopped,
             };
             interp.set_marker(id, Some((start + consumed).min(end)), Some(buffer_id))?;
             result.map(|(value, _)| value)
         }
         Kind::StringObject(_) => {
             let text = reader_string_source_text(source)?;
-            read_one_positioned_form(interp, env, &text, 0).map(|(value, _)| value)
+            read_one_positioned_form(interp, env, LispReaderInput::Text(&text), 0, &mut 0)
+                .map(|(value, _)| value)
         }
         // lread.c:readchar calls the remaining stream objects, including
         // bytecode closures, through the ordinary function dispatcher.
@@ -1762,8 +1886,9 @@ pub(crate) fn read_positioning_symbols_from_lisp_source(
 fn read_one_positioned_form(
     interp: &mut Interpreter,
     env: &mut Env,
-    text: &str,
+    input: LispReaderInput<'_>,
     base_position: i64,
+    stopped: &mut usize,
 ) -> Result<(Value, usize), LispError> {
     // read0 with LOCATE_SYMS: the reader itself wraps each symbol
     // occurrence with its character position (the retired token-stream
@@ -1772,26 +1897,46 @@ fn read_one_positioned_form(
     // the enclosing defun's position instead of the offending form's).
     let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
     let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
-    let (value, consumed, unescaped) = {
+    let read = (|| {
         let mut resolve_symbol = |name: &str| intern_in_obarray(interp, &obarray, name);
-        let mut reader = crate::lisp::reader::Reader::with_positioned_symbols(
-            text,
-            symbol_shorthands,
-            base_position,
-        )
-        .with_symbol_resolver(&mut resolve_symbol);
-        let value = reader.read()?;
-        let consumed = text[..reader.position()].chars().count();
+        let reader = match input {
+            LispReaderInput::Text(text) => crate::lisp::reader::Reader::with_positioned_symbols(
+                text,
+                symbol_shorthands,
+                base_position,
+            ),
+            LispReaderInput::Encoded(bytes, multibyte) => {
+                crate::lisp::reader::Reader::from_encoded_positioned(
+                    bytes,
+                    multibyte,
+                    symbol_shorthands,
+                    base_position,
+                )
+            }
+        };
+        let mut reader = reader.with_symbol_resolver(&mut resolve_symbol);
+        let value = match reader.read() {
+            Ok(value) => value,
+            Err(error) => {
+                *stopped = reader.characters_consumed();
+                return Err(error);
+            }
+        };
+        let consumed = reader.characters_consumed();
         let unescaped = reader
             .unescaped_character_literals()
             .map(Value::Integer)
             .collect::<Vec<_>>();
-        (value, consumed, unescaped)
-    };
+        Ok((value, consumed, unescaped))
+    })();
+    let (value, consumed, unescaped) =
+        read.map_err(|error| reader_end_of_file(interp, error, env))?;
     let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
-    interp.set_variable(
-        "lread--unescaped-character-literals",
-        Value::list(unescaped),
+    // read_char_literal conses each new literal onto the variable, which
+    // `load' (or the caller) binds; `read' itself never resets it.
+    record_unescaped_character_literals(
+        interp,
+        unescaped.iter().filter_map(Value::integer_value),
         env,
     );
     // GNU's reader constructs `#s(...)', `#^[...]', and bool-vector objects
@@ -1925,9 +2070,11 @@ fn read_callable_source(
         (value, unescaped, reader.emitted_reader_forms())
     };
     let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
-    interp.set_variable(
-        "lread--unescaped-character-literals",
-        Value::list(unescaped),
+    // read_char_literal conses each new literal onto the variable, which
+    // `load' (or the caller) binds; `read' itself never resets it.
+    record_unescaped_character_literals(
+        interp,
+        unescaped.iter().filter_map(Value::integer_value),
         env,
     );
     if needs_materialization {
@@ -1995,7 +2142,7 @@ fn materialize_char_table_literals_inner(
                     ..=crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_SLOTS)
                     .contains(&fields.len())
                 {
-                    return Err(LispError::ReadError("invalid size char-table".into()));
+                    return Err(LispError::ReadError("Invalid size char-table".into()));
                 }
                 (
                     Value::CharTable(crate::lisp::types::CharTableRef::new(
@@ -2215,30 +2362,26 @@ fn read_from_lisp_source_raw(
     match source.kind() {
         Kind::Buffer(_) => {
             let buffer_id = interp.resolve_buffer_id(source)?;
-            let (start, end, text) = {
+            let (start, end) = {
                 let buffer = interp
                     .get_buffer_by_id(buffer_id)
                     .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?;
-                let start = buffer.point();
-                let end = buffer.point_max();
-                (
-                    start,
-                    end,
-                    buffer
-                        .buffer_substring(start, end)
-                        .map_err(|error| LispError::Signal(error.to_string()))?,
-                )
+                (buffer.point(), buffer.point_max())
             };
-            let result = read_one_form_in_env(interp, &text, env);
+            let text = BufferReadSource::new(interp, buffer_id, start, end)?;
+            let mut stopped = 0;
+            let result = read_one_from_reader(interp, text.input(), &mut stopped, env);
             let consumed = match result.as_ref().map_err(LispError::kind) {
                 Ok((_, consumed)) => *consumed,
-                Err(LispErrorKind::EndOfInput) => text.chars().count(),
-                Err(_) => 0,
+                Err(_) if result.as_ref().is_err_and(is_end_of_file_error) => end - start,
+                Err(_) => stopped,
             };
             if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
                 buffer.goto_char((start + consumed).min(end));
             }
-            result.map(|(value, _)| value)
+            result
+                .map(|(value, _)| value)
+                .map_err(|error| invalid_syntax_in_buffer(interp, buffer_id, error, env))
         }
         Kind::Marker(id) => {
             let (buffer_id, start) = {
@@ -2256,16 +2399,13 @@ fn read_from_lisp_source_raw(
                 .get_buffer_by_id(buffer_id)
                 .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
                 .point_max();
-            let text = interp
-                .get_buffer_by_id(buffer_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {buffer_id}")))?
-                .buffer_substring(start, end)
-                .map_err(|error| LispError::Signal(error.to_string()))?;
-            let result = read_one_form_in_env(interp, &text, env);
+            let text = BufferReadSource::new(interp, buffer_id, start, end)?;
+            let mut stopped = 0;
+            let result = read_one_from_reader(interp, text.input(), &mut stopped, env);
             let consumed = match result.as_ref().map_err(LispError::kind) {
                 Ok((_, consumed)) => *consumed,
-                Err(LispErrorKind::EndOfInput) => text.chars().count(),
-                Err(_) => 0,
+                Err(_) if result.as_ref().is_err_and(is_end_of_file_error) => end - start,
+                Err(_) => stopped,
             };
             interp.set_marker(id, Some((start + consumed).min(end)), Some(buffer_id))?;
             result.map(|(value, _)| value)

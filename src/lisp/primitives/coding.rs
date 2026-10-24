@@ -1,6 +1,5 @@
 use super::*;
 use crate::lisp::types::Kind;
-use encoding_rs::{Encoding, KOI8_R, WINDOWS_1251, WINDOWS_1252};
 
 mod charset_table;
 mod detect;
@@ -11,11 +10,12 @@ pub(crate) use charset_table::{CharsetInfo, charset_info};
 pub(crate) use detect::DetectSource;
 pub(crate) use iso2022::charset_dimension;
 
-/// character.h MAX_UNICODE_CHAR and MAX_5_BYTE_CHAR: the last Unicode
-/// character and the last character of the `emacs' charset; raw bytes
-/// follow at #x3fff80..#x3fffff.
+/// character.h MAX_UNICODE_CHAR, MAX_5_BYTE_CHAR and MAX_CHAR: the last
+/// Unicode character, the last character of the `emacs' charset (raw
+/// bytes follow at #x3fff80..#x3fffff) and the last character.
 pub(crate) const MAX_UNICODE_CHAR: u32 = 0x10_FFFF;
 pub(crate) const MAX_5_BYTE_CHAR: u32 = 0x3F_FF7F;
+pub(crate) const MAX_CHAR: u32 = 0x3F_FFFF;
 
 pub(crate) fn coding_system_error(coding: Value) -> LispError {
     // coding.c:Fcheck_coding_system signals with the actual offending
@@ -189,11 +189,6 @@ pub(crate) fn make_charset_character(
     let character = info
         .decode(interp, code)
         .ok_or_else(|| LispError::Signal("Invalid code(s)".into()))?;
-    let character = if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xff).contains(&character) {
-        RAW_BYTE8_BASE + character - RAW_BYTE_REGEX_BASE
-    } else {
-        character
-    };
     Ok(Value::Integer(i64::from(character)))
 }
 
@@ -215,12 +210,9 @@ pub(crate) fn encode_charset_char(
     charset: &str,
     character: u32,
 ) -> Option<u32> {
-    // CHARACTER may be a Rust-internal char (a raw byte spelled in the
-    // regex-internal range) or GNU's own character number (a raw byte at
-    // #x3fff80..#x3fffff, as `encode-char' and `char-charset' receive
-    // it); both spellings name the same raw byte, which no code space but
-    // `eight-bit' contains.
-    encode_charset_character_number(interp, charset, gnu_character_number(character))
+    // CHARACTER is GNU's character number: a raw byte is #x3fff80..#x3fffff,
+    // which no code space but `eight-bit' contains.
+    encode_charset_character_number(interp, charset, character)
 }
 
 /// Charset membership for an actual Emacs character number. Canonical
@@ -235,7 +227,11 @@ fn encode_charset_character_number(
 }
 
 /// coding-system-get: `plist-get' on the coding system's plist.
-fn coding_system_property(interp: &Interpreter, coding: &str, property: &str) -> Option<Value> {
+pub(crate) fn coding_system_property(
+    interp: &Interpreter,
+    coding: &str,
+    property: &str,
+) -> Option<Value> {
     let mut tail = interp.coding_system(coding)?.plist;
     while let Some((key, rest)) = tail.cons_values() {
         let (value, next) = rest.cons_values()?;
@@ -245,10 +241,6 @@ fn coding_system_property(interp: &Interpreter, coding: &str, property: &str) ->
         tail = next;
     }
     None
-}
-
-fn coding_system_default_char_byte(interp: &Interpreter, coding: &str) -> u8 {
-    u8::try_from(coding_system_default_char(interp, coding)).unwrap_or(b' ')
 }
 
 /// CODING_ATTR_DEFAULT_CHAR: Fdefine_coding_system_internal stores a
@@ -274,7 +266,7 @@ fn coding_system_consumes_bom(interp: &Interpreter, coding: &str) -> bool {
     coding_system_requires_bom(interp, coding) || coding_system_auto_detects_bom(interp, coding)
 }
 
-fn coding_system_is_ascii_compatible(interp: &Interpreter, coding: &str) -> bool {
+pub(crate) fn coding_system_is_ascii_compatible(interp: &Interpreter, coding: &str) -> bool {
     coding_system_property(interp, coding, ":ascii-compatible-p")
         .is_some_and(|value| value.is_truthy())
 }
@@ -398,50 +390,51 @@ fn run_coding_conversion(
     Ok(converted)
 }
 
-fn encode_charset_coding_bytes(
-    interp: &Interpreter,
-    text: &str,
-    coding: &str,
-) -> Result<Vec<u8>, LispError> {
+/// encode_coding_charset: an ASCII character as itself when the coding is
+/// ASCII-compatible, an eight-bit one as its byte, any other through the
+/// first charset of the coding's list that encodes it (one to four bytes
+/// by the charset's dimension), and else the default character, whose
+/// low eight bits EMIT_ONE_BYTE stores.
+fn encode_coding_charset(interp: &Interpreter, codes: &[u32], coding: &str) -> Vec<u8> {
     let charsets: Vec<std::rc::Rc<CharsetInfo>> = coding_system_charset_names(interp, coding)
         .iter()
         .filter_map(|charset| charset_info(interp, charset))
         .collect();
     let ascii_compatible = coding_system_is_ascii_compatible(interp, coding);
-    // setup_coding_system takes the codec's default character from its
-    // attributes.  Charset codings do not share one replacement: us-ascii
-    // specifies `?' while iso-latin-1 and the Japanese families default to
-    // SPACE.  Reading the live property also preserves package-defined
-    // charset codings instead of special-casing these builtins.
-    // EMIT_ONE_BYTE stores its low eight bits.
     let default_char = coding_system_default_char(interp, coding) as u8;
-    let mut encoded = Vec::new();
-    for character in text.chars() {
-        // CHAR_BYTE8_P: a raw byte is written as itself.
-        if let Some(byte) = raw_byte_from_regex_char(character) {
-            encoded.push(byte);
-            continue;
-        }
-        let c = character as u32;
-        if ascii_compatible && c <= 0x7f {
+    let mut encoded = Vec::with_capacity(codes.len());
+    for &c in codes {
+        if ascii_compatible && c < 0x80 {
             encoded.push(c as u8);
-            continue;
-        }
-        let number = gnu_character_number(c);
-        match charsets.iter().find_map(|charset| {
-            charset
-                .encode(interp, number)
-                .map(|code| (charset.dimension, code))
-        }) {
-            // EMIT_ONE_BYTE ... EMIT_FOUR_BYTES by the charset's dimension.
-            Some((dimension, code)) => {
-                let bytes = code.to_be_bytes();
-                encoded.extend_from_slice(&bytes[4 - dimension.clamp(1, 4) as usize..]);
+        } else if char_byte8_p(c) {
+            encoded.push((c - RAW_BYTE8_BASE) as u8);
+        } else {
+            match charsets.iter().find_map(|charset| {
+                charset
+                    .encode(interp, c)
+                    .map(|code| (charset.dimension, code))
+            }) {
+                Some((dimension, code)) => {
+                    let bytes = code.to_be_bytes();
+                    encoded.extend_from_slice(&bytes[4 - dimension.clamp(1, 4) as usize..]);
+                }
+                None => encoded.push(default_char),
             }
-            None => encoded.push(default_char),
         }
     }
-    Ok(encoded)
+    encoded
+}
+
+/// CODING_CHAR_CHARSET over a coding's charset list: the first charset
+/// that encodes C, with C's code point in it.
+fn coding_char_charset<'a>(
+    interp: &Interpreter,
+    charsets: &'a [std::rc::Rc<CharsetInfo>],
+    c: u32,
+) -> Option<(&'a CharsetInfo, u32)> {
+    charsets
+        .iter()
+        .find_map(|charset| charset.encode(interp, c).map(|code| (&**charset, code)))
 }
 
 /// coding.c decode_coding_charset: each first byte selects, through the
@@ -449,55 +442,62 @@ fn encode_charset_coding_bytes(
 /// whose following bytes complete the code; a byte outside the table or a
 /// code the charset does not decode comes through as itself, and every
 /// character of a non-ASCII charset is annotated with it.
-fn decode_charset_coding_bytes(interp: &Interpreter, bytes: &[u8], coding: &str) -> DecodedText {
+fn decode_charset_coding_bytes(
+    interp: &Interpreter,
+    bytes: &[u8],
+    coding: &str,
+    block: &mut DecodeBlock,
+) -> DecodedText {
     let valids = charset_valids(interp, coding);
-    let mut out = String::new();
-    let mut offset = 0usize;
+    let mut out = DecodedText::new();
     let mut runs = CharsetRuns::new();
     let mut p = 0usize;
-    while p < bytes.len() {
-        let src_base = p;
+    let mut src_base = 0usize;
+    'decode: while p < bytes.len() {
+        src_base = p;
         let c = bytes[p];
         p += 1;
-        let decoded = valids[usize::from(c)].as_ref().and_then(|charsets| {
+        if block.eol_dos && c == b'\r' && p == bytes.len() {
+            // ONE_MORE_BYTE (byte_after_cr) ran out.
+            break;
+        }
+        let mut decoded = None;
+        if let Some(charsets) = valids[usize::from(c)].as_ref() {
             let mut code = u32::from(c);
             let mut len = 1usize;
             for charset in charsets {
                 let dim = charset.dimension as usize;
                 while len < dim {
-                    let &next = bytes.get(p)?;
+                    let Some(&next) = bytes.get(p) else {
+                        // no_more_source.
+                        break 'decode;
+                    };
                     p += 1;
                     code = (code << 8) | u32::from(next);
                     len += 1;
                 }
-                if let Some(ch) = charset.decode(interp, code).and_then(char::from_u32) {
-                    return Some((charset, ch));
+                if let Some(ch) = charset.decode(interp, code) {
+                    decoded = Some((charset, ch));
+                    break;
                 }
             }
-            None
-        });
+        }
         match decoded {
             Some((charset, ch)) => {
-                runs.note(&charset.name, offset);
-                out.push(ch);
-                offset += 1;
+                runs.note(&charset.name, out.char_count());
+                out.push_code(ch);
             }
             None => {
                 // invalid_code: the first byte as itself, resynchronize.
                 p = src_base + 1;
-                out.push(if c.is_ascii() {
-                    char::from(c)
-                } else {
-                    raw_byte_regex_char(c)
-                });
-                offset += 1;
+                out.push_byte(c);
             }
         }
+        src_base = p;
     }
-    DecodedText {
-        charsets: runs.finish(offset),
-        text: out,
-    }
+    out.charsets = runs.finish(out.char_count());
+    block.finish(&mut out, bytes, src_base);
+    out
 }
 
 pub(crate) fn checked_coding_name(
@@ -512,6 +512,29 @@ pub(crate) fn checked_coding_name(
         .coding_system_canonical_name(&symbol)
         .ok_or_else(|| coding_system_error(*value))
         .map(Some)
+}
+
+/// A coding system VALUE as given (an alias keeps its name), once
+/// CHECK_CODING_SYSTEM accepts it; None for nil.
+pub(crate) fn checked_coding_given(
+    interp: &Interpreter,
+    value: &Value,
+) -> Result<Option<String>, LispError> {
+    Ok(checked_coding_name(interp, value)?
+        .map(|_| value.symbol_str().map(str::to_string).unwrap_or_default()))
+}
+
+/// coding.c raw_text_coding_system: what a unibyte buffer reads CODING
+/// as -- a raw-text coding stays, one with an undecided eol becomes
+/// `raw-text', and any other the raw-text subsidiary of its eol type.
+pub(crate) fn raw_text_coding_system(interp: &Interpreter, coding: &str) -> String {
+    if interp.coding_system_kind_name(coding).as_deref() == Some("raw-text") {
+        return coding.to_string();
+    }
+    match coding_eol_type(interp, coding) {
+        None => "raw-text".into(),
+        Some(eol) => coding_variant_name(interp, "raw-text", Some(eol)),
+    }
 }
 
 pub(crate) fn checked_coding_symbol(
@@ -563,18 +586,6 @@ pub(crate) fn shared_string_copy(value: &Value) -> Result<Value, LispError> {
     };
     let copy = object.borrow().copy_with_properties();
     Ok(Value::StringObject(copy))
-}
-
-/// The character a unibyte Lisp string stores for one byte: ASCII stays
-/// itself, and a byte above 0x7F keeps Emaxx's raw-byte spelling -- the
-/// same one `bytes_to_unibyte_value' and the raw-text decoder produce --
-/// so a case table keyed on byte8 characters still matches it.
-fn unibyte_char_for_byte(byte: u8) -> char {
-    if byte <= 0x7F {
-        char::from(byte)
-    } else {
-        raw_byte_regex_char(byte)
-    }
 }
 
 pub(crate) fn bytes_to_unibyte_value(bytes: &[u8]) -> Value {
@@ -720,25 +731,29 @@ pub(crate) fn encode_base64_bytes(
     encoded
 }
 
+/// fns.c base64_encode_1's reading of its source: the characters of a
+/// multibyte source as bytes, an eight-bit character as its byte, any other
+/// non-ASCII character failing the encoding.
 pub(crate) fn encode_base64_source_bytes(
-    text: &str,
+    codes: impl IntoIterator<Item = i64>,
     multibyte: bool,
 ) -> Result<Vec<u8>, LispError> {
-    if !multibyte {
-        return encode_raw_text_bytes(text);
-    }
-
-    let mut bytes = Vec::with_capacity(text.chars().count());
-    for ch in text.chars() {
-        if let Some(byte) = raw_byte_from_regex_char(ch) {
-            bytes.push(byte);
-        } else if (ch as u32) <= 0x7F {
-            bytes.push(ch as u8);
-        } else {
-            return Err(LispError::Signal("Character cannot be encoded".into()));
-        }
-    }
-    Ok(bytes)
+    codes
+        .into_iter()
+        .map(|code| {
+            if !multibyte {
+                Ok(code as u8)
+            } else if (0x3F_FF80..=0x3F_FFFF).contains(&code) {
+                Ok((code - 0x3F_FF00) as u8)
+            } else if code >= 128 {
+                Err(LispError::Signal(
+                    "Multibyte character in data for base64 encoding".into(),
+                ))
+            } else {
+                Ok(code as u8)
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn base64_encode_string_value(
@@ -749,7 +764,7 @@ pub(crate) fn base64_encode_string_value(
 ) -> Result<Value, LispError> {
     let string =
         string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
-    let bytes = encode_base64_source_bytes(&string.text, string.multibyte)?;
+    let bytes = encode_base64_source_bytes(string.character_codes_iter(), string.multibyte)?;
     Ok(Value::String(
         encode_base64_bytes(&bytes, line_break, pad, base64url).into(),
     ))
@@ -766,12 +781,9 @@ pub(crate) fn base64_encode_region_value(
 ) -> Result<Value, LispError> {
     let lo = start.min(end);
     let hi = start.max(end);
-    let text = interp
-        .buffer
-        .borrow()
-        .buffer_substring(lo, hi)
-        .map_err(|error| LispError::Signal(error.to_string()))?;
-    let bytes = encode_base64_source_bytes(&text, interp.buffer.borrow().is_multibyte())?;
+    let codes = buffer_region_codes(interp, lo, hi);
+    let multibyte = interp.buffer.borrow().is_multibyte();
+    let bytes = encode_base64_source_bytes(codes.into_iter().map(i64::from), multibyte)?;
     let encoded = encode_base64_bytes(&bytes, line_break, pad, base64url);
     let inserted = insert_then_delete_region(interp, lo, hi, &encoded, env)?;
     Ok(Value::Integer(inserted as i64))
@@ -923,91 +935,6 @@ pub(crate) fn base64_decode_region_value(
     Ok(Value::Integer(inserted as i64))
 }
 
-pub(crate) fn ascii_only_text(text: &str) -> bool {
-    text.chars()
-        .all(|ch| raw_byte_from_regex_char(ch).unwrap_or_default() <= 0x7F && (ch as u32) <= 0x7F)
-}
-
-pub(crate) fn strip_utf8_bom(bytes: &[u8]) -> (bool, &[u8]) {
-    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-        (true, &bytes[3..])
-    } else {
-        (false, bytes)
-    }
-}
-
-/// Like `detect_eol_type', but reports None when the bytes contain no
-/// line-ending byte at all: GNU's detector leaves the eol UNDECIDED then,
-/// and the detected coding keeps its bare base name (`undecided', `utf-8')
-/// instead of gaining a `-unix' suffix.
-pub(crate) fn detect_eol_type_opt(bytes: &[u8]) -> Option<i64> {
-    bytes
-        .iter()
-        .any(|byte| matches!(byte, b'\r' | b'\n'))
-        .then(|| detect_eol_type(bytes))
-}
-
-pub(crate) fn detect_eol_type(bytes: &[u8]) -> i64 {
-    let mut saw_crlf = false;
-    let mut saw_lf = false;
-    let mut saw_cr = false;
-    let mut index = 0usize;
-
-    while index < bytes.len() {
-        match bytes[index] {
-            b'\r' if bytes.get(index + 1) == Some(&b'\n') => {
-                saw_crlf = true;
-                index += 2;
-                continue;
-            }
-            b'\r' => saw_cr = true,
-            b'\n' => saw_lf = true,
-            _ => {}
-        }
-        index += 1;
-    }
-
-    if saw_crlf && !saw_lf {
-        1
-    } else if saw_cr && !saw_crlf && !saw_lf {
-        2
-    } else {
-        0
-    }
-}
-
-pub(crate) fn decode_bytes_with_explicit_eol(bytes: &[u8], eol_type: i64) -> Vec<u8> {
-    match eol_type {
-        1 => {
-            let mut decoded = Vec::with_capacity(bytes.len());
-            let mut index = 0usize;
-            while index < bytes.len() {
-                if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
-                    decoded.push(b'\n');
-                    index += 2;
-                } else {
-                    decoded.push(bytes[index]);
-                    index += 1;
-                }
-            }
-            decoded
-        }
-        2 => bytes
-            .iter()
-            .map(|byte| if *byte == b'\r' { b'\n' } else { *byte })
-            .collect(),
-        _ => bytes.to_vec(),
-    }
-}
-
-pub(crate) fn encode_text_with_eol(text: &str, eol_type: Option<i64>) -> String {
-    match eol_type {
-        Some(1) => text.replace('\n', "\r\n"),
-        Some(2) => text.replace('\n', "\r"),
-        _ => text.to_string(),
-    }
-}
-
 pub(crate) fn encode_raw_text_bytes(text: &str) -> Result<Vec<u8>, LispError> {
     let mut bytes = Vec::new();
     for ch in text.chars() {
@@ -1044,216 +971,6 @@ pub(crate) fn encode_internal_multibyte_bytes(text: &str) -> Result<Vec<u8>, Lis
     Ok(bytes)
 }
 
-pub(crate) fn encode_iso_latin_bytes(text: &str) -> Result<Vec<u8>, LispError> {
-    encode_raw_text_bytes(text)
-}
-
-fn legacy_single_byte_encoding(interp: &Interpreter, coding: &str) -> Option<&'static Encoding> {
-    match interp.coding_system_base_name(coding)?.as_str() {
-        "cyrillic-koi8" => Some(KOI8_R),
-        "windows-1251" => Some(WINDOWS_1251),
-        "windows-1252" => Some(WINDOWS_1252),
-        _ => None,
-    }
-}
-
-fn encode_legacy_single_byte_bytes(
-    encoding: &'static Encoding,
-    text: &str,
-) -> Result<Vec<u8>, LispError> {
-    let mut bytes = Vec::with_capacity(text.len());
-    for character in text.chars() {
-        if let Some(byte) = raw_byte_from_regex_char(character) {
-            bytes.push(byte);
-            continue;
-        }
-        let text = character.to_string();
-        let (encoded, _, had_errors) = encoding.encode(&text);
-        if had_errors {
-            return Err(LispError::Signal("Character cannot be encoded".into()));
-        }
-        bytes.extend_from_slice(&encoded);
-    }
-    Ok(bytes)
-}
-
-fn decode_legacy_single_byte_bytes(encoding: &'static Encoding, bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte| {
-            encoding
-                .decode_without_bom_handling_and_without_replacement(std::slice::from_ref(byte))
-                .and_then(|decoded| decoded.chars().next())
-                .unwrap_or_else(|| raw_byte_regex_char(*byte))
-        })
-        .collect()
-}
-
-pub(crate) fn encode_ascii_bytes(text: &str) -> Result<Vec<u8>, LispError> {
-    let mut bytes = Vec::new();
-    for ch in text.chars() {
-        if let Some(byte) = raw_byte_from_regex_char(ch) {
-            if byte > 0x7F {
-                return Err(LispError::Signal("Character cannot be encoded".into()));
-            }
-            bytes.push(byte);
-        } else if (ch as u32) <= 0x7F {
-            bytes.push(ch as u8);
-        } else {
-            return Err(LispError::Signal("Character cannot be encoded".into()));
-        }
-    }
-    Ok(bytes)
-}
-
-pub(crate) fn encode_utf8_bytes(text: &str, with_bom: bool) -> Result<Vec<u8>, LispError> {
-    let mut bytes = if with_bom {
-        vec![0xEF, 0xBB, 0xBF]
-    } else {
-        Vec::new()
-    };
-    for ch in text.chars() {
-        if ch == json::INVALID_UNICODE_SENTINEL {
-            return Err(LispError::TypeError("character".into(), "string".into()));
-        }
-        if let Some(byte) = raw_byte_from_regex_char(ch) {
-            bytes.push(byte);
-        } else {
-            bytes.extend(ch.to_string().into_bytes());
-        }
-    }
-    Ok(bytes)
-}
-
-/// EUC-JP through the charset tables (coding.c's iso-2022 encoder for
-/// japanese-iso-8bit): ASCII stays single-byte, JIS X 0208 becomes the
-/// two-byte high bank, halfwidth katakana rides SS2 (0x8E), JIS X 0212
-/// rides SS3 (0x8F).  Characters of latin-jisx0201 (yen sign, overline)
-/// are designated into G0 with ESC ( J and restored to ASCII with
-/// ESC ( B before controls/eol and at the end (the coding system's
-/// ascii-at-eol/ascii-at-cntl flags); an unencodable character becomes
-/// a space, and raw-byte markers pass through as their byte.  Each of
-/// these is the oracle's own answer -- see the regression contract.
-pub(crate) fn encode_euc_jp_bytes(interp: &Interpreter, text: &str) -> Result<Vec<u8>, LispError> {
-    let mut out = Vec::new();
-    let mut g0_latin = false;
-    let restore_ascii = |out: &mut Vec<u8>, g0_latin: &mut bool| {
-        if *g0_latin {
-            out.extend([0x1B, b'(', b'B']);
-            *g0_latin = false;
-        }
-    };
-    for ch in text.chars() {
-        let code = ch as u32;
-        if let Some(byte) = raw_byte_from_regex_char(ch) {
-            out.push(byte);
-            continue;
-        }
-        if code < 0x20 || code == 0x7F {
-            restore_ascii(&mut out, &mut g0_latin);
-            out.push(code as u8);
-            continue;
-        }
-        if code <= 0x7F {
-            out.push(code as u8);
-            continue;
-        }
-        if let Some(code) = encode_charset_char(interp, "japanese-jisx0208", code) {
-            out.extend([(code >> 8) as u8 | 0x80, (code & 0xFF) as u8 | 0x80]);
-            continue;
-        }
-        if let Some(code) = encode_charset_char(interp, "katakana-jisx0201", code) {
-            out.extend([0x8E, code as u8 | 0x80]);
-            continue;
-        }
-        if let Some(code) = encode_charset_char(interp, "japanese-jisx0212", code) {
-            out.extend([0x8F, (code >> 8) as u8 | 0x80, (code & 0xFF) as u8 | 0x80]);
-            continue;
-        }
-        if let Some(code) = encode_charset_char(interp, "latin-jisx0201", code) {
-            if !g0_latin {
-                out.extend([0x1B, b'(', b'J']);
-                g0_latin = true;
-            }
-            out.push(code as u8);
-            continue;
-        }
-        out.push(b' ');
-    }
-    restore_ascii(&mut out, &mut g0_latin);
-    Ok(out)
-}
-
-/// The euc-jp decoder does NOT interpret ISO-2022 escapes (the coding
-/// system lacks the `designation' flag): ESC sequences pass through as
-/// literal characters, per the oracle.  A byte that cannot start or
-/// complete a valid EUC sequence decodes as its raw-byte marker and the
-/// scan resynchronizes.  The charset runs follow decode_coding_iso_2022.
-pub(crate) fn decode_euc_jp_bytes(interp: &Interpreter, bytes: &[u8]) -> DecodedText {
-    let mut out = String::new();
-    let mut offset = 0usize;
-    let mut runs = CharsetRuns::new();
-    let mut rest = bytes;
-    let is_high = |byte: u8| (0xA1..=0xFE).contains(&byte);
-    while let Some((&lead, tail)) = rest.split_first() {
-        let (decoded, consumed) = match lead {
-            0x00..=0x7F => (Some(("ascii", char::from(lead))), 1),
-            0x8E => match tail.first() {
-                Some(&byte) if is_high(byte) => (
-                    decode_charset_code(interp, "katakana-jisx0201", u32::from(byte & 0x7F))
-                        .and_then(char::from_u32)
-                        .map(|ch| ("katakana-jisx0201", ch)),
-                    2,
-                ),
-                _ => (None, 1),
-            },
-            0x8F => match (tail.first(), tail.get(1)) {
-                (Some(&hi), Some(&lo)) if is_high(hi) && is_high(lo) => (
-                    decode_charset_code(
-                        interp,
-                        "japanese-jisx0212",
-                        u32::from(hi & 0x7F) << 8 | u32::from(lo & 0x7F),
-                    )
-                    .and_then(char::from_u32)
-                    .map(|ch| ("japanese-jisx0212", ch)),
-                    3,
-                ),
-                _ => (None, 1),
-            },
-            _ if is_high(lead) => match tail.first() {
-                Some(&lo) if is_high(lo) => (
-                    decode_charset_code(
-                        interp,
-                        "japanese-jisx0208",
-                        u32::from(lead & 0x7F) << 8 | u32::from(lo & 0x7F),
-                    )
-                    .and_then(char::from_u32)
-                    .map(|ch| ("japanese-jisx0208", ch)),
-                    2,
-                ),
-                _ => (None, 1),
-            },
-            _ => (None, 1),
-        };
-        match decoded {
-            Some((charset, ch)) => {
-                runs.note(charset, offset);
-                out.push(ch);
-                rest = &rest[consumed..];
-            }
-            None => {
-                out.push(raw_byte_regex_char(lead));
-                rest = &rest[1..];
-            }
-        }
-        offset += 1;
-    }
-    DecodedText {
-        charsets: runs.finish(offset),
-        text: out,
-    }
-}
-
 /// coding.h:567 SJIS_TO_JIS.
 pub(crate) fn sjis_to_jis(code: u32) -> u32 {
     let (s1, s2) = (code >> 8, code & 0xFF);
@@ -1285,34 +1002,90 @@ pub(crate) fn jis_to_sjis(code: u32) -> u32 {
     (s1 << 8) | s2
 }
 
-/// Shift-JIS through the same charset tables (coding.c's shift-jis codec
-/// for japanese-shift-jis): ASCII single-byte, halfwidth katakana as its
-/// code + 0x80, JIS X 0208 as the two-byte code through JIS_TO_SJIS, a
-/// space for unencodable characters and raw-byte markers as their byte.
-pub(crate) fn encode_sjis_bytes(interp: &Interpreter, text: &str) -> Result<Vec<u8>, LispError> {
-    let mut out = Vec::new();
-    for ch in text.chars() {
-        let code = ch as u32;
-        if let Some(byte) = raw_byte_from_regex_char(ch) {
-            out.push(byte);
-            continue;
+/// coding.h JIS_TO_SJIS2, for the fourth (JIS X 0213 plane 2) charset.
+fn jis_to_sjis2(code: u32) -> u32 {
+    let (j1, j2) = (code >> 8, code & 0xFF);
+    let (s1, s2) = if j1 & 1 != 0 {
+        (
+            if j1 <= 0x25 {
+                0xF0 + (j1 - 0x21) / 2
+            } else if j1 <= 0x2F {
+                0xF3 + (j1 - 0x2D) / 2
+            } else {
+                0xF5 + (j1 - 0x6F) / 2
+            },
+            j2 + if j2 >= 0x60 { 0x20 } else { 0x1F },
+        )
+    } else {
+        (
+            match j1 {
+                0x28 => 0xF0,
+                0x24 => 0xF1,
+                0x2C => 0xF2,
+                0x2E => 0xF3,
+                _ => 0xF4 + (j1 - 0x6E) / 2,
+            },
+            j2 + 0x7E,
+        )
+    };
+    (s1 << 8) | s2
+}
+
+/// encode_coding_sjis over the coding's (roman kana kanji [kanji2])
+/// charsets: an ASCII character as itself when the coding is
+/// ASCII-compatible, an eight-bit one as its byte; otherwise the charset
+/// list's first charset for the character, or for the default character
+/// when none has it: kanji through JIS_TO_SJIS, kana as its code + 0x80,
+/// kanji2 through JIS_TO_SJIS2 in the rows JIS X 0213 plane 2 occupies,
+/// anything else as its low seven bits.
+fn encode_coding_sjis(interp: &Interpreter, codes: &[u32], coding: &str) -> Vec<u8> {
+    let names = coding_system_charset_names(interp, coding);
+    let charsets: Vec<std::rc::Rc<CharsetInfo>> = names
+        .iter()
+        .filter_map(|charset| charset_info(interp, charset))
+        .collect();
+    let kana = names.get(1).map(String::as_str);
+    let kanji = names.get(2).map(String::as_str);
+    let kanji2 = names.get(3).map(String::as_str);
+    let ascii_compatible = coding_system_is_ascii_compatible(interp, coding);
+    let default_char = coding_system_default_char(interp, coding);
+    let mut out = Vec::with_capacity(codes.len());
+    for &c in codes {
+        if c < 0x80 && ascii_compatible {
+            out.push(c as u8);
+        } else if char_byte8_p(c) {
+            out.push((c - RAW_BYTE8_BASE) as u8);
+        } else {
+            let Some((charset, code)) = coding_char_charset(interp, &charsets, c)
+                .or_else(|| coding_char_charset(interp, &charsets, default_char))
+            else {
+                continue;
+            };
+            let name = Some(charset.name.as_str());
+            if name == kanji {
+                let sjis = jis_to_sjis(code);
+                out.extend([(sjis >> 8) as u8, (sjis & 0xFF) as u8]);
+            } else if name == kana {
+                out.push((code | 0x80) as u8);
+            } else if kanji2.is_some() && name == kanji2 {
+                let c1 = code >> 8;
+                if c1 == 0x21
+                    || (0x23..=0x25).contains(&c1)
+                    || c1 == 0x28
+                    || (0x2C..=0x2F).contains(&c1)
+                    || c1 >= 0x6E
+                {
+                    let sjis = jis_to_sjis2(code);
+                    out.extend([(sjis >> 8) as u8, (sjis & 0xFF) as u8]);
+                } else {
+                    out.push((code & 0x7F) as u8);
+                }
+            } else {
+                out.push((code & 0x7F) as u8);
+            }
         }
-        if code <= 0x7F {
-            out.push(code as u8);
-            continue;
-        }
-        if let Some(code) = encode_charset_char(interp, "katakana-jisx0201", code) {
-            out.push(code as u8 | 0x80);
-            continue;
-        }
-        if let Some(code) = encode_charset_char(interp, "japanese-jisx0208", code) {
-            let sjis = jis_to_sjis(code);
-            out.extend([(sjis >> 8) as u8, (sjis & 0xFF) as u8]);
-            continue;
-        }
-        out.push(b' ');
     }
-    Ok(out)
+    out
 }
 
 /// coding.h SJIS_TO_JIS2 for the fourth (JIS X 0213 plane 2) charset.
@@ -1352,7 +1125,12 @@ fn sjis_to_jis2(code: u32) -> u32 {
 /// resynchronizes.  An unmapped code decodes in GNU to a supra-Unicode
 /// codepoint, which emaxx strings cannot hold: those fall back to
 /// raw-byte markers (the ledger's disclosed limitation).
-pub(crate) fn decode_sjis_bytes(interp: &Interpreter, bytes: &[u8], coding: &str) -> DecodedText {
+pub(crate) fn decode_sjis_bytes(
+    interp: &Interpreter,
+    bytes: &[u8],
+    coding: &str,
+    block: &mut DecodeBlock,
+) -> DecodedText {
     let charsets = coding_system_charset_names(interp, coding);
     let roman = charsets.first().cloned().unwrap_or_else(|| "ascii".into());
     let kana = charsets
@@ -1364,23 +1142,28 @@ pub(crate) fn decode_sjis_bytes(interp: &Interpreter, bytes: &[u8], coding: &str
         .cloned()
         .unwrap_or_else(|| "japanese-jisx0208".into());
     let kanji2 = charsets.get(3).cloned();
-    let mut out = String::new();
-    let mut offset = 0usize;
+    let mut out = DecodedText::new();
     let mut runs = CharsetRuns::new();
     let mut rest = bytes;
     let trail_ok = |trail: u8| (0x40..=0xFC).contains(&trail) && trail != 0x7F;
     while let Some((&lead, tail)) = rest.split_first() {
-        let (decoded, consumed): (Option<(&str, char)>, usize) = match lead {
+        // ONE_MORE_BYTE running out: a CR under a dos eol, or a lead byte
+        // of JIS X 0208 (or 0213-2), at the end.
+        if tail.is_empty()
+            && ((block.eol_dos && lead == b'\r')
+                || (0x81..=0xEF).contains(&lead) && !(0xA0..=0xDF).contains(&lead)
+                || (0xF0..=0xFC).contains(&lead) && kanji2.is_some())
+        {
+            break;
+        }
+        let (decoded, consumed): (Option<(&str, u32)>, usize) = match lead {
             0x00..=0x7F => (
-                decode_charset_code(interp, &roman, u32::from(lead))
-                    .and_then(char::from_u32)
-                    .map(|ch| (roman.as_str(), ch)),
+                decode_charset_code(interp, &roman, u32::from(lead)).map(|ch| (roman.as_str(), ch)),
                 1,
             ),
             0x80 | 0xA0 => (None, 1),
             0xA1..=0xDF => (
                 decode_charset_code(interp, &kana, u32::from(lead & 0x7F))
-                    .and_then(char::from_u32)
                     .map(|ch| (kana.as_str(), ch)),
                 1,
             ),
@@ -1391,7 +1174,6 @@ pub(crate) fn decode_sjis_bytes(interp: &Interpreter, bytes: &[u8], coding: &str
                         &kanji,
                         sjis_to_jis(u32::from(lead) << 8 | u32::from(trail)),
                     )
-                    .and_then(char::from_u32)
                     .map(|ch| (kanji.as_str(), ch)),
                     2,
                 ),
@@ -1406,7 +1188,6 @@ pub(crate) fn decode_sjis_bytes(interp: &Interpreter, bytes: &[u8], coding: &str
                             kanji2,
                             sjis_to_jis2(u32::from(lead) << 8 | u32::from(trail)),
                         )
-                        .and_then(char::from_u32)
                         .map(|ch| (kanji2, ch)),
                         2,
                     )
@@ -1417,64 +1198,82 @@ pub(crate) fn decode_sjis_bytes(interp: &Interpreter, bytes: &[u8], coding: &str
         };
         match decoded {
             Some((charset, ch)) => {
-                runs.note(charset, offset);
-                out.push(ch);
+                runs.note(charset, out.char_count());
+                out.push_code(ch);
                 rest = &rest[consumed..];
             }
             None => {
-                out.push(raw_byte_regex_char(lead));
+                out.push_byte(lead);
                 rest = &rest[1..];
             }
         }
-        offset += 1;
     }
-    DecodedText {
-        charsets: runs.finish(offset),
-        text: out,
-    }
+    out.charsets = runs.finish(out.char_count());
+    block.finish(&mut out, bytes, bytes.len() - rest.len());
+    out
 }
 
-/// Big5 through the BIG5 charset map: ASCII single-byte, everything the
-/// map encodes as its two-byte code, a space for unencodable characters.
-pub(crate) fn encode_big5_bytes(interp: &Interpreter, text: &str) -> Result<Vec<u8>, LispError> {
-    let mut out = Vec::new();
-    for ch in text.chars() {
-        let code = ch as u32;
-        if let Some(byte) = raw_byte_from_regex_char(ch) {
-            out.push(byte);
-            continue;
+/// encode_coding_big5 over the coding's (roman big5) charsets: an ASCII
+/// character as itself when the coding is ASCII-compatible, an eight-bit
+/// one as its byte; otherwise the list's first charset for the character
+/// or else for the default character: big5 as its two-byte code, any
+/// other charset as the code's low seven bits.
+fn encode_coding_big5(interp: &Interpreter, codes: &[u32], coding: &str) -> Vec<u8> {
+    let names = coding_system_charset_names(interp, coding);
+    let charsets: Vec<std::rc::Rc<CharsetInfo>> = names
+        .iter()
+        .filter_map(|charset| charset_info(interp, charset))
+        .collect();
+    let big5 = names.get(1).map(String::as_str);
+    let ascii_compatible = coding_system_is_ascii_compatible(interp, coding);
+    let default_char = coding_system_default_char(interp, coding);
+    let mut out = Vec::with_capacity(codes.len());
+    for &c in codes {
+        if c < 0x80 && ascii_compatible {
+            out.push(c as u8);
+        } else if char_byte8_p(c) {
+            out.push((c - RAW_BYTE8_BASE) as u8);
+        } else {
+            let Some((charset, code)) = coding_char_charset(interp, &charsets, c)
+                .or_else(|| coding_char_charset(interp, &charsets, default_char))
+            else {
+                continue;
+            };
+            if Some(charset.name.as_str()) == big5 {
+                out.extend([(code >> 8) as u8, (code & 0xFF) as u8]);
+            } else {
+                out.push((code & 0x7F) as u8);
+            }
         }
-        if code <= 0x7F {
-            out.push(code as u8);
-            continue;
-        }
-        if let Some(code) = encode_charset_char(interp, "big5", code) {
-            out.extend([(code >> 8) as u8, (code & 0xFF) as u8]);
-            continue;
-        }
-        out.push(b' ');
     }
-    Ok(out)
+    out
 }
 
 /// coding.c decode_coding_big5 over the coding system's (roman big5)
 /// charsets: a lead 0xA1..0xFE with trail 0x40..0x7E or 0xA1..0xFE decodes
 /// through the second charset; anything else is a raw byte and the scan
 /// resynchronizes.
-pub(crate) fn decode_big5_bytes(interp: &Interpreter, bytes: &[u8], coding: &str) -> DecodedText {
+pub(crate) fn decode_big5_bytes(
+    interp: &Interpreter,
+    bytes: &[u8],
+    coding: &str,
+    block: &mut DecodeBlock,
+) -> DecodedText {
     let charsets = coding_system_charset_names(interp, coding);
     let roman = charsets.first().cloned().unwrap_or_else(|| "ascii".into());
     let big5 = charsets.get(1).cloned().unwrap_or_else(|| "big5".into());
-    let mut out = String::new();
-    let mut offset = 0usize;
+    let mut out = DecodedText::new();
     let mut runs = CharsetRuns::new();
     let mut rest = bytes;
     while let Some((&lead, tail)) = rest.split_first() {
-        let (decoded, consumed): (Option<(&str, char)>, usize) = match lead {
+        // ONE_MORE_BYTE running out: a CR under a dos eol, or a Big5 lead
+        // byte, at the end.
+        if tail.is_empty() && ((block.eol_dos && lead == b'\r') || (0xA1..=0xFE).contains(&lead)) {
+            break;
+        }
+        let (decoded, consumed): (Option<(&str, u32)>, usize) = match lead {
             0x00..=0x7F => (
-                decode_charset_code(interp, &roman, u32::from(lead))
-                    .and_then(char::from_u32)
-                    .map(|ch| (roman.as_str(), ch)),
+                decode_charset_code(interp, &roman, u32::from(lead)).map(|ch| (roman.as_str(), ch)),
                 1,
             ),
             0xA1..=0xFE => match tail.first() {
@@ -1483,7 +1282,6 @@ pub(crate) fn decode_big5_bytes(interp: &Interpreter, bytes: &[u8], coding: &str
                 {
                     (
                         decode_charset_code(interp, &big5, u32::from(lead) << 8 | u32::from(trail))
-                            .and_then(char::from_u32)
                             .map(|ch| (big5.as_str(), ch)),
                         2,
                     )
@@ -1494,103 +1292,430 @@ pub(crate) fn decode_big5_bytes(interp: &Interpreter, bytes: &[u8], coding: &str
         };
         match decoded {
             Some((charset, ch)) => {
-                runs.note(charset, offset);
-                out.push(ch);
+                runs.note(charset, out.char_count());
+                out.push_code(ch);
                 rest = &rest[consumed..];
             }
             None => {
-                out.push(raw_byte_regex_char(lead));
+                out.push_byte(lead);
                 rest = &rest[1..];
             }
         }
-        offset += 1;
     }
-    DecodedText {
-        charsets: runs.finish(offset),
-        text: out,
-    }
+    out.charsets = runs.finish(out.char_count());
+    block.finish(&mut out, bytes, bytes.len() - rest.len());
+    out
 }
 
-pub(crate) fn decode_raw_text_bytes(bytes: &[u8]) -> String {
-    // The ASCII runs are copied as they are; each other byte becomes its
-    // raw-byte character.
-    let mut text = String::with_capacity(bytes.len());
-    let mut rest = bytes;
+/// coding.c decode_coding_raw_text: each byte as itself, a non-ASCII one
+/// as its eight-bit character.
+/// The length of the ASCII run BYTES starts with, a word at a time.
+fn ascii_prefix_len(bytes: &[u8]) -> usize {
+    let mut i = 0;
+    while let Some(word) = bytes.get(i..i + 8) {
+        let word = u64::from_ne_bytes(word.try_into().expect("eight bytes"));
+        if word & 0x8080_8080_8080_8080 != 0 {
+            break;
+        }
+        i += 8;
+    }
+    while bytes.get(i).is_some_and(u8::is_ascii) {
+        i += 1;
+    }
+    i
+}
+
+pub(crate) fn decode_coding_raw_text(bytes: &[u8]) -> DecodedText {
+    decode_coding_raw_text_block(
+        bytes,
+        &mut DecodeBlock::whole(&mut DecoderSpec::default(), false),
+    )
+}
+
+/// coding.c decode_coding_raw_text: each byte as itself, a non-ASCII one
+/// as its eight-bit character; under a dos eol a CR at the end is left
+/// unconsumed.
+fn decode_coding_raw_text_block(bytes: &[u8], block: &mut DecodeBlock) -> DecodedText {
+    let end = if block.eol_dos && bytes.last() == Some(&b'\r') {
+        bytes.len() - 1
+    } else {
+        bytes.len()
+    };
+    let mut out = DecodedText::new();
+    out.text.reserve(bytes.len());
+    let mut rest = &bytes[..end];
     while !rest.is_empty() {
-        let ascii = rest
-            .iter()
-            .position(|byte| !byte.is_ascii())
-            .unwrap_or(rest.len());
-        // SAFETY: ASCII is UTF-8.
-        text.push_str(unsafe { std::str::from_utf8_unchecked(&rest[..ascii]) });
+        let ascii = ascii_prefix_len(rest);
+        out.push_ascii(&rest[..ascii]);
         rest = &rest[ascii..];
         if let Some((&byte, after)) = rest.split_first() {
-            text.push(raw_byte_regex_char(byte));
+            out.push_byte(byte);
             rest = after;
         }
     }
-    text
+    block.finish(&mut out, bytes, end);
+    out
 }
 
-pub(crate) fn decode_latin_bytes(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| char::from(*byte)).collect()
+pub(crate) fn decode_raw_text_bytes(bytes: &[u8]) -> String {
+    decode_coding_raw_text(bytes).text
+}
+
+pub(crate) fn decode_coding_utf_8(bytes: &[u8]) -> DecodedText {
+    decode_coding_utf_8_block(
+        bytes,
+        false,
+        &mut DecodeBlock::whole(&mut DecoderSpec::default(), false),
+    )
+}
+
+/// UTF_8_EXTRA_OCTET_P.
+fn utf_8_extra_octet(byte: u8) -> bool {
+    byte & 0xC0 == 0x80
+}
+
+/// coding.c decode_coding_utf_8: with BOM (CODING_UTF_8_BOM not
+/// utf_without_bom) the first block drops a leading BOM; then the
+/// standard sequences, and Emacs's four-octet ones up to #x1FFFFF and
+/// five-octet ones from #x200000 to MAX_CHAR; an overlong sequence, a
+/// surrogate or any other invalid octet is that octet's eight-bit
+/// character, decoding resuming after it.  A non-ASCII octet reads the
+/// extra octets after it until its kind has its count (five for one
+/// that leads none), so a block ending inside them stops before it, as
+/// it stops before a CR at the end under a dos eol.
+fn decode_coding_utf_8_block(bytes: &[u8], bom: bool, block: &mut DecodeBlock) -> DecodedText {
+    let mut out = DecodedText::new();
+    out.text.reserve(bytes.len());
+    let mut p = 0;
+    if bom && !block.spec.bom_done {
+        // The BOM check runs out of source unless the first octet is no
+        // three-octet leader, or one of the next two is no extra octet.
+        let check_len = bytes.len().min(3);
+        let unfinished = bytes.len() < 3
+            && bytes.first().is_none_or(|&c1| {
+                c1 & 0xF0 == 0xE0 && bytes[1..check_len].iter().all(|&c| utf_8_extra_octet(c))
+            });
+        if unfinished {
+            block.finish(&mut out, bytes, 0);
+            return out;
+        }
+        if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+            p = 3;
+        }
+        block.spec.bom_done = true;
+    }
+    // A CR is never an extra octet, so one at the end is where a
+    // character starts.
+    let end = if block.eol_dos && bytes.len() > p && bytes.last() == Some(&b'\r') {
+        bytes.len() - 1
+    } else {
+        bytes.len()
+    };
+    let src = &bytes[..end];
+    while p < end {
+        // The standard sequences, a valid run at a time.
+        let valid_up_to = match std::str::from_utf8(&src[p..]) {
+            Ok(_) => end - p,
+            Err(error) => error.valid_up_to(),
+        };
+        // SAFETY: from_utf8 validated these bytes.
+        out.push_str(unsafe { std::str::from_utf8_unchecked(&src[p..p + valid_up_to]) });
+        p += valid_up_to;
+        let Some(&c1) = src.get(p) else {
+            break;
+        };
+        let count = match c1 {
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF7 => 4,
+            _ => 5,
+        };
+        if end - p < count && src[p + 1..].iter().all(|&c| utf_8_extra_octet(c)) {
+            // no_more_source.
+            block.finish(&mut out, bytes, p);
+            return out;
+        }
+        let extra = |index: usize| {
+            src.get(p + index)
+                .copied()
+                .filter(|&byte| utf_8_extra_octet(byte))
+                .map(|byte| u32::from(byte & 0x3F))
+        };
+        let longer = if c1 & 0xF8 == 0xF0 {
+            (|| {
+                let c =
+                    (u32::from(c1 & 0x7) << 18) | (extra(1)? << 12) | (extra(2)? << 6) | extra(3)?;
+                (c >= 0x10000).then_some((c, 4))
+            })()
+        } else if c1 & 0xFC == 0xF8 {
+            (|| {
+                let c = (u32::from(c1 & 0x3) << 24)
+                    | (extra(1)? << 18)
+                    | (extra(2)? << 12)
+                    | (extra(3)? << 6)
+                    | extra(4)?;
+                (0x20_0000..=MAX_CHAR).contains(&c).then_some((c, 5))
+            })()
+        } else {
+            None
+        };
+        match longer {
+            Some((c, length)) => {
+                out.push_code(c);
+                p += length;
+            }
+            None => {
+                // invalid_code.
+                out.push_byte(c1);
+                p += 1;
+            }
+        }
+    }
+    block.finish(&mut out, bytes, end);
+    out
 }
 
 pub(crate) fn decode_utf8_bytes(bytes: &[u8]) -> String {
-    let mut decoded = String::new();
-    let mut remaining = bytes;
-    while !remaining.is_empty() {
-        match std::str::from_utf8(remaining) {
-            Ok(valid) => {
-                decoded.push_str(valid);
-                break;
-            }
-            Err(error) => {
-                let valid_up_to = error.valid_up_to();
-                if valid_up_to > 0 {
-                    decoded.push_str(
-                        std::str::from_utf8(&remaining[..valid_up_to])
-                            .expect("valid_up_to prefix is valid utf-8"),
-                    );
-                }
-                let invalid_len = error.error_len().unwrap_or(1);
-                for byte in &remaining[valid_up_to..valid_up_to + invalid_len] {
-                    decoded.push(raw_byte_regex_char(*byte));
-                }
-                remaining = &remaining[valid_up_to + invalid_len..];
-            }
-        }
-    }
-    decoded
+    decode_coding_utf_8(bytes).text
 }
 
-/// coding.c's UTF-8 and raw-text encoders emit internal character bytes,
-/// except that byte8 emits one octet. This includes surrogates and five-byte
-/// characters; a Rust Unicode projection cannot substitute for those codes.
-fn encode_character_bytes(
+/// coding.c consume_chars: the character codes an encoder reads from
+/// SOURCE.  A multibyte source gives its characters, an eight-bit one as
+/// #x3FFF80..#x3FFFFF.  A unibyte source gives the raw-text encoder its
+/// bytes; every other encoder gets each internal multibyte sequence the
+/// bytes spell as that character and the remaining bytes as eight-bit
+/// characters.  A newline becomes CR LF under a dos EOL_TYPE and CR under
+/// mac; SELECTIVE_DISPLAY (write-region in a buffer whose
+/// `selective-display' is t) reads a CR as a newline first.  Then
+/// TRANSLATION, get_translation_table's tables for the encoder (none for
+/// the raw-text one), maps each character.  PREFERRED, the `charset'
+/// property of each source character, comes back aligned with the codes
+/// (empty when PREFERRED is).
+fn consume_chars(
     source: &StringLike,
     eol_type: Option<i64>,
-    with_bom: bool,
-) -> Result<Vec<u8>, LispError> {
-    let mut bytes = Vec::with_capacity(source.text.len() + if with_bom { 3 } else { 0 });
-    if with_bom {
-        bytes.extend_from_slice(&[0xef, 0xbb, 0xbf]);
-    }
-    for code in source.character_codes_iter() {
-        let code = code as u32;
-        if code == 10 && matches!(eol_type, Some(1) | Some(2)) {
-            bytes.push(b'\r');
-            if eol_type == Some(1) {
-                bytes.push(b'\n');
-            }
-        } else if !source.multibyte || (0x3fff80..=0x3fffff).contains(&code) {
-            bytes.push(code as u8);
+    raw_text_encoder: bool,
+    selective_display: bool,
+    translation: &[Value],
+    preferred: &[Option<String>],
+) -> (Vec<u32>, Vec<Option<String>>) {
+    // Each character as the source spells it, with the index of the
+    // source position it starts at.
+    let mut chars: Vec<(u32, usize)> = Vec::with_capacity(source.text.len());
+    if source.multibyte {
+        chars.extend(
+            source
+                .character_codes_iter()
+                .enumerate()
+                .map(|(index, code)| (code as u32, index)),
+        );
+    } else {
+        let bytes: Vec<u8> = source
+            .text
+            .chars()
+            .map(|ch| raw_byte_from_regex_char(ch).unwrap_or(ch as u8))
+            .collect();
+        if raw_text_encoder {
+            chars.extend(
+                bytes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &byte)| (u32::from(byte), index)),
+            );
         } else {
-            let (encoded, width) = crate::lisp::types::string_data::encode_character(code)?;
-            bytes.extend_from_slice(&encoded[..width]);
+            let mut pos = 0;
+            while pos < bytes.len() {
+                let len = crate::lisp::types::string_data::multibyte_length(&bytes[pos..], true);
+                if len > 0 {
+                    let (c, _) =
+                        crate::lisp::types::string_data::decode_character(&bytes[pos..pos + len])
+                            .expect("multibyte_length validated the sequence");
+                    chars.push((c, pos));
+                    pos += len;
+                } else {
+                    // BYTE8_TO_CHAR.
+                    chars.push((RAW_BYTE8_BASE + u32::from(bytes[pos]), pos));
+                    pos += 1;
+                }
+            }
         }
     }
-    Ok(bytes)
+    let translation = if raw_text_encoder { &[] } else { translation };
+    let max_lookup = translation_max_lookup(translation);
+    let annotate = !preferred.is_empty();
+    let mut codes = Vec::with_capacity(chars.len());
+    let mut aligned = Vec::with_capacity(if annotate { chars.len() } else { 0 });
+    let mut next = 0;
+    while next < chars.len() {
+        let (mut c, index) = chars[next];
+        next += 1;
+        if c == u32::from(b'\r') && selective_display {
+            c = u32::from(b'\n');
+        }
+        let preference = annotate.then(|| preferred.get(index).cloned().flatten());
+        if c == u32::from(b'\n') {
+            match eol_type {
+                Some(1) => {
+                    codes.push(u32::from(b'\r'));
+                    if let Some(preference) = &preference {
+                        aligned.push(preference.clone());
+                    }
+                }
+                Some(2) => c = u32::from(b'\r'),
+                _ => {}
+            }
+        }
+        // LOOKUP_TRANSLATION_TABLE: a character entry replaces C and the
+        // next table sees it; any other entry is a sequence translation.
+        let mut trans = Value::Nil;
+        for table in translation {
+            if let Kind::CharTable(table) = table.kind() {
+                trans = table.get(c);
+                if let Some(to) = translation_character(trans) {
+                    c = to;
+                    trans = Value::Nil;
+                } else if !trans.is_nil() {
+                    break;
+                }
+            }
+        }
+        let start = codes.len();
+        if trans.is_nil() {
+            codes.push(c);
+        } else {
+            let lookup: Vec<u32> = std::iter::once(c)
+                .chain(chars[next..].iter().map(|&(code, _)| code))
+                .take(max_lookup)
+                .collect();
+            match get_translation(trans, &lookup) {
+                Some((to, from_nchars)) => {
+                    if let Some(to) = translation_character(to) {
+                        codes.push(to);
+                    } else if let Kind::Vector(items) = to.kind() {
+                        codes.extend(
+                            items
+                                .slots()
+                                .filter_map(|item| item.integer_value())
+                                .map(|item| item as u32),
+                        );
+                    } else {
+                        codes.push(c);
+                    }
+                    next += from_nchars - 1;
+                }
+                // consume_chars stops consuming at a sequence it cannot
+                // complete (and its caller would retry it forever); the
+                // character goes through untranslated instead.
+                None => codes.push(c),
+            }
+        }
+        if let Some(preference) = preference {
+            aligned.extend(std::iter::repeat_n(preference, codes.len() - start));
+        }
+    }
+    (codes, aligned)
+}
+
+/// CHARACTERP of a translation table entry.
+fn translation_character(value: Value) -> Option<u32> {
+    value
+        .integer_value()
+        .filter(|&code| (0..=i64::from(RAW_BYTE8_BASE + 0xFF)).contains(&code))
+        .map(|code| code as u32)
+}
+
+/// get_translation_table's MAX_LOOKUP: the longest source sequence a
+/// table's second extra slot declares, at least one character.
+fn translation_max_lookup(tables: &[Value]) -> usize {
+    tables
+        .iter()
+        .filter_map(|table| match table.kind() {
+            Kind::CharTable(table) if table.extra_count() > 1 => table.extra(1),
+            _ => None,
+        })
+        .filter_map(|value| value.integer_value())
+        .filter_map(|value| usize::try_from(value).ok())
+        .fold(1, |longest, value| longest.max(value.min(4096)))
+}
+
+/// coding.c get_translation: a character or vector entry translates the
+/// one character; an alist of (FROM-VECTOR . TO) the first FROM sequence
+/// LOOKUP starts with.  The value and the number of characters it
+/// replaces, or None when no sequence completes.
+fn get_translation(trans: Value, lookup: &[u32]) -> Option<(Value, usize)> {
+    if trans.integer_value().is_some() || matches!(trans.kind(), Kind::Vector(_)) {
+        return Some((trans, 1));
+    }
+    let mut tail = trans;
+    while let Some((entry, rest)) = tail.cons_values() {
+        tail = rest;
+        let (from, to) = entry.cons_values()?;
+        let Kind::Vector(from) = from.kind() else {
+            continue;
+        };
+        let len = from.len();
+        let matches = len <= lookup.len()
+            && from
+                .slots()
+                .zip(lookup)
+                .all(|(item, &c)| item.integer_value() == Some(i64::from(c)));
+        if len > lookup.len() {
+            return None;
+        }
+        if matches {
+            return Some((to, len.max(1)));
+        }
+    }
+    None
+}
+
+/// CHAR_BYTE8_P.
+fn char_byte8_p(c: u32) -> bool {
+    RAW_BYTE8_CHARS.contains(&c)
+}
+
+/// CHAR_STRING (CHAR_STRING_ADVANCE_NO_UNIFY): C's internal spelling, an
+/// eight-bit character as its byte (encode_coding_utf_8 and
+/// encode_coding_raw_text for a multibyte source).
+fn emit_internal_chars(out: &mut Vec<u8>, codes: &[u32]) -> Result<(), LispError> {
+    for &c in codes {
+        if c < 0x80 {
+            out.push(c as u8);
+        } else if char_byte8_p(c) {
+            out.push((c - RAW_BYTE8_BASE) as u8);
+        } else {
+            let (encoded, width) = crate::lisp::types::string_data::encode_character(c)?;
+            out.extend_from_slice(&encoded[..width]);
+        }
+    }
+    Ok(())
+}
+
+/// encode_coding_raw_text: a multibyte source's characters in their
+/// internal spelling, a unibyte source's bytes as they are.
+fn encode_coding_raw_text(codes: &[u32], src_multibyte: bool) -> Result<Vec<u8>, LispError> {
+    if !src_multibyte {
+        return Ok(codes.iter().map(|&c| c as u8).collect());
+    }
+    let mut out = Vec::with_capacity(codes.len());
+    emit_internal_chars(&mut out, codes)?;
+    Ok(out)
+}
+
+/// encode_coding_utf_8.
+fn encode_coding_utf_8(
+    codes: &[u32],
+    bom: bool,
+    spec: &mut EncoderSpec,
+) -> Result<Vec<u8>, LispError> {
+    let mut out = Vec::with_capacity(codes.len() + 3);
+    // CODING_UTF_8_BOM becomes utf_without_bom once the BOM is written.
+    if bom && !spec.bom_done {
+        out.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    }
+    spec.bom_done = true;
+    emit_internal_chars(&mut out, codes)?;
+    Ok(out)
 }
 
 /// Encode SOURCE with CODING. Its multibyte flag distinguishes characters
@@ -1602,356 +1727,522 @@ pub(crate) fn encode_text_bytes(
     source: &StringLike,
     coding: &str,
     inhibit_eol_conversion: bool,
+    selective_display: bool,
+    translation: &[Value],
 ) -> Result<Vec<u8>, LispError> {
-    encode_text_bytes_with_charsets(interp, source, coding, inhibit_eol_conversion, &[])
+    encode_text_bytes_with_charsets(
+        interp,
+        source,
+        coding,
+        inhibit_eol_conversion,
+        selective_display,
+        translation,
+        &[],
+        None,
+    )
 }
 
-/// `encode_text_bytes' with the per-character `charset' text property
-/// values PREFERRED (indexed by character of TEXT), which the ISO-2022
-/// encoder consumes as CODING_ANNOTATE_CHARSET annotations.
+/// encode_coding: consume_chars, then the encoder of CODING's type.
+/// TRANSLATION is get_translation_table's for CODING
+/// (`encode_translation_tables').  PREFERRED holds the per-character
+/// `charset' text property values of SOURCE, which the ISO-2022 encoder
+/// consumes as CODING_ANNOTATE_CHARSET annotations.
+/// BLOCK, when given, is a stream's encoder state, the encoding its last
+/// block only when its CODING_MODE_LAST_BLOCK is set (send_process leaves
+/// it unset); otherwise the text is encoded whole from the initial state.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn encode_text_bytes_with_charsets(
     interp: &Interpreter,
     source: &StringLike,
     coding: &str,
     inhibit_eol_conversion: bool,
+    selective_display: bool,
+    translation: &[Value],
     preferred: &[Option<String>],
+    block: Option<&mut EncoderSpec>,
 ) -> Result<Vec<u8>, LispError> {
+    let last = block.is_none();
+    let mut whole = EncoderSpec::default();
+    let spec = block.unwrap_or(&mut whole);
     let canonical = interp
         .coding_system_canonical_name(coding)
         .ok_or_else(|| coding_system_error(Value::symbol(coding)))?;
     let kind = interp
         .coding_system_kind_name(&canonical)
         .unwrap_or_else(|| canonical.clone());
+    // setup_coding_system chooses the encoder by the coding type.
+    let encoder = kind.as_str();
     let eol_type = (!inhibit_eol_conversion)
         .then(|| interp.coding_system_eol_type_value(&canonical))
         .flatten();
-    if matches!(
-        kind.as_str(),
-        "utf-8"
-            | "prefer-utf-8"
-            | "utf-8-auto"
-            | "utf-8-with-signature"
-            | "raw-text"
-            | "no-conversion"
-            | "undecided"
-    ) {
-        return encode_character_bytes(
-            source,
-            eol_type,
+    // consume_chars hands the raw-text and CCL encoders a unibyte
+    // source's bytes undecoded.
+    let raw_text_encoder = matches!(encoder, "raw-text" | "undecided" | "ccl");
+    let preferred = if encoder == "iso-2022" {
+        preferred
+    } else {
+        &[]
+    };
+    let (codes, preferred) = consume_chars(
+        source,
+        eol_type,
+        raw_text_encoder,
+        selective_display,
+        translation,
+        preferred,
+    );
+    match encoder {
+        "utf-8" => encode_coding_utf_8(
+            &codes,
             kind == "utf-8-with-signature" || coding_system_requires_bom(interp, &canonical),
-        );
-    }
-    let source_multibyte = source.multibyte;
-    let source = source.text.as_str();
-    let text = encode_text_with_eol(source, eol_type);
-    if let Some(encoding) = legacy_single_byte_encoding(interp, &canonical) {
-        return encode_legacy_single_byte_bytes(encoding, &text);
-    }
-    match kind.as_str() {
-        "iso-2022" => {
-            // The dos conversion doubled each newline: realign the
-            // per-character preferences with the converted text.
-            let preferred: Vec<Option<String>> = if preferred.is_empty() {
-                Vec::new()
-            } else if eol_type == Some(1) {
-                source
-                    .chars()
-                    .enumerate()
-                    .flat_map(|(index, ch)| {
-                        let value = preferred.get(index).cloned().flatten();
-                        if ch == '\n' {
-                            vec![value.clone(), value]
-                        } else {
-                            vec![value]
-                        }
-                    })
-                    .collect()
-            } else {
-                preferred.to_vec()
-            };
-            iso2022::encode(interp, &text, &canonical, eol_type, &preferred)
-        }
+            spec,
+        ),
         "utf-16" => {
             let (big_endian, with_bom, _) = coding_system_utf16_options(interp, &canonical, &kind);
-            encode_utf16_bytes(&text, big_endian, with_bom)
+            let default_char = coding_system_default_char(interp, &canonical);
+            // CODING_UTF_16_BOM becomes utf_without_bom once written.
+            let bom = with_bom && !spec.bom_done;
+            spec.bom_done = true;
+            Ok(encode_coding_utf_16(&codes, big_endian, bom, default_char))
         }
-        "utf-16be" => encode_utf16_bytes(&text, true, false),
-        "utf-16le" => encode_utf16_bytes(&text, false, false),
-        "iso-latin-1" => encode_iso_latin_bytes(&text),
-        "us-ascii" => encode_ascii_bytes(&text),
-        "euc-jp" => encode_euc_jp_bytes(interp, &text),
-        "sjis" => encode_sjis_bytes(interp, &text),
-        "big5" => encode_big5_bytes(interp, &text),
-        "charset" => encode_charset_coding_bytes(interp, &text, &canonical),
-        "emacs-mule" => Ok(encode_emacs_mule_bytes(interp, &text, &canonical)),
-        // raw-text, no-conversion and undecided all encode through
-        // coding.c's encode_coding_raw_text.
-        _ if source_multibyte => encode_internal_multibyte_bytes(&text),
-        _ => encode_raw_text_bytes(&text),
+        "iso-2022" => iso2022::encode(
+            interp,
+            &codes,
+            &canonical,
+            eol_type,
+            &preferred,
+            &mut spec.iso2022,
+            last,
+        ),
+        "charset" => Ok(encode_coding_charset(interp, &codes, &canonical)),
+        "shift-jis" => Ok(encode_coding_sjis(interp, &codes, &canonical)),
+        "big5" => Ok(encode_coding_big5(interp, &codes, &canonical)),
+        "emacs-mule" => Ok(encode_coding_emacs_mule(interp, &codes, &canonical)),
+        // raw-text, undecided and (with no CCL interpreter) ccl all encode
+        // through encode_coding_raw_text.
+        _ => encode_coding_raw_text(&codes, source.multibyte),
     }
 }
 
-/// Encode TEXT as UTF-16 (big- or little-endian), optionally prefixing a
-/// byte-order mark.  Raw-byte marker chars encode as their byte value.
-fn encode_utf16_bytes(text: &str, big_endian: bool, bom: bool) -> Result<Vec<u8>, LispError> {
-    let mut out = Vec::new();
-    if bom {
-        // U+FEFF
+/// encode_coding_utf_16: a character beyond MAX_UNICODE_CHAR (eight-bit
+/// ones included) is the coding's default character.
+fn encode_coding_utf_16(codes: &[u32], big_endian: bool, bom: bool, default_char: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(codes.len() * 2 + 2);
+    let mut emit = |unit: u32| {
+        let unit = unit as u16;
         if big_endian {
-            out.extend_from_slice(&[0xFE, 0xFF]);
+            out.extend_from_slice(&unit.to_be_bytes());
         } else {
-            out.extend_from_slice(&[0xFF, 0xFE]);
+            out.extend_from_slice(&unit.to_le_bytes());
         }
-    }
-    for ch in text.chars() {
-        let scalar = if let Some(byte) = raw_byte_from_regex_char(ch) {
-            byte as u32
-        } else {
-            ch as u32
-        };
-        if scalar <= 0xFFFF {
-            let unit = scalar as u16;
-            if big_endian {
-                out.extend_from_slice(&unit.to_be_bytes());
-            } else {
-                out.extend_from_slice(&unit.to_le_bytes());
-            }
-        } else {
-            // Surrogate pair for astral codepoints.
-            let v = scalar - 0x1_0000;
-            let hi = 0xD800 + ((v >> 10) as u16);
-            let lo = 0xDC00 + ((v & 0x3FF) as u16);
-            for unit in [hi, lo] {
-                if big_endian {
-                    out.extend_from_slice(&unit.to_be_bytes());
-                } else {
-                    out.extend_from_slice(&unit.to_le_bytes());
-                }
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn push_invalid_utf16_unit(out: &mut String, unit: u16, big_endian: bool) {
-    let bytes = if big_endian {
-        unit.to_be_bytes()
-    } else {
-        unit.to_le_bytes()
     };
-    for byte in bytes {
-        out.push(if byte <= 0x7f {
-            char::from(byte)
-        } else {
-            raw_byte_regex_char(byte)
-        });
+    if bom {
+        emit(0xFEFF);
     }
-}
-
-fn decode_utf16_bytes(
-    bytes: &[u8],
-    mut big_endian: bool,
-    with_bom: bool,
-    detect_bom: bool,
-) -> String {
-    let mut offset = 0usize;
-    if detect_bom {
-        match bytes.get(..2) {
-            Some([0xfe, 0xff]) => {
-                big_endian = true;
-                offset = 2;
-            }
-            Some([0xff, 0xfe]) => {
-                big_endian = false;
-                offset = 2;
-            }
-            _ => {}
-        }
-    } else if with_bom {
-        let expected = if big_endian {
-            [0xfe, 0xff]
+    for &c in codes {
+        let c = if c > MAX_UNICODE_CHAR {
+            default_char
         } else {
-            [0xff, 0xfe]
+            c
         };
-        if bytes.starts_with(&expected) {
-            offset = 2;
-        }
-    }
-
-    let mut out = String::new();
-    let mut units = Vec::with_capacity((bytes.len().saturating_sub(offset)) / 2);
-    let (chunks, remainder) = bytes[offset..].as_chunks::<2>();
-    for chunk in chunks {
-        units.push(if big_endian {
-            u16::from_be_bytes([chunk[0], chunk[1]])
+        if c < 0x10000 {
+            emit(c);
         } else {
-            u16::from_le_bytes([chunk[0], chunk[1]])
-        });
-    }
-    let mut index = 0usize;
-    while index < units.len() {
-        let unit = units[index];
-        if (0xd800..=0xdbff).contains(&unit)
-            && let Some(low) = units.get(index + 1).copied()
-            && (0xdc00..=0xdfff).contains(&low)
-        {
-            let scalar =
-                0x1_0000 + (((u32::from(unit) - 0xd800) << 10) | (u32::from(low) - 0xdc00));
-            if let Some(character) = char::from_u32(scalar) {
-                out.push(character);
-            }
-            index += 2;
-            continue;
+            let c = c - 0x10000;
+            emit((c >> 10) + 0xD800);
+            emit((c & 0x3FF) + 0xDC00);
         }
-        if (0xd800..=0xdfff).contains(&unit) {
-            push_invalid_utf16_unit(&mut out, unit, big_endian);
-        } else if let Some(character) = char::from_u32(u32::from(unit)) {
-            out.push(character);
-        }
-        index += 1;
-    }
-    if let Some(byte) = remainder.first() {
-        out.push(if *byte <= 0x7f {
-            char::from(*byte)
-        } else {
-            raw_byte_regex_char(*byte)
-        });
     }
     out
 }
 
-fn encode_string_text_for_coding(interp: &Interpreter, text: &str, coding: &str) -> String {
-    let kind = interp
-        .coding_system_kind_name(coding)
-        .unwrap_or_else(|| coding.to_string());
-    match kind.as_str() {
-        "iso-latin-1" => text
-            .chars()
-            .map(|ch| {
-                if raw_byte_from_regex_char(ch).is_some() || (ch as u32) <= 0xFF {
-                    ch
-                } else {
-                    ' '
-                }
-            })
-            .collect(),
-        "euc-jp" => text
-            .chars()
-            .map(|ch| {
-                let code = ch as u32;
-                if raw_byte_from_regex_char(ch).is_some()
-                    || code <= 0x7F
-                    || [
-                        "japanese-jisx0208",
-                        "katakana-jisx0201",
-                        "japanese-jisx0212",
-                        "latin-jisx0201",
-                    ]
-                    .iter()
-                    .any(|charset| encode_charset_char(interp, charset, code).is_some())
-                {
-                    ch
-                } else {
-                    // coding.c's iso-2022 encoder emits a space for an
-                    // unencodable character (the oracle's answer for
-                    // (encode-coding-string "\u{20AC}" 'euc-jp)).
-                    ' '
-                }
-            })
-            .collect(),
-        "sjis" => text
-            .chars()
-            .map(|ch| {
-                let code = ch as u32;
-                if raw_byte_from_regex_char(ch).is_some()
-                    || code <= 0x7F
-                    || ["japanese-jisx0208", "katakana-jisx0201"]
-                        .iter()
-                        .any(|charset| encode_charset_char(interp, charset, code).is_some())
-                {
-                    ch
-                } else {
-                    ' '
-                }
-            })
-            .collect(),
-        "big5" => text
-            .chars()
-            .map(|ch| {
-                let code = ch as u32;
-                if raw_byte_from_regex_char(ch).is_some()
-                    || code <= 0x7F
-                    || encode_charset_char(interp, "big5", code).is_some()
-                {
-                    ch
-                } else {
-                    ' '
-                }
-            })
-            .collect(),
-        "iso-2022" => {
-            // encode_coding_iso_2022 substitutes coding->default_char.
-            let default_char = char::from(coding_system_default_char_byte(interp, coding));
-            let attrs = iso2022::iso_attributes(interp, coding);
-            text.chars()
-                .map(|ch| {
-                    let scalar = raw_byte_from_regex_char(ch)
-                        .map(|byte| RAW_BYTE_REGEX_BASE + u32::from(byte))
-                        .unwrap_or(ch as u32);
-                    if scalar < 0x80
-                        || attrs
-                            .as_ref()
-                            .is_some_and(|attrs| iso2022::char_encodable(interp, attrs, scalar))
-                    {
-                        ch
-                    } else {
-                        default_char
-                    }
-                })
-                .collect()
+/// detect_coding for the utf-8-auto and utf-16-auto categories (a utf-8
+/// or utf-16 coding whose `:bom' is a cons): the coding the source's
+/// signature picks from that cons, carrying CODING's own eol type over
+/// (adjust_coding_eol_type); None when CODING stays.
+pub(crate) fn detect_auto_bom_coding(
+    interp: &Interpreter,
+    coding: &str,
+    source: &detect::DetectSource,
+    env: &Env,
+) -> Option<String> {
+    if !coding_system_auto_detects_bom(interp, coding)
+        || interp.coding_system_kind_name(coding).as_deref() == Some("undecided")
+    {
+        return None;
+    }
+    let found = detect::detect_coding(interp, source, coding, env)?;
+    Some(adjust_coding_eol_type(
+        interp,
+        &found,
+        interp.coding_system_eol_type_value(coding),
+    ))
+}
+
+/// setup_coding_system (CODING) then adjust_coding_eol_type for EOL: a
+/// coding whose eol is undecided becomes its EOL subsidiary (that of the
+/// coding an alias names, whose eol-type vector the alias shares), one
+/// whose eol is settled stays.
+pub(crate) fn adjust_coding_eol_type(
+    interp: &Interpreter,
+    coding: &str,
+    eol: Option<i64>,
+) -> String {
+    match eol {
+        Some(eol) if coding_eol_type(interp, coding).is_none() => {
+            let canonical = interp
+                .coding_system_canonical_name(coding)
+                .unwrap_or_else(|| coding.to_string());
+            let base = interp
+                .coding_system_base_name(&canonical)
+                .unwrap_or(canonical);
+            coding_variant_name(interp, &base, Some(eol))
         }
-        "charset" => {
-            let charsets = coding_system_charset_names(interp, coding);
-            let ascii_compatible = coding_system_is_ascii_compatible(interp, coding);
-            let default_char = char::from(coding_system_default_char_byte(interp, coding));
-            text.chars()
-                .map(|ch| {
-                    let scalar = raw_byte_from_regex_char(ch)
-                        .map(u32::from)
-                        .unwrap_or(ch as u32);
-                    if ascii_compatible && scalar <= 0x7f
-                        || charsets
-                            .iter()
-                            .any(|charset| encode_charset_char(interp, charset, scalar).is_some())
-                    {
-                        ch
-                    } else {
-                        default_char
-                    }
-                })
-                .collect()
-        }
-        "us-ascii" => text
-            .chars()
-            .map(|ch| {
-                if raw_byte_from_regex_char(ch).is_some_and(|byte| byte <= 0x7F)
-                    || (ch as u32) <= 0x7F
-                {
-                    ch
-                } else {
-                    '?'
-                }
-            })
-            .collect(),
-        _ => text.to_string(),
+        _ => coding.to_string(),
     }
 }
 
-/// Decoded text with the `charset' runs the decoder annotated (character
-/// offsets), which GNU's produce_charset turns into text properties.
+/// coding.c decode_coding_utf_16, once detect_coding has settled the byte
+/// order: with CHECK_BOM (CODING_UTF_16_BOM is utf_with_bom) the first
+/// block skips a BOM that matches its order; a surrogate pair is its
+/// character; a lone low surrogate is its own character; a high surrogate
+/// before anything but a low one comes out as its two bytes (as
+/// characters 0..255), and, as CODING_UTF_16_SURROGATE is cleared only by
+/// the next high or low surrogate, so does every unit after it until
+/// then; one still pending at the end of the last block is dropped.  A
+/// block stops before a byte without its pair and, under a dos eol,
+/// before a CR without the two bytes after it; the last block's flush
+/// makes those bytes binary characters.
+fn decode_coding_utf_16_block(
+    bytes: &[u8],
+    big_endian: bool,
+    check_bom: bool,
+    block: &mut DecodeBlock,
+) -> DecodedText {
+    let mut out = DecodedText::new();
+    let end = bytes.len();
+    let mut p = 0;
+    let mut src_base = 0;
+    'decode: {
+        if !block.spec.bom_done {
+            if check_bom {
+                if end < 2 {
+                    break 'decode;
+                }
+                let c = (u32::from(bytes[0]) << 8) | u32::from(bytes[1]);
+                if (big_endian && c == 0xFEFF) || (!big_endian && c == 0xFFFE) {
+                    p = 2;
+                }
+            }
+            block.spec.bom_done = true;
+        }
+        let is_high = |c: u32| (0xD800..0xDC00).contains(&c);
+        let is_low = |c: u32| (0xDC00..0xE000).contains(&c);
+        loop {
+            src_base = p;
+            if p + 2 > end {
+                break;
+            }
+            let (c1, c2) = (u32::from(bytes[p]), u32::from(bytes[p + 1]));
+            p += 2;
+            let c = if big_endian {
+                (c1 << 8) | c2
+            } else {
+                (c2 << 8) | c1
+            };
+            let surrogate = block.spec.surrogate;
+            if surrogate != 0 {
+                if !is_low(c) {
+                    let (first, second) = if big_endian {
+                        (surrogate >> 8, surrogate & 0xFF)
+                    } else {
+                        (surrogate & 0xFF, surrogate >> 8)
+                    };
+                    out.push_code(first);
+                    out.push_code(second);
+                    if is_high(c) {
+                        block.spec.surrogate = c;
+                    } else {
+                        // CODING_UTF_16_SURROGATE stays as it was.
+                        out.push_code(c);
+                    }
+                } else {
+                    out.push_code(0x10000 + (((surrogate - 0xD800) << 10) | (c - 0xDC00)));
+                    block.spec.surrogate = 0;
+                }
+            } else if is_high(c) {
+                block.spec.surrogate = c;
+            } else {
+                if block.eol_dos && c == u32::from(b'\r') && p + 2 > end {
+                    // ONE_MORE_BYTE (byte_after_cr1/2) ran out.
+                    break;
+                }
+                out.push_code(c);
+            }
+        }
+    }
+    block.finish(&mut out, bytes, src_base);
+    out
+}
+
+/// What a decoder reads and leaves of coding.c's `struct coding_system'
+/// for one block of a longer text.  LAST is CODING_MODE_LAST_BLOCK: what
+/// the decoder could not finish at the end is decode_coding's to flush as
+/// binary characters, where otherwise it stays unconsumed for the next
+/// block; EOL_DOS (a dos eol and no `inhibit-eol-conversion') makes a CR
+/// at the end wait for the byte after it.  SPEC is the coding->spec state
+/// one block leaves the next, and the decoder sets CONSUMED
+/// (coding->consumed).
+pub(crate) struct DecodeBlock<'a> {
+    pub(crate) last: bool,
+    pub(crate) eol_dos: bool,
+    pub(crate) spec: &'a mut DecoderSpec,
+    pub(crate) consumed: usize,
+}
+
+impl<'a> DecodeBlock<'a> {
+    /// A whole text, as decode_coding_object decodes one.
+    pub(crate) fn whole(spec: &'a mut DecoderSpec, eol_dos: bool) -> Self {
+        DecodeBlock {
+            last: true,
+            eol_dos,
+            spec,
+            consumed: 0,
+        }
+    }
+
+    /// decode_coding after the decoder stopped at SRC_BASE: the last
+    /// block flushes the rest of BYTES as binary characters, any other
+    /// leaves it for coding->carryover.
+    pub(crate) fn finish(&mut self, out: &mut DecodedText, bytes: &[u8], src_base: usize) {
+        if self.last {
+            for &byte in &bytes[src_base..] {
+                out.push_byte(byte);
+            }
+            self.consumed = bytes.len();
+        } else {
+            self.consumed = src_base;
+        }
+    }
+}
+
+/// coding->spec as one block leaves it for the next.
+#[derive(Default)]
+pub(crate) struct DecoderSpec {
+    /// CODING_UTF_8_BOM or CODING_UTF_16_BOM is utf_without_bom: the first
+    /// block's BOM check is done.
+    pub(crate) bom_done: bool,
+    /// CODING_UTF_16_SURROGATE.
+    pub(crate) surrogate: u32,
+    /// coding->spec.iso_2022.
+    pub(crate) iso2022: Option<Box<iso2022::Iso2022Carry>>,
+}
+
+/// A stream decoded a block at a time: read_process_output's
+/// proc_decode_coding_system[] and p->decoding_buf, call_process's
+/// process_coding and carryover.  CARRYOVER is what the last block left
+/// undecoded (at most coding->carryover's 64 bytes), LAST_BLOCK is
+/// CODING_MODE_LAST_BLOCK, and the spec state belongs to the coding the
+/// last block settled on (setup_coding_system starts another afresh).
+#[derive(Default)]
+pub(crate) struct BlockDecoder {
+    pub(crate) carryover: Vec<u8>,
+    pub(crate) last_block: bool,
+    spec_coding: Option<String>,
+    spec: DecoderSpec,
+}
+
+impl BlockDecoder {
+    /// setup_process_coding_systems: a fresh coding struct, but the
+    /// decoding carryover (p->decoding_buf) survives it.
+    pub(crate) fn reset_keeping_carryover(&mut self) {
+        let carryover = std::mem::take(&mut self.carryover);
+        *self = Self {
+            carryover,
+            ..Default::default()
+        };
+    }
+}
+
+/// The encoder side of a process's coding struct
+/// (proc_encode_coding_system[]) as one send_process leaves it for the
+/// next: the coding it is set up with, when not the process's encoding
+/// itself (a unibyte send's raw-text), and the coding->spec state of a
+/// block that is not the last -- the ISO-2022 designations and the BOM
+/// already written.  No send is a last block: Fprocess_send_eof's flush
+/// sets CODING_MODE_LAST_BLOCK, but send_process's object t encodes
+/// nothing, and the raw-text setup after it clears the mode.
+#[derive(Default)]
+pub(crate) struct EncoderSpec {
+    pub(crate) coding: Option<Value>,
+    pub(crate) bom_done: bool,
+    pub(crate) iso2022: Option<Box<iso2022::Iso2022EncodeCarry>>,
+}
+
+/// sizeof coding->carryover.
+const CODING_CARRYOVER_BYTES: usize = 64;
+
+/// A decoder's characters, as produce_chars stores them: the text, with
+/// the characters it cannot spell kept by character index in EXTENDED
+/// (one beyond Unicode or a surrogate, spelled as the invalid-Unicode
+/// sentinel, and a real U+E080..U+E0FF, which would read back as a raw
+/// byte), the way strings and buffers keep them; and the `charset' runs
+/// the decoder annotated (character offsets), which produce_charset turns
+/// into text properties.
+#[derive(Default)]
 pub(crate) struct DecodedText {
     pub(crate) text: String,
     pub(crate) charsets: Vec<(usize, usize, String)>,
+    pub(crate) extended: Vec<(usize, u32)>,
+    chars: usize,
+}
+
+impl DecodedText {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// The number of characters produced so far.
+    pub(crate) fn char_count(&self) -> usize {
+        self.chars
+    }
+
+    /// Store the character whose code is C.
+    pub(crate) fn push_code(&mut self, c: u32) {
+        if c < 0x80 {
+            self.text.push(char::from(c as u8));
+        } else if RAW_BYTE8_CHARS.contains(&c) {
+            self.text
+                .push(raw_byte_regex_char((c - RAW_BYTE8_BASE) as u8));
+        } else {
+            match char::from_u32(c) {
+                Some(ch) => {
+                    self.text.push(ch);
+                    if raw_byte_from_regex_char(ch).is_some() {
+                        self.extended.push((self.chars, c));
+                    }
+                }
+                None => {
+                    self.text.push(json::INVALID_UNICODE_SENTINEL);
+                    self.extended.push((self.chars, c));
+                }
+            }
+        }
+        self.chars += 1;
+    }
+
+    /// Store BYTE as a decoder's invalid octet: ASCII as itself, any other
+    /// as its eight-bit character.
+    pub(crate) fn push_byte(&mut self, byte: u8) {
+        if byte < 0x80 {
+            self.text.push(char::from(byte));
+        } else {
+            self.text.push(raw_byte_regex_char(byte));
+        }
+        self.chars += 1;
+    }
+
+    /// Store the characters of RUN.
+    pub(crate) fn push_str(&mut self, run: &str) {
+        if run.as_bytes().contains(&0xEE)
+            && run.chars().any(|ch| raw_byte_from_regex_char(ch).is_some())
+        {
+            for ch in run.chars() {
+                self.push_code(ch as u32);
+            }
+        } else {
+            self.text.push_str(run);
+            self.chars += run.chars().count();
+        }
+    }
+
+    /// Store the ASCII run RUN.
+    pub(crate) fn push_ascii(&mut self, run: &[u8]) {
+        debug_assert!(run.is_ascii());
+        // SAFETY: ASCII is UTF-8.
+        self.text
+            .push_str(unsafe { std::str::from_utf8_unchecked(run) });
+        self.chars += run.len();
+    }
+
+    /// decode_eol's scan of the produced text: the EOL_SEEN bits, with
+    /// CRLF counted once and CR LF's second character skipped.
+    fn eol_seen(&self) -> u8 {
+        // CR and LF are never part of another character's UTF-8.
+        let bytes = self.text.as_bytes();
+        let mut seen = detect::EOL_SEEN_NONE;
+        let mut i = 0;
+        while let Some(offset) = memchr::memchr2(b'\n', b'\r', &bytes[i..]) {
+            let p = i + offset;
+            if bytes[p] == b'\n' {
+                seen |= detect::EOL_SEEN_LF;
+                i = p + 1;
+            } else if bytes.get(p + 1) == Some(&b'\n') {
+                seen |= detect::EOL_SEEN_CRLF;
+                i = p + 2;
+            } else {
+                seen |= detect::EOL_SEEN_CR;
+                i = p + 1;
+            }
+            if seen == detect::EOL_SEEN_LF | detect::EOL_SEEN_CR | detect::EOL_SEEN_CRLF {
+                break;
+            }
+        }
+        seen
+    }
+
+    /// decode_eol's conversion for EOL_TYPE (1 dos, 2 mac): a CR becomes a
+    /// newline under mac, and under dos each CR followed by a newline goes,
+    /// the side table and the charset runs moving with the characters
+    /// after it.
+    fn convert_eol(&mut self, eol_type: i64) {
+        match eol_type {
+            2 => self.text = self.text.replace('\r', "\n"),
+            1 if self.text.contains("\r\n") => {
+                // removed[i]: the CRs deleted before character index I.
+                let mut removed = Vec::with_capacity(self.chars + 1);
+                let mut count = 0;
+                let mut chars = self.text.chars().peekable();
+                while let Some(ch) = chars.next() {
+                    removed.push(count);
+                    if ch == '\r' && chars.peek() == Some(&'\n') {
+                        count += 1;
+                    }
+                }
+                removed.push(count);
+                let shift = |index: usize| index - removed[index.min(removed.len() - 1)];
+                for entry in &mut self.extended {
+                    entry.0 = shift(entry.0);
+                }
+                for run in &mut self.charsets {
+                    run.0 = shift(run.0);
+                    run.1 = shift(run.1);
+                }
+                self.text = self.text.replace("\r\n", "\n");
+                self.chars -= count;
+            }
+            _ => {}
+        }
+    }
+
+    /// Append OTHER, shifting its character offsets past these.
+    pub(crate) fn append(&mut self, other: DecodedText) {
+        let base = self.chars;
+        self.text.push_str(&other.text);
+        self.extended.extend(
+            other
+                .extended
+                .into_iter()
+                .map(|(index, code)| (base + index, code)),
+        );
+        self.charsets.extend(
+            other
+                .charsets
+                .into_iter()
+                .map(|(start, end, charset)| (base + start, base + end, charset)),
+        );
+        self.chars += other.chars;
+    }
 }
 
 pub(crate) fn decode_text_bytes(
@@ -2023,16 +2314,13 @@ impl CharsetRuns {
 /// Unicode character answering `unicode' once the non-preferred part of
 /// the order is reached, and `eight-bit' is the fallback.  ORDERED and
 /// NON_PREFERRED_HEAD come from the interpreter (a caller working over a
-/// text fetches them once).
+/// text fetches them once).  CH is GNU's character number.
 pub(crate) fn char_charset_ordered(
     interp: &Interpreter,
     ordered: &[String],
     non_preferred_head: Option<&str>,
     ch: u32,
 ) -> (String, u32) {
-    // CH may carry a raw byte in its Rust-internal spelling; GNU's
-    // character number decides the MAX_UNICODE_CHAR test below.
-    let ch = gnu_character_number(ch);
     if ch <= 0x7F {
         return ("ascii".into(), ch);
     }
@@ -2054,16 +2342,6 @@ pub(crate) fn char_charset_ordered(
         ("emacs".into(), ch)
     } else {
         ("eight-bit".into(), ch - RAW_BYTE8_BASE)
-    }
-}
-
-/// GNU's number for CH: a raw byte spelled in the Rust-internal regex
-/// range becomes #x3fff80..#x3fffff; every other value is its own number.
-pub(crate) fn gnu_character_number(ch: u32) -> u32 {
-    if (RAW_BYTE_REGEX_BASE + 0x80..=RAW_BYTE_REGEX_BASE + 0xff).contains(&ch) {
-        RAW_BYTE8_BASE + ch - RAW_BYTE_REGEX_BASE
-    } else {
-        ch
     }
 }
 
@@ -2140,37 +2418,6 @@ fn decode_translation_table_p(interp: &Interpreter, coding: &str, env: &Env) -> 
     }
 }
 
-/// decode_coding_gap: the BYTES a file read left in the gap as the text
-/// CODING decodes them to, with the charsets its decoder annotates.  When
-/// CODING is ASCII compatible with no post-read conversion and no
-/// translation table, and every byte is ASCII, the bytes are the text as
-/// they are (`disable-ascii-optimization' turns this off).  EOL
-/// conversion is the caller's, before.
-pub(crate) fn decode_coding_gap(
-    interp: &Interpreter,
-    env: &Env,
-    bytes: &[u8],
-    coding: &str,
-) -> Result<DecodedText, LispError> {
-    if bytes.is_ascii()
-        && interp
-            .lookup_var("disable-ascii-optimization", env)
-            .is_none_or(|value| value.is_nil())
-        && coding_system_is_ascii_compatible(interp, coding)
-        && coding_system_property(interp, coding, ":post-read-conversion")
-            .is_none_or(|value| value.is_nil())
-        && !decode_translation_table_p(interp, coding, env)
-    {
-        // SAFETY: ASCII is UTF-8.
-        let text = unsafe { String::from_utf8_unchecked(bytes.to_vec()) };
-        return Ok(DecodedText {
-            text,
-            charsets: Vec::new(),
-        });
-    }
-    decode_text_bytes_annotated(interp, bytes, coding)
-}
-
 pub(crate) fn decode_text_bytes_annotated(
     interp: &Interpreter,
     bytes: &[u8],
@@ -2179,6 +2426,41 @@ pub(crate) fn decode_text_bytes_annotated(
     let canonical = interp
         .coding_system_canonical_name(coding)
         .ok_or_else(|| coding_system_error(Value::symbol(coding)))?;
+    // detect_coding settles an auto-BOM coding before it decodes.
+    let canonical = detect_auto_bom_coding(
+        interp,
+        &canonical,
+        &detect::DetectSource::from_bytes(bytes),
+        &Env::new(),
+    )
+    .unwrap_or(canonical);
+    decode_bytes_with_coding(interp, bytes, &canonical)
+}
+
+/// The decoder of the coding system CANONICAL over BYTES, with no
+/// detection, as a whole text.
+fn decode_bytes_with_coding(
+    interp: &Interpreter,
+    bytes: &[u8],
+    canonical: &str,
+) -> Result<DecodedText, LispError> {
+    decode_bytes_with_coding_block(
+        interp,
+        bytes,
+        canonical,
+        &mut DecodeBlock::whole(&mut DecoderSpec::default(), false),
+    )
+}
+
+/// The decoder of the coding system CANONICAL over the block BYTES, with
+/// no detection.
+fn decode_bytes_with_coding_block(
+    interp: &Interpreter,
+    bytes: &[u8],
+    canonical: &str,
+    block: &mut DecodeBlock,
+) -> Result<DecodedText, LispError> {
+    let canonical = canonical.to_string();
     let kind = interp
         .coding_system_kind_name(&canonical)
         .unwrap_or_else(|| canonical.clone());
@@ -2186,197 +2468,162 @@ pub(crate) fn decode_text_bytes_annotated(
     // single-byte ones (koi8-r, windows-125x) included: their `charset'
     // property is the coding's charset, as the oracle reports for
     // `(decode-coding-string "a\301" 'koi8-r)'.
-    match kind.as_str() {
-        "iso-2022" => {
-            let decoded = iso2022::decode(interp, bytes, &canonical);
-            return Ok(DecodedText {
-                text: decoded.text,
-                charsets: decoded.charsets,
-            });
+    Ok(match kind.as_str() {
+        "iso-2022" => iso2022::decode(interp, bytes, &canonical, block),
+        "shift-jis" => decode_sjis_bytes(interp, bytes, &canonical, block),
+        "big5" => decode_big5_bytes(interp, bytes, &canonical, block),
+        "emacs-mule" => decode_emacs_mule_bytes(interp, bytes, block),
+        "charset" => decode_charset_coding_bytes(interp, bytes, &canonical, block),
+        "utf-8" | "prefer-utf-8" | "utf-8-auto" => {
+            let bom = coding_system_consumes_bom(interp, &canonical);
+            decode_coding_utf_8_block(bytes, bom, block)
         }
-        "euc-jp" => return Ok(decode_euc_jp_bytes(interp, bytes)),
-        "sjis" => return Ok(decode_sjis_bytes(interp, bytes, &canonical)),
-        "big5" => return Ok(decode_big5_bytes(interp, bytes, &canonical)),
-        "emacs-mule" => return Ok(decode_emacs_mule_bytes(interp, bytes)),
-        "charset" => return Ok(decode_charset_coding_bytes(interp, bytes, &canonical)),
-        _ => {}
-    }
-    let text = decode_text_bytes_plain(interp, bytes, &canonical, &kind)?;
-    Ok(DecodedText {
-        text,
-        charsets: Vec::new(),
+        "utf-8-with-signature" => decode_coding_utf_8_block(bytes, true, block),
+        "utf-16" => {
+            // An auto-BOM coding reaching the decoder is one detect_coding
+            // could not settle (utf_detect_bom): it decodes without a BOM in
+            // its own byte order.
+            let (big_endian, with_bom, detect_bom) =
+                coding_system_utf16_options(interp, &canonical, &kind);
+            decode_coding_utf_16_block(bytes, big_endian, with_bom && !detect_bom, block)
+        }
+        _ => decode_coding_raw_text_block(bytes, block),
     })
 }
 
-fn decode_text_bytes_plain(
-    interp: &Interpreter,
-    bytes: &[u8],
-    canonical: &str,
-    kind: &str,
-) -> Result<String, LispError> {
-    let canonical = canonical.to_string();
-    if let Some(encoding) = legacy_single_byte_encoding(interp, &canonical) {
-        return Ok(decode_legacy_single_byte_bytes(encoding, bytes));
-    }
-    match kind {
-        "utf-8" | "prefer-utf-8" | "utf-8-auto" => {
-            let bytes = if coding_system_consumes_bom(interp, &canonical) {
-                strip_utf8_bom(bytes).1
-            } else {
-                bytes
-            };
-            Ok(decode_utf8_bytes(bytes))
-        }
-        "utf-8-with-signature" => Ok(decode_utf8_bytes(strip_utf8_bom(bytes).1)),
-        "utf-16" => {
-            let (big_endian, with_bom, detect_bom) =
-                coding_system_utf16_options(interp, &canonical, kind);
-            Ok(decode_utf16_bytes(bytes, big_endian, with_bom, detect_bom))
-        }
-        "utf-16be" => Ok(decode_utf16_bytes(bytes, true, false, false)),
-        "utf-16le" => Ok(decode_utf16_bytes(bytes, false, false, false)),
-        "iso-latin-1" => Ok(decode_latin_bytes(bytes)),
-        "us-ascii" => Ok(bytes.iter().map(|byte| char::from(*byte)).collect()),
-        "raw-text" | "no-conversion" => Ok(decode_raw_text_bytes(bytes)),
-        _ => Ok(decode_raw_text_bytes(bytes)),
+/// CODING_ATTR_CHARSET_LIST: the charsets CODING was defined with, the
+/// symbols `iso-2022' and `emacs-mule' standing for those lists.
+pub(crate) fn coding_attr_charset_list(interp: &Interpreter, coding: &str) -> Vec<String> {
+    let Some(state) = interp.coding_system(coding) else {
+        return Vec::new();
+    };
+    match state.charset_list.kind() {
+        Kind::Symbol(name) if name == "iso-2022" => interp.iso_2022_charset_list(),
+        Kind::Symbol(name) if name == "emacs-mule" => emacs_mule_charset_list(interp),
+        _ => coding_system_charset_names(interp, coding),
     }
 }
 
-pub(crate) fn string_unencodable_positions(
-    text: &str,
-    coding: &str,
+fn charset_infos(interp: &Interpreter, names: &[String]) -> Vec<std::rc::Rc<CharsetInfo>> {
+    names
+        .iter()
+        .filter_map(|charset| charset_info(interp, charset))
+        .collect()
+}
+
+/// coding.c char_encodable_p: some charset of CHARSETS contains C once the
+/// encode translation TABLES have translated it.
+fn char_encodable_p(
     interp: &Interpreter,
-) -> Result<Vec<i64>, LispError> {
+    c: u32,
+    charsets: &[std::rc::Rc<CharsetInfo>],
+    tables: &[Value],
+) -> bool {
+    let c = tables
+        .iter()
+        .fold(c, |code, table| translate_safety_character(*table, code));
+    charsets
+        .iter()
+        .any(|charset| charset.encode(interp, c).is_some())
+}
+
+/// term.c's test of a character against the terminal's charset list
+/// (coding_charset_list of its coding): char_charset over that list, which
+/// for a coding without one is the ordered list and always succeeds.
+pub(crate) fn terminal_char_encodable(interp: &Interpreter, coding: &str, c: u32) -> bool {
+    let names = match iso2022::iso_attributes(interp, coding) {
+        Some(attrs) if attrs.flags & crate::lisp::eval::coding::ISO_FLAG_FULL_SUPPORT != 0 => {
+            interp.iso_2022_charset_list()
+        }
+        _ => coding_attr_charset_list(interp, coding),
+    };
+    names.is_empty() || char_encodable_p(interp, c, &charset_infos(interp, &names), &[])
+}
+
+/// The character codes of the current buffer's text FROM..TO, absolute
+/// positions read past any narrowing.
+fn buffer_character_codes(interp: &Interpreter, from: usize, to: usize) -> Vec<u32> {
+    let buffer = interp.buffer.borrow();
+    let source = StringLike {
+        text: String::from(buffer.text_rope().slice(from - 1..to - 1)),
+        props: Vec::new(),
+        multibyte: buffer.is_multibyte(),
+        extended_chars: buffer.substring_extended_chars(from, to),
+    };
+    source
+        .character_codes_iter()
+        .map(|code| code as u32)
+        .collect()
+}
+
+/// coding.c Funencodable_char_position.
+pub(crate) fn unencodable_char_position_value(
+    interp: &mut Interpreter,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let coding = checked_coding_symbol(interp, &args[2])?;
     let canonical = interp
-        .coding_system_canonical_name(coding)
-        .ok_or_else(|| coding_system_error(Value::symbol(coding)))?;
+        .coding_system_canonical_name(&coding)
+        .ok_or_else(|| coding_system_error(args[2]))?;
     let kind = interp
         .coding_system_kind_name(&canonical)
-        .unwrap_or_else(|| canonical.clone());
-    let legacy_single_byte = legacy_single_byte_encoding(interp, &canonical);
-    // A charset coding's attributes, resolved once for the whole text.
-    let (charset_ascii_compatible, charsets) = if kind == "charset" {
-        (
-            coding_system_is_ascii_compatible(interp, &canonical),
-            coding_system_charset_names(interp, &canonical)
-                .iter()
-                .filter_map(|charset| charset_info(interp, charset))
-                .collect::<Vec<_>>(),
-        )
-    } else {
-        (false, Vec::new())
+        .unwrap_or_default();
+    if kind == "raw-text" {
+        return Ok(Value::Nil);
+    }
+    let ascii_compatible = coding_system_is_ascii_compatible(interp, &canonical);
+    let charsets = charset_infos(interp, &coding_attr_charset_list(interp, &canonical));
+    let tables = encode_translation_tables(interp, &canonical, env)?;
+    let string = args.get(4).copied().filter(|value| !value.is_nil());
+    let (codes, from) = match string {
+        None => {
+            let (start, end) = validate_region(interp, &args[0], &args[1])?;
+            if !interp.buffer.borrow().is_multibyte() {
+                return Ok(Value::Nil);
+            }
+            (buffer_character_codes(interp, start, end), start)
+        }
+        Some(string) => {
+            let source = string_like(&string)
+                .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), string))?;
+            let length = source.text.chars().count();
+            let (from, to) = validate_subarray(string, args[0], args[1], length)?;
+            if !source.multibyte {
+                return Ok(Value::Nil);
+            }
+            let codes: Vec<u32> = source
+                .character_codes_iter()
+                .skip(from)
+                .take(to - from)
+                .map(|code| code as u32)
+                .collect();
+            (codes, from)
+        }
     };
-    let iso_attrs = if kind == "iso-2022" {
-        iso2022::iso_attributes(interp, &canonical)
-    } else {
-        None
+    if ascii_compatible && codes.iter().all(|&c| c < 0x80) {
+        return Ok(Value::Nil);
+    }
+    let mut n = match args.get(3).map(|value| value.kind()) {
+        None | Some(Kind::Nil) => 1,
+        Some(Kind::Integer(count)) if count >= 0 => count,
+        Some(other) => return Err(wrong_type_argument("wholenump", other.value())),
     };
-    let mut failures = Vec::new();
-    for (index, ch) in text.chars().enumerate() {
-        let raw_byte = raw_byte_from_regex_char(ch);
-        let code = ch as u32;
-        let representable = match kind.as_str() {
-            "utf-8" | "utf-8-with-signature" | "utf-8-auto" | "prefer-utf-8" | "undecided" => true,
-            _ if let Some(encoding) = legacy_single_byte => {
-                raw_byte.is_some() || !encoding.encode(&ch.to_string()).2
+    let mut positions = Vec::new();
+    for (index, &c) in codes.iter().enumerate() {
+        if !(c < 0x80 && ascii_compatible) && !char_encodable_p(interp, c, &charsets, &tables) {
+            positions.push(Value::Integer((from + index) as i64));
+            n -= 1;
+            if n == 0 {
+                break;
             }
-            // raw-text and no-conversion encode every character (their
-            // encoder is encode_coding_raw_text).
-            "raw-text" | "no-conversion" => true,
-            "iso-latin-1" => raw_byte.is_some() || code <= 0xFF,
-            "iso-2022" => {
-                raw_byte.is_some()
-                    || code < 0x80
-                    || iso_attrs
-                        .as_ref()
-                        .is_some_and(|attrs| iso2022::char_encodable(interp, attrs, code))
-            }
-            "us-ascii" => raw_byte.is_some_and(|byte| byte <= 0x7F) || code <= 0x7F,
-            "sjis" => {
-                raw_byte.is_some()
-                    || code <= 0x7F
-                    || ["japanese-jisx0208", "katakana-jisx0201"]
-                        .iter()
-                        .any(|charset| encode_charset_char(interp, charset, code).is_some())
-            }
-            "big5" => {
-                raw_byte.is_some()
-                    || code <= 0x7F
-                    || encode_charset_char(interp, "big5", code).is_some()
-            }
-            "euc-jp" => {
-                raw_byte.is_some()
-                    || code <= 0x7F
-                    || [
-                        "japanese-jisx0208",
-                        "katakana-jisx0201",
-                        "japanese-jisx0212",
-                        "latin-jisx0201",
-                    ]
-                    .iter()
-                    .any(|charset| encode_charset_char(interp, charset, code).is_some())
-            }
-            "charset" => {
-                (charset_ascii_compatible
-                    && (raw_byte.is_some_and(|byte| byte <= 0x7f) || code <= 0x7f))
-                    || raw_byte.is_some()
-                    || charsets
-                        .iter()
-                        .any(|charset| charset.encode(interp, gnu_character_number(code)).is_some())
-            }
-            _ => true,
-        };
-        if !representable {
-            failures.push(index as i64);
         }
     }
-    Ok(failures)
-}
-
-pub(crate) fn string_identity_for_coding(
-    text: &str,
-    coding: &str,
-    interp: &Interpreter,
-    encode: bool,
-    inhibit_eol_conversion: bool,
-) -> bool {
-    let eol_type = if inhibit_eol_conversion {
-        None
+    Ok(if args.get(3).is_none_or(Value::is_nil) {
+        positions.first().copied().unwrap_or(Value::Nil)
     } else {
-        interp.coding_system_eol_type_value(coding)
-    };
-    let kind = interp
-        .coding_system_kind_name(coding)
-        .unwrap_or_else(|| coding.to_string());
-    let single_byte_translation = legacy_single_byte_encoding(interp, coding).is_some()
-        || matches!(kind.as_str(), "iso-latin-1" | "charset");
-    if encode {
-        if matches!(eol_type, Some(1) | Some(2)) && text.contains('\n') {
-            return false;
-        }
-        if kind == "utf-8-with-signature"
-            || (kind == "utf-8" && coding_system_requires_bom(interp, coding))
-            || matches!(kind.as_str(), "utf-16" | "utf-16be" | "utf-16le")
-            || (kind == "iso-2022" && !coding_system_is_ascii_compatible(interp, coding))
-        {
-            return false;
-        }
-        if single_byte_translation
-            && text
-                .chars()
-                .any(|ch| raw_byte_from_regex_char(ch).is_some() || !ch.is_ascii())
-        {
-            return false;
-        }
-    } else if (matches!(eol_type, Some(1) | Some(2)) && text.contains('\r'))
-        || (single_byte_translation && text.chars().any(is_raw_byte_regex_char))
-        || matches!(kind.as_str(), "utf-16" | "utf-16be" | "utf-16le")
-        || ((kind == "utf-8" || kind == "utf-8-with-signature")
-            && coding_system_consumes_bom(interp, coding))
-    {
-        return false;
-    }
-    true
+        Value::list(positions)
+    })
 }
 
 struct EmacsMuleLayout {
@@ -2438,7 +2685,7 @@ pub(crate) fn emacs_mule_charset_list(interp: &Interpreter) -> Vec<String> {
 /// ISO-2022 designation codings only, so a `charset' text property does
 /// not steer emacs-mule (the oracle re-encodes a jisx0208-annotated
 /// hiragana through chinese-gb2312, the list's first match).
-fn encode_emacs_mule_bytes(interp: &Interpreter, text: &str, coding: &str) -> Vec<u8> {
+fn encode_coding_emacs_mule(interp: &Interpreter, codes: &[u32], coding: &str) -> Vec<u8> {
     let charsets: Vec<(std::rc::Rc<CharsetInfo>, u8)> = emacs_mule_charset_list(interp)
         .iter()
         .filter_map(|charset| {
@@ -2449,23 +2696,21 @@ fn encode_emacs_mule_bytes(interp: &Interpreter, text: &str, coding: &str) -> Ve
         .collect();
     // char_charset (C, Vemacs_mule_charset_list, &code).
     let char_charset = |c: u32| {
-        let number = gnu_character_number(c);
         charsets.iter().find_map(|(charset, id)| {
             charset
-                .encode(interp, number)
+                .encode(interp, c)
                 .map(|code| (charset.dimension, *id, code))
         })
     };
     let default_char = coding_system_default_char(interp, coding);
-    let mut out = Vec::with_capacity(text.len());
-    for ch in text.chars() {
-        let code = ch as u32;
-        if let Some(byte) = raw_byte_from_regex_char(ch) {
-            out.push(byte);
-            continue;
-        }
+    let mut out = Vec::with_capacity(codes.len());
+    for &code in codes {
         if code < 0x80 {
             out.push(code as u8);
+            continue;
+        }
+        if char_byte8_p(code) {
+            out.push((code - RAW_BYTE8_BASE) as u8);
             continue;
         }
         let Some((dimension, id, charset_code)) = char_charset(code).or_else(|| {
@@ -2495,23 +2740,28 @@ fn encode_emacs_mule_bytes(interp: &Interpreter, text: &str, coding: &str) -> Ve
     out
 }
 
-pub(crate) fn decode_emacs_mule_bytes(interp: &Interpreter, bytes: &[u8]) -> DecodedText {
+pub(crate) fn decode_emacs_mule_bytes(
+    interp: &Interpreter,
+    bytes: &[u8],
+    block: &mut DecodeBlock,
+) -> DecodedText {
     // coding.c:emacs_mule_char.  Invalid or unmappable sequences are retried
     // from the next byte, which preserves each offending byte as GNU's
     // eight-bit character instead of consuming a superficially valid run.
     // decode_coding_emacs_mule annotates every character's charset, so an
     // ASCII character closes a run.
     let layout = emacs_mule_layout(interp);
-    let mut out = String::new();
-    let mut offset = 0usize;
+    let mut out = DecodedText::new();
     let mut runs = CharsetRuns::new();
     let mut index = 0;
     while index < bytes.len() {
         let lead = bytes[index];
+        if emacs_mule_char_runs_out(&layout, &bytes[index..], block.eol_dos) {
+            break;
+        }
         if lead < 0x80 {
-            runs.note_strict("ascii", offset);
-            out.push(char::from(lead));
-            offset += 1;
+            runs.note_strict("ascii", out.char_count());
+            out.push_byte(lead);
             index += 1;
             continue;
         }
@@ -2527,7 +2777,6 @@ pub(crate) fn decode_emacs_mule_bytes(interp: &Interpreter, bytes: &[u8]) -> Dec
                 })
                 .and_then(|(charset, tail)| {
                     decode_charset_code(interp, charset, u32::from(tail[1] & 0x7F))
-                        .and_then(char::from_u32)
                         .map(|character| (charset, character, 3))
                 }),
             0x9C | 0x9D => bytes
@@ -2541,7 +2790,6 @@ pub(crate) fn decode_emacs_mule_bytes(interp: &Interpreter, bytes: &[u8]) -> Dec
                 .and_then(|(charset, tail)| {
                     let code = u32::from(tail[1] & 0x7F) << 8 | u32::from(tail[2] & 0x7F);
                     decode_charset_code(interp, charset, code)
-                        .and_then(char::from_u32)
                         .map(|character| (charset, character, 4))
                 }),
             _ if lead < 0xA0 && layout.lengths[usize::from(lead)] > 1 => {
@@ -2555,110 +2803,58 @@ pub(crate) fn decode_emacs_mule_bytes(interp: &Interpreter, bytes: &[u8]) -> Dec
                             .iter()
                             .fold(0_u32, |code, byte| code << 8 | u32::from(byte & 0x7F));
                         decode_charset_code(interp, charset, code)
-                            .and_then(char::from_u32)
                             .map(|character| (charset, character, length))
                     })
             }
             _ => None,
         };
         if let Some((charset, character, consumed)) = decoded {
-            runs.note_strict(charset, offset);
-            out.push(character);
+            runs.note_strict(charset, out.char_count());
+            out.push_code(character);
             index += consumed;
         } else {
-            runs.note_strict("eight-bit", offset);
-            out.push(raw_byte_regex_char(lead));
+            // A byte emacs_mule_bytes counts as one character by itself
+            // (#x9E, #x9F) is eight-bit; invalid_code passes any other
+            // through without touching the run.
+            if (0x81..0xA0).contains(&lead) && layout.lengths[usize::from(lead)] == 1 {
+                runs.note_strict("eight-bit", out.char_count());
+            }
+            out.push_byte(lead);
             index += 1;
         }
-        offset += 1;
     }
-    DecodedText {
-        charsets: runs.finish(offset),
-        text: out,
-    }
+    out.charsets = runs.finish(out.char_count());
+    block.finish(&mut out, bytes, index);
+    out
 }
 
-/// coding.c detect_coding for a decode with CODING (an undecided-type or
-/// an auto-BOM system): the coding system the bytes decode with, named
-/// with the eol convention decode_eol settles on afterwards, and the
-/// bytes with that convention normalized to LF.  TEXT is the multibyte
-/// source when the bytes came from one (detection then skips its
-/// multibyte characters, as ONE_MORE_BYTE does).
-pub(crate) fn auto_detect_coding_for(
-    interp: &Interpreter,
-    bytes: &[u8],
-    text: Option<&str>,
-    coding: &str,
-    env: &Env,
-) -> (String, Vec<u8>) {
-    let canonical = interp
-        .coding_system_canonical_name(coding)
-        .unwrap_or_else(|| coding.to_string());
-    let src = match text {
-        Some(text) => DetectSource::from_text(text, true),
-        None => DetectSource::from_bytes(bytes),
+/// Whether decode_coding_emacs_mule's ONE_MORE_BYTE runs out of SRC for
+/// the character SRC starts: a CR under a dos eol, or a multibyte
+/// sequence whose bytes so far pass emacs_mule_char's checks.
+fn emacs_mule_char_runs_out(layout: &EmacsMuleLayout, src: &[u8], eol_dos: bool) -> bool {
+    let Some((&lead, rest)) = src.split_first() else {
+        return false;
     };
-    let found = detect::detect_coding(interp, &src, &canonical, env).unwrap_or(canonical);
-    let kind = interp
-        .coding_system_kind_name(&found)
-        .unwrap_or_else(|| found.clone());
-    if matches!(found.as_str(), "no-conversion" | "binary")
-        || matches!(kind.as_str(), "utf-16" | "utf-16be" | "utf-16le")
-    {
-        // A unix eol (no-conversion) converts nothing; the UTF-16 decoder
-        // reads its own code units.
-        return (found, bytes.to_vec());
-    }
-    // detect_coding: a specified eol (an undecided-unix request) carries
-    // over to the found coding system; an undecided one is settled by
-    // decode_eol from the decoded text.
-    let explicit_eol = interp.coding_system_eol_type_value(&found);
-    let eol = explicit_eol
-        .or_else(|| interp.coding_system_eol_type_value(coding))
-        .or_else(|| detect_eol_type_opt(bytes));
-    let name = match (explicit_eol, eol) {
-        (None, Some(eol)) => {
-            let base = interp
-                .coding_system_base_name(&found)
-                .unwrap_or_else(|| found.clone());
-            coding_variant_name(interp, &base, Some(eol))
+    let charset_ok = |byte: u8| layout.charsets[usize::from(byte)].is_some();
+    let count = match lead {
+        b'\r' if eol_dos => return rest.is_empty(),
+        0x9A | 0x9B => 2,
+        0x9C | 0x9D => 3,
+        0x81..=0x9F if layout.lengths[usize::from(lead)] > 1 && charset_ok(lead) => {
+            layout.lengths[usize::from(lead)] - 1
         }
-        _ => found,
+        _ => return false,
     };
-    (
-        name,
-        decode_bytes_with_explicit_eol(bytes, eol.unwrap_or(0)),
-    )
-}
-
-pub(crate) fn auto_detect_coding(interp: &Interpreter, bytes: &[u8]) -> (String, Vec<u8>) {
-    auto_detect_coding_for(
-        interp,
-        bytes,
-        None,
-        "undecided",
-        &crate::lisp::types::Env::new(),
-    )
-}
-
-pub(crate) fn text_from_region_or_string(
-    interp: &Interpreter,
-    start_or_string: &Value,
-    end: Option<&Value>,
-) -> Result<String, LispError> {
-    if let Some(string) = string_like(start_or_string) {
-        return Ok(string.text);
-    }
-    let start = position_from_value(interp, start_or_string)?;
-    let end = end
-        .map(|value| position_from_value(interp, value))
-        .transpose()?
-        .unwrap_or(start);
-    interp
-        .buffer
-        .borrow()
-        .buffer_substring(start, end)
-        .map_err(|error| LispError::Signal(error.to_string()))
+    rest.len() < count
+        && rest
+            .iter()
+            .enumerate()
+            .all(|(index, &byte)| match (index, lead) {
+                // A private charset's byte names the charset.
+                (0, 0x9A | 0x9B) => byte >= 0xA0 && charset_ok(byte),
+                (0, 0x9C | 0x9D) => charset_ok(byte),
+                _ => byte >= 0xA0,
+            })
 }
 
 fn detected_names_value(names: Vec<String>, highest: bool) -> Value {
@@ -2700,7 +2896,13 @@ pub(crate) fn detect_coding_region_value(
     highest: Option<&Value>,
     env: &Env,
 ) -> Result<Value, LispError> {
-    let text = text_from_region_or_string(interp, start, Some(end))?;
+    // coding.c:Fdetect_coding_region: validate_region, then the text.
+    let (start, end) = validate_region(interp, start, end)?;
+    let text = interp
+        .buffer
+        .borrow()
+        .buffer_substring(start, end)
+        .map_err(|error| LispError::Signal(error.to_string()))?;
     let highest = highest.is_some_and(Value::is_truthy);
     let src = DetectSource::from_text(&text, interp.buffer.borrow().is_multibyte());
     Ok(detected_names_value(
@@ -2709,10 +2911,11 @@ pub(crate) fn detect_coding_region_value(
     ))
 }
 
-/// coding.c:get_translation_table for the encoding-side safety check.
+/// coding.c:get_translation_table (ATTRS, true, ...): the tables the
+/// encoders and the encodability checks translate characters through.
 /// Only a coding's own symbol/list entries are resolved through symbol
 /// properties; a standard table used on its own is passed through as-is.
-fn encoding_safety_translation_tables(
+pub(crate) fn encode_translation_tables(
     interp: &mut Interpreter,
     coding: &str,
     env: &mut Env,
@@ -2856,7 +3059,7 @@ pub(crate) fn find_coding_systems_region_internal_value(
             Kind::Symbol(name) if name == "emacs-mule" => emacs_mule_charset_list(interp),
             _ => coding_system_charset_names(interp, coding),
         };
-        let translations = encoding_safety_translation_tables(interp, coding, env)?;
+        let translations = encode_translation_tables(interp, coding, env)?;
         // coding.c:char_encodable_p tests declared charset membership;
         // an encoder's fallback/substitution is not proof of safe encoding.
         if characters.iter().all(|&character| {
@@ -2876,31 +3079,78 @@ pub(crate) fn find_coding_systems_region_internal_value(
     Ok(Value::list(codings))
 }
 
+/// coding.c Fcheck_coding_systems_region: for each coding of
+/// CODING_LIST that cannot encode some non-ASCII character of the region
+/// (absolute positions, past any narrowing) or string, the coding as
+/// given followed by those positions.
 pub(crate) fn check_coding_systems_region_value(
-    interp: &Interpreter,
-    start_or_string: &Value,
+    interp: &mut Interpreter,
+    start: &Value,
     end: Option<&Value>,
     coding_list: &Value,
+    env: &mut Env,
 ) -> Result<Value, LispError> {
-    let text = text_from_region_or_string(interp, start_or_string, end)?;
-    let mut failures = Vec::new();
-    for coding in coding_list.to_vec()? {
-        let symbol = coding.as_symbol()?.to_string();
-        let canonical = interp
-            .coding_system_canonical_name(&symbol)
+    let (codes, base) = if let Some(string) = string_like(start) {
+        if !string.multibyte {
+            return Ok(Value::Nil);
+        }
+        let codes: Vec<u32> = string
+            .character_codes_iter()
+            .map(|code| code as u32)
+            .collect();
+        (codes, 0)
+    } else {
+        let end_value = end.copied().unwrap_or(Value::Nil);
+        let s = position_from_value(interp, start)?;
+        let e = position_from_value(interp, &end_value)?;
+        let (z, multibyte) = {
+            let buffer = interp.buffer.borrow();
+            (buffer.text_rope().len_chars() + 1, buffer.is_multibyte())
+        };
+        if !(1 <= s && s <= e && e <= z) {
+            return Err(LispError::SignalValue(Value::list([
+                Value::symbol("args-out-of-range"),
+                *start,
+                end_value,
+            ])));
+        }
+        if !multibyte {
+            return Ok(Value::Nil);
+        }
+        (buffer_character_codes(interp, s, e), s)
+    };
+    if codes.iter().all(|&c| c < 0x80) {
+        return Ok(Value::Nil);
+    }
+    let mut checks = Vec::new();
+    let mut tail = *coding_list;
+    while let Some((coding, rest)) = tail.cons_values() {
+        tail = rest;
+        let canonical = coding
+            .symbol_str()
+            .and_then(|name| interp.coding_system_canonical_name(name))
             .ok_or_else(|| coding_system_error(coding))?;
-        let positions = string_unencodable_positions(&text, &canonical, interp)?;
-        if !positions.is_empty() {
-            let mut items = vec![Value::Symbol(canonical.into())];
-            items.extend(positions.into_iter().map(Value::Integer));
-            failures.push(Value::list(items));
+        let charsets = charset_infos(interp, &coding_attr_charset_list(interp, &canonical));
+        let tables = encode_translation_tables(interp, &canonical, env)?;
+        checks.push((coding, charsets, tables, Vec::new()));
+    }
+    for (index, &c) in codes.iter().enumerate() {
+        if c < 0x80 {
+            continue;
+        }
+        for (_, charsets, tables, positions) in &mut checks {
+            if !char_encodable_p(interp, c, charsets, tables) {
+                positions.push(Value::Integer((base + index) as i64));
+            }
         }
     }
-    Ok(if failures.is_empty() {
-        Value::Nil
-    } else {
-        Value::list(failures)
-    })
+    Ok(Value::list(
+        checks
+            .into_iter()
+            .filter(|(_, _, _, positions)| !positions.is_empty())
+            .map(|(coding, _, _, positions)| Value::list(std::iter::once(coding).chain(positions)))
+            .collect::<Vec<_>>(),
+    ))
 }
 
 pub(crate) fn find_operation_coding_system_value(
@@ -3081,35 +3331,98 @@ pub(crate) fn encode_coding_value_recording(
     } else {
         Vec::new()
     };
-    let failures = string_unencodable_positions(&converted.text, &canonical, interp)?;
-    let encoded = if failures.is_empty() {
-        encode_text_bytes_with_charsets(
-            interp,
-            &converted,
-            &canonical,
-            inhibit_eol_conversion,
-            &preferred,
-        )?
-    } else {
-        let substituted = encode_string_text_for_coding(interp, &converted.text, &canonical);
-        if substituted == converted.text {
-            return Err(LispError::Signal("Character cannot be encoded".into()));
-        }
-        let substituted = StringLike {
-            text: substituted,
-            props: Vec::new(),
-            multibyte: converted.multibyte,
-            extended_chars: Vec::new(),
-        };
-        encode_text_bytes_with_charsets(
-            interp,
-            &substituted,
-            &canonical,
-            inhibit_eol_conversion,
-            &preferred,
-        )?
-    };
+    // encode_coding substitutes the default character for what the
+    // coding cannot encode; it never signals.
+    let translation = encode_translation_tables(interp, &canonical, env)?;
+    let encoded = encode_text_bytes_with_charsets(
+        interp,
+        &converted,
+        &canonical,
+        inhibit_eol_conversion,
+        false,
+        &translation,
+        &preferred,
+        None,
+    )?;
     Ok(bytes_to_shared_unibyte_value(&encoded))
+}
+
+/// send_process's encode_coding_object of the string VALUE by CODING
+/// through a process's encoder SPEC, as a block that is not the last: the
+/// pre-write conversion, then the encoder resuming from and leaving SPEC's
+/// state.  `last-coding-system-used' is the caller's.
+pub(crate) fn encode_process_block(
+    interp: &mut Interpreter,
+    value: &Value,
+    coding: &str,
+    spec: &mut EncoderSpec,
+    env: &mut Env,
+) -> Result<Vec<u8>, LispError> {
+    let string =
+        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
+    let canonical = interp
+        .coding_system_canonical_name(coding)
+        .ok_or_else(|| coding_system_error(Value::symbol(coding)))?;
+    let inhibit_eol_conversion = interp
+        .lookup_var("inhibit-eol-conversion", env)
+        .is_some_and(|value| value.is_truthy());
+    let pre_write =
+        coding_system_property(interp, &canonical, ":pre-write-conversion").unwrap_or(Value::Nil);
+    let converted = run_coding_conversion(interp, &string, &pre_write, true, env)?;
+    let preferred = if pre_write.is_nil() {
+        charset_preferences(&string)
+    } else {
+        Vec::new()
+    };
+    let translation = encode_translation_tables(interp, &canonical, env)?;
+    encode_text_bytes_with_charsets(
+        interp,
+        &converted,
+        &canonical,
+        inhibit_eol_conversion,
+        false,
+        &translation,
+        &preferred,
+        Some(spec),
+    )
+}
+
+/// CODING_REQUIRE_FLUSHING: setup_coding_system sets it for the
+/// ISO-2022 and CCL coding types.
+pub(crate) fn coding_requires_flushing(interp: &Interpreter, coding: &str) -> bool {
+    matches!(
+        interp.coding_system_kind_name(coding).as_deref(),
+        Some("iso-2022" | "ccl")
+    )
+}
+
+/// CODING_REQUIRE_ENCODING of a coding struct set up for CODING (nil
+/// standing for `undecided'): every type but undecided and raw-text, any
+/// coding with a pre-write conversion, and those two with a dos or mac
+/// eol unless `inhibit-eol-conversion' makes every eol unix.
+pub(crate) fn coding_requires_encoding(interp: &Interpreter, coding: &Value, env: &Env) -> bool {
+    let name = coding
+        .symbol_str()
+        .filter(|_| !coding.is_nil())
+        .unwrap_or("undecided");
+    let Some(canonical) = interp.coding_system_canonical_name(name) else {
+        return false;
+    };
+    if coding_system_property(interp, &canonical, ":pre-write-conversion")
+        .is_some_and(|function| !function.is_nil())
+    {
+        return true;
+    }
+    if !matches!(
+        interp.coding_system_kind_name(&canonical).as_deref(),
+        Some("undecided" | "raw-text")
+    ) {
+        return true;
+    }
+    let inhibit_eol_conversion = interp
+        .lookup_var("inhibit-eol-conversion", env)
+        .is_some_and(|value| value.is_truthy());
+    !inhibit_eol_conversion && matches!(coding_eol_type(interp, &canonical), Some(1 | 2))
 }
 
 /// coding.c's `ONE_MORE_BYTE' under `multibytep' (coding->src_multibyte,
@@ -3125,53 +3438,35 @@ pub(crate) fn encode_coding_value_recording(
 /// its byte and every other non-ASCII character as an invalid (negative)
 /// code that comes through unchanged, so the byte runs decode and the
 /// characters between them pass.  The decoder's `charset' runs are kept,
-/// re-based on the output.
+/// re-based on the output.  RAW_TO_UNIBYTE is a raw-text decode into a
+/// unibyte destination, which produce_chars fills with the bytes
+/// ONE_MORE_BYTE reads (a character's negative code's low eight bits).
 fn decode_multibyte_source_text(
     interp: &Interpreter,
-    text: &str,
+    source: &StringLike,
     coding: &str,
-    for_unibyte: bool,
+    raw_to_unibyte: bool,
 ) -> Result<DecodedText, LispError> {
-    let mut decoded = DecodedText {
-        text: String::new(),
-        charsets: Vec::new(),
-    };
-    let mut produced = 0usize;
+    let mut decoded = DecodedText::new();
     let mut run: Vec<u8> = Vec::new();
-    for ch in text.chars() {
-        if let Some(byte) = raw_byte_from_regex_char(ch) {
-            run.push(byte);
+    for code in source.character_codes_iter() {
+        let code = code as u32;
+        if code < 0x80 {
+            run.push(code as u8);
             continue;
         }
-        if (ch as u32) < 0x80 {
-            run.push(ch as u8);
+        if RAW_BYTE8_CHARS.contains(&code) {
+            run.push((code - RAW_BYTE8_BASE) as u8);
             continue;
         }
-        flush_decoded_source_run(
-            interp,
-            &mut run,
-            &mut decoded,
-            &mut produced,
-            coding,
-            for_unibyte,
-        )?;
-        if for_unibyte {
-            decoded
-                .text
-                .push(unibyte_char_for_byte(((-(ch as i32)) & 0xFF) as u8));
+        flush_decoded_source_run(interp, &mut run, &mut decoded, coding, raw_to_unibyte)?;
+        if raw_to_unibyte {
+            decoded.push_byte(((-i64::from(code)) & 0xFF) as u8);
         } else {
-            decoded.text.push(ch);
+            decoded.push_code(code);
         }
-        produced += 1;
     }
-    flush_decoded_source_run(
-        interp,
-        &mut run,
-        &mut decoded,
-        &mut produced,
-        coding,
-        for_unibyte,
-    )?;
+    flush_decoded_source_run(interp, &mut run, &mut decoded, coding, raw_to_unibyte)?;
     Ok(decoded)
 }
 
@@ -3179,7 +3474,6 @@ fn flush_decoded_source_run(
     interp: &Interpreter,
     run: &mut Vec<u8>,
     decoded: &mut DecodedText,
-    produced: &mut usize,
     coding: &str,
     for_unibyte: bool,
 ) -> Result<(), LispError> {
@@ -3187,20 +3481,11 @@ fn flush_decoded_source_run(
         return Ok(());
     }
     if for_unibyte {
-        decoded
-            .text
-            .extend(run.iter().copied().map(unibyte_char_for_byte));
-        *produced += run.len();
+        for &byte in run.iter() {
+            decoded.push_byte(byte);
+        }
     } else {
-        let part = decode_text_bytes_annotated(interp, run, coding)?;
-        let base = *produced;
-        decoded.charsets.extend(
-            part.charsets
-                .into_iter()
-                .map(|(start, end, charset)| (base + start, base + end, charset)),
-        );
-        *produced += part.text.chars().count();
-        decoded.text.push_str(&part.text);
+        decoded.append(decode_bytes_with_coding(interp, run, coding)?);
     }
     run.clear();
     Ok(())
@@ -3226,7 +3511,7 @@ fn eol_removed_prefix(staged: &str, crlf: bool) -> Vec<usize> {
 }
 
 /// The `charset' runs as text property spans on the converted text.
-fn charset_spans_to_props(
+pub(crate) fn charset_spans_to_props(
     charsets: Vec<(usize, usize, String)>,
     staged: &str,
     crlf_conversion: Option<bool>,
@@ -3255,6 +3540,302 @@ fn charset_spans_to_props(
         .collect()
 }
 
+/// A text decode_coding_object reads.
+pub(crate) enum DecodeSource<'a> {
+    /// The bytes of a unibyte text: a unibyte string's or buffer's, a
+    /// file's or a process's.
+    Bytes(&'a [u8]),
+    /// A string's or a buffer region's characters.
+    Text(&'a StringLike),
+}
+
+/// What decode_coding_object leaves behind.
+pub(crate) struct CodingDecode {
+    pub(crate) decoded: DecodedText,
+    /// CODING_ID_NAME once detect_coding and decode_eol have settled it:
+    /// the coding as given (an alias stays its name) unless detection
+    /// found another or the eol decided a subsidiary.
+    pub(crate) coding: String,
+    /// The settled coding's CODING_FOR_UNIBYTE: a string decoded with it
+    /// is unibyte.
+    pub(crate) for_unibyte: bool,
+}
+
+/// CODING_ID_EOL_TYPE as a settled type (0 unix, 1 dos, 2 mac), or None
+/// for an undecided one's vector of subsidiaries.
+pub(crate) fn coding_eol_type(interp: &Interpreter, coding: &str) -> Option<i64> {
+    let canonical = interp
+        .coding_system_canonical_name(coding)
+        .unwrap_or_else(|| coding.to_string());
+    if matches!(canonical.as_str(), "no-conversion" | "binary") {
+        // `binary' and `no-conversion' are unix in GNU; the native
+        // accessor keeps them out of the eol-variant table.
+        return Some(0);
+    }
+    interp.coding_system_eol_type_value(&canonical)
+}
+
+/// coding.c decode_coding_object without its destination: SOURCE decoded
+/// by CODING into a destination whose multibyteness is DST_MULTIBYTE (a
+/// buffer's), or None for a string, multibyte unless the settled coding
+/// is for unibyte text.  detect_coding settles an undecided or auto-BOM
+/// coding first, carrying CODING's specified eol type over; the settled
+/// coding's decoder runs; then decode_eol, unless the eol is unix or
+/// `inhibit-eol-conversion' is set, decides an undecided eol from the
+/// decoded text (naming its subsidiary) and converts.
+pub(crate) fn decode_coding_object(
+    interp: &Interpreter,
+    env: &Env,
+    source: DecodeSource<'_>,
+    coding: &str,
+    dst_multibyte: Option<bool>,
+) -> Result<CodingDecode, LispError> {
+    decode_coding(interp, env, source, coding, dst_multibyte, false, None)
+}
+
+/// decode_coding_c_string of one block of a stream: BYTES after what
+/// DECODER carried over from the block before, decoded as a block that is
+/// the last one when DECODER's CODING_MODE_LAST_BLOCK is set; what the
+/// decoder leaves unconsumed is DECODER's carryover for the next.
+pub(crate) fn decode_coding_block(
+    interp: &Interpreter,
+    env: &Env,
+    bytes: &[u8],
+    coding: &str,
+    dst_multibyte: Option<bool>,
+    decoder: &mut BlockDecoder,
+) -> Result<CodingDecode, LispError> {
+    decode_coding(
+        interp,
+        env,
+        DecodeSource::Bytes(bytes),
+        coding,
+        dst_multibyte,
+        false,
+        Some(decoder),
+    )
+}
+
+/// decode_coding_gap: decode_coding_object for a file's BYTES, read into
+/// a buffer whose multibyteness is DST_MULTIBYTE, with its ASCII
+/// optimization.
+pub(crate) fn decode_coding_gap(
+    interp: &Interpreter,
+    env: &Env,
+    bytes: &[u8],
+    coding: &str,
+    dst_multibyte: bool,
+) -> Result<CodingDecode, LispError> {
+    decode_coding(
+        interp,
+        env,
+        DecodeSource::Bytes(bytes),
+        coding,
+        Some(dst_multibyte),
+        true,
+        None,
+    )
+}
+
+fn decode_coding(
+    interp: &Interpreter,
+    env: &Env,
+    source: DecodeSource<'_>,
+    coding: &str,
+    dst_multibyte: Option<bool>,
+    gap: bool,
+    mut decoder: Option<&mut BlockDecoder>,
+) -> Result<CodingDecode, LispError> {
+    let canonical = interp
+        .coding_system_canonical_name(coding)
+        .ok_or_else(|| coding_system_error(Value::symbol(coding)))?;
+    let last_block = decoder.as_ref().is_none_or(|decoder| decoder.last_block);
+    // coding->src_multibyte = chars < bytes: a multibyte text of ASCII
+    // characters alone is read as its bytes.
+    let (bytes, text) = match source {
+        DecodeSource::Bytes(bytes) => match decoder.as_mut() {
+            // read_process_output: the carryover, then the bytes read.
+            Some(decoder) if !decoder.carryover.is_empty() => {
+                let mut joined = std::mem::take(&mut decoder.carryover);
+                joined.extend_from_slice(bytes);
+                (std::borrow::Cow::Owned(joined), None)
+            }
+            _ => (std::borrow::Cow::Borrowed(bytes), None),
+        },
+        DecodeSource::Text(string) if !string.multibyte => (
+            std::borrow::Cow::Owned(encode_raw_text_bytes(&string.text)?),
+            None,
+        ),
+        DecodeSource::Text(string) if string.text.is_ascii() => {
+            (std::borrow::Cow::Borrowed(string.text.as_bytes()), None)
+        }
+        DecodeSource::Text(string) => (std::borrow::Cow::Borrowed(&[][..]), Some(string)),
+    };
+    let mut name = coding.to_string();
+    let mut settled = canonical.clone();
+    let mut detection = detect::DetectOutcome::default();
+    if interp.coding_system_kind_name(&canonical).as_deref() == Some("undecided")
+        || coding_system_auto_detects_bom(interp, &canonical)
+    {
+        let src = match text {
+            Some(string) => detect::DetectSource::from_codes(string.character_codes_iter()),
+            None => detect::DetectSource::from_bytes(&bytes),
+        };
+        // decode_coding_gap detects before it sets CODING_MODE_LAST_BLOCK.
+        let src = if gap || !last_block {
+            src.not_last_block()
+        } else {
+            src
+        };
+        detection = detect::detect_coding_outcome(interp, &src, &canonical, env);
+        if let Some(found) = &detection.found {
+            name = adjust_coding_eol_type(interp, found, coding_eol_type(interp, &canonical));
+            settled = interp
+                .coding_system_canonical_name(&name)
+                .unwrap_or_else(|| name.clone());
+        }
+    }
+    let for_unibyte = coding_system_property(interp, &settled, ":for-unibyte")
+        .is_some_and(|value| value.is_truthy());
+    let inhibit_eol_conversion = interp
+        .lookup_var("inhibit-eol-conversion", env)
+        .is_some_and(|value| value.is_truthy());
+    // decode_coding_gap's ASCII optimization: with an ascii-compatible
+    // coding, no post-read conversion and no translation table, ASCII
+    // bytes -- or bytes detect_coding_utf_8 accepted to their end, for a
+    // utf-8 coding -- go in as they are.  The eol bits detection saw (its
+    // head scan, or the check_ascii over the ASCII head of an auto-BOM
+    // detection), else check_ascii's (only LF under
+    // `inhibit-eol-conversion' or a settled eol), still name an undecided
+    // eol's subsidiary, and a dos or mac eol still converts.
+    let utf_8_whole = detection.utf8_whole
+        && interp.coding_system_kind_name(&settled).as_deref() == Some("utf-8");
+    if gap
+        && text.is_none()
+        && (bytes.is_ascii() || utf_8_whole)
+        && interp
+            .lookup_var("disable-ascii-optimization", env)
+            .is_none_or(|value| value.is_nil())
+        && coding_system_is_ascii_compatible(interp, &settled)
+        && coding_system_property(interp, &settled, ":post-read-conversion")
+            .is_none_or(|value| value.is_nil())
+        && !decode_translation_table_p(interp, &settled, env)
+    {
+        let mut decoded = if bytes.is_ascii() {
+            let mut decoded = DecodedText::new();
+            decoded.push_ascii(&bytes);
+            decoded
+        } else {
+            decode_coding_utf_8(&bytes)
+        };
+        let mut eol_type = coding_eol_type(interp, &settled);
+        if eol_type.is_none() {
+            let seen = match detection.eol_seen {
+                Some(seen) => seen,
+                None if inhibit_eol_conversion => {
+                    if bytes.contains(&b'\n') {
+                        detect::EOL_SEEN_LF
+                    } else {
+                        detect::EOL_SEEN_NONE
+                    }
+                }
+                None => decoded.eol_seen(),
+            };
+            eol_type = detect::eol_type_for_seen(seen);
+            if eol_type.is_some() {
+                name = adjust_coding_eol_type(interp, &name, eol_type);
+            }
+        }
+        if let Some(eol_type) = eol_type {
+            decoded.convert_eol(eol_type);
+        }
+        return Ok(CodingDecode {
+            decoded,
+            coding: name,
+            for_unibyte,
+        });
+    }
+    // produce_chars copies the source of a raw-text decode (undecided
+    // that detected nothing decodes as raw text too): unchanged into a
+    // multibyte destination, and from a multibyte source into a unibyte
+    // one as the bytes ONE_MORE_BYTE reads.
+    let dst_multibyte = dst_multibyte.unwrap_or(!for_unibyte);
+    let mut decoded = match text {
+        Some(string) => decode_multibyte_source_text(
+            interp,
+            string,
+            &settled,
+            !dst_multibyte
+                && matches!(
+                    interp.coding_system_kind_name(&settled).as_deref(),
+                    Some("raw-text" | "undecided")
+                ),
+        )?,
+        None => {
+            // decode_coding's decoder over the block, CODING_MODE_LAST_BLOCK
+            // unless a stream's block is not the last, with the spec state
+            // the stream's last block left when it settled the same coding.
+            let eol_dos = !inhibit_eol_conversion && coding_eol_type(interp, &settled) == Some(1);
+            let mut whole = DecoderSpec::default();
+            let spec = match decoder.as_mut() {
+                Some(decoder) => {
+                    if decoder.spec_coding.as_deref() != Some(settled.as_str()) {
+                        decoder.spec = DecoderSpec::default();
+                        decoder.spec_coding = Some(settled.clone());
+                    }
+                    &mut decoder.spec
+                }
+                None => &mut whole,
+            };
+            let mut block = DecodeBlock {
+                last: last_block,
+                eol_dos,
+                spec,
+                consumed: 0,
+            };
+            let decoded = decode_bytes_with_coding_block(interp, &bytes, &settled, &mut block)?;
+            let consumed = block.consumed;
+            if let Some(decoder) = decoder.as_mut() {
+                // coding->carryover holds at most its 64 bytes.
+                let rest = &bytes[consumed..];
+                decoder.carryover = rest[..rest.len().min(CODING_CARRYOVER_BYTES)].to_vec();
+            }
+            decoded
+        }
+    };
+    if !inhibit_eol_conversion {
+        let eol_type = match coding_eol_type(interp, &settled) {
+            Some(eol_type) => Some(eol_type),
+            None => {
+                // Stray CRs among CRLFs are dos; any other mixture is unix.
+                let seen = match decoded.eol_seen() {
+                    seen if seen == detect::EOL_SEEN_CRLF | detect::EOL_SEEN_CR => {
+                        detect::EOL_SEEN_CRLF
+                    }
+                    detect::EOL_SEEN_NONE => detect::EOL_SEEN_NONE,
+                    seen @ (detect::EOL_SEEN_LF | detect::EOL_SEEN_CRLF | detect::EOL_SEEN_CR) => {
+                        seen
+                    }
+                    _ => detect::EOL_SEEN_LF,
+                };
+                let eol_type = detect::eol_type_for_seen(seen);
+                if eol_type.is_some() {
+                    name = adjust_coding_eol_type(interp, &name, eol_type);
+                }
+                eol_type
+            }
+        };
+        if let Some(eol_type) = eol_type {
+            decoded.convert_eol(eol_type);
+        }
+    }
+    Ok(CodingDecode {
+        decoded,
+        coding: name,
+        for_unibyte,
+    })
+}
+
 /// Decode VALUE with CODING. code_convert_string's ASCII fast path applies
 /// only to a string result; a source region or a buffer destination goes
 /// straight through decode_coding_object (BUFFER_CONVERSION).
@@ -3264,6 +3845,7 @@ pub(crate) fn decode_coding_text(
     coding: Option<&str>,
     nocopy: bool,
     buffer_conversion: bool,
+    dst_multibyte: Option<bool>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let string =
@@ -3279,53 +3861,23 @@ pub(crate) fn decode_coding_text(
     let canonical = interp
         .coding_system_canonical_name(coding)
         .ok_or_else(|| coding_system_error(Value::symbol(coding)))?;
-    // coding.c's code_convert_string decodes the STRING's own bytes
-    // (SDATA/SBYTES), so a multibyte string contributes its internal
-    // spelling -- reading it as one octet per character rejected every
-    // non-Latin-1 character with "Character cannot be encoded" instead of
-    // decoding it.
-    let source_bytes = if string.multibyte {
-        encode_internal_multibyte_bytes(&string.text)?
-    } else {
-        encode_raw_text_bytes(&string.text)?
-    };
     let inhibit_eol_conversion = interp
         .lookup_var("inhibit-eol-conversion", env)
         .is_some_and(|value| value.is_truthy());
-    // A unibyte Lisp string is a byte stream even when its internal scalar
-    // happens to be in U+0080..U+00FF; a byte-oriented coding such as
-    // UTF-16 is not ascii-compatible, so the fast path below never claims
-    // its ASCII-looking octets (30 42 encodes U+3042 in UTF-16BE).
-    // decode_coding_object: coding->src_multibyte = chars < bytes.  A raw
-    // byte8 character counts as two bytes in that comparison, exactly as
-    // SBYTES counts its internal C0/C1 pair.
-    let src_multibyte = string.text.chars().count() < string.byte_len()?;
-    // setup_coding_system: CODING_FOR_UNIBYTE comes from the coding
-    // system's `:for-unibyte' attribute (the raw-text family), and such a
-    // decode produces a unibyte string.
-    let for_unibyte = coding_system_property(interp, &canonical, ":for-unibyte")
-        .is_some_and(|value| value.is_truthy());
-    // code_convert_string's fast path: an ascii-compatible coding whose
-    // source carries no multibyte content and nothing for eol conversion
-    // to do returns the string unchanged -- the decoder never runs, and
-    // neither does detection.
+    // code_convert_string's fast path: an ascii-compatible coding, an
+    // ASCII string (a multibyte one whose characters are its bytes) and
+    // nothing for eol conversion to do return the string as it is -- the
+    // decoder never runs, and neither does detection.  A region or a
+    // buffer destination never takes it.
     let fast_path = !buffer_conversion
         && coding_system_is_ascii_compatible(interp, &canonical)
-        && (if string.multibyte {
-            !src_multibyte
-        } else {
-            source_bytes.iter().all(u8::is_ascii)
-        })
-        && (interp.coding_system_eol_type_value(&canonical) == Some(0)
-            // `binary'/`no-conversion' report eol type 0 to Lisp; the
-            // native accessor keeps them out of the eol-variant table.
-            || matches!(canonical.as_str(), "no-conversion" | "binary")
+        && string.text.is_ascii()
+        && (coding_eol_type(interp, &canonical) == Some(0)
             || inhibit_eol_conversion
-            || !source_bytes.contains(&b'\r'));
+            || !string.text.contains('\r'));
     if fast_path {
-        // coding.c:code_convert_string returns before post-read conversion.
         // A copied result is a fresh, unpropertized multibyte ASCII string;
-        // NOCOPY preserves the original object, including its properties.
+        // NOCOPY gives back the original object, properties and all.
         set_last_coding_system_used(interp, coding, env);
         return Ok(if nocopy {
             *value
@@ -3333,160 +3885,50 @@ pub(crate) fn decode_coding_text(
             make_shared_string_value_with_multibyte(string.text, Vec::new(), true)
         });
     }
-    let undecided_bytes = if !fast_path
-        && interp.coding_system_kind_name(&canonical).as_deref() == Some("undecided")
-    {
-        Some(auto_detect_coding_for(
-            interp,
-            &source_bytes,
-            string.multibyte.then_some(string.text.as_str()),
-            &canonical,
-            env,
-        ))
-    } else {
-        None
-    };
-    let detected_undecided = undecided_bytes.is_some();
-    let decoder_ran = !detected_undecided && !fast_path;
-    let mut charsets = Vec::new();
-    let staged = if let Some((detected, normalized)) = &undecided_bytes {
-        let decoded = decode_text_bytes_annotated(interp, normalized, detected)?;
-        charsets = decoded.charsets;
-        decoded.text
-    } else if decoder_ran {
-        if src_multibyte {
-            let decoded =
-                decode_multibyte_source_text(interp, &string.text, &canonical, for_unibyte)?;
-            charsets = decoded.charsets;
-            decoded.text
-        } else if for_unibyte {
-            source_bytes
-                .iter()
-                .copied()
-                .map(unibyte_char_for_byte)
-                .collect()
-        } else {
-            let decoded = decode_text_bytes_annotated(interp, &source_bytes, &canonical)?;
-            charsets = decoded.charsets;
-            decoded.text
-        }
-    } else {
-        string.text.clone()
-    };
-    // String decoding names `last-coding-system-used' differently from a
-    // file read (the oracle's contract): the fast path never re-resolves
-    // the name -- the requested spelling survives, alias and all (euc-jp
-    // stays `euc-jp', LF included) -- and a converted text gains the
-    // canonical eol subsidiary only when an eol byte was seen.
-    let actual_coding = if let Some((detected, _)) = &undecided_bytes {
-        detected.clone()
-    } else if interp.coding_system_eol_type_value(&canonical).is_none()
-        && !matches!(canonical.as_str(), "no-conversion" | "binary")
-    {
-        // The pure-ASCII shortcut is really "the decoder never ran": it
-        // needs the coding to be ascii-compatible.  iso-2022-7bit is not
-        // (its ESC sequences convert), so even an all-ASCII decode with a
-        // LF re-resolves to iso-2022-7bit-unix, per the oracle.  The eol
-        // convention is a property of the DECODED characters: a byte
-        // oriented coding such as utf-16 swallows a CR octet inside a code
-        // unit, so it never names an eol subsidiary for it.
-        let bytes = staged.as_bytes();
-        let untouched =
-            bytes.iter().all(u8::is_ascii) && coding_system_is_ascii_compatible(interp, &canonical);
-        match detect_eol_type_opt(bytes) {
-            Some(eol) if bytes.contains(&b'\r') || !untouched => {
-                let base = interp
-                    .coding_system_base_name(&canonical)
-                    .unwrap_or_else(|| canonical.clone());
-                coding_variant_name(interp, &base, Some(eol))
-            }
-            _ => coding.to_string(),
-        }
-    } else {
-        // Explicit eol (or binary): the requested spelling survives.
-        coding.to_string()
-    };
-    set_last_coding_system_used(interp, &actual_coding, env);
-    // The decoder's own output stage performs the eol conversion, so it
-    // applies to the DECODED characters (fileio/coding.c never rewrites
-    // source octets before decoding them).  GNU detects the EOL
-    // convention for codings with an unspecified eol type; only
-    // no-conversion/binary keep raw CR bytes.
-    let crlf_conversion = if detected_undecided || inhibit_eol_conversion || !staged.contains('\r')
-    {
-        None
-    } else {
-        match interp.coding_system_eol_type_value(&canonical) {
-            Some(1) => Some(true),
-            Some(2) => Some(false),
-            // coding.c:decode_eol settles an undecided eol from the decoded
-            // text: CRLF (with stray CRs) is dos, CR alone mac, and any
-            // other mixture unix, which converts nothing.
-            None if !matches!(canonical.as_str(), "no-conversion" | "binary") => {
-                match detect_eol_type(staged.as_bytes()) {
-                    1 => Some(true),
-                    2 => Some(false),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    };
-    // The decoder's `charset' annotations become text properties of the
-    // decoded text (produce_charset); they index the staged text, and
-    // the eol conversion below removes CRs before them.
-    let charset_props = charset_spans_to_props(charsets, &staged, crlf_conversion);
-    let text = match crlf_conversion {
-        Some(true) => staged.replace("\r\n", "\n"),
-        Some(false) => staged.replace('\r', "\n"),
-        None => staged,
-    };
-    // A raw-text decode that actually ran yields a unibyte string; the
-    // ASCII fast path in code_convert_string still returns multibyte.
-    let result_multibyte = !(decoder_ran && for_unibyte);
+    let CodingDecode {
+        decoded,
+        coding: actual_coding,
+        for_unibyte,
+    } = decode_coding_object(
+        interp,
+        env,
+        DecodeSource::Text(&string),
+        coding,
+        dst_multibyte,
+    )?;
+    // produce_annotation's `charset' properties of the decoded text.
+    let charset_props = charset_spans_to_props(decoded.charsets, &decoded.text, None);
+    // decode_coding_object makes the work buffer multibyte unless the
+    // coding detect_coding settled on is for unibyte text.
     let post_read = coding_system_property(interp, &actual_coding, ":post-read-conversion")
         .unwrap_or(Value::Nil);
     let conversion_ran = !post_read.is_nil();
     let decoded = StringLike {
-        text,
+        text: decoded.text,
         props: Vec::new(),
-        multibyte: result_multibyte,
-        extended_chars: Vec::new(),
+        // A buffer destination takes the characters produced (written
+        // into a unibyte one in their multibyte form, by the caller); a
+        // string is unibyte for a coding for unibyte text.
+        multibyte: dst_multibyte.is_some() || !for_unibyte,
+        extended_chars: decoded.extended,
     };
     let converted = run_coding_conversion(interp, &decoded, &post_read, false, env)?;
-    let text = converted.text;
-    if nocopy
-        && !conversion_ran
-        && text == string.text
-        && string_identity_for_coding(
-            &string.text,
-            &canonical,
-            interp,
-            false,
-            inhibit_eol_conversion,
-        )
-    {
-        Ok(*value)
+    // code_convert_string records CODING_ID_NAME once decode_coding_object,
+    // post-read conversion included, has returned.
+    set_last_coding_system_used(interp, &actual_coding, env);
+    // A post-read conversion rewrites the text, after which the decoder's
+    // annotations cannot be placed.
+    let props = if conversion_ran {
+        Vec::new()
     } else {
-        // A decode that ran carries only the decoder's annotations; a
-        // post-read conversion rewrites the text, after which they cannot
-        // be placed.
-        let props = if decoder_ran || detected_undecided {
-            if conversion_ran {
-                Vec::new()
-            } else {
-                charset_props
-            }
-        } else {
-            string.props
-        };
-        Ok(make_shared_string_value_with_extended_chars(
-            text,
-            props,
-            converted.multibyte,
-            converted.extended_chars,
-        ))
-    }
+        charset_props
+    };
+    Ok(make_shared_string_value_with_extended_chars(
+        converted.text,
+        props,
+        converted.multibyte,
+        converted.extended_chars,
+    ))
 }
 
 /// charset.c CHARSET_MIN_CODE / CHARSET_MAX_CODE.

@@ -14,6 +14,75 @@ use unicode_names2::character as unicode_character;
 
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 const INVALID_UNICODE_SENTINEL: char = '\u{F8FF}';
+// lisp.h's character modifier bits.
+const CHAR_ALT: i64 = 0x040_0000;
+const CHAR_SUPER: i64 = 0x080_0000;
+const CHAR_HYPER: i64 = 0x100_0000;
+const CHAR_SHIFT: i64 = 0x200_0000;
+const CHAR_CTL: i64 = 0x400_0000;
+const CHAR_META: i64 = 0x800_0000;
+const CHAR_MODIFIER_MASK: i64 =
+    CHAR_ALT | CHAR_SUPER | CHAR_HYPER | CHAR_SHIFT | CHAR_CTL | CHAR_META;
+// BYTE8_TO_CHAR's offset: the eight-bit character of byte B is B + 0x3FFF00.
+const BYTE8_BASE: i64 = 0x3F_FF00;
+// lread.c's bound on the length of a Unicode character name.
+const UNICODE_CHARACTER_NAME_LENGTH_BOUND: usize = 200;
+
+/// character.h CHAR_BYTE8_P: a character past MAX_5_BYTE_CHAR.
+fn char_byte8_p(c: i64) -> bool {
+    c > 0x3F_FF7F
+}
+
+/// The text of character CODE in an INVALID_SYNTAX_WITH_BUFFER datum.
+fn reader_code_text(code: i64) -> String {
+    if char_byte8_p(code) {
+        return encode_raw_byte((code - BYTE8_BASE) as u8).to_string();
+    }
+    u32::try_from(code)
+        .ok()
+        .and_then(char::from_u32)
+        .map_or_else(String::new, String::from)
+}
+
+/// read0's test for the end of a `#:' or `#_' symbol: the end of input, a
+/// character up to SPC, NO-BREAK SPACE or one of "';#()[]`,.
+fn symbol_terminator_code(code: Option<i64>) -> bool {
+    match code {
+        None => true,
+        Some(c) => {
+            c <= 32
+                || c == 0xA0
+                || matches!(
+                    u8::try_from(c),
+                    Ok(b'"' | b'\'' | b';' | b'#' | b'(' | b')' | b'[' | b']' | b'`' | b',')
+                )
+        }
+    }
+}
+
+/// lread.c char_hexdigit.
+fn hex_digit_value(c: i64) -> Option<i64> {
+    u8::try_from(c)
+        .ok()
+        .and_then(|byte| (byte as char).to_digit(16))
+        .map(i64::from)
+}
+
+/// lread.c character_name_to_code: "U+" and hex digits, or a name
+/// `char-from-name' knows; anything else, a surrogate or a code past
+/// Unicode is `\N{NAME}' invalid syntax.
+fn character_name_to_code(name: &str) -> Result<i64, LispError> {
+    let code = match name.strip_prefix("U+") {
+        Some(hex) => (!hex.is_empty() && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .then(|| u32::from_str_radix(hex, 16).ok())
+            .flatten(),
+        None => unicode_character(name).map(|ch| ch as u32),
+    };
+    match code {
+        Some(code) if valid_unicode_scalar(code) => Ok(i64::from(code)),
+        _ => Err(LispError::ReadError(format!("\\N{{{name}}}"))),
+    }
+}
 static READER_UNINTERNED_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -137,13 +206,16 @@ pub(crate) fn read_object_needs_resolution(value: &Value) -> bool {
 }
 
 fn encode_raw_byte(byte: u8) -> char {
+    if byte < 0x80 {
+        return byte as char;
+    }
     char::from_u32(RAW_BYTE_REGEX_BASE + byte as u32)
         .expect("raw byte regex marker is a valid private-use character")
 }
 
 fn raw_byte_from_source_char(ch: char) -> Option<u8> {
     let code = ch as u32;
-    if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&code) {
+    if (RAW_BYTE_REGEX_BASE + 0x80..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&code) {
         Some((code - RAW_BYTE_REGEX_BASE) as u8)
     } else {
         None
@@ -198,6 +270,9 @@ pub struct Reader<'a> {
     /// bool-vector or closure literal): only then
     /// does the read result need Interpreter-owned object materialization.
     emitted_reader_forms: bool,
+    /// read0's read_objects_map keys: the `#N=' labels read so far, so a
+    /// `#N#' naming no earlier label is invalid syntax where it is read.
+    defined_labels: HashSet<u32>,
 }
 
 impl<'a> Reader<'a> {
@@ -220,6 +295,7 @@ impl<'a> Reader<'a> {
             // registered under those names.
             unescaped_character_literals: BTreeSet::new(),
             emitted_reader_forms: false,
+            defined_labels: HashSet::new(),
             locate_symbols: false,
             position_base: 0,
             position_cursor_byte: 0,
@@ -254,6 +330,20 @@ impl<'a> Reader<'a> {
     ) -> Self {
         let mut reader = Self::with_symbol_shorthands("", symbol_shorthands);
         reader.input = Input::Encoded { bytes, multibyte };
+        reader
+    }
+
+    /// `read-positioning-symbols' on an encoded source: each symbol
+    /// occurrence gets its character position, offset by BASE.
+    pub(crate) fn from_encoded_positioned(
+        bytes: &'a [u8],
+        multibyte: bool,
+        symbol_shorthands: Vec<(String, String)>,
+        position_base: i64,
+    ) -> Self {
+        let mut reader = Self::from_encoded(bytes, multibyte, symbol_shorthands);
+        reader.locate_symbols = true;
+        reader.position_base = position_base;
         reader
     }
 
@@ -420,8 +510,13 @@ impl<'a> Reader<'a> {
             None => Ok(None),
             Some(b'(') => self.read_list(),
             Some(b'[') => self.read_vector(),
-            Some(b')') => Err(LispError::ReadError("unexpected ')'".into())),
-            Some(b']') => Err(LispError::ReadError("unexpected ']'".into())),
+            // read0 reads the stray closer before invalid_syntax.
+            Some(close @ (b')' | b']')) => {
+                self.advance()?;
+                Err(LispError::ReadError(
+                    if close == b')' { ")" } else { "]" }.into(),
+                ))
+            }
             Some(b'"') => self.read_string(),
             Some(b'\'') => self.read_quote("quote"),
             Some(b'`') => self.read_quote("backquote"),
@@ -597,176 +692,54 @@ impl<'a> Reader<'a> {
                 }
                 Some(b'\\') => {
                     self.advance()?;
-                    if self
-                        .peek()?
-                        .is_some_and(|ch| matches!(ch, b'C' | b'M' | b'^'))
-                        && (self.peek()? == Some(b'^') || self.peek_at(1)? == Some(b'-'))
-                    {
-                        let code = self.read_string_modified_escape()?;
-                        Self::push_string_escape_code(
-                            &mut s,
-                            code,
-                            &mut has_explicit_multibyte,
-                            &mut has_raw_bytes,
-                            &mut has_invalid_unicode,
-                            &mut extended_chars,
-                        );
+                    // lread.c read_string_literal: the string-specific
+                    // rules first (`\s' a space, `\SPC' and `\LF' nothing),
+                    // then read_char_escape.
+                    let next = self.read_code()?;
+                    if next == Some(i64::from(b's')) {
+                        s.push(' ');
                         continue;
                     }
-                    if self.peek()?.is_some_and(|ch| ch >= 0x80) {
-                        self.push_non_ascii_string_source(
-                            &mut s,
-                            &mut has_explicit_multibyte,
-                            &mut has_raw_bytes,
-                            &mut has_invalid_unicode,
-                            &mut extended_chars,
-                        )?;
+                    if matches!(next, Some(0x20 | 0x0A)) {
                         continue;
                     }
-                    match self.advance()? {
-                        None => return Err(LispError::EndOfInput()),
-                        Some(b'n') => s.push('\n'),
-                        Some(b't') => s.push('\t'),
-                        Some(b'r') => s.push('\r'),
-                        Some(b'e') => s.push('\x1B'),
-                        Some(b'd') => s.push('\x7F'),
-                        Some(b'\n') => {}
-                        Some(b'\r') => {
-                            if self.peek()? == Some(b'\n') {
-                                self.advance()?;
+                    let escaped = self.read_char_escape(next)?;
+                    let mut modifiers = escaped & CHAR_MODIFIER_MASK;
+                    let mut ch = escaped & !CHAR_MODIFIER_MASK;
+                    if !char_byte8_p(ch) && ch < 0x80 {
+                        // Allow `\C-SPC' and `\^SPC'.
+                        if modifiers == CHAR_CTL && ch == i64::from(b' ') {
+                            ch = 0;
+                            modifiers = 0;
+                        }
+                        if modifiers & CHAR_SHIFT != 0 {
+                            // Shift modifier is valid only with [A-Za-z].
+                            if (i64::from(b'A')..=i64::from(b'Z')).contains(&ch) {
+                                modifiers &= !CHAR_SHIFT;
+                            } else if (i64::from(b'a')..=i64::from(b'z')).contains(&ch) {
+                                ch -= i64::from(b'a' - b'A');
+                                modifiers &= !CHAR_SHIFT;
                             }
                         }
-                        Some(b'\\') => s.push('\\'),
-                        Some(b'"') => s.push('"'),
-                        // GNU treats backslash-space in a string as a
-                        // zero-width escape.  It is commonly used to
-                        // terminate a numeric escape without inserting a
-                        // separator, as in "\\0\\ 29".
-                        Some(b' ') => {}
-                        Some(b's') => s.push(' '),
-                        Some(b'a') => s.push('\x07'),
-                        Some(b'b') => s.push('\x08'),
-                        Some(b'f') => s.push('\x0C'),
-                        Some(b'v') => s.push('\x0B'),
-                        Some(b'^') => {
-                            let code = self.read_string_control_escape()?;
-                            if code <= 0x7F {
-                                s.push(char::from_u32(code).unwrap_or(char::REPLACEMENT_CHARACTER));
-                            } else if code <= 0xFF {
-                                has_raw_bytes = true;
-                                s.push(encode_raw_byte(code as u8));
-                            } else if valid_unicode_scalar(code) {
-                                let c = char::from_u32(code).expect("validated scalar");
-                                has_explicit_multibyte = true;
-                                s.push(c);
-                            } else {
-                                has_invalid_unicode = true;
-                                extended_chars.push((s.chars().count(), code));
-                                s.push(INVALID_UNICODE_SENTINEL);
-                            }
-                        }
-                        Some(b'x') => {
-                            // Emacs reads as many contiguous hex digits as it can here.
-                            let start = self.position();
-                            let hex = self.read_hex_digits(usize::MAX)?;
-                            let digits = self.position() - start;
-                            if hex <= 0x7F {
-                                s.push(char::from_u32(hex).unwrap_or(char::REPLACEMENT_CHARACTER));
-                            } else if hex <= 0xFF && digits < 3 {
-                                has_raw_bytes = true;
-                                s.push(encode_raw_byte(hex as u8));
-                            } else if (0x3F_FF80..=0x3F_FFFF).contains(&hex) {
-                                // Emacs eight-bit (raw byte) codepoints
-                                // start at #x3FFF80. The preceding values
-                                // are ordinary five-byte characters.
-                                has_raw_bytes = true;
-                                s.push(encode_raw_byte((hex - 0x3F_FF00) as u8));
-                            } else if valid_unicode_scalar(hex) {
-                                let c = char::from_u32(hex).expect("validated scalar");
-                                has_explicit_multibyte = true;
-                                s.push(c);
-                            } else {
-                                has_invalid_unicode = true;
-                                extended_chars.push((s.chars().count(), hex));
-                                s.push(INVALID_UNICODE_SENTINEL);
-                            }
-                        }
-                        Some(b'u') => {
-                            // Unicode escape: \uNNNN
-                            let hex = self.read_hex_digits(4)?;
-                            if valid_unicode_scalar(hex) {
-                                let c = char::from_u32(hex).expect("validated scalar");
-                                if hex > 0x7F {
-                                    has_explicit_multibyte = true;
-                                }
-                                s.push(c);
-                            } else {
-                                has_invalid_unicode = true;
-                                extended_chars.push((s.chars().count(), hex));
-                                s.push(INVALID_UNICODE_SENTINEL);
-                            }
-                        }
-                        Some(b'U') => {
-                            // Unicode escape: \UNNNNNNNN
-                            let hex = self.read_hex_digits(8)?;
-                            if valid_unicode_scalar(hex) {
-                                let c = char::from_u32(hex).expect("validated scalar");
-                                if hex > 0x7F {
-                                    has_explicit_multibyte = true;
-                                }
-                                s.push(c);
-                            } else {
-                                has_invalid_unicode = true;
-                                extended_chars.push((s.chars().count(), hex));
-                                s.push(INVALID_UNICODE_SENTINEL);
-                            }
-                        }
-                        Some(b'N') => {
-                            if self.peek()? == Some(b'{') {
-                                let code = self.read_named_character_code()?;
-                                if valid_unicode_scalar(code) {
-                                    let c = char::from_u32(code).expect("validated scalar");
-                                    if code > 0x7F {
-                                        has_explicit_multibyte = true;
-                                    }
-                                    s.push(c);
-                                } else {
-                                    has_invalid_unicode = true;
-                                    extended_chars.push((s.chars().count(), code));
-                                    s.push(INVALID_UNICODE_SENTINEL);
-                                }
-                            } else {
-                                s.push('N');
-                            }
-                        }
-                        Some(ch) if ch.is_ascii_digit() => {
-                            // Octal escape
-                            let mut val = (ch - b'0') as u32;
-                            for _ in 0..2 {
-                                match self.peek()? {
-                                    Some(d) if d.is_ascii_digit() && d < b'8' => {
-                                        self.advance()?;
-                                        val = val * 8 + (d - b'0') as u32;
-                                    }
-                                    _ => break,
-                                }
-                            }
-                            if val <= 0x7F {
-                                s.push(char::from_u32(val).unwrap_or(char::REPLACEMENT_CHARACTER));
-                            } else if val <= 0xFF {
-                                has_raw_bytes = true;
-                                s.push(encode_raw_byte(val as u8));
-                            } else if let Some(c) = char::from_u32(val) {
-                                has_explicit_multibyte = true;
-                                s.push(c);
-                            } else {
-                                s.push(char::REPLACEMENT_CHARACTER);
-                            }
-                        }
-                        Some(ch) => {
-                            s.push(ch as char);
+                        if modifiers & CHAR_META != 0 {
+                            // Move the meta bit to the right place for a
+                            // string.
+                            modifiers &= !CHAR_META;
+                            ch = BYTE8_BASE + (ch | 0x80);
                         }
                     }
+                    // Any modifiers remaining are invalid.
+                    if modifiers != 0 {
+                        return Err(LispError::ReadError("Invalid modifier in string".into()));
+                    }
+                    Self::push_string_character(
+                        &mut s,
+                        ch,
+                        &mut has_explicit_multibyte,
+                        &mut has_raw_bytes,
+                        &mut has_invalid_unicode,
+                        &mut extended_chars,
+                    );
                 }
                 Some(ch) if ch < 0x80 => {
                     self.advance()?;
@@ -823,144 +796,278 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    fn read_string_control_escape(&mut self) -> Result<u32, LispError> {
-        let Some(ch) = self.advance()? else {
-            return Err(LispError::EndOfInput());
-        };
-        Ok(match ch {
-            b'?' => 0x7F,
-            b'a'..=b'z' => (ch - b'a' + 1) as u32,
-            b'A'..=b'Z' => (ch - b'A' + 1) as u32,
-            _ => (ch & 0x1F) as u32,
-        })
+    /// lread.c READCHAR's character: the next character's code without
+    /// consuming it, a multibyte source's raw byte as its eight-bit
+    /// character and a unibyte string's byte as itself; None at the end.
+    fn peek_code(&mut self) -> Result<Option<i64>, LispError> {
+        if let Some((code, _)) = self.input.encoded_character(self.pos)? {
+            return Ok(Some(i64::from(code)));
+        }
+        if let Some(code) = self.input.function_code()? {
+            return Ok(Some(code));
+        }
+        Ok(self.peek_char()?.map(|ch| {
+            raw_byte_from_source_char(ch).map_or(ch as i64, |byte| BYTE8_BASE + i64::from(byte))
+        }))
     }
 
-    fn push_string_escape_code(
+    /// READCHAR: the code `peek_code' reads, consumed.
+    fn read_code(&mut self) -> Result<Option<i64>, LispError> {
+        if let Some(byte) = self.peek()?
+            && byte < 0x80
+        {
+            self.advance()?;
+            return Ok(Some(i64::from(byte)));
+        }
+        let code = self.peek_code()?;
+        if code.is_some() {
+            self.advance_char()?;
+        }
+        Ok(code)
+    }
+
+    /// lread.c read_char_escape: the character, with its modifier bits, of
+    /// an escape sequence whose backslash has been read and whose next
+    /// character is NEXT_CHAR (None at the end of the input).
+    fn read_char_escape(&mut self, mut next_char: Option<i64>) -> Result<i64, LispError> {
+        let mut modifiers = 0i64;
+        let mut ncontrol = 0usize;
+        let mut chr = loop {
+            let Some(c) = next_char else {
+                return Err(LispError::EndOfInput());
+            };
+            let ascii = u8::try_from(c).ok().filter(u8::is_ascii);
+            break match ascii {
+                Some(b'a') => 0x07,
+                Some(b'b') => 0x08,
+                Some(b'd') => 127,
+                Some(b'e') => 27,
+                Some(b'f') => 0x0C,
+                Some(b'n') => i64::from(b'\n'),
+                Some(b'r') => i64::from(b'\r'),
+                Some(b't') => i64::from(b'\t'),
+                Some(b'v') => 0x0B,
+                // ?\LF is an error; it's probably a user mistake.
+                Some(b'\n') => {
+                    return Err(LispError::Signal(
+                        "Invalid escape char syntax: \\<newline>".into(),
+                    ));
+                }
+                // \M-x etc: set modifier bit and parse the char to which it
+                // applies, allowing for chains such as \M-\S-\A-\H-\s-\C-q.
+                Some(letter @ (b'M' | b'S' | b'H' | b'A' | b's')) => {
+                    if self.peek_code()? != Some(i64::from(b'-')) {
+                        if letter == b's' {
+                            // \s not followed by a hyphen is SPC.
+                            break i64::from(b' ');
+                        }
+                        // \M, \S, \H, \A not followed by a hyphen is an
+                        // error.
+                        self.read_code()?;
+                        return Err(LispError::Signal(format!(
+                            "Invalid escape char syntax: \\{} not followed by -",
+                            letter as char
+                        )));
+                    }
+                    self.read_code()?;
+                    modifiers |= match letter {
+                        b'M' => CHAR_META,
+                        b'S' => CHAR_SHIFT,
+                        b'H' => CHAR_HYPER,
+                        b'A' => CHAR_ALT,
+                        _ => CHAR_SUPER,
+                    };
+                    let c1 = self.read_code()?;
+                    if c1 == Some(i64::from(b'\\')) {
+                        next_char = self.read_code()?;
+                        continue;
+                    }
+                    c1.unwrap_or(-1)
+                }
+                // Control modifiers (\C-x or \^x) are messy and not actually
+                // idempotent.  Keep a count of them and apply them
+                // separately.
+                Some(prefix @ (b'C' | b'^')) => {
+                    if prefix == b'C' && self.read_code()? != Some(i64::from(b'-')) {
+                        return Err(LispError::Signal(
+                            "Invalid escape char syntax: \\C not followed by -".into(),
+                        ));
+                    }
+                    ncontrol += 1;
+                    let c1 = self.read_code()?;
+                    if c1 == Some(i64::from(b'\\')) {
+                        next_char = self.read_code()?;
+                        continue;
+                    }
+                    c1.unwrap_or(-1)
+                }
+                // 1-3 octal digits.  Values in 0x80..0xff are encoded as raw
+                // bytes.
+                Some(digit @ b'0'..=b'7') => {
+                    let mut i = i64::from(digit - b'0');
+                    for _ in 0..2 {
+                        match self.peek_code()? {
+                            Some(c @ 0x30..=0x37) => {
+                                self.read_code()?;
+                                i = (i << 3) + (c - 0x30);
+                            }
+                            _ => break,
+                        }
+                    }
+                    if (0x80..0x100).contains(&i) {
+                        i += BYTE8_BASE;
+                    }
+                    i
+                }
+                // 1 or more hex digits.  Values may encode modifiers.
+                // Values in 0x80..0xff using 2 hex digits are encoded as raw
+                // bytes.
+                Some(b'x') => {
+                    let mut i: i64 = 0;
+                    let mut count = 0;
+                    while let Some(digit) = self.peek_code()?.and_then(hex_digit_value) {
+                        self.read_code()?;
+                        i = (i << 4) + digit;
+                        // Allow hex escapes as large as ?\xfffffff, because
+                        // some packages use them to denote characters with
+                        // modifiers.
+                        if i > (CHAR_META | (CHAR_META - 1)) {
+                            return Err(LispError::Signal(format!(
+                                "Hex character out of range: \\x{i:x}..."
+                            )));
+                        }
+                        count += usize::from(count < 3);
+                    }
+                    if count == 0 {
+                        return Err(LispError::Signal(
+                            "Invalid escape char syntax: \\x not followed by hex digit".into(),
+                        ));
+                    }
+                    if count < 3 && i >= 0x80 {
+                        i += BYTE8_BASE;
+                    }
+                    modifiers |= i & CHAR_MODIFIER_MASK;
+                    i & !CHAR_MODIFIER_MASK
+                }
+                // 4-digit \uHHHH and 8-digit \UHHHHHHHH Unicode escapes.
+                Some(letter @ (b'u' | b'U')) => {
+                    let mut i: i64 = 0;
+                    for _ in 0..if letter == b'u' { 4 } else { 8 } {
+                        let Some(c) = self.read_code()? else {
+                            return Err(LispError::Signal(format!(
+                                "Malformed Unicode escape: \\{}{i:x}",
+                                letter as char
+                            )));
+                        };
+                        let Some(digit) = hex_digit_value(c) else {
+                            let shown = u32::try_from(c)
+                                .ok()
+                                .and_then(char::from_u32)
+                                .unwrap_or(INVALID_UNICODE_SENTINEL);
+                            return Err(LispError::Signal(format!(
+                                "Non-hex character used for Unicode escape: {shown} ({c})"
+                            )));
+                        };
+                        i = (i << 4) + digit;
+                    }
+                    if i > 0x10_FFFF {
+                        return Err(LispError::Signal(format!("Non-Unicode character: 0x{i:x}")));
+                    }
+                    i
+                }
+                // Named character: \N{name}
+                Some(b'N') => {
+                    if self.read_code()? != Some(i64::from(b'{')) {
+                        return Err(LispError::ReadError(
+                            "Expected opening brace after \\N".into(),
+                        ));
+                    }
+                    let mut name = String::new();
+                    let mut whitespace = false;
+                    loop {
+                        let Some(c) = self.read_code()? else {
+                            return Err(LispError::EndOfInput());
+                        };
+                        if c == i64::from(b'}') {
+                            break;
+                        }
+                        if c >= 0x80 {
+                            return Err(LispError::ReadError(format!(
+                                "Invalid character U+{c:04X} in character name"
+                            )));
+                        }
+                        // Treat multiple adjacent whitespace characters as
+                        // a single space character.
+                        let mut c = c as u8;
+                        if matches!(c, b' ' | b'\t' | b'\n' | 0x0B | 0x0C | b'\r') {
+                            if whitespace {
+                                continue;
+                            }
+                            c = b' ';
+                            whitespace = true;
+                        } else {
+                            whitespace = false;
+                        }
+                        name.push(c as char);
+                        if name.len() > UNICODE_CHARACTER_NAME_LENGTH_BOUND {
+                            return Err(LispError::ReadError("Character name too long".into()));
+                        }
+                    }
+                    if name.is_empty() {
+                        return Err(LispError::ReadError("Empty character name".into()));
+                    }
+                    character_name_to_code(&name)?
+                }
+                _ => c,
+            };
+        };
+        // Apply Control modifiers: \C-X is ascii_ctrl(X) when X is one of
+        // A-Z a-z ? @ [ \ ] ^ _, X | ctrl_modifier otherwise.
+        for _ in 0..ncontrol {
+            if (0x40..=0x5F).contains(&chr) || (0x61..=0x7A).contains(&chr) {
+                chr &= 0x1F;
+            } else if chr == i64::from(b'?') {
+                chr = 127;
+            } else {
+                modifiers |= CHAR_CTL;
+            }
+        }
+        Ok(chr | modifiers)
+    }
+
+    /// Append the character CHR, read from a string literal, to the text
+    /// view S: an eight-bit character as its raw-byte marker (the string
+    /// unibyte unless another character makes it multibyte), a character
+    /// the view cannot carry with its side-table entry.
+    fn push_string_character(
         s: &mut String,
-        code: u32,
+        chr: i64,
         has_explicit_multibyte: &mut bool,
         has_raw_bytes: &mut bool,
         has_invalid_unicode: &mut bool,
         extended_chars: &mut Vec<(usize, u32)>,
     ) {
-        if code <= 0x7F {
-            s.push(char::from_u32(code).unwrap_or(char::REPLACEMENT_CHARACTER));
-        } else if code <= 0xFF {
+        if char_byte8_p(chr) {
             *has_raw_bytes = true;
-            s.push(encode_raw_byte(code as u8));
-        } else if valid_unicode_scalar(code) {
-            let c = char::from_u32(code).expect("validated scalar");
-            *has_explicit_multibyte = true;
-            s.push(c);
-        } else {
-            *has_invalid_unicode = true;
-            extended_chars.push((s.chars().count(), code));
-            s.push(INVALID_UNICODE_SENTINEL);
+            s.push(encode_raw_byte((chr - BYTE8_BASE) as u8));
+            return;
         }
-    }
-
-    fn read_string_modified_escape(&mut self) -> Result<u32, LispError> {
-        const META_BIT: i64 = 1 << 27;
-
-        let mut modifiers = 0i64;
-        let mut ctrl_count = 0u32;
-        let mut first = true;
-        loop {
-            if !first {
-                // GNU chains modifiers only through another backslash escape
-                // ("\C-\M-a"); a bare `C-', `M-' or `^' after the first
-                // modifier is the target character ("\C-^" is control-^).
-                let chained = self.peek()? == Some(b'\\')
-                    && match self.peek_at(1)? {
-                        Some(b'^') => true,
-                        Some(b'C' | b'M') => self.peek_at(2)? == Some(b'-'),
-                        _ => false,
-                    };
-                if !chained {
-                    break;
+        let code = chr as u32;
+        match char::from_u32(code) {
+            Some(ch) if code < 0x80 => s.push(ch),
+            Some(ch) => {
+                *has_explicit_multibyte = true;
+                if raw_byte_from_source_char(ch).is_some() {
+                    extended_chars.push((s.chars().count(), code));
                 }
-                self.advance()?;
+                s.push(ch);
             }
-            first = false;
-            match (self.peek()?, self.peek_at(1)?) {
-                (Some(b'C'), Some(b'-')) => {
-                    ctrl_count += 1;
-                    self.advance_bytes(2)?;
-                }
-                (Some(b'M'), Some(b'-')) => {
-                    modifiers |= META_BIT;
-                    self.advance_bytes(2)?;
-                }
-                (Some(b'^'), _) => {
-                    ctrl_count += 1;
-                    self.advance_bytes(1)?;
-                }
-                _ => break,
+            None => {
+                *has_invalid_unicode = true;
+                extended_chars.push((s.chars().count(), code));
+                s.push(INVALID_UNICODE_SENTINEL);
             }
         }
-
-        let mut value = if self.peek()? == Some(b'\\') {
-            self.read_escaped_character_code()?
-        } else {
-            self.read_literal_character_code()?
-        };
-
-        // GNU read_char_escape folds each control prefix over letters and
-        // the 0x40..0x5F block; anything else keeps the control modifier
-        // bit, which only `\C-SPC' (-> NUL) survives inside a string.
-        let mut ctrl_pending = false;
-        for _ in 0..ctrl_count {
-            value = match value {
-                0x3f => 0x7f,
-                n if (0x40..=0x5f).contains(&n) || (0x61..=0x7a).contains(&n) => n & 0x1f,
-                n => {
-                    ctrl_pending = true;
-                    n
-                }
-            };
-        }
-        if ctrl_pending {
-            if value == 0x20 && modifiers == 0 {
-                return Ok(0);
-            }
-            return Err(LispError::ReadError("Invalid modifier in string".into()));
-        }
-
-        if modifiers == META_BIT && value <= 0x7F {
-            value |= 0x80;
-            modifiers &= !META_BIT;
-        }
-
-        if modifiers != 0 {
-            return Err(LispError::ReadError("Invalid modifier in string".into()));
-        }
-
-        Ok(value as u32)
-    }
-
-    fn read_hex_digits(&mut self, max: usize) -> Result<u32, LispError> {
-        let mut val: u32 = 0;
-        let mut remaining = max;
-        let unlimited = max == usize::MAX;
-        while unlimited || remaining > 0 {
-            match self.peek()? {
-                Some(ch) if ch.is_ascii_hexdigit() => {
-                    self.advance()?;
-                    let digit = match ch {
-                        b'0'..=b'9' => ch - b'0',
-                        b'a'..=b'f' => ch - b'a' + 10,
-                        b'A'..=b'F' => ch - b'A' + 10,
-                        _ => unreachable!(),
-                    };
-                    val = val.saturating_mul(16).saturating_add(digit as u32);
-                    if !unlimited {
-                        remaining -= 1;
-                    }
-                }
-                _ => break,
-            }
-        }
-        Ok(val)
     }
 
     fn read_utf8_char(&mut self) -> Result<Option<char>, LispError> {
@@ -1017,91 +1124,17 @@ impl<'a> Reader<'a> {
         match self.peek()? {
             None => Err(LispError::EndOfInput()),
             Some(b'\\') => {
-                const ALT_BIT: i64 = 1 << 22;
-                const SUPER_BIT: i64 = 1 << 23;
-                const HYPER_BIT: i64 = 1 << 24;
-                const SHIFT_BIT: i64 = 1 << 25;
-                const CTRL_BIT: i64 = 1 << 26;
-                const META_BIT: i64 = 1 << 27;
-
-                let mut modifiers = 0i64;
-                let mut ctrl_count = 0u8;
-                let mut saw_modifier = false;
-                loop {
-                    let escaped_modifier_start = self.peek()? == Some(b'\\')
-                        && match self.peek_at(1)? {
-                            Some(b'^') => true,
-                            Some(b'A' | b'S' | b'C' | b'H' | b'M' | b's') => {
-                                self.peek_at(2)? == Some(b'-')
-                            }
-                            _ => false,
-                        };
-                    if !escaped_modifier_start {
-                        // GNU chains modifiers only through another
-                        // backslash escape (?\C-\M-a); a bare `M-' or `^'
-                        // after the first modifier is the target character.
-                        break;
-                    }
-                    self.advance()?;
-                    match (self.peek()?, self.peek_at(1)?) {
-                        (Some(b'A'), Some(b'-')) => {
-                            saw_modifier = true;
-                            modifiers |= ALT_BIT;
-                            self.advance_bytes(2)?;
-                        }
-                        (Some(b'S'), Some(b'-')) => {
-                            saw_modifier = true;
-                            modifiers |= SHIFT_BIT;
-                            self.advance_bytes(2)?;
-                        }
-                        (Some(b'C'), Some(b'-')) => {
-                            saw_modifier = true;
-                            ctrl_count = ctrl_count.saturating_add(1);
-                            self.advance_bytes(2)?;
-                        }
-                        (Some(b'H'), Some(b'-')) => {
-                            saw_modifier = true;
-                            modifiers |= HYPER_BIT;
-                            self.advance_bytes(2)?;
-                        }
-                        (Some(b'M'), Some(b'-')) => {
-                            saw_modifier = true;
-                            modifiers |= META_BIT;
-                            self.advance_bytes(2)?;
-                        }
-                        (Some(b's'), Some(b'-')) => {
-                            saw_modifier = true;
-                            modifiers |= SUPER_BIT;
-                            self.advance_bytes(2)?;
-                        }
-                        (Some(b'^'), _) => {
-                            saw_modifier = true;
-                            ctrl_count = ctrl_count.saturating_add(1);
-                            self.advance_bytes(1)?;
-                        }
-                        _ => break,
-                    }
+                // lread.c read_char_literal: read_char_escape, then an
+                // eight-bit character becomes its byte, the modifiers kept.
+                self.advance()?;
+                let next = self.read_code()?;
+                let ch = self.read_char_escape(next)?;
+                let modifiers = ch & CHAR_MODIFIER_MASK;
+                let mut ch = ch & !CHAR_MODIFIER_MASK;
+                if char_byte8_p(ch) {
+                    ch -= BYTE8_BASE;
                 }
-                let mut value = if !saw_modifier || self.peek()? == Some(b'\\') {
-                    self.read_escaped_character_code()?
-                } else {
-                    self.read_literal_character_code()?
-                };
-                // GNU read_char_escape folds each control prefix over
-                // letters and the 0x40..0x5F block and turns `?' into DEL;
-                // any other target keeps the control modifier bit.
-                for _ in 0..ctrl_count {
-                    value = match value {
-                        0x3f => 0x7f,
-                        n if (0x40..=0x5f).contains(&n) || (0x61..=0x7a).contains(&n) => n & 0x1f,
-                        n => {
-                            modifiers |= CTRL_BIT;
-                            n
-                        }
-                    };
-                }
-                value |= modifiers;
-                Ok(Some(Value::Integer(value)))
+                Ok(Some(Value::Integer(ch | modifiers)))
             }
             Some(ch) if ch < 0x80 => {
                 self.advance()?;
@@ -1148,139 +1181,6 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn read_escaped_character_code(&mut self) -> Result<i64, LispError> {
-        if self.peek()? == Some(b'\\') {
-            self.advance()?;
-            if matches!(self.peek()?, Some(b'A' | b'S' | b'C' | b'H' | b'M'))
-                && self.peek_at(1)? != Some(b'-')
-            {
-                return Err(LispError::ReadError(
-                    "invalid character modifier syntax".into(),
-                ));
-            }
-            if self.peek()? == Some(b's') && self.peek_at(1)? == Some(b'-') {
-                return Err(LispError::ReadError(
-                    "invalid character modifier syntax".into(),
-                ));
-            }
-            if self.peek()? == Some(b'\\') && self.peek_at(1)? == Some(b'\'') {
-                self.advance_bytes(2)?;
-                return Ok('\'' as i64);
-            }
-        }
-        if self.peek()?.is_some_and(|ch| ch >= 0x80) {
-            if matches!(self.input, Input::Function(_) | Input::Encoded { .. }) {
-                return self.read_literal_character_code();
-            }
-            return self.read_utf8_char()?.map_or_else(
-                || {
-                    Err(LispError::ReadError(
-                        "invalid UTF-8 in character literal".into(),
-                    ))
-                },
-                |ch| Ok(raw_byte_from_source_char(ch).map_or(ch as i64, i64::from)),
-            );
-        }
-        match self.advance()? {
-            None => Err(LispError::EndOfInput()),
-            Some(b'\n') | Some(b'\r') => Err(LispError::ReadError(
-                "invalid escaped line feed in character literal".into(),
-            )),
-            Some(b'n') => Ok('\n' as i64),
-            Some(b't') => Ok('\t' as i64),
-            Some(b'r') => Ok('\r' as i64),
-            Some(b'a') => Ok('\x07' as i64),
-            Some(b'd') => Ok('\x7F' as i64),
-            Some(b'e') => Ok('\x1B' as i64),
-            Some(b'b') => Ok('\x08' as i64),
-            Some(b'f') => Ok('\x0C' as i64),
-            Some(b's') => Ok(' ' as i64),
-            Some(b' ') => Ok(' ' as i64),
-            Some(b'v') => Ok('\x0B' as i64),
-            Some(b'\\') => Ok('\\' as i64),
-            Some(b'N') => {
-                if self.peek()? != Some(b'{') {
-                    return Err(LispError::ReadError(
-                        "invalid named character escape".into(),
-                    ));
-                }
-                Ok(self.read_named_character_code()? as i64)
-            }
-            Some(b'x') => {
-                let start = self.pos;
-                let value = self.read_hex_digits(6)?;
-                if self.pos == start {
-                    return Err(LispError::ReadError(
-                        "missing hex digits in character escape".into(),
-                    ));
-                }
-                Ok(value as i64)
-            }
-            Some(b'u') => {
-                let start = self.pos;
-                let value = self.read_hex_digits(4)?;
-                if self.pos - start != 4 {
-                    return Err(LispError::ReadError(
-                        "unicode character escape must have four hex digits".into(),
-                    ));
-                }
-                Ok(value as i64)
-            }
-            Some(b'U') => {
-                let start = self.pos;
-                let value = self.read_hex_digits(8)?;
-                if self.pos - start != 8 {
-                    return Err(LispError::ReadError(
-                        "unicode character escape must have eight hex digits".into(),
-                    ));
-                }
-                Ok(value as i64)
-            }
-            Some(ch) if ch.is_ascii_digit() => {
-                let mut val = (ch - b'0') as i64;
-                for _ in 0..2 {
-                    match self.peek()? {
-                        Some(d) if d.is_ascii_digit() && d < b'8' => {
-                            self.advance()?;
-                            val = val * 8 + (d - b'0') as i64;
-                        }
-                        _ => break,
-                    }
-                }
-                Ok(val)
-            }
-            Some(ch) => Ok(ch as i64),
-        }
-    }
-
-    fn read_named_character_code(&mut self) -> Result<u32, LispError> {
-        debug_assert_eq!(self.peek()?, Some(b'{'));
-        self.advance()?; // consume '{'
-        let mut name = String::new();
-        while let Some(ch) = self.peek()? {
-            if ch == b'}' {
-                self.advance()?; // consume '}'
-                if name.len() > 200 {
-                    return Err(LispError::ReadError("Character name too long".into()));
-                }
-                if let Some(ch) = name.chars().find(|ch| !ch.is_ascii()) {
-                    return Err(LispError::ReadError(format!(
-                        "Invalid character U+{:04X} in character name",
-                        ch as u32
-                    )));
-                }
-                let normalized = normalize_named_character_name(&name);
-                if normalized.is_empty() {
-                    return Err(LispError::ReadError("Empty character name".into()));
-                }
-                return resolve_named_character_code(&normalized)
-                    .ok_or_else(|| LispError::ReadError(format!("\\N{{{normalized}}}")));
-            }
-            name.push(self.advance_char()?.ok_or(LispError::EndOfInput())?);
-        }
-        Err(LispError::EndOfInput())
-    }
-
     fn read_hash(&mut self) -> Result<Option<Value>, LispError> {
         self.advance()?; // consume '#'
         match self.peek()? {
@@ -1302,16 +1202,13 @@ impl<'a> Reader<'a> {
             }
             Some(b'_') => {
                 self.advance()?;
-                match self.peek()? {
-                    None
-                    | Some(
-                        b' ' | b'\t' | b'\n' | b'\r' | 0x0C | b'(' | b')' | b'[' | b']' | b'"'
-                        | b'\'' | b';' | b'#' | b'`' | b',',
-                    ) => {
-                        self.input.unread_lookahead()?;
-                        self.resolve_symbol("").map(Some)
-                    }
-                    Some(_) => self.read_atom_in_syntax(AtomSyntax::ShorthandExempt),
+                if symbol_terminator_code(self.peek_code()?) {
+                    // No symbol character follows: this is the empty
+                    // symbol.
+                    self.input.unread_lookahead()?;
+                    self.resolve_symbol("").map(Some)
+                } else {
+                    self.read_atom_in_syntax(AtomSyntax::ShorthandExempt)
                 }
             }
             Some(b'\'') => {
@@ -1321,26 +1218,45 @@ impl<'a> Reader<'a> {
                 Ok(Some(Value::list([Value::symbol("function"), inner])))
             }
             Some(b'<') => {
+                // read0's default: INVALID_SYNTAX_WITH_BUFFER.
                 self.advance()?;
-                Err(LispError::SignalValue(Value::list([
-                    Value::Symbol("invalid-read-syntax".into()),
-                    Value::String("#<".into()),
-                    Value::Integer(1),
-                    Value::Integer(2),
-                ])))
+                Err(LispError::ReadError("#<".into()))
             }
             Some(b'@') => {
+                // lread.c skip_lazy_string off a file: #@00 skips to the
+                // end and reads as nil; #@NUMBER skips the dynamic string
+                // or byte-code that follows, which always ends in \037.
                 self.advance()?;
-                let count_start = self.pos;
-                let count = self.read_unsigned_decimal()?;
-                if self.pos == count_start {
-                    return Err(LispError::ReadError("invalid-read-syntax".into()));
+                let mut nskip: i64 = 0;
+                let mut digits = 0;
+                loop {
+                    match self.peek_code()? {
+                        Some(c @ 0x30..=0x39) => {
+                            self.read_code()?;
+                            nskip = nskip
+                                .checked_mul(10)
+                                .and_then(|n| n.checked_add(c - 0x30))
+                                .ok_or_else(|| LispError::ReadError("#@".into()))?;
+                            digits += 1;
+                            if digits == 2 && nskip == 0 {
+                                while self.read_code()?.is_some() {}
+                                return Ok(Some(Value::Nil));
+                            }
+                        }
+                        _ => {
+                            if nskip > 0 {
+                                self.read_code()?;
+                            }
+                            break;
+                        }
+                    }
                 }
-                if count == 0 {
-                    while self.advance()?.is_some() {}
-                    return Ok(Some(Value::Nil));
+                while let Some(c) = self.read_code()? {
+                    if c == 0o37 {
+                        break;
+                    }
                 }
-                Err(LispError::ReadError("unsupported #@ syntax".into()))
+                self.read()
             }
             Some(b'^') => {
                 self.advance()?;
@@ -1351,7 +1267,19 @@ impl<'a> Reader<'a> {
                     false
                 };
                 if self.peek()? != Some(b'[') {
-                    return Err(LispError::ReadError("invalid-read-syntax".into()));
+                    // INVALID_SYNTAX_WITH_BUFFER: `#^' and the character
+                    // READ_AND_BUFFER took (`#^^' alone for a sub-table).
+                    if sub_table {
+                        return Err(LispError::ReadError("#^^".into()));
+                    }
+                    // The character is buffered, then unread.
+                    let Some(offender) = self.peek_code()? else {
+                        return Err(LispError::ReadError("#^".into()));
+                    };
+                    return Err(LispError::ReadError(format!(
+                        "#^{}",
+                        reader_code_text(offender)
+                    )));
                 }
                 // read0 clears locate_syms across a char-table literal.
                 let saved_locate = self.locate_symbols;
@@ -1363,27 +1291,27 @@ impl<'a> Reader<'a> {
                     if !(68..=crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_SLOTS)
                         .contains(&fields.len())
                     {
-                        return Err(LispError::ReadError("invalid size char-table".into()));
+                        return Err(LispError::ReadError("Invalid size char-table".into()));
                     }
                 } else {
+                    // lread.c sub_char_table_from_rev_list signals `error'.
+                    if fields.len() < 2 {
+                        return Err(LispError::Signal("Invalid size of sub-char-table".into()));
+                    }
                     let Some(Kind::Integer(depth @ 1..=3)) = fields.first().map(|v| v.kind())
                     else {
-                        return Err(LispError::ReadError(
-                            "invalid depth in sub-char-table".into(),
-                        ));
+                        return Err(LispError::Signal("Invalid depth in sub-char-table".into()));
                     };
                     let expected_contents = [0usize, 16, 32, 128][depth as usize];
                     if fields.len() != expected_contents + 2 {
-                        return Err(LispError::ReadError(
-                            "invalid size in sub-char-table".into(),
-                        ));
+                        return Err(LispError::Signal("Invalid size in sub-char-table".into()));
                     }
                     if !matches!(
                         fields.get(1).map(|v| v.kind()),
                         Some(Kind::Integer(0..=0x3f_ffff))
                     ) {
-                        return Err(LispError::ReadError(
-                            "invalid minimum character in sub-char-table".into(),
+                        return Err(LispError::Signal(
+                            "Invalid minimum character in sub-char-table".into(),
                         ));
                     }
                 }
@@ -1435,9 +1363,7 @@ impl<'a> Reader<'a> {
                     (4..=6).contains(&fields.len())
                 };
                 if !valid_len {
-                    return Err(LispError::ReadError(
-                        "invalid byte-code object syntax".into(),
-                    ));
+                    return Err(LispError::ReadError("Invalid byte-code object".into()));
                 }
                 Ok(Some(Value::ReaderForm(
                     crate::lisp::alloc::VectorlikeRef::allocate(ReaderForm::Closure {
@@ -1451,42 +1377,44 @@ impl<'a> Reader<'a> {
                 )))
             }
             Some(b'&') => {
+                // lread.c read_bool_vector: the length's digits and then at
+                // once the string of its bytes.
                 self.advance()?;
-                let len_start = self.pos;
-                let len = self.read_unsigned_decimal()? as usize;
-                if self.pos == len_start {
-                    return Err(LispError::ReadError("missing bool vector length".into()));
-                }
-                let bytes = match (self.read()?.ok_or(LispError::EndOfInput())?).kind() {
-                    Kind::StringObject(state) => state.borrow().text(),
-                    other => {
-                        return Err(LispError::ReadError(format!(
-                            "invalid bool vector literal bytes: expected string, got {}",
-                            other.value().type_name()
-                        )));
-                    }
-                };
-
-                let mut bits = Vec::with_capacity(len);
-                for ch in bytes.chars() {
-                    let byte = u32::from(ch);
-                    if byte > 0xFF {
-                        return Err(LispError::ReadError(
-                            "bool vector literal byte was out of range".into(),
-                        ));
-                    }
-                    for bit in 0..8 {
-                        if bits.len() == len {
-                            break;
+                let mut length: usize = 0;
+                loop {
+                    let c = self.read_code()?;
+                    match c {
+                        Some(c @ 0x30..=0x39) => {
+                            length = length
+                                .checked_mul(10)
+                                .and_then(|n| n.checked_add((c - 0x30) as usize))
+                                .ok_or_else(|| LispError::ReadError("#&".into()))?;
                         }
-                        bits.push((byte & (1 << bit)) != 0);
-                    }
-                    if bits.len() == len {
-                        break;
+                        Some(0x22) => break,
+                        _ => return Err(LispError::ReadError("#&".into())),
                     }
                 }
-                bits.resize(len, false);
-
+                self.retreat_ascii(b'"');
+                let string = self.read_string()?.ok_or(LispError::EndOfInput())?;
+                let Kind::StringObject(state) = string.kind() else {
+                    return Err(LispError::ReadError("#&...".into()));
+                };
+                let (multibyte, bytes) = {
+                    let state = state.borrow();
+                    (state.is_multibyte(), state.bytes().to_vec())
+                };
+                let size_in_chars = length.div_ceil(8);
+                // We used to print 1 char too many when the number of bits
+                // was a multiple of 8; accept such input.
+                if multibyte
+                    || !(size_in_chars == bytes.len()
+                        || (!bytes.is_empty() && length == (bytes.len() - 1) * 8))
+                {
+                    return Err(LispError::ReadError("#&...".into()));
+                }
+                let bits = (0..length)
+                    .map(|bit| bytes[bit / 8] & (1 << (bit % 8)) != 0)
+                    .collect();
                 Ok(Some(Value::ReaderForm(
                     crate::lisp::alloc::VectorlikeRef::allocate(
                         crate::lisp::types::ReaderForm::BoolVector { bits },
@@ -1495,25 +1423,7 @@ impl<'a> Reader<'a> {
             }
             Some(b':') => {
                 self.advance()?;
-                if matches!(
-                    self.peek()?,
-                    None | Some(
-                        b' ' | b'\t'
-                            | b'\n'
-                            | b'\r'
-                            | 0x0C
-                            | b'('
-                            | b')'
-                            | b'['
-                            | b']'
-                            | b'"'
-                            | b'\''
-                            | b';'
-                            | b'#'
-                            | b'`'
-                            | b','
-                    )
-                ) {
+                if symbol_terminator_code(self.peek_code()?) {
                     self.input.unread_lookahead()?;
                     // lread.c's empty #: branch returns a bare fresh symbol.
                     let id = READER_UNINTERNED_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
@@ -1525,8 +1435,7 @@ impl<'a> Reader<'a> {
                 }
             }
             Some(b'(') => {
-                // #(...) — either a self-evaluating vector literal or a
-                // string literal with text properties.  read0 clears
+                // #(...) — a string literal with text properties.  read0 clears
                 // locate_syms across the literal (lread.c RE_string_props).
                 self.advance()?; // consume '('
                 let saved_locate = self.locate_symbols;
@@ -1551,71 +1460,93 @@ impl<'a> Reader<'a> {
                 })();
                 self.locate_symbols = saved_locate;
                 let items = items?;
-                if let Some(string) = self.try_read_string_literal_with_properties(&items)? {
-                    Ok(Some(string))
-                } else {
-                    Ok(Some(Value::list(
-                        std::iter::once(Value::symbol("vector-literal")).chain(items),
-                    )))
+                // lread.c string_props_from_rev_list: the first element
+                // must be a string, then BEG END PLIST triples.
+                if !items
+                    .first()
+                    .is_some_and(|first| matches!(first.kind(), Kind::StringObject(_)))
+                {
+                    return Err(LispError::ReadError("#".into()));
                 }
+                if !(items.len() - 1).is_multiple_of(3) {
+                    return Err(LispError::ReadError("Invalid string property list".into()));
+                }
+                Ok(self.try_read_string_literal_with_properties(&items)?)
             }
             Some(ch) if ch.is_ascii_digit() => {
-                let base = self.read_unsigned_decimal()?;
-                let radix = match self.peek()? {
-                    Some(b'r') | Some(b'R') => {
-                        self.advance()?;
-                        base
+                // #N=OBJ, #N# or #NrDIGITS: the number N first, each
+                // character buffered for INVALID_SYNTAX_WITH_BUFFER.
+                let mut token = String::from("#");
+                let mut n: Option<i64> = Some(0);
+                let c = loop {
+                    let Some(c) = self.read_code()? else {
+                        return Err(LispError::ReadError(token));
+                    };
+                    token.push_str(&reader_code_text(c));
+                    if !(0x30..=0x39).contains(&c) {
+                        break c;
                     }
-                    Some(b'=') => {
-                        self.advance()?;
-                        let value = self.read()?.ok_or(LispError::EndOfInput())?;
-                        return Ok(Some(Value::ReaderForm(
-                            crate::lisp::alloc::VectorlikeRef::allocate(
-                                ReaderForm::CircularLabel {
-                                    id: base,
-                                    payload: value,
-                                },
-                            ),
-                        )));
-                    }
-                    Some(b'#') => {
-                        self.advance()?;
-                        return Ok(Some(Value::ReaderForm(
-                            crate::lisp::alloc::VectorlikeRef::allocate(
-                                ReaderForm::CircularReference(base),
-                            ),
-                        )));
-                    }
-                    _ => {
-                        // lread.c's INVALID_SYNTAX_WITH_BUFFER: the datum is
-                        // the buffered token text — `#', the digits, and the
-                        // character the dispatch choked on ("#5)").
-                        let offender = self
-                            .peek_char()?
-                            .map(|ch| ch.to_string())
-                            .unwrap_or_default();
-                        return Err(LispError::ReadError(format!("#{base}{offender}")));
+                    n = n.and_then(|n| n.checked_mul(10)?.checked_add(c - 0x30));
+                    if n.is_none() {
+                        return Err(LispError::ReadError(token));
                     }
                 };
-                Ok(Some(self.read_radix_integer(radix)?))
+                let n = n.expect("checked above");
+                if c == i64::from(b'r') || c == i64::from(b'R') {
+                    // #NrDIGITS -- radix-N number.
+                    if n > 36 {
+                        return Err(LispError::ReadError(format!("integer, radix {n}")));
+                    }
+                    return Ok(Some(self.read_integer(n as u32)?));
+                }
+                let Ok(id) = u32::try_from(n) else {
+                    return Err(LispError::ReadError(token));
+                };
+                if c == i64::from(b'=') {
+                    // #N=OBJ -- assign number N to OBJ.
+                    self.defined_labels.insert(id);
+                    let value = self.read()?.ok_or(LispError::EndOfInput())?;
+                    return Ok(Some(Value::ReaderForm(
+                        crate::lisp::alloc::VectorlikeRef::allocate(ReaderForm::CircularLabel {
+                            id,
+                            payload: value,
+                        }),
+                    )));
+                }
+                if c == i64::from(b'#') && self.defined_labels.contains(&id) {
+                    // #N# -- reference to numbered object.
+                    return Ok(Some(Value::ReaderForm(
+                        crate::lisp::alloc::VectorlikeRef::allocate(ReaderForm::CircularReference(
+                            id,
+                        )),
+                    )));
+                }
+                Err(LispError::ReadError(token))
             }
             Some(b'x' | b'X') => {
                 self.advance()?;
-                Ok(Some(self.read_radix_integer(16)?))
+                Ok(Some(self.read_integer(16)?))
             }
             Some(b'o' | b'O') => {
                 self.advance()?;
-                Ok(Some(self.read_radix_integer(8)?))
+                Ok(Some(self.read_integer(8)?))
             }
             Some(b'b' | b'B') => {
                 self.advance()?;
-                Ok(Some(self.read_radix_integer(2)?))
+                Ok(Some(self.read_integer(2)?))
             }
-            Some(b's') | Some(b'S') => {
+            Some(b's') => {
                 self.advance()?;
-                self.skip_whitespace_and_comments()?;
+                // READ_AND_BUFFER: the character after `#s' must be `('.
                 if self.peek()? != Some(b'(') {
-                    return Err(LispError::ReadError("unsupported #s syntax".into()));
+                    // The character is buffered, then unread.
+                    let Some(offender) = self.peek_code()? else {
+                        return Err(LispError::ReadError("#s".into()));
+                    };
+                    return Err(LispError::ReadError(format!(
+                        "#s{}",
+                        reader_code_text(offender)
+                    )));
                 }
                 self.advance()?; // consume '('
                 self.skip_whitespace_and_comments()?;
@@ -1660,10 +1591,20 @@ impl<'a> Reader<'a> {
                     )))
                 }
             }
-            _ => {
-                // Treat unknown hash-prefixed syntax as a symbol token that starts with '#'.
+            // `#$' outside the `.elc' rewrite (lisp::preprocess_lazy_doc_source)
+            // reads on as the symbol it spells.
+            Some(b'$') => {
                 self.retreat_ascii(b'#');
                 self.read_atom()
+            }
+            // read0's default: INVALID_SYNTAX_WITH_BUFFER, `#' and the
+            // character after it.
+            Some(_) => {
+                let offender = self.read_code()?.unwrap_or(-1);
+                Err(LispError::ReadError(format!(
+                    "#{}",
+                    reader_code_text(offender)
+                )))
             }
         }
     }
@@ -1908,35 +1849,49 @@ impl<'a> Reader<'a> {
         })
     }
 
-    fn read_unsigned_decimal(&mut self) -> Result<u32, LispError> {
-        let mut value = Some(0u32);
-        let mut any = false;
-        while let Some(ch) = self.peek()? {
-            if !ch.is_ascii_digit() {
-                break;
-            }
-            self.advance()?;
-            any = true;
-            value = value.and_then(|v| v.checked_mul(10)?.checked_add(u32::from(ch - b'0')));
-        }
-        Ok(if any { value.unwrap_or(10) } else { 10 })
-    }
-
-    fn read_radix_integer(&mut self, base: u32) -> Result<Value, LispError> {
+    /// lread.c read_integer: an optional sign, then RADIX digits; a
+    /// letter or digit past RADIX is read into the token and makes it
+    /// invalid ("integer, radix N").
+    fn read_integer(&mut self, radix: u32) -> Result<Value, LispError> {
         let mut token = String::new();
-        if let Some(sign @ (b'-' | b'+')) = self.peek()? {
-            self.advance()?;
-            token.push(sign as char);
+        let mut valid: i8 = -1;
+        let mut c = self.peek_code()?;
+        if let Some(sign @ (0x2B | 0x2D)) = c {
+            self.read_code()?;
+            token.push(sign as u8 as char);
+            c = self.peek_code()?;
         }
-        while let Some(ch) = self.peek()? {
-            if !ch.is_ascii_alphanumeric() {
-                break;
+        if c == Some(0x30) {
+            token.push('0');
+            valid = 1;
+            // Ignore redundant leading zeros.
+            while c == Some(0x30) {
+                self.read_code()?;
+                c = self.peek_code()?;
             }
-            self.advance()?;
-            token.push(ch as char);
+        }
+        while let Some(code) = c {
+            let Some(digit) = u8::try_from(code)
+                .ok()
+                .and_then(|byte| (byte as char).to_digit(36))
+            else {
+                break;
+            };
+            if digit >= radix {
+                valid = 0;
+            }
+            if valid < 0 {
+                valid = 1;
+            }
+            self.read_code()?;
+            token.push(code as u8 as char);
+            c = self.peek_code()?;
         }
         self.input.unread_lookahead()?;
-        parse_radix_integer(base, &token)
+        if valid != 1 {
+            return Err(LispError::ReadError(format!("integer, radix {radix}")));
+        }
+        parse_radix_integer(radix, &token)
     }
 }
 
@@ -1998,38 +1953,13 @@ fn valid_unicode_scalar(value: u32) -> bool {
     value <= 0x10_FFFF && !(0xD800..=0xDFFF).contains(&value)
 }
 
-fn normalize_named_character_name(name: &str) -> String {
-    let mut normalized = String::with_capacity(name.len());
-    let mut previous_was_whitespace = false;
-    for ch in name.chars() {
-        if ch.is_ascii_whitespace() {
-            if !previous_was_whitespace {
-                normalized.push(' ');
-            }
-            previous_was_whitespace = true;
-        } else {
-            normalized.push(ch);
-            previous_was_whitespace = false;
-        }
-    }
-    normalized
-}
-
-fn resolve_named_character_code(name: &str) -> Option<u32> {
-    if let Some(hex) = name.strip_prefix("U+").or_else(|| name.strip_prefix("u+")) {
-        if hex.is_empty() || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
-            return None;
-        }
-        let value = u32::from_str_radix(hex, 16).ok()?;
-        return valid_unicode_scalar(value).then_some(value);
-    }
-
-    unicode_character(name).map(|ch| ch as u32)
-}
-
 fn parse_radix_integer(base: u32, token: &str) -> Result<Value, LispError> {
+    if base == 1 {
+        // read_integer has checked every digit is `0'.
+        return Ok(Value::Integer(0));
+    }
     if !(2..=36).contains(&base) {
-        return Err(LispError::ReadError(format!("invalid radix {}", base)));
+        return Err(LispError::ReadError(format!("integer, radix {base}")));
     }
     let (negative, digits) = token
         .strip_prefix('-')
@@ -2043,7 +1973,7 @@ fn parse_radix_integer(base: u32, token: &str) -> Result<Value, LispError> {
     for ch in digits.chars() {
         let digit = ch
             .to_digit(base)
-            .ok_or_else(|| LispError::ReadError(format!("invalid radix digit {}", ch)))?;
+            .ok_or_else(|| LispError::ReadError(format!("integer, radix {base}")))?;
         value = value * BigInt::from(base) + BigInt::from(digit);
     }
     if negative {
@@ -2539,13 +2469,15 @@ mod tests {
         assert_eq!(table.extra_count(), 20);
         assert_eq!(table.extra(19), Some(Value::Nil));
 
+        // lread.c: char_table_from_rev_list's invalid_syntax, and
+        // sub_char_table_from_rev_list's `error'.
         assert!(matches!(
             Reader::new("#^[nil]").read().as_ref().map_err(LispError::kind),
-            Err(LispErrorKind::ReadError(message)) if message == "invalid size char-table"
+            Err(LispErrorKind::ReadError(message)) if message == "Invalid size char-table"
         ));
         assert!(matches!(
             Reader::new("#^^[2 0 nil]").read().as_ref().map_err(LispError::kind),
-            Err(LispErrorKind::ReadError(message)) if message == "invalid size in sub-char-table"
+            Err(LispErrorKind::Signal(message)) if message == "Invalid size in sub-char-table"
         ));
     }
 

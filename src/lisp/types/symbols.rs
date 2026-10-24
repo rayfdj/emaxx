@@ -171,6 +171,19 @@ const KEY_NAMES: &[&str] = &[
     "current-load-list",
     "internal--text-quoting-flag",
     "standard-display-table",
+    // buffer.c reset_buffer's always-local slots.
+    "buffer-backed-up",
+    "buffer-auto-save-file-name",
+    "major-mode",
+    "local-minor-modes",
+    "mode-name",
+    "buffer-file-format",
+    "buffer-auto-save-file-format",
+    "point-before-scroll",
+    "buffer-invisibility-spec",
+    "buffer-display-count",
+    "buffer-display-time",
+    "fundamental-mode",
 ];
 
 struct Symbols {

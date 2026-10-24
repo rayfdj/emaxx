@@ -285,7 +285,16 @@ pub(super) fn describe_syntax_value(value: &Value) -> (String, bool) {
 // GNU standard-syntax-table classes for characters a syntax table leaves
 // unset: `$'/`%' are word constituents, `&*+-/<=>|_' symbol constituents,
 // alongside the usual delimiter/escape assignments.
-fn default_syntax_entry(ch: char) -> SyntaxEntry {
+fn default_syntax_entry(code: u32) -> SyntaxEntry {
+    // GNU initializes the complete multibyte range, characters beyond
+    // Unicode and raw bytes included, as word syntax, independent of
+    // Unicode alphabetic properties.
+    let Some(ch) = u8::try_from(code).ok().filter(u8::is_ascii).map(char::from) else {
+        return SyntaxEntry {
+            class: SyntaxClass::Word,
+            ..SyntaxEntry::default()
+        };
+    };
     let class = match ch {
         ' ' | '\t' | '\n' | '\r' | '\u{000C}' => SyntaxClass::Whitespace,
         '_' | '&' | '*' | '+' | '-' | '/' | '<' | '=' | '>' | '|' => SyntaxClass::Symbol,
@@ -295,9 +304,6 @@ fn default_syntax_entry(ch: char) -> SyntaxEntry {
         '(' | '[' | '{' => SyntaxClass::OpenParen,
         ')' | ']' | '}' => SyntaxClass::CloseParen,
         '0'..='9' | 'A'..='Z' | 'a'..='z' => SyntaxClass::Word,
-        // GNU initializes the complete multibyte range as word syntax,
-        // independent of Unicode alphabetic properties.
-        ch if ch as u32 >= 0x80 => SyntaxClass::Word,
         _ => SyntaxClass::Punctuation,
     };
     let matching = match ch {
@@ -321,13 +327,6 @@ pub(super) fn syntax_entry_for_code(
     table_id: CharTableRef,
     code: u32,
 ) -> SyntaxEntry {
-    // GNU character codes include the raw-byte range above Unicode's scalar
-    // limit.  Keep the public code as the char-table key, but use the shared
-    // character boundary to obtain Emaxx's internal marker when a default
-    // syntax entry has to be derived.
-    let Ok(ch) = char_from_integer(i64::from(code)) else {
-        return SyntaxEntry::default();
-    };
     let value = table_id.get(code);
     let entry = match value.kind() {
         Kind::Nil => SyntaxEntry {
@@ -340,7 +339,7 @@ pub(super) fn syntax_entry_for_code(
             ..SyntaxEntry::default()
         },
         value => {
-            syntax_entry_from_value(&value.value()).unwrap_or_else(|| default_syntax_entry(ch))
+            syntax_entry_from_value(&value.value()).unwrap_or_else(|| default_syntax_entry(code))
         }
     };
     if entry.class == SyntaxClass::Inherit && table_id != interp.standard_syntax_table_id() {

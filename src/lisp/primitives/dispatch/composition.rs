@@ -21,20 +21,7 @@ fn checked_buffer_region(
     start: &Value,
     end: &Value,
 ) -> Result<(usize, usize), LispError> {
-    let from = position_from_value(interp, start)?;
-    let to = position_from_value(interp, end)?;
-    if from < interp.buffer.borrow().point_min()
-        || from > interp.buffer.borrow().point_max()
-        || to < interp.buffer.borrow().point_min()
-        || to > interp.buffer.borrow().point_max()
-    {
-        return Err(args_out_of_range([
-            current_buffer_value(interp),
-            *start,
-            *end,
-        ]));
-    }
-    Ok(if from <= to { (from, to) } else { (to, from) })
+    validate_region(interp, start, end)
 }
 
 fn checked_string_region(
@@ -900,6 +887,11 @@ fn find_composition(
 fn get_glyph_string(interp: &Interpreter, env: &Env, args: &[Value]) -> Result<Value, LispError> {
     let font = terminal_font(interp, &args[2])?;
     let chars = if args[3].is_nil() {
+        // composite.c: a unibyte buffer cannot be shaped, checked before
+        // validate_region.
+        if !interp.buffer.borrow().is_multibyte() {
+            return Err(LispError::Signal("Attempt to shape unibyte text".into()));
+        }
         let (start, end) = checked_buffer_region(interp, &args[0], &args[1])?;
         composition_chars(interp, &Value::Nil, start, end)?
     } else {

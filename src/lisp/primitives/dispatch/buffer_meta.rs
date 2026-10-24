@@ -95,62 +95,8 @@ define_dispatch!(
     ) -> Result<Value, LispError> {
         match name {
             "unencodable-char-position" => {
-                // coding.c Funencodable_char_position: the first position
-                // (or, with COUNT, up to COUNT positions) in the region or
-                // STRING that CODING-SYSTEM cannot encode.
                 need_arg_range(name, args, 3, 5)?;
-                let coding = checked_coding_symbol(interp, &args[2])?;
-                let count = match args.get(3).map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => None,
-                    Some(Kind::Integer(count)) if count >= 0 => Some(count as usize),
-                    Some(other) => {
-                        return Err(crate::lisp::primitives::wrong_type_argument(
-                            "wholenump",
-                            other.value(),
-                        ));
-                    }
-                };
-                let (text, base) = match args.get(4) {
-                    Some(string) if !string.is_nil() => {
-                        let text = string_text(string)?;
-                        let length = text.chars().count();
-                        let start = usize::try_from(args[0].as_integer()?).unwrap_or(usize::MAX);
-                        let end = usize::try_from(args[1].as_integer()?).unwrap_or(usize::MAX);
-                        if start > end || end > length {
-                            return Err(LispError::Signal("Args out of range".into()));
-                        }
-                        (
-                            text.chars()
-                                .skip(start)
-                                .take(end - start)
-                                .collect::<String>(),
-                            start,
-                        )
-                    }
-                    _ => {
-                        let start = position_from_value(interp, &args[0])?;
-                        let end = position_from_value(interp, &args[1])?;
-                        if start > end || end > interp.buffer.borrow().point_max() {
-                            return Err(LispError::Signal("Args out of range".into()));
-                        }
-                        (
-                            interp
-                                .buffer
-                                .borrow()
-                                .buffer_substring(start, end)
-                                .map_err(|error| LispError::Signal(error.to_string()))?,
-                            start,
-                        )
-                    }
-                };
-                let positions = string_unencodable_positions(&text, &coding, interp)?;
-                let positions = positions
-                    .into_iter()
-                    .map(|index| Value::Integer(index + base as i64));
-                Ok(match count {
-                    None => positions.take(1).next().unwrap_or(Value::Nil),
-                    Some(count) => Value::list(positions.take(count).collect::<Vec<_>>()),
-                })
+                unencodable_char_position_value(interp, args, env)
             }
             "compare-buffer-substrings" => {
                 need_args(name, args, 6)?;
@@ -530,7 +476,7 @@ define_dispatch!(
                 let clone = args.get(2).is_some_and(|value| value.is_truthy());
                 let inhibit_hooks = args.get(3).is_some_and(|value| value.is_truthy());
                 let (new_id, _) = interp.create_buffer(&new_name);
-                let (text, props, point, mark, base_overlays, restriction, multibyte) = {
+                let (text, props, point, mark, mark_active, base_overlays, restriction, multibyte) = {
                     let base = interp.get_buffer_by_id(base_id).ok_or_else(|| {
                         LispError::Signal(format!("No buffer with id {}", base_id))
                     })?;
@@ -539,6 +485,7 @@ define_dispatch!(
                         base.full_property_spans(),
                         base.point(),
                         base.mark(),
+                        base.mark_active_value(),
                         base.overlays.iter().collect::<Vec<_>>(),
                         base.restriction(),
                         base.is_multibyte(),
@@ -557,8 +504,14 @@ define_dispatch!(
                     buffer.set_multibyte(multibyte);
                     buffer.restore_restriction(restriction.0, restriction.1);
                     buffer.goto_char(point);
-                    if let Some(mark) = mark {
-                        buffer.set_mark(mark);
+                    // A fresh mark pointing nowhere and `mark-active' nil
+                    // (reset_buffer), unless clone_per_buffer_values copies
+                    // the base's mark and `mark-active'.
+                    if clone {
+                        if let Some(mark) = mark {
+                            buffer.set_mark_position(mark);
+                        }
+                        buffer.set_mark_active_value(mark_active);
                     }
                     // Property spans are 1-based buffer positions, the
                     // same coordinates set_text_properties consumes.
@@ -582,6 +535,42 @@ define_dispatch!(
                 interp.register_indirect_buffer(new_id, base_id);
                 if clone {
                     interp.clone_buffer_local_state(base_id, new_id);
+                    // The clone visits no file, has its own display count,
+                    // backup history and auto-save file, and no minor modes.
+                    for (slot, value) in [
+                        ("buffer-display-count", Value::Integer(0)),
+                        ("buffer-backed-up", Value::Nil),
+                        ("local-minor-modes", Value::Nil),
+                        ("buffer-auto-save-file-name", Value::Nil),
+                    ] {
+                        interp.set_buffer_local_value(new_id, slot, value);
+                    }
+                    // Then, in the clone, Fset of buffer-save-without-query
+                    // and buffer-file-number, and no buffer-local
+                    // buffer-stale-function the base has.
+                    let saved = interp.current_buffer_id();
+                    interp.set_current_buffer_id(new_id)?;
+                    let result = (|| {
+                        for variable in ["buffer-save-without-query", "buffer-file-number"] {
+                            call_named_function(
+                                interp,
+                                "set",
+                                &[Value::symbol(variable), Value::Nil],
+                                env,
+                            )?;
+                        }
+                        if interp.has_buffer_local_binding(base_id, "buffer-stale-function") {
+                            call_named_function(
+                                interp,
+                                "kill-local-variable",
+                                &[Value::symbol("buffer-stale-function")],
+                                env,
+                            )?;
+                        }
+                        Ok::<(), LispError>(())
+                    })();
+                    interp.set_current_buffer_id(saved)?;
+                    result?;
                     interp.run_clone_indirect_buffer_hook(new_id, env)?;
                 }
                 if !inhibit_hooks {
@@ -713,26 +702,53 @@ define_dispatch!(
                     Some(value) => interp.resolve_buffer_id(value)?,
                     None => interp.current_buffer_id(),
                 };
-                // buffer.c:buffer_lisp_local_variables: a void local is the
-                // bare symbol, a bound one `(symbol . value)'.
-                let mut vars = interp
-                    .buffer_local_variables(buffer_id)
-                    .into_iter()
-                    .map(|(name, value)| {
-                        if matches!(value.kind(), Kind::Unbound) {
-                            Value::Symbol(name.into())
-                        } else {
-                            Value::cons(Value::Symbol(name.into()), value)
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let buffer = interp
-                    .get_buffer_by_id(buffer_id)
-                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", buffer_id)))?;
-                vars.push(Value::cons(
+                // buffer.c:Fbuffer_local_variables: `buffer-undo-list'
+                // first, then the DEFVAR_PER_BUFFER slots local in BUFFER
+                // (every index -1 one) in struct buffer's order reversed,
+                // then the alist cells oldest first
+                // (buffer_lisp_local_variables); a void one is the bare
+                // symbol, a bound one `(symbol . value)'.
+                let entry = |name: &str, value: Value| {
+                    if matches!(value.kind(), Kind::Unbound) {
+                        Value::Symbol(name.into())
+                    } else {
+                        Value::cons(Value::Symbol(name.into()), value)
+                    }
+                };
+                let undo_list = {
+                    let buffer = interp.get_buffer_by_id(buffer_id).ok_or_else(|| {
+                        LispError::Signal(format!("No buffer with id {}", buffer_id))
+                    })?;
+                    buffer_undo_list_value(&buffer)
+                };
+                let mut vars = vec![Value::cons(
                     Value::Symbol("buffer-undo-list".into()),
-                    buffer_undo_list_value(&buffer),
-                ));
+                    undo_list,
+                )];
+                // FOR_EACH_PER_BUFFER_OBJECT_AT reads each slot, whatever
+                // its symbol's redirect: a variable makunbound leaves plain
+                // keeps its slot and flag, and an ordinary local made for
+                // it after that is an alist cell listed besides.
+                for name in crate::lisp::eval::BUFFER_LOCAL_VARIABLES_ORDER {
+                    let local = if *name == "text-conversion-style" {
+                        interp.text_conversion_style_slot(buffer_id).map(Some)
+                    } else {
+                        interp.buffer_local_binding(buffer_id, name)
+                    };
+                    if let Some(local) = local {
+                        vars.push(entry(name, local.unwrap_or(Value::Unbound)));
+                    }
+                }
+                vars.extend(
+                    interp
+                        .buffer_alist_local_variables(buffer_id)
+                        .into_iter()
+                        .filter(|(name, _)| {
+                            name == "text-conversion-style"
+                                || crate::lisp::eval::native_per_buffer_slot(name).is_none()
+                        })
+                        .map(|(name, value)| entry(&name, value)),
+                );
                 Ok(Value::list(vars))
             }
             #[cfg(target_os = "linux")]
@@ -747,12 +763,17 @@ define_dispatch!(
             "kill-local-variable" => {
                 need_args(name, args, 1)?;
                 let symbol = interp.resolve_variable_name(args[0].as_symbol()?)?;
-                // data.c:Fkill_local_variable's BUFFER_OBJFWD branch
-                // resets the field and flag before its alist watcher path.
-                if interp.has_native_text_conversion_style(&symbol) {
-                    interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
-                    // The forwarded branch returns VARIABLE as supplied,
-                    // including an alias, before the alist branch rewrites it.
+                // data.c:Fkill_local_variable's BUFFER_OBJFWD branch: an
+                // indexed slot returns to its default with its flag
+                // cleared, an always-local one (index -1) stays as it is;
+                // no watcher is told, and VARIABLE comes back as supplied,
+                // an alias included, before the alist branch rewrites it.
+                if let Some(slot) = crate::lisp::eval::native_per_buffer_slot(&symbol)
+                    && interp.is_per_buffer_special(&symbol)
+                {
+                    if !slot.always_local {
+                        interp.remove_buffer_local_value(interp.current_buffer_id(), &symbol);
+                    }
                     return Ok(args[0]);
                 }
                 interp.notify_variable_watchers(
@@ -1105,16 +1126,7 @@ define_dispatch!(
                 let code = u32::try_from(args[1].as_integer()?)
                     .map_err(|_| LispError::Signal("Invalid charset code-point".into()))?;
                 Ok(decode_charset_code(interp, charset, code)
-                    .map(|character| {
-                        let public = if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xff)
-                            .contains(&character)
-                        {
-                            RAW_BYTE8_BASE + character - RAW_BYTE_REGEX_BASE
-                        } else {
-                            character
-                        };
-                        Value::Integer(public.into())
-                    })
+                    .map(|character| Value::Integer(character.into()))
                     .unwrap_or(Value::Nil))
             }
             "encode-char" => {
@@ -1264,43 +1276,46 @@ define_dispatch!(
                 }
             }
             "charset-after" => {
-                if args.len() > 1 {
-                    return Err(LispError::WrongNumberOfArgs(name.into(), args.len()));
-                }
-                let pos = args
-                    .first()
-                    .map(Value::as_integer)
-                    .transpose()?
-                    .unwrap_or(interp.buffer.borrow().point() as i64);
-                Ok(match interp.buffer.borrow().char_at(pos as usize) {
-                    Some(ch) => {
-                        let code = raw_byte_from_regex_char(ch)
-                            .map(|byte| RAW_BYTE_REGEX_BASE + u32::from(byte))
-                            .unwrap_or(ch as u32);
-                        Value::Symbol(char_charset(interp, code).0.into())
+                need_arg_range(name, args, 0, 1)?;
+                // charset.c:Fcharset_after: CHAR_CHARSET of the character
+                // Fchar_after finds, nil where it finds none.
+                let ch = super::buffer_edit::direct_char_after(interp, args, env)?;
+                Ok(match ch.kind() {
+                    Kind::Integer(code) => {
+                        Value::Symbol(char_charset(interp, code as u32).0.into())
                     }
-                    None => Value::Nil,
+                    _ => ch,
                 })
             }
             "find-charset-string" => {
-                need_args(name, args, 1)?;
-                Ok(Value::list(charsets_for_text(
-                    &string_text(&args[0])?,
-                    interp,
+                need_arg_range(name, args, 1, 2)?;
+                // charset.c:Ffind_charset_string: CHECK_STRING, then the
+                // string's characters (a unibyte one's bytes).
+                let Kind::StringObject(state) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
+                let (codes, multibyte) = {
+                    let state = state.borrow();
+                    (state.codes(), state.is_multibyte())
+                };
+                let table = args.get(1).copied().unwrap_or(Value::Nil);
+                Ok(Value::list(find_charsets_in_text(
+                    interp, &codes, multibyte, &table,
                 )))
             }
             "find-charset-region" => {
-                need_args(name, args, 2)?;
-                let from = args[0].as_integer()?;
-                let to = args[1].as_integer()?;
-                let (start, end) = clamp_overlay_range(&interp.buffer.borrow(), from, to);
-                let mut text = String::new();
-                for pos in start..end {
-                    if let Some(ch) = interp.buffer.borrow().char_at(pos) {
-                        text.push(ch);
-                    }
-                }
-                Ok(Value::list(charsets_for_text(&text, interp)))
+                need_arg_range(name, args, 2, 3)?;
+                // charset.c:Ffind_charset_region: validate_region, then the
+                // region's characters (a unibyte buffer's bytes).
+                let (start, end) = validate_region(interp, &args[0], &args[1])?;
+                let codes = (start..end)
+                    .map(|pos| public_buffer_char_code_at(interp, pos).unwrap_or(0) as u32)
+                    .collect::<Vec<_>>();
+                let multibyte = interp.buffer.borrow().is_multibyte();
+                let table = args.get(2).copied().unwrap_or(Value::Nil);
+                Ok(Value::list(find_charsets_in_text(
+                    interp, &codes, multibyte, &table,
+                )))
             }
             "map-charset-chars" => {
                 if args.len() < 2 || args.len() > 5 {
@@ -1695,7 +1710,7 @@ define_dispatch!(
             }
             "check-coding-systems-region" => {
                 need_args(name, args, 3)?;
-                check_coding_systems_region_value(interp, &args[0], args.get(1), &args[2])
+                check_coding_systems_region_value(interp, &args[0], args.get(1), &args[2], env)
             }
             "detect-coding-string" => {
                 need_args(name, args, 1)?;
@@ -1902,6 +1917,15 @@ define_dispatch!(
                 let coding = args[0].as_symbol()?;
                 let mnemonic = args[1].as_integer()?;
                 let kind = args[2].as_symbol()?;
+                // coding.c: a translation table is a char-table, a list or
+                // a symbol, and each conversion a symbol.
+                for table in &args[5..7] {
+                    if !matches!(table.kind(), Kind::CharTable(_) | Kind::Cons(_)) {
+                        table.as_symbol()?;
+                    }
+                }
+                args[7].as_symbol()?;
+                args[8].as_symbol()?;
                 // coding.c derives public attributes from the validated codec
                 // shape and prepends them to the Lisp-supplied plist.  Dumped
                 // mule.el reads these properties back to decide display and
@@ -1957,7 +1981,7 @@ define_dispatch!(
                     default_char,
                     args.get(13..).unwrap_or(&[]).to_vec(),
                 )?;
-                Ok(Value::Symbol(coding.to_string().into()))
+                Ok(Value::Nil)
             }
             "define-coding-system-alias" => {
                 need_args(name, args, 2)?;

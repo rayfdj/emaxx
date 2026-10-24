@@ -126,7 +126,7 @@ fn included_ranges(
     }
     let visible_text = buffer.buffer_string();
     let visible_start = buffer
-        .position_bytes(buffer.point_min())
+        .storage_byte_position(buffer.point_min())
         .expect("point-min is a valid buffer position")
         - 1;
     let mut previous_end = buffer.point_min();
@@ -152,12 +152,12 @@ fn included_ranges(
             ));
         }
         let start_byte = buffer
-            .position_bytes(start)
+            .storage_byte_position(start)
             .expect("validated included-range start")
             - 1
             - visible_start;
         let end_byte = buffer
-            .position_bytes(end)
+            .storage_byte_position(end)
             .expect("validated included-range end")
             - 1
             - visible_start;
@@ -567,10 +567,10 @@ impl Interpreter {
                 .get_buffer_by_id(parser.buffer_id)
                 .expect("node buffer liveness was checked");
             let visible_start = buffer
-                .position_bytes(buffer.point_min())
+                .storage_byte_position(buffer.point_min())
                 .expect("point-min is a valid buffer position");
             buffer
-                .byte_to_position(visible_start + byte)
+                .storage_byte_to_position(visible_start + byte)
                 .expect("Tree-sitter returned an in-buffer byte position")
         })
     }
@@ -597,10 +597,10 @@ impl Interpreter {
                 ));
             }
             let visible_start = buffer
-                .position_bytes(buffer.point_min())
+                .storage_byte_position(buffer.point_min())
                 .expect("point-min is a valid buffer position");
             Ok(buffer
-                .position_bytes(position)
+                .storage_byte_position(position)
                 .expect("validated buffer position")
                 - visible_start)
         })?

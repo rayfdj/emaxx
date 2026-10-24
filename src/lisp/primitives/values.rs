@@ -1441,24 +1441,51 @@ pub(crate) fn remove_equal(
     elt: &Value,
     sequence: &Value,
 ) -> Result<Value, LispError> {
-    if let Some(string) = sequence_string_like(sequence) {
-        let filtered = string
-            .text
-            .chars()
-            .filter(|ch| !values_equal(interp, &string_sequence_value(&string, *ch), elt))
-            .collect::<String>();
-        return Ok(make_shared_string_value_with_multibyte(
-            filtered,
-            Vec::new(),
-            string.multibyte,
-        ));
+    // fns.c:Fdelete: a string loses the characters ELT names (none when
+    // ELT is not a character), a vector the elements `equal' to ELT; a
+    // sequence that loses nothing comes back itself.
+    if let Kind::StringObject(state) = sequence.kind() {
+        let Kind::Integer(target) = elt.kind() else {
+            return Ok(*sequence);
+        };
+        if !(0..=0x3F_FFFF).contains(&target) {
+            return Ok(*sequence);
+        }
+        let (codes, multibyte) = {
+            let state = state.borrow();
+            (state.codes(), state.is_multibyte())
+        };
+        let kept = codes
+            .iter()
+            .copied()
+            .filter(|&code| i64::from(code) != target)
+            .collect::<Vec<_>>();
+        if kept.len() == codes.len() {
+            return Ok(*sequence);
+        }
+        let mut bytes = Vec::with_capacity(kept.len());
+        for code in kept {
+            if multibyte {
+                let (encoded, width) = crate::lisp::types::string_data::encode_character(code)?;
+                bytes.extend_from_slice(&encoded[..width]);
+            } else {
+                bytes.push(code as u8);
+            }
+        }
+        return make_specified_string(bytes, multibyte)
+            .map_err(|error| LispError::Signal(error.to_string()));
     }
 
     if is_vector_value(sequence) {
-        let filtered = vector_items(sequence)?
-            .into_iter()
+        let items = vector_items(sequence)?;
+        let filtered = items
+            .iter()
+            .copied()
             .filter(|item| !values_equal(interp, item, elt))
             .collect::<Vec<_>>();
+        if filtered.len() == items.len() {
+            return Ok(*sequence);
+        }
         let mut result = vec![Value::symbol("vector-literal")];
         result.extend(filtered);
         return Ok(Value::list(result));

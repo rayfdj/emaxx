@@ -13,6 +13,7 @@ mod faces;
 mod files_process;
 mod fonts;
 mod frames;
+pub(crate) use frames::frame_display_parameter;
 pub(crate) mod gnutls;
 mod gui_actions;
 mod lists;

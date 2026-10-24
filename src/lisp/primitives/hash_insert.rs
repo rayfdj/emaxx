@@ -485,8 +485,16 @@ pub(crate) fn display_property_value(value: &Value, property: &str) -> Option<Va
     None
 }
 
-pub(crate) fn find_bidi_override(interp: &Interpreter, start: usize, end: usize) -> Option<usize> {
-    let text = interp.buffer.borrow().buffer_substring(start, end).ok()?;
+/// The first position from FROM below TO in TEXT (whose first character
+/// is at position START) where a directional embedding, override or
+/// isolate makes a character display at a level its class does not have.
+pub(crate) fn find_bidi_override(
+    text: &str,
+    start: usize,
+    from: usize,
+    to: usize,
+    right_to_left: bool,
+) -> Option<usize> {
     if !text
         .chars()
         .any(|character| matches!(character as u32, 0x202A..=0x202E | 0x2066..=0x2069))
@@ -494,35 +502,50 @@ pub(crate) fn find_bidi_override(interp: &Interpreter, start: usize, end: usize)
         return None;
     }
 
-    use unicode_bidi::{BidiClass, BidiInfo, LTR_LEVEL};
-    let bidi = BidiInfo::new(&text, Some(LTR_LEVEL));
+    use unicode_bidi::{BidiClass, BidiInfo, LTR_LEVEL, RTL_LEVEL};
+    let bidi = BidiInfo::new(
+        text,
+        Some(if right_to_left { RTL_LEVEL } else { LTR_LEVEL }),
+    );
+    // The levels a strong character keeps under the paragraph's base
+    // level; embeddings and isolates may move a weak or neutral one a
+    // level above the base without making it confusing.
+    let base = u8::from(right_to_left);
+    let left_level = if right_to_left { 2 } else { 0 };
     for (character_index, (byte_index, _)) in text.char_indices().enumerate() {
+        let position = start + character_index;
+        if position < from {
+            continue;
+        }
+        if position >= to {
+            break;
+        }
         let class = bidi.original_classes[byte_index];
         let level = bidi.levels[byte_index].number();
         let suspicious = match class {
-            // GNU allows only the paragraph base level for L/EN and
-            // the first RTL level for R/AL.
-            BidiClass::L | BidiClass::EN => level > 0,
+            BidiClass::L | BidiClass::EN => level > left_level,
             BidiClass::R | BidiClass::AL => level > 1,
-            // Explicit embeddings/isolates may move weak and neutral
-            // characters by one level without creating a confusing
-            // override; deeper nesting is suspicious.
             BidiClass::AN
             | BidiClass::BN
             | BidiClass::CS
             | BidiClass::ES
             | BidiClass::ET
             | BidiClass::NSM
-            | BidiClass::ON => level > 1,
+            | BidiClass::ON => level > base + 1,
             _ => false,
         };
         if suspicious {
-            return Some(start + character_index);
+            return Some(position);
         }
     }
     None
 }
 
+/// editfns.c:general_insert_function: each argument inserted by itself,
+/// its own change -- a character as its multibyte form, or in a unibyte
+/// buffer as CHAR_TO_BYTE8's byte (insert_1_both, nothing for no text),
+/// a string as insert_from_string puts it -- anything else
+/// `char-or-string-p'.
 pub(crate) fn insert_impl(
     interp: &mut Interpreter,
     args: &[Value],
@@ -530,16 +553,43 @@ pub(crate) fn insert_impl(
     inherit: bool,
     before_markers: bool,
 ) -> Result<Value, LispError> {
-    let combined = combine_insert_args(args)?;
-    insert_text_with_hooks(
-        interp,
-        &combined.text,
-        &combined.props,
-        &combined.extended_chars,
-        inherit,
-        before_markers,
-        env,
-    )?;
+    for arg in args {
+        if let Kind::Integer(code) = arg.kind()
+            && (0..=0x3F_FFFF).contains(&code)
+        {
+            let multibyte = interp.buffer.borrow().is_multibyte();
+            let mut text = String::new();
+            let mut extended_chars = Vec::new();
+            push_buffer_character(&mut text, &mut extended_chars, 0, code as u32, multibyte);
+            insert_text_with_hooks(
+                interp,
+                &text,
+                &[],
+                &extended_chars,
+                inherit,
+                before_markers,
+                env,
+            )?;
+        } else if let Some(string) = string_like(arg) {
+            if string.text.is_empty() {
+                continue;
+            }
+            insert_text_with_hooks(
+                interp,
+                &string.text,
+                &merge_string_props(string.props),
+                &string.extended_chars,
+                inherit,
+                before_markers,
+                env,
+            )?;
+        } else {
+            return Err(LispError::WrongTypeArgument(
+                "char-or-string-p".into(),
+                *arg,
+            ));
+        }
+    }
     Ok(Value::Nil)
 }
 
@@ -548,29 +598,32 @@ pub(crate) fn insert_char_impl(
     args: &[Value],
     env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
-    need_args("insert-char", args, 1)?;
-    let ch = args[0].as_integer()?;
-    let count = match args.get(1) {
-        Some(value) if !value.is_nil() => value.as_integer()?.max(0) as usize,
-        _ => 1,
+    need_arg_range("insert-char", args, 1, 3)?;
+    // editfns.c:Finsert_char: CHECK_CHARACTER, CHECK_FIXNUM of a count
+    // given, nothing for one below 1; the character's multibyte form in a
+    // multibyte buffer, CHAR_TO_BYTE8 of it in a unibyte one.
+    let ch = match args[0].kind() {
+        Kind::Integer(ch) if (0..=0x3F_FFFF).contains(&ch) => ch as u32,
+        _ => return Err(LispError::WrongTypeArgument("characterp".into(), args[0])),
+    };
+    let count = match args.get(1).filter(|value| !value.is_nil()) {
+        Some(value) => match value.kind() {
+            Kind::Integer(count) => count,
+            _ => return Err(LispError::WrongTypeArgument("fixnump".into(), *value)),
+        },
+        None => 1,
     };
     let inherit = args.get(2).is_some_and(Value::is_truthy);
-    if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&ch) {
-        let byte = (ch - RAW_BYTE8_BASE as i64) as u8;
-        let text: String = std::iter::repeat_n(raw_byte_regex_char(byte), count).collect();
-        insert_text_with_hooks(interp, &text, &[], &[], inherit, false, env)?;
-    } else if let Some(c) = char::from_u32(ch as u32) {
-        let text: String = std::iter::repeat_n(c, count).collect();
-        insert_text_with_hooks(interp, &text, &[], &[], inherit, false, env)?;
-    } else if (0..=0x3F_FFFF).contains(&ch) {
-        let text: String = std::iter::repeat_n(RAW_CHAR_SENTINEL, count).collect();
-        let extended_chars = (0..count)
-            .map(|offset| (offset, ch as u32))
-            .collect::<Vec<_>>();
-        insert_text_with_hooks(interp, &text, &[], &extended_chars, inherit, false, env)?;
-    } else {
-        return Err(LispError::Signal(format!("Invalid character: {}", ch)));
+    if count <= 0 {
+        return Ok(Value::Nil);
     }
+    let multibyte = interp.buffer.borrow().is_multibyte();
+    let mut text = String::new();
+    let mut extended_chars = Vec::new();
+    for offset in 0..count as usize {
+        push_buffer_character(&mut text, &mut extended_chars, offset, ch, multibyte);
+    }
+    insert_text_with_hooks(interp, &text, &[], &extended_chars, inherit, false, env)?;
     Ok(Value::Nil)
 }
 
@@ -581,6 +634,57 @@ pub(crate) fn insert_text_with_hooks(
     extended_chars: &[(usize, u32)],
     inherit: bool,
     before_markers: bool,
+    env: &mut crate::lisp::types::Env,
+) -> Result<(), LispError> {
+    insert_text_and_signal(
+        interp,
+        text,
+        props,
+        extended_chars,
+        inherit,
+        before_markers,
+        None,
+        env,
+    )
+}
+
+/// What encode_coding_object and decode_coding_object do for a buffer
+/// destination: prepare_to_modify_buffer at point, the text inserted
+/// there by insert_from_gap, which leaves point and the markers at it
+/// before the text, and signal_after_change for PRODUCED characters
+/// (coding->produced_char, which counts a character decoded into a
+/// unibyte buffer once however many bytes it took).
+pub(crate) fn insert_text_before_point(
+    interp: &mut Interpreter,
+    text: &str,
+    props: &[TextPropertySpan],
+    extended_chars: &[(usize, u32)],
+    produced: usize,
+    env: &mut crate::lisp::types::Env,
+) -> Result<(), LispError> {
+    insert_text_and_signal(
+        interp,
+        text,
+        props,
+        extended_chars,
+        false,
+        false,
+        Some(produced),
+        env,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_text_and_signal(
+    interp: &mut Interpreter,
+    text: &str,
+    props: &[TextPropertySpan],
+    extended_chars: &[(usize, u32)],
+    inherit: bool,
+    before_markers: bool,
+    // Some for an insertion that leaves point before the text and
+    // reports this many characters to the after-change functions.
+    keep_point: Option<usize>,
     env: &mut crate::lisp::types::Env,
 ) -> Result<(), LispError> {
     if text.is_empty() {
@@ -643,61 +747,12 @@ pub(crate) fn insert_text_with_hooks(
             }
         }
         interp.set_inserted_extended_chars(start, extended_chars);
-        let inserted = text.chars().count();
-        Ok((Some(AfterChange::new(start, 0, inserted)), ()))
-    })
-}
-
-pub(crate) fn combine_insert_args(args: &[Value]) -> Result<StringLike, LispError> {
-    // A sole string is its own text: copied once, not again into a
-    // concatenation, and its offsets need no shift.
-    if let [arg] = args
-        && let Some(mut string) = string_like(arg)
-    {
-        string.props = merge_string_props(string.props);
-        string.multibyte = string.text.chars().any(|ch| (ch as u32) > 0x7F);
-        return Ok(string);
-    }
-    let mut text = String::new();
-    let mut props = Vec::new();
-    let mut extended_chars = Vec::new();
-    for arg in args {
-        if let Some(string) = string_like(arg) {
-            let offset = text.chars().count();
-            text.push_str(&string.text);
-            props.extend(shift_string_props(&string.props, offset));
-            extended_chars.extend(
-                string
-                    .extended_chars
-                    .into_iter()
-                    .map(|(position, code)| (offset + position, code)),
-            );
-        } else {
-            let fragment = match arg.kind() {
-                Kind::Integer(n) => {
-                    let offset = text.chars().count();
-                    if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&n) {
-                        raw_byte_regex_char((n - RAW_BYTE8_BASE as i64) as u8).to_string()
-                    } else if let Some(c) = char::from_u32(n as u32) {
-                        c.to_string()
-                    } else if (0..=0x3F_FFFF).contains(&n) {
-                        extended_chars.push((offset, n as u32));
-                        RAW_CHAR_SENTINEL.to_string()
-                    } else {
-                        String::new()
-                    }
-                }
-                Kind::Nil => String::new(),
-                _ => arg.to_string(),
-            };
-            text.push_str(&fragment);
+        let mut inserted = text.chars().count();
+        if let Some(produced) = keep_point {
+            interp.buffer.borrow_mut().goto_char(start);
+            inserted = produced;
         }
-    }
-    Ok(StringLike {
-        multibyte: text.chars().any(|ch| (ch as u32) > 0x7F),
-        text,
-        props: merge_string_props(props),
-        extended_chars,
+        Ok((Some(AfterChange::new(start, 0, inserted)), ()))
     })
 }
 

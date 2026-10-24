@@ -80,8 +80,9 @@ pub struct Buffer {
     /// position with the actual mark object, without retaining a position copy.
     mark: BufferMark,
 
-    /// True when the region between point and mark is active.
-    mark_active: bool,
+    /// BVAR (b, mark_active): any Lisp object, non-nil when the region
+    /// between point and mark is active.
+    mark_active: Value,
 
     /// Bumped on every modification.
     modiff: ModCount,
@@ -408,6 +409,14 @@ impl BufferText {
         match &self.store {
             TextStore::Small(text) => self.small_byte(text, index),
             TextStore::Rope(rope) => rope.char_to_byte(index),
+        }
+    }
+
+    /// The char index of the character byte index BYTE lies in.
+    fn byte_to_char(&self, byte: usize) -> usize {
+        match &self.store {
+            TextStore::Small(text) => ropey::str_utils::byte_to_char_idx(text, byte),
+            TextStore::Rope(rope) => rope.byte_to_char(byte),
         }
     }
 
@@ -772,7 +781,7 @@ pub(crate) struct BufferImage {
     pub(crate) text: String,
     pub(crate) pt: usize,
     pub(crate) mark: Option<usize>,
-    pub(crate) mark_active: bool,
+    pub(crate) mark_active: Value,
     pub(crate) modiff: ModCount,
     pub(crate) chars_modiff: ModCount,
     pub(crate) save_modiff: ModCount,
@@ -935,7 +944,7 @@ impl Buffer {
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: 1,
             mark: BufferMark::Position(None),
-            mark_active: false,
+            mark_active: Value::Nil,
             modiff: 1,
             chars_modiff: 1,
             save_modiff: 1,
@@ -976,7 +985,7 @@ impl Buffer {
             char_cache: RefCell::new(RopeCharCache::default()),
             pt: 1,
             mark: BufferMark::Position(None),
-            mark_active: false,
+            mark_active: Value::Nil,
             modiff: 1,
             chars_modiff: 1,
             save_modiff: 1,
@@ -1542,12 +1551,17 @@ impl Buffer {
     }
 
     pub fn mark_active(&self) -> bool {
+        !self.mark_active.is_nil()
+    }
+
+    /// `mark-active' as stored, any Lisp object.
+    pub fn mark_active_value(&self) -> Value {
         self.mark_active
     }
 
     pub fn set_mark(&mut self, pos: usize) {
         self.set_mark_position(pos);
-        self.mark_active = true;
+        self.mark_active = Value::T;
     }
 
     /// Move the buffer's mark marker without changing whether the region is
@@ -1563,8 +1577,10 @@ impl Buffer {
         }
     }
 
-    pub fn set_mark_active(&mut self, active: bool) {
-        self.mark_active = active && self.mark().is_some();
+    /// A store into the slot: buffer.c keeps whatever `mark-active' is
+    /// set to, mark or no mark.
+    pub fn set_mark_active_value(&mut self, value: Value) {
+        self.mark_active = value;
     }
 
     pub fn clear_mark(&mut self) {
@@ -1572,11 +1588,11 @@ impl Buffer {
             BufferMark::Position(_) => self.mark = BufferMark::Position(None),
             BufferMark::Object { marker, .. } => marker.detach(),
         }
-        self.mark_active = false;
+        self.mark_active = Value::Nil;
     }
 
     pub fn deactivate_mark(&mut self) {
-        self.mark_active = false;
+        self.mark_active = Value::Nil;
     }
 
     pub fn region(&self) -> Option<(usize, usize)> {
@@ -1625,7 +1641,11 @@ impl Buffer {
             .collect()
     }
 
-    pub fn position_bytes(&self, pos: usize) -> Option<usize> {
+    /// The stored text's byte offset of POS plus one: what a consumer of
+    /// the UTF-8 text itself (tree-sitter) indexes by, which differs from
+    /// GNU's byte position where raw bytes or characters beyond Unicode
+    /// sit before POS.
+    pub fn storage_byte_position(&self, pos: usize) -> Option<usize> {
         let char_len = self.text.len_chars();
         if pos == 0 || pos > char_len + 1 {
             return None;
@@ -1633,26 +1653,41 @@ impl Buffer {
         Some(1 + self.text.char_to_byte(pos - 1))
     }
 
+    /// The position of the character the stored text's byte offset
+    /// BYTE - 1 lies in: `storage_byte_position' inverted.
+    pub fn storage_byte_to_position(&self, byte: usize) -> Option<usize> {
+        if byte == 0 || byte > self.text.len_bytes() + 1 {
+            return None;
+        }
+        Some(self.text.byte_to_char(byte - 1) + 1)
+    }
+
+    /// Fposition_bytes: GNU's byte position of POS in [BEG, Z].
+    pub fn position_bytes(&self, pos: usize) -> Option<usize> {
+        let char_len = self.text.len_chars();
+        if pos == 0 || pos > char_len + 1 {
+            return None;
+        }
+        Some(self.marker_byte_position(pos))
+    }
+
+    /// Fbyte_to_position: the character at GNU byte position BYTE in
+    /// [BEG_BYTE, Z_BYTE], the one a byte inside a character belongs to.
     pub fn byte_to_position(&self, byte: usize) -> Option<usize> {
-        if byte == 0 {
+        let end = self.text.len_chars() + 1;
+        if byte == 0 || byte > self.marker_byte_position(end) {
             return None;
         }
-        let total_bytes = self.text.len_bytes();
-        if byte > total_bytes + 1 {
-            return None;
-        }
-        if byte == total_bytes + 1 {
-            return Some(self.text.len_chars() + 1);
-        }
-        let mut current_byte = 1usize;
-        for (index, ch) in self.text.chars().enumerate() {
-            let next = current_byte + ch.len_utf8();
-            if byte == current_byte || byte < next {
-                return Some(index + 1);
+        let (mut low, mut high) = (1, end);
+        while low < high {
+            let middle = low + (high - low).div_ceil(2);
+            if self.marker_byte_position(middle) <= byte {
+                low = middle;
+            } else {
+                high = middle - 1;
             }
-            current_byte = next;
         }
-        Some(self.text.len_chars() + 1)
+        Some(low)
     }
 
     /// The characters `buffer_substring' returns for [FROM, TO), read from
@@ -1798,6 +1833,7 @@ impl Buffer {
             }
         }
         self.text_conversion_style = copy(&self.text_conversion_style);
+        self.mark_active = copy(&self.mark_active);
         for span in &mut self.text_properties {
             rewrite_properties(&mut span.props, copy);
         }
@@ -1836,6 +1872,7 @@ impl Buffer {
     /// payloads and attached overlay objects are Lisp roots.
     pub(crate) fn visit_lisp_values(&self, visit: &mut impl FnMut(&Value)) {
         visit(&self.text_conversion_style);
+        visit(&self.mark_active);
         if let Some(marker) = self.mark_object() {
             visit(&Value::Marker(marker));
         }
@@ -2223,7 +2260,16 @@ impl Buffer {
     /// Replace [from, to) with TEXT of the same character length, in place:
     /// text properties and markers are untouched (GNU subst-char-in-region
     /// substitutes characters without disturbing intervals).
-    pub fn replace_region_in_place(&mut self, from: usize, to: usize, text: &str, noundo: bool) {
+    /// Replace [FROM, TO) by TEXT of the same length in place, EXTENDED
+    /// (offsets into TEXT) the side-table entries of its characters.
+    pub fn replace_region_in_place(
+        &mut self,
+        from: usize,
+        to: usize,
+        text: &str,
+        extended: &[(usize, u32)],
+        noundo: bool,
+    ) {
         let from0 = from - 1;
         let to0 = to - 1;
         if !self.undo_disabled && !noundo {
@@ -2248,6 +2294,10 @@ impl Buffer {
         self.text.insert(from0, text);
         self.extended_chars
             .retain(|(position, _)| *position < from || *position >= to);
+        self.extended_chars
+            .extend(extended.iter().map(|(offset, code)| (from + offset, *code)));
+        self.extended_chars
+            .sort_unstable_by_key(|(position, _)| *position);
         self.invalidate_char_cache();
         self.refresh_marker_byte_positions();
         // insdel.c modify_text.
@@ -2255,6 +2305,117 @@ impl Buffer {
         self.chars_modiff = self.modiff;
         self.log_edit(from, to, to, true);
         self.autosaved = false;
+    }
+
+    /// insdel.c:replace_range's buffer change: [FROM, TO) replaced by
+    /// TEXT (EXTENDED its side table, offsets into TEXT), clamped to the
+    /// accessible region, without the change hooks or text properties
+    /// (the caller grafts the new text's).  The undo list records the
+    /// insertion first, then the deletion, so undoing deletes after it
+    /// reinserts; with MARKERS, markers inside the old text move to FROM
+    /// and those at or after TO shift (adjust_markers_for_replace), and
+    /// overlays take the insertion as if made before markers at TO, then
+    /// the deletion.  Point moves as a marker would.  Returns FROM.
+    pub fn replace_range(
+        &mut self,
+        from: usize,
+        to: usize,
+        text: &str,
+        extended: &[(usize, u32)],
+        markers: bool,
+    ) -> usize {
+        let from = from.max(self.begv);
+        let to = to.min(self.zv).max(from);
+        let nchars_del = to - from;
+        let inschars = text.chars().count();
+        if nchars_del == 0 && inschars == 0 {
+            return from;
+        }
+        let from0 = from - 1;
+        let old_pt = self.pt;
+        let deleted = self.text_range_string(from0, to - 1);
+        if !self.undo_disabled {
+            let props = self.substring_property_spans(from, to);
+            let extended_chars = self.substring_extended_chars(from, to);
+            if inschars > 0 {
+                self.record_point_for_undo(from + nchars_del);
+                self.record_insert_for_undo(from + nchars_del, inschars);
+            }
+            if nchars_del > 0 {
+                self.record_point_for_undo(from);
+                self.push_undo_entry(UndoEntry::Delete {
+                    pos: from,
+                    point_after: old_pt == to,
+                    text: deleted.clone(),
+                    props,
+                    extended_chars,
+                    markers: Vec::new(),
+                });
+            }
+        }
+        let from_byte = self.marker_byte_position(from);
+        let to_byte = self.marker_byte_position(to);
+        if nchars_del > 0 {
+            self.text.remove_text(from0..to - 1, &deleted);
+        }
+        if inschars > 0 {
+            self.text.insert(from0, text);
+        }
+        self.invalidate_char_cache();
+        let new_bytes =
+            crate::lisp::primitives::lisp_string_storage_byte_len(text, self.multibyte, extended);
+        let shift = |position: usize| position + inschars - nchars_del;
+        if markers {
+            match &mut self.mark {
+                BufferMark::Position(mark) => {
+                    if let Some(mark) = mark {
+                        if *mark >= to {
+                            *mark = shift(*mark);
+                        } else if *mark > from {
+                            *mark = from;
+                        }
+                    }
+                }
+                BufferMark::Object { owner, .. } => {
+                    for marker in owner.markers() {
+                        let position = marker.last_position();
+                        if position >= to {
+                            marker.set_positions(
+                                shift(position),
+                                marker.bytepos() + new_bytes - (to_byte - from_byte),
+                            );
+                        } else if position > from {
+                            marker.set_positions(from, from_byte);
+                        }
+                    }
+                }
+            }
+        }
+        if from < old_pt {
+            self.pt = from + inschars + old_pt - old_pt.min(to);
+        }
+        self.overlays.insert_gap(to, inschars, true);
+        if nchars_del > 0 {
+            self.overlays.delete_gap(from, nchars_del);
+        }
+        self.adjust_text_properties_for_delete(from, to);
+        self.adjust_extended_chars_for_delete(from, to);
+        self.adjust_text_properties_for_insert(from, inschars);
+        self.adjust_extended_chars_for_insert(from, inschars);
+        self.extended_chars
+            .extend(extended.iter().map(|(offset, code)| (from + offset, *code)));
+        self.extended_chars
+            .sort_unstable_by_key(|(position, _)| *position);
+        if self.text.len_chars() == 0 {
+            self.interval_tree = false;
+        }
+        self.zv = self.zv + inschars - nchars_del;
+        self.refresh_marker_byte_positions();
+        modiff_incr(&mut self.modiff, nchars_del + inschars);
+        self.chars_modiff = self.modiff;
+        self.log_edit(from, to, from + inschars, true);
+        self.autosaved = false;
+        from
     }
 
     /// Insert a single character at point.
@@ -2740,7 +2901,7 @@ impl Buffer {
         self.overlays.clear();
         // Fkill_buffer detaches only markers whose buffer is dying. Its
         // mark can have been moved into another buffer and must survive there.
-        self.mark_active = false;
+        self.mark_active = Value::Nil;
         self.mark = BufferMark::Position(None);
         self.pt = 1;
         self.begv = 1;
@@ -3239,7 +3400,7 @@ impl Buffer {
         region: Option<(usize, usize)>,
         skip_newest_groups: usize,
     ) -> Result<Vec<UndoEntry>, BufferError> {
-        if region.is_none() || !self.mark_active {
+        if region.is_none() || self.mark_active.is_nil() {
             if skip_newest_groups == 0 {
                 return self.pop_latest_undo_group();
             }
@@ -3860,7 +4021,7 @@ mod tests {
         assert!(!buf.char_cache.borrow().valid);
         assert_eq!(buf.char_at(1502), Some('λ'));
 
-        buf.replace_region_in_place(1502, 1503, "Ω", false);
+        buf.replace_region_in_place(1502, 1503, "Ω", &[], false);
         assert!(!buf.char_cache.borrow().valid);
         assert_eq!(buf.char_at(1502), Some('Ω'));
 

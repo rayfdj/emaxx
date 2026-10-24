@@ -190,7 +190,7 @@ define_dispatch!(
                 let pos = if buffer.is_multibyte() {
                     pos
                 } else {
-                    buffer_position_to_byte(&buffer, pos).unwrap_or(pos)
+                    buffer.storage_byte_position(pos).unwrap_or(pos)
                 };
                 Ok(Value::Integer(pos as i64))
             }

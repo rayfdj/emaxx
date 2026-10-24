@@ -3,6 +3,17 @@ use crate::lisp::types::CharTableRef;
 use crate::lisp::types::Kind;
 use crate::lisp::types::string_data::character_code;
 
+/// BYTE as a multibyte string's bytes: itself when ASCII, else the
+/// two-byte form of its eight-bit character (BYTE8_STRING).
+fn push_byte_as_multibyte(bytes: &mut Vec<u8>, byte: u8) {
+    if byte < 0x80 {
+        bytes.push(byte);
+    } else {
+        bytes.push(0xC0 | ((byte >> 6) & 1));
+        bytes.push(0x80 | (byte & 0x3F));
+    }
+}
+
 define_dispatch!(
     pub(super) fn call(
         interp: &mut Interpreter,
@@ -133,50 +144,50 @@ define_dispatch!(
 
             "posix-string-match" => regexp::posix_string_match_impl(interp, args, env),
             "string-width" => {
-                if args.is_empty() || args.len() > 3 {
-                    return Err(LispError::WrongNumberOfArgs(
-                        "string-width".into(),
-                        args.len(),
-                    ));
-                }
-                let text = string_text(&args[0])?;
-                let chars: Vec<char> = text.chars().collect();
-                let len = chars.len() as i64;
-                let start = normalize_string_index(args.get(1), 0, len)?;
-                let end = normalize_string_index(args.get(2), len, len)?;
-                if end < start {
-                    return Err(LispError::Signal("Args out of range".into()));
-                }
-                let tab_width = interp
-                    .lookup_var("tab-width", &crate::lisp::types::Env::new())
-                    .and_then(|value| value.integer_value())
-                    .unwrap_or(8)
-                    .max(1) as usize;
-                let mut width = 0usize;
-                for ch in chars[start as usize..end as usize].iter().copied() {
-                    if ch == '\t' {
-                        width += tab_width;
-                    } else {
-                        width += ch.width().unwrap_or(0);
+                // character.c Fstring_width and lisp_string_width: each
+                // character's char_width with the buffer's display table; a
+                // string whose bytes are its characters is read bytewise.
+                need_arg_range(name, args, 1, 3)?;
+                let Kind::StringObject(state) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
+                let length = state.borrow().len();
+                let (from, to) = validate_subarray(
+                    args[0],
+                    args.get(1).copied().unwrap_or(Value::Nil),
+                    args.get(2).copied().unwrap_or(Value::Nil),
+                    length,
+                )?;
+                let codes = {
+                    let state = state.borrow();
+                    let bytewise = state.bytes().len() == state.len();
+                    let mut offset = state.byte_offset(from).unwrap_or(0);
+                    let mut codes = Vec::with_capacity(to - from);
+                    for _ in from..to {
+                        if bytewise {
+                            codes.push(u32::from(state.bytes()[offset]));
+                            offset += 1;
+                        } else if let Some(code) = state.character_advance(&mut offset) {
+                            codes.push(code as u32);
+                        }
                     }
-                }
+                    codes
+                };
+                let dp = buffer_display_table(interp, env);
+                let width: usize = codes
+                    .into_iter()
+                    .map(|c| display_char_width(interp, c, dp, env))
+                    .sum();
                 Ok(Value::Integer(width as i64))
             }
             "char-width" => {
                 need_args(name, args, 1)?;
-                let codepoint = args[0].as_integer()?;
-                let ch = char::from_u32(codepoint as u32)
-                    .ok_or_else(|| LispError::Signal(format!("Invalid character: {codepoint}")))?;
-                let width = if ch == '\t' {
-                    interp
-                        .lookup_var("tab-width", &crate::lisp::types::Env::new())
-                        .and_then(|value| value.integer_value())
-                        .unwrap_or(8)
-                        .max(1) as usize
-                } else {
-                    ch.width().unwrap_or(0)
+                let c = match args[0].kind() {
+                    Kind::Integer(c) if (0..=MAX_CHAR as i64).contains(&c) => c as u32,
+                    _ => return Err(LispError::WrongTypeArgument("characterp".into(), args[0])),
                 };
-                Ok(Value::Integer(width as i64))
+                let dp = buffer_display_table(interp, env);
+                Ok(Value::Integer(display_char_width(interp, c, dp, env) as i64))
             }
             "string" => Ok(Value::StringObject(
                 StringObjectRef::from_characters(args)
@@ -195,34 +206,45 @@ define_dispatch!(
                 need_args(name, args, 1)?;
                 let string = string_like(&args[0])
                     .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
+                // fns.c:Fstring_to_unibyte: a unibyte STRING itself, else a
+                // new string without properties of its ASCII and eight-bit
+                // characters' bytes.
                 if !string.multibyte {
-                    return Ok(string_like_value_with_multibyte(
-                        string.text,
-                        string.props,
-                        false,
-                    ));
+                    return Ok(args[0]);
                 }
-                let mut text = String::new();
-                for ch in string.text.chars() {
-                    if let Some(byte) = raw_case_byte(ch as u32) {
-                        text.push(raw_byte_regex_char(byte as u8));
-                    } else if (ch as u32) <= 0x7F {
-                        text.push(ch);
+                let mut bytes = Vec::new();
+                for (index, code) in string.character_codes_iter().enumerate() {
+                    if code <= 0x7F {
+                        bytes.push(code as u8);
+                    } else if (0x3F_FF80..=0x3F_FFFF).contains(&code) {
+                        bytes.push((code - 0x3F_FF00) as u8);
                     } else {
-                        return Err(LispError::Signal("Character cannot be encoded".into()));
+                        return Err(LispError::Signal(format!(
+                            "Cannot convert character at index {index} to unibyte"
+                        )));
                     }
                 }
-                Ok(string_like_value_with_multibyte(text, string.props, false))
+                Ok(bytes_to_unibyte_value(&bytes))
             }
             "string-to-multibyte" => {
+                // fns.c string_to_multibyte: STRING itself when multibyte,
+                // else a new string of its bytes, each non-ASCII byte an
+                // eight-bit character, without properties.
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
-                Ok(make_shared_string_value_with_multibyte(
-                    string.text,
-                    string.props,
-                    true,
-                ))
+                let Kind::StringObject(state) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
+                let state = state.borrow();
+                if state.is_multibyte() {
+                    return Ok(args[0]);
+                }
+                let mut bytes = Vec::with_capacity(state.bytes().len());
+                for &byte in state.bytes() {
+                    push_byte_as_multibyte(&mut bytes, byte);
+                }
+                StringObjectRef::from_storage(bytes, state.len(), true)
+                    .map(Value::StringObject)
+                    .map_err(|error| string_storage_error(interp, env, error))
             }
             "string-make-multibyte" => {
                 need_args(name, args, 1)?;
@@ -253,48 +275,63 @@ define_dispatch!(
                 ))
             }
             "string-as-multibyte" => {
-                // character.c str_as_multibyte: reinterpret the unibyte
-                // string's bytes as the internal (UTF-8) encoding -- valid
-                // sequences become their characters ((195 128) reads back
-                // as U+00C0), stray bytes stay eight-bit characters.  What
-                // stood here pushed RAW_BYTE8_BASE + byte into a char,
-                // which is beyond char::MAX and panicked on any 8-bit byte.
+                // fns.c Fstring_as_multibyte: STRING itself when multibyte,
+                // else its bytes read as the internal encoding
+                // (parse_str_as_multibyte), each byte outside a sequence an
+                // eight-bit character, without properties.
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
-                if string.multibyte {
-                    return Ok(string_like_value_with_multibyte(
-                        string.text,
-                        string.props,
-                        true,
-                    ));
+                let Kind::StringObject(state) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
+                let state = state.borrow();
+                if state.is_multibyte() {
+                    return Ok(args[0]);
                 }
-                let bytes = encode_raw_text_bytes(&string.text)?;
-                Ok(make_shared_string_value_with_multibyte(
-                    decode_utf8_bytes(&bytes),
-                    string.props,
-                    true,
-                ))
+                let source = state.bytes();
+                let mut bytes = Vec::with_capacity(source.len());
+                let mut characters = 0;
+                let mut offset = 0;
+                while offset < source.len() {
+                    let width =
+                        crate::lisp::types::string_data::multibyte_length(&source[offset..], true);
+                    if width > 0 {
+                        bytes.extend_from_slice(&source[offset..offset + width]);
+                        offset += width;
+                    } else {
+                        push_byte_as_multibyte(&mut bytes, source[offset]);
+                        offset += 1;
+                    }
+                    characters += 1;
+                }
+                StringObjectRef::from_storage(bytes, characters, true)
+                    .map(Value::StringObject)
+                    .map_err(|error| string_storage_error(interp, env, error))
             }
             "string-make-unibyte" => {
+                // fns.c string_make_unibyte: STRING itself when unibyte,
+                // else each character's CHAR_TO_BYTE8 (an eight-bit
+                // character's byte, another's low eight bits), without
+                // properties.
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
-                if !string.multibyte {
-                    return Ok(string_like_value_with_multibyte(
-                        string.text,
-                        string.props,
-                        false,
-                    ));
+                let Kind::StringObject(state) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
+                let state = state.borrow();
+                if !state.is_multibyte() {
+                    return Ok(args[0]);
                 }
-                // charset.c CHAR_TO_BYTE8's fallback: a character with no
-                // unibyte equivalent contributes its low byte (the oracle:
-                // (string-make-unibyte (string 12354)) is "\102").
-                let bytes = string
-                    .text
-                    .chars()
-                    .map(|ch| raw_byte_from_regex_char(ch).unwrap_or((ch as u32 & 0xFF) as u8))
-                    .collect::<Vec<u8>>();
+                let mut bytes = Vec::with_capacity(state.len());
+                let mut offset = 0;
+                while let Some(code) = state.character_advance(&mut offset) {
+                    let code = code as u32;
+                    bytes.push(
+                        if (RAW_BYTE8_BASE + 0x80..=RAW_BYTE8_BASE + 0xFF).contains(&code) {
+                            (code - RAW_BYTE8_BASE) as u8
+                        } else {
+                            (code & 0xFF) as u8
+                        },
+                    );
+                }
                 Ok(bytes_to_shared_unibyte_value(&bytes))
             }
             "string-as-unibyte" => {
@@ -347,7 +384,9 @@ define_dispatch!(
                 let ch = args[0].as_integer()?;
                 Ok(if (0..=255).contains(&ch) {
                     Value::Integer(ch)
-                } else if (RAW_BYTE8_BASE as i64..=RAW_BYTE8_BASE as i64 + 0xFF).contains(&ch) {
+                } else if (RAW_BYTE8_BASE as i64 + 0x80..=RAW_BYTE8_BASE as i64 + 0xFF)
+                    .contains(&ch)
+                {
                     Value::Integer(ch - RAW_BYTE8_BASE as i64)
                 } else {
                     Value::Integer(-1)
@@ -390,6 +429,8 @@ define_dispatch!(
                 // Only a format string with text properties lends them to
                 // the result.
                 let fmt_has_props = !string_without_properties(fmt_value);
+                // The characters the format string's text view cannot carry.
+                let fmt_extended = string_extended_chars(fmt_value);
                 // editfns.c styled_format: a format string that is exactly
                 // "%s" without text properties returns a string argument
                 // itself (`(eq s (format "%s" s))' is t in the oracle), so
@@ -406,6 +447,7 @@ define_dispatch!(
                 // count of the whole result at each piece was quadratic).
                 let mut result_chars = 0usize;
                 let mut result_props = Vec::new();
+                let mut result_extended = Vec::new();
                 let mut result_multibyte = string_is_multibyte(fmt_value) == Some(true);
                 let mut arg_idx = 1;
                 let quoting_style =
@@ -421,6 +463,9 @@ define_dispatch!(
                             _ => chars[i],
                         };
                         result.push(literal);
+                        if let Ok(found) = fmt_extended.binary_search_by_key(&i, |(at, _)| *at) {
+                            result_extended.push((start, fmt_extended[found].1));
+                        }
                         result_chars += 1;
                         if fmt_has_props
                             && let Some(props) = format_source_props(fmt_value, i, i + 1)
@@ -560,9 +605,19 @@ define_dispatch!(
                         _ => false,
                     };
 
+                    let mut formatted_extended = Vec::new();
                     let (mut formatted, mut formatted_props) = match conv {
-                        's' => format_s_conversion(interp, arg, precision, env)?,
-                        'S' => (render_prin1_ephemeral(interp, arg, env)?, Vec::new()),
+                        's' => {
+                            let (text, props, extended) =
+                                format_s_conversion(interp, arg, precision, env)?;
+                            formatted_extended = extended;
+                            (text, props)
+                        }
+                        'S' => {
+                            let (text, extended) = render_prin1_parts_ephemeral(interp, arg, env)?;
+                            formatted_extended = extended;
+                            (text, Vec::new())
+                        }
                         // GNU accepts %i as a synonym for %d (erc-backend's
                         // define-erc-response-handler formats "%03i").
                         'd' | 'i' | 'o' | 'x' | 'X' | 'b' | 'B' => (
@@ -587,7 +642,11 @@ define_dispatch!(
                             )?,
                             Vec::new(),
                         ),
-                        'c' => (format_char_conversion(arg)?, Vec::new()),
+                        'c' => {
+                            let (text, extended) = format_char_conversion(arg)?;
+                            formatted_extended = extended;
+                            (text, Vec::new())
+                        }
                         _ => {
                             // Unknown conversion, pass through
                             if let Some(pos) = positional {
@@ -640,6 +699,9 @@ define_dispatch!(
                         } else {
                             formatted = format!("{}{}", " ".repeat(padding), formatted);
                             formatted_props = shift_string_props(&formatted_props, padding);
+                            for (at, _) in &mut formatted_extended {
+                                *at += padding;
+                            }
                         }
                     }
                     // Each padding adds its count of one-byte characters.
@@ -655,6 +717,11 @@ define_dispatch!(
                     }
                     let start = result_chars;
                     result.push_str(&formatted);
+                    result_extended.extend(
+                        formatted_extended
+                            .into_iter()
+                            .map(|(at, code)| (start + at, code)),
+                    );
                     result_chars += formatted_chars;
                     result_props.extend(shift_string_props(
                         &crate::lisp::primitives::strings::flatten_overlapping_string_props(
@@ -663,14 +730,16 @@ define_dispatch!(
                         start,
                     ));
                 }
-                result_multibyte |= !result.is_ascii()
-                    && result
-                        .chars()
-                        .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F);
-                Ok(string_like_value_with_multibyte(
+                result_multibyte |= !result_extended.is_empty()
+                    || (!result.is_ascii()
+                        && result
+                            .chars()
+                            .any(|ch| !is_raw_byte_regex_char(ch) && (ch as u32) > 0x7F));
+                Ok(string_like_value_with_extended_chars(
                     result,
                     merge_string_props(result_props),
                     result_multibyte,
+                    result_extended,
                 ))
             }
             "format-network-address" => {
@@ -711,15 +780,15 @@ define_dispatch!(
             }
             "base64-encode-region" => {
                 need_arg_range(name, args, 2, 3)?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
+                // fns.c's validate_region.
+                let (start, end) = validate_region(interp, &args[0], &args[1])?;
                 let no_line_break = args.get(2).is_some_and(Value::is_truthy);
                 base64_encode_region_value(interp, start, end, !no_line_break, true, false, env)
             }
             "base64url-encode-region" => {
                 need_arg_range(name, args, 2, 3)?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
+                // fns.c's validate_region.
+                let (start, end) = validate_region(interp, &args[0], &args[1])?;
                 let no_pad = args.get(2).is_some_and(Value::is_truthy);
                 base64_encode_region_value(interp, start, end, false, !no_pad, true, env)
             }
@@ -735,8 +804,8 @@ define_dispatch!(
             }
             "base64-decode-region" => {
                 need_arg_range(name, args, 2, 4)?;
-                let start = position_from_value(interp, &args[0])?;
-                let end = position_from_value(interp, &args[1])?;
+                // fns.c's validate_region.
+                let (start, end) = validate_region(interp, &args[0], &args[1])?;
                 let base64url = args.get(2).is_some_and(Value::is_truthy);
                 let ignore_invalid = args.get(3).is_some_and(Value::is_truthy);
                 base64_decode_region_value(interp, start, end, base64url, ignore_invalid, env)
@@ -761,14 +830,12 @@ define_dispatch!(
             }
             "string-to-char" => {
                 need_args(name, args, 1)?;
-                let string = string_like(&args[0])
-                    .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), args[0]))?;
-                Ok(string
-                    .text
-                    .chars()
-                    .next()
-                    .map(|ch| string_sequence_value(&string, ch))
-                    .unwrap_or(Value::Integer(0)))
+                // editfns.c:Fstring_to_char: CHECK_STRING, the first
+                // character (a unibyte string's byte), 0 for "".
+                let Kind::StringObject(state) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
+                Ok(Value::Integer(state.borrow().character_at(0).unwrap_or(0)))
             }
             "char-syntax" => {
                 need_args(name, args, 1)?;

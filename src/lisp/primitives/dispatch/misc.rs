@@ -1327,28 +1327,30 @@ define_dispatch!(
                 )
             }
             "getenv-internal" => {
-                need_args(name, args, 1)?;
-                let variable = string_text(&args[0])?;
-                let from_explicit_env = args.get(1).is_some_and(|value| !value.is_nil());
-                let mut process_environment = args
-                    .get(1)
-                    .filter(|value| !value.is_nil())
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        interp
-                            .lookup_var("process-environment", env)
-                            .unwrap_or(Value::Nil)
-                    });
-                if let Some((symbol_value, environment)) = process_environment.cons_values()
-                    && let Kind::Symbol(symbol) = symbol_value.kind()
-                    && symbol == "environment"
-                {
-                    process_environment = environment;
+                // callproc.c Fgetenv_internal: a list ENV is searched
+                // instead of `process-environment', where a negative entry
+                // gives t; anything else names the frame for DISPLAY.
+                need_arg_range(name, args, 1, 2)?;
+                let Kind::StringObject(variable) = args[0].kind() else {
+                    return Err(wrong_type_argument("stringp", args[0]));
+                };
+                let variable = variable.borrow().bytes().to_vec();
+                let environment = args.get(1).copied().unwrap_or(Value::Nil);
+                let value = if environment.is_cons() {
+                    match getenv_internal_1(&variable, environment) {
+                        Some(Some(value)) => Some(value),
+                        Some(None) => return Ok(Value::T),
+                        None => None,
+                    }
+                } else {
+                    getenv_internal(interp, env, &variable, &environment)?
+                };
+                match value {
+                    Some(value) => {
+                        make_string(value).map_err(|error| string_storage_error(interp, env, error))
+                    }
+                    None => Ok(Value::Nil),
                 }
-                Ok(
-                    getenv_in_environment(&variable, &process_environment, from_explicit_env)?
-                        .unwrap_or(Value::Nil),
-                )
             }
 
             "purecopy" => {

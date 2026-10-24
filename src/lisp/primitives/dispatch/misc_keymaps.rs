@@ -120,14 +120,10 @@ fn lookup_key_value(
                                 .char_table_get(table, code as u32)
                                 .filter(|value| !value.is_nil())
                                 .map_or(Ok(code), |value| value.as_integer())?;
-                            match char_from_integer(mapped) {
-                                Ok(ch) => text.push(ch),
-                                Err(_) if (0..=0x3f_ffff).contains(&mapped) => {
-                                    extended.push((position, mapped as u32));
-                                    text.push(crate::lisp::json::INVALID_UNICODE_SENTINEL);
-                                }
-                                Err(error) => return Err(error),
+                            if !(0..=0x3f_ffff).contains(&mapped) {
+                                return Err(LispError::Signal("Invalid character".into()));
                             }
+                            push_character_code(&mut text, &mut extended, position, mapped as u32);
                         }
                         make_shared_string_value_with_extended_chars(
                             text,
@@ -1382,21 +1378,56 @@ define_dispatch!(
                 Ok(Value::list(frames))
             }
             "regexp-quote" => {
+                // search.c Fregexp_quote: a backslash before each special
+                // byte of STRING's data, the result as multibyte as STRING
+                // (without properties); a copy of STRING when none needs one.
                 need_args(name, args, 1)?;
-                Ok(Value::String(
-                    regexp::regexp_quote_elisp(&string_text(&args[0])?).into(),
-                ))
+                let Kind::StringObject(state) = args[0].kind() else {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                };
+                let (quoted, characters, multibyte) = {
+                    let state = state.borrow();
+                    let mut quoted = Vec::with_capacity(state.bytes().len());
+                    for &byte in state.bytes() {
+                        if matches!(byte, b'[' | b'*' | b'.' | b'\\' | b'?' | b'+' | b'^' | b'$') {
+                            quoted.push(b'\\');
+                        }
+                        quoted.push(byte);
+                    }
+                    let added = quoted.len() - state.bytes().len();
+                    if added == 0 {
+                        drop(state);
+                        return super::call(interp, "copy-sequence", args, env);
+                    }
+                    (quoted, state.len() + added, state.is_multibyte())
+                };
+                StringObjectRef::from_storage(quoted, characters, multibyte)
+                    .map(Value::StringObject)
+                    .map_err(|error| string_storage_error(interp, env, error))
             }
             "kill-all-local-variables" => {
                 need_arg_range(name, args, 0, 1)?;
                 let buffer_id = interp.current_buffer_id();
                 let kill_permanent = args.first().is_some_and(Value::is_truthy);
                 run_named_hooks(interp, "change-major-mode-hook", env, Some(buffer_id))?;
-                // buffer.c resets native fields directly; only the alist
-                // cells participate in watchers and permanent-local props.
+                // buffer.c:reset_buffer_local_variables.  Only the alist
+                // cells (ordinary buffer-local variables) participate in
+                // watchers and `permanent-local' properties; the
+                // DEFVAR_PER_BUFFER slots are reset directly: an index -1
+                // slot is kept (but for the three assigned below), an
+                // indexed one returns to its default unless
+                // buffer_permanent_local_flags keeps it.
                 let locals = interp.buffer_local_cells(buffer_id);
                 let mut permanent = Vec::new();
                 for (name, value) in &locals {
+                    if let Some(slot) = crate::lisp::eval::native_per_buffer_slot(name.as_str()) {
+                        if slot.always_local || (slot.permanent && !kill_permanent) {
+                            permanent.push((*name, *value));
+                        } else {
+                            interp.mark_buffer_local_special_binding_killed(buffer_id, name);
+                        }
+                        continue;
+                    }
                     let preserve = !kill_permanent
                         && interp
                             .get_symbol_property(name, "permanent-local")
@@ -1422,6 +1453,7 @@ define_dispatch!(
                 for (name, value) in permanent {
                     interp.set_buffer_local_value(buffer_id, &name, value);
                 }
+                interp.reset_major_mode_slots(buffer_id);
                 Ok(Value::Nil)
             }
             "force-mode-line-update" => {

@@ -1531,16 +1531,18 @@ define_dispatch!(
 
             "translate-region-internal" => {
                 need_args(name, args, 3)?;
-                let from = position_from_value(interp, &args[0])?;
-                let to = position_from_value(interp, &args[1])?;
-                // editfns.c: a string, or a char-table whose purpose is
-                // `translation-table'.
+                let (from, to) = validate_region(interp, &args[0], &args[1])?;
+                // editfns.c: a char-table whose purpose is
+                // `translation-table', or a string.
                 let table = match args[2].kind() {
-                    Kind::StringObject(_) => TranslationTable::String(args[2]),
                     Kind::CharTable(id) if id.has_purpose("translation-table") => {
                         TranslationTable::Chars(id)
                     }
-                    _ => return Err(LispError::Signal("Not a translation table".into())),
+                    Kind::CharTable(_) => {
+                        return Err(LispError::Signal("Not a translation table".into()));
+                    }
+                    Kind::StringObject(_) => TranslationTable::String(args[2]),
+                    _ => return Err(LispError::WrongTypeArgument("stringp".into(), args[2])),
                 };
                 translate_region_internal(interp, from, to, table, env)
             }
@@ -1635,7 +1637,7 @@ define_dispatch!(
             "delete" => {
                 need_args(name, args, 2)?;
                 let elt = &args[0];
-                if string_like(&args[1]).is_some() || is_vector_value(&args[1]) {
+                if matches!(args[1].kind(), Kind::StringObject(_)) || is_vector_value(&args[1]) {
                     return remove_equal(interp, elt, &args[1]);
                 }
 

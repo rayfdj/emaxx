@@ -65,6 +65,22 @@ impl Drop for LocalCells {
 }
 
 impl LocalCells {
+    /// The bindings a new buffer is made with, room for CAPACITY of them.
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            cells: LinkedHashMap::with_capacity_and_hasher(capacity, Default::default()),
+            forwarded_eval: 0,
+        }
+    }
+
+    /// Bind SYMBOL in a buffer just made: no binding of the buffer can be
+    /// loaded yet, SYMBOL has none here, and it has no evaluator cell.
+    pub(crate) fn insert_fresh(&mut self, symbol: &SymbolName, value: Value) {
+        debug_assert!(self.cells.get(symbol).is_none());
+        debug_assert!(!super::variables::is_forwarded_eval_cell(symbol));
+        self.cells.insert(*symbol, Cell::new(value));
+    }
+
     /// A local binding retains its actual symbol, as GNU's local_var_alist does.
     pub(crate) fn symbols(&self) -> impl Iterator<Item = &SymbolName> {
         self.cells.keys()

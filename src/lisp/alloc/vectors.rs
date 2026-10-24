@@ -358,10 +358,16 @@ static FREED_RECORDS: std::sync::Mutex<Vec<FreedRecord>> = std::sync::Mutex::new
 /// alloc.c's `all_buffers': the header of every buffer object, live or
 /// dead, from its allocation until its storage is reclaimed, for the
 /// sweep's marker chains (which would otherwise read every vector header
-/// to find the buffers).
-static ALL_BUFFERS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+/// to find the buffers).  A set: the sweep reclaims each dead buffer by
+/// its address, and a collection that frees thousands of temporary
+/// buffers must not search a list for each.
+type BufferHeaders = std::collections::HashSet<usize, crate::lisp::types::IdentityBuildHasher>;
 
-fn all_buffers() -> std::sync::MutexGuard<'static, Vec<usize>> {
+static ALL_BUFFERS: std::sync::Mutex<BufferHeaders> = std::sync::Mutex::new(
+    std::collections::HashSet::with_hasher(std::hash::BuildHasherDefault::new()),
+);
+
+fn all_buffers() -> std::sync::MutexGuard<'static, BufferHeaders> {
     ALL_BUFFERS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -933,7 +939,7 @@ impl<T: Vectorlike> VectorlikeRef<T> {
             payload(header).cast::<T>().write(value);
             census_on_allocate(header);
             if T::TAG == VectorTag::Buffer {
-                all_buffers().push(header as usize);
+                all_buffers().insert(header as usize);
             }
             Self(NonNull::new_unchecked(header), PhantomData)
         }
@@ -1081,12 +1087,8 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
             VectorTag::Bignum => std::ptr::drop_in_place(body.cast::<LispBignum>()),
             VectorTag::Buffer => {
                 std::ptr::drop_in_place(body.cast::<BufferValue>());
-                let mut buffers = all_buffers();
-                let index = buffers
-                    .iter()
-                    .position(|&address| address == header as usize)
-                    .expect("a reclaimed buffer is in all_buffers");
-                buffers.swap_remove(index);
+                let listed = all_buffers().remove(&(header as usize));
+                assert!(listed, "a reclaimed buffer is in all_buffers");
             }
             VectorTag::Overlay => {
                 std::ptr::drop_in_place(body.cast::<crate::lisp::types::OverlayValue>())
@@ -1272,7 +1274,7 @@ pub(crate) fn sweep_vectors(epoch: u32) {
                 }
             }
         }
-        let mut listed = all_buffers().clone();
+        let mut listed = all_buffers().iter().copied().collect::<Vec<_>>();
         found.sort_unstable();
         listed.sort_unstable();
         assert_eq!(found, listed, "all_buffers names every buffer header");

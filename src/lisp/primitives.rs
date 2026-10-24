@@ -212,7 +212,6 @@ pub(crate) const STANDARD_FRINGE_BITMAPS: &[&str] = &[
     "empty-line",
 ];
 
-const RAW_CHAR_SENTINEL: char = '\u{F8FF}';
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
 static TEMP_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MAKE_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(0);

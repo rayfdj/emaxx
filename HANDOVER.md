@@ -4553,6 +4553,690 @@ recorded behavior, and most exposed a behavior difference that is now fixed.
   search, unibyte and raw-byte strings) gives GNU's output, as do
   regex-emacs, search, syntax, fns, casefiddle, editfns, rx, subr-x,
   subr, replace, isearch, thingatpt, minibuffer, simple and files tests.
+- **Round 61: code_convert_string's buffer destination, eight-bit
+  storage, byte positions.** A probe of the encoders against GNU found:
+  `encode-coding-string` and `decode-coding-string` with a BUFFER returned
+  the string where code_convert_string returns the characters produced,
+  `decode-coding-string` checked the coding system before the string, and
+  neither checked the destination's type. Both now follow
+  code_convert_string: CHECK_STRING, the coding system, nil or t for a
+  string and else a buffer (`bufferp`), a nil coding system with a buffer
+  encoding with no-conversion. The text goes in as insert_from_gap puts
+  it, `insert_text_before_point`: before-change at point, point and the
+  markers at it left before the text, after-change for
+  `coding->produced_char` characters; decoded into a unibyte buffer each
+  character is written in its multibyte form, as produce_chars does, and
+  still counts as one. `string-to-unibyte` returned a copy of a unibyte
+  string, kept the properties and signalled "Character cannot be
+  encoded"; it is fns.c's now (the string itself, no properties, "Cannot
+  convert character at index N to unibyte"). The UTF-16 encoders wrote an
+  eight-bit character's byte where encode_coding_utf_16 writes the
+  default character. The stored eight-bit markers are U+E080..U+E0FF,
+  but `raw_byte_from_regex_char`, `raw_case_byte` and the reader's,
+  JSON's and `decode-char`'s tests took all of U+E000..U+E0FF, so a
+  private-use U+E000..U+E07F (mac-roman's 0xF0 decodes to U+E01E) read
+  back as a character #x3FFF00 + N in buffers, `upcase` and `format`;
+  #x3FFF00..#x3FFF7F, ordinary five-byte characters, were taken for raw
+  bytes by `insert`, `char_from_integer` and `multibyte-char-to-unibyte`.
+  Both ranges are 0x80..0xFF now (`RAW_BYTE_MARKERS`, `RAW_BYTE8_CHARS`)
+  and a marker is never made for an ASCII byte. `position-bytes` and
+  `byte-to-position` counted Emaxx's UTF-8 storage (three bytes for a raw
+  byte, three for a character beyond Unicode); they count GNU's bytes
+  through `marker_byte_position`, and tree-sitter and unibyte overlay
+  positions, which index the stored text, use the new
+  `storage_byte_position` and `storage_byte_to_position`. Encoder,
+  destination, private-use and byte-position probes give GNU's output
+  (GNU itself crashes on `(encode-coding-string "é" 'utf-8 nil t)` and on
+  a killed destination buffer, where Emaxx returns a string and signals),
+  as do coding, fns, character, charset, casefiddle, buffer, editfns,
+  data, print, lread, search, regex-emacs, syntax, json, marker, mule,
+  mule-util, textsec, subr, subr-x, simple, files, bytecomp, fill, replace
+  and rx tests. Still open on the encode side: GNU's encoders take
+  consume_chars' character codes, emit an eight-bit character as its byte
+  and substitute the default character inline; Emaxx's take the stored
+  text, so a character beyond Unicode reaches them as its placeholder
+  U+F8FF, and the substitution pass before encoding (charset and us-ascii
+  codings) replaces an eight-bit character too when the text holds an
+  unencodable one.
+- **Round 62: consume_chars and the encoders on GNU character codes.**
+  Every encoder reads what coding.c's `consume_chars` hands it: a
+  multibyte source's characters as GNU numbers (an eight-bit one as
+  #x3FFF80..#x3FFFFF, one beyond Unicode from the side table, a real
+  U+E080..U+E0FF as itself); a unibyte source's bytes for the raw-text
+  encoder and, for every other one, each internal multibyte sequence the
+  bytes spell as its character (`multibyte_length` with eight-bit
+  allowed, so `"\303\251"` encodes in latin-1 as 0xE9 and `"\300\200"`
+  in utf-8 as 0x80) and the other bytes as eight-bit characters; the dos
+  and mac newline conversions; a CR read as a newline for write-region in
+  a buffer whose `selective-display` is t; and the encode translation
+  tables (`get_translation_table`, sequence entries through
+  `get_translation`). The encoder is the coding type's, as
+  setup_coding_system chooses it: utf-8 and raw-text write the internal
+  spelling with an eight-bit character as its byte, utf-16 the default
+  character above MAX_UNICODE_CHAR, and charset, shift-jis, big5,
+  emacs-mule and iso-2022 their charset lists with the default character
+  substituted inline. shift-jis and big5 go through CODING_CHAR_CHARSET
+  over the coding's own list, so japanese-shift-jis-2004's fourth charset
+  encodes and decodes, where a shift-jis coding other than
+  japanese-shift-jis fell to raw text both ways. japanese-iso-8bit is an
+  iso-2022 coding again (the bootstrap's separate EUC-JP codec routing is
+  gone), and the ISO-2022 decoder closes its last charset run before it
+  flushes an incomplete trailing sequence, as no_more_source does. The
+  pass that substituted unencodable characters by coding kind before
+  encoding, the "Character cannot be encoded" error GNU's encoders never
+  signal, the hand-written EUC-JP, Latin-1 and ASCII encoders and
+  encoding_rs (windows-1251, windows-1252 and koi8-r are charset codings
+  over their charset maps) are gone. `encode-coding-region` encodes the
+  region with its characters beyond Unicode and its `charset`
+  properties. `unencodable-char-position` and
+  `check-coding-systems-region` are coding.c's: the coding's charset list
+  (CODING_ATTR_CHARSET_LIST, `iso-2022` and `emacs-mule` standing for
+  those lists) after the encode translation, a raw-text coding answering
+  nil in the first and every non-ASCII position in the second,
+  validate_region (swapped bounds, narrowing) for the first and BEG..Z
+  for the second, the coding as given in the result; the terminal's
+  glyphless test is term.c's char_charset over coding_charset_list. A
+  probe of 37 codings over 19 strings and two regions, the
+  encodability probe (20 codings) and a decode probe of eight Japanese
+  codings give GNU's output, except euc-jis-2004's two characters of
+  japanese-jisx0213-2 (#x150000 and up): every decoder still builds Rust
+  text, which cannot hold a character beyond Unicode, so such a code
+  comes out as its bytes. Porting the decode side the same way
+  (`produce_chars` from GNU codes, the decoders writing character codes
+  rather than a `String`) is the next coding step. 20,000 encodings of a
+  100-character string: utf-8 0.076 s (GNU 0.122), latin-1 0.082
+  (0.084), euc-jp 0.195 (0.180), utf-16le 0.071 (0.051) on a loaded host.
+- **Round 63: the decoders on GNU character codes, detect_coding first.**
+  Every decoder writes coding.c's character codes into a `DecodedText`
+  (its text, the `charset` runs and the side table of characters beyond
+  Unicode, as strings and buffers keep them) through `push_code`: an
+  eight-bit character becomes its stored marker, a real U+E080..U+E0FF
+  stays a character, and a code beyond Unicode, or a surrogate, goes to
+  the side table. Before, the decoders built Rust text, so such codes came
+  out as their bytes, and a real U+E080 decoded as a raw byte. The utf-8
+  decoder is decode_coding_utf_8's, with 4-octet sequences up to #x1FFFFF
+  and 5-octet ones up to MAX_CHAR; the utf-16 one is decode_coding_utf_16's:
+  a lone low surrogate decodes to its own character, a high one followed by
+  anything else comes out as its two bytes, and since
+  CODING_UTF_16_SURROGATE is cleared only by the next surrogate, every unit
+  after it until then repeats those bytes. An auto-BOM coding (`utf-16`,
+  `utf-8-auto`) is settled by detect_coding before anything decodes, from
+  detect.rs's port (a multibyte source's characters through the new
+  `DetectSource::from_codes`, the UTF-8 signature tested on the raw
+  source as detect_coding_utf_8 tests it: a multibyte buffer's three
+  eight-bit characters EF BB BF are no signature), with the requested eol
+  type carried over (`adjust_coding_eol_type`); the settled coding decodes
+  and is the one `last-coding-system-used` records
+  (`utf-16le-with-signature`), and one detection could not settle decodes
+  without a BOM in its own byte order, as utf_detect_bom does. A string
+  decoded by a coding detection settles on `raw-text` is unibyte, as
+  decode_coding_object sets `dst_multibyte` after detect_coding. The
+  decoded side table reaches strings, regions (Replace, Return and a
+  buffer destination), `insert-file-contents` (including REPLACE, which
+  compares character codes) and `call-process` output. A decode probe of
+  27 codings over 20 inputs plus 30 multibyte-buffer region decodes went
+  from 49 differing lines to one, and the round 62 encode probes give
+  GNU's output. A naming probe of 36 codings over 18 strings, with
+  `inhibit-eol-conversion` and as regions (2,312 lines), differs on 360:
+  `decode-coding-string` with NOCOPY returns the source string itself
+  whenever the decoded text reads the same, where GNU returns it only on
+  code_convert_string's ASCII fast path (so `(decode-coding-string
+  "\244\242\n" 'utf-8 t)` gives back the unibyte source); with
+  `inhibit-eol-conversion` the name still gains an eol subsidiary; and a
+  region decode of ASCII text keeps the requested name where decode_eol
+  names the subsidiary (`utf-8-unix`). Compare probe output with `diff -a`:
+  these probes hold raw bytes, and plain `diff` reports only "Binary files
+  differ". Still open: (1) the one
+  differing line is ISO-2022's CODING_DECODE_CHAR failure on a multibyte
+  source, where GNU emits the internal bytes of the invalid sequence one by
+  one; Emaxx splits a multibyte source into runs of bytes and decodes each
+  run on its own, so decoder state also does not carry across a non-byte
+  character. The faithful form is the decoders reading the source with
+  ONE_MORE_BYTE's multibytep semantics. (2) `insert-file-contents`
+  converts end-of-lines in the raw bytes before decoding, where
+  decode_coding_gap runs decode_eol on the decoded text, so a UTF-16 file
+  with CR LF keeps its CR and one whose code units contain 0x0D or 0x0A
+  bytes is corrupted; its naming (`last-coding-system-used` against
+  `buffer-file-coding-system`, `utf-8-auto` files) is heuristic and differs
+  from GNU on 45 lines of a BOM probe. (3) process output: `call-process`
+  converts end-of-lines in the bytes before decoding as files do, and a
+  process filter's output with an undecided coding is read as UTF-8 with
+  U+FFFD for an invalid byte (`decode_process_output_bytes`), its decoded
+  text without the side table. All three want one decode_coding_object
+  (detect_coding, the decoder over the source with multibytep, decode_eol
+  on the produced text) behind strings, regions, files and processes.
+- **Round 64: one decode_coding_object for strings, regions, files and
+  processes.** `decode_coding_object` (strings, regions, `call-process`
+  output) and `decode_coding_gap` (`insert-file-contents`) share one
+  `decode_coding`, coding.c's: the name starts as the coding as given (an
+  alias keeps its own), detect_coding runs for `undecided` and the
+  auto-BOM codings with the specified eol carried over
+  (`adjust_coding_eol_type`, the subsidiary taken from the canonical base's
+  eol vector, so `euc-jp` settles as `japanese-iso-8bit-unix`), the settled
+  coding decodes, and decode_eol then works on the decoded text: it counts
+  LF, CR LF as a pair and lone CR (CR LF with lone CR but no LF counts as
+  CR LF, any other mixture as LF), names the subsidiary from what it saw
+  (LF before CR LF before CR), turns CR into LF for `mac` and drops each
+  CR before LF for `dos`, and is skipped for `unix` or under
+  `inhibit-eol-conversion`. A file's detection runs without
+  CODING_MODE_LAST_BLOCK (an odd-length UTF-16 file or a truncated UTF-8
+  tail is not rejected), with decode_coding_gap's ASCII optimization (an
+  ASCII-compatible coding with no post-read conversion, translation table
+  or `disable-ascii-optimization`, over all-ASCII bytes or UTF-8 whose
+  detection counted every byte) and its eol from the detection's head scan.
+  Finsert_file_contents picks the coding as fileio.c does
+  (`coding-system-for-read`, `auto-save-coding` as `utf-8-emacs-unix`,
+  `set-auto-coding-function` on a non-empty file, the car of
+  find-operation-coding-system called with the file name as given, VISIT,
+  BEG, END and REPLACE, else `undecided`; a unibyte buffer's
+  raw_text_coding_system), makes a visited buffer unibyte for a coding
+  `:for-unibyte`, does not decode an empty file, records the decided name
+  in `last-coding-system-used` (`after-insert-file-set-coding` sets
+  `buffer-file-coding-system` from it, as in GNU, in place of the old
+  heuristic), and runs the post-read conversion with point at the inserted
+  text and undo off, the inserted count growing by its change of size.
+  `decode-coding-string` takes code_convert_string's fast path only for an
+  ASCII string and an ASCII-compatible coding with nothing to convert at
+  eol, which alone returns the source under NOCOPY, decodes into a
+  multibyte string unless the settled coding is for unibyte text, runs the
+  settled coding's post-read conversion and then records it; a region
+  decode's destination is the buffer it writes. Raw text copies a
+  multibyte source's characters into a multibyte destination and the low
+  bytes ONE_MORE_BYTE reads into a unibyte one. `call-process` decodes as
+  callproc.c chooses (`coding-system-for-read`, else the car of
+  find-operation-coding-system, else of `default-process-coding-system`,
+  raw text with the eol type in a unibyte buffer), records
+  `last-coding-system-used` even when the program writes nothing, and
+  reads DESTINATION as callproc.c does: `(REAL-BUFFER STDERR-FILE)` with
+  REAL-BUFFER possibly `(:file FILE)`, both files expanded against
+  `default-directory` and truncated even when nothing is written, and a
+  dotted `(BUFFER . X)` mixing standard error into the output. File reads
+  cost 2.82 to 2.12 billion instructions on a probe reading 60 Lisp files
+  ten times (GNU 1.52): detect.rs's head scan skips printable ASCII runs,
+  decode_eol finds CR and LF with `memchr2`, raw text copies its ASCII
+  prefix a word at a time, the inserted text is not counted twice, and
+  `search`'s unibyte loader copies an ASCII chunk at once. The naming
+  probe (2,312 lines) went from 360 differing lines to none and the BOM
+  file probe (337) from 45 to none; the file-read (1,080), alias,
+  decode, encode and charset probes give GNU's output but for the round 63
+  ISO-2022 line. GNU's arc-mode, bytecomp, files, ccl, mule, mule-util,
+  textsec, qp, rfc2045, rfc2047, simple, subr, buffer, casefiddle,
+  character, charset, coding, data, editfns, fileio, fns, json, lread,
+  print, process, search, jit-lock, tramp-archive, compile and esh-proc
+  tests give GNU's results. Still open: (1) the ISO-2022 line, as in round
+  63; (2) `call-process` sends a unibyte argument's raw bytes as the UTF-8
+  of their markers and fails on a NUL where GNU truncates the argument
+  (60 of 162 lines of a process probe), and `call-process-region` sends
+  the region's Rust text rather than encoding it; (3) a process filter
+  still reads `undecided` output as UTF-8, and `call-process` decodes its
+  whole output at once where callproc.c decodes each 16 to 64 KB block,
+  detection settling on the first; (4) the two `bookmark-tests`
+  non-ASCII tests that fail on `9ba4dee` (below): their gb18030
+  character, #x22484C, now decodes to GNU's code beyond Unicode, and
+  `read` from a buffer, `format`, `message`, case conversion, `char-width`,
+  regexp search and several editing commands lose such characters (or
+  real U+E000..U+E0FF ones) through the Rust text view; (5) with
+  `:expensive-test`s, `package-test-update-archives-async` fails
+  (`url-http-response-status` void in its filter) and leaves two later
+  package tests failing, and `ucs-normalize-part1` fails on U+E0FF, as on
+  `9ba4dee`; the frozen run does not include them.
+- **Round 65: characters beyond Unicode and real U+E000..U+E0FF through
+  the Rust text paths.** Lisp strings and buffers keep GNU's internal
+  bytes, but many primitives work on the Rust text view, where a raw byte
+  is a U+E080..U+E0FF marker and a character the view cannot carry (beyond
+  Unicode, a surrogate, a real U+E000..U+E0FF such as the Powerline glyphs
+  U+E0A0..U+E0D4) needs its side-table entry. Every path below now carries
+  it or works on the internal bytes. `read` and `read-positioning-symbols`
+  on a buffer or marker, and `eval-buffer`/`eval-region` (so `load` of a
+  source file), read the region's internal bytes when it holds such a
+  character: a loaded `.el` file with a literal U+E0B0 in a string came
+  back with the raw byte 176. `format` (`%c` checks the code against
+  MAX_CHAR, "Invalid character: N"; `%s`/`%S` keep the side table through
+  padding and precision), `message` and its batch stderr output
+  (xdisp.c message_to_stderr: the internal bytes, or encoded with
+  `coding-system-for-write`/`locale-coding-system`), `write-char`,
+  `char-to-string`, case conversion of strings and regions (each character
+  cased by its code through the case table, words by its syntax),
+  `delete-and-extract-region`, `kill-region`/`yank`, `transpose-chars` and
+  `decode-coding-region`. `replace-match` is search.c's Freplace_match
+  (the literal fast path, `\&`, `\N`, `\\`, `\?` an error in the buffer
+  case, case conversion of the replacement from the matched text,
+  "replace-match subexpression does not exist", args-out-of-range on the
+  bounds, string pieces via concat3 keeping properties) over insdel.c's
+  replace_range (insertion recorded before the deletion in the undo list,
+  markers and overlays adjusted as adjust_markers_for_replace and
+  adjust_overlays_for_insert/delete do, point moved as replace_range moves
+  it, match data updated by update_search_regs, one after-change call);
+  `subst-char-in-region` is editfns.c's (byte-length check in a multibyte
+  buffer, low byte in a unibyte one); `regexp-quote` works on the internal
+  bytes and returns a copy when nothing needs quoting;
+  `string-to-multibyte`, `string-as-multibyte` and `string-make-unibyte`
+  are fns.c's byte conversions (STRING itself when nothing changes, no
+  properties otherwise); `char-width` and `string-width` are character.c's
+  (char-width-table, which now also gives raw bytes width 4, display
+  tables, `ctl-arrow`, tab width). keymap.c's `key-description`,
+  `single-key-description` (push_key_description: a multibyte result, any
+  valid character as itself, `[N]` past MAX_CHAR, map-char-table intervals
+  as `A..B`, Lucid event lists through `event-convert-list`, EVENT_HEAD of
+  other conses, the modifier prefix of a symbol scanned while `i < len -
+  3`, "KEY must be an integer, cons, symbol, or string") and
+  `text-char-description` (`characterp`, a unibyte result for ASCII);
+  `char-syntax` gives word syntax for characters beyond Unicode;
+  base64 encoding takes a multibyte source's eight-bit characters as bytes
+  and rejects any other non-ASCII character ("Multibyte character in data
+  for base64 encoding"); `json-serialize` checks strings as json.c's
+  json_out_string does over the internal bytes (`(wrong-type-argument
+  json-value-p STRING)` for a raw byte, a surrogate or a character beyond
+  Unicode) and requires string hash keys, and `json-insert` keeps a real
+  U+E000..U+E0FF; `file-name-directory`, `file-name-nondirectory`,
+  `file-name-as-directory`, `directory-file-name` and `directory-name-p`
+  work on the internal bytes and keep the name's multibyteness. A reader
+  error in a buffer source is lread.c's invalid_syntax: point stays where
+  reading stopped and the data gains the line and column (`Invalid read
+  syntax: ")", 77, 4`), a stray closer is read before the error and named
+  `)` or `]`, and readevalloop's native path puts a `read` frame on the
+  backtrace while it reads each form, as GNU's call of
+  `load-read-function` does; `eval-buffer` restores point however its
+  forms end. A key-description probe went from 160 differing lines of 160
+  to 6, the replace-match probe (29 lines), the regexp probe and the width
+  probe (22) give GNU's output, and the two 84-line character probes
+  (#x22484C and U+E0B0 through 80 primitives) from 23 and 21 differing
+  lines to 2 each. The bookmark, simple, subr, fns, editfns, search,
+  casefiddle, character, print, lread, buffer, undo, textprop, replace,
+  files, mule, coding, json, keymap, help, bytecomp, fileio, files-x,
+  kmacro, syntax, edebug, elisp-mode, data, minibuf, ls-lisp and dired
+  tests give GNU's results. Still open: (1) a symbol's name keeps no
+  multibyteness: GNU's reader gives a symbol first read from a multibyte
+  source a multibyte name, so `single-key-description` with NO-ANGLES
+  returns a multibyte name there (the 6 key-description lines); (2) buffer
+  names are Rust strings, so `buffer-name` builds a new string on each
+  call (never `eq` to the last, and losing such characters), and
+  `expand-file-name` still works on the text view (the 2 character-probe
+  lines); (3) the reader's escape sequences and `#` syntaxes still signal
+  Emaxx's own conditions and messages where lread.c signals `error` or
+  other text (`\M`, `\C` without `-`, `\x` without a digit, malformed
+  `\u`/`\U`, `\N` without `{`, `#s`, `#&`, `#@`, radix errors, the
+  char-table size): 56 of 117 lines of a reader-error probe over strings,
+  buffers and markers differ, and some end-of-file errors lack
+  `load-true-file-name`; (4) the round 64 items (1) to (3) and (5).
+- **Round 66: lread.c's reader; callproc.c's environment, arguments,
+  input and output.** The reader is lread.c's over character codes:
+  read_char_escape for strings and character literals (the control,
+  meta, shift, hyper, alt and super modifiers with `Invalid escape char
+  syntax: \C not followed by -` and its kin, `\x` with any number of hex
+  digits and "Hex character out of range", `\u`/`\U` with exactly four and
+  eight and "Malformed Unicode escape" or "Non-Unicode character",
+  `\N{NAME}` and `\N{U+X}` with `Expected opening brace after \N`,
+  "Empty character name", "Character name too long" and "Invalid
+  character U+X in character name", a backslash-newline an error in a
+  character literal), read_char_literal (modifier bits on any code, so
+  `?\x8000041` reads; an unescaped `?(`, `?)`, `?[`, `?]`, `?"` or `?;`
+  consed onto `lread--unescaped-character-literals` for the warning),
+  read_string_literal (each character entered as push_string_character
+  does, the string's multibyteness from what it holds, "Invalid modifier
+  in string"),
+  `#(` through string_props_from_rev_list ("Invalid string property
+  list"), read_integer for `#b`/`#o`/`#x`/`#NrDIGITS` ("integer, radix N"),
+  bool vectors, `#s(...)`, char-tables and sub-char-tables ("Invalid size
+  char-table", "Invalid depth in sub-char-table", "Invalid minimum
+  character in sub-char-table", "Invalid size in sub-char-table"), `#[`
+  ("Invalid byte-code object"), `#@N` (in a buffer or string skipping to
+  the next `\037`), `#&`, `#:`, `#_`, `##`, `#'` and `#N=`/`#N#` (which
+  stay readable whatever `read-circle` says, where GNU rejects `#1=` with
+  it nil; `#$` as before), with INVALID_SYNTAX_WITH_BUFFER's line and
+  column for a buffer source, and end_of_file_error naming
+  `load-true-file-name` while loading. The 230-line escape and `#` probe
+  and the 117-line reader-error probe (56 differing lines on round 65)
+  give GNU's output, as do the lread and print tests.
+  `getenv-internal` is callproc.c's over the entries' internal bytes (a
+  non-string entry passed over, an improper tail ending the walk; a list
+  ENV searched instead, its negative entry t; any other ENV the frame
+  whose `display` parameter answers DISPLAY ahead of
+  `initial-environment`), its value make_string's, so valid multibyte
+  bytes come back multibyte; egetenv's HOME reads go through it. A
+  child's environment is make_environment_block's, handed to execve in
+  its order: PWD, when the Lisp environment has one, naming the child's
+  directory without trailing slashes, DISPLAY from the frame or
+  `initial-environment` when `process-environment` lacks it, then
+  `process-environment`'s strings up to its first non-string as their
+  internal bytes cut at a NUL, each left out when an earlier entry names
+  its variable (a lone name keeps later definitions out), the lone names
+  dropped last. Before, the entries reached the child as Rust text (a raw
+  byte as its marker's UTF-8) applied last-first, and a lone name had no
+  effect. `call-process` output goes in as callproc.c inserts a
+  bufferful: prepare_to_modify_buffer at point (the before-change
+  functions), then the bytes as they are for a unibyte buffer whose
+  coding needs no decoding (insert_1_both) or decode_coding_c_string with
+  `inhibit-modification-hooks` bound (produce_charset's `charset`
+  properties, one insertion in the undo list, the post-read conversion
+  through safe_calln with undo off, its errors muted into `*Messages*`),
+  point moved over the characters produced and signal_after_change for
+  them; before, no change hook ran and no `charset` property was put. An
+  error out of the insertion has call_process_cleanup announce "Waiting
+  for process to die...(type C-g again to kill it instantly)" and
+  "...done" (xdisp.c message1) first. Its arguments are callproc.c's:
+  checked as strings, the coding `coding-system-for-write`, else for a
+  multibyte argument the cdr of find-operation-coding-system's answer,
+  else raw-text, completed by coding.c's complement_process_encoding_system
+  (the cdr of `default-process-coding-system`, then the preferred coding
+  system) and made raw-text when not ASCII compatible; the
+  encode_coding_string macro encodes a multibyte argument and passes a
+  unibyte one as its bytes, and the child reads each up to its first NUL
+  (before: the UTF-8 of the Rust text, and a "nul byte found" error).
+  `call-process-region` is Fcall_process_region: START a string, nil
+  (the whole buffer, empty when BEG = Z) or a region checked as
+  validate_region checks it (`args-out-of-range` with the buffer), the
+  input written as create_temp_file writes it (write_region's coding
+  choice with `coding-system-for-write` bound to the completed
+  `coding-system-for-write`, raw-text for a unibyte buffer or the cdr of
+  find-operation-coding-system's answer for `call-process-region`, and
+  recorded in `last-coding-system-used`), the region deleted before the
+  child runs, the null device as stdin for an empty input, and the
+  output read as call_process reads it for `call-process` with INFILE in
+  DELETE's place. `define-coding-system-internal` checks its translation
+  tables (a char-table, a list or a symbol) and conversions (symbols) as
+  coding.c does and returns nil. `tramp-test42-utf8`, failing on
+  `9ba4dee` and before, passes. The round 64 process probe (60 differing
+  lines of 162) gives GNU's output but for the temporary file names, as
+  do a 15-form environment probe, a change-hook probe, a 22-form argument
+  and region probe and a post-read probe but for one value: GNU leaves
+  point past the end of the buffer (8 in a 5-character one) when a
+  post-read conversion inserts before point, where Emaxx's buffer keeps
+  it in range. The callproc, process, env, files, eshell (proc, var, cmd,
+  unix, eshell), shell, term, compile, simple, tramp-archive, vc, vc-git,
+  dired, dired-aux, ls-lisp, grep, dbus, fileio, coding, mule, epg and man
+  tests give GNU's results. Still open: (1) `make-process` takes its
+  codings from `:coding` or `default-process-coding-system` only (not
+  `coding-system-for-read`/`-write` or find-operation-coding-system for
+  `start-process`), passes its arguments as the UTF-8 of their Rust text
+  where GNU encodes a multibyte one with the completed encoding, and its
+  filter reads `undecided` output as UTF-8; (2) `call-process` takes the
+  child's whole output as one bufferful, where GNU reads 16 to 64 KB
+  blocks at the sizes the pipe gives, with a change-hook pair for each
+  and detection settled on the first (carryover keeps the text the
+  same); (3) post-read conversions of strings and regions propagate their
+  errors where decode_coding_object's safe_calln mutes them; (4) the
+  program, its directory and file names still go through the Rust text
+  (ENCODE_FILE); (5) the round 65 items (1) and (2) and the round 64
+  items (1) and (5).
+- **Round 67: process.c's codings for subprocesses, pipes, sockets and
+  serial ports, its argument encoding, and the decoding of their
+  output.** `make-process` chooses its codings as Fmake_process does
+  (`:coding`, its car and cdr when a cons; else `coding-system-for-read`
+  and `-write`; else for a process with a program what
+  find-operation-coding-system answers for `start-process` with the name,
+  buffer and command; else `default-process-coding-system`'s), reads each
+  keyword's first value as plist_get does, and has
+  setup_process_coding_systems check them before the child runs
+  (`(coding-system-error X)`); a multibyte argument is encoded by the
+  encoding coding completed by complement_process_encoding_system, a
+  unibyte one passed as its bytes. `make-pipe-process` always has a
+  buffer (`:buffer`, else the one its name names, created when missing)
+  and takes Fmake_pipe_process's codings; network streams take
+  set_network_socket_coding_system's (find-operation-coding-system for
+  `open-network-stream` with the name, buffer, host and service) and
+  serial ports Fmake_serial_process's, each with process.c's "no decoding
+  for unibyte text" rule (a unibyte process buffer, or the default
+  `enable-multibyte-characters` nil without one; a unibyte current buffer
+  for the encoding); once their channels exist, connections, servers,
+  accepted clients and serial ports have setup_process_coding_systems
+  check their codings too, an undefined one signalling with the process
+  left registered, as GNU leaves it. `set-process-coding-system` checks
+  both codings and
+  completes the encoding's eol type (coding_inherit_eol_type: nil becomes
+  `raw-text-unix`). A
+  process's output is decoded as read_process_output decodes it:
+  decode_coding_c_string into a string with the process's decoding coding
+  (raw_text_coding_system's form of it for the default filter into a
+  unibyte buffer), produce_charset's `charset` properties on it, then
+  read_process_output_set_last_coding_system: the settled coding is
+  `last-coding-system-used`, becomes the process's decoding coding when
+  it differs, and an undecided encoding of a live process takes it with
+  its eol completed. The filter receives that string, properties and all;
+  the default filter makes its multibyteness the buffer's
+  (string-as-unibyte or string-to-multibyte) and inserts it with its
+  properties before markers. Before, `undecided` output was read as UTF-8
+  with U+FFFD replacements, other codings without properties, and a
+  network stream without `:coding` had no coding at all. `default-value`
+  of `enable-multibyte-characters` and `buffer-undo-list` reads
+  buffer.c's buffer_defaults (t and nil) rather than the current buffer's
+  value. `default-process-coding-system` starts nil, as coding.c leaves it
+until mule-cmds.el's `set-default-coding-systems` (the bare interpreter
+had `(utf-8-unix . utf-8-unix)`, naming codings it never defines, which
+setup_process_coding_systems's check now refuses). A 13-form
+`make-process` probe (16 differing lines on round 63)
+  and a 13-form pipe, network and serial probe give GNU's output; the
+  process, callproc, eshell, shell, term, compile, vc-git, epg, comint,
+  erc, jsonrpc, eglot, network-stream and server tests give GNU's results
+  (jsonrpc's needs the network streams' `undecided-unix` from
+  `default-process-coding-system`: plain `undecided` converts the CR LF
+  its headers end with). Still open: (1) output is decoded as one block
+  per poll with no carryover: GNU reads `read-process-output-max` bytes at
+  a time, calling the filter for each, and keeps an incomplete trailing
+  sequence (and the coding state) for the next read, which needs every
+  decoder to report where it stopped -- the same machinery `call-process`
+  blocks need; (2) `default-value` of `default-directory` and `mode-name`
+  still gives the startup directory and "Fundamental" (GNU: nil), Emaxx's
+  global bindings of them standing in for buffer_defaults; (3) the round
+  66 items (2) to (5).
+- **Round 68: buffer.c's always-local slots.** Every DEFVAR_PER_BUFFER
+  slot whose buffer_local_flags index is -1 is each buffer's own from the
+  start, as reset_buffer and reset_buffer_local_variables make it: a new
+  buffer gets `default-directory` (the creating buffer's, a `let` of it
+  included), `buffer-backed-up`, `buffer-saved-size`,
+  `buffer-auto-save-file-name`, `buffer-read-only`, `major-mode`
+  (`fundamental-mode`), `local-minor-modes`, `mode-name` (QSFundamental,
+  one string every buffer shares, a new dumped root as GNU staticpros it),
+  `buffer-file-format`, `buffer-auto-save-file-format` (t),
+  `point-before-scroll`, `buffer-invisibility-spec` (t),
+  `buffer-display-count` and `buffer-display-time`, and the first buffer
+  gets them with the working directory (init_buffer). The slots the
+  buffer record holds (`buffer-file-name`, `buffer-file-truename`,
+  `mark-active`, `enable-multibyte-characters`) answer
+  `buffer-local-value`, `local-variable-p`, `buffer-local-variables` and
+  `let` for the buffer named, as `text-conversion-style` did: a `let`
+  binds the buffer's slot and restores it there, where it bound the
+  default (`default-value` of `mark-active` showed the `let`'s value).
+  `mark-active` holds any Lisp object (it kept t or nil, and nil whenever
+  there was no mark), a new pdumper word. The global cells are
+  buffer_defaults': `default-value` of `mode-name` and
+  `default-directory` is nil, `setq-default` reaches no buffer.
+  `kill-local-variable` of a DEFVAR_PER_BUFFER slot tells no watcher and
+  returns VARIABLE as given, an index -1 slot staying as it is;
+  `kill-all-local-variables` keeps every index -1 slot but the three
+  reset_buffer_local_variables assigns (`major-mode`, `mode-name`,
+  `buffer-invisibility-spec`), returns indexed ones to their defaults
+  unless buffer_permanent_local_flags keeps them (`truncate-lines`,
+  `buffer-file-coding-system`), and tells watchers only of the alist
+  cells; `buffer-local-variables` lists `buffer-undo-list`, the slots in
+  struct buffer's order reversed, then the ordinary locals oldest first.
+  `make-indirect-buffer` gives a non-clone a fresh mark and `mark-active`
+  nil (it set the base's mark and activated it) and a clone the base's
+  mark and `mark-active`, then resets its display count, backup and
+  auto-save state and minor modes, sets `buffer-save-without-query` and
+  `buffer-file-number` and kills a local `buffer-stale-function` as
+  Fmake_indirect_buffer does. Before, an always-local slot without a
+  local cell read the global binding, so `setq-default mode-name` renamed
+  every buffer's mode, `kill-local-variable` and
+  `kill-all-local-variables` dropped `local-minor-modes` and
+  `mark-active`, and another buffer's `buffer-file-name` read nil. A
+  49-form probe of defaults, kills, lets, `setq-default`, other buffers'
+  values, `buffer-local-variables` (its order included) and indirect
+  buffers gives GNU's output but for `makunbound`; the dired, derived,
+  easy-mmode, edebug, ert-x, generator, subr-x, files, files-x, hi-lock,
+  minibuffer, elisp-mode, simple, subr, fill, buffer, data, editfns,
+  fileio, minibuf, textprop and undo tests give GNU's results. Still
+  open: (1) `makunbound` of a DEFVAR_PER_BUFFER slot: GNU's set_internal
+  makes the symbol plain and void in every buffer (`default-boundp` nil,
+  `local-variable-if-set-p` nil), its C slots kept for C readers; Emaxx
+  voids the current buffer's cell -- porting it needs Emaxx's Rust
+  readers of these slots to stop going through the symbol; (2) the round
+  67 items (1) and (3).
+  A temporary buffer costs 19.8K instructions (`with-temp-buffer` with
+  one insertion, 20,000 times under callgrind; 17.7K on `183603d`, GNU's
+  wall time three times Emaxx's): its 14 cells go into a fresh table at
+  once. Measuring it found the sweep reclaiming each dead buffer with a
+  linear search of the all-buffers list, quadratic in the buffers one
+  collection frees (39.4K a buffer once the cells made collections
+  rarer); the list is an address set now.
+- **Round 69: process.c's reads and sends by the process's codings,
+  callproc.c's blocks, print.c's debugging output.** read_process_output
+  reads at most p->readmax bytes at a time (`read-process-output-max`
+  when the process is made, clipped to 1..INT_MAX) and decodes them with
+  the carryover the last read left (p->decoding_buf, up to 64 bytes); the
+  end of file is a read of nothing of its own, which decodes the carryover
+  as the last block (CODING_MODE_LAST_BLOCK), and a read that returned
+  carried bytes is not yet the end. A network peer's end of file
+  deactivates the connection (status `closed`, exit 256) with "connection
+  broken by remote peer\n"; GnuTLS reads one record of up to readmax.
+  `accept-process-output` for a process keeps reading while a pass finds
+  output, a process deleted or stopped meanwhile keeping the rest. Before,
+  each poll drained a pipe into one string decoded whole, so a character
+  split across reads came out as raw bytes, a dos CR ending a read became
+  a newline, and a filter saw more than `read-process-output-max` at once.
+  coding.c's decoders without CODING_MODE_LAST_BLOCK stop before an
+  incomplete character and leave it as the carryover: UTF-8 (by its lead
+  byte's count, 5 after a non-leader), UTF-16 (the surrogate kept in the
+  coding struct, GNU's stale-surrogate quirk included, a dos CR waiting
+  for two more bytes), Shift-JIS, Big5, charset, emacs-mule, raw-text's
+  dos CR, and ISO-2022 with its designations, shifts and composition kept
+  across blocks; the BOM is looked for in the first block only, and the
+  last block flushes what remains as raw bytes. emacs-mule's invalid bytes
+  carry no charset annotation but a lone 0x9E or 0x9F (eight-bit).
+  `call-process` and the other callproc.c readers read 16K blocks (64K once
+  32 have been read) less 1024 bytes for the carryover, and each block is
+  its own prepare_to_modify_buffer, decode and signal_after_change, so the
+  change hooks run per block as in GNU. send_process encodes by the
+  process's coding struct, which persists from send to send:
+  `last-coding-system-used` is its coding; multibyte text complements
+  p->encode_coding_system and sets the struct up again when it differs;
+  unibyte text sets up raw-text of the coding last used (an ISO-2022 or CCL
+  coding's flush first, send_process of t, which encodes and sends
+  nothing); text is encoded only when CODING_REQUIRE_ENCODING; no send is
+  a last block, so ISO-2022 designations and a UTF-16 BOM written stay
+  written for the next send. `process-send-eof` flushes, and
+  `set-process-coding-system` makes fresh coding structs keeping the
+  decoding carryover. A send to a dead process signals "Process NAME not
+  running: STATUS"; `process-send-string` checks its string first;
+  `process-send-region` sends the region encoded as its buffer's
+  multibyteness says. Before, every send went out as UTF-8 whatever the
+  process's coding. `external-debugging-output` takes a fixnum and writes
+  it to stderr as printchar_to_stream does (a `standard-display-table`
+  vector expanded, other non-ASCII encoded by `coding-system-for-write` or
+  `locale-coding-system`); it wrote into a buffer. `redirect-debugging-output`
+  dup2s stderr to the file (appending or truncating), nil restoring the
+  saved stderr, and returns nil. Also fixed: round 68's two red gate tests
+  (below): `buffer-local-variables` reads the `text-conversion-style` slot
+  itself, as FOR_EACH_PER_BUFFER_OBJECT_AT does, so a variable `makunbound`
+  left plain still lists its slot, and an ordinary local made after that
+  is listed besides. Probes of decoding tails, carryover across process
+  reads (UTF-8, UTF-16, dos CRs, ISO-2022-JP), `call-process`'s per-block
+  hooks, emacs-mule annotations and 31 sends across 18 codings
+  (ISO-2022 designations and the UTF-16 and UTF-8 BOMs across sends,
+  unibyte sends, dos and mac eols, `inhibit-eol-conversion`, a 70,000
+  character send, a network connection, errors) give GNU's output but
+  for an out-of-range `process-send-region` (item (2) below); the
+  process, callproc, coding, print, editfns, fileio, comint, shell, term,
+  erc, jsonrpc, eglot, network-stream, socks, package (all 38; three
+  failed before), mule, mule-util, server, vc-git, 23 eshell and 10 url
+  test files give GNU's results. Still open: (1) round 68's item (1);
+  (2) primitives that clamp an out-of-range region where validate_region
+  signals `args-out-of-range`: `buffer-substring` and its
+  `-no-properties`, `delete-region`, `delete-and-extract-region`,
+  `put-text-property`, `upcase-region`, `insert-buffer-substring`,
+  `subst-char-in-region`, `translate-region` and `encode-coding-region`
+  among 16 probed (`process-send-region` with them); (3) a character
+  U+E080..U+E0FF inserted as an integer (`insert`, `insert-char`,
+  `insert-and-inherit`, `translate-region`) is stored as a raw byte, the
+  text view's marker for one -- strings carry such characters in their
+  side table, these paths do not -- which fails ucs-normalize-tests'
+  `ucs-normalize-part1` (on round 66's build too).
+- **Round 70: buffer.c's validate_region at its callers, characters as
+  GNU numbers in the text views, cmds.c's self-insert.** validate_region
+  (fix_position for each bound: a marker pointing nowhere "Marker does not
+  point anywhere", a bignum the most positive or negative fixnum, else
+  `integer-or-marker-p`; then the bounds in order, within BEGV..ZV, else
+  `(args-out-of-range BUFFER B E)` with the bounds as given) is what
+  `buffer-substring` and its `-no-properties`, `delete-region`,
+  `delete-and-extract-region`, `subst-char-in-region`, `translate-region`
+  (a char-table not a translation table "Not a translation table", other
+  non-strings `stringp`), `transpose-regions` (each region; characters
+  outside Unicode's scalars carried across with the text),
+  `upcase-region` and the other casify_region commands (a region list
+  walked as FOR_EACH_TAIL walks it, a cycle `circular-list`),
+  `find-charset-region`, `detect-coding-region`,
+  `unencodable-char-position`, `encode-coding-region` and
+  `decode-coding-region` (a destination other than nil and t
+  `bufferp` first), `compose-region-internal` (a unibyte buffer
+  checked first), `composition-get-gstring`,
+  `zlib-decompress-region`, `write-region`, the base64 region
+  functions, `process-send-region`, `parse-partial-sexp`,
+  `bidi-find-overridden-directionality` and `libxml-parse-*-region`
+  (nil bounds point-min and point-max) call; they clamped an out-of-range
+  region before (round 69's item (2)). Characters are GNU's numbers
+  through the text views: a buffer or string holds a raw byte as its
+  private-use stand-in and any other character not a Unicode scalar, or
+  U+E080..U+E0FF itself, in the extended side table (push_character_code),
+  so `insert`, `insert-char`, `insert-and-inherit`, `insert-before-markers`,
+  `insert-byte`, `translate-region`, `subst-char-in-region`,
+  `lookup-key`'s keyboard translation and the region replacements store
+  U+E080..U+E0FF as the character it is (round 69's item (3);
+  ucs-normalize-tests' `ucs-normalize-part1` passes). editfns.c's
+  general_insert_function inserts each argument by itself with its own
+  change hooks, a character in a unibyte buffer as CHAR_TO_BYTE8's byte,
+  an empty string with no change at all, anything else
+  `char-or-string-p`; `insert-byte` checks 0..255 and makes a byte from
+  128 the raw-byte character in a multibyte buffer. The charset
+  functions take characters as GNU numbers (`eight-bit` 0x3FFF80 and up):
+  `charset-after`, `find-charset-string` and `find-charset-region`
+  (through the translation table, a unibyte text's bytes `ascii` or
+  `eight-bit`), `print`'s charset-property pruning. `delete` on a string
+  drops the characters ELT names (none when ELT is not a character) and
+  returns the string itself when nothing goes, a vector too;
+  `string-to-char` reads a unibyte string's byte; `string-to-unibyte`
+  keeps raw bytes and signals for other non-ASCII. cmds.c's
+  Fself_insert_command and internal_self_insert are ported: N checked,
+  the character through `translation-table-for-input`, overwrite mode
+  replacing the character after point with the columns kept (a tab kept
+  before point, spaces filling), abbrev expansion under GNU's conditions
+  (a `no-self-insert` hook ending the insertion), auto-fill after a
+  space or newline, `post-self-insert-hook`, the amalgamating undo
+  boundary, and the 0/1/2 return value; a non-character is
+  bitch_at_user: in batch a BEL on stdout, while a keyboard macro runs
+  the user-error that ends it, else `ring-bell-function` (bound to nil
+  while it runs) or the bell. `ding` with ARG rings without ending a
+  macro. `bidi-find-overridden-directionality` takes a string (FROM and
+  TO as validate_subarray's) or a buffer, a unibyte one or one without
+  `bidi-display-reordering` finding nothing, and starts its paragraph
+  after the newline before FROM. Probes of 57 private-use and raw-byte
+  insertions and conversions, 25 insertion cases and 15 charset lookups
+  give GNU's output, as do 71 of 98 region-validation cases; the other
+  27 are item (1) below. The GNU cmds, editfns,
+  buffer, textprop, casefiddle (11 tests; the circular region list hung
+  before), coding, charset, character, fns, decompress, undo, xml,
+  simple, abbrev, electric, kmacro, mule, ucs-normalize, mule-util, ccl,
+  textsec, subr, fill, subr-x, seq, cl-seq, sort, thingatpt, replace,
+  minibuffer, elisp-mode, files, ert-x, python, css-mode, process,
+  callproc, esh-proc, shell and comint test files give GNU's results.
+  Still open: (1) textprop.c's validate_interval_range: the property
+  primitives (`put-text-property`, `set-text-properties`,
+  `add-text-properties`, `remove-text-properties`,
+  `remove-list-of-text-properties`, `add-face-text-property`,
+  `text-properties-at`, `get-text-property`, the property-change
+  scanners, on buffers and strings) return nil or t for an out-of-range
+  range where GNU signals `(args-out-of-range BEGIN END)`, and
+  `get-char-property`, `get-pos-property`, `field-string`,
+  `constrain-to-field` and `char-property-alias`'s lookup where GNU
+  signals `(args-out-of-range POS)`; `insert-buffer-substring` and its
+  `-no-properties` clamp where GNU signals; `secure-hash` of a buffer
+  clamps the region (`md5` signals already); an overlay made or moved
+  in a buffer since killed prints its id, GNU `#<overlay in no buffer>`;
+  (2) `intern` of a name with a raw byte gives a symbol `eq` to the one
+  named by the private-use stand-in: symbol names do not carry the side
+  table; (3) bidi.c is not ported: the overridden-directionality search
+  uses unicode-bidi's levels, which agree with GNU on textsec's and
+  bidi's cases; (4) `ring_bell` ignores `visible-bell`; (5) round 68's
+  item (1).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -5165,7 +5849,33 @@ gate passed (run 40063298332), frozen passed on its first attempt (run
 40063300298). **On `0148bb1`** (round 55): full Rust gate passed (run
 40066473882), frozen passed on its first attempt (run 40066475799).
 **On `71b5174`** (rounds 56 and 57): full Rust gate passed (run
-40073624210), frozen passed on its first attempt (run 40073625996). Run
+40073624210), frozen passed on its first attempt (run 40073625996).
+**On `5d2bdea`** (rounds 58 and 59): full Rust gate passed (run
+40076991774), frozen passed on its first attempt (run 40076993546).
+**On `440d81c`** (round 60): full Rust gate passed (run 40078381958),
+frozen passed on its first attempt (run 40078383462); rounds 55 to 60 were
+merged into main by PR #102 (`df6c293`). **On `8c95f91`** (rounds 61 and
+62): full Rust gate passed (run 40087156789); frozen matched 7,927 of 7,928
+tests on its first attempt, the miss GNU's eglot flake, and passed on the
+second (run 40087158866). **On `9ba4dee`** (round 63): full Rust gate
+passed (run 40090524898); frozen matched 7,926 of 7,928 tests (run
+40090526570): `bookmark-tests-save/non-ascii-annotation` and
+`bookmark-tests-save/non-ascii-bookmark-name` fail, as the round 64
+bullet's item (4) describes. **On `d99d85c`** (round 64): full Rust gate
+passed (run 40097399568); frozen matched 7,926 of 7,928 tests (run
+40097401438), the same two bookmark tests, which pass after round 65.
+**On `6002362`** (rounds 65 and 66): full Rust gate passed (run
+40113387970), frozen passed on its first attempt (run 40113390272).
+**On `183603d`** (round 67): full Rust gate passed (run 40117891134),
+frozen passed on its first attempt (run 40117893169). **On `1610718`** (round 68): the Rust
+gate failed `text_conversion_detached_state_matches_gnu` and
+`text_conversion_native_store_matches_gnu_without_localizing` in its
+primitives group (run 40123867987; the groups after it did not run):
+round 68's `buffer-local-variables` read the `text-conversion-style` slot
+through the symbol, which `makunbound` had made plain; fixed in round 69.
+Frozen passed on its first attempt (run 40123869891). **On `13dfb41`**
+(round 69): the full Rust gate and frozen runs are dispatched with it;
+their results go in the next round's record. Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that
 locale. With none set here, `char_charset_family_follows_charset_c` and

@@ -423,6 +423,92 @@ const GNU_NATIVE_PER_BUFFER_VARIABLES: &[NativePerBufferVariable] = &[
     NativePerBufferVariable::new("word-wrap"),
 ];
 
+/// The DEFVAR_PER_BUFFER slots but `buffer-undo-list', in the order
+/// buffer.c:Fbuffer_local_variables lists them: FOR_EACH_PER_BUFFER_OBJECT_AT
+/// walks struct buffer's fields and conses each local one onto the front,
+/// so the last field comes first.
+pub(crate) const BUFFER_LOCAL_VARIABLES_ORDER: &[&str] = &[
+    "cursor-in-non-selected-windows",
+    "text-conversion-style",
+    "line-spacing",
+    "cursor-type",
+    "scroll-down-aggressively",
+    "scroll-up-aggressively",
+    "buffer-display-time",
+    "fringe-cursor-alist",
+    "fringe-indicator-alist",
+    "indicate-buffer-boundaries",
+    "indicate-empty-lines",
+    "horizontal-scroll-bar",
+    "vertical-scroll-bar",
+    "scroll-bar-height",
+    "scroll-bar-width",
+    "fringes-outside-margins",
+    "right-fringe-width",
+    "left-fringe-width",
+    "right-margin-width",
+    "left-margin-width",
+    "buffer-display-count",
+    "buffer-invisibility-spec",
+    "buffer-file-truename",
+    "point-before-scroll",
+    "cache-long-scans",
+    "buffer-auto-save-file-format",
+    "buffer-file-format",
+    "buffer-file-coding-system",
+    "enable-multibyte-characters",
+    "mark-active",
+    "buffer-display-table",
+    "abbrev-mode",
+    "overwrite-mode",
+    "selective-display-ellipses",
+    "selective-display",
+    "bidi-paragraph-start-re",
+    "bidi-paragraph-separate-re",
+    "bidi-paragraph-direction",
+    "bidi-display-reordering",
+    "ctl-arrow",
+    "word-wrap",
+    "truncate-lines",
+    "auto-fill-function",
+    "left-margin",
+    "fill-column",
+    "tab-width",
+    "local-abbrev-table",
+    "tab-line-format",
+    "header-line-format",
+    "mode-line-format",
+    "mode-name",
+    "local-minor-modes",
+    "major-mode",
+    "buffer-read-only",
+    "buffer-auto-save-file-name",
+    "buffer-saved-size",
+    "buffer-backed-up",
+    "default-directory",
+    "buffer-file-name",
+];
+
+/// A DEFVAR_PER_BUFFER slot (BUFFER_OBJFWD) as buffer.c treats it:
+/// whether its buffer_local_flags index is -1 (always local) and whether
+/// buffer_permanent_local_flags keeps it.  syntax.c's
+/// `syntax-propertize--done' is an ordinary buffer-local variable there.
+#[derive(Clone, Copy)]
+pub(crate) struct PerBufferSlot {
+    pub(crate) always_local: bool,
+    pub(crate) permanent: bool,
+}
+
+pub(crate) fn native_per_buffer_slot(name: &str) -> Option<PerBufferSlot> {
+    GNU_NATIVE_PER_BUFFER_VARIABLES
+        .iter()
+        .find(|variable| variable.name == name && name != "syntax-propertize--done")
+        .map(|variable| PerBufferSlot {
+            always_local: variable.always_local,
+            permanent: variable.permanent,
+        })
+}
+
 // Edebug specs that GNU Emacs registers through `declare (debug ...)` forms
 // in preloaded Lisp files for macros emaxx implements natively.
 fn builtin_edebug_form_specs() -> Vec<(String, Vec<(String, Value)>)> {
@@ -2167,33 +2253,38 @@ impl ProcessGnuTlsSession {
         }
     }
 
-    pub(crate) fn receive(&mut self) -> Result<(Vec<u8>, bool), LispError> {
+    /// gnutls.c emacs_gnutls_read: one gnutls_record_recv of at most
+    /// NBYTE bytes (retried when interrupted); the bytes it read, or EOF
+    /// for a closed peer or a fatal error.
+    pub(crate) fn receive(&mut self, nbyte: usize) -> Result<(Vec<u8>, bool), LispError> {
         if !self.ready {
             // gnutls.c:emacs_gnutls_read reports EAGAIN until negotiation
             // is complete. The process event loop owns the handshake and
             // must update initstage and run the open sentinel together.
             return Ok((Vec::new(), false));
         }
-        let mut output = Vec::new();
-        let mut chunk = [0_u8; 16_384];
+        let mut chunk = vec![0_u8; nbyte];
         loop {
             // SAFETY: STATE is live and CHUNK is writable for its full length.
             let result = unsafe {
                 (self.api.record_recv)(self.state, chunk.as_mut_ptr().cast(), chunk.len())
             };
             match result {
-                0 => return Ok((output, true)),
-                length if length > 0 => output.extend_from_slice(&chunk[..length as usize]),
+                0 => return Ok((Vec::new(), true)),
+                length if length > 0 => {
+                    chunk.truncate(length as usize);
+                    return Ok((chunk, false));
+                }
                 -52 => continue,
-                -28 => return Ok((output, false)),
-                -9 => return Ok((output, true)),
+                -28 => return Ok((Vec::new(), false)),
+                -9 => return Ok((Vec::new(), true)),
                 error => {
                     // GNU turns fatal record-layer failures into EOF and
                     // leaves other repairable conditions for the next poll.
                     // SAFETY: Every C integer is accepted by this classifier.
                     let closed =
                         unsafe { (self.api.error_is_fatal)(error as std::ffi::c_int) } != 0;
-                    return Ok((output, closed));
+                    return Ok((Vec::new(), closed));
                 }
             }
         }
@@ -2333,6 +2424,12 @@ impl Clone for ProcessState {
             plist: self.plist,
             gnutls: self.gnutls.clone(),
             contact: self.contact,
+            readmax: self.readmax,
+            // A template's processes have no channel left to read.
+            decoder: Default::default(),
+            stdout_eof: self.stdout_eof,
+            stderr_eof: self.stderr_eof,
+            encoder: Default::default(),
         }
     }
 }
@@ -2405,6 +2502,19 @@ struct ProcessState {
     /// it, with :service resolved and :local/:remote address vectors
     /// appended (process-contact with KEY t).
     contact: Value,
+    /// GNU p->readmax: `read-process-output-max' when the process was
+    /// made, the most one read takes.
+    readmax: usize,
+    /// proc_decode_coding_system[] for the process's input channel with
+    /// p->decoding_buf: the decoder state and carryover one read leaves
+    /// the next.
+    decoder: crate::lisp::primitives::coding::BlockDecoder,
+    /// A read of the output (stderr) pipe found its end, and the decoder's
+    /// carryover is yet to be flushed.
+    stdout_eof: bool,
+    stderr_eof: bool,
+    /// proc_encode_coding_system[] for the output channel.
+    encoder: crate::lisp::primitives::coding::EncoderSpec,
 }
 
 #[derive(Clone, Debug)]
@@ -4314,6 +4424,7 @@ impl Interpreter {
         for hooks in &self.interval_insert_hooks {
             mark(hooks);
         }
+        mark(&self.fundamental_mode_name);
         for notification in &self.pending_file_notifications {
             if let Some(event) = &notification.raw_event {
                 mark(event);
@@ -4792,6 +4903,7 @@ impl Interpreter {
             for hooks in &mut clone.interval_insert_hooks {
                 *hooks = c.copy(hooks);
             }
+            clone.fundamental_mode_name = c.copy(&clone.fundamental_mode_name);
             for notification in &mut clone.pending_file_notifications {
                 if let Some(event) = &notification.raw_event {
                     notification.raw_event = Some(c.copy(event));
@@ -5145,10 +5257,6 @@ pub struct InterpreterState {
     /// ` *Minibuf-N*' buffer, so grow-only height does not leak between
     /// consecutive or nested reads.
     minibuffer_activation_count: u64,
-    /// Destination installed by the native `redirect-debugging-output'
-    /// primitive.  GNU keeps this in C state; it must not leak through a
-    /// project-private Lisp variable.
-    pub(crate) external_debugging_output_target: Option<String>,
     /// Scoped module handles, global references and retained libraries.
     pub(crate) modules: crate::lisp::modules::ModuleState,
     /// The live libgccjit arena and runtime ABI state owned by GNU's `comp.c`
@@ -5493,6 +5601,9 @@ pub struct InterpreterState {
     /// in a buffer with intervals found beside the insertion, run after
     /// each insertion until another check replaces them.
     pub(crate) interval_insert_hooks: [Value; 2],
+    /// buffer.c's staticpro'd QSFundamental: the "Fundamental" every
+    /// buffer's `mode-name' starts as (reset_buffer_local_variables).
+    pub(crate) fundamental_mode_name: Value,
     process_states: Vec<ProcessState>,
     pending_timers: Vec<ScheduledTimer>,
     /// Source-loaded callbacks stand in for GNU's byte-compiled Lisp.  Keep
@@ -5786,10 +5897,9 @@ impl Interpreter {
                 ("kill-emacs-hook".into(), Value::Nil),
                 ("delete-terminal-functions".into(), Value::Nil),
                 ("null-device".into(), Value::String("/dev/null".into())),
-                (
-                    "default-process-coding-system".into(),
-                    Value::cons(Value::symbol("utf-8-unix"), Value::symbol("utf-8-unix")),
-                ),
+                // coding.c syms_of_coding leaves this nil; mule-cmds.el's
+                // `set-default-coding-systems' fills it in at startup.
+                ("default-process-coding-system".into(), Value::Nil),
                 ("process-coding-system-alist".into(), Value::Nil),
                 ("network-coding-system-alist".into(), Value::Nil),
                 ("delete-exited-processes".into(), Value::T),
@@ -5884,7 +5994,6 @@ impl Interpreter {
             command_loop_recursion_depth: 0,
             minibuffer_runtime: MinibufferRuntimeState::default(),
             minibuffer_activation_count: 0,
-            external_debugging_output_target: None,
             modules: crate::lisp::modules::ModuleState::default(),
             native_compiler: crate::lisp::native_comp::NativeCompilerState::default(),
             default_file_modes: initial_default_file_modes(),
@@ -6193,6 +6302,7 @@ impl Interpreter {
             condition_variables: Vec::new(),
             combined_after_change: None,
             interval_insert_hooks: [Value::Nil, Value::Nil],
+            fundamental_mode_name: Value::Nil,
             process_states: Vec::new(),
             pending_timers: Vec::new(),
             timer_callback_depth: 0,
@@ -6670,6 +6780,10 @@ impl Interpreter {
         // search.c uses its own Lisp variable rather than a Buffer field, but
         // GNU gives it the same always-buffer-local behavior.
         interp.mark_per_buffer_special("case-fold-search");
+        // buffer.c init_buffer_once makes the first buffer with its slots,
+        // init_buffer gives it the working directory.
+        interp.fundamental_mode_name = Value::string("Fundamental");
+        interp.reset_always_local_slots(0, Value::String(primitives::default_directory().into()));
         for feature in STARTUP_FEATURES {
             if let Some(subfeatures) = feature.subfeatures {
                 interp.put_symbol_property(feature.name, "subfeatures", subfeatures());
@@ -6776,8 +6890,10 @@ impl Interpreter {
         interp.define_per_buffer_special("font-lock-mode", Value::Nil);
         interp.define_per_buffer_special("font-lock-fontified", Value::Nil);
         interp.define_per_buffer_special("header-line-indent-mode", Value::Nil);
+        // buffer_defaults' slots (every buffer has its own; see
+        // `reset_always_local_slots').
         interp.set_global_binding("major-mode", Value::Symbol("fundamental-mode".into()));
-        interp.set_global_binding("mode-name", Value::String("Fundamental".into()));
+        interp.set_global_binding("mode-name", Value::Nil);
         // buffer.c:4794 seeds the C default as the string "%-", with the
         // comment "real setup is done in bindings.el"; that preloaded file
         // installs the real spec and its `standard-value'.  Transcribing
@@ -6813,6 +6929,11 @@ impl Interpreter {
             interp
                 .char_table_set_range(table_id, 0x80, 0x9f, Value::Integer(4))
                 .expect("initialize C1 character widths");
+            // character.c also gives raw-byte characters
+            // (MAX_5_BYTE_CHAR + 1 .. MAX_CHAR) width 4.
+            interp
+                .char_table_set_range(table_id, 0x3f_ff80, 0x3f_ffff, Value::Integer(4))
+                .expect("initialize raw-byte character widths");
             interp.define_special_variable("char-width-table", Value::CharTable(table_id));
         }
         let ambiguous_width_chars = interp.make_char_table(None, Value::Nil);

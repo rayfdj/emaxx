@@ -595,6 +595,45 @@ fn assert_upstream_primitive_contract(program: &str, expected: &str) {
 }
 
 #[test]
+fn always_local_slots_are_each_buffers_own_like_buffer_c() {
+    // buffer.c: an index -1 DEFVAR_PER_BUFFER slot is every buffer's own
+    // from reset_buffer on; buffer_defaults only answers default-value.
+    assert_oracle_contract_matches_interpreter(
+        r#"(with-temp-buffer
+             (let ((other (generate-new-buffer " other")))
+               (unwind-protect
+                   (list
+                    (default-value 'mode-name)
+                    (default-value 'default-directory)
+                    (progn (setq mode-name "M") (kill-local-variable 'mode-name) mode-name)
+                    (progn (setq local-minor-modes '(x) mark-active t mode-name "N")
+                           (kill-all-local-variables)
+                           (list local-minor-modes mark-active mode-name))
+                    (progn (setq-default mode-name "D")
+                           (prog1 (list mode-name (with-current-buffer other mode-name)
+                                        (with-temp-buffer mode-name))
+                             (setq-default mode-name nil)))
+                    (let ((mark-active 'zz))
+                      (list mark-active (default-value 'mark-active)
+                            (buffer-local-value 'mark-active other)))
+                    (with-current-buffer other
+                      (setq buffer-file-name "/tmp/x")
+                      (prog1 (with-temp-buffer (buffer-local-value 'buffer-file-name other))
+                        (setq buffer-file-name nil)))
+                    (mapcar (lambda (e) (if (consp e) (car e) e))
+                            (buffer-local-variables other)))
+                 (kill-buffer other))))"#,
+        "(nil nil \"M\" ((x) t \"Fundamental\") (\"Fundamental\" \"Fundamental\" \"Fundamental\") \
+         (zz nil nil) \"/tmp/x\" (buffer-undo-list buffer-display-time buffer-display-count \
+         buffer-invisibility-spec buffer-file-truename point-before-scroll \
+         buffer-auto-save-file-format buffer-file-format enable-multibyte-characters mark-active \
+         mode-name local-minor-modes major-mode buffer-read-only buffer-auto-save-file-name \
+         buffer-saved-size buffer-backed-up default-directory buffer-file-name))",
+        "always-local slots",
+    );
+}
+
+#[test]
 fn looking_at_does_not_create_or_assign_unrelated_lisp_variables() {
     assert_oracle_contract_matches_interpreter(
         r#"(with-temp-buffer
@@ -7994,7 +8033,7 @@ fn charset_helpers_cover_ascii_unicode_and_priority_mutation() {
         vec!["ascii", "unicode", "iso-8859-1", "emacs", "eight-bit"]
     );
     assert_eq!(
-        charsets_for_text("Aあ", &interp),
+        find_charsets_in_text(&interp, &['A' as u32, 'あ' as u32], true, &Value::Nil),
         vec![
             Value::Symbol("ascii".into()),
             Value::Symbol("unicode".into())
@@ -10476,7 +10515,9 @@ fn make_network_process_ipv6_family_uses_an_ipv6_listener() {
 
 #[test]
 fn make_network_process_coding_precedence_matches_gnu() {
-    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    // The codings must be defined: connect_network_socket's
+    // setup_process_coding_systems refuses an undefined one.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = crate::lisp::types::Env::new();
     let form = Reader::new(
         r#"
@@ -10731,10 +10772,9 @@ fn process_command_reports_child_argv_and_nil_for_connection_records() {
     assert_eq!(
         call(&mut interp, "process-coding-system", &[child], &mut env,)
             .expect("read child coding systems"),
-        Value::cons(
-            Value::Symbol("utf-8-unix".into()),
-            Value::Symbol("utf-8-unix".into()),
-        )
+        // Fmake_process with no coding asked for and a nil
+        // `default-process-coding-system' (coding.c's initial value).
+        Value::cons(Value::Nil, Value::Nil)
     );
 }
 
@@ -13538,6 +13578,8 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
     let mut server = Server(child);
     wait_for_local_test_server(&mut server.0, port, "GnuTLS test server");
 
+    // The early-Lisp fixture has no mule-conf.el, hence no `binary' alias:
+    // the connections name coding.c's own `no-conversion'.
     let program = format!(
         r#"
         (let* ((buffer (generate-new-buffer " *gnutls-transport*"))
@@ -13547,7 +13589,7 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
                          :host "127.0.0.1"
                          :service {port}
                          :family 'ipv4
-                         :coding 'binary
+                         :coding 'no-conversion
                          :sentinel #'ignore
                          :noquery t)))
           (unwind-protect
@@ -13601,7 +13643,7 @@ fn native_gnutls_session_encrypts_process_io_and_closes_the_same_transport() {
                          :host "127.0.0.1"
                          :service {port}
                          :family 'ipv4
-                         :coding 'binary
+                         :coding 'no-conversion
                          :sentinel #'ignore
                          :noquery t
                          :nowait t
@@ -17481,6 +17523,233 @@ fn generate_new_buffer_name_tries_a_random_suffix_for_internal_names() {
 }
 
 #[test]
+fn coding_destinations_eight_bit_storage_and_byte_positions_follow_gnu() {
+    // coding.c:code_convert_string with a buffer destination answers the
+    // characters produced and leaves point before them; fns.c's
+    // string-to-unibyte; encode_coding_utf_16's default character for an
+    // eight-bit one; U+E000..U+E07F and #x3FFF00..#x3FFF7F are ordinary
+    // characters; position-bytes and byte-to-position count GNU's bytes.
+    // The oracle's answer.
+    let program = r#"
+(format "%S" (list
+  (condition-case e (string-to-unibyte (string #x3fffe9 #x80a)) (error e))
+  (let ((s (unibyte-string 1 2))) (eq s (string-to-unibyte s)))
+  (text-properties-at 0 (string-to-unibyte (propertize (string #x3fffe9 ?a) 'face 'x)))
+  (string-to-list (encode-coding-string (string #x3fff90 ?a) 'utf-16le))
+  (with-temp-buffer
+    (insert "AB") (goto-char 2)
+    (let (log)
+      (add-hook 'after-change-functions (lambda (b e l) (push (list b e l (point)) log)) nil t)
+      (list (encode-coding-string "éx" 'utf-8 nil (current-buffer))
+            (decode-coding-string "\303\251z" 'utf-8 nil (current-buffer))
+            (point) (string-to-list (buffer-string)) log)))
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (list (decode-coding-string "\303\251z" 'utf-8 nil (current-buffer)) (string-to-list (buffer-string))))
+  (condition-case e (encode-coding-string "x" 'utf-8 nil 5) (error e))
+  (condition-case e (decode-coding-string 5 'bogus) (error e))
+  (decode-coding-string "a" 'utf-8 nil t)
+  (with-temp-buffer
+    (insert #xe01e #x3fff10 #x3fff90 "a")
+    (list (string-to-list (buffer-string)) (mapcar #'position-bytes '(1 2 3 4 5)) (mapcar #'byte-to-position '(1 4 5 9 10 11 12))))
+  (upcase (string #xe01e)) (multibyte-char-to-unibyte #x3fff10)
+  (string-to-list (decode-coding-string (unibyte-string #xf0) 'mac-roman))))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("coding contract should parse")
+        .expect("coding contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("coding contract should evaluate");
+    assert_eq!(
+        value,
+        Value::string(concat!(
+            "((error \"Cannot convert character at index 1 to unibyte\") t nil (32 0 97 0) ",
+            "(3 2 2 (65 233 122 4194243 4194217 120 66) ((2 4 0 2) (2 5 0 2))) (2 (195 169 122)) ",
+            "(wrong-type-argument bufferp 5) (wrong-type-argument stringp 5) \"a\" ",
+            "((57374 4194064 4194192 97) (1 4 9 11 12) (1 2 2 3 3 4 5)) \"\u{e01e}\" -1 (57374))"
+        ))
+    );
+}
+
+#[test]
+fn encoders_read_consume_chars_codes_like_coding_c() {
+    // coding.c:consume_chars parses a unibyte source's multibyte sequences
+    // for every encoder but raw-text's; the encoders take GNU character
+    // codes (an eight-bit one written as its byte, a character beyond
+    // Unicode or a private-use U+E080 as itself) and substitute the
+    // default character inline; unencodable-char-position and
+    // check-coding-systems-region test the coding's charset list.  The
+    // oracle's answer.
+    let program = r#"
+(format "%S" (list
+  (string-to-list (encode-coding-string "\303\251\300\200\343\201\202\351" 'latin-1))
+  (string-to-list (encode-coding-string "\300\200" 'utf-8))
+  (string-to-list (encode-coding-string "\303\251" 'raw-text))
+  (string-to-list (encode-coding-string (string #xe080 #x3fffe9 ?a #x20ac) 'iso-latin-1))
+  (string-to-list (encode-coding-string (string #x110000 ?\n) 'utf-16le-dos))
+  (string-to-list (encode-coding-string (string ?a #x3fffe9 #x20ac) 'us-ascii))
+  (string-to-list (encode-coding-string (string #x430 #x20ac #x3042) 'windows-1251))
+  (string-to-list (encode-coding-string (string #x3042 #x20ac #xff71 ?\n) 'shift_jis-mac))
+  (string-to-list (encode-coding-string (string #x3042 #x20ac #xff71 #x3fffe9) 'euc-jp))
+  (with-temp-buffer
+    (insert (string ?a #x110000 #x3fffe9 ?\n))
+    (encode-coding-region 1 (point-max) 'utf-8-dos)
+    (string-to-list (buffer-string)))
+  (let ((s (string ?a #xe9 #x20ac #x3fffe9 #x110000 #xe080)))
+    (list (unencodable-char-position 0 6 'latin-1 10 s)
+          (unencodable-char-position 0 6 'raw-text 10 s)
+          (check-coding-systems-region s nil '(latin-1 utf-8 raw-text))))
+  (with-temp-buffer
+    (insert "aé€b") (narrow-to-region 2 3)
+    (list (condition-case e (unencodable-char-position 1 5 'us-ascii 5) (error (car e)))
+          (unencodable-char-position 3 2 'us-ascii 5)
+          (check-coding-systems-region 1 5 '(us-ascii))))))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("encoder contract should parse")
+        .expect("encoder contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("encoder contract should evaluate");
+    assert_eq!(
+        value,
+        Value::string(concat!(
+            "((233 128 32 233) (128) (195 169) (32 233 97 32) (32 0 13 0 10 0) (97 233 63) ",
+            "(224 136 32) (130 160 32 177 13) (164 162 32 142 177 233) ",
+            "(97 4194292 4194192 4194176 4194176 4194281 13 10) ",
+            "((2 3 4 5) nil ((latin-1 2 3 4 5) (utf-8 3 4) (raw-text 1 2 3 4 5))) ",
+            "(args-out-of-range (2) ((us-ascii 2 3))))"
+        ))
+    );
+}
+
+#[test]
+fn decoders_produce_gnu_character_codes_like_coding_c() {
+    // coding.c's decoders: utf-8 takes 4-octet sequences up to #x1FFFFF and
+    // 5-octet ones up to MAX_CHAR, and a real U+E080 stays a character;
+    // utf-16 keeps a lone low surrogate and repeats a stale high one's
+    // bytes; detect_coding settles an auto-BOM coding (reading a multibyte
+    // source's raw bytes for the UTF-8 signature) and a detected raw-text
+    // gives a unibyte string; the jisx0213 codings reach characters beyond
+    // Unicode.  The oracle's answer.
+    let program = r#"
+(format "%S" (list
+  (mapcar (lambda (s) (let ((d (decode-coding-string s 'utf-8)))
+                        (list (string-to-list d) (multibyte-string-p d))))
+          (list "\356\202\200" "\364\220\200\200" "\370\210\200\200\200" "\355\240\200" "\300\200"))
+  (mapcar (lambda (s) (string-to-list (decode-coding-string s 'utf-16le)))
+          (list "\000\330\000\334" "\000\330a\000b\000\000\334" "\000\334" "\000\330" "a"))
+  (mapcar (lambda (s) (list (string-to-list (decode-coding-string s 'utf-16))
+                            last-coding-system-used))
+          (list "\377\376a\000\r\000\n\000" "\376\377\000a" "\377\376a"))
+  (let ((d (decode-coding-string "\200\377" 'undecided)))
+    (list (string-to-list d) (multibyte-string-p d) last-coding-system-used))
+  (with-temp-buffer
+    (insert "\357\273\277a")
+    (decode-coding-region 1 (point-max) 'utf-8-auto)
+    (list (string-to-list (buffer-string)) last-coding-system-used))
+  (with-temp-buffer
+    (insert "\377\376a\000")
+    (decode-coding-region 1 (point-max) 'utf-16)
+    (list (string-to-list (buffer-string)) last-coding-system-used))
+  (string-to-list (decode-coding-string "\217\260\241w" 'euc-jis-2004))
+  (string-to-list (decode-coding-string "\234\362\240\241" 'japanese-shift-jis-2004))))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("decoder contract should parse")
+        .expect("decoder contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("decoder contract should evaluate");
+    assert_eq!(
+        value,
+        Value::string(concat!(
+            "((((57472) t) ((1114112) t) ((2097152) t) ((4194285 4194208 4194176) t) ",
+            "((4194240 4194176) t)) ((65536) (0 216 97 0 216 98 65536) (56320) nil (97)) ",
+            "(((97 10) utf-16le-with-signature-dos) ((97) utf-16be-with-signature) ",
+            "((65534 97) utf-16)) ((128 255) nil raw-text) ((65279 97) utf-8) ",
+            "((97) utf-16le-with-signature) (1377666 119) (25087 4194208 65377))"
+        ))
+    );
+}
+
+#[test]
+fn decode_coding_object_settles_and_names_codings_like_coding_c() {
+    // decode_coding_object and decode_coding_gap: detect_coding settles an
+    // auto-BOM or undecided coding (without CODING_MODE_LAST_BLOCK for a
+    // file, so an odd-length UTF-16 file and a truncated UTF-8 tail still
+    // detect), decode_eol works on the decoded text and names the
+    // subsidiary of the coding an alias names, a unibyte buffer reads raw
+    // text, a visit with raw-text makes the buffer unibyte, a file's
+    // post-read conversion runs, NOCOPY returns a fresh string unless the
+    // ASCII fast path applies, `inhibit-eol-conversion' names nothing,
+    // and call-process records its coding with no output.  The oracle's
+    // answer.
+    let program = r#"
+(progn
+  (defvar t64-file (make-temp-file "t64"))
+  (defun t64-rd (bytes coding &optional unibyte visit)
+    (let ((coding-system-for-write 'no-conversion))
+      (write-region bytes nil t64-file nil 'silent))
+    (with-temp-buffer
+      (when unibyte (set-buffer-multibyte nil))
+      (let ((coding-system-for-read coding))
+        (insert-file-contents t64-file visit))
+      (list (string-to-list (buffer-string)) last-coding-system-used
+            buffer-file-coding-system enable-multibyte-characters)))
+  (format "%S" (prog1 (list
+   (t64-rd "\377\376a\000\r\000\n\000" 'utf-16)
+   (t64-rd "\377\376a" 'utf-16)
+   (t64-rd "\303\251\n" 'utf-8-auto)
+   (t64-rd "\357\273\277a\r\n" 'utf-8-auto)
+   (t64-rd "\303\251\200" 'undecided)
+   (t64-rd "\303\251\r\n" nil t)
+   (t64-rd "abc" 'raw-text nil t)
+   (t64-rd "" 'latin-1)
+   (t64-rd "a+AOk-b" 'utf-7)
+   (let ((s "\244\242\n"))
+     (list (string-to-list (decode-coding-string s 'euc-jp)) last-coding-system-used
+           (eq s (decode-coding-string s 'utf-8 t))))
+   (let ((inhibit-eol-conversion t))
+     (decode-coding-string "\351\r\n" 'utf-8) last-coding-system-used)
+   (with-temp-buffer (insert "a\nb") (decode-coding-region 1 4 'utf-8) last-coding-system-used)
+   (with-temp-buffer (insert "é\n") (decode-coding-region 1 3 'raw-text)
+                     (list (string-to-list (buffer-string)) last-coding-system-used))
+   (with-temp-buffer (let ((coding-system-for-read 'latin-1)) (call-process "true" nil t nil))
+                     last-coding-system-used))
+    (delete-file t64-file))))"#;
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let form = Reader::new(program)
+        .read()
+        .expect("decode contract should parse")
+        .expect("decode contract should contain a form");
+    let value = interp
+        .eval(&form, &mut env)
+        .expect("decode contract should evaluate");
+    assert_eq!(
+        value,
+        Value::string(concat!(
+            "(((97 10) utf-16le-with-signature-dos utf-16le-with-signature-dos t) ",
+            "((97) utf-16le-with-signature utf-16le-with-signature-unix t) ",
+            "((233 10) utf-8 utf-8-unix t) ",
+            "((97 10) utf-8-with-signature-dos utf-8-with-signature-dos t) ",
+            "((233 4194176) utf-8 utf-8-unix t) ((195 169 10) raw-text-dos raw-text-dos nil) ",
+            "((97 98 99) raw-text raw-text-unix nil) (nil latin-1 iso-latin-1-unix t) ",
+            "((97 233 98) utf-7 utf-7-unix t) ((12354 10) japanese-iso-8bit-unix nil) ",
+            "utf-8 utf-8-unix ((233 10) raw-text-unix) latin-1)"
+        ))
+    );
+}
+
+#[test]
 fn help_describe_vector_describes_each_run_of_a_char_table_once() {
     // keymap.c:describe_vector: char_table_ref_and_range gives each run of
     // characters bound to one object, which is looked up in SHADOW and the
@@ -18737,15 +19006,7 @@ fn bidi_override_positions_match_upstream_cases() {
     ];
 
     for (index, (text, expected_exact)) in cases.into_iter().enumerate() {
-        let interp = Interpreter::new();
-        interp
-            .buffer
-            .replace_state(crate::buffer::Buffer::from_text("*test*", text));
-        let found = find_bidi_override(
-            &interp,
-            interp.buffer.borrow().point_min(),
-            interp.buffer.borrow().point_max(),
-        );
+        let found = find_bidi_override(text, 1, 1, text.chars().count() + 1, false);
         if let Some(expected) = expected_exact {
             assert_eq!(found, Some(expected));
         } else {
@@ -18761,16 +19022,8 @@ fn bidi_override_positions_match_upstream_cases() {
     // before asking the primitive, so exercise the exact balanced shape that
     // previously produced a false positive.
     let balanced = "אבגד \u{2067}שונה\u{2069} מרגילa1א:!";
-    let interp = Interpreter::new();
-    interp
-        .buffer
-        .replace_state(crate::buffer::Buffer::from_text("*test*", balanced));
     assert_eq!(
-        find_bidi_override(
-            &interp,
-            interp.buffer.borrow().point_min(),
-            interp.buffer.borrow().point_max(),
-        ),
+        find_bidi_override(balanced, 1, 1, balanced.chars().count() + 1, false),
         None
     );
 }
@@ -23424,7 +23677,8 @@ fn native_network_accept_preserves_binary_bytes_without_listener_buffer() {
     // This is a live loopback contract, not a synthetic call into the output
     // helper.  Bytes above 0x7f expose accidental conversion to multibyte
     // byte8 characters, while the listener buffer exposes whether accepted
-    // children incorrectly keep that buffer alive.
+    // children incorrectly keep that buffer alive.  `no-conversion' is
+    // coding.c's own (the fixture loads no mule-conf.el `binary' alias).
     let program = r#"(progn
                        (setq emaxx-test-tcp-received nil
                              emaxx-test-tcp-accepted nil)
@@ -23440,7 +23694,7 @@ fn native_network_accept_preserves_binary_bytes_without_listener_buffer() {
                               :host "127.0.0.1"
                               :service t
                               :buffer buffer
-                              :coding 'binary
+                              :coding 'no-conversion
                               :filter
                               (lambda (process text)
                                 (setq
@@ -23458,7 +23712,7 @@ fn native_network_accept_preserves_binary_bytes_without_listener_buffer() {
                               :family 'ipv4
                               :host "127.0.0.1"
                               :service (aref local 4)
-                              :coding 'binary
+                              :coding 'no-conversion
                               :sentinel 'ignore
                               :noquery t)))
                          (unwind-protect

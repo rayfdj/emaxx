@@ -840,33 +840,75 @@ fn serialize_array(
     Ok(format!("[{}]", rendered.join(",")))
 }
 
+/// json.c json_out_string, over the string's internal bytes: printable
+/// ASCII but `"' and `\\' as is, the other ASCII characters escaped, and a
+/// multibyte string's Unicode characters copied as UTF-8; a raw byte, a
+/// surrogate, a character beyond Unicode or any non-ASCII byte of a unibyte
+/// string signals `(wrong-type-argument json-value-p STRING)'.
 fn serialize_string(value: &Value) -> Result<String, LispError> {
-    let string =
-        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
-    let mut rendered = String::from("\"");
-    for ch in string.text.chars() {
-        if ch == INVALID_UNICODE_SENTINEL || raw_byte_from_regex_char(ch).is_some() {
-            return Err(LispError::TypeError(
-                "json-string".into(),
-                value.type_name(),
-            ));
-        }
-        match ch {
-            '"' => rendered.push_str("\\\""),
-            '\\' => rendered.push_str("\\\\"),
-            '\n' => rendered.push_str("\\n"),
-            '\r' => rendered.push_str("\\r"),
-            '\t' => rendered.push_str("\\t"),
-            '\u{0008}' => rendered.push_str("\\b"),
-            '\u{000C}' => rendered.push_str("\\f"),
-            ch if (ch as u32) < 0x20 => {
-                rendered.push_str(&format!("\\u{:04X}", ch as u32));
+    let (bytes, multibyte) = if let Kind::StringObject(state) = value.kind() {
+        let state = state.borrow();
+        (state.bytes().to_vec(), state.is_multibyte())
+    } else {
+        let string = string_like(value)
+            .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
+        (
+            crate::lisp::primitives::internal_string_bytes(&string)?,
+            string.multibyte,
+        )
+    };
+    let not_unicode = || LispError::WrongTypeArgument("json-value-p".into(), *value);
+    let mut out = Vec::with_capacity(bytes.len() + 2);
+    out.push(b'"');
+    let mut p = 0;
+    while p < bytes.len() {
+        let c = bytes[p];
+        if (0x20..=0x7F).contains(&c) && c != b'"' && c != b'\\' {
+            out.push(c);
+            p += 1;
+        } else if c > 0x7F {
+            if !multibyte {
+                return Err(not_unicode());
             }
-            ch => rendered.push(ch),
+            let byte =
+                |offset: usize| u32::from(bytes.get(p + offset).copied().unwrap_or(0) & 0x3F);
+            let n = if c <= 0xC1 {
+                return Err(not_unicode());
+            } else if c <= 0xDF {
+                2
+            } else if c <= 0xEF {
+                let v = (u32::from(c & 0x0F) << 12) + (byte(1) << 6) + byte(2);
+                if (0xD800..=0xDFFF).contains(&v) {
+                    return Err(not_unicode());
+                }
+                3
+            } else if c <= 0xF7 {
+                let v = (u32::from(c & 0x07) << 18) + (byte(1) << 12) + (byte(2) << 6) + byte(3);
+                if v > 0x10_FFFF {
+                    return Err(not_unicode());
+                }
+                4
+            } else {
+                return Err(not_unicode());
+            };
+            out.extend_from_slice(&bytes[p..(p + n).min(bytes.len())]);
+            p += n;
+        } else {
+            out.push(b'\\');
+            match c {
+                b'"' | b'\\' => out.push(c),
+                0x08 => out.push(b'b'),
+                b'\t' => out.push(b't'),
+                b'\n' => out.push(b'n'),
+                0x0C => out.push(b'f'),
+                b'\r' => out.push(b'r'),
+                _ => out.extend_from_slice(format!("u00{c:02X}").as_bytes()),
+            }
+            p += 1;
         }
     }
-    rendered.push('"');
-    Ok(rendered)
+    out.push(b'"');
+    String::from_utf8(out).map_err(|_| not_unicode())
 }
 
 fn serialize_hash_table(
@@ -881,12 +923,8 @@ fn serialize_hash_table(
     };
     serialize_object_entries(
         interp,
-        entries
-            .iter()
-            .map(|(key, value)| Ok((hash_table_key_string(key)?, value)))
-            .collect::<Result<Vec<_>, LispError>>()?,
+        entries.iter().map(|(key, value)| (*key, value)).collect(),
         options,
-        false,
         depth,
     )
 }
@@ -923,11 +961,8 @@ fn serialize_hash_table_literal(
     let _ = test;
     serialize_object_entries(
         interp,
-        data.iter()
-            .map(|(key, value)| Ok((hash_table_key_string(key)?, value)))
-            .collect::<Result<Vec<_>, LispError>>()?,
+        data.iter().map(|(key, value)| (*key, value)).collect(),
         options,
-        false,
         depth,
     )
     .map(Some)
@@ -1005,23 +1040,23 @@ fn serialize_list_object(
     Ok(format!("{{{}}}", rendered.join(",")))
 }
 
+/// json.c json_out_object_hash: each key must be a string (CHECK_STRING)
+/// and is written before its value; uniqueness is the caller's business.
 fn serialize_object_entries(
     interp: &mut Interpreter,
-    entries: Vec<(String, &Value)>,
+    entries: Vec<(Value, &Value)>,
     options: &SerializeOptions<'_>,
-    skip_duplicates: bool,
     depth: usize,
 ) -> Result<String, LispError> {
-    let mut seen = Vec::new();
     let mut rendered = Vec::new();
     for (key, value) in entries {
-        if skip_duplicates && seen.iter().any(|existing| existing == &key) {
-            continue;
+        if string_like(&key).is_none() {
+            return Err(LispError::WrongTypeArgument("stringp".into(), key));
         }
-        seen.push(key.clone());
+        let key = serialize_string(&key)?;
         rendered.push(format!(
             "{}:{}",
-            serialize_string(&Value::String(key.into()))?,
+            key,
             serialize_value(interp, value, options, depth)?
         ));
     }
@@ -1034,22 +1069,9 @@ fn json_nested_depth(depth: usize) -> Result<usize, LispError> {
         .ok_or_else(|| LispError::Signal("Maximum JSON serialization depth exceeded".into()))
 }
 
-fn hash_table_key_string(value: &Value) -> Result<String, LispError> {
-    let string =
-        string_like(value).ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *value))?;
-    if string
-        .text
-        .chars()
-        .any(|ch| ch == INVALID_UNICODE_SENTINEL || raw_byte_from_regex_char(ch).is_some())
-    {
-        return Err(LispError::WrongTypeArgument("stringp".into(), *value));
-    }
-    Ok(string.text)
-}
-
 fn raw_byte_from_regex_char(ch: char) -> Option<u8> {
     let code = ch as u32;
-    if (RAW_BYTE_REGEX_BASE..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&code) {
+    if (RAW_BYTE_REGEX_BASE + 0x80..=RAW_BYTE_REGEX_BASE + 0xFF).contains(&code) {
         Some((code - RAW_BYTE_REGEX_BASE) as u8)
     } else {
         None
