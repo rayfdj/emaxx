@@ -22,7 +22,7 @@ pub(crate) use misc::set_internal_symbol;
 mod misc_keymaps;
 mod numeric;
 
-pub(crate) use buffer_edit::{visual_line_bounds, visual_segment_starts};
+pub(crate) use buffer_edit::{screen_row_starts, visual_line_bounds};
 #[cfg(test)]
 pub(crate) use display::echo_area_message_with_spans;
 #[cfg(test)]
@@ -32,7 +32,8 @@ pub(crate) use display::{
     apply_staged_root_window_height, render_window_header_line, render_window_mode_line,
     render_window_tab_line, resolve_tty_face_attrs, run_window_change_functions,
     store_window_hscroll_state, string_face_spans, window_face_spans, window_hscroll_state,
-    window_line_number_layout, window_render_layout,
+    window_line_number_layout, window_render_layout, window_text_area_columns,
+    window_total_columns,
 };
 pub(crate) use display::{
     clear_message, echo_area_message, echo_area_message_tick, echo_area_print,

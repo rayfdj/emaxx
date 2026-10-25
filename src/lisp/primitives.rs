@@ -304,10 +304,11 @@ pub(crate) use dispatch::{
     apply_staged_root_window_height, render_window_header_line, render_window_mode_line,
     render_window_tab_line, resolve_tty_face_attrs, run_window_change_functions,
     store_window_hscroll_state, window_face_spans, window_hscroll_state, window_line_number_layout,
-    window_render_layout,
+    window_render_layout, window_text_area_columns, window_total_columns,
 };
 pub use dispatch::{call, is_builtin};
 pub(crate) use dispatch::{call_with_facts, call_with_facts_arity_checked};
+pub(crate) use search::category_member;
 #[cfg(test)]
 pub(crate) use search::{elisp_regex_compile_count, reset_elisp_regex_compile_count};
 

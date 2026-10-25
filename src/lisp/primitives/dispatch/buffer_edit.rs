@@ -515,7 +515,12 @@ define_dispatch!(
                         (None, big.to_i64().unwrap_or(i64::MAX / 2))
                     }
                 };
-                let moved = visual_vertical_motion(interp, env, n, goal_col)?;
+                // WINDOW lends only its geometry: the motion runs in the
+                // current buffer (Fvertical_motion).
+                let window = live_motion_window(interp, args.get(1).unwrap_or(&Value::Nil))?;
+                let window_id = window_record_id_from_value(interp, &window)
+                    .unwrap_or_else(|| interp.selected_window_id());
+                let moved = visual_vertical_motion(interp, env, window_id, n, goal_col)?;
                 Ok(Value::Integer(moved))
             }
             "search-forward" | "search-backward" => search_named(interp, name, args, env),
@@ -1637,6 +1642,47 @@ fn motion_line_number_columns(interp: &mut Interpreter, env: &mut Env) -> usize 
     .map_or(0, |layout| layout.cols)
 }
 
+/// Whether screen-line motion follows a live terminal display rather
+/// than the batch model: Fvertical_motion's `noninteractive' test.
+pub(crate) fn interactive_motion(interp: &Interpreter, env: &Env) -> bool {
+    interp
+        .lookup_var_key(cached_symbol!("noninteractive"), env)
+        .is_some_and(|value| value.is_nil())
+}
+
+/// The display line [BOL, EOL) of the current buffer as WINDOW lays it
+/// out on a terminal (tty.rs), for interactive motion.
+pub(crate) fn interactive_screen_line(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    bol: usize,
+) -> crate::tty::ScreenLineLayout {
+    let lnum_cols = motion_line_number_columns(interp, env);
+    let width = crate::lisp::primitives::window_text_area_columns(interp, window_id)
+        .saturating_sub(lnum_cols)
+        .max(1);
+    let truncate = crate::tty::window_truncates(interp, window_id, interp.current_buffer_id());
+    crate::tty::screen_line_layout(interp, window_id, bol, width, truncate, lnum_cols)
+}
+
+/// Buffer positions where the screen lines of the display line [BOL,
+/// EOL) begin: WINDOW's terminal layout in an interactive session,
+/// vmotion's batch model otherwise.
+pub(crate) fn screen_row_starts(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    bol: usize,
+    eol: usize,
+) -> Vec<usize> {
+    if interactive_motion(interp, env) {
+        interactive_screen_line(interp, env, window_id, bol).row_starts
+    } else {
+        visual_segment_starts(interp, env, bol, eol)
+    }
+}
+
 pub(crate) fn visual_segment_starts(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -2171,6 +2217,7 @@ fn line_number_display_width_value(
 fn visual_vertical_motion(
     interp: &mut Interpreter,
     env: &mut Env,
+    window_id: u64,
     n: i64,
     goal_col: Option<usize>,
 ) -> Result<i64, LispError> {
@@ -2178,7 +2225,7 @@ fn visual_vertical_motion(
     let point_max = interp.buffer.borrow().point_max();
     let point = interp.buffer.borrow().point();
     let (mut bol, mut eol) = visual_line_bounds(interp, point);
-    let mut starts = visual_segment_starts(interp, env, bol, eol);
+    let mut starts = screen_row_starts(interp, env, window_id, bol, eol);
     let mut index = starts
         .iter()
         .rposition(|&start| start <= point)
@@ -2193,7 +2240,7 @@ fn visual_vertical_motion(
             let (next_bol, next_eol) = visual_line_bounds(interp, eol + 1);
             bol = next_bol;
             eol = next_eol;
-            starts = visual_segment_starts(interp, env, bol, eol);
+            starts = screen_row_starts(interp, env, window_id, bol, eol);
             index = 0;
             moved += 1;
         } else {
@@ -2209,7 +2256,7 @@ fn visual_vertical_motion(
             let (prev_bol, prev_eol) = visual_line_bounds(interp, bol - 1);
             bol = prev_bol;
             eol = prev_eol;
-            starts = visual_segment_starts(interp, env, bol, eol);
+            starts = screen_row_starts(interp, env, window_id, bol, eol);
             index = starts.len().saturating_sub(1);
             moved -= 1;
         } else {
@@ -2225,22 +2272,10 @@ fn visual_vertical_motion(
         point_max
     } else {
         let mut target = starts[index];
-        let interactive = interp
-            .lookup_var_key(cached_symbol!("noninteractive"), env)
-            .is_some_and(|value| value.is_nil());
-        if let Some(goal) = goal_col.filter(|&goal| goal > 0 && interactive) {
-            let seg_end = starts.get(index + 1).copied().unwrap_or(eol);
-            let widths = visual_char_widths(interp, env, bol, eol);
-            let mut col = 0usize;
-            while target < seg_end && col < goal {
-                let (raw, _) = widths[target - bol];
-                col += if raw == usize::MAX {
-                    8 - (col % 8)
-                } else {
-                    raw
-                };
-                target += 1;
-            }
+        if let Some(goal) = goal_col.filter(|&goal| goal > 0 && interactive_motion(interp, env)) {
+            // move_it_in_display_line to the goal X on the target row.
+            target = interactive_screen_line(interp, env, window_id, bol)
+                .position_at_column(index, goal);
         }
         target
     };

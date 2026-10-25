@@ -970,6 +970,11 @@ impl Interpreter {
         self.input_interrupt_mode = enabled;
     }
 
+    /// The standard category table, if one exists yet.
+    pub(crate) fn standard_category_table(&self) -> Option<CharTableRef> {
+        self.standard_category_table_id
+    }
+
     pub fn ensure_standard_category_table(&mut self) -> CharTableRef {
         if let Some(id) = self.standard_category_table_id {
             return id;

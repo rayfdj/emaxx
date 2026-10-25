@@ -5595,16 +5595,89 @@ setup_process_coding_systems's check now refuses). A 13-form
   first output (the delivery count compared with the wait's start), so
   such a wait always lasted its full timeout and ERC's `erc-d-t-wait-for'
   missed state that lasts under 0.1 s (join-display-context's requested
-  channels, which passed before round 75 by timing). Newly exposed, not
-  fixed: `erc-scenarios-scrolltobottom--relaxed' (an `:expensive-test' in a
+  channels, which passed before round 75 by timing). Newly exposed and
+  fixed in round 77: `erc-scenarios-scrolltobottom--relaxed' (an `:expensive-test' in a
   `term' child, outside the frozen selection) fails its "New message does
   not trigger a scroll when at prompt" sustain check: with the wait now
   returning on output, its loop redisplays while messages arrive, and
   Emaxx's redisplay moves the window start of a window whose point is at
-  the prompt (GNU's keeps it); the next round starts there. Of 42 ERC and
+  the prompt (GNU's keeps it); the next round starts there. Checked: the
+  buffer-local `window-configuration-change-hook' (scrolltobottom's
+  recenter to the bottom) never runs in that test; the open hypothesis is
+  that redisplay re-anchors the window start that relaxed scrolltobottom
+  restores with `recenter' (fill-wrap's visual lines), so
+  `count-screen-lines' from the start to the prompt changes. Of 42 ERC and
   window-related GNU test files (the 21 former failures and every file
   using `split-window', `delete-window', `display-buffer' or
   `pop-to-buffer'), all others match GNU's results.
+
+- **Round 77: xdisp.c display_line's row breaking on terminal frames.**
+  `erc-scenarios-scrolltobottom--relaxed' passes. Its failure was not the
+  window start's anchoring itself: Emaxx's tty redisplay ignored
+  `line-prefix', `wrap-prefix' and `word-wrap', while `vertical-motion'
+  (which `recenter' and `count-screen-lines' walk) used the batch vmotion
+  model, so the window start relaxed scrolltobottom restored with
+  `recenter' on ERC's fill-wrap lines was not a row start of the
+  redisplay's layout and the redraw moved it to the line's start. (1)
+  `src/tty/layout.rs' lays out a display line as display_line does on a
+  tty: the last column holds the continuation glyph; under `word-wrap'
+  (and `word-wrap-by-category', its kinsoku categories) a row backs up to
+  its last wrap point (the first non-whitespace after whitespace) with no
+  `\' glyph, so a word ending at the edge or a space run past it moves
+  down, and only a word with no wrap point breaks mid-word with `\';
+  `line-prefix' starts a line's first row and `wrap-prefix' each
+  continued row, from the char property at the row's first position
+  (overlays for that window included, handle_line_prefix) else the
+  buffer-local variable, the first real glyph after a pushed prefix always
+  produced; TAB stops are Emacs 30's term.c: on a line's first row
+  current_x (prefix cells included), on a continued row current_x plus
+  continuation_lines_width (every earlier row's full x, the
+  `display-line-numbers' gutter included) less the wrap-prefix's width,
+  the gutter left out, to the next multiple of the buffer's sane
+  `tab-width' — so `ab1<TAB>' after a 2-cell line-prefix stops at column
+  8, and a TAB split at the edge resumes on the next row after a
+  wrap-prefix or gutter exactly where GNU's does. Columns live in that x
+  space, which
+  keeps the cursor, face spans, glyphless restarts and hscroll one model;
+  truncated rows carry `line-prefix' too. (2) Prefix values: a non-empty
+  string shows its characters with its own `face' properties; `(space
+  ...)' is produce_stretch_glyph's width from calc_pixel_width_or_height
+  (`:width', `:relative-width', `:align-to', symbols read buffer-locally,
+  `(+ ...)', `(- ...)', `(NUM)', `(NUM . UNIT)'), drawn in the face of the
+  row's first character; a face with `:extend' running on past a
+  word-wrapped row fills that row to the edge (back_to_wrap's
+  extend_face_to_end_of_line), others stop at the row's last glyph (they
+  ran to the window edge). (3) Interactive `vertical-motion' (with WINDOW
+  lending its geometry, the goal column of `(COLS . LINES)' measured from
+  the text area), `posn-at-point' (X counting the line-number gutter, a
+  position past a truncated edge at the last column), `recenter' and
+  scrolling walk the same layout; batch keeps vmotion. move_it_by_lines'
+  reseat past a truncated last line ending at ZV is one more screen line
+  (GNU's `count-screen-lines' counts it). (4) Auto-hscroll measures the
+  cursor's row with the same layout, and counts point as at the end of
+  the line only on a newline (ITERATOR_AT_END_OF_LINE_P): at ZV of a
+  truncated line it centers the cursor as GNU does (it kept it 4 columns
+  from the edge). Probes in an 80x34 tmux pane
+  (plain word-wrap with words and spaces at the edge, TABs, text-property
+  and overlay prefixes of both kinds, a variable `wrap-prefix', a
+  truncated buffer with prefixes, `tab-width' 4, line numbers) give GNU's
+  screen, cursor, `vertical-motion' row starts, `count-screen-lines',
+  `window-end' and `posn-at-point' columns, and so do four probes of
+  TABs on continued rows (a variable `wrap-prefix', line numbers, both,
+  and `word-wrap' with `tab-width' 5). (5) `write-region''s closing
+  message is fileio.c's: through message_with_string (no `message'
+  advice, `%' in a file name kept), "Wrote", "Added to" (APPEND non-nil)
+  or "Updated" (APPEND a number), naming the expanded VISIT or FILENAME
+  (it said "Wrote" with the unexpanded argument). Local validation: the
+  full gate, 3,204 passed across its ten groups with the documented
+  local skips (before the TAB and message changes; the tty group, 66,
+  and the `write_region'/`append' tests passed after them), and 82 GNU
+  test files (dired, edebug, every ERC file, flymake, python, replace,
+  simple, so-long and others) as GNU (python-tests'
+  `python-nav-end-of-statement--infloop' fails in GNU too). Not covered:
+  double-width characters still take one cell, as before; a TAB inside
+  a `line-prefix' or `wrap-prefix' string still takes one cell (GNU
+  expands it from the row's start).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -6259,18 +6332,15 @@ rounds 71 to 74 into main (`a6640b6`).
 frozen failed only GNU's known `eglot-test-rust-completion-exit-function`
 oracle flake (7,669 passed, 1 unexpected), and its rerun passed (run
 40171630795, attempt 2).
-**On round 76's commit**: the local gate (all groups, gate profile,
-`LANG=C LC_ALL=C`, the known as-root and image tests skipped) passed
-3,202 of 3,202 before the `accept-process-output` grace fix, after which
-the 101 process tests and 78 accept tests pass; the full Rust gate and
-frozen runs are dispatched with it. Earlier, on round 75's commit: the
-local gate (all groups, gate profile,
-`LANG=C LC_ALL=C`, the known as-root and image tests skipped) passed
-3,201 of 3,202; the failure was the anti-cheat scan catching
+**On `b8c4e84`** (round 76): full Rust gate passed (run 40177432296),
+frozen passed on its first attempt (run 40177433903). Locally the gate
+(all groups, gate profile, `LANG=C LC_ALL=C`, the known as-root and
+image tests skipped) passed 3,202 of 3,202 before the
+`accept-process-output` grace fix, after which the 101 process tests and
+78 accept tests pass. On round 75's commit the local gate passed 3,201 of
+3,202; the failure was the anti-cheat scan catching
 `rename-auto-save-file` called through the native dispatcher, now called
-through its function cell, after which the anti-cheat tests pass. The
-full Rust gate and frozen runs are dispatched with it; their results go
-in the next round's record. Run
+through its function cell, after which the anti-cheat tests pass. Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that
 locale. With none set here, `char_charset_family_follows_charset_c` and

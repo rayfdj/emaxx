@@ -3286,6 +3286,16 @@ fn selected_command_text_height(interp: &Interpreter, env: &Env) -> usize {
         as usize
 }
 
+/// WINDOW_TOTAL_COLS of WINDOW.
+pub(crate) fn window_total_columns(interp: &Interpreter, window_id: u64) -> i64 {
+    window_geometry(interp, window_id).0
+}
+
+/// window_box_width of WINDOW's text area in terminal cells.
+pub(crate) fn window_text_area_columns(interp: &Interpreter, window_id: u64) -> usize {
+    window_text_width_columns(interp, window_id).max(0) as usize
+}
+
 fn window_text_width_columns(interp: &Interpreter, window_id: u64) -> i64 {
     let (total, _, left, _) = window_geometry(interp, window_id);
     let root_id = match interp.root_window_value().kind() {
@@ -6247,31 +6257,35 @@ define_dispatch!(
                     // GNU answers nil for positions outside the window.
                     return Ok(Value::Nil);
                 }
-                let (bol, eol) = super::buffer_edit::visual_line_bounds(interp, pos);
-                let starts = super::buffer_edit::visual_segment_starts(interp, env, bol, eol);
-                let seg_index = starts.iter().rposition(|&s| s <= pos).unwrap_or(0);
-                let widths = super::buffer_edit::visual_char_widths(interp, env, bol, eol);
-                let mut x = 0usize;
-                for p in starts[seg_index]..pos {
-                    let (raw, _) = widths[p - bol];
-                    x += if raw == usize::MAX { 8 - (x % 8) } else { raw };
-                }
+                let window_id = interp.selected_window_id();
+                let (bol, _) = super::buffer_edit::visual_line_bounds(interp, pos);
+                let line = super::buffer_edit::interactive_screen_line(interp, env, window_id, bol);
+                let (seg_index, x) = line.position_cell(pos);
+                // A position past a truncated row's edge reports the last
+                // visible column; X counts the line-number gutter's glyphs.
+                let x = if line.truncate {
+                    x.min(line.text_width.saturating_sub(1))
+                } else {
+                    x
+                } + line.lnum_cols;
                 // Row within the window: visual rows between window-start
                 // and POS's screen line, capped at the window height.
                 let mut y = 0usize;
                 let (mut walk_bol, mut walk_eol) =
                     super::buffer_edit::visual_line_bounds(interp, start);
-                let walk_starts =
-                    super::buffer_edit::visual_segment_starts(interp, env, walk_bol, walk_eol);
+                let walk_starts = super::buffer_edit::screen_row_starts(
+                    interp, env, window_id, walk_bol, walk_eol,
+                );
                 let mut walk_seg = walk_starts.iter().rposition(|&s| s <= start).unwrap_or(0);
                 while y < metrics.text_height {
                     if walk_bol == bol {
                         y += seg_index.saturating_sub(walk_seg);
                         break;
                     }
-                    let segs =
-                        super::buffer_edit::visual_segment_starts(interp, env, walk_bol, walk_eol)
-                            .len();
+                    let segs = super::buffer_edit::screen_row_starts(
+                        interp, env, window_id, walk_bol, walk_eol,
+                    )
+                    .len();
                     y += segs.saturating_sub(walk_seg);
                     walk_seg = 0;
                     if walk_eol >= point_max {
