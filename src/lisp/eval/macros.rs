@@ -379,7 +379,94 @@ impl CircularReadMaterializer<'_> {
     }
 }
 
+/// The reader's view of the Lisp world as `read' and `load' read: symbols
+/// interned in OBARRAY, literal objects built as their syntax closes.
+pub(crate) struct LispReadContext<'i> {
+    pub(crate) interp: &'i mut Interpreter,
+    pub(crate) obarray: Value,
+    pub(crate) env: &'i mut Env,
+}
+
+impl<'i> LispReadContext<'i> {
+    /// The context of a read now: the current `obarray'.
+    pub(crate) fn current(interp: &'i mut Interpreter, env: &'i mut Env) -> Self {
+        let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
+        Self {
+            interp,
+            obarray,
+            env,
+        }
+    }
+}
+
+impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
+    fn intern(&mut self, name: &str) -> Result<Value, LispError> {
+        crate::lisp::primitives::intern_in_obarray(self.interp, &self.obarray, name)
+    }
+
+    fn build(&mut self, form: ReaderForm) -> Result<Value, LispError> {
+        self.interp.build_read_object(form, self.env)
+    }
+}
+
 impl Interpreter {
+    /// read0's construction of a literal whose syntax just closed, its
+    /// fields already the objects they read as: a record (RE_record), a
+    /// closure (bytecode_from_rev_list), a bool vector, a hash table
+    /// (hash_table_from_plist) or a char-table.  Circular labels never
+    /// reach here; the reader keeps them for `materialize_read_object_literals'.
+    pub(crate) fn build_read_object(
+        &mut self,
+        form: ReaderForm,
+        env: &mut Env,
+    ) -> Result<Value, LispError> {
+        match form {
+            ReaderForm::Record { slots } => {
+                let Some(kind) = slots.first() else {
+                    return Err(LispError::ReadError("empty record literal".into()));
+                };
+                crate::lisp::primitives::check_record_data_slots(slots.len() - 1)?;
+                Ok(Value::LispRecord(LispRecordRef::new(*kind, &slots[1..])))
+            }
+            ReaderForm::Closure { mut slots, .. } => {
+                if !(3..=6).contains(&slots.len()) {
+                    return Err(LispError::ReadError("Invalid byte-code object".into()));
+                }
+                prepare_closure_literal(self, &mut slots, env)?;
+                let value = Value::Closure(crate::lisp::types::ClosureRef::filled(
+                    slots.len(),
+                    Value::Nil,
+                ));
+                let Kind::Closure(closure) = value.kind() else {
+                    unreachable!()
+                };
+                for (index, slot) in slots.into_iter().enumerate() {
+                    closure.initialize_slot(index, slot);
+                }
+                Ok(value)
+            }
+            ReaderForm::BoolVector { bits } => Ok(self.create_pseudovector(
+                RecordKind::BoolVector,
+                "bool-vector",
+                bits.iter()
+                    .map(|bit| if *bit { Value::T } else { Value::Nil })
+                    .collect(),
+            )),
+            ReaderForm::HashTable { fields } => {
+                crate::lisp::primitives::hash_table_from_read_fields(self, &fields, env)
+            }
+            ReaderForm::CharTable { fields } => {
+                crate::lisp::primitives::char_table_from_read_fields(&fields, false)
+            }
+            ReaderForm::SubCharTable { fields } => {
+                crate::lisp::primitives::char_table_from_read_fields(&fields, true)
+            }
+            ReaderForm::CircularLabel { .. } | ReaderForm::CircularReference(_) => {
+                unreachable!("the reader builds no object across a label")
+            }
+        }
+    }
+
     /// Finish the Interpreter-dependent part of GNU's reader contract.
     ///
     /// Emaxx deliberately parses without an Interpreter, so circular labels

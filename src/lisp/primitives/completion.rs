@@ -188,17 +188,20 @@ pub(crate) fn intern_in_obarray_with_name(
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
     };
     if interp.is_standard_obarray_id(id.id) {
+        // oblookup's hit is the bucket's symbol; intern_driver makes one
+        // for a miss.
         if !interp.standard_obarray_contains_symbol(symbol_name) {
             let name = make_name(interp)?;
-            crate::lisp::types::SymbolName::intern_with_lisp_name(
-                symbol_name.to_owned(),
-                Some(name),
-            );
+            return Ok(Value::Symbol(
+                crate::lisp::types::SymbolName::intern_with_lisp_name(
+                    symbol_name.to_owned(),
+                    Some(name),
+                ),
+            ));
         }
-        interp.intern_symbol_name(symbol_name);
-        return Ok(crate::lisp::types::interned_symbol_value(
-            symbol_name.to_string(),
-        ));
+        return Ok(Value::Symbol(crate::lisp::types::SymbolName::intern_str(
+            symbol_name,
+        )));
     }
     let Some(record) = interp.find_record_mut(id) else {
         return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));

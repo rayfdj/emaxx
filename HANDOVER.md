@@ -6176,6 +6176,35 @@ setup_process_coding_systems's check now refuses). A 13-form
   of the position cache, `string-search', string property edits and
   buffer reads, whose values are GNU 30.2's); clippy `-D warnings',
   rustfmt and `git diff --check' pass.
+- **Round 84: literal objects built as the reader reads them (lread.c
+  read0), and an intern that looks a name up once.** (1) Records, closures
+  (bytecode_from_rev_list), bool vectors, hash tables
+  (hash_table_from_plist) and char-tables are now made when their syntax
+  closes, from fields that are already the objects they read as, through a
+  read context (`LispReadContext': the obarray current at the read, the
+  interpreter that builds the object) that `read', `read-from-string',
+  `load''s readevalloop and positioned reads share; the placeholder and
+  the interpreter's walk over every read form that replaced placeholders
+  afterwards remain only for a form that defines a `#N=' label, which
+  can be referred to inside a literal before the literal is complete (the
+  case read0 itself defers to its substitution pass). Loading 13 `.elc'
+  files spent 62M instructions in that walk; now 5.6M. (2) An empty
+  `#s()' is invalid syntax "#s" (RE_record), not an error of Emaxx's
+  wording. (3) The reader reads a text or encoded input's bytes from the
+  slice directly instead of through the input enum on every byte. (4)
+  `intern' in the standard obarray looks the name up once: a hit returns
+  the symbol found, a miss interns it then (the old path looked up, then
+  interned, which looked up again). The 13-file load went from 541.6M
+  instructions to 479.8M (GNU 390.9M, of which Emaxx's startup is 239M
+  and GNU's 173M); the reads inside it from 146.3M to 102.7M including the
+  objects now built there. The remaining load-specific gap is the
+  decoding pass over a `.elc''s bytes and the lazy-docstring rewriting
+  (35M together), which GNU does not have: it reads the file's bytes with
+  readchar and handles `#@' and `#$' in read0 (next round). Local
+  validation: the full gate, 3,223 passed across its ten groups with the
+  documented local skips, and the new eval_05 test of the literals read
+  builds (its values are GNU 30.2's) on its own; clippy `-D warnings',
+  rustfmt and `git diff --check' pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -6881,6 +6910,10 @@ frozen passed on its first attempt (run 40221557268); PR #107 merged
 rounds 80 and 81 into main (`e5a16c0`).
 **On `b2c9e9d`** (round 82): full Rust gate passed (run 40230698235),
 frozen passed on its first attempt (run 40230700102).
+**On `cf7b8ef`** (round 83): full Rust gate passed (run 40238054634);
+the frozen run (40238056589) was still running when round 84 was
+committed. survey83 (the 515 GNU test files under round 83's build): each
+file gives GNU's `Ran' line and exit code.
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

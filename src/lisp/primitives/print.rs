@@ -673,10 +673,9 @@ fn read_one_from_reader(
 ) -> Result<(Value, usize), LispError> {
     // lread.c resolves each atom in the selected obarray. A post-read walk
     // would first intern a private name in the standard table and leak it.
-    let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
     let shorthands = read_symbol_shorthands_in_env(interp, env)?;
     let read = (|| {
-        let mut resolve_symbol = |name: &str| intern_in_obarray(interp, &obarray, name);
+        let mut context = crate::lisp::eval::LispReadContext::current(interp, env);
         let reader = match input {
             LispReaderInput::Text(text) => {
                 crate::lisp::reader::Reader::with_symbol_shorthands(text, shorthands)
@@ -686,7 +685,7 @@ fn read_one_from_reader(
             }
             LispReaderInput::Rope(rope) => crate::lisp::reader::Reader::from_rope(rope, shorthands),
         };
-        let mut reader = reader.with_symbol_resolver(&mut resolve_symbol);
+        let mut reader = reader.with_read_context(&mut context);
         let value = match reader.read() {
             Ok(value) => value,
             Err(error) => {
@@ -927,9 +926,8 @@ fn read_one_positioned_form(
     // silently dropped every later position; bytecomp warnings inherited
     // the enclosing defun's position instead of the offending form's).
     let symbol_shorthands = read_symbol_shorthands_in_env(interp, env)?;
-    let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
     let read = (|| {
-        let mut resolve_symbol = |name: &str| intern_in_obarray(interp, &obarray, name);
+        let mut context = crate::lisp::eval::LispReadContext::current(interp, env);
         let reader = match input {
             LispReaderInput::Text(text) => crate::lisp::reader::Reader::with_positioned_symbols(
                 text,
@@ -950,7 +948,7 @@ fn read_one_positioned_form(
                 base_position,
             ),
         };
-        let mut reader = reader.with_symbol_resolver(&mut resolve_symbol);
+        let mut reader = reader.with_read_context(&mut context);
         let value = match reader.read() {
             Ok(value) => value,
             Err(error) => {
@@ -963,9 +961,9 @@ fn read_one_positioned_form(
             .unescaped_character_literals()
             .map(Value::Integer)
             .collect::<Vec<_>>();
-        Ok((value, consumed, unescaped))
+        Ok((value, consumed, unescaped, reader.emitted_reader_forms()))
     })();
-    let (value, consumed, unescaped) =
+    let (value, consumed, unescaped, needs_materialization) =
         read.map_err(|error| reader_end_of_file(interp, error, env))?;
     let value = value.ok_or_else(|| end_of_file_error(interp, env))?;
     // read_char_literal conses each new literal onto the variable, which
@@ -978,8 +976,13 @@ fn read_one_positioned_form(
     // GNU's reader constructs `#s(...)', `#^[...]', and bool-vector objects
     // before read-positioning-symbols returns.  In particular, the byte
     // compiler must receive an actual hash table constant rather than
-    // Emaxx's parser-private ReaderForm marker.
-    let value = interp.materialize_read_object_literals(value, env)?;
+    // Emaxx's parser-private ReaderForm marker.  The reader builds them
+    // itself unless a circular label made it leave placeholders.
+    let value = if needs_materialization {
+        interp.materialize_read_object_literals(value, env)?
+    } else {
+        value
+    };
     Ok((value, consumed))
 }
 
@@ -1162,6 +1165,49 @@ pub(crate) fn materialize_read_char_table_literals(
     materialize_char_table_literals_inner(interp, value, env, &mut HashMap::new())
 }
 
+/// lread.c's char-table and sub-char-table construction (`#^[...]' and
+/// `#^^[...]'), from fields the reader has read.
+pub(crate) fn char_table_from_read_fields(
+    fields: &[Value],
+    sub_table: bool,
+) -> Result<Value, LispError> {
+    let (table, skip) = if sub_table {
+        let depth = fields[0].as_integer()? as usize;
+        let minimum = fields[1].as_integer()? as u32;
+        (
+            Value::SubCharTable(crate::lisp::types::SubCharTableRef::new(
+                depth,
+                minimum,
+                Value::Nil,
+            )),
+            2,
+        )
+    } else {
+        if !(CHAR_TABLE_STANDARD_SLOTS
+            ..=crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_SLOTS)
+            .contains(&fields.len())
+        {
+            return Err(LispError::ReadError("Invalid size char-table".into()));
+        }
+        (
+            Value::CharTable(crate::lisp::types::CharTableRef::new(
+                Value::Nil,
+                Value::Nil,
+                fields.len() - CHAR_TABLE_STANDARD_SLOTS,
+            )),
+            0,
+        )
+    };
+    for (index, field) in fields.iter().skip(skip).enumerate() {
+        match table.kind() {
+            Kind::CharTable(table) => table.set_slot(index, *field),
+            Kind::SubCharTable(table) => table.set_slot(index, *field),
+            _ => unreachable!(),
+        }
+    }
+    Ok(table)
+}
+
 fn materialize_char_table_literals_inner(
     interp: &mut Interpreter,
     value: &Value,
@@ -1338,6 +1384,27 @@ fn hash_table_from_literal_fields(
     env: &mut Env,
     _seen: &mut HashSet<usize>,
 ) -> Result<Value, LispError> {
+    hash_table_from_plist(interp, fields, env, true)
+}
+
+/// lread.c:hash_table_from_plist over the fields of a `#s(hash-table ...)'
+/// the reader has just read, its data already the objects they read as.
+pub(crate) fn hash_table_from_read_fields(
+    interp: &mut Interpreter,
+    fields: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    hash_table_from_plist(interp, fields, env, false)
+}
+
+/// lread.c:hash_table_from_plist; MATERIALIZE finishes reader forms left in
+/// the data by a read that deferred them.
+fn hash_table_from_plist(
+    interp: &mut Interpreter,
+    fields: &[Value],
+    env: &mut Env,
+    materialize: bool,
+) -> Result<Value, LispError> {
     let mut test = "eql".to_string();
     let mut weakness = Value::Nil;
     let mut purecopy = Value::Nil;
@@ -1358,9 +1425,14 @@ fn hash_table_from_literal_fields(
                 let items = field_value.to_vec()?;
                 let mut cursor = 0usize;
                 while cursor + 1 < items.len() {
-                    let entry_key = interp.materialize_read_object_literals(items[cursor], env)?;
-                    let entry_value =
-                        interp.materialize_read_object_literals(items[cursor + 1], env)?;
+                    let (entry_key, entry_value) = if materialize {
+                        (
+                            interp.materialize_read_object_literals(items[cursor], env)?,
+                            interp.materialize_read_object_literals(items[cursor + 1], env)?,
+                        )
+                    } else {
+                        (items[cursor], items[cursor + 1])
+                    };
                     entries.push((entry_key, entry_value));
                     cursor += 2;
                 }

@@ -619,9 +619,8 @@ fn read_next_eval_form(
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
     let shorthands = read_symbol_shorthands_in_env(interp, env)?;
-    let obarray = interp.lookup_var("obarray", env).unwrap_or(Value::Nil);
     let (value, consumed, needs_materialization, unescaped) = {
-        let mut resolve_symbol = |name: &str| intern_in_obarray(interp, &obarray, name);
+        let mut context = crate::lisp::eval::LispReadContext::current(interp, env);
         let reader = match source.input_from(*offset) {
             LispReaderInput::Text(text) => {
                 crate::lisp::reader::Reader::with_symbol_shorthands(text, shorthands)
@@ -631,7 +630,7 @@ fn read_next_eval_form(
             }
             LispReaderInput::Rope(rope) => crate::lisp::reader::Reader::from_rope(rope, shorthands),
         };
-        let mut reader = reader.with_symbol_resolver(&mut resolve_symbol);
+        let mut reader = reader.with_read_context(&mut context);
         let value = match reader.read() {
             Ok(value) => value,
             Err(error) => {

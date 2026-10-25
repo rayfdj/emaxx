@@ -8855,3 +8855,32 @@ fn reading_a_buffer_takes_its_text_in_place() {
         )
     );
 }
+
+#[test]
+fn read_builds_literal_objects_as_their_syntax_closes() {
+    assert_eq!(
+        eval_str(
+            r##"(prin1-to-string
+                (list (car (read-from-string "#s(foo 1 #s(bar 2))"))
+                      (let ((h (car (read-from-string
+                                     "#s(hash-table test equal data (\"a\" 1 #s(k) [2 3]))"))))
+                        (list (hash-table-count h) (gethash "a" h) (hash-table-test h)))
+                      (car (read-from-string "#&5\"\\37\""))
+                      (aref (car (read-from-string "#[(x) \"\\300\\207\" [x] 1]")) 0)
+                      (car (read-from-string "#1=(a #s(r #1#) . #1#)"))
+                      (let ((x (car (read-from-string "(#s(r) #2=(b) #2#)"))))
+                        (eq (nth 1 x) (nth 2 x)))
+                      (car (read-from-string "#s(r #3=(c) #3#)"))
+                      (condition-case e (read-from-string "#s()") (error e))
+                      (condition-case e (read-from-string "#[1 2]") (error e))
+                      (char-table-p
+                       (car (read-from-string
+                             (prin1-to-string (make-char-table 'foo)))))))"##
+        ),
+        Value::string(
+            "(#s(foo 1 #s(bar 2)) (2 1 equal) #&5\"\x1f\" (x) (a #s(r #1) a #s(r #1) . #2) t \
+             #s(r (c) (c)) (invalid-read-syntax \"#s\") \
+             (invalid-read-syntax \"Invalid byte-code object\") t)"
+        )
+    );
+}

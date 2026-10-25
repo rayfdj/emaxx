@@ -46,6 +46,7 @@ mod thread_context;
 pub(crate) use dump_roots::{FIELDS_NOT_CARRIED, ROOTS_RESET_AFTER_LOAD, TRANSIENT_ROOTS};
 pub(crate) use image_install::PdumperLoadRecord;
 pub(crate) use local_cells::{LoadedBindings, LocalCells};
+pub(crate) use macros::LispReadContext;
 mod symbol_cells;
 pub(crate) use symbol_cells::{SymbolCellSnapshot, SymbolCells};
 pub(crate) mod symbol_cell_flags {

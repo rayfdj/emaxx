@@ -92,7 +92,15 @@ enum AtomSyntax {
     Uninterned,
 }
 
-type SymbolResolver<'a> = dyn FnMut(&str) -> Result<Value, LispError> + 'a;
+/// What the reader asks of the Lisp world as it reads: lread.c's read0
+/// interns each symbol in the current obarray, and builds each `#s(...)',
+/// `#[...]', `#&...' and `#^[...]' object when its syntax closes.  A
+/// reader without a context leaves `ReaderForm' placeholders for the
+/// interpreter to finish (`materialize_read_object_literals').
+pub(crate) trait ReadContext {
+    fn intern(&mut self, name: &str) -> Result<Value, LispError>;
+    fn build(&mut self, form: ReaderForm) -> Result<Value, LispError>;
+}
 
 fn circular_read_label_form(value: &Value) -> Option<(u32, Value)> {
     match value.kind() {
@@ -261,9 +269,12 @@ pub(crate) fn apply_symbol_shorthands_to_token(
 /// backquote, characters, and comments.
 pub struct Reader<'a> {
     input: Input<'a>,
+    /// The bytes of a text or encoded input, read at POS directly (empty
+    /// for a stream or a rope, read through INPUT).
+    slice: &'a [u8],
     pos: usize,
     symbol_shorthands: Vec<(String, String)>,
-    symbol_resolver: Option<&'a mut SymbolResolver<'a>>,
+    context: Option<&'a mut dyn ReadContext>,
     backquote_depth: usize,
     unescaped_character_literals: BTreeSet<u8>,
     /// read0's LOCATE_SYMS: allocate a symbol-with-position for each
@@ -296,9 +307,10 @@ impl<'a> Reader<'a> {
     ) -> Self {
         Reader {
             input: Input::Text(input.as_bytes()),
+            slice: input.as_bytes(),
             pos: 0,
             symbol_shorthands,
-            symbol_resolver: None,
+            context: None,
             backquote_depth: 0,
             // GNU's reader always encodes quote shorthands with the raw
             // `\``/`\,'/`\,@' symbols; pcase.el's pattern expanders are
@@ -340,6 +352,7 @@ impl<'a> Reader<'a> {
     ) -> Self {
         let mut reader = Self::with_symbol_shorthands("", symbol_shorthands);
         reader.input = Input::Encoded { bytes, multibyte };
+        reader.slice = bytes;
         reader
     }
 
@@ -391,11 +404,11 @@ impl<'a> Reader<'a> {
         self.pos
     }
 
-    /// Resolve atom names through the active obarray before applying
-    /// LOCATE_SYMS, as lread.c's oblookup/intern_driver do. The borrowed
-    /// resolver avoids a second object graph and a post-read interning walk.
-    pub(crate) fn with_symbol_resolver(mut self, resolver: &'a mut SymbolResolver<'a>) -> Self {
-        self.symbol_resolver = Some(resolver);
+    /// Resolve atom names through the active obarray and build literal
+    /// objects as lread.c's oblookup/intern_driver and read0 do. The
+    /// borrowed context avoids a second object graph and post-read walks.
+    pub(crate) fn with_read_context(mut self, context: &'a mut dyn ReadContext) -> Self {
+        self.context = Some(context);
         self
     }
 
@@ -403,10 +416,24 @@ impl<'a> Reader<'a> {
         if let Input::Function(input) = &mut self.input {
             return input.stream.intern_symbol(name, false);
         }
-        match self.symbol_resolver.as_mut() {
-            Some(resolve) => resolve(name),
+        match self.context.as_mut() {
+            Some(context) => context.intern(name),
             None => Ok(Value::symbol(name)),
         }
+    }
+
+    /// The object a literal's syntax stands for, built now (read0) unless a
+    /// `#N=' label read so far may be referred to inside it: then, and
+    /// without a context, the placeholder waits for the interpreter.
+    fn literal_object(&mut self, form: ReaderForm) -> Result<Value, LispError> {
+        if self.defined_labels.is_empty()
+            && let Some(context) = self.context.as_mut()
+        {
+            return context.build(form);
+        }
+        Ok(Value::ReaderForm(
+            crate::lisp::alloc::VectorlikeRef::allocate(form),
+        ))
     }
 
     pub(crate) fn unescaped_character_literals(&self) -> impl Iterator<Item = i64> + '_ {
@@ -420,11 +447,20 @@ impl<'a> Reader<'a> {
         self.peek_at(0)
     }
 
+    #[inline]
     fn peek_at(&mut self, offset: usize) -> Result<Option<u8>, LispError> {
+        if let Some(&byte) = self.slice.get(self.pos + offset) {
+            return Ok(Some(byte));
+        }
         self.input.peek(self.pos, offset)
     }
 
+    #[inline]
     fn advance(&mut self) -> Result<Option<u8>, LispError> {
+        if let Some(&byte) = self.slice.get(self.pos) {
+            self.pos += 1;
+            return Ok(Some(byte));
+        }
         let byte = self.input.advance(self.pos)?;
         self.pos += usize::from(byte.is_some());
         Ok(byte)
@@ -1365,13 +1401,12 @@ impl<'a> Reader<'a> {
                         ));
                     }
                 }
-                Ok(Some(Value::ReaderForm(
-                    crate::lisp::alloc::VectorlikeRef::allocate(if sub_table {
-                        ReaderForm::SubCharTable { fields }
-                    } else {
-                        ReaderForm::CharTable { fields }
-                    }),
-                )))
+                self.literal_object(if sub_table {
+                    ReaderForm::SubCharTable { fields }
+                } else {
+                    ReaderForm::CharTable { fields }
+                })
+                .map(Some)
             }
             Some(b'[') => {
                 self.advance()?;
@@ -1415,16 +1450,15 @@ impl<'a> Reader<'a> {
                 if !valid_len {
                     return Err(LispError::ReadError("Invalid byte-code object".into()));
                 }
-                Ok(Some(Value::ReaderForm(
-                    crate::lisp::alloc::VectorlikeRef::allocate(ReaderForm::Closure {
-                        kind: if interpreted {
-                            ReaderClosureKind::Interpreted
-                        } else {
-                            ReaderClosureKind::ByteCode
-                        },
-                        slots: fields,
-                    }),
-                )))
+                self.literal_object(ReaderForm::Closure {
+                    kind: if interpreted {
+                        ReaderClosureKind::Interpreted
+                    } else {
+                        ReaderClosureKind::ByteCode
+                    },
+                    slots: fields,
+                })
+                .map(Some)
             }
             Some(b'&') => {
                 // lread.c read_bool_vector: the length's digits and then at
@@ -1465,11 +1499,8 @@ impl<'a> Reader<'a> {
                 let bits = (0..length)
                     .map(|bit| bytes[bit / 8] & (1 << (bit % 8)) != 0)
                     .collect();
-                Ok(Some(Value::ReaderForm(
-                    crate::lisp::alloc::VectorlikeRef::allocate(
-                        crate::lisp::types::ReaderForm::BoolVector { bits },
-                    ),
-                )))
+                self.literal_object(ReaderForm::BoolVector { bits })
+                    .map(Some)
             }
             Some(b':') => {
                 self.advance()?;
@@ -1606,6 +1637,12 @@ impl<'a> Reader<'a> {
                 let saved_locate = self.locate_symbols;
                 self.locate_symbols = false;
                 let result = (|| {
+                    // RE_record: a `#s(' closed with no elements is invalid
+                    // syntax named "#s".
+                    if self.peek()? == Some(b')') {
+                        self.advance()?;
+                        return Err(LispError::ReadError("#s".into()));
+                    }
                     let Some(kind) = self.read()? else {
                         return Err(LispError::EndOfInput());
                     };
@@ -1629,16 +1666,11 @@ impl<'a> Reader<'a> {
                 self.locate_symbols = saved_locate;
                 let (kind, fields) = result?;
                 if matches!(kind.kind(), Kind::Symbol(kind_name) if kind_name == "hash-table") {
-                    Ok(Some(Value::ReaderForm(
-                        crate::lisp::alloc::VectorlikeRef::allocate(ReaderForm::HashTable {
-                            fields,
-                        }),
-                    )))
+                    self.literal_object(ReaderForm::HashTable { fields })
+                        .map(Some)
                 } else {
                     let slots = std::iter::once(kind).chain(fields).collect();
-                    Ok(Some(Value::ReaderForm(
-                        crate::lisp::alloc::VectorlikeRef::allocate(ReaderForm::Record { slots }),
-                    )))
+                    self.literal_object(ReaderForm::Record { slots }).map(Some)
                 }
             }
             // `#$' outside the `.elc' rewrite (lisp::preprocess_lazy_doc_source)

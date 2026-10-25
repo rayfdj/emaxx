@@ -1263,13 +1263,10 @@ pub(crate) fn read_next_load_form(
     env: &mut types::Env,
 ) -> Result<Option<types::Value>, types::LispError> {
     let shorthands = primitives::read_symbol_shorthands_in_env(interp, env)?;
-    let obarray = interp
-        .lookup_var("obarray", env)
-        .unwrap_or(types::Value::Nil);
     let (value, needs_materialization, unescaped) = {
-        let mut resolve_symbol = |name: &str| primitives::intern_in_obarray(interp, &obarray, name);
+        let mut context = eval::LispReadContext::current(interp, env);
         let mut reader = reader::Reader::with_symbol_shorthands(&source[*offset..], shorthands)
-            .with_symbol_resolver(&mut resolve_symbol);
+            .with_read_context(&mut context);
         let value = reader.read();
         *offset += reader.position();
         let value = value?;
