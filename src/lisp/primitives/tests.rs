@@ -25503,11 +25503,16 @@ fn window_end_and_posn_follow_published_interactive_geometry() {
     let posn = call(&mut interp, "posn-at-point", &[], &mut env).expect("posn-at-point");
     assert_eq!(posn, Value::Nil, "no glyph matrix in batch");
 
-    // A frontend publishing live geometry changes both answers.
+    // A frontend publishing live geometry changes both answers: its
+    // redisplay records the window's end (w->window_end_pos).
     set_interactive_window_metrics(Some(InteractiveWindowMetrics {
         text_height: 22,
         window_end: 199,
     }));
+    let window_id = interp.selected_window_id();
+    let buffer_id = interp.current_buffer_id();
+    let point = interp.buffer.borrow().point();
+    super::window::record_window_display(&mut interp, window_id, buffer_id, point, 199);
     let end = call(&mut interp, "window-end", &[], &mut env).expect("window-end");
     assert_eq!(end, Value::Integer(199), "window-end reads the glass state");
 
@@ -26454,7 +26459,9 @@ fn window_render_layout_reports_split_geometry_in_tree_order() {
         "both windows show the split buffer"
     );
     assert_eq!(bottom.start, 1);
-    assert_eq!(bottom.point, 1);
+    // set_window_buffer gives the new window the buffer's point (after
+    // the insertion), as GNU's split-window does.
+    assert_eq!(bottom.point, 18);
 }
 
 #[test]

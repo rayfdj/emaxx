@@ -1203,16 +1203,17 @@ impl Interpreter {
         }
     }
 
-    /// GNU keeps each window's point as real markers (w->pointm and
-    /// w->old_pointm), so insdel.c's marker adjustment drags them with
-    /// every insertion and deletion — a process filter inserting before
-    /// markers at a non-selected window's point moves that window's
-    /// point exactly like any other marker.  The native window records
-    /// hold integer point slots instead; this sweep applies the same
-    /// insertion-type-nil marker rules to those integers.  (The
-    /// window-start slot stays under the native scroll recomputation.)
-    fn adjust_window_point_slots(&mut self, buffer_id: u64, adjust: impl Fn(usize) -> usize) {
-        const POINT_SLOTS: [usize; 2] = [
+    /// GNU keeps each window's start and point as real markers
+    /// (w->start, w->pointm and w->old_pointm), so insdel.c's marker
+    /// adjustment drags them with every insertion and deletion — a
+    /// process filter inserting before a non-selected window's point
+    /// moves that point, and text inserted above a window's start moves
+    /// the start with the text it shows.  The native window records hold
+    /// integer slots instead; this sweep applies the same
+    /// insertion-type-nil marker rules to those integers.
+    fn adjust_window_marker_slots(&mut self, buffer_id: u64, adjust: impl Fn(usize) -> usize) {
+        const MARKER_SLOTS: [usize; 3] = [
+            crate::lisp::primitives::WINDOW_START_SLOT,
             crate::lisp::primitives::WINDOW_OLD_POINT_SLOT,
             crate::lisp::primitives::WINDOW_POINT_SLOT,
         ];
@@ -1236,7 +1237,7 @@ impl Interpreter {
             if !shows_buffer {
                 continue;
             }
-            for slot in POINT_SLOTS {
+            for slot in MARKER_SLOTS {
                 if let Some(Kind::Integer(position)) = record.slots.get(slot).map(|v| v.kind())
                     && let Ok(position) = usize::try_from(position)
                 {
@@ -1256,7 +1257,7 @@ impl Interpreter {
         if nchars == 0 {
             return;
         }
-        self.adjust_window_point_slots(buffer_id, |position| {
+        self.adjust_window_marker_slots(buffer_id, |position| {
             if position > pos || (position == pos && before_markers) {
                 position + nchars
             } else {
@@ -1285,7 +1286,7 @@ impl Interpreter {
         to: usize,
         inschars: usize,
     ) {
-        self.adjust_window_point_slots(buffer_id, |position| {
+        self.adjust_window_marker_slots(buffer_id, |position| {
             if position >= to {
                 position + inschars - (to - from)
             } else if position > from {
@@ -1301,7 +1302,7 @@ impl Interpreter {
             return;
         }
         let nchars = to - from;
-        self.adjust_window_point_slots(buffer_id, |position| {
+        self.adjust_window_marker_slots(buffer_id, |position| {
             if position > to {
                 position - nchars
             } else if position > from {

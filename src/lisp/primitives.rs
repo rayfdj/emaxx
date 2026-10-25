@@ -235,38 +235,6 @@ fn signal_condition(condition: &str) -> LispError {
     LispError::SignalValue(Value::list([Value::Symbol(condition.into())]))
 }
 
-fn beginning_of_line_at(interp: &mut Interpreter, pos: usize) -> usize {
-    let saved = interp.buffer.borrow().point();
-    interp.buffer.borrow_mut().goto_char(pos);
-    let start = interp.buffer.borrow_mut().beginning_of_line();
-    interp.buffer.borrow_mut().goto_char(saved);
-    start
-}
-
-fn move_lines_from(interp: &mut Interpreter, start: usize, count: isize) -> (usize, isize) {
-    let saved = interp.buffer.borrow().point();
-    interp.buffer.borrow_mut().goto_char(start);
-    interp.buffer.borrow_mut().beginning_of_line();
-    let shortage = interp.buffer.borrow_mut().forward_line(count);
-    let target = interp.buffer.borrow().point();
-    interp.buffer.borrow_mut().goto_char(saved);
-    (target, shortage)
-}
-
-fn line_distance(interp: &Interpreter, start: usize, target: usize) -> usize {
-    if target <= start {
-        return 0;
-    }
-    interp
-        .buffer
-        .borrow()
-        .buffer_substring(start, target)
-        .unwrap_or_default()
-        .chars()
-        .filter(|ch| *ch == '\n')
-        .count()
-}
-
 pub(crate) fn wrong_type_argument(predicate: &str, value: Value) -> LispError {
     LispError::SignalValue(Value::list([
         Value::Symbol("wrong-type-argument".into()),
@@ -288,6 +256,7 @@ pub(crate) use dispatch::echo_area_message;
 pub(crate) use dispatch::echo_area_message_with_spans;
 #[cfg(test)]
 pub(crate) use dispatch::has_dispatch_handler;
+pub(crate) use dispatch::live_ordinary_window_ids;
 pub(crate) use dispatch::mark_thread_local_roots;
 pub(crate) use dispatch::name_facts;
 pub(crate) use dispatch::native_elisp_load;

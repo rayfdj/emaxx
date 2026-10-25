@@ -6243,18 +6243,65 @@ fn window_configuration_equality_ignores_view_position_but_compares_layout() {
     assert_eq!(
         eval_str_with_upstream_batch_feature(
             "window",
-            r#"(progn
+            // GNU 30.2 --batch answers each step alike (a comparison
+            // against a configuration saved before a split is left out:
+            // GNU's batch frame moves its windows' top_line to the menu
+            // bar line on the first resize, which Emaxx does not model).
+            r#"(let (r (cur #'current-window-configuration))
                  (insert "one\ntwo\nthree\n")
-                 (let ((before (current-window-configuration)))
+                 (let ((before (funcall cur)))
                    (goto-char (point-max))
                    (set-window-start (selected-window) 5)
-                   (let ((moved (current-window-configuration)))
+                   (set-window-hscroll (selected-window) 3)
+                   (set-window-dedicated-p nil t)
+                   (set-window-parameter nil 'foo 1)
+                   (push (window-configuration-equal-p before (funcall cur)) r)
+                   (set-window-dedicated-p nil nil)
+                   (set-buffer (get-buffer-create "zz"))
+                   (push (window-configuration-equal-p before (funcall cur)) r)
+                   (set-buffer (window-buffer))
+                   (set-window-display-table nil (make-display-table))
+                   (push (window-configuration-equal-p before (funcall cur)) r)
+                   (set-window-display-table nil nil)
+                   (push (window-configuration-equal-p before (funcall cur)) r)
+                   (split-window)
+                   (let ((split (funcall cur)))
+                     (push (window-configuration-equal-p before split) r)
+                     (delete-window (next-window))
+                     (split-window)
+                     (push (window-configuration-equal-p split (funcall cur)) r)
+                     (other-window 1)
+                     (push (window-configuration-equal-p split (funcall cur)) r)
+                     (other-window 1)
+                     (set-window-buffer (next-window) (get-buffer-create "zz"))
+                     (push (window-configuration-equal-p split (funcall cur)) r)
+                     (set-window-buffer (next-window) (window-buffer))
+                     (push (window-configuration-equal-p split (funcall cur)) r)
+                     (delete-window (next-window))
+                     (split-window nil nil t)
+                     (push (window-configuration-equal-p split (funcall cur)) r)
+                     (delete-window (next-window))
+                     (split-window nil 5)
+                     (push (window-configuration-equal-p split (funcall cur)) r)
+                     (delete-window (next-window))
                      (switch-to-buffer (get-buffer-create "*other-layout*"))
-                     (list (window-configuration-equal-p before moved)
-                           (window-configuration-equal-p
-                            before (current-window-configuration))))))"#
+                     (push (window-configuration-equal-p before (funcall cur)) r)))
+                 (nreverse r))"#
         ),
-        Value::list([Value::T, Value::Nil])
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+        ])
     );
 }
 
@@ -6376,7 +6423,10 @@ fn display_buffer_preserves_current_and_selected_window_like_headless_gnu() {
                         (= (window-end (selected-window))
                            (with-current-buffer other (point-max)))))"#
         ),
-        Value::list([Value::T, Value::Nil, Value::Nil, Value::Nil])
+        // The selected window still shows the harness's *scratch* (its
+        // initial message, so position 3 exists): GNU 30.2 --batch with
+        // that text gives (t nil t nil).
+        Value::list([Value::T, Value::Nil, Value::T, Value::Nil])
     );
 }
 
@@ -7744,4 +7794,111 @@ fn pcase_seq_pattern_supports_seq_let_rest() {
             ])
         );
     });
+}
+
+#[test]
+fn split_window_gives_the_new_window_the_buffers_point_and_start() {
+    // window.c Fsplit_window_internal: set_window_buffer (new, r->contents,
+    // true, true) on a window that had no buffer, so it takes the buffer's
+    // last_window_start and point, keeps the reference window's margins,
+    // and runs `window-scroll-functions' (then split-window runs them
+    // again).  GNU 30.2 --batch gives these values.
+    assert_eq!(
+        eval_str_with_upstream_batch_feature(
+            "window",
+            r#"(let (log)
+                 (add-hook 'window-scroll-functions
+                           (lambda (w s) (push (list (eq w (next-window)) s) log)))
+                 (dotimes (i 300) (insert (format "line %d\n" i)))
+                 (goto-char 1500)
+                 (set-window-start nil 500)
+                 (set-window-margins nil 2 3)
+                 (let ((new (split-window)))
+                   (list (window-start new) (window-point new) (window-start)
+                         (window-point) (point) log (window-margins new))))"#
+        ),
+        crate::lisp::reader::Reader::new("(1 1500 500 1500 1500 ((t 1) (t 1)) (2 . 3))")
+            .read()
+            .unwrap()
+            .unwrap()
+    );
+}
+
+#[test]
+fn buffer_text_pixel_size_restores_the_window_inside_the_accessible_region() {
+    // xdisp.c unwind_with_echo_area_buffer: WINDOW's start comes back
+    // through set_marker_restricted_both, so a measurement in a narrowed
+    // buffer leaves the start at BEGV.  GNU 30.2 --batch gives these values.
+    assert_eq!(
+        eval_str_with_upstream_batch_feature(
+            "window",
+            r#"(progn
+                 (erase-buffer)
+                 (dotimes (i 100) (insert (format "line %d\n" i)))
+                 (set-window-start nil 1)
+                 (let ((other (get-buffer-create " *btps*")))
+                   (with-current-buffer other (erase-buffer) (insert "abc\ndefgh\n"))
+                   (list (save-restriction (narrow-to-region 500 600)
+                           (buffer-text-pixel-size))
+                         (window-start)
+                         (progn (set-window-start nil 1)
+                                (save-restriction (narrow-to-region 500 600)
+                                  (buffer-text-pixel-size other)))
+                         (window-start)
+                         (progn (set-window-start nil 1) (buffer-text-pixel-size other))
+                         (window-start)
+                         (condition-case e (buffer-text-pixel-size nil 3)
+                           (error e)))))"#
+        ),
+        crate::lisp::reader::Reader::new(
+            "((7 . 14) 500 (5 . 2) 500 (5 . 2) 1 (wrong-type-argument window-live-p 3))"
+        )
+        .read()
+        .unwrap()
+        .unwrap()
+    );
+}
+
+#[test]
+fn execute_kbd_macro_enters_the_command_loop_like_command_loop_1() {
+    // keyboard.c command_loop_1: each iteration of a keyboard macro enters
+    // the loop afresh, running `post-command-hook' and
+    // `delayed-warnings-hook' and setting `last-command' from
+    // `this-command', which is nil while a key sequence is read.  GNU 30.2
+    // --batch gives this log.
+    assert_eq!(
+        eval_str_with_upstream_batch_feature(
+            "window",
+            r#"(let (log)
+                 (setq this-command 'outer-cmd real-this-command 'outer-real)
+                 (add-hook 'post-command-hook
+                           (lambda () (push (list 'post this-command last-command) log)))
+                 (add-hook 'pre-command-hook
+                           (lambda () (push (list 'pre this-command last-command) log)))
+                 (setq delayed-warnings-list '((emacs "w1")))
+                 (add-hook 'delayed-warnings-hook
+                           (lambda ()
+                             (push (list 'dw (length delayed-warnings-list)) log)
+                             (setq delayed-warnings-list nil)))
+                 (switch-to-buffer (get-buffer-create " *pch*"))
+                 (execute-kbd-macro "ab" 2)
+                 (prog1 (list (nreverse log) last-command real-last-command (buffer-string))
+                   (setq post-command-hook nil pre-command-hook nil
+                         delayed-warnings-hook nil)))"#
+        ),
+        crate::lisp::reader::Reader::new(
+            "(((post outer-cmd nil) (dw 1) (pre self-insert-command outer-cmd) \
+               (post self-insert-command outer-cmd) \
+               (pre self-insert-command self-insert-command) \
+               (post self-insert-command self-insert-command) \
+               (post nil self-insert-command) (pre self-insert-command nil) \
+               (post self-insert-command nil) \
+               (pre self-insert-command self-insert-command) \
+               (post self-insert-command self-insert-command)) \
+              self-insert-command self-insert-command \"abab\")"
+        )
+        .read()
+        .unwrap()
+        .unwrap()
+    );
 }

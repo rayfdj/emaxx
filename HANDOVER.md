@@ -5829,6 +5829,150 @@ setup_process_coding_systems's check now refuses). A 13-form
   simple, help-fns, package, eshell, which-func, erc, erc statusmsg,
   xdisp, buffer, textprop) as GNU.
 
+- **Round 80: redisplay_window's window start for every window, and
+  the window commands that steer it (window.c, xdisp.c).** (1) Window
+  state as GNU keeps it: a window's start is a marker (an insertion
+  above it moves it with the text, like the window points);
+  `window-start' reads it unclamped; force_start, optional_new_start
+  and start_at_line_beg are window slots; the frontend records each
+  window's window_end_pos, so `window-end' answers Z less it for any
+  window (Z in batch, before any redisplay), and with UPDATE displays
+  the window's body from its start. (2) Fset_window_start keeps the
+  exact position (clamped to the accessible region, no longer snapped
+  to its line), sets force_start unless NOFORCE, and returns POS;
+  Fset_window_point moves the buffer's point for the selected window and
+  clamps the window's own point marker for another; Frecenter is
+  ported (the current-buffer error, ARG nil and C-u centering, ARG
+  clipped to the scroll margins, the initial frame's vmotion,
+  optional_new_start, `recenter-redisplay'); scroll-up and scroll-down
+  are window_scroll_line_based (the start from pos-visible-in-window-p,
+  force_start, point kept out of the scroll margins,
+  `scroll-preserve-screen-position' with window_scroll_preserve_vpos,
+  window-old-point following); Fmove_to_window_line is ported
+  (displayed_window_lines, a start outside the accessible region
+  recomputed with force_start); set-window-buffer is unshow_buffer
+  (the buffer's last_window_start, the window's point back into a
+  buffer no other selected window shows) plus set_window_buffer (start
+  from last_window_start, point, hscroll and the flags reset, unless
+  KEEP-MARGINS on the same buffer; `window-scroll-functions' run);
+  delete-other-windows-internal moves the start up by the window's old
+  top line so the text stays in place (optional_new_start). (3)
+  windows_or_buffers_changed: an interpreter flag set by wset_redisplay
+  of a window other than the selected one (set-window-start,
+  set-window-point, set-window-buffer, an hscroll change), by
+  select-window, the window-tree primitives, set-window-configuration,
+  force-window-update and set-buffer-multibyte; the frontend adds a
+  resize, a face change, changed window edges and bset_redisplay's rule
+  (a buffer modified since the last redisplay shown in a non-selected
+  window or in two windows). (4) `src/tty/redisplay_window.rs':
+  redisplay_window's decision for every window, selected or not, on
+  the window's own point (a non-selected window's point clamped and
+  written back): compute_window_start_on_continuation_line under
+  windows_or_buffers_changed (the row start nearest the start, not
+  after the buffer's point); optional_new_start becoming force_start
+  when point shows; force_start keeping the start and, when point does
+  not show, moving it to the row half the window reaches (header and
+  tab rows counted, as MATRIX_ROW_BOTTOM_Y does) and into the window's
+  point or the buffer's; the scroll margin (window_scroll_margin with
+  `maximum-scroll-margin'); try_cursor_movement's no-motion success;
+  start_at_line_beg's recenter; the same start under try_window's
+  CHECK_MARGINS; try_scrolling (`scroll-conservatively', `scroll-step',
+  `scroll-up-aggressively', `scroll-down-aggressively', the limit of
+  100) and recentering (centering at half the window, or under
+  conservative or aggressive scrolling just outside the margin);
+  `window-scroll-functions' run (safe_run_hooks_2) at GNU's three
+  points with redisplay continuing from the start they leave;
+  `make-window-start-visible'; round 79's noted gap (a non-selected
+  window keeping its start with its point off screen) is gone. (5)
+  `window-configuration-equal-p' is compare_window_configurations: the
+  frame's size, selected frame and current buffer, then every saved
+  window in save_window_save's order (the window tree depth first, the
+  minibuffer window last) by whether it is the current window, its
+  buffer, pixel edges, display table and its parent's and previous
+  sibling's indices; Emaxx compared only the selected window's slots, so
+  a split, a buffer change in another window or a different selected
+  window went unnoticed, and the window's point and the new start flags
+  were compared. (6) Fsplit_window_internal ends with set_window_buffer
+  (new, r->contents, true, true): the new window takes the reference
+  window's margins and, having had no buffer, the buffer's
+  last_window_start and point (Emaxx gave it the old window's start and
+  no point, which redisplay then clamped to 1), and
+  `window-scroll-functions' run from there (and once more from
+  split-window). (7) handle_single_display_spec's `((margin LOCATION)
+  VALUE)' on buffer text: under `left-margin' or `right-margin' the
+  covered text leaves the text area and VALUE is drawn in that margin on
+  the row where the run displays, after the row's earlier margin
+  glyphs; `(margin nil)' displays VALUE in the text area (only overlay
+  strings were handled; ERC's right-margin timestamps were laid out
+  inline and wrapped its rows). (8) Display never looks outside the
+  accessible region: a line the narrowing cuts lays out from BEGV and
+  stops at ZV (Buffer::display_line_start_of), so `vertical-motion' and
+  `count-screen-lines' in a buffer narrowed mid-line find GNU's rows.
+  (9) `buffer-text-pixel-size' measures BUFFER-OR-NAME and, like
+  unwind_with_echo_area_buffer, gives WINDOW back its points and start
+  through set_marker_restricted_both (inside the accessible region: ERC's
+  fill-wrap measures in a narrowed buffer and so moves the start to
+  BEGV); a WINDOW that is not live signals (wrong-type-argument
+  window-live-p OBJ). (10) keyboard.c command_loop_1's entry, at the top
+  level and for each iteration of `execute-kbd-macro': the post-command
+  hooks, then `last-command', `real-last-command' and
+  `last-repeatable-command' from the command that ran; after each
+  command `delayed-warnings-hook' runs while `delayed-warnings-list' is
+  non-nil (never before); `this-command', `real-this-command',
+  `this-original-command' and `this-command-keys-shift-translated' are
+  nil while a key sequence is read. With these,
+  erc-scenarios-scrolltobottom--relaxed passes again (round 80's
+  redisplay had recentered its lower window by Emaxx's narrower row
+  layout) and its traced window starts and points match GNU's. tmux probes of GNU 30.2 — non-selected
+  windows with point off screen, forced and optional starts in both
+  kinds of window, mid-line starts with and without
+  windows_or_buffers_changed, scroll-margin, scroll-conservatively 101
+  and 5, scroll-step, both aggressive options, every recenter argument
+  with and without margins, scroll-up and scroll-down with margins and
+  preserve-screen-position, move-to-window-line, the end of the buffer,
+  an insertion above a non-selected window's start,
+  `window-scroll-functions' calls, `window-end' with UPDATE,
+  last_window_start, delete-other-windows, conservative scrolling over
+  wrapped lines and a header line — give GNU's window-start,
+  window-point, window-end, hook calls, screens and cursor. Not covered:
+  a start in the middle of a screen row is shown from that row's start
+  (GNU's start_display shows the row from the start itself), so such a
+  start's first row and window-end differ; the try_window_id path's
+  continuation-line snap (BEG_UNCHANGED/END_UNCHANGED) is not modeled;
+  try_scrolling measures the distance from point's row, where GNU
+  starts a fresh row at a point inside a continued row; face changes
+  count as windows_or_buffers_changed only through the face generation;
+  frozen window starts (`frozen-window-start-p') are not consulted.
+  Found, not fixed: GNU keeps a window's character geometry (top_line,
+  left_col, total_lines, total_cols) apart from its pixel geometry, and
+  in batch, where the initial frame counts one menu-bar line in
+  FRAME_TOP_MARGIN but places its root window at pixel row 0, the first
+  `window-resize-apply-total' (any split or delete) moves the root's
+  top_line to 1: after `split-window' GNU's `window-edges' are (0 1 80
+  13) and (0 13 80 25) while the pixel edges stay (0 0 80 12) and (0 12
+  80 24), and a configuration saved before the split no longer equals
+  the same single window after `delete-window'. Emaxx derives both from
+  the pixel slots, so it answers (0 0 80 12) and t there; the
+  window-configuration test leaves that comparison out. Also found:
+  move_it_by_lines with a negative count reseats with handle_stop, so a
+  window start or `vertical-motion' result that is the first row of a
+  buffer line skips leading invisible text and `display' "" runs
+  (GNU's (recenter 1) and (vertical-motion -1) land 9 characters past
+  the line start when the line begins with such a 9-character prefix;
+  move_it_vertically_backward and vertical-motion from a line start do
+  not), where Emaxx answers the row's first position: the screens are
+  the same, the positions differ. And `menu-bar-mode' changes the frame
+  size only at the next redisplay in GNU (change_frame_size with
+  delay), where Emaxx resizes the windows at once.
+  Local validation: the full gate, 3,214 passed across its ten groups
+  with the documented local skips (eval_03, 324, includes the new
+  window-configuration, split-window, `buffer-text-pixel-size' and
+  keyboard-macro tests; tty, 71, the redisplay_window probe, margin
+  display and narrowing tests), and 88 GNU test files (every ERC
+  scenario file, edebug, kmacro, keyboard, minibuffer, simple, xdisp,
+  scroll, isearch, repeat, term, python, so-long and others; 1,782
+  tests) as GNU.
+
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
 25 sorting/case-folding/substring tests plus the comparison tests, and 95
@@ -6521,8 +6665,11 @@ left in a stack slot by the allocator's bookkeeping, kept the block's
 first cell, which the weak key sometimes was (see round 47).
 **On `fe2b73e`** (round 78): full Rust gate passed (run 40193461329);
 frozen failed only GNU's known `eglot-test-rust-completion-exit-function`
-oracle flake (7,669 passed, 1 unexpected), and its rerun was dispatched
-(run 40193463671, attempt 2).
+oracle flake (7,669 passed, 1 unexpected), and its rerun passed (run
+40193463671, attempt 2).
+**On `d5e95f9`** (round 79): full Rust gate passed (run 40199436854),
+frozen passed on its first attempt (run 40199438907); PR #106 merged
+rounds 77 to 79 into main (`4fc869e`).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

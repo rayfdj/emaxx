@@ -3100,6 +3100,13 @@ impl Buffer {
         self.text.line_to_char(index) + 1
     }
 
+    /// Where display of the 1-based LINE begins: its start, or BEGV when
+    /// the accessible region begins inside it (the display iterator never
+    /// looks before BEGV).
+    pub fn display_line_start_of(&self, line: usize) -> usize {
+        self.line_start_of(line).max(self.begv)
+    }
+
     /// search.c's find_newline backward from Z over the whole text: the
     /// position just after the COUNTth newline before the end, or None when
     /// the text has fewer. The rope counts only newlines as line breaks.

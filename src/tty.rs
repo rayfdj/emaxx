@@ -26,6 +26,7 @@ use crate::lisp::primitives::{
 use crate::lisp::types::{Env, Kind, LispError, LispErrorKind, Value};
 
 mod layout;
+mod redisplay_window;
 
 /// Append diagnostics to `EMAXX_TTY_LOG' when set; raw-mode sessions have
 /// no usable stderr, so a file is the only trace channel.
@@ -69,10 +70,12 @@ struct WindowView {
     /// Continuation segment of `top_line' shown first: a window can start
     /// mid-line when long lines wrap, like GNU's window-start position.
     top_seg: usize,
-    /// The window-start position last agreed with the interpreter's
-    /// window model; a differing value there means a command (recenter,
-    /// scroll) moved the window and the frontend adopts it.
-    synced_start: usize,
+    /// The start marker, accessible region and buffer modification count
+    /// of the window's last display: with point unmoved and none of them
+    /// changed, try_cursor_movement keeps the display as it is.
+    last_start: Option<usize>,
+    last_restriction: Option<(usize, usize)>,
+    last_modiff: Option<crate::buffer::ModCount>,
     /// Redisplay state from the preceding frame.  GNU can leave point-based
     /// mode-line constructs on their preceding value after point moves inside
     /// invisible text, until the next input invalidates that incremental
@@ -394,6 +397,12 @@ struct TtyState {
     /// message3 paints through a frozen redisplay while read_char's
     /// input-arrival wipe waits for the next redisplay.
     painted_message_tick: u64,
+    /// The window layout the last redisplay showed (each window's id and
+    /// edges) and each shown buffer's modification count then: a change
+    /// in either is a windows_or_buffers_changed event (fset_redisplay,
+    /// bset_redisplay).
+    last_layout: Vec<(u64, usize, usize, usize, usize)>,
+    buffer_modiffs: std::collections::HashMap<u64, crate::buffer::ModCount>,
 }
 
 impl TtyState {
@@ -430,6 +439,8 @@ impl TtyState {
             minibuffer_activation_id: None,
             menu_bar_row: None,
             painted_message_tick: 0,
+            last_layout: Vec::new(),
+            buffer_modiffs: std::collections::HashMap::new(),
         }
     }
 
@@ -954,6 +965,7 @@ fn command_loop(
     shared_state: &std::rc::Rc<std::cell::RefCell<TtyState>>,
 ) -> Result<i32, String> {
     let mut reader: Option<crate::lisp::primitives::KeySequenceReader> = None;
+    crate::lisp::primitives::command_loop_entry(interpreter, env);
     loop {
         // keyboard.c's command_loop_1 reselects the selected window's
         // buffer at the top of every command cycle.  A display action can
@@ -962,6 +974,9 @@ fn command_loop(
         // this when opening a log).  Key lookup and the next command must
         // operate in what the selected window shows, not that stale buffer.
         select_command_loop_buffer(interpreter).map_err(|error| error.to_string())?;
+        if reader.is_none() {
+            crate::lisp::primitives::clear_this_command(interpreter, env);
+        }
         // GNU redisplays only when the input queue is quiet; a key burst
         // paints once at the end.
         if !queue.input_pending() {
@@ -1617,7 +1632,7 @@ fn window_render_geometry(
         let laid = layout::lay_out_visual_line(&visual, body_width, true);
         let point_index = visual
             .map
-            .get(point_pos - buffer.line_start_of(point_line))
+            .get(point_pos - buffer.display_line_start_of(point_line))
             .copied()
             .unwrap_or_else(|| visual.map.last().copied().unwrap_or(0));
         let point_dcol = laid.columns[point_index.min(laid.columns.len() - 1)] as i64;
@@ -1750,18 +1765,50 @@ fn specified_space(value: &Value) -> Option<SpecifiedSpace> {
     Some(SpecifiedSpace::Width(1))
 }
 
+/// handle_single_display_spec's `((margin LOCATION) VALUE)': LOCATION
+/// (`left-margin', `right-margin', or nil for the text area) and VALUE,
+/// when VALUE can be displayed there (a string or a `(space ...)' spec on
+/// a terminal).  A spec without the margin prefix answers None.
+fn margin_display_spec(display: &Value) -> Option<(Option<String>, Value)> {
+    let (head, rest) = display.cons_values()?;
+    let (tag, location) = head.cons_values()?;
+    if !matches!(tag.kind(), Kind::Symbol(name) if name == "margin") {
+        return None;
+    }
+    let location = match location.cons_values() {
+        Some((side, _)) => side,
+        None => Value::Nil,
+    };
+    let location = match location.kind() {
+        Kind::Nil => None,
+        Kind::Symbol(name) if name == "left-margin" || name == "right-margin" => {
+            Some(name.to_string())
+        }
+        _ => return None,
+    };
+    let value = rest.cons_values().map_or(rest, |(value, _)| value);
+    let valid = crate::lisp::primitives::string_text(&value).is_ok()
+        || value
+            .cons_values()
+            .is_some_and(|(car, _)| matches!(car.kind(), Kind::Symbol(name) if name == "space"));
+    valid.then_some((location, value))
+}
+
+/// A buffer `display' property shown in a window margin: the covered text
+/// leaves the text area, and the margin shows VALUE instead.
+fn buffer_margin_display(display: &Value) -> Option<(String, Value)> {
+    match margin_display_spec(display)? {
+        (Some(side), value) => Some((side, value)),
+        (None, _) => None,
+    }
+}
+
 /// Decode a string `display' property of the form
 /// `((margin SIDE) PAYLOAD)'.  The string's source characters do not enter
 /// the text body; PAYLOAD is rendered in the requested window margin.
 fn window_margin_display(value: &Value) -> Option<(String, Value)> {
     let display = crate::lisp::primitives::string_property_at(value, 0, "display")?;
-    let parts = display.to_vec().ok()?;
-    let location = parts.first()?.to_vec().ok()?;
-    if !matches!(location.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name == "margin") {
-        return None;
-    }
-    let side = location.get(1)?.symbol_str()?.to_string();
-    let payload = *parts.get(1)?;
+    let (side, payload) = buffer_margin_display(&display)?;
     crate::lisp::primitives::string_text(&payload).ok()?;
     Some((side, payload))
 }
@@ -2880,7 +2927,7 @@ fn visual_line_at(
             lnum_cols: 0,
         };
     }
-    let line_begin = buffer.line_start_of(first_line);
+    let line_begin = buffer.display_line_start_of(first_line);
     let end = buffer.point_max();
     let has_display_prop = buffer.has_text_property_named("display");
     let mut text = String::new();
@@ -3065,6 +3112,19 @@ fn visual_line_at(
         let display = has_display_prop
             .then(|| buffer.text_property_at(pos, "display"))
             .flatten();
+        // `((margin nil) VALUE)' displays VALUE in the text area; a margin
+        // location takes the covered text out of it.
+        let display = match display.as_ref().and_then(margin_display_spec) {
+            Some((None, value)) => Some(value),
+            Some((Some(_), _)) => {
+                map.push(display_chars);
+                string_run = None;
+                space_run = None;
+                pos += 1;
+                continue;
+            }
+            None => display,
+        };
         let replacement = display
             .as_ref()
             .and_then(|value| crate::lisp::primitives::string_text(value).ok());
@@ -3190,7 +3250,12 @@ fn glyphless_visual_line_at(
     visual.line_wrap = context.line_wrap;
     visual.tab_width = context.tab_width;
     visual.lnum_cols = context.lnum_cols;
-    visual.prefixes = line_prefix_runs(buffer, context, buffer.line_start_of(first_line), &visual);
+    visual.prefixes = line_prefix_runs(
+        buffer,
+        context,
+        buffer.display_line_start_of(first_line),
+        &visual,
+    );
     let display = context.translate(&visual.text);
     let final_raw = visual.raw_of_display.last().copied().unwrap_or(0);
     let mut raw_of_display = Vec::with_capacity(display.offset(usize::MAX) + 1);
@@ -3292,7 +3357,7 @@ pub(crate) fn screen_line_layout(
     let context = CharacterDisplayContext::new(interpreter, buffer_id, window_id)
         .with_line_numbers(lnum_cols);
     let first_line = visual_line_first_line(&buffer, &spec, buffer.line_number_at_pos(bol));
-    let line_start = buffer.line_start_of(first_line);
+    let line_start = buffer.display_line_start_of(first_line);
     let visual = glyphless_visual_line_at(&buffer, &spec, first_line, Some(&context));
     let laid = layout::lay_out_motion_line(&visual, text_width.max(1), truncate);
     let raw_of = |index: usize| {
@@ -3434,10 +3499,21 @@ fn displayed_line_with_map(
         .into_iter()
         .next()
         .unwrap_or_default();
+    // Only the accessible part of the line displays: from BEGV when the
+    // region begins inside it, up to ZV when it ends inside it.
+    let line_begin = buffer.display_line_start_of(line);
+    let skip = line_begin - buffer.line_start_of(line);
+    let raw = if skip > 0 || line_begin + raw.chars().count() > buffer.point_max() {
+        raw.chars()
+            .skip(skip)
+            .take(buffer.point_max().saturating_sub(line_begin))
+            .collect()
+    } else {
+        raw
+    };
     if !buffer.has_text_property_named("display") {
         return (raw, None);
     }
-    let line_begin = buffer.line_start_of(line);
     let mut expanded = String::new();
     let mut expanded_chars = 0usize;
     let mut map = Vec::with_capacity(raw.chars().count() + 1);
@@ -3452,6 +3528,16 @@ fn displayed_line_with_map(
     for (offset, ch) in raw.chars().enumerate() {
         map.push(expanded_chars);
         let display = buffer.text_property_at(line_begin + offset, "display");
+        let display = match display.as_ref().and_then(margin_display_spec) {
+            Some((None, value)) => Some(value),
+            Some((Some(_), _)) => {
+                changed = true;
+                string_run = None;
+                space_run = None;
+                continue;
+            }
+            None => display,
+        };
         // Lisp often builds the replacement with `concat' or
         // `substitute-command-keys', so it can itself be a propertized
         // string represented by a vector-literal value.  It is still a
@@ -3515,42 +3601,63 @@ fn displayed_line_with_map(
     }
 }
 
-/// Plan one window's text: adopt a commanded window-start, keep point
-/// visible with GNU's recenter-on-jump model (selected window only), and
-/// render the visible rows under the window's own wrap-or-truncate
-/// geometry.
+/// What planning one window yields: either a request to run
+/// `window-scroll-functions' first, or the window's rows.
+enum PlanOutcome {
+    Hook {
+        stage: redisplay_window::Stage,
+        start: usize,
+        consumed: redisplay_window::Consumed,
+    },
+    Planned {
+        plan: WindowPlan,
+        chosen: redisplay_window::Chosen,
+        consumed: redisplay_window::Consumed,
+    },
+}
+
+/// Plan one window's text: choose its start as redisplay_window does
+/// (redisplay_window.rs), then lay out the visible rows under the
+/// window's own wrap-or-truncate geometry.
 #[allow(clippy::too_many_arguments)]
 fn plan_window_text(
     buffer: &crate::buffer::Buffer,
     spec: &InvisibilitySpec,
     glyphless: Option<&CharacterDisplayContext<'_>>,
     view: &mut WindowView,
-    commanded_start: usize,
-    point: usize,
+    state: &redisplay_window::StartState,
     text_rows: usize,
     body_width: usize,
     truncate: bool,
     geometry: &RenderGeometry,
     selected: bool,
-) -> WindowPlan {
+) -> PlanOutcome {
     let hscroll = geometry.hscroll;
     // A line-number column's glyphs precede the text on every row, so
     // the text lays out in the remaining columns.
     let lnum_cols = geometry.lnum.map_or(0, |layout| layout.cols);
     let body_width = body_width.saturating_sub(lnum_cols).max(1);
     let usable = body_width.saturating_sub(1).max(1);
-    let segs_of = |visual: &VisualLine| {
-        if truncate {
-            1
-        } else {
-            wrap_glyphless_visual_line(visual, body_width).len()
+    let rows = redisplay_window::Rows::new(buffer, spec, glyphless, body_width, truncate);
+    let (decision, consumed) = redisplay_window::decide(&rows, state, text_rows);
+    let chosen = match decision {
+        redisplay_window::Decision::Hook { stage, start } => {
+            return PlanOutcome::Hook {
+                stage,
+                start,
+                consumed,
+            };
         }
+        redisplay_window::Decision::Display(chosen) => chosen,
     };
-    let visual_at = |line: usize| glyphless_visual_line_at(buffer, spec, line, glyphless);
+    let point = chosen
+        .point
+        .unwrap_or(state.point)
+        .clamp(buffer.point_min(), buffer.point_max());
 
     let point_line = visual_line_first_line(buffer, spec, buffer.line_number_at_pos(point));
-    let point_visual = visual_at(point_line);
-    let point_offset = point.saturating_sub(buffer.line_start_of(point_line));
+    let point_visual = glyphless_visual_line_at(buffer, spec, point_line, glyphless);
+    let point_offset = point.saturating_sub(buffer.display_line_start_of(point_line));
     let point_index = point_visual
         .map
         .get(point_offset)
@@ -3558,7 +3665,7 @@ fn plan_window_text(
         .unwrap_or_else(|| point_visual.map.last().copied().unwrap_or(0));
     let point_layout = layout::lay_out_visual_line(&point_visual, body_width, truncate);
     let point_dcol = point_layout.columns[point_index.min(point_layout.columns.len() - 1)];
-    let (point_seg, cursor_col) = if truncate {
+    let cursor_col = if truncate {
         // Without a line-number gutter, the left `$' occupies one screen
         // cell before source column HSCROLL.  A point hidden farther left
         // still clamps to the marker itself.
@@ -3570,7 +3677,7 @@ fn plan_window_text(
         )
         .screen_column(point_dcol)
         .unwrap_or(0);
-        (0, on_screen.min(body_width.saturating_sub(1)))
+        on_screen.min(body_width.saturating_sub(1))
     } else {
         wrapped_position_of_column(
             &point_layout.rows,
@@ -3580,6 +3687,7 @@ fn plan_window_text(
                 .iter()
                 .any(|(from, _)| *from == point_index),
         )
+        .1
     };
     let cursor_hidden_left = truncate
         && hscroll > 0
@@ -3594,101 +3702,11 @@ fn plan_window_text(
     } else {
         lnum_cols.saturating_add(cursor_col)
     };
-
-    // A command that owns its scrolling (recenter, scroll-up) moved the
-    // interpreter's window-start; adopt it as the window's top before
-    // deciding whether point needs recentering.  Non-selected windows
-    // simply show their commanded start — GNU only enforces point
-    // visibility in the selected window's redisplay.
-    if commanded_start != view.synced_start || !selected {
-        let start_line =
-            visual_line_first_line(buffer, spec, buffer.line_number_at_pos(commanded_start));
-        let start_visual = visual_at(start_line);
-        let start_offset = commanded_start.saturating_sub(buffer.line_start_of(start_line));
-        let start_index = start_visual
-            .map
-            .get(start_offset)
-            .copied()
-            .unwrap_or_else(|| start_visual.map.last().copied().unwrap_or(0));
-        view.top_line = start_line;
-        view.top_seg = if truncate {
-            0
-        } else {
-            let start_layout = layout::lay_out_visual_line(&start_visual, body_width, false);
-            let start_dcol = start_layout.columns[start_index.min(start_layout.columns.len() - 1)];
-            wrapped_position_of_column(
-                &start_layout.rows,
-                start_dcol,
-                start_visual
-                    .glyphless_spans
-                    .iter()
-                    .any(|(from, _)| *from == start_index),
-            )
-            .0
-        };
-    }
-
-    // Keep point visible, counting visual rows (wrapped lines span
-    // several); recenter on a jump like GNU's default scrolling.
-    let mut recenter = selected
-        && (view.top_line == 0
-            || point_line < view.top_line
-            || (point_line == view.top_line && point_seg < view.top_seg));
-    let mut point_row = 0usize;
-    if selected && !recenter {
-        if point_line == view.top_line {
-            point_row = point_seg - view.top_seg;
-        } else if point_line - view.top_line >= text_rows && !spec.active {
-            // Every line fills at least one row: certainly off-screen.
-            recenter = true;
-        } else {
-            // Walk the visual lines between the top and point; hidden
-            // newlines make one visual line span several raw lines.
-            let mut rows_before = 0usize;
-            let mut walk = view.top_line;
-            let mut first = true;
-            while walk < point_line {
-                let visual = glyphless_visual_line_at(buffer, spec, walk, glyphless);
-                let segs = segs_of(&visual);
-                let skipped = if first { view.top_seg } else { 0 };
-                first = false;
-                rows_before += segs.saturating_sub(skipped);
-                if rows_before > text_rows {
-                    break;
-                }
-                walk += visual.lines_spanned;
-            }
-            point_row = rows_before.saturating_add(point_seg);
-        }
-        if point_row >= text_rows {
-            recenter = true;
-        }
-    }
-    if recenter {
-        // Walk back half a window of visual rows from point, GNU's
-        // recentering target.
-        let mut budget = text_rows / 2;
-        let (mut line, mut seg) = (point_line, point_seg);
-        let mut stepped = 0usize;
-        while budget > 0 {
-            if seg > 0 {
-                let step = seg.min(budget);
-                seg -= step;
-                budget -= step;
-                stepped += step;
-            } else if line > 1 {
-                line = visual_line_first_line(buffer, spec, line - 1);
-                seg = segs_of(&visual_at(line)) - 1;
-                budget -= 1;
-                stepped += 1;
-            } else {
-                break;
-            }
-        }
-        view.top_line = line;
-        view.top_seg = seg;
-        point_row = stepped;
-    }
+    view.top_line = chosen.top.line;
+    view.top_seg = chosen.top.seg;
+    // Without point in the window (scroll functions that moved the start
+    // away from it), the cursor goes to the first row.
+    let (point_row, cursor_col) = chosen.cursor_row.map_or((0, 0), |row| (row, cursor_col));
 
     // Fetch only the window: redisplay cost must follow the screen size,
     // never the buffer size.  A wholly invisible tail contributes no glyph
@@ -3702,7 +3720,7 @@ fn plan_window_text(
     let mut first_fill = true;
     'fill: while rendered.len() < text_rows && fill_line <= last_line {
         let visual = glyphless_visual_line_at(buffer, spec, fill_line, glyphless);
-        let line_start = buffer.line_start_of(fill_line);
+        let line_start = buffer.display_line_start_of(fill_line);
         if visual.text.is_empty()
             && line_start < buffer.point_max()
             && invisible_class_at(buffer, spec, line_start) != 0
@@ -3766,8 +3784,7 @@ fn plan_window_text(
     }
     rendered.resize(text_rows, (String::new(), 0, 0, usize::MAX, 0));
 
-    let top_pos =
-        position_of_visual_row(buffer, spec, glyphless, view.top_line, view.top_seg, usable);
+    let top_pos = rows.start_pos(chosen.top);
     let window_end = match past_window {
         // A row past the final buffer line means the window shows
         // everything: window-end is ZV (a buffer without a trailing
@@ -3776,11 +3793,207 @@ fn plan_window_text(
         Some((line, seg)) => position_of_visual_row(buffer, spec, glyphless, line, seg, usable),
         None => invisible_tail_start.unwrap_or_else(|| buffer.point_max()),
     };
-    WindowPlan {
-        rendered,
-        top_pos,
+    PlanOutcome::Planned {
+        plan: WindowPlan {
+            rendered,
+            top_pos,
+            window_end,
+            cursor: selected.then_some((point_row, cursor_col)),
+        },
+        chosen,
+        consumed,
+    }
+}
+
+/// What redisplay_window reads of INFO's window: its start and point,
+/// the redisplay flags commands left, and its buffer's scrolling options.
+/// Also the accessible region and modification count the display is
+/// made under.
+fn window_start_state(
+    interpreter: &Interpreter,
+    info: &crate::lisp::primitives::WindowRenderInfo,
+    previous: &WindowView,
+    text_rows: usize,
+    top_rows: usize,
+    windows_or_buffers_changed: bool,
+) -> (
+    redisplay_window::StartState,
+    (usize, usize),
+    crate::buffer::ModCount,
+) {
+    use crate::lisp::primitives::{
+        WINDOW_FORCE_START_SLOT, WINDOW_OPTIONAL_NEW_START_SLOT, WINDOW_START_AT_LINE_BEG_SLOT,
+        window_flag,
+    };
+    let value = |name: &str| {
+        interpreter
+            .buffer_local_value(info.buffer_id, name)
+            .or_else(|| interpreter.default_value(name))
+    };
+    let integer = |name: &str| {
+        value(name)
+            .and_then(|value| value.integer_value())
+            .unwrap_or(0)
+    };
+    // NUMBERP: an integer or a float fraction.
+    let number = |name: &str| {
+        value(name).and_then(|value| match value.kind() {
+            Kind::Integer(number) => Some(number as f64),
+            Kind::Float(number) => Some(number.get()),
+            _ => None,
+        })
+    };
+    let scroll = redisplay_window::ScrollParams {
+        margin: crate::lisp::primitives::scroll_margin_lines(
+            integer("scroll-margin"),
+            value("maximum-scroll-margin").unwrap_or(Value::Nil),
+            text_rows,
+        ),
+        conservatively: integer("scroll-conservatively"),
+        step: integer("scroll-step"),
+        up_aggressively: number("scroll-up-aggressively"),
+        down_aggressively: number("scroll-down-aggressively"),
+    };
+    let (buffer_point, restriction, modiff) = if info.buffer_id == interpreter.current_buffer_id() {
+        let buffer = interpreter.buffer.borrow();
+        (
+            buffer.point(),
+            (buffer.point_min(), buffer.point_max()),
+            buffer.modified_tick(),
+        )
+    } else {
+        interpreter
+            .get_buffer_by_id(info.buffer_id)
+            .map(|buffer| {
+                (
+                    buffer.point(),
+                    (buffer.point_min(), buffer.point_max()),
+                    buffer.modified_tick(),
+                )
+            })
+            .unwrap_or((info.point, (1, 1), Default::default()))
+    };
+    let force_start = window_flag(interpreter, info.window_id, WINDOW_FORCE_START_SLOT);
+    let optional_new_start =
+        window_flag(interpreter, info.window_id, WINDOW_OPTIONAL_NEW_START_SLOT);
+    let window_outdated =
+        previous.last_buffer_id != Some(info.buffer_id) || previous.last_modiff != Some(modiff);
+    let cursor_unmoved = !windows_or_buffers_changed
+        && !window_outdated
+        && !force_start
+        && !optional_new_start
+        && previous.last_point == Some(info.point)
+        && previous.last_start == Some(info.start)
+        && previous.last_restriction == Some(restriction);
+    let state = redisplay_window::StartState {
+        start: info.start,
+        point: info.point,
+        buffer_point,
+        force_start,
+        optional_new_start,
+        start_at_line_beg: window_flag(interpreter, info.window_id, WINDOW_START_AT_LINE_BEG_SLOT),
+        windows_or_buffers_changed,
+        window_outdated,
+        cursor_unmoved,
+        scroll_functions: value("window-scroll-functions").is_some_and(|hook| hook.is_truthy()),
+        make_window_start_visible: value("make-window-start-visible")
+            .is_some_and(|flag| flag.is_truthy()),
+        total_cells: info.width.saturating_mul(info.height),
+        top_rows,
+        scroll,
+        resume: None,
+    };
+    (state, restriction, modiff)
+}
+
+/// The force_start and optional_new_start flags redisplay consumed.
+fn consume_window_start_flags(
+    interpreter: &mut Interpreter,
+    window_id: u64,
+    consumed: redisplay_window::Consumed,
+) {
+    use crate::lisp::primitives::{
+        WINDOW_FORCE_START_SLOT, WINDOW_OPTIONAL_NEW_START_SLOT, set_window_flag,
+    };
+    if consumed.force_start {
+        set_window_flag(interpreter, window_id, WINDOW_FORCE_START_SLOT, false);
+    }
+    if consumed.optional_new_start {
+        set_window_flag(
+            interpreter,
+            window_id,
+            WINDOW_OPTIONAL_NEW_START_SLOT,
+            false,
+        );
+    }
+}
+
+/// xdisp.c run_window_scroll_functions: `window-scroll-functions' with
+/// the window's buffer current, quits inhibited and errors reported
+/// (safe_run_hooks_2).
+fn run_window_scroll_functions(
+    interpreter: &mut Interpreter,
+    env: &mut Env,
+    window_id: u64,
+    buffer_id: u64,
+    start: usize,
+) {
+    let saved = interpreter.current_buffer_id();
+    if saved != buffer_id && interpreter.set_current_buffer_id(buffer_id).is_err() {
+        return;
+    }
+    let _ = env;
+    let window = interpreter.record_value(window_id);
+    let _ = batch::safe_run_hooks_with_args(
+        interpreter,
+        "window-scroll-functions",
+        &[window, Value::Integer(start as i64)],
+    );
+    if interpreter.current_buffer_id() != saved && interpreter.has_buffer_id(saved) {
+        let _ = interpreter.set_current_buffer_id(saved);
+    }
+}
+
+/// Store what redisplay decided for INFO's window: its start marker and
+/// start_at_line_beg, a point it moved into view (the buffer's own for
+/// the selected window), a non-selected window's point clamped to the
+/// accessible region, and window_end_pos.  Answers INFO as displayed.
+fn publish_window_start(
+    interpreter: &mut Interpreter,
+    info: &crate::lisp::primitives::WindowRenderInfo,
+    chosen: &redisplay_window::Chosen,
+    window_end: usize,
+) -> crate::lisp::primitives::WindowRenderInfo {
+    use crate::lisp::primitives::{
+        WINDOW_START_AT_LINE_BEG_SLOT, record_window_display, set_window_flag,
+        set_window_start_marker,
+    };
+    set_window_start_marker(interpreter, info.window_id, chosen.start);
+    set_window_flag(
+        interpreter,
+        info.window_id,
+        WINDOW_START_AT_LINE_BEG_SLOT,
+        chosen.start_at_line_beg,
+    );
+    let point = chosen.point.unwrap_or(info.point);
+    if info.selected && chosen.point.is_some() {
+        if info.buffer_id == interpreter.current_buffer_id() {
+            interpreter.buffer.borrow_mut().goto_char(point);
+        } else if let Some(mut buffer) = interpreter.get_buffer_by_id_mut(info.buffer_id) {
+            buffer.goto_char(point);
+        }
+    }
+    record_window_display(
+        interpreter,
+        info.window_id,
+        info.buffer_id,
+        point,
         window_end,
-        cursor: selected.then_some((point_row, cursor_col)),
+    );
+    crate::lisp::primitives::WindowRenderInfo {
+        start: chosen.start,
+        point,
+        ..*info
     }
 }
 
@@ -4090,7 +4303,8 @@ fn redraw_with_echo_policy(
     // Resolved faces stay cached until a face definition changes (GNU's
     // face_change flag) — resolution evaluates Lisp per attribute.
     let face_generation = interpreter.face_definitions_generation();
-    if full_repaint || state.face_cache_generation != face_generation {
+    let face_changed = state.face_cache_generation != face_generation;
+    if full_repaint || face_changed {
         state.face_cache.clear();
         state.face_cache_generation = face_generation;
     }
@@ -4154,9 +4368,54 @@ fn redraw_with_echo_policy(
     } else {
         CellAttrs::default()
     };
+    // xdisp.c's windows_or_buffers_changed for this redisplay: set by the
+    // interpreter (wset_redisplay of another window, window-tree and
+    // frame changes), by a resize or face change (face_change), by window
+    // edges differing from the last ones shown (a mini window's growth),
+    // and by bset_redisplay's rule: a buffer modified since then that
+    // shows in a window other than the selected one, or in two windows.
+    let windows_or_buffers_changed = {
+        // Window edges only: a buffer shown or a window selected marks
+        // the windows involved (wset_redisplay) when GNU does.
+        let signature: Vec<(u64, usize, usize, usize, usize)> = layout
+            .iter()
+            .map(|info| (info.window_id, info.left, info.top, info.width, info.height))
+            .collect();
+        let mut changed = std::mem::take(&mut interpreter.windows_or_buffers_changed)
+            || full_repaint
+            || face_changed
+            || signature != state.last_layout;
+        let selected_buffer = layout
+            .iter()
+            .find(|info| info.selected)
+            .map(|info| info.buffer_id);
+        let mut seen = std::collections::HashSet::new();
+        for info in &layout {
+            if !seen.insert(info.buffer_id) {
+                continue;
+            }
+            let modiff = if info.buffer_id == interpreter.current_buffer_id() {
+                interpreter.buffer.borrow().modified_tick()
+            } else if let Some(buffer) = interpreter.get_buffer_by_id(info.buffer_id) {
+                buffer.modified_tick()
+            } else {
+                continue;
+            };
+            let shown = layout
+                .iter()
+                .filter(|other| other.buffer_id == info.buffer_id)
+                .count();
+            if (shown > 1 || Some(info.buffer_id) != selected_buffer)
+                && state.buffer_modiffs.get(&info.buffer_id) != Some(&modiff)
+            {
+                changed = true;
+            }
+        }
+        state.last_layout = signature;
+        changed
+    };
     let mut cursor_position = (0u16, 0u16);
-    let mut selected_sync: Option<(usize, crate::lisp::primitives::InteractiveWindowMetrics)> =
-        None;
+    let mut selected_sync: Option<crate::lisp::primitives::InteractiveWindowMetrics> = None;
     struct ModeLineJob {
         window_id: u64,
         buffer_id: u64,
@@ -4293,46 +4552,108 @@ fn redraw_with_echo_policy(
             .get(&info.window_id)
             .copied()
             .unwrap_or_default();
-        let (geometry, plan, invisibility_active, chars_modiff) = loop {
-            let geometry =
-                window_render_geometry(interpreter, env, info, text_body_width, cols, lnum);
-            let view = state.views.entry(info.window_id).or_default();
-            let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
-                Some(interpreter.buffer.borrow())
-            } else {
-                interpreter.get_buffer_by_id(info.buffer_id)
-            }) else {
-                continue 'windows;
+        let (mut start_state, restriction, modiff) = window_start_state(
+            interpreter,
+            info,
+            &previous_view,
+            text_rows,
+            tab_rows + header_rows,
+            windows_or_buffers_changed,
+        );
+        let mut hook_rounds = 0usize;
+        let (geometry, plan, chosen, invisibility_active, chars_modiff) = loop {
+            let outcome = loop {
+                let geometry =
+                    window_render_geometry(interpreter, env, info, text_body_width, cols, lnum);
+                let view = state.views.entry(info.window_id).or_default();
+                let Some(buffer) = (if info.buffer_id == interpreter.current_buffer_id() {
+                    Some(interpreter.buffer.borrow())
+                } else {
+                    interpreter.get_buffer_by_id(info.buffer_id)
+                }) else {
+                    continue 'windows;
+                };
+                let invisibility =
+                    resolve_buffer_invisibility(interpreter, &buffer, info.buffer_id);
+                let glyphless =
+                    CharacterDisplayContext::new(interpreter, info.buffer_id, info.window_id)
+                        .with_line_numbers(geometry.lnum.map_or(0, |layout| layout.cols));
+                match plan_window_text(
+                    &buffer,
+                    &invisibility,
+                    Some(&glyphless),
+                    view,
+                    &start_state,
+                    text_rows,
+                    text_body_width,
+                    geometry.truncate,
+                    &geometry,
+                    info.selected,
+                ) {
+                    PlanOutcome::Hook {
+                        stage,
+                        start,
+                        consumed,
+                    } => break Err((stage, start, consumed)),
+                    PlanOutcome::Planned {
+                        plan,
+                        chosen,
+                        consumed,
+                    } => {
+                        let top_line = view.top_line;
+                        let settled = lnum_for(interpreter, top_line);
+                        if settled.map(|layout| layout.cols) == lnum.map(|layout| layout.cols) {
+                            break Ok((
+                                geometry,
+                                plan,
+                                chosen,
+                                consumed,
+                                invisibility.active,
+                                buffer.chars_modified_tick(),
+                            ));
+                        }
+                        lnum = settled;
+                    }
+                }
             };
-            let invisibility = resolve_buffer_invisibility(interpreter, &buffer, info.buffer_id);
-            let glyphless =
-                CharacterDisplayContext::new(interpreter, info.buffer_id, info.window_id)
-                    .with_line_numbers(geometry.lnum.map_or(0, |layout| layout.cols));
-            let plan = plan_window_text(
-                &buffer,
-                &invisibility,
-                Some(&glyphless),
-                view,
-                info.start,
-                info.point,
-                text_rows,
-                text_body_width,
-                geometry.truncate,
-                &geometry,
-                info.selected,
-            );
-            let top_line = view.top_line;
-            let settled = lnum_for(interpreter, top_line);
-            if settled.map(|layout| layout.cols) == lnum.map(|layout| layout.cols) {
-                break (
-                    geometry,
-                    plan,
-                    invisibility.active,
-                    buffer.chars_modified_tick(),
-                );
+            match outcome {
+                Err((stage, start, consumed)) => {
+                    // run_window_scroll_functions: the hooks see the start
+                    // redisplay chose, and redisplay continues from the
+                    // start they leave.
+                    consume_window_start_flags(interpreter, info.window_id, consumed);
+                    crate::lisp::primitives::set_window_start_marker(
+                        interpreter,
+                        info.window_id,
+                        start,
+                    );
+                    run_window_scroll_functions(
+                        interpreter,
+                        env,
+                        info.window_id,
+                        info.buffer_id,
+                        start,
+                    );
+                    start_state.resume = Some((
+                        stage,
+                        crate::lisp::primitives::window_start_marker(
+                            interpreter,
+                            info.window_id,
+                            info.buffer_id,
+                        ),
+                    ));
+                    hook_rounds += 1;
+                    if hook_rounds >= 4 {
+                        start_state.scroll_functions = false;
+                    }
+                }
+                Ok((geometry, plan, chosen, consumed, active, chars)) => {
+                    consume_window_start_flags(interpreter, info.window_id, consumed);
+                    break (geometry, plan, chosen, active, chars);
+                }
             }
-            lnum = settled;
         };
+        let info = &publish_window_start(interpreter, info, &chosen, plan.window_end);
         let newly_deferred_point = mode_line_display_point(
             previous_view,
             info.buffer_id,
@@ -4516,6 +4837,60 @@ fn redraw_with_echo_policy(
                     });
                 }
             }
+            // handle_single_display_spec: buffer text whose `display'
+            // puts a string in a margin shows it there, on the row where
+            // the property's run is displayed, after any margin glyphs
+            // the row already has.
+            if buffer.has_text_property_named("display") {
+                let end = plan.window_end.min(buffer.point_max());
+                let from = plan.top_pos.clamp(buffer.point_min(), end);
+                let mut used: Vec<(usize, bool, usize)> = Vec::new();
+                for span in buffer.substring_property_spans(from, end) {
+                    let position = from + span.start;
+                    let Some(display) = buffer.text_property_at(position, "display") else {
+                        continue;
+                    };
+                    let Some((side, payload)) = buffer_margin_display(&display) else {
+                        continue;
+                    };
+                    let Ok(text) = crate::lisp::primitives::string_text(&payload) else {
+                        continue;
+                    };
+                    let right = side == "right-margin";
+                    let (margin_left, margin_width) = match right {
+                        false if left_margin > 0 => (info.left, left_margin),
+                        true if right_margin > 0 => {
+                            (info.left + body_width - right_margin, right_margin)
+                        }
+                        _ => continue,
+                    };
+                    let Some(row) = plan.rendered.iter().rposition(|(_, _, _, start, _)| {
+                        *start != usize::MAX && *start <= position
+                    }) else {
+                        continue;
+                    };
+                    let offset = match used.iter_mut().find(|(r, s, _)| *r == row && *s == right) {
+                        Some((_, _, cols)) => {
+                            let offset = *cols;
+                            *cols += text.chars().count();
+                            offset
+                        }
+                        None => {
+                            used.push((row, right, text.chars().count()));
+                            0
+                        }
+                    };
+                    if offset >= margin_width {
+                        continue;
+                    }
+                    margin_string_jobs.push(MarginStringJob {
+                        row: text_top + row,
+                        left: margin_left + offset,
+                        width: margin_width - offset,
+                        value: payload,
+                    });
+                }
+            }
         }
         if let Some(layout) = geometry.lnum {
             line_number_jobs.push(LineNumberJob {
@@ -4579,11 +4954,13 @@ fn redraw_with_echo_policy(
                     (text_top + row).min(frame_rows - 1) as u16,
                 );
             }
-            state.views.entry(info.window_id).or_default().synced_start = plan.top_pos;
-            selected_sync = Some((plan.top_pos, metrics));
+            selected_sync = Some(metrics);
         }
         {
             let view = state.views.entry(info.window_id).or_default();
+            view.last_start = Some(info.start);
+            view.last_restriction = Some(restriction);
+            view.last_modiff = Some(modiff);
             view.last_buffer_id = Some(info.buffer_id);
             view.last_point = Some(info.point);
             view.last_cursor = plan.cursor;
@@ -4635,14 +5012,28 @@ fn redraw_with_echo_policy(
         }
     }
 
-    // Publish the selected window's displayed geometry to the interpreter:
-    // window-end, recenter, and %p answer from live glass state, and the
-    // next redraw can detect a command-moved window-start.  This precedes
-    // the mode-line renders so their %p reads the synced start.
-    if let Some((top_pos, metrics)) = selected_sync {
-        crate::lisp::primitives::set_current_window_start(interpreter, top_pos);
+    // Publish the selected window's displayed geometry to the interpreter
+    // (each window's start and end went to its record as it was planned).
+    // This precedes the mode-line renders.
+    if let Some(metrics) = selected_sync {
         crate::lisp::primitives::set_interactive_window_metrics(Some(metrics));
     }
+    // The shown buffers' modification counts as of this redisplay (after
+    // its fontification): bset_redisplay's flag is cleared with the rest
+    // of windows_or_buffers_changed at the end of redisplay_internal.
+    state.buffer_modiffs = layout
+        .iter()
+        .filter_map(|info| {
+            let modiff = if info.buffer_id == interpreter.current_buffer_id() {
+                interpreter.buffer.borrow().modified_tick()
+            } else {
+                interpreter
+                    .get_buffer_by_id(info.buffer_id)?
+                    .modified_tick()
+            };
+            Some((info.buffer_id, modiff))
+        })
+        .collect();
 
     // Face spans over window text — buffer `face' properties, the
     // selected window's active region, and overlay faces (isearch's
@@ -4725,7 +5116,7 @@ fn redraw_with_echo_policy(
             });
             let hscroll_layout =
                 HscrollLayout::new(&visual, &laid.columns, *row_hscroll, job.lnum_cols == 0);
-            let line_begin = buffer.line_start_of(*line);
+            let line_begin = buffer.display_line_start_of(*line);
             // The right-truncation `$' glyph keeps the default face
             // (produce_special_glyphs); spans stop one cell short of it.
             // A continued row's glyphs end at its own end column: a
@@ -5100,7 +5491,7 @@ fn redraw_with_echo_policy(
                 } else {
                     let visual =
                         glyphless_visual_line_at(&buffer, &spec, point_vline, Some(&glyphless));
-                    let offset = point.saturating_sub(buffer.line_start_of(point_vline));
+                    let offset = point.saturating_sub(buffer.display_line_start_of(point_vline));
                     let index = visual
                         .map
                         .get(offset)
@@ -6137,7 +6528,7 @@ fn position_of_visual_row(
     seg: usize,
     usable: usize,
 ) -> usize {
-    let start = buffer.line_start_of(line);
+    let start = buffer.display_line_start_of(line);
     if seg == 0 {
         return start;
     }
@@ -6221,6 +6612,48 @@ fn call(
 mod tests {
     use super::*;
     use crate::test_support::initialized_upstream_interactive_interpreter as initialized_interactive_runtime;
+
+    /// plan_window_text for a window with no redisplay flags set, as a
+    /// window freshly shown with START and POINT.
+    #[allow(clippy::too_many_arguments)]
+    fn plan_window_text(
+        buffer: &crate::buffer::Buffer,
+        spec: &InvisibilitySpec,
+        glyphless: Option<&CharacterDisplayContext<'_>>,
+        view: &mut WindowView,
+        start: usize,
+        point: usize,
+        text_rows: usize,
+        body_width: usize,
+        truncate: bool,
+        geometry: &RenderGeometry,
+        selected: bool,
+    ) -> WindowPlan {
+        let state = redisplay_window::StartState {
+            start,
+            point,
+            buffer_point: point,
+            force_start: false,
+            optional_new_start: false,
+            start_at_line_beg: false,
+            windows_or_buffers_changed: false,
+            window_outdated: true,
+            cursor_unmoved: false,
+            scroll_functions: false,
+            make_window_start_visible: false,
+            total_cells: (text_rows + 1) * body_width,
+            top_rows: 0,
+            scroll: Default::default(),
+            resume: None,
+        };
+        match super::plan_window_text(
+            buffer, spec, glyphless, view, &state, text_rows, body_width, truncate, geometry,
+            selected,
+        ) {
+            PlanOutcome::Planned { plan, .. } => plan,
+            PlanOutcome::Hook { .. } => unreachable!("no window-scroll-functions"),
+        }
+    }
 
     fn display_test_eval(interpreter: &mut Interpreter, text: &str) -> Value {
         let form = crate::lisp::reader::Reader::new(text)
@@ -7182,6 +7615,60 @@ mod tests {
     }
 
     #[test]
+    fn buffer_text_in_a_margin_display_leaves_the_text_area() {
+        // handle_single_display_spec: `((margin right-margin) STAMP)' on
+        // buffer text (ERC's right-margin timestamps) sends STAMP to the
+        // margin; `((margin nil) X)' displays X in the text area.
+        let mut interp = Interpreter::new();
+        let mut env: Env = crate::lisp::types::Env::new();
+        let form = crate::lisp::reader::Reader::new(
+            "(progn
+               (insert \"<a> hi \")
+               (insert (propertize \"[10:00]\" 'display
+                                   '((margin right-margin) \"[10:00]\")))
+               (insert \" and \")
+               (insert (propertize \"zz\" 'display '((margin nil) \"Q\")))
+               (insert \"\\n\"))",
+        )
+        .read()
+        .expect("read margin text probe")
+        .expect("margin text probe exists");
+        interp
+            .eval(&form, &mut env)
+            .expect("evaluate margin text probe");
+        let buffer = interp.buffer.borrow();
+        let visual = visual_line_at(&buffer, &InvisibilitySpec::default(), 1);
+        assert_eq!(visual.text, "<a> hi  and Q");
+        let (text, _) = displayed_line_with_map(&buffer, 1);
+        assert_eq!(text, "<a> hi  and Q");
+    }
+
+    #[test]
+    fn a_line_cut_by_narrowing_displays_from_begv_to_zv() {
+        // The display iterator never looks outside the accessible region:
+        // a line the narrowing cuts lays out from BEGV and stops at ZV.
+        let mut interp = Interpreter::new();
+        let mut env: Env = crate::lisp::types::Env::new();
+        let form = crate::lisp::reader::Reader::new(
+            "(progn (insert \"abcdefghij\\nklmnop\\n\")
+                    (put-text-property 1 3 'display \"\")
+                    (narrow-to-region 4 9))",
+        )
+        .read()
+        .expect("read narrowing probe")
+        .expect("narrowing probe exists");
+        interp
+            .eval(&form, &mut env)
+            .expect("evaluate narrowing probe");
+        let buffer = interp.buffer.borrow();
+        assert_eq!(buffer.display_line_start_of(1), 4);
+        let (text, _) = displayed_line_with_map(&buffer, 1);
+        assert_eq!(text, "defgh");
+        let visual = visual_line_at(&buffer, &InvisibilitySpec::default(), 1);
+        assert_eq!(visual.text, "defgh");
+    }
+
+    #[test]
     fn graphical_fringe_overlay_strings_have_no_tty_text_glyph() {
         let mut interp = Interpreter::new();
         let mut env: Env = crate::lisp::types::Env::new();
@@ -7804,7 +8291,7 @@ mod tests {
     }
 
     #[test]
-    fn non_selected_windows_render_from_their_start_without_recentering() {
+    fn non_selected_windows_recenter_around_their_own_point() {
         let interpreter = Interpreter::new();
         for n in 1..=60 {
             interpreter
@@ -7812,8 +8299,8 @@ mod tests {
                 .borrow_mut()
                 .insert(&format!("line {n:02}\n"));
         }
-        // Point far below the start: a selected window would recenter,
-        // a non-selected one must show its commanded start regardless.
+        // Point far below the start: redisplay_window treats every
+        // window alike, so a non-selected one recenters on its point too.
         let start = interpreter.buffer.borrow().line_start_of(30);
         let mut view = WindowView::default();
         let plan = plan_window_text(
@@ -7835,18 +8322,110 @@ mod tests {
             },
             false,
         );
-        assert_eq!(plan.rendered[0].0, "line 30");
-        assert_eq!(plan.rendered[9].0, "line 39");
-        assert_eq!(plan.top_pos, start);
+        assert_eq!(plan.rendered[0].0, "line 50");
+        assert_eq!(plan.rendered[9].0, "line 59");
+        assert_eq!(plan.top_pos, interpreter.buffer.borrow().line_start_of(50));
         assert_eq!(
             plan.cursor, None,
             "only the selected window shows the cursor"
         );
         assert_eq!(
             plan.window_end,
-            interpreter.buffer.borrow().line_start_of(40),
+            interpreter.buffer.borrow().line_start_of(60),
             "window-end is the first position past the last row"
         );
+    }
+
+    #[test]
+    fn redisplay_window_starts_follow_gnus_probes() {
+        // Each case is a tmux probe of GNU 30.2 on "line N\n" lines.
+        let start_for = |lines: usize,
+                         rows: usize,
+                         start: usize,
+                         point: usize,
+                         force_start: bool,
+                         scroll: redisplay_window::ScrollParams| {
+            let interpreter = Interpreter::new();
+            for n in 0..lines {
+                interpreter
+                    .buffer
+                    .borrow_mut()
+                    .insert(&format!("line {n}\n"));
+            }
+            let buffer = interpreter.buffer.borrow();
+            let state = redisplay_window::StartState {
+                start,
+                point,
+                buffer_point: point,
+                force_start,
+                optional_new_start: false,
+                start_at_line_beg: false,
+                windows_or_buffers_changed: false,
+                window_outdated: true,
+                cursor_unmoved: false,
+                scroll_functions: false,
+                make_window_start_visible: false,
+                total_cells: (rows + 1) * 80,
+                top_rows: 0,
+                scroll,
+                resume: None,
+            };
+            let geometry = RenderGeometry {
+                truncate: false,
+                hscroll: 0,
+                current_line_only: false,
+                min_hscroll: 0,
+                lnum: None,
+            };
+            match super::plan_window_text(
+                &buffer,
+                &InvisibilitySpec::default(),
+                None,
+                &mut WindowView::default(),
+                &state,
+                rows,
+                80,
+                false,
+                &geometry,
+                true,
+            ) {
+                PlanOutcome::Planned { chosen, .. } => {
+                    (chosen.start, chosen.point.unwrap_or(point))
+                }
+                PlanOutcome::Hook { .. } => unreachable!(),
+            }
+        };
+        let line = |n: usize| if n < 10 { 1 + 7 * n } else { 71 + 8 * (n - 10) };
+        // set-window-start 500 with point off the window: point moves to
+        // the row half a 9-row window reaches (row 3).
+        assert_eq!(
+            start_for(200, 9, 500, 1, true, Default::default()),
+            (500, 519)
+        );
+        // scroll-conservatively 101, point two rows past the bottom.
+        let conservative = redisplay_window::ScrollParams {
+            conservatively: 101,
+            ..Default::default()
+        };
+        assert_eq!(
+            start_for(300, 30, 1, line(31), false, conservative),
+            (15, line(31))
+        );
+        // scroll-margin 3: point entering the bottom margin recenters.
+        let margin = redisplay_window::ScrollParams {
+            margin: 3,
+            ..Default::default()
+        };
+        assert_eq!(
+            start_for(300, 30, 1, line(28), false, margin),
+            (95, line(28))
+        );
+        // scroll-step 4.
+        let step = redisplay_window::ScrollParams {
+            step: 4,
+            ..Default::default()
+        };
+        assert_eq!(start_for(300, 30, 1, line(32), false, step), (29, line(32)));
     }
 
     #[test]
