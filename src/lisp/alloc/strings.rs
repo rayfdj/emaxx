@@ -7,7 +7,10 @@
 //! borrowed data blocks remain stationary until their Rust guards end.
 
 mod data;
-pub(crate) use data::{PendingStringData, retire_string_data, string_data_size};
+pub(crate) use data::{
+    PendingStringData, STRING_DATA_ALIGNMENT, STRING_DATA_PREFIX, retire_string_data,
+    string_data_size,
+};
 #[cfg(test)]
 pub(crate) fn string_data_census() -> (usize, usize, usize) {
     data::census()

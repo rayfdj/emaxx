@@ -92,6 +92,32 @@ impl std::fmt::Display for StringError {
     }
 }
 
+/// The characters BYTES hold are CHARACTERS: a unibyte string and ASCII
+/// text have a character a byte, other multibyte text is decoded.
+fn check_character_count(
+    bytes: &[u8],
+    characters: usize,
+    multibyte: bool,
+) -> Result<(), StringError> {
+    let count = if !multibyte || bytes.is_ascii() {
+        bytes.len()
+    } else {
+        let mut count = 0;
+        let mut offset = 0;
+        while offset < bytes.len() {
+            offset += decode_character(&bytes[offset..])?.1;
+            count += 1;
+        }
+        count
+    };
+    if count != characters {
+        return Err(
+            LispError::Signal("String character count does not match its bytes".into()).into(),
+        );
+    }
+    Ok(())
+}
+
 impl StringObjectRef {
     fn from_data(
         nbytes: usize,
@@ -270,7 +296,7 @@ impl StringObjectRef {
         multibyte: bool,
     ) -> Result<Self, StringError> {
         Self::from_storage_kind(
-            bytes,
+            &bytes,
             characters,
             multibyte,
             crate::lisp::alloc::StringAllocation::Ordinary,
@@ -278,28 +304,49 @@ impl StringObjectRef {
     }
 
     pub(crate) fn from_storage_kind(
-        bytes: Vec<u8>,
+        bytes: &[u8],
         characters: usize,
         multibyte: bool,
         kind: crate::lisp::alloc::StringAllocation,
     ) -> Result<Self, StringError> {
-        let mut count = 0;
-        let mut offset = 0;
-        while offset < bytes.len() {
-            offset += if multibyte {
-                decode_character(&bytes[offset..])?.1
-            } else {
-                1
-            };
-            count += 1;
-        }
-        if count != characters {
-            return Err(LispError::Signal(
-                "String character count does not match its bytes".into(),
-            )
-            .into());
-        }
-        Self::try_from_slice(&bytes, characters, multibyte, Vec::new(), kind)
+        check_character_count(bytes, characters, multibyte)?;
+        Self::try_from_slice(bytes, characters, multibyte, Vec::new(), kind)
+    }
+
+    /// A string of an image whose data stays where the image holds it, as
+    /// pdumper.c leaves a dumped string's data in the mapped dump: the
+    /// entry is no block's, so compaction never moves it (as
+    /// compact_small_strings never reads the dump), and the header owns
+    /// it as it owns allocated data -- retiring or resizing it within its
+    /// slop writes the entry, as they write any.
+    ///
+    /// # Safety
+    /// DATA is the data of an sdata entry for NBYTES bytes and their NUL --
+    /// aligned, with its owner word before DATA and its padding after --
+    /// in writable memory that lives as long as the process and that
+    /// nothing else uses.
+    pub(crate) unsafe fn from_image_data(
+        data: NonNull<u8>,
+        nbytes: usize,
+        characters: usize,
+        multibyte: bool,
+    ) -> Result<Self, StringError> {
+        assert!(nbytes > 0, "an empty string's data is static");
+        validate_size(nbytes)?;
+        // SAFETY: the caller's entry holds NBYTES bytes at DATA.
+        let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr(), nbytes) };
+        check_character_count(bytes, characters, multibyte)?;
+        crate::lisp::alloc::allocate_string(
+            characters,
+            multibyte,
+            StringAllocation::Restored,
+            |state| {
+                state.size = characters;
+                state.size_byte = if multibyte { nbytes as isize } else { -1 };
+                state.data = data;
+                Ok::<(), StringError>(())
+            },
+        )
     }
 
     pub(crate) fn from_text(

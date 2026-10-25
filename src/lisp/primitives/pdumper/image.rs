@@ -337,11 +337,18 @@ impl DumpRelocKind {
     }
 }
 
-/// One entry of a dump-relocation table or of the object-start table:
-/// the dump offset and either the relocation kind or the object type.
-/// GNU packs both into one 32-bit word; the image keeps two.
+/// One entry of the object-start table: the dump offset and the object
+/// type.  GNU packs both into one 32-bit word; the image keeps two.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const TABLE_ENTRY_LEN: usize = 8;
+
+/// One entry of a dump-relocation table: the dump offset, the relocation
+/// kind, and for a word naming an object of the dump that object's
+/// number, its entry's index in the object-start table (`NO_OBJECT'
+/// otherwise).  GNU's loader adds the dump's address to the word in
+/// place; this one rebuilds each object, and finds the target by number.
+pub(crate) const RELOC_ENTRY_LEN: usize = 12;
+pub(crate) const NO_OBJECT: u32 = u32::MAX;
 
 /// pdumper.c:emacs_reloc_type: how a slot of the running process (an
 /// Emacs C variable there, a root slot of the interpreter here) is set

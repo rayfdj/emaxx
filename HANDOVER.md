@@ -5365,6 +5365,59 @@ setup_process_coding_systems's check now refuses). A 13-form
   timings: the frozen run builds the gate profile (debug assertions,
   overflow checks, thin LTO), which puts nearly every file at 2.0 to 2.3
   times GNU; release-build comparisons are made locally.
+- **Round 73: the image loader's tables, string data and heap blocks as
+  pdumper.c and alloc.c keep them.** Startup (`-Q --batch --eval '(princ
+  "x")'`, release) took 0.12 s against GNU's 0.05 s: 399M instructions
+  (GNU 166M) and 17,747 minor page faults (GNU 5,642), at about 2.2 us a
+  fault in this container, so the faults alone were some 26 ms. Where they
+  came from: (1) the loader's dense tables, 5.5 MB of relocation kinds
+  written in full, an 11 MB object index and 4.6 MB of `Option<Value>`;
+  (2) a copy of every string's data, through a temporary vector per
+  string; (3) heap blocks from glibc's aligned malloc, which writes its
+  chunk header in the page before each block, so a 4 KB symbol, string or
+  vector block took two pages; (4) the 22 MB image itself was cheap
+  (file pages, 16 a fault). Now: the object-start and relocation tables
+  are read where the image maps them, as pdumper.c reads its tables; the
+  early relocations are walked in order alongside the fields being read
+  (dump_do_all_dump_reloc_for_phase applies them in order), runs of
+  fields read in one pass, with a rank index (a bit per word, counts per
+  64 words) only for a read out of order; each relocation entry names its
+  target's object number (`RELOC_ENTRY_LEN` 12: the writer resolves it
+  from the sorted object starts), so a field naming an object is one index
+  into the object vector, whose slots the kernel zeroes. A dumped string's
+  data stays in the image, as GNU's stays in the mapped dump: the writer
+  lays each cold string out as the sdata entry the loaded string keeps
+  (owner word, bytes, NUL, padding to `string_data_size`), the image is
+  mapped private and writable and never unmapped (pdumper.c maps every
+  section read-write and keeps the dump), and the string's header points
+  at its entry, which no block lists, so compaction never moves it and
+  retiring or resizing it within its slop writes the entry like any other
+  (a page copied on write); ASCII text is counted without decoding. Heap
+  blocks (cons, float, symbol, string, vector) come from an arena of 4 MB
+  anonymous mappings carved in address order, released blocks kept on
+  their size's free list as `free` keeps a chunk; symbol and string blocks
+  are their cells (21 symbols, 1,344 bytes; 85 strings) at cache-line
+  alignment instead of a rounded, page-aligned 4 KB. A copied subr record
+  is resolved once per record through a name index of the subr table (the
+  linear search cost 4,700 instructions a reference). `install_image`
+  finds a symbol's record by the symbol's identity and installs its
+  function cell, plist and watchers on that symbol: by name, an uninterned
+  symbol's cells went to the interned symbol of its name, or were skipped
+  when a same-named record had been installed. Native-subr records start
+  without names (two allocations each before), and the unit file name is
+  built only for an error. Result: 0.07 to 0.08 s, 8,545 faults, 298M
+  instructions, RSS 90 MB to 75 MB. What remains of the 0.02 to 0.03 s:
+  rebuilding the 285,638 objects (phase 2 about 17 ms, mostly symbols,
+  conses and sub char-tables), `Interpreter::new` (20M instructions:
+  temacs's syms_of_* work, which the image then replaces; GNU skips it
+  when a dump loads), native-code relocation as GNU does it (dlopen of 87
+  units, dlsym of 5,901 functions), and the record registry indexed by id
+  (record ids reach 190,000 for 800 records, 1.5 MB of slots). Probes:
+  `aset` on a dumped string in place and across a width change, then
+  collections, give GNU's results; fns, data, alloc, print, subr, lread,
+  editfns, casefiddle, chartab and cl-lib tests give GNU's results; the
+  pdumper tests and the local gate pass (3,202 tests, the as-root and
+  image exceptions below skipped).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -6008,7 +6061,9 @@ gate passed (run 40134441249), frozen passed on its first attempt (run
 40134442777); PR #103 merged rounds 61 to 70 into main (`7b960e7`).
 **On `e3bc9ef`** (round 71): full Rust gate passed (run 40139903681),
 frozen passed on its first attempt (run 40139905885).
-**On round 72's commit**: the full Rust gate and frozen runs are
+**On `cae8d39`** (round 72): full Rust gate passed (run 40146208215),
+frozen passed on its first attempt (run 40146209717).
+**On round 73's commit**: the full Rust gate and frozen runs are
 dispatched with it; their results go in the next round's record. Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that

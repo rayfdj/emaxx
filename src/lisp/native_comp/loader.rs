@@ -1597,16 +1597,19 @@ pub(super) fn resolve_dumped_function(
             "dumped native function has no compilation unit".into(),
         ));
     };
-    let unit_file = string_like(&unit.field(0))
-        .map(|string| string.text)
-        .unwrap_or_default();
-    let library = unit
-        .library()
-        .ok_or_else(|| dump_load_error(format!("NULL handle in compilation unit {unit_file}")))?;
+    let unit_file = || {
+        string_like(&unit.field(0))
+            .map(|string| string.text)
+            .unwrap_or_default()
+    };
+    let library = unit.library().ok_or_else(|| {
+        dump_load_error(format!("NULL handle in compilation unit {}", unit_file()))
+    })?;
     let c_name = function.c_name();
     let target = unsafe { function_symbol(&library, c_name) }.map_err(|_| {
         dump_load_error(format!(
-            "can't find function \"{c_name}\" in compilation unit {unit_file}"
+            "can't find function \"{c_name}\" in compilation unit {}",
+            unit_file()
         ))
     })?;
     function.set_target(target);

@@ -411,7 +411,10 @@ pub(crate) fn pdumper_load(
     if bytes.len() < HEADER_LEN {
         return Err(PdumperLoadError::BadFileType);
     }
-    let image = match load::load_image(&bytes, interp) {
+    let dump_size = bytes.len() as u64;
+    let image = match load::validate_header(&bytes)
+        .and_then(|header| load::load_permanent_image(bytes.into_permanent(), header, interp))
+    {
         Ok(image) => image,
         Err(load::LoadError::BadFileType) => return Err(PdumperLoadError::BadFileType),
         Err(load::LoadError::FailedDump) => return Err(PdumperLoadError::FailedDump),
@@ -421,7 +424,7 @@ pub(crate) fn pdumper_load(
     let record = PdumperLoadRecord {
         filename: path.to_string_lossy().into_owned(),
         load_time: started.elapsed(),
-        dump_size: bytes.len() as u64,
+        dump_size,
     };
     interp
         .install_image(&image, record.clone())

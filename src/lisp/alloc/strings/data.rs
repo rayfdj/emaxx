@@ -10,6 +10,10 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 const ALIGN: usize = std::mem::align_of::<usize>();
 const PREFIX: usize = std::mem::size_of::<*mut SharedStringState>();
+/// An sdata entry's alignment and its owner word before the data, for
+/// the image writer that lays out the entries its strings load into.
+pub(crate) const STRING_DATA_ALIGNMENT: usize = ALIGN;
+pub(crate) const STRING_DATA_PREFIX: usize = PREFIX;
 // alloc.c:MALLOC_SIZE_NEAR(8192), on the supported 64-bit targets.
 const BLOCK_BYTES: usize = 8192 - std::mem::size_of::<usize>();
 const LARGE_BYTES: usize = 1024;
