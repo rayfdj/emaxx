@@ -1,0 +1,11 @@
+{
+  "name": "puzzle-dojo",
+  "private": true,
+  "description": "Offline Queens with a coach that teaches the solving techniques.",
+  "scripts": {
+    "build": "node build.js",
+    "test": "node test/sound.js && node test/drills.js",
+    "test:dist": "node test/dist.js",
+    "test:browser": "node build.js && node test/e2e.js && node test/drill-play.js && node test/phone.js"
+  }
+}
