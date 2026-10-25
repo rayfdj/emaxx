@@ -3515,12 +3515,16 @@ pub(crate) fn wait_pumping_processes(
     let mut delivery_grace_deadline = None;
     let target_start =
         target_process_id.and_then(|process_id| interp.process_output_delivery_count(process_id));
-    let all_processes_start = interp.current_thread_process_output_delivery_count();
+    let mut all_processes_seen = interp.current_thread_process_output_delivery_count();
     loop {
         let mut progressed = pump_external_process_output_for(interp, env, only_process_id)?;
         progressed |= pump_connection_processes_for(interp, env, only_process_id)?;
-        let any_process_delivered =
-            interp.current_thread_process_output_delivery_count() != all_processes_start;
+        // Output delivered since the previous pass: the grace below is
+        // measured from the latest output, so a wait returns once output
+        // has been quiet for one READ_OUTPUT_DELAY_INCREMENT.
+        let delivery_count = interp.current_thread_process_output_delivery_count();
+        let any_process_delivered = delivery_count != all_processes_seen;
+        all_processes_seen = delivery_count;
         delivered |= any_process_delivered;
         if return_on_delivery && target_process_id.is_none() && any_process_delivered {
             // process.c:5657-5661 keeps waiting for up to one

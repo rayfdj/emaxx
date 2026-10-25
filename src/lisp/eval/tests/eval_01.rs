@@ -7799,8 +7799,9 @@ fn killing_buffer_replaces_it_in_every_window() {
             &mut interp,
             "(let* ((original (current-buffer))
                     (victim (get-buffer-create \" kill-other-window-buffer-victim\"))
-                    (other (split-window-internal
-                            (selected-window) 10 'below 0)))
+                    (other (progn
+                             (set-window-new-pixel (selected-window) 14)
+                             (split-window-internal (selected-window) 10 'below 0))))
                (set-window-buffer other victim)
                (kill-buffer victim)
                (list (window-live-p other)

@@ -620,6 +620,8 @@ impl Interpreter {
                 left: 0,
                 top: 0,
                 window_state_change: false,
+                change_stamp: 0,
+                number_of_windows: 0,
                 after_make_frame: true,
                 pointer_invisible: false,
                 was_invisible: false,
@@ -640,8 +642,8 @@ impl Interpreter {
     }
 
     pub(crate) fn note_selected_frame(&mut self, id: crate::lisp::types::FrameRef) {
+        // old_selected_frame is window_change_record's alone.
         if id != self.selected_frame_id {
-            self.old_selected_frame_id = self.selected_frame_id;
             self.selected_frame_id = id;
         }
         let terminal = id.borrow().terminal.expect("live frame terminal");

@@ -5993,7 +5993,7 @@ fn save_window_excursion_restores_the_window_tree() {
             r#"
                 (let ((original (selected-window)) during)
                   (save-window-excursion
-                    (select-window (split-window-internal original 12 nil 0.5))
+                    (select-window (split-window original -12))
                     (setq during (length (window-list))))
                   (list during
                         (eq (selected-window) original)
@@ -6118,11 +6118,10 @@ fn deleting_the_selected_window_restores_the_replacement_windows_point() {
                   (insert "abcdef")
                   (goto-char 5)
                   (let ((popup
-                         (split-window-internal
-                          origin-window 12 nil 0.5)))
+                         (split-window origin-window -12)))
                     (set-window-buffer popup popup-buffer)
                     (select-window popup)
-                    (delete-window-internal popup)
+                    (delete-window popup)
                     (list (eq (selected-window) origin-window)
                           (eq (current-buffer) origin-buffer)
                           (point))))
@@ -6214,7 +6213,7 @@ fn keyboard_macro_normalizes_shift_tab_and_selected_window_context() {
                 (let* ((map (make-sparse-keymap))
                        (origin (selected-window))
                        (other-window
-                        (split-window-internal origin 12 nil 0.5))
+                        (split-window origin -12))
                        (other-buffer (get-buffer-create "*command-window*"))
                        shifted-tab-ran)
                   (set-window-buffer other-window other-buffer)
@@ -6327,8 +6326,9 @@ fn pos_visible_in_window_p_uses_the_queried_split_window_height() {
             r#"
                 (let* ((other-buffer (get-buffer-create "*visibility-other*"))
                        (other-window
-                        (split-window-internal
-                         (selected-window) 12 nil 0.5)))
+                        (progn
+                          (set-window-new-pixel (selected-window) 12)
+                          (split-window-internal (selected-window) 12 nil 0.5))))
                   (with-current-buffer other-buffer
                     (dotimes (_ 20) (insert "line\n")))
                   (set-window-buffer other-window other-buffer)
@@ -6885,7 +6885,7 @@ fn ert_tests_get_independent_window_excursions() {
             (setq ert-original-window (selected-window))
             (ert-deftest first-window-mutator ()
               (select-window
-               (split-window-internal (selected-window) 12 nil 0.5)))
+               (split-window (selected-window) -12)))
             (ert-deftest second-window-observer ()
               (should (eq (selected-window) ert-original-window))
               (should (= (length (window-list)) 1)))

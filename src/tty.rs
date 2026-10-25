@@ -339,6 +339,9 @@ fn run_owned(
         let state = std::rc::Rc::clone(&state);
         move |interpreter, env| {
             if queue.input_pending() {
+                // Painting yields to the input, but redisplay_internal
+                // runs the window change functions before any update.
+                let _ = crate::lisp::primitives::run_window_change_functions(interpreter, env);
                 return;
             }
             if let Ok(mut state) = state.try_borrow_mut() {
@@ -3006,15 +3009,13 @@ fn redraw_with_echo_policy(
             &[root, Value::Integer(delta), Value::T],
         )?;
         if recovered.as_integer().unwrap_or(0) != 0 {
-            call(
-                interpreter,
-                env,
-                "window-resize-apply",
-                &[Value::Nil, Value::Nil],
-            )?;
+            crate::lisp::primitives::apply_staged_root_window_height(interpreter)?;
         }
         Ok(())
     })(interpreter, env);
+    // xdisp.c:redisplay_internal runs the window change functions once
+    // the mini window has its size; their errors are already muted.
+    let _ = crate::lisp::primitives::run_window_change_functions(interpreter, env);
     let frame_rows = rows - state.echo_rows; // everything above the echo area
     let full_repaint = state.painted_size != (cols, rows);
     if full_repaint {

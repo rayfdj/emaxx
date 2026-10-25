@@ -25210,18 +25210,43 @@ fn indirect_buffers_share_text_properties_with_their_base() {
     );
 }
 
+/// window.c's split-window-internal expects `split-window's staging: the
+/// old window's new pixel size is what remains of it after the split.
+fn split_window_internal_staged(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    window: Value,
+    size: i64,
+    side: Value,
+    normal: f64,
+) -> Result<Value, LispError> {
+    let measure = if side.is_nil() {
+        "window-pixel-height"
+    } else {
+        "window-pixel-width"
+    };
+    let old_size = call(interp, measure, &[window], env)?.as_integer()?;
+    call(
+        interp,
+        "set-window-new-pixel",
+        &[window, Value::Integer(old_size - size)],
+        env,
+    )?;
+    call(
+        interp,
+        "split-window-internal",
+        &[window, Value::Integer(size), side, Value::float(normal)],
+        env,
+    )
+}
+
 #[test]
 fn window_resize_apply_commits_staged_pixel_sizes() {
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
     let upper = call(&mut interp, "selected-window", &[], &mut env).expect("selected window");
-    call(
-        &mut interp,
-        "split-window-internal",
-        &[upper, Value::Integer(12), Value::Nil, Value::float(0.5)],
-        &mut env,
-    )
-    .expect("split succeeds");
+    split_window_internal_staged(&mut interp, &mut env, upper, 12, Value::Nil, 0.5)
+        .expect("split succeeds");
     let windows = call(&mut interp, "window-list", &[], &mut env)
         .expect("window list")
         .to_vec()
@@ -25565,7 +25590,11 @@ fn interactive_recenter_uses_the_live_shrunken_window_height() {
         &mut env,
     )
     .expect("stage the minibuffer-shrunken height");
-    call(&mut interp, "window-resize-apply", &[], &mut env).expect("apply the live height");
+    assert!(
+        crate::lisp::primitives::apply_staged_root_window_height(&mut interp)
+            .expect("apply the live height"),
+        "the staged root height is committed as grow_mini_window does"
+    );
     assert_eq!(
         call(&mut interp, "window-body-height", &[], &mut env).expect("body height"),
         Value::Integer(15)
@@ -26256,13 +26285,8 @@ fn window_render_layout_reports_split_geometry_in_tree_order() {
     let upper = interp.selected_window_value();
     // C-x 2's shape on the 24-row tty: under the menu-bar line the
     // 22-line root splits 11/11.
-    let lower = call(
-        &mut interp,
-        "split-window-internal",
-        &[upper, Value::Integer(11), Value::Nil, Value::float(0.5)],
-        &mut env,
-    )
-    .expect("split-window-internal");
+    let lower = split_window_internal_staged(&mut interp, &mut env, upper, 11, Value::Nil, 0.5)
+        .expect("split-window-internal");
     let Kind::Record(lower_id) = lower.kind() else {
         panic!("split answers the new window record");
     };
@@ -26299,25 +26323,12 @@ fn window_cycling_follows_tree_order_from_the_selected_window() {
     let upper_left = interp.selected_window_value();
     // C-x 2 then C-x 3: the bottom window exists before the upper-right
     // one, so creation order and tree order disagree.
-    let bottom = call(
-        &mut interp,
-        "split-window-internal",
-        &[
-            upper_left,
-            Value::Integer(11),
-            Value::Nil,
-            Value::float(0.5),
-        ],
-        &mut env,
-    )
-    .expect("split below");
-    let upper_right = call(
-        &mut interp,
-        "split-window-internal",
-        &[upper_left, Value::Integer(40), Value::T, Value::float(0.5)],
-        &mut env,
-    )
-    .expect("split right");
+    let bottom =
+        split_window_internal_staged(&mut interp, &mut env, upper_left, 11, Value::Nil, 0.5)
+            .expect("split below");
+    let upper_right =
+        split_window_internal_staged(&mut interp, &mut env, upper_left, 40, Value::T, 0.5)
+            .expect("split right");
 
     let next = call(&mut interp, "next-window", &[], &mut env).expect("next-window");
     assert_eq!(
@@ -26359,13 +26370,8 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         .borrow_mut()
         .insert("alpha\nbeta\ngamma\ndelta\n");
     let upper = interp.selected_window_value();
-    let lower = call(
-        &mut interp,
-        "split-window-internal",
-        &[upper, Value::Integer(11), Value::Nil, Value::float(0.5)],
-        &mut env,
-    )
-    .expect("split");
+    let lower = split_window_internal_staged(&mut interp, &mut env, upper, 11, Value::Nil, 0.5)
+        .expect("split");
     let Kind::Record(lower_id) = lower.kind() else {
         panic!("window record");
     };

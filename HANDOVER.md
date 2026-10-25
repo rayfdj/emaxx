@@ -5541,6 +5541,70 @@ setup_process_coding_systems's check now refuses). A 13-form
   ignores ROOT; the speedbar then turns itself off and kills its buffer
   while the test waits on a marker in it); keep-place-indicator's follow
   test times out after 21 s.
+- **Round 76: window.c's tree operations and window change functions.**
+  The last two `erc-scenarios-*` failures pass (all 21 now). (1)
+  window.c's Fsplit_window_internal, Fdelete_window_internal and
+  Fdelete_other_windows_internal with window_resize_check,
+  window_resize_apply, replace_window, make_parent_window,
+  recombine_windows, delete_all_child_windows and unshow_buffer: a split
+  reuses its parent combination unless `window-combination-limit' is t,
+  OLD has no parent or the parent combines the other way, and applies
+  the sizes and normal sizes `split-window' staged (three `split-window'
+  calls give one combination of three with normal sizes 0.25, 0.25 and
+  0.5, window numbers as GNU's; Emaxx nested binary parents, every normal
+  size 1.0); deletion applies the staged sibling sizes, a parent left
+  with one child is replaced by it and merged into a same-direction
+  grandparent, and "Deletion failed" when the sizes do not add up;
+  `delete-other-windows-internal' replaces ROOT (default the frame's root)
+  by WINDOW and leaves windows outside ROOT, so `delete-other-windows'
+  keeps a side window marked `no-delete-other-windows' (it flattened the
+  whole frame, which turned nickbar off), selects a live WINDOW, resizes
+  an internal one through `window--resize-root-window' and signals
+  "Specified root is not an ancestor of specified window"; the unstaged
+  calls GNU rejects ("Resizing old window failed", "Sum of sizes of old
+  and new window don't fit") are rejected; `window-resize-apply' applies
+  FRAME's staged tree only when the root's new size equals its size (it
+  applied any staging on the selected frame); the tty mini window's
+  growth commits the root through grow_mini_window's direct apply; (2)
+  `set-window-parameter' and `window-parameter' by `assq': a new entry
+  goes on the front and nil stays an entry (entries were appended,
+  removed for nil and found by `equal'); (3) window.c's
+  run_window_change_functions from redisplay (never in batch, as GNU's
+  initial-frame redisplay): `window-buffer-change-functions',
+  `window-size-change-functions', `window-selection-change-functions' and
+  `window-state-change-functions' buffer-locally per window, then per
+  frame, `window-configuration-change-hook' and `window-state-change-hook',
+  calls muted as safe_funcall ("Error muted by safe_call"), then
+  window_change_record's stamps, old buffers, old pixel and body sizes,
+  frame old selected windows and the old selected window and frame; none
+  of these ran, `window-old-buffer' was always nil and the old sizes 0;
+  `old-selected-frame' changes only there (a frame switch set it); the
+  initial frame counts as made (make_initial_frame); a redraw that yields
+  to pending input still runs them, as redisplay_internal does before any
+  update. A `-nw' probe of split, switch-to-buffer and other-window logs
+  the same hook calls and old selected windows as GNU. Known batch
+  difference: GNU's `window-resize-apply-total' puts the root at the
+  frame's top margin (the initial frame's one menu-bar line), so after
+  `set-window-configuration' GNU's batch root is 23 lines; Emaxx keeps one
+  coordinate set and stays at 24. Tests that called the internal split and
+  delete primitives without staging now use `split-window' and
+  `delete-window', or stage as `split-window' does. (4)
+  wait_reading_process_output's READ_OUTPUT_DELAY_INCREMENT: a wait for
+  any process (`accept-process-output' with nil) returns once output has
+  been quiet for 10 ms; the grace was re-armed on every pass after the
+  first output (the delivery count compared with the wait's start), so
+  such a wait always lasted its full timeout and ERC's `erc-d-t-wait-for'
+  missed state that lasts under 0.1 s (join-display-context's requested
+  channels, which passed before round 75 by timing). Newly exposed, not
+  fixed: `erc-scenarios-scrolltobottom--relaxed' (an `:expensive-test' in a
+  `term' child, outside the frozen selection) fails its "New message does
+  not trigger a scroll when at prompt" sustain check: with the wait now
+  returning on output, its loop redisplays while messages arrive, and
+  Emaxx's redisplay moves the window start of a window whose point is at
+  the prompt (GNU's keeps it); the next round starts there. Of 42 ERC and
+  window-related GNU test files (the 21 former failures and every file
+  using `split-window', `delete-window', `display-buffer' or
+  `pop-to-buffer'), all others match GNU's results.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -6191,7 +6255,16 @@ frozen passed on its first attempt (run 40154532135).
 **On `8ec8a70`** (round 74): full Rust gate passed (run 40162780501),
 frozen passed on its first attempt (run 40162782011); PR #104 merged
 rounds 71 to 74 into main (`a6640b6`).
-**On round 75's commit**: the local gate (all groups, gate profile,
+**On `15acff5`** (round 75): full Rust gate passed (run 40171629179);
+frozen failed only GNU's known `eglot-test-rust-completion-exit-function`
+oracle flake (7,669 passed, 1 unexpected), and its rerun passed (run
+40171630795, attempt 2).
+**On round 76's commit**: the local gate (all groups, gate profile,
+`LANG=C LC_ALL=C`, the known as-root and image tests skipped) passed
+3,202 of 3,202 before the `accept-process-output` grace fix, after which
+the 101 process tests and 78 accept tests pass; the full Rust gate and
+frozen runs are dispatched with it. Earlier, on round 75's commit: the
+local gate (all groups, gate profile,
 `LANG=C LC_ALL=C`, the known as-root and image tests skipped) passed
 3,201 of 3,202; the failure was the anti-cheat scan catching
 `rename-auto-save-file` called through the native dispatcher, now called
