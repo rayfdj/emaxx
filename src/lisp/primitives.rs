@@ -300,7 +300,7 @@ pub(crate) use dispatch::{
     string_face_spans,
 };
 pub(crate) use dispatch::{
-    LineNumberLayout, LineNumberMode, TtyFaceAttrs, WindowRenderInfo,
+    LineNumberLayout, LineNumberMode, ModeLineCells, TtyFaceAttrs, WindowRenderInfo,
     apply_staged_root_window_height, render_window_header_line, render_window_mode_line,
     render_window_tab_line, resolve_tty_face_attrs, run_window_change_functions,
     store_window_hscroll_state, window_face_spans, window_hscroll_state, window_line_number_layout,

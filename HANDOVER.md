@@ -5746,12 +5746,88 @@ setup_process_coding_systems's check now refuses). A 13-form
   clamps to (79 . 0); compositions beyond base plus zero-width marks
   (composition-function-table rules, grapheme clusters, point
   adjustment) are not consulted; `format-mode-line' still ignores FACE,
-  WINDOW and BUFFER (GNU formats in WINDOW's buffer and keeps faces).
+  WINDOW and BUFFER (GNU formats in WINDOW's buffer and keeps faces;
+  round 79 ports it).
   Local validation: the full gate, 3,207 passed across its ten groups
   with the documented local skips (the tty group, 68, includes the new
   continuation-TAB, translation and padding-fill tests), and 81 GNU test
   files (dired, edebug, every ERC file, flymake, python, replace,
   simple, so-long and others) as GNU.
+
+- **Round 79: xdisp.c's mode-line formatting (display_mode_element,
+  decode_mode_spec, Fformat_mode_line, display_mode_line).** A new module,
+  `src/lisp/primitives/dispatch/display/mode_line.rs`, replaces the old
+  renderer. (1) One engine with GNU's targets: `format-mode-line' builds
+  MODE_LINE_STRING's propertized pieces (store_mode_line_string: a FACE
+  argument merged under each piece's own face, `t' stored as is, an
+  integer FACE giving MODE_LINE_NOPROP's plain text), and a window's mode,
+  header and tab lines lay out MODE_LINE_DISPLAY's terminal row as
+  display_string does: the frontend measures each glyph's cells (display
+  table, escapes, `char-width-table'), a TAB goes to the buffer's next
+  tab stop, the row stops at its right edge and is filled with spaces
+  (a custom format no longer ends in dashes). (2) display_mode_element:
+  a symbol without a `risky-local-variable' property makes its value
+  risky (strings lose their properties, :eval and :propertize are
+  ignored); a symbol's string value shows literally; (SYMBOL THEN ELSE)
+  tests the symbol's dynamic value, nil, t and keywords included, and
+  any malformed element is "*invalid*"; (WIDTH ...) pads and truncates
+  in columns, padding in the base face and only after a list's last
+  element; :propertize's props replace the outer ones and merge over a
+  string's own (those at its start) across the whole copy; a %-construct
+  takes the properties of the character after its `%'; depth over 100
+  gives "*too-deep*"; a NUL ends a string; :eval is dsafe_eval (`(eval
+  FORM t)' with quitting inhibited, an error logged as "Error during
+  redisplay: (eval FORM t) signaled ..."). (3) decode_mode_spec: %l from
+  the window's start through w->base_line_number (a window slot), "??"
+  over `line-number-display-limit' or when lines are longer than
+  `line-number-display-limit-width' (GNU's backward scan), carriage
+  returns counted under `selective-display'; %c %C %i right-justified in
+  their field (pint2str) and %I as pint2hrstr; %o %p %P %q from the
+  window's start and the end its last redisplay recorded
+  (w->window_end_pos, a window slot); %m only for a string `mode-name';
+  %M processes `global-mode-string' as a construct; %- is "--" in strings
+  and FRAME_MESSAGE_BUF_SIZE dashes on the row; %[ %] the recursive-edit
+  depth; %e, %F (the title, else the name), %z and %Z with the
+  end-of-line mnemonic (a string, a character or "(*invalid*)"); an
+  unknown spec is "". (4) format-mode-line decodes WINDOW and BUFFER
+  (wrong-type-argument windowp or bufferp, the dead-buffer error) before
+  the batch no-op, answers "" for a nil FORMAT, and formats with WINDOW
+  selected and BUFFER current, then restores the selection, the old
+  window's point and the buffer, so Buffer-menu's Mode column shows each
+  buffer's mode. (5) display_mode_line: the window's
+  `mode-line-format', `header-line-format' or `tab-line-format' parameter
+  overrides the buffer's, match data is saved around the formatting,
+  `mode-line-compact' (and `long') squeezes runs of spaces, and the row
+  handles a string's properties as display_string's iterator does:
+  `invisible' text is hidden under the buffer's invisibility spec, a
+  display string replaces its run, `(space :width ...)' and `(space
+  :align-to ...)' stretch (align-to from the text area's left edge), a
+  `min-width' sequence is padded when the row moves on to a string
+  without it (one column when the sequence is already wider), `(when
+  FORM . SPEC)' tests FORM; mode-line strings use `standard-display-table'
+  when it is a display table. tmux probes (35 format-mode-line cases with
+  faces, risky symbols, widths, every %-construct, errors; screens of
+  custom, min-width, align-to, right-aligned, compact, header and tab
+  lines, a window parameter, invisible text, scrolled, narrowed and
+  read-only buffers, side-by-side windows, `list-buffers') give GNU's
+  results; 2,000 `format-mode-line' calls of the default format take
+  0.17 s against GNU's 0.35 s and redisplay costs the same. Not covered:
+  GNU's interval tree keeps adjacent intervals with equal properties
+  apart where Emaxx's string properties merge them, so a result built
+  from equally propertized pieces (any `concat' of them too) prints
+  fewer intervals (#("ab" 0 2 (face bold)) for GNU's #("ab" 0 1 (face
+  bold) 1 2 (face bold))); the base-line cache's validity uses the
+  buffer's modiff and accessible region for BEG_UNCHANGED; a window
+  whose `mode-line-format' is nil still gets a blank mode line row
+  (window_wants_mode_line); a non-selected window keeps its start when
+  its point is off-screen, where GNU's redisplay_window scrolls it, so
+  its %l and %p (and `window-end') can differ; the terminal draws no
+  italic, strike-through or dim face attribute. Local validation: the
+  full gate, 3,208 passed across its ten groups with the documented local
+  skips (primitives, 751, includes the new 35-case format-mode-line
+  test), and 14 GNU test files (buff-menu, ibuffer, tab-bar, so-long,
+  simple, help-fns, package, eshell, which-func, erc, erc statusmsg,
+  xdisp, buffer, textprop) as GNU.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -6443,6 +6519,10 @@ whose asynchronous handshake this container's GNU leaves in `connect`
 failed now and then under load until round 47: a cons block's address,
 left in a stack slot by the allocator's bookkeeping, kept the block's
 first cell, which the weak key sometimes was (see round 47).
+**On `fe2b73e`** (round 78): full Rust gate passed (run 40193461329);
+frozen failed only GNU's known `eglot-test-rust-completion-exit-function`
+oracle flake (7,669 passed, 1 unexpected), and its rerun was dispatched
+(run 40193463671, attempt 2).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

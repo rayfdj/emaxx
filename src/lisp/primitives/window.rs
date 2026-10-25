@@ -78,6 +78,13 @@ pub(crate) const WINDOW_OLD_PIXEL_WIDTH_SLOT: usize = 32;
 pub(crate) const WINDOW_OLD_PIXEL_HEIGHT_SLOT: usize = 33;
 pub(crate) const WINDOW_OLD_BODY_PIXEL_WIDTH_SLOT: usize = 34;
 pub(crate) const WINDOW_OLD_BODY_PIXEL_HEIGHT_SLOT: usize = 35;
+/// window.h's base_line_number and base_line_pos for the mode line's
+/// %l, with the buffer and the state they were counted under (absent,
+/// read as no cache, for a window that has not shown a line number).
+pub(crate) const WINDOW_BASE_LINE_SLOT: usize = 36;
+/// window.h's window_end_pos: Z minus the end of the text the window's
+/// last redisplay showed (absent before one).
+pub(crate) const WINDOW_END_POS_SLOT: usize = 37;
 pub(crate) const MINIBUFFER_WINDOW_KIND: &str = "minibuffer";
 pub(crate) const INTERNAL_HORIZONTAL_WINDOW_KIND: &str = "internal-horizontal";
 pub(crate) const INTERNAL_VERTICAL_WINDOW_KIND: &str = "internal-vertical";

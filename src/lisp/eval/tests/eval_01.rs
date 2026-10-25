@@ -8807,6 +8807,7 @@ fn header_line_glass_honors_propertized_align_to_columns() {
     );
     let mut env: Env = crate::lisp::types::Env::new();
     let window_id = interp.selected_window_id();
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window_id);
     let text = crate::lisp::primitives::render_window_header_line(
         &mut interp,
         &mut env,
@@ -8816,6 +8817,8 @@ fn header_line_glass_honors_propertized_align_to_columns() {
             text_height: 10,
             window_end: 1,
         },
+        80,
+        &measure,
     )
     .expect("Buffer Menu header renders")
     .0;
@@ -8840,6 +8843,7 @@ fn header_line_glass_keeps_partial_sort_column_face() {
     );
     let mut env: Env = crate::lisp::types::Env::new();
     let window_id = interp.selected_window_id();
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window_id);
     let (text, spans) = crate::lisp::primitives::render_window_header_line(
         &mut interp,
         &mut env,
@@ -8849,6 +8853,8 @@ fn header_line_glass_keeps_partial_sort_column_face() {
             text_height: 10,
             window_end: 1,
         },
+        80,
+        &measure,
     )
     .expect("sortable tabulated-list header renders");
     assert!(
@@ -8881,6 +8887,7 @@ fn tab_line_glass_evaluates_per_buffer_format() {
     );
     let mut env: Env = crate::lisp::types::Env::new();
     let window_id = interp.selected_window_id();
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window_id);
     let (text, spans) = crate::lisp::primitives::render_window_tab_line(
         &mut interp,
         &mut env,
@@ -8890,12 +8897,18 @@ fn tab_line_glass_evaluates_per_buffer_format() {
             text_height: 10,
             window_end: 1,
         },
+        80,
+        &measure,
     )
     .expect("tab line renders");
-    assert_eq!(text, " Group: M-1 flat");
+    assert_eq!(text.trim_end(), " Group: M-1 flat");
     assert_eq!(
         spans,
-        vec![(0, text.chars().count(), Value::Symbol("bold".into()))]
+        vec![(
+            0,
+            text.trim_end().chars().count(),
+            Value::Symbol("bold".into())
+        )]
     );
 }
 

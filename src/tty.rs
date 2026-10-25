@@ -1969,6 +1969,67 @@ impl<'a> CharacterDisplayContext<'a> {
         self
     }
 
+    /// The context display_string draws a mode, header or tab line in:
+    /// reseat_to_string's iterator uses `standard-display-table' when it
+    /// is a display table, else the window's.
+    fn for_mode_line(interpreter: &'a Interpreter, buffer_id: u64, window_id: u64) -> Self {
+        let mut context = Self::new(interpreter, buffer_id, window_id);
+        if let Some(Kind::CharTable(table)) = interpreter
+            .default_toplevel_value("standard-display-table")
+            .map(|value| value.kind())
+            && table.has_purpose("display-table")
+            && table.extra_count() == 6
+        {
+            context.display_table = Some(table);
+        }
+        context
+    }
+
+    /// produce_stretch_glyph's width, in cells, of a `(space . PLIST)'
+    /// display spec at X on a mode-line row: an :align-to position there
+    /// counts from the text area's left edge when it names no window
+    /// position.
+    fn mode_line_stretch_width(&self, plist: &[Value], x: usize) -> usize {
+        let get = |key: &str| {
+            plist
+                .chunks(2)
+                .find(|pair| matches!(pair[0].kind(), Kind::Symbol(name) if name == key))
+                .and_then(|pair| pair.get(1).copied())
+                .filter(|value| !value.is_nil())
+        };
+        let (width, zero_ok) = if let Some(width) =
+            get(":width").and_then(|prop| self.pixel_width(&prop, None))
+        {
+            (width as i64, true)
+        } else if let Some(factor) = get(":relative-width").and_then(|prop| prop.as_float().ok())
+            && factor > 0.0
+        {
+            (factor as i64, false)
+        } else if let Some(prop) = get(":align-to") {
+            let mut align_to = -1i64;
+            match self.pixel_width(&prop, Some(&mut align_to)) {
+                Some(target) => {
+                    let left = self
+                        .interpreter
+                        .window_margins(self.window_id)
+                        .0
+                        .unwrap_or(0)
+                        .max(0);
+                    let origin = if align_to < 0 { left } else { align_to };
+                    ((target as i64 + origin - x as i64).max(0), true)
+                }
+                None => (1, false),
+            }
+        } else {
+            (1, false)
+        };
+        if width < 0 || (width == 0 && !zero_ok) {
+            1
+        } else {
+            width as usize
+        }
+    }
+
     /// The `word-wrap-by-category' bits (layout.rs) of CHARACTER.
     fn wrap_category_bits(&self, character: char) -> u8 {
         let Some(table) = self.category_table else {
@@ -2593,6 +2654,59 @@ impl CharacterDisplay {
 /// A mode, header or tab line's text as display_string shows it: the
 /// window's display translations and glyph widths, with SPANS moved
 /// from character offsets to the cells the glyphs take.
+/// The terminal's measures of a window's mode, header or tab line row
+/// for the interpreter's display_string.
+pub(crate) struct ModeLineMeasure {
+    buffer_id: u64,
+    window_id: u64,
+}
+
+impl ModeLineMeasure {
+    /// The measures of WINDOW_ID's rows, which show its buffer.
+    #[cfg(test)]
+    pub(crate) fn for_window(interpreter: &Interpreter, window_id: u64) -> Self {
+        let buffer_id = crate::lisp::primitives::window_buffer_id(
+            interpreter,
+            &interpreter.record_value(window_id),
+        )
+        .unwrap_or_else(|| interpreter.current_buffer_id());
+        Self {
+            buffer_id,
+            window_id,
+        }
+    }
+}
+
+impl crate::lisp::primitives::ModeLineCells for ModeLineMeasure {
+    fn widths(&self, interpreter: &Interpreter, text: &[char]) -> Vec<usize> {
+        let source: String = text.iter().collect();
+        let display =
+            CharacterDisplayContext::for_mode_line(interpreter, self.buffer_id, self.window_id)
+                .translate_for(&source, true);
+        let glyphs: Vec<char> = display.text.chars().collect();
+        display
+            .offsets
+            .windows(2)
+            .map(|pair| {
+                let piece: String = glyphs[pair[0].min(glyphs.len())..pair[1].min(glyphs.len())]
+                    .iter()
+                    .collect();
+                cell_count(&piece)
+            })
+            .collect()
+    }
+
+    fn stretch(&self, interpreter: &Interpreter, plist: &[Value], x: usize) -> usize {
+        CharacterDisplayContext::for_mode_line(interpreter, self.buffer_id, self.window_id)
+            .mode_line_stretch_width(plist, x)
+    }
+
+    fn width_of(&self, interpreter: &Interpreter, spec: &Value) -> Option<f64> {
+        CharacterDisplayContext::for_mode_line(interpreter, self.buffer_id, self.window_id)
+            .pixel_width(spec, None)
+    }
+}
+
 fn apply_character_display(
     interpreter: &Interpreter,
     buffer_id: u64,
@@ -2600,8 +2714,8 @@ fn apply_character_display(
     text: String,
     spans: &mut Vec<(usize, usize, Value)>,
 ) -> String {
-    let display =
-        CharacterDisplayContext::new(interpreter, buffer_id, window_id).translate_for(&text, true);
+    let display = CharacterDisplayContext::for_mode_line(interpreter, buffer_id, window_id)
+        .translate_for(&text, true);
     display.remap_faces(spans);
     spans.extend(display.face_spans);
     spans.extend(
@@ -5102,18 +5216,23 @@ fn redraw_with_echo_policy(
     let mode_line_active_attrs = mode_line_face("mode-line-active");
     let mode_line_inactive_attrs = mode_line_face("mode-line-inactive");
     for job in &mode_line_jobs {
+        let measure = ModeLineMeasure {
+            buffer_id: job.buffer_id,
+            window_id: job.window_id,
+        };
         let (mut mode_line, mut spans) = match crate::lisp::primitives::render_window_mode_line(
             interpreter,
             env,
             job.window_id,
             job.point,
             job.metrics,
+            job.body_width,
+            &measure,
         ) {
-            Ok((text, spans)) if !text.is_empty() => (text, spans),
+            Ok((text, spans)) => (text, spans),
             // A GNU-shaped fabrication here would feed the very
             // differential tool that checks mode lines; render failures
             // must be visible.
-            Ok(_) => ("[mode-line: empty render]".to_string(), Vec::new()),
             Err(error) => {
                 debug_log(&format!("mode-line render: {error:?}"));
                 (format!("[mode-line render error: {error:?}]"), Vec::new())
@@ -5126,9 +5245,11 @@ fn redraw_with_echo_policy(
             mode_line,
             &mut spans,
         );
+        // display_mode_line fills the row with spaces; a wide character
+        // cut at its edge leaves pad_mode_line's `-'.
         let cells = cell_count(&mode_line);
         if cells < job.body_width {
-            mode_line.extend(std::iter::repeat_n('-', job.body_width - cells));
+            mode_line.extend(std::iter::repeat_n(' ', job.body_width - cells));
         }
         let mut shown = job.body_width;
         if cells > job.body_width {
@@ -5168,12 +5289,18 @@ fn redraw_with_echo_policy(
                 )
             });
         for job in &tab_line_jobs {
+            let measure = ModeLineMeasure {
+                buffer_id: job.buffer_id,
+                window_id: job.window_id,
+            };
             let (mut tab, mut spans) = match crate::lisp::primitives::render_window_tab_line(
                 interpreter,
                 env,
                 job.window_id,
                 job.point,
                 job.metrics,
+                job.body_width,
+                &measure,
             ) {
                 Ok((text, spans)) => (text, spans),
                 Err(error) => {
@@ -5220,12 +5347,18 @@ fn redraw_with_echo_policy(
                 )
             });
         for job in &header_line_jobs {
+            let measure = ModeLineMeasure {
+                buffer_id: job.buffer_id,
+                window_id: job.window_id,
+            };
             let (mut header, mut spans) = match crate::lisp::primitives::render_window_header_line(
                 interpreter,
                 env,
                 job.window_id,
                 job.point,
                 job.metrics,
+                job.body_width,
+                &measure,
             ) {
                 Ok((text, spans)) => (text, spans),
                 Err(error) => {

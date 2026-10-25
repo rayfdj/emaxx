@@ -60,6 +60,12 @@ pub(crate) fn resolve_buffer_invisibility(
             interpreter.lookup_var("buffer-invisibility-spec", &crate::lisp::types::Env::new())
         })
         .unwrap_or(Value::T);
+    invisibility_spec_of(spec)
+}
+
+/// TEXT_PROP_MEANS_INVISIBLE's reading of a `buffer-invisibility-spec'
+/// value, for text (a mode-line string) whatever its source.
+pub(crate) fn invisibility_spec_of(spec: Value) -> InvisibilitySpec {
     match spec.kind() {
         Kind::Nil => InvisibilitySpec::default(),
         value
