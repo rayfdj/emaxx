@@ -4926,7 +4926,7 @@ fn loaded_todo_mode_resource_state_survives_real_ert_macro() {
                         (null (set-window-new-normal window))
                         (null (window-new-normal window))))
                      (let* ((old (selected-window))
-                            (new (split-window-internal old 12 nil 0.5))
+                            (new (split-window old -12))
                             (root (frame-root-window)))
                        (unwind-protect
                            (and
@@ -4962,7 +4962,7 @@ fn loaded_todo_mode_resource_state_survives_real_ert_macro() {
                                 (run-window-scroll-functions new))
                               (equal seen (list new 1 t)))
                             (progn
-                              (delete-window-internal new)
+                              (delete-window new)
                               (and
                                (windowp new)
                                (not (window-valid-p new))
@@ -4972,7 +4972,7 @@ fn loaded_todo_mode_resource_state_survives_real_ert_macro() {
                                (= (window-pixel-height old) 24)
                                (= (length (window-list)) 1))))
                          (when (window-valid-p new)
-                           (delete-window-internal new))))
+                           (delete-window new))))
                      (let ((actual
                             (list temp-buffer-show-function
                                   minibuffer-scroll-window

@@ -397,28 +397,34 @@ define_dispatch!(
             }
             "rename-buffer" => {
                 need_args(name, args, 1)?;
+                // buffer.c:Frename_buffer.
                 let new_name = string_text(&args[0])?;
                 if new_name.is_empty() {
-                    return Err(LispError::Signal("Empty string for buffer name".into()));
+                    return Err(LispError::Signal(
+                        "Empty string is invalid as a buffer name".into(),
+                    ));
                 }
                 let old_name = interp.buffer.borrow().name.clone();
                 let unique = args.len() > 1 && args[1].is_truthy();
-                let final_name = if interp.has_buffer(&new_name) && new_name != old_name {
-                    if unique {
-                        let mut n = 2;
-                        loop {
-                            let candidate = format!("{}<{}>", new_name, n);
-                            if !interp.has_buffer(&candidate) {
-                                break candidate;
-                            }
-                            n += 1;
-                        }
-                    } else {
+                let final_name = if interp.has_buffer(&new_name) {
+                    if !unique && new_name == old_name {
+                        return Ok(Value::String(old_name.into()));
+                    }
+                    if !unique {
                         return Err(LispError::Signal(format!(
-                            "Buffer name `{}' is in use",
-                            new_name
+                            "Buffer name `{new_name}' is in use"
                         )));
                     }
+                    // Fgenerate_new_buffer_name with the old name as the
+                    // one that may be kept, so a buffer already in NAME's
+                    // <N> sequence keeps its name.
+                    let generated = super::call(
+                        interp,
+                        "generate-new-buffer-name",
+                        &[args[0], Value::String(old_name.clone().into())],
+                        env,
+                    )?;
+                    string_text(&generated)?
                 } else {
                     new_name
                 };
@@ -427,6 +433,21 @@ define_dispatch!(
                 }
                 interp.buffer.borrow_mut().last_name = Some(old_name);
                 interp.buffer.borrow_mut().name = final_name.clone();
+                // A buffer visiting no file renames its auto-save file.
+                let visits_file = interp
+                    .lookup_var("buffer-file-name", env)
+                    .is_some_and(|value| value.is_truthy());
+                let auto_saves = interp
+                    .lookup_var("buffer-auto-save-file-name", env)
+                    .is_some_and(|value| value.is_truthy());
+                if !visits_file && auto_saves {
+                    crate::lisp::primitives::hooks_overlays::call_named_function(
+                        interp,
+                        "rename-auto-save-file",
+                        &[],
+                        env,
+                    )?;
+                }
                 run_named_hooks(interp, "buffer-list-update-hook", env, None)?;
                 // GNU buffer.c calls the preloaded Elisp owner directly
                 // after installing the provisional name.  Uniquify uses

@@ -1975,8 +1975,9 @@ enum ProcessStatus {
     Exit,
     /// Subprocess terminated by an operating-system signal.
     Signal,
-    /// Nonblocking network connection not yet reported as established.
-    Connect,
+    /// process.c's (connect . ADDRINFOS): a non-blocking connect under
+    /// way, and the addresses to try after it.
+    Connect(Vec<std::net::SocketAddr>),
     /// Network connection established (client or accepted server child).
     Open,
     /// Network connection closed.
@@ -2002,7 +2003,7 @@ impl ProcessStatus {
             Self::Stop => "stop",
             Self::Exit => "exit",
             Self::Signal => "signal",
-            Self::Connect => "connect",
+            Self::Connect(_) => "connect",
             Self::Open => "open",
             Self::Closed => "closed",
             Self::Failed => "failed",
@@ -2013,7 +2014,7 @@ impl ProcessStatus {
     fn is_live(&self) -> bool {
         matches!(
             self,
-            Self::Run | Self::Stop | Self::Connect | Self::Open | Self::Listen
+            Self::Run | Self::Stop | Self::Connect(_) | Self::Open | Self::Listen
         )
     }
 }
@@ -2430,6 +2431,7 @@ impl Clone for ProcessState {
             stdout_eof: self.stdout_eof,
             stderr_eof: self.stderr_eof,
             encoder: Default::default(),
+            output_to_null: self.output_to_null,
         }
     }
 }
@@ -2515,6 +2517,9 @@ struct ProcessState {
     stderr_eof: bool,
     /// proc_encode_coding_system[] for the output channel.
     encoder: crate::lisp::primitives::coding::EncoderSpec,
+    /// Fprocess_send_eof reopened the output channel on the null device
+    /// (p->outfd): what is sent after the EOF goes nowhere.
+    output_to_null: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -2718,6 +2723,10 @@ pub(crate) struct FrameState {
     pub(crate) left: i64,
     pub(crate) top: i64,
     pub(crate) window_state_change: bool,
+    /// window.c's change_stamp and number_of_windows, as
+    /// window_change_record last left them.
+    pub(crate) change_stamp: i64,
+    pub(crate) number_of_windows: usize,
     pub(crate) after_make_frame: bool,
     pub(crate) pointer_invisible: bool,
     pub(crate) was_invisible: bool,
@@ -4077,7 +4086,10 @@ impl Interpreter {
                 left: 0,
                 top: 0,
                 window_state_change: false,
-                after_make_frame: false,
+                change_stamp: 0,
+                number_of_windows: 0,
+                // frame.c:make_initial_frame: the initial frame is made.
+                after_make_frame: true,
                 pointer_invisible: false,
                 was_invisible: false,
             },
@@ -5289,7 +5301,7 @@ pub struct InterpreterState {
     /// Missing entries retain GNU's visible-by-default state.
     window_cursor_visibility: HashMap<u64, bool>,
     /// Window selected when the last window-change cycle completed.
-    old_selected_window_id: u64,
+    pub(crate) old_selected_window_id: u64,
     /// Per-frame old selected window.  GNU's initial batch frame leaves this
     /// unset until the first completed window-change cycle.
     /// Monotonic selection stamp used by `window-use-time'.
@@ -5811,6 +5823,8 @@ impl Interpreter {
                 left: 0,
                 top: 0,
                 window_state_change: false,
+                change_stamp: 0,
+                number_of_windows: 0,
                 after_make_frame: true,
                 pointer_invisible: false,
                 was_invisible: false,

@@ -5466,6 +5466,145 @@ setup_process_coding_systems's check now refuses). A 13-form
   median against GNU's 0.057 s (40 interleaved runs), 7,438 page faults
   (GNU 5,614), RSS 72 MB (GNU 55 MB). The local gate passes (3,202
   tests).
+- **Round 75: process.c's get_process, non-blocking connects, deletion
+  and EOF on connections, timers bounding the wait.** A survey of the 519
+  GNU test files (each under GNU and Emaxx, `-l ert -f
+  ert-run-tests-batch-and-exit`) took 1,616 s against GNU's 1,842 s; what
+  stood out was correctness: 21 `erc-scenarios-*` files, outside the
+  frozen selection (`:expensive-test`, local servers), failed under Emaxx
+  and passed under GNU. Startup was looked at again first: a linear probe
+  of the relocation cursor gained nothing (137.17M against 137.13M
+  instructions in the loader) and is not kept; skipping the dumped
+  strings' character recount saves 2.9M instructions and no page faults
+  (the faults are the 11 MB of objects the loader makes, 2,956 of them
+  in the symbol and container phase), so the check stays. Changes: (1)
+  process.c's `get_process` (a process, a process's or buffer's name, a
+  buffer, nil for the current buffer's process; "Process NAME does not
+  exist", "Attempt to get process for a dead buffer", "Buffer NAME has no
+  process", else CHECK_PROCESS) for `delete-process` (now 0 to 1
+  arguments, its interactive `message` reporting "Deleted process"),
+  `process-status` (a name finds only a process, none being nil),
+  `process-type`, `process-send-string`, `process-send-region`,
+  `process-send-eof`, `process-running-child-p`, the signal functions and
+  `internal-default-signal-process`; they took a process object only, or
+  answered `processp` for every designator; (2) Fget_buffer_process: nil
+  has no process, a buffer object is taken as it is, killed or not, a
+  name finds its live buffer, anything else is CHECK_STRING's error; it
+  signaled "Selecting deleted buffer" for a killed buffer, which every
+  ERC test's cleanup asks about, and read nil as the current buffer (the
+  mode line's `%s` and `process-send-eof` now pass the current buffer);
+  (3) a `:nowait t` client connects as connect_network_socket's
+  non-blocking client: a socket per address, O_NONBLOCK and FD_CLOEXEC,
+  connect returning EINPROGRESS, the process `connect` with the addresses
+  left (status (connect . ADDRINFOS)), `:remote` the address dialed; the
+  event loop's wait finds the socket writable and reads SO_ERROR: zero
+  is `open` (after any TLS), an error goes on to the next address, and
+  with none left the status is (failed ERRNO) and the sentinel hears
+  "failed with code 111"; a socket still connecting is not read, and a
+  connect that cannot start on any address leaves the process failed;
+  the client connected synchronously and signaled `file-error` at once,
+  so ERC's reconnect timers and connectivity probe never ran; (4)
+  Fdelete_process: a connection's status becomes (exit 0) whatever is
+  left of its socket, a child still running is killed, and status_notify
+  reports `status_message` of the new status to a process still on the
+  process alist only; a connection whose peer closed leaves the alist
+  (`delete-exited-processes`) before its "connection broken by remote
+  peer" sentinel, so a later `delete-process` notifies no one; the sentinel
+  heard "killed" for a closed connection; (5) server_accept_connection's
+  HOST: "open from 127.0.0.1" and "accept from 127.0.0.1\n" (the port was
+  in both and the log line had no newline), IPv6 children named "NAME
+  <[HOST]:PORT>" with HOST_FORMAT_IN6; (6) Fprocess_send_eof on a
+  connection shuts down its sending half and points output at the null
+  device (`output_to_null`), as for a pipe or a non-pty child; a serial
+  port drains (tcdrain); it did nothing for a connection, so a server
+  never read the end; (7) timer_check's delay: the wait
+  (`wait_pumping_processes`) is bounded by the earliest timer on
+  `timer-list`; it napped in 10 ms steps, so a 1 s timer fired up to
+  10 ms late (erc-d's "Lingered for 1.00 seconds" read "1.01"); a 1 s,
+  0.25 s and 0.3 s timer now fire at 1.0003, 0.2503 and 0.3003 s (GNU
+  1.0004, 0.2503, 0.3006); (8) send_process's wait_while_connecting:
+  `process-send-string`, `process-send-region` and `process-send-eof` on
+  a connection still connecting wait (running timers, reading other
+  processes) until it is open or failed; they wrote to the socket still
+  connecting; (9) buffer.c's Frename_buffer: UNIQUE asks
+  `generate-new-buffer-name` with the old name as IGNORE, so `a<2>`
+  renamed uniquely to `a` stays `a<2>` (it became `a<4>` with `a<3>`
+  present, and ERC, renaming a reconnected channel's buffer, took another
+  buffer's name), a non-unique rename to the buffer's own name returns
+  early, an empty name signals "Empty string is invalid as a buffer
+  name", and a buffer visiting no file with an auto-save file name calls
+  `rename-auto-save-file` through its function cell. Of the 21 failing
+  files, 19 pass. The other two run their test in a child Emacs under
+  `term`: status-sidebar's nickbar test needs window.c's tree operations
+  (its `delete-other-windows` deletes the speedbar's side window, which
+  carries `no-delete-other-windows`, because `delete-other-windows-internal`
+  ignores ROOT; the speedbar then turns itself off and kills its buffer
+  while the test waits on a marker in it); keep-place-indicator's follow
+  test times out after 21 s.
+- **Round 76: window.c's tree operations and window change functions.**
+  The last two `erc-scenarios-*` failures pass (all 21 now). (1)
+  window.c's Fsplit_window_internal, Fdelete_window_internal and
+  Fdelete_other_windows_internal with window_resize_check,
+  window_resize_apply, replace_window, make_parent_window,
+  recombine_windows, delete_all_child_windows and unshow_buffer: a split
+  reuses its parent combination unless `window-combination-limit' is t,
+  OLD has no parent or the parent combines the other way, and applies
+  the sizes and normal sizes `split-window' staged (three `split-window'
+  calls give one combination of three with normal sizes 0.25, 0.25 and
+  0.5, window numbers as GNU's; Emaxx nested binary parents, every normal
+  size 1.0); deletion applies the staged sibling sizes, a parent left
+  with one child is replaced by it and merged into a same-direction
+  grandparent, and "Deletion failed" when the sizes do not add up;
+  `delete-other-windows-internal' replaces ROOT (default the frame's root)
+  by WINDOW and leaves windows outside ROOT, so `delete-other-windows'
+  keeps a side window marked `no-delete-other-windows' (it flattened the
+  whole frame, which turned nickbar off), selects a live WINDOW, resizes
+  an internal one through `window--resize-root-window' and signals
+  "Specified root is not an ancestor of specified window"; the unstaged
+  calls GNU rejects ("Resizing old window failed", "Sum of sizes of old
+  and new window don't fit") are rejected; `window-resize-apply' applies
+  FRAME's staged tree only when the root's new size equals its size (it
+  applied any staging on the selected frame); the tty mini window's
+  growth commits the root through grow_mini_window's direct apply; (2)
+  `set-window-parameter' and `window-parameter' by `assq': a new entry
+  goes on the front and nil stays an entry (entries were appended,
+  removed for nil and found by `equal'); (3) window.c's
+  run_window_change_functions from redisplay (never in batch, as GNU's
+  initial-frame redisplay): `window-buffer-change-functions',
+  `window-size-change-functions', `window-selection-change-functions' and
+  `window-state-change-functions' buffer-locally per window, then per
+  frame, `window-configuration-change-hook' and `window-state-change-hook',
+  calls muted as safe_funcall ("Error muted by safe_call"), then
+  window_change_record's stamps, old buffers, old pixel and body sizes,
+  frame old selected windows and the old selected window and frame; none
+  of these ran, `window-old-buffer' was always nil and the old sizes 0;
+  `old-selected-frame' changes only there (a frame switch set it); the
+  initial frame counts as made (make_initial_frame); a redraw that yields
+  to pending input still runs them, as redisplay_internal does before any
+  update. A `-nw' probe of split, switch-to-buffer and other-window logs
+  the same hook calls and old selected windows as GNU. Known batch
+  difference: GNU's `window-resize-apply-total' puts the root at the
+  frame's top margin (the initial frame's one menu-bar line), so after
+  `set-window-configuration' GNU's batch root is 23 lines; Emaxx keeps one
+  coordinate set and stays at 24. Tests that called the internal split and
+  delete primitives without staging now use `split-window' and
+  `delete-window', or stage as `split-window' does. (4)
+  wait_reading_process_output's READ_OUTPUT_DELAY_INCREMENT: a wait for
+  any process (`accept-process-output' with nil) returns once output has
+  been quiet for 10 ms; the grace was re-armed on every pass after the
+  first output (the delivery count compared with the wait's start), so
+  such a wait always lasted its full timeout and ERC's `erc-d-t-wait-for'
+  missed state that lasts under 0.1 s (join-display-context's requested
+  channels, which passed before round 75 by timing). Newly exposed, not
+  fixed: `erc-scenarios-scrolltobottom--relaxed' (an `:expensive-test' in a
+  `term' child, outside the frozen selection) fails its "New message does
+  not trigger a scroll when at prompt" sustain check: with the wait now
+  returning on output, its loop redisplays while messages arrive, and
+  Emaxx's redisplay moves the window start of a window whose point is at
+  the prompt (GNU's keeps it); the next round starts there. Of 42 ERC and
+  window-related GNU test files (the 21 former failures and every file
+  using `split-window', `delete-window', `display-buffer' or
+  `pop-to-buffer'), all others match GNU's results.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -6113,8 +6252,25 @@ frozen passed on its first attempt (run 40139905885).
 frozen passed on its first attempt (run 40146209717).
 **On `caa70a2`** (round 73): full Rust gate passed (run 40154530346),
 frozen passed on its first attempt (run 40154532135).
-**On round 74's commit**: the full Rust gate and frozen runs are
-dispatched with it; their results go in the next round's record. Run
+**On `8ec8a70`** (round 74): full Rust gate passed (run 40162780501),
+frozen passed on its first attempt (run 40162782011); PR #104 merged
+rounds 71 to 74 into main (`a6640b6`).
+**On `15acff5`** (round 75): full Rust gate passed (run 40171629179);
+frozen failed only GNU's known `eglot-test-rust-completion-exit-function`
+oracle flake (7,669 passed, 1 unexpected), and its rerun passed (run
+40171630795, attempt 2).
+**On round 76's commit**: the local gate (all groups, gate profile,
+`LANG=C LC_ALL=C`, the known as-root and image tests skipped) passed
+3,202 of 3,202 before the `accept-process-output` grace fix, after which
+the 101 process tests and 78 accept tests pass; the full Rust gate and
+frozen runs are dispatched with it. Earlier, on round 75's commit: the
+local gate (all groups, gate profile,
+`LANG=C LC_ALL=C`, the known as-root and image tests skipped) passed
+3,201 of 3,202; the failure was the anti-cheat scan catching
+`rename-auto-save-file` called through the native dispatcher, now called
+through its function cell, after which the anti-cheat tests pass. The
+full Rust gate and frozen runs are dispatched with it; their results go
+in the next round's record. Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that
 locale. With none set here, `char_charset_family_follows_charset_c` and
