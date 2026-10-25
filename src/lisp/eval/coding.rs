@@ -933,6 +933,13 @@ impl Interpreter {
             .and_then(|terminal| terminal.terminal_coding.clone())
     }
 
+    /// The coding system whose charsets the selected terminal's
+    /// t->charset_list holds, None while it is nil.
+    pub fn terminal_charset_list_coding(&self) -> Option<String> {
+        self.terminal_state(self.selected_terminal_id())
+            .and_then(|terminal| terminal.charset_list_coding.clone())
+    }
+
     /// Return the coder term.c uses when terminal output needs encoding.
     /// A nil coder and coders that do not perform an encoding conversion use
     /// GNU's safe US-ASCII fallback instead of passing multibyte text through.
@@ -951,15 +958,20 @@ impl Interpreter {
             })
     }
 
+    /// The terminal as `set-terminal-coding-system-internal' leaves it
+    /// for CODING (a None coding converts nothing: ASCII glyphs alone).
     #[cfg(test)]
     pub fn set_terminal_coding_system(&mut self, coding: Option<String>) {
         let id = self.selected_terminal_id();
-        self.terminals
+        let charset_list_coding = Some(coding.clone().unwrap_or_else(|| "us-ascii".into()));
+        let terminal = self
+            .terminals
             .iter_mut()
             .find(|terminal| terminal.id == id)
-            .expect("decoded terminal has state")
-            .borrow_mut()
-            .terminal_coding = coding;
+            .expect("decoded terminal has state");
+        let mut terminal = terminal.borrow_mut();
+        terminal.terminal_coding = coding;
+        terminal.charset_list_coding = charset_list_coding;
     }
 
     pub fn input_interrupt_mode(&self) -> bool {
@@ -968,6 +980,11 @@ impl Interpreter {
 
     pub fn set_input_interrupt_mode(&mut self, enabled: bool) {
         self.input_interrupt_mode = enabled;
+    }
+
+    /// The standard category table, if one exists yet.
+    pub(crate) fn standard_category_table(&self) -> Option<CharTableRef> {
+        self.standard_category_table_id
     }
 
     pub fn ensure_standard_category_table(&mut self) -> CharTableRef {

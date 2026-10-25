@@ -5595,16 +5595,239 @@ setup_process_coding_systems's check now refuses). A 13-form
   first output (the delivery count compared with the wait's start), so
   such a wait always lasted its full timeout and ERC's `erc-d-t-wait-for'
   missed state that lasts under 0.1 s (join-display-context's requested
-  channels, which passed before round 75 by timing). Newly exposed, not
-  fixed: `erc-scenarios-scrolltobottom--relaxed' (an `:expensive-test' in a
+  channels, which passed before round 75 by timing). Newly exposed and
+  fixed in round 77: `erc-scenarios-scrolltobottom--relaxed' (an `:expensive-test' in a
   `term' child, outside the frozen selection) fails its "New message does
   not trigger a scroll when at prompt" sustain check: with the wait now
   returning on output, its loop redisplays while messages arrive, and
   Emaxx's redisplay moves the window start of a window whose point is at
-  the prompt (GNU's keeps it); the next round starts there. Of 42 ERC and
+  the prompt (GNU's keeps it); the next round starts there. Checked: the
+  buffer-local `window-configuration-change-hook' (scrolltobottom's
+  recenter to the bottom) never runs in that test; the open hypothesis is
+  that redisplay re-anchors the window start that relaxed scrolltobottom
+  restores with `recenter' (fill-wrap's visual lines), so
+  `count-screen-lines' from the start to the prompt changes. Of 42 ERC and
   window-related GNU test files (the 21 former failures and every file
   using `split-window', `delete-window', `display-buffer' or
   `pop-to-buffer'), all others match GNU's results.
+
+- **Round 77: xdisp.c display_line's row breaking on terminal frames.**
+  `erc-scenarios-scrolltobottom--relaxed' passes. Its failure was not the
+  window start's anchoring itself: Emaxx's tty redisplay ignored
+  `line-prefix', `wrap-prefix' and `word-wrap', while `vertical-motion'
+  (which `recenter' and `count-screen-lines' walk) used the batch vmotion
+  model, so the window start relaxed scrolltobottom restored with
+  `recenter' on ERC's fill-wrap lines was not a row start of the
+  redisplay's layout and the redraw moved it to the line's start. (1)
+  `src/tty/layout.rs' lays out a display line as display_line does on a
+  tty: the last column holds the continuation glyph; under `word-wrap'
+  (and `word-wrap-by-category', its kinsoku categories) a row backs up to
+  its last wrap point (the first non-whitespace after whitespace) with no
+  `\' glyph, so a word ending at the edge or a space run past it moves
+  down, and only a word with no wrap point breaks mid-word with `\';
+  `line-prefix' starts a line's first row and `wrap-prefix' each
+  continued row, from the char property at the row's first position
+  (overlays for that window included, handle_line_prefix) else the
+  buffer-local variable, the first real glyph after a pushed prefix always
+  produced; TAB stops are Emacs 30's term.c: on a line's first row
+  current_x (prefix cells included), on a continued row current_x plus
+  continuation_lines_width (every earlier row's full x, the
+  `display-line-numbers' gutter included) less the wrap-prefix's width,
+  the gutter left out, to the next multiple of the buffer's sane
+  `tab-width' — so `ab1<TAB>' after a 2-cell line-prefix stops at column
+  8, and a TAB split at the edge resumes on the next row after a
+  wrap-prefix or gutter exactly where GNU's does. Columns live in that x
+  space, which
+  keeps the cursor, face spans, glyphless restarts and hscroll one model;
+  truncated rows carry `line-prefix' too. (2) Prefix values: a non-empty
+  string shows its characters with its own `face' properties; `(space
+  ...)' is produce_stretch_glyph's width from calc_pixel_width_or_height
+  (`:width', `:relative-width', `:align-to', symbols read buffer-locally,
+  `(+ ...)', `(- ...)', `(NUM)', `(NUM . UNIT)'), drawn in the face of the
+  row's first character; a face with `:extend' running on past a
+  word-wrapped row fills that row to the edge (back_to_wrap's
+  extend_face_to_end_of_line), others stop at the row's last glyph (they
+  ran to the window edge). (3) Interactive `vertical-motion' (with WINDOW
+  lending its geometry, the goal column of `(COLS . LINES)' measured from
+  the text area), `posn-at-point' (X counting the line-number gutter, a
+  position past a truncated edge at the last column), `recenter' and
+  scrolling walk the same layout; batch keeps vmotion. move_it_by_lines'
+  reseat past a truncated last line ending at ZV is one more screen line
+  (GNU's `count-screen-lines' counts it). (4) Auto-hscroll measures the
+  cursor's row with the same layout, and counts point as at the end of
+  the line only on a newline (ITERATOR_AT_END_OF_LINE_P): at ZV of a
+  truncated line it centers the cursor as GNU does (it kept it 4 columns
+  from the edge). Probes in an 80x34 tmux pane
+  (plain word-wrap with words and spaces at the edge, TABs, text-property
+  and overlay prefixes of both kinds, a variable `wrap-prefix', a
+  truncated buffer with prefixes, `tab-width' 4, line numbers) give GNU's
+  screen, cursor, `vertical-motion' row starts, `count-screen-lines',
+  `window-end' and `posn-at-point' columns, and so do four probes of
+  TABs on continued rows (a variable `wrap-prefix', line numbers, both,
+  and `word-wrap' with `tab-width' 5). (5) `write-region''s closing
+  message is fileio.c's: through message_with_string (no `message'
+  advice, `%' in a file name kept), "Wrote", "Added to" (APPEND non-nil)
+  or "Updated" (APPEND a number), naming the expanded VISIT or FILENAME
+  (it said "Wrote" with the unexpanded argument). Local validation: the
+  full gate, 3,204 passed across its ten groups with the documented
+  local skips (before the TAB and message changes; the tty group, 66,
+  and the `write_region'/`append' tests passed after them), and 82 GNU
+  test files (dired, edebug, every ERC file, flymake, python, replace,
+  simple, so-long and others) as GNU (python-tests'
+  `python-nav-end-of-statement--infloop' fails in GNU too). Not covered
+  then (round 78 covers both): double-width characters took one cell; a
+  TAB inside a `line-prefix' or `wrap-prefix' string took one cell (GNU
+  expands it from the row's start).
+
+- **Round 78: get_next_display_element's character translation and
+  term.c's glyph widths on terminal frames.** (1) Display text is now
+  one character a terminal cell: `translate' (window text, overlay and
+  display strings, prefixes, mode, header and tab lines, the echo area)
+  emits a wide character followed by PADDING_GLYPH cells (append_glyph's
+  padding_p glyphs; `char-width-table', sanitized, gives the width) and a
+  zero-width character as ATTACHED_GLYPH plus the character, drawn in the
+  cell before it (the terminal composition compose-gstring-for-terminal
+  makes; with no base it follows a space, and with
+  `auto-composition-mode' off it produces no glyph). PaintRow keeps each
+  cell's attached characters, never prints padding, and a blit that cuts
+  a wide character blanks its remains. The order is GNU's: a display-table
+  vector, an explicit `glyphless-char-display' method, the escape
+  translations, then the no-font method for a character outside the
+  terminal's charset list. (2) Escape translations: a control character
+  shows as `^C' under the buffer's `ctl-arrow' (else `\003'), DEL as `^?',
+  a newline only in mode lines; a raw byte as `\200' (`\x80' under
+  `display-raw-bytes-as-hex'); a character outside `printable-chars' (C1
+  controls) as its octal code; under `nobreak-char-display' t a non-ASCII
+  space (Zs) or soft/non-breaking hyphen keeps its glyph (or ` '/`-' under
+  `nobreak-char-ascii-display') in `nobreak-space'/`nobreak-hyphen', and
+  under another non-nil value shows the escape glyph and ` ' or `-'.
+  Escape glyphs take `escape-glyph' or the display table's escape/control
+  glyph (extra slots 2 and 3) with its face; each glyph is its own
+  element, so `^A^B^' can end a row and `C' start the next as GNU does.
+  These variables are read buffer-locally, as redisplay sees them. (3)
+  Layout: an element is a glyph with its padding and attached
+  characters; a padding glyph that does not fit fills the rest of the
+  row with `\' and moves the character down, before any word-wrap point
+  (GNU's word-wrapped CJK row ends `\\'), while vertical motion,
+  `posn-at-point' and recentering walk move_it_in_display_line_to's rows,
+  which go back to the wrap point instead; a truncated row's `$' replaces
+  from the first cell of the character in the last column (`$$' for a
+  wide one); hscroll skips cells; the echo area wraps a wide character
+  whole. A prefix string goes through the same translation, its TABs
+  measured from the row start and its faces moved to cells. (4) term.c's
+  charset list: a terminal's t->charset_list is nil (every character
+  drawn) until `set-terminal-coding-system-internal' sets it to the
+  coding's charsets, or ASCII when that coding converts nothing, and
+  output writes `?' for each cell (and composed character) the output
+  coding (the terminal's, else the safe coding) cannot encode: with LANG=C
+  GNU shows `??' for a CJK character, which Emaxx had drawn as a hex-code
+  glyphless escape. (5) Mode lines: CURRENT_MODE_LINE_ACTIVE_FACE_ID, so
+  a non-selected window's mode line is `mode-line-inactive' (all were
+  `mode-line'), the selected window's and, while the minibuffer is
+  selected, the window it was entered from `mode-line-active', all of
+  them when `mode-line-in-non-selected-windows' is nil; a wide character
+  cut at the edge leaves pad_mode_line's `-' (a space in header and tab
+  lines) in the row's base face. Probes in 80x34 tmux panes, UTF-8 and
+  LANG=C: wide characters at the continuation edge, after 79 and 77
+  columns, under `word-wrap' (CJK words and Japanese with no spaces), a
+  line of 30 CJK characters, TABs after them, combining marks after a
+  base, a CJK character and at line start, truncated lines with CJK at
+  the edge and `$$', hscroll into CJK text, a split frame with a CJK
+  buffer name cut in the mode line, a CJK `line-prefix' with a TAB, faces
+  over CJK, an echo message wrapping CJK, and every control, raw-byte,
+  C1, non-ASCII space and hyphen, and zero-width case under both
+  `ctl-arrow' values and `nobreak-char-display' t and 1, give GNU's
+  screen (with SGR attributes), cursor, `vertical-motion' rows,
+  `count-screen-lines', `window-end' and `posn-at-point'; round 77's wrap,
+  prefix, truncation, motion and TAB probes are unchanged. Not covered:
+  `posn-at-point' of a position after a wide character whose padding
+  ends exactly at a truncated row's last column reports GNU's (80 . 1)
+  only through posn-at-x-y's coordinate classification, which Emaxx
+  clamps to (79 . 0); compositions beyond base plus zero-width marks
+  (composition-function-table rules, grapheme clusters, point
+  adjustment) are not consulted; `format-mode-line' still ignores FACE,
+  WINDOW and BUFFER (GNU formats in WINDOW's buffer and keeps faces;
+  round 79 ports it).
+  Local validation: the full gate, 3,207 passed across its ten groups
+  with the documented local skips (the tty group, 68, includes the new
+  continuation-TAB, translation and padding-fill tests), and 81 GNU test
+  files (dired, edebug, every ERC file, flymake, python, replace,
+  simple, so-long and others) as GNU.
+
+- **Round 79: xdisp.c's mode-line formatting (display_mode_element,
+  decode_mode_spec, Fformat_mode_line, display_mode_line).** A new module,
+  `src/lisp/primitives/dispatch/display/mode_line.rs`, replaces the old
+  renderer. (1) One engine with GNU's targets: `format-mode-line' builds
+  MODE_LINE_STRING's propertized pieces (store_mode_line_string: a FACE
+  argument merged under each piece's own face, `t' stored as is, an
+  integer FACE giving MODE_LINE_NOPROP's plain text), and a window's mode,
+  header and tab lines lay out MODE_LINE_DISPLAY's terminal row as
+  display_string does: the frontend measures each glyph's cells (display
+  table, escapes, `char-width-table'), a TAB goes to the buffer's next
+  tab stop, the row stops at its right edge and is filled with spaces
+  (a custom format no longer ends in dashes). (2) display_mode_element:
+  a symbol without a `risky-local-variable' property makes its value
+  risky (strings lose their properties, :eval and :propertize are
+  ignored); a symbol's string value shows literally; (SYMBOL THEN ELSE)
+  tests the symbol's dynamic value, nil, t and keywords included, and
+  any malformed element is "*invalid*"; (WIDTH ...) pads and truncates
+  in columns, padding in the base face and only after a list's last
+  element; :propertize's props replace the outer ones and merge over a
+  string's own (those at its start) across the whole copy; a %-construct
+  takes the properties of the character after its `%'; depth over 100
+  gives "*too-deep*"; a NUL ends a string; :eval is dsafe_eval (`(eval
+  FORM t)' with quitting inhibited, an error logged as "Error during
+  redisplay: (eval FORM t) signaled ..."). (3) decode_mode_spec: %l from
+  the window's start through w->base_line_number (a window slot), "??"
+  over `line-number-display-limit' or when lines are longer than
+  `line-number-display-limit-width' (GNU's backward scan), carriage
+  returns counted under `selective-display'; %c %C %i right-justified in
+  their field (pint2str) and %I as pint2hrstr; %o %p %P %q from the
+  window's start and the end its last redisplay recorded
+  (w->window_end_pos, a window slot); %m only for a string `mode-name';
+  %M processes `global-mode-string' as a construct; %- is "--" in strings
+  and FRAME_MESSAGE_BUF_SIZE dashes on the row; %[ %] the recursive-edit
+  depth; %e, %F (the title, else the name), %z and %Z with the
+  end-of-line mnemonic (a string, a character or "(*invalid*)"); an
+  unknown spec is "". (4) format-mode-line decodes WINDOW and BUFFER
+  (wrong-type-argument windowp or bufferp, the dead-buffer error) before
+  the batch no-op, answers "" for a nil FORMAT, and formats with WINDOW
+  selected and BUFFER current, then restores the selection, the old
+  window's point and the buffer, so Buffer-menu's Mode column shows each
+  buffer's mode. (5) display_mode_line: the window's
+  `mode-line-format', `header-line-format' or `tab-line-format' parameter
+  overrides the buffer's, match data is saved around the formatting,
+  `mode-line-compact' (and `long') squeezes runs of spaces, and the row
+  handles a string's properties as display_string's iterator does:
+  `invisible' text is hidden under the buffer's invisibility spec, a
+  display string replaces its run, `(space :width ...)' and `(space
+  :align-to ...)' stretch (align-to from the text area's left edge), a
+  `min-width' sequence is padded when the row moves on to a string
+  without it (one column when the sequence is already wider), `(when
+  FORM . SPEC)' tests FORM; mode-line strings use `standard-display-table'
+  when it is a display table. tmux probes (35 format-mode-line cases with
+  faces, risky symbols, widths, every %-construct, errors; screens of
+  custom, min-width, align-to, right-aligned, compact, header and tab
+  lines, a window parameter, invisible text, scrolled, narrowed and
+  read-only buffers, side-by-side windows, `list-buffers') give GNU's
+  results; 2,000 `format-mode-line' calls of the default format take
+  0.17 s against GNU's 0.35 s and redisplay costs the same. Not covered:
+  GNU's interval tree keeps adjacent intervals with equal properties
+  apart where Emaxx's string properties merge them, so a result built
+  from equally propertized pieces (any `concat' of them too) prints
+  fewer intervals (#("ab" 0 2 (face bold)) for GNU's #("ab" 0 1 (face
+  bold) 1 2 (face bold))); the base-line cache's validity uses the
+  buffer's modiff and accessible region for BEG_UNCHANGED; a window
+  whose `mode-line-format' is nil still gets a blank mode line row
+  (window_wants_mode_line); a non-selected window keeps its start when
+  its point is off-screen, where GNU's redisplay_window scrolls it, so
+  its %l and %p (and `window-end') can differ; the terminal draws no
+  italic, strike-through or dim face attribute. Local validation: the
+  full gate, 3,208 passed across its ten groups with the documented local
+  skips (primitives, 751, includes the new 35-case format-mode-line
+  test), and 14 GNU test files (buff-menu, ibuffer, tab-bar, so-long,
+  simple, help-fns, package, eshell, which-func, erc, erc statusmsg,
+  xdisp, buffer, textprop) as GNU.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -6259,18 +6482,17 @@ rounds 71 to 74 into main (`a6640b6`).
 frozen failed only GNU's known `eglot-test-rust-completion-exit-function`
 oracle flake (7,669 passed, 1 unexpected), and its rerun passed (run
 40171630795, attempt 2).
-**On round 76's commit**: the local gate (all groups, gate profile,
-`LANG=C LC_ALL=C`, the known as-root and image tests skipped) passed
-3,202 of 3,202 before the `accept-process-output` grace fix, after which
-the 101 process tests and 78 accept tests pass; the full Rust gate and
-frozen runs are dispatched with it. Earlier, on round 75's commit: the
-local gate (all groups, gate profile,
-`LANG=C LC_ALL=C`, the known as-root and image tests skipped) passed
-3,201 of 3,202; the failure was the anti-cheat scan catching
+**On `b8c4e84`** (round 76): full Rust gate passed (run 40177432296),
+frozen passed on its first attempt (run 40177433903).
+**On `0cde30d`** (round 77): full Rust gate passed (run 40188636495),
+frozen passed on its first attempt (run 40188638449). Locally the gate
+(all groups, gate profile, `LANG=C LC_ALL=C`, the known as-root and
+image tests skipped) passed 3,202 of 3,202 before the
+`accept-process-output` grace fix, after which the 101 process tests and
+78 accept tests pass. On round 75's commit the local gate passed 3,201 of
+3,202; the failure was the anti-cheat scan catching
 `rename-auto-save-file` called through the native dispatcher, now called
-through its function cell, after which the anti-cheat tests pass. The
-full Rust gate and frozen runs are dispatched with it; their results go
-in the next round's record. Run
+through its function cell, after which the anti-cheat tests pass. Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that
 locale. With none set here, `char_charset_family_follows_charset_c` and
@@ -6297,6 +6519,10 @@ whose asynchronous handshake this container's GNU leaves in `connect`
 failed now and then under load until round 47: a cons block's address,
 left in a stack slot by the allocator's bookkeeping, kept the block's
 first cell, which the weak key sometimes was (see round 47).
+**On `fe2b73e`** (round 78): full Rust gate passed (run 40193461329);
+frozen failed only GNU's known `eglot-test-rust-completion-exit-function`
+oracle flake (7,669 passed, 1 unexpected), and its rerun was dispatched
+(run 40193463671, attempt 2).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

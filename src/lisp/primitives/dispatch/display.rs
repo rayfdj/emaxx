@@ -3,6 +3,9 @@ use crate::lisp::primitives::processes::wait_pumping_processes;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 
+mod mode_line;
+pub(crate) use mode_line::ModeLineCells;
+
 // The live echo-area line of an interactive session.  GNU keeps this in
 // the echo buffer that redisplay paints; the terminal frontend reads it
 // after every command and inside blocking event reads so prompts appear
@@ -1923,18 +1926,30 @@ pub(crate) fn window_face_spans(
     spans
 }
 
-/// A window's mode line as the display engine paints it.  GNU renders
-/// each mode line with that window selected and its buffer current
-/// (display_mode_line's context); this swaps both in — plus the window's
-/// point and live metrics — and restores every piece afterwards.
+/// A window's mode line as the display engine paints it, WIDTH cells
+/// wide.  GNU renders each mode line with that window selected and its
+/// buffer current (display_mode_line's context); this swaps both in —
+/// plus the window's point and live metrics — and restores every piece
+/// afterwards.
 pub(crate) fn render_window_mode_line(
     interp: &mut Interpreter,
     env: &mut Env,
     window_id: u64,
     point: usize,
     metrics: InteractiveWindowMetrics,
+    width: usize,
+    cells: &dyn ModeLineCells,
 ) -> Result<(String, FaceSpans), LispError> {
-    render_window_line_with_format(interp, env, window_id, point, metrics, "mode-line-format")
+    render_window_line_with_format(
+        interp,
+        env,
+        window_id,
+        point,
+        metrics,
+        "mode-line-format",
+        width,
+        cells,
+    )
 }
 
 /// The window's header line, rendered by the same machinery as its mode
@@ -1946,8 +1961,19 @@ pub(crate) fn render_window_header_line(
     window_id: u64,
     point: usize,
     metrics: InteractiveWindowMetrics,
+    width: usize,
+    cells: &dyn ModeLineCells,
 ) -> Result<(String, FaceSpans), LispError> {
-    render_window_line_with_format(interp, env, window_id, point, metrics, "header-line-format")
+    render_window_line_with_format(
+        interp,
+        env,
+        window_id,
+        point,
+        metrics,
+        "header-line-format",
+        width,
+        cells,
+    )
 }
 
 /// The window's tab line, rendered above its header and text through the
@@ -1958,10 +1984,22 @@ pub(crate) fn render_window_tab_line(
     window_id: u64,
     point: usize,
     metrics: InteractiveWindowMetrics,
+    width: usize,
+    cells: &dyn ModeLineCells,
 ) -> Result<(String, FaceSpans), LispError> {
-    render_window_line_with_format(interp, env, window_id, point, metrics, "tab-line-format")
+    render_window_line_with_format(
+        interp,
+        env,
+        window_id,
+        point,
+        metrics,
+        "tab-line-format",
+        width,
+        cells,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_window_line_with_format(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -1969,6 +2007,8 @@ fn render_window_line_with_format(
     point: usize,
     metrics: InteractiveWindowMetrics,
     format_variable: &str,
+    width: usize,
+    cells: &dyn ModeLineCells,
 ) -> Result<(String, FaceSpans), LispError> {
     let saved_window = interp.selected_window_id();
     let saved_buffer = interp.current_buffer_id();
@@ -1980,14 +2020,28 @@ fn render_window_line_with_format(
     let saved_point = interp.buffer.borrow().point();
     interp.buffer.borrow_mut().goto_char(point);
     set_interactive_window_metrics(Some(metrics));
-    let result = (|| {
-        let format = interp
-            .lookup_var(format_variable, env)
-            .unwrap_or(Value::Nil);
-        let mut spans = Vec::new();
-        let text = render_mode_line_element(interp, env, &format, false, true, 0, 0, &mut spans)?;
-        Ok((text, spans))
-    })();
+    mode_line::record_window_end(interp, window_id, metrics.window_end);
+    let result = {
+        // display_mode_lines: the window's parameter, else the buffer's
+        // format.
+        let parameter = window_parameter_value(interp, window_id, &Value::symbol(format_variable));
+        let format = if parameter.is_nil() {
+            interp
+                .lookup_var(format_variable, &Env::new())
+                .unwrap_or(Value::Nil)
+        } else {
+            parameter
+        };
+        mode_line::display_mode_line(
+            interp,
+            env,
+            window_id,
+            format,
+            width,
+            format_variable == "mode-line-format",
+            cells,
+        )
+    };
     interp.buffer.borrow_mut().goto_char(saved_point);
     // Restore selection before switching the current buffer back.  While a
     // non-selected window's mode line is rendered we temporarily select it;
@@ -2000,6 +2054,47 @@ fn render_window_line_with_format(
     }
     set_interactive_window_metrics(saved_metrics);
     result
+}
+
+/// The selected window's mode line on a row of WIDTH cells of one column
+/// a character: the glass the frontend paints, for tests.
+#[cfg(test)]
+pub(crate) fn render_mode_line_glass(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Result<String, LispError> {
+    struct UnitCells;
+    impl ModeLineCells for UnitCells {
+        fn widths(&self, _: &Interpreter, text: &[char]) -> Vec<usize> {
+            vec![1; text.len()]
+        }
+        fn stretch(&self, _: &Interpreter, plist: &[Value], x: usize) -> usize {
+            plist
+                .chunks(2)
+                .find_map(
+                    |pair| match (pair[0].kind(), pair.get(1).map(|v| v.kind())) {
+                        (Kind::Symbol(key), Some(Kind::Integer(target))) if key == ":align-to" => {
+                            Some((target.max(0) as usize).saturating_sub(x))
+                        }
+                        (Kind::Symbol(key), Some(Kind::Integer(width))) if key == ":width" => {
+                            Some(width.max(0) as usize)
+                        }
+                        _ => None,
+                    },
+                )
+                .unwrap_or(1)
+        }
+        fn width_of(&self, _: &Interpreter, spec: &Value) -> Option<f64> {
+            spec.as_float().ok()
+        }
+    }
+    let window_id = interp.selected_window_id();
+    let format = interp
+        .lookup_var("mode-line-format", &Env::new())
+        .unwrap_or(Value::Nil);
+    let (text, _) =
+        mode_line::display_mode_line(interp, env, window_id, format, 200, true, &UnitCells)?;
+    Ok(text.trim_end().to_string())
 }
 
 fn live_window_id_or_selected(
@@ -3286,6 +3381,16 @@ fn selected_command_text_height(interp: &Interpreter, env: &Env) -> usize {
         as usize
 }
 
+/// WINDOW_TOTAL_COLS of WINDOW.
+pub(crate) fn window_total_columns(interp: &Interpreter, window_id: u64) -> i64 {
+    window_geometry(interp, window_id).0
+}
+
+/// window_box_width of WINDOW's text area in terminal cells.
+pub(crate) fn window_text_area_columns(interp: &Interpreter, window_id: u64) -> usize {
+    window_text_width_columns(interp, window_id).max(0) as usize
+}
+
 fn window_text_width_columns(interp: &Interpreter, window_id: u64) -> i64 {
     let (total, _, left, _) = window_geometry(interp, window_id);
     let root_id = match interp.root_window_value().kind() {
@@ -3556,25 +3661,7 @@ define_dispatch!(
         env: &mut crate::lisp::types::Env,
     ) -> Result<Value, LispError> {
         match name {
-            "format-mode-line" => {
-                need_arg_range(name, args, 1, 4)?;
-                // GNU's C primitive intentionally makes formatting a no-op in
-                // noninteractive mode, before it inspects FORMAT or frame state.
-                // An interactive session (a frontend published live window
-                // geometry) renders the construct for real.
-                if interactive_window_metrics().is_none() {
-                    return Ok(Value::String(String::new().into()));
-                }
-                let format = if args[0].is_nil() {
-                    interp
-                        .lookup_var("mode-line-format", env)
-                        .unwrap_or(Value::Nil)
-                } else {
-                    args[0]
-                };
-                let text = render_mode_line_construct(interp, env, &format, 0)?;
-                Ok(Value::String(text.into()))
-            }
+            "format-mode-line" => mode_line::format_mode_line(interp, args, env),
             // ── Output ──
             "message" => {
                 let (text, formatted) =
@@ -6247,31 +6334,35 @@ define_dispatch!(
                     // GNU answers nil for positions outside the window.
                     return Ok(Value::Nil);
                 }
-                let (bol, eol) = super::buffer_edit::visual_line_bounds(interp, pos);
-                let starts = super::buffer_edit::visual_segment_starts(interp, env, bol, eol);
-                let seg_index = starts.iter().rposition(|&s| s <= pos).unwrap_or(0);
-                let widths = super::buffer_edit::visual_char_widths(interp, env, bol, eol);
-                let mut x = 0usize;
-                for p in starts[seg_index]..pos {
-                    let (raw, _) = widths[p - bol];
-                    x += if raw == usize::MAX { 8 - (x % 8) } else { raw };
-                }
+                let window_id = interp.selected_window_id();
+                let (bol, _) = super::buffer_edit::visual_line_bounds(interp, pos);
+                let line = super::buffer_edit::interactive_screen_line(interp, env, window_id, bol);
+                let (seg_index, x) = line.position_cell(pos);
+                // A position past a truncated row's edge reports the last
+                // visible column; X counts the line-number gutter's glyphs.
+                let x = if line.truncate {
+                    x.min(line.text_width.saturating_sub(1))
+                } else {
+                    x
+                } + line.lnum_cols;
                 // Row within the window: visual rows between window-start
                 // and POS's screen line, capped at the window height.
                 let mut y = 0usize;
                 let (mut walk_bol, mut walk_eol) =
                     super::buffer_edit::visual_line_bounds(interp, start);
-                let walk_starts =
-                    super::buffer_edit::visual_segment_starts(interp, env, walk_bol, walk_eol);
+                let walk_starts = super::buffer_edit::screen_row_starts(
+                    interp, env, window_id, walk_bol, walk_eol,
+                );
                 let mut walk_seg = walk_starts.iter().rposition(|&s| s <= start).unwrap_or(0);
                 while y < metrics.text_height {
                     if walk_bol == bol {
                         y += seg_index.saturating_sub(walk_seg);
                         break;
                     }
-                    let segs =
-                        super::buffer_edit::visual_segment_starts(interp, env, walk_bol, walk_eol)
-                            .len();
+                    let segs = super::buffer_edit::screen_row_starts(
+                        interp, env, window_id, walk_bol, walk_eol,
+                    )
+                    .len();
                     y += segs.saturating_sub(walk_seg);
                     walk_seg = 0;
                     if walk_eol >= point_max {
@@ -6494,675 +6585,6 @@ define_dispatch!(
         }
     }
 );
-
-// ── Mode-line rendering (xdisp.c's display_mode_element) ───────────────
-//
-// The engine renders GNU's dumped mode-line specification to plain text:
-// faces, mouse maps, and help-echo do not change the characters a tty
-// draws.  %-constructs follow decode_mode_spec; the geometry-dependent
-// ones (%p, %P) read the live window metrics the frontend publishes.
-
-/// Render a mode-line construct to its display text.  LITERAL marks
-/// strings reached through a symbol's value, which GNU shows verbatim
-/// (%-constructs are only recognized in strings written in the spec).
-#[allow(clippy::too_many_arguments)]
-fn render_mode_line_element(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    element: &Value,
-    literal: bool,
-    glass: bool,
-    depth: usize,
-    offset: usize,
-    spans: &mut Vec<(usize, usize, Value)>,
-) -> Result<String, LispError> {
-    if depth > 32 {
-        return Ok(String::new());
-    }
-    match element.kind() {
-        value if value.value().is_string() => {
-            let string = string_like(&value.value())
-                .ok_or_else(|| wrong_type_argument("stringp", value.value()))?;
-            let (text, display_offsets) = if glass && !string.props.is_empty() {
-                render_mode_line_string_display_properties(
-                    interp,
-                    env,
-                    &string.text,
-                    &string.props,
-                    offset,
-                )?
-            } else {
-                let length = string.text.chars().count();
-                (string.text, (0..=length).collect())
-            };
-            let expands_percent_constructs = !literal && text.contains('%');
-            let rendered = if literal {
-                text
-            } else {
-                expand_mode_line_percent_constructs(interp, env, &text)?
-            };
-            // GNU maps a template's text properties onto its expansion;
-            // the shipped formats propertize whole templates (%12b's
-            // buffer-id face), so a face covering the template covers
-            // the expansion.
-            if let Kind::StringObject(state) = value.value().kind() {
-                let state = state.borrow();
-                let source_length = state.len();
-                for property_span in &state.props {
-                    let Some(face) = property_span
-                        .props
-                        .iter()
-                        .find(|(name, _)| name == "face")
-                        .or_else(|| {
-                            property_span
-                                .props
-                                .iter()
-                                .find(|(name, _)| name == "font-lock-face")
-                        })
-                        .map(|(_, face)| *face)
-                    else {
-                        continue;
-                    };
-                    if expands_percent_constructs {
-                        if property_span.start == 0 && property_span.end >= source_length {
-                            spans.push((offset, offset + rendered.chars().count(), face));
-                        }
-                    } else {
-                        let from = display_offsets
-                            .get(property_span.start.min(source_length))
-                            .copied()
-                            .unwrap_or(0);
-                        let to = display_offsets
-                            .get(property_span.end.min(source_length))
-                            .copied()
-                            .unwrap_or_else(|| rendered.chars().count());
-                        spans.push((offset + from, offset + to, face));
-                    }
-                }
-            }
-            Ok(rendered)
-        }
-        Kind::Symbol(name) => {
-            if name == "t" || name == "nil" {
-                return Ok(String::new());
-            }
-            // Only a direct string value is shown verbatim; list values
-            // are full constructs whose strings carry %-specs (xdisp's
-            // display_mode_element symbol case).
-            let value = interp.lookup_var(&name, env).unwrap_or(Value::Nil);
-            render_mode_line_element(
-                interp,
-                env,
-                &value,
-                value.is_string(),
-                glass,
-                depth + 1,
-                offset,
-                spans,
-            )
-        }
-        Kind::Cons(_) => {
-            let items = element.to_vec().unwrap_or_default();
-            let Some(head) = items.first() else {
-                return Ok(String::new());
-            };
-            match head.kind() {
-                Kind::Symbol(keyword) if keyword == ":eval" => {
-                    let Some(form) = items.get(1) else {
-                        return Ok(String::new());
-                    };
-                    // Mode-line evaluation never signals in GNU
-                    // (safe_eval); a broken construct renders empty.
-                    let result =
-                        crate::lisp::primitives::eval_impl(interp, std::slice::from_ref(form), env)
-                            .unwrap_or(Value::Nil);
-                    render_mode_line_element(
-                        interp,
-                        env,
-                        &result,
-                        false,
-                        glass,
-                        depth + 1,
-                        offset,
-                        spans,
-                    )
-                }
-                Kind::Symbol(keyword) if keyword == ":propertize" => {
-                    let Some(inner) = items.get(1) else {
-                        return Ok(String::new());
-                    };
-                    // The outer span goes in before the recursion so any
-                    // nested :propertize face lands after it and wins on
-                    // overlap when the spans apply in order.
-                    let face = items[2..].chunks(2).find_map(|pair| {
-                        match pair.iter().map(|v| v.kind()).collect::<Vec<_>>().as_slice() {
-                            [Kind::Symbol(key), value] if key == "face" => Some(*value),
-                            _ => None,
-                        }
-                    });
-                    let span_index = face.map(|face| {
-                        spans.push((offset, offset, face.value()));
-                        spans.len() - 1
-                    });
-                    let mut text = render_mode_line_element(
-                        interp,
-                        env,
-                        inner,
-                        false,
-                        glass,
-                        depth + 1,
-                        offset,
-                        spans,
-                    )?;
-                    // display (min-width (N.0)) only affects the glass:
-                    // format-mode-line's string ignores it, while the
-                    // display engine emits a stretch glyph — one column
-                    // wide even when the span already exceeds the
-                    // minimum (produce_stretch_glyph floors width at 1).
-                    if glass {
-                        let mut properties = items[2..].chunks(2);
-                        if let Some(min_width) = properties.find_map(|pair| {
-                            match pair.iter().map(|v| v.kind()).collect::<Vec<_>>().as_slice() {
-                                [Kind::Symbol(key), value] if key == "display" => {
-                                    mode_line_min_width(&value.value())
-                                }
-                                _ => None,
-                            }
-                        }) {
-                            let actual = text.chars().count();
-                            let pad = if actual < min_width {
-                                min_width - actual
-                            } else if actual == min_width {
-                                0
-                            } else {
-                                1
-                            };
-                            text.extend(std::iter::repeat_n(' ', pad));
-                        }
-                    }
-                    if let Some(index) = span_index {
-                        spans[index].1 = offset + text.chars().count();
-                    }
-                    Ok(text)
-                }
-                Kind::Symbol(condition) => {
-                    // (SYMBOL THEN [ELSE]): a variable-conditioned construct.
-                    let value = interp.lookup_var(&condition, env).unwrap_or(Value::Nil);
-                    let branch = if value.is_truthy() {
-                        items.get(1)
-                    } else {
-                        items.get(2)
-                    };
-                    match branch {
-                        Some(branch) => render_mode_line_element(
-                            interp,
-                            env,
-                            branch,
-                            false,
-                            glass,
-                            depth + 1,
-                            offset,
-                            spans,
-                        ),
-                        None => Ok(String::new()),
-                    }
-                }
-                Kind::Integer(width) => {
-                    // (WIDTH REST...): pad to WIDTH, or truncate to -WIDTH.
-                    let mut text = String::new();
-                    for item in &items[1..] {
-                        text.push_str(&render_mode_line_element(
-                            interp,
-                            env,
-                            item,
-                            false,
-                            glass,
-                            depth + 1,
-                            offset + text.chars().count(),
-                            spans,
-                        )?);
-                    }
-                    if width >= 0 {
-                        let width = width as usize;
-                        while text.chars().count() < width {
-                            text.push(' ');
-                        }
-                    } else {
-                        let limit = (-width) as usize;
-                        if text.chars().count() > limit {
-                            text = text.chars().take(limit).collect();
-                        }
-                    }
-                    Ok(text)
-                }
-                _ => {
-                    let mut text = String::new();
-                    for item in &items {
-                        text.push_str(&render_mode_line_element(
-                            interp,
-                            env,
-                            item,
-                            false,
-                            glass,
-                            depth + 1,
-                            offset + text.chars().count(),
-                            spans,
-                        )?);
-                    }
-                    Ok(text)
-                }
-            }
-        }
-        _ => Ok(String::new()),
-    }
-}
-
-fn render_mode_line_string_display_properties(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    text: &str,
-    properties: &[crate::buffer::TextPropertySpan],
-    offset: usize,
-) -> Result<(String, Vec<usize>), LispError> {
-    let mut rendered = String::new();
-    let mut display_offsets = Vec::with_capacity(text.chars().count() + 1);
-    display_offsets.push(0);
-    let mut column = offset;
-    for (index, character) in text.chars().enumerate() {
-        let display = properties
-            .iter()
-            .find(|span| span.start <= index && index < span.end)
-            .and_then(|span| {
-                span.props
-                    .iter()
-                    .find(|(name, _)| name == "display")
-                    .map(|(_, value)| value)
-            });
-        let align_to = display.and_then(|value| {
-            let items = value.to_vec().ok()?;
-            if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "space") {
-                return None;
-            }
-            let index = items.iter().position(
-                |item| matches!(item.kind(), Kind::Symbol(name) if name == ":align-to"),
-            )?;
-            let target = items.get(index + 1)?;
-            match target.kind() {
-                Kind::Integer(target) => usize::try_from(target).ok(),
-                expression => crate::lisp::primitives::eval_impl(
-                    interp,
-                    std::slice::from_ref(&expression.value()),
-                    env,
-                )
-                .ok()
-                .and_then(|value| value.integer_value())
-                .and_then(|target| usize::try_from(target).ok()),
-            }
-        });
-        if let Some(target) = align_to {
-            let padding = target.saturating_sub(column);
-            rendered.extend(std::iter::repeat_n(' ', padding));
-            column += padding;
-        } else {
-            rendered.push(character);
-            column += if character == '\t' {
-                8 - (column % 8)
-            } else {
-                1
-            };
-        }
-        display_offsets.push(rendered.chars().count());
-    }
-    Ok((rendered, display_offsets))
-}
-
-pub(super) fn render_mode_line_construct(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    format: &Value,
-    depth: usize,
-) -> Result<String, LispError> {
-    render_mode_line_element(interp, env, format, false, false, depth, 0, &mut Vec::new())
-}
-
-/// The selected window's mode line as the display engine paints it:
-/// format-mode-line's text plus the glass-only stretch behavior of
-/// `min-width' display properties.
-#[cfg(test)]
-pub(crate) fn render_mode_line_glass(
-    interp: &mut Interpreter,
-    env: &mut Env,
-) -> Result<String, LispError> {
-    let format = interp
-        .lookup_var("mode-line-format", env)
-        .unwrap_or(Value::Nil);
-    render_mode_line_element(interp, env, &format, false, true, 0, 0, &mut Vec::new())
-}
-
-/// The glass mode line together with its `:propertize' face spans, in
-/// char offsets — the frontend paints the spans over the mode-line face
-/// (the buffer name's `mode-line-buffer-id' bold).
-/// The `(min-width (N.0))' display specification's width, if VALUE is one.
-fn mode_line_min_width(value: &Value) -> Option<usize> {
-    let items = value.to_vec().ok()?;
-    match items
-        .as_slice()
-        .iter()
-        .map(|v| v.kind())
-        .collect::<Vec<_>>()
-        .as_slice()
-    {
-        [Kind::Symbol(key), width] if key == "min-width" => {
-            let widths = width.value().to_vec().ok()?;
-            match (widths.first()?).kind() {
-                Kind::Float(width) => Some(width.get() as usize),
-                Kind::Integer(width) => Some(width as usize),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-/// decode_mode_spec: expand the %-constructs of a spec string.
-fn expand_mode_line_percent_constructs(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    text: &str,
-) -> Result<String, LispError> {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '%' {
-            out.push(c);
-            continue;
-        }
-        let mut field = 0usize;
-        while let Some(digit) = chars.peek().and_then(|c| c.to_digit(10)) {
-            field = field * 10 + digit as usize;
-            chars.next();
-        }
-        let Some(spec) = chars.next() else {
-            break;
-        };
-        let expanded = decode_mode_line_spec(interp, env, spec)?;
-        let mut expanded = expanded;
-        while expanded.chars().count() < field {
-            expanded.push(' ');
-        }
-        out.push_str(&expanded);
-    }
-    Ok(out)
-}
-
-fn decode_mode_line_spec(
-    interp: &mut Interpreter,
-    env: &mut Env,
-    spec: char,
-) -> Result<String, LispError> {
-    let var = |interp: &Interpreter, name: &str| -> Value {
-        interp
-            .lookup_var(name, &crate::lisp::types::Env::new())
-            .unwrap_or(Value::Nil)
-    };
-    Ok(match spec {
-        '%' => "%".to_string(),
-        'b' => interp.buffer.borrow().name.clone(),
-        'f' => match super::call(interp, "buffer-file-name", &[], env) {
-            Ok(path) if path.is_string() => string_text(&path)?,
-            _ => String::new(),
-        },
-        'F' => match super::call(
-            interp,
-            "frame-parameter",
-            &[Value::Nil, Value::Symbol("name".into())],
-            env,
-        ) {
-            Ok(name) if name.is_string() => string_text(&name)?,
-            _ => "F1".to_string(),
-        },
-        'l' => {
-            let point_line = interp
-                .buffer
-                .borrow()
-                .line_number_at_pos(interp.buffer.borrow().point());
-            let first_accessible_line = interp
-                .buffer
-                .borrow()
-                .line_number_at_pos(interp.buffer.borrow().point_min());
-            point_line
-                .saturating_sub(first_accessible_line)
-                .saturating_add(1)
-                .to_string()
-        }
-        'c' | 'C' => {
-            let column = super::call(interp, "current-column", &[], env)?
-                .as_integer()
-                .unwrap_or(0);
-            (column + i64::from(spec == 'C')).to_string()
-        }
-        'i' => {
-            (interp.buffer.borrow().point_max() - interp.buffer.borrow().point_min()).to_string()
-        }
-        'I' => human_readable_size(
-            interp.buffer.borrow().point_max() - interp.buffer.borrow().point_min(),
-        ),
-        'p' | 'P' => window_percent_spec(interp, spec == 'P'),
-        'n' => {
-            // xdisp.c:28812 decode_mode_spec case 'n': pure C accessibility
-            // checks (BUF_BEGV > BUF_BEG || BUF_ZV < BUF_Z) -- GNU never
-            // consults the Lisp-owned `buffer-narrowed-p' here, and the old
-            // native dispatch of that name was both a gate escape (it went
-            // through `super::call', which the anti-cheat regex missed) and
-            // half wrong: it ignored narrowing at the buffer's end.
-            let narrowed = interp.buffer.borrow().point_min() > 1
-                || interp.buffer.borrow().point_max() < interp.buffer.borrow().size_total() + 1;
-            if narrowed {
-                " Narrow".to_string()
-            } else {
-                String::new()
-            }
-        }
-        '*' => {
-            if var(interp, "buffer-read-only").is_truthy() {
-                "%".to_string()
-            } else if interp.buffer.borrow().is_modified() {
-                "*".to_string()
-            } else {
-                "-".to_string()
-            }
-        }
-        '+' => {
-            if interp.buffer.borrow().is_modified() {
-                "*".to_string()
-            } else if var(interp, "buffer-read-only").is_truthy() {
-                "%".to_string()
-            } else {
-                "-".to_string()
-            }
-        }
-        '&' => {
-            if interp.buffer.borrow().is_modified() {
-                "*".to_string()
-            } else {
-                "-".to_string()
-            }
-        }
-        '@' => {
-            // xdisp.c:28909 case '@': `dsafe_call1 (Qfile_remote_p, curdir)'
-            // -- GNU's C reaches the Lisp-owned `file-remote-p' through the
-            // function cell and treats any error as nil; so must Emaxx
-            // (finding 67's second catch).
-            let remote = crate::lisp::primitives::call_named_function(
-                interp,
-                "file-remote-p",
-                &[var(interp, "default-directory")],
-                env,
-            )
-            .map(|value| value.is_truthy())
-            .unwrap_or(false);
-            if remote { "@" } else { "-" }.to_string()
-        }
-        'z' | 'Z' => {
-            // Keyboard and terminal coding mnemonics (tty frames only in
-            // GNU; this renderer only runs interactively), then the
-            // buffer's; %Z appends the end-of-line mnemonic.
-            let mut text = String::new();
-            for source in ["keyboard-coding-system", "terminal-coding-system"] {
-                let coding = super::call(interp, source, &[], env).unwrap_or(Value::Nil);
-                text.push(coding_mnemonic_char(interp, env, &coding));
-            }
-            let buffer_coding = var(interp, "buffer-file-coding-system");
-            text.push(coding_mnemonic_char(interp, env, &buffer_coding));
-            if spec == 'Z' {
-                // xdisp.c:28455: the eol mnemonic comes from the
-                // `eol-mnemonic-*' variables keyed by the coding system's
-                // eol type -- GNU never calls the Lisp-owned
-                // `coding-system-eol-type-mnemonic' here (finding 67's
-                // third catch; the old dispatch was a gate escape).
-                let eol_type = super::call(interp, "coding-system-eol-type", &[buffer_coding], env)
-                    .unwrap_or(Value::Nil);
-                let mnemonic_variable = match eol_type.kind() {
-                    Kind::Integer(0) => "eol-mnemonic-unix",
-                    Kind::Integer(1) => "eol-mnemonic-dos",
-                    Kind::Integer(2) => "eol-mnemonic-mac",
-                    _ => "eol-mnemonic-undecided",
-                };
-                let mnemonic = var(interp, mnemonic_variable);
-                if let Some(mnemonic) = string_like(&mnemonic) {
-                    text.push_str(&mnemonic.text);
-                }
-            }
-            text
-        }
-        'm' => {
-            let mode_name = var(interp, "mode-name");
-            render_mode_line_element(interp, env, &mode_name, true, false, 0, 0, &mut Vec::new())?
-        }
-        'M' => {
-            let global = var(interp, "global-mode-string");
-            render_mode_line_element(interp, env, &global, true, false, 0, 0, &mut Vec::new())?
-        }
-        's' => {
-            // xdisp.c:28899 case 's': the status of the current buffer's
-            // process -- Fget_buffer_process, "no process" when there is
-            // none, else the `process-status' symbol's name.
-            let buffer = Value::Buffer(interp.buffer);
-            match super::call(interp, "get-buffer-process", &[buffer], env) {
-                Ok(process) if process.is_truthy() => {
-                    match super::call(interp, "process-status", &[process], env).map(|v| v.kind()) {
-                        Ok(Kind::Symbol(status)) => status.to_string(),
-                        _ => String::new(),
-                    }
-                }
-                _ => "no process".to_string(),
-            }
-        }
-        // Recursive-editing depth brackets: the frontend runs at level 0.
-        '[' | ']' => String::new(),
-        'e' => String::new(),
-        '-' => "-".repeat(256),
-        other => other.to_string(),
-    })
-}
-
-// `coding-system-mnemonic' is GNU mule.el's; reach it through the
-// ordinary function cell, never the native dispatcher.
-fn coding_mnemonic_char(interp: &mut Interpreter, env: &mut Env, coding: &Value) -> char {
-    // xdisp.c:28432: an undefined spec ("Not yet decided") renders '-' in
-    // a multibyte buffer and ' ' in a unibyte one WITHOUT consulting any
-    // mnemonic.  (terminal-coding-system) is nil on a fresh tty and GNU
-    // shows '-' there, while (coding-system-mnemonic nil) would answer
-    // '=' by resolving nil to no-conversion.
-    let defined = !coding.is_nil()
-        && super::call(interp, "coding-system-p", std::slice::from_ref(coding), env)
-            .is_ok_and(|value| value.is_truthy());
-    if !defined {
-        return if interp.buffer.borrow().is_multibyte() {
-            '-'
-        } else {
-            ' '
-        };
-    }
-    // xdisp.c:28421 `decode_mode_spec_coding' reads CODING_ATTR_MNEMONIC
-    // out of the coding system's attribute vector; the same datum reaches
-    // Lisp as the `:mnemonic' entry of the C-owned `coding-system-plist'.
-    // The Lisp-owned `coding-system-mnemonic' wrapper is exactly that
-    // plist-get, and dispatching it natively was a gate escape
-    // (finding 67).
-    let plist = super::call(
-        interp,
-        "coding-system-plist",
-        std::slice::from_ref(coding),
-        env,
-    )
-    .unwrap_or(Value::Nil);
-    match super::call(
-        interp,
-        "plist-get",
-        &[plist, Value::symbol(":mnemonic")],
-        env,
-    )
-    .map(|v| v.kind())
-    {
-        Ok(Kind::Integer(code)) => char::from_u32(code as u32).unwrap_or('-'),
-        _ => '-',
-    }
-}
-
-/// xdisp.c's percent99: a ceiling percentage capped at 99.
-fn percent99(n: usize, d: usize) -> usize {
-    let d = d.max(1);
-    (100 * n).div_ceil(d).min(99)
-}
-
-/// %p / %P: window position within the buffer, from the live metrics
-/// (decode_mode_spec's 'p' and 'P', "%2d%%" formatting included; the
-/// spec's own -3 width truncates "Bottom" to "Bot" downstream).
-fn window_percent_spec(interp: &Interpreter, of_bottom: bool) -> String {
-    let Some(metrics) = crate::lisp::primitives::interactive_window_metrics() else {
-        return String::new();
-    };
-    let point_min = interp.buffer.borrow().point_min();
-    let point_max = interp.buffer.borrow().point_max();
-    let start = crate::lisp::primitives::current_window_start(interp).clamp(point_min, point_max);
-    let window_end = metrics.window_end.clamp(point_min, point_max);
-    if of_bottom {
-        // %P: percent of buffer above the window bottom.
-        if window_end >= point_max {
-            return if start <= point_min { "All" } else { "Bottom" }.to_string();
-        }
-        let above_top = start - point_min;
-        let percent = percent99(above_top, above_top + (point_max - window_end));
-        return format!("{percent:2}%");
-    }
-    // %p: percent of buffer above the window top.
-    if window_end >= point_max {
-        return if start <= point_min { "All" } else { "Bottom" }.to_string();
-    }
-    if start <= point_min {
-        return "Top".to_string();
-    }
-    format!("{:2}%", percent99(start - point_min, point_max - point_min))
-}
-
-/// pint2hrstr: a size with k/M/G units, at most four characters.
-fn human_readable_size(size: usize) -> String {
-    if size < 10_000 {
-        return size.to_string();
-    }
-    let mut quotient = size as f64;
-    for unit in ['k', 'M', 'G'] {
-        quotient /= 1000.0;
-        if quotient < 10.0 {
-            return format!("{quotient:.1}{unit}");
-        }
-        if quotient < 1000.0 {
-            return format!("{}{unit}", quotient.round() as usize);
-        }
-    }
-    format!("{}T", (quotient / 1000.0).round() as usize)
-}
 
 /// The `preceding-char' primitive, callable directly (a subr's function pointer).
 pub(super) fn direct_preceding_char(

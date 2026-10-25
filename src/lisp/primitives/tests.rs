@@ -25673,6 +25673,136 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
 }
 
 #[test]
+fn format_mode_line_follows_display_mode_element() {
+    // Each expected value is GNU 30's on a terminal frame (tmux probe).
+    let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    interp.set_variable("noninteractive", Value::Nil, &mut env);
+    let setup = Reader::new(
+        "(progn (switch-to-buffer (get-buffer-create \"probe-buf\"))
+                (insert \"line1\\nline2\\nline3\\n\")
+                (goto-char (point-min)) (forward-line 1)
+                (defvar probe-unrisky '(:eval (concat \"EV\" \"AL\")))
+                (defvar probe-risky '(:eval (concat \"EV\" \"AL\")))
+                (put 'probe-risky 'risky-local-variable t)
+                (defvar probe-str (propertize \"Sx\" 'face 'bold)))",
+    )
+    .read()
+    .expect("setup parses")
+    .expect("setup exists");
+    interp.eval(&setup, &mut env).expect("setup runs");
+    set_interactive_window_metrics(Some(InteractiveWindowMetrics {
+        text_height: 22,
+        window_end: 19,
+    }));
+    let cases = [
+        ("(format-mode-line nil)", "\"\""),
+        ("(format-mode-line \"x\" t)", "#(\"x\" 0 1 (face t))"),
+        (
+            "(format-mode-line (propertize \"x%b\" 'face 'italic) 'bold)",
+            "#(\"xprobe-buf\" 0 1 (face (italic bold)) 1 10 (face (italic bold)))",
+        ),
+        (
+            "(format-mode-line (propertize \"x\" 'face 'italic) 0)",
+            "\"x\"",
+        ),
+        (
+            "(format-mode-line '(20 mode-name))",
+            "\"*invalid*           \"",
+        ),
+        ("(format-mode-line '(8 . \"abc\"))", "\"abc     \""),
+        (
+            "(format-mode-line '(:propertize (8 \"abc\") face bold))",
+            "#(\"abc     \" 0 3 (face bold))",
+        ),
+        ("(format-mode-line \"a%Qb%\")", "\"ab\""),
+        (
+            "(format-mode-line \"[%5l][%-5c][%3C][%6i][%6I]\")",
+            "\"[    2][--5c][  1][    18][    18]\"",
+        ),
+        ("(format-mode-line \"%5-\")", "\"--   \""),
+        ("(format-mode-line '(\"\" probe-unrisky))", "\"\""),
+        ("(format-mode-line '(\"\" probe-risky))", "\"EVAL\""),
+        ("(format-mode-line '(\"\" probe-str))", "\"Sx\""),
+        (
+            "(format-mode-line '(:propertize (\"\" probe-str) help-echo \"h\"))",
+            "#(\"Sx\" 0 2 (help-echo \"h\"))",
+        ),
+        (
+            "(format-mode-line '(:propertize (:propertize \"x\" face bold) help-echo \"h\"))",
+            "#(\"x\" 0 1 (face bold))",
+        ),
+        (
+            "(format-mode-line '(\"a\" 5 \"b\" [1]))",
+            "\"a*invalid*b*invalid*\"",
+        ),
+        ("(format-mode-line '(1.5 \"a\"))", "\"\""),
+        (
+            "(format-mode-line (let ((x \"end\")) (dotimes (_ 120) (setq x (list x))) x))",
+            "\"*too-deep*\"",
+        ),
+        ("(format-mode-line '(-3 \"abcdef\" \"ghi\"))", "\"abc\""),
+        ("(format-mode-line '(-4 \"%b\"))", "\"prob\""),
+        ("(format-mode-line '(12 \"%b\"))", "\"probe-buf   \""),
+        (
+            "(let ((global-mode-string '(\"G\" \"%b\"))) (format-mode-line \"%M|%5M|\"))",
+            "\"Gprobe-buf|Gprobe-buf|\"",
+        ),
+        (
+            "(let ((mode-name '(\"ML\" \"x\"))) (format-mode-line \"%m\"))",
+            "\"\"",
+        ),
+        ("(format-mode-line \"ab\\0cd\")", "\"ab\""),
+        (
+            "(format-mode-line \"%b:%l\" nil nil (with-current-buffer (get-buffer-create \"probe-other\") (insert \"a\\nb\\nc\") (current-buffer)))",
+            "\"probe-other:3\"",
+        ),
+        ("(format-mode-line '(nil \"a\" \"b\"))", "\"b\""),
+        ("(format-mode-line '(t \"a\" \"b\"))", "\"a\""),
+        ("(format-mode-line '(unbound-probe-xyz \"a\"))", "\"\""),
+        ("(format-mode-line '(t))", "\"*invalid*\""),
+        ("(format-mode-line '(:foo \"a\" \"b\"))", "\"a\""),
+        (
+            "(format-mode-line '(\"A\" (:eval (error \"boom\")) \"B\"))",
+            "\"AB\"",
+        ),
+        (
+            "(format-mode-line '((:eval 42) (:eval nil) \"|\"))",
+            "\"*invalid*|\"",
+        ),
+        ("(format-mode-line \"%[%]%n%e\")", "\"\""),
+        (
+            "(condition-case err (format-mode-line \"%b\" nil 'foo) (error err))",
+            "(wrong-type-argument windowp foo)",
+        ),
+        (
+            "(condition-case err (format-mode-line \"%b\" nil nil 'bar) (error err))",
+            "(wrong-type-argument bufferp bar)",
+        ),
+    ];
+    let mut mismatches = Vec::new();
+    for (form, expected) in cases {
+        let value = Reader::new(form)
+            .read()
+            .expect("case parses")
+            .expect("case exists");
+        let printed = match interp.eval(&value, &mut env) {
+            Ok(result) => call(&mut interp, "prin1-to-string", &[result], &mut env)
+                .map(|text| crate::lisp::primitives::string_text(&text).unwrap_or_default())
+                .unwrap_or_else(|error| format!("ERROR {error:?}")),
+            Err(error) => format!("ERROR {error:?}"),
+        };
+        if printed != expected {
+            mismatches.push(format!(
+                "{form}\n  got      {printed}\n  expected {expected}"
+            ));
+        }
+    }
+    set_interactive_window_metrics(None);
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+#[test]
 fn format_mode_line_renders_the_dumped_spec_interactively() {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = crate::lisp::types::Env::new();
@@ -25689,8 +25819,13 @@ fn format_mode_line_renders_the_dumped_spec_interactively() {
         text_height: 22,
         window_end: 7,
     }));
-    let text = call(&mut interp, "format-mode-line", &[Value::Nil], &mut env)
-        .expect("format-mode-line renders");
+    let text = call(
+        &mut interp,
+        "format-mode-line",
+        &[Value::symbol("mode-line-format")],
+        &mut env,
+    )
+    .expect("format-mode-line renders");
     let text = format!("{text}");
     // Spec strings written in the format are %-expanded; symbol string
     // values are literal; conditionals and paddings follow the spec.
@@ -25879,8 +26014,13 @@ fn glass_mode_line_pads_min_width_spans_like_the_display_engine() {
     }));
     let glass = crate::lisp::primitives::render_mode_line_glass(&mut interp, &mut env)
         .expect("glass render");
-    let string =
-        call(&mut interp, "format-mode-line", &[Value::Nil], &mut env).expect("string render");
+    let string = call(
+        &mut interp,
+        "format-mode-line",
+        &[Value::symbol("mode-line-format")],
+        &mut env,
+    )
+    .expect("string render");
     set_interactive_window_metrics(None);
     // The 7-column coding/modified span exceeds its min-width of 6, so
     // the glass inserts one stretch column (produce_stretch_glyph floors
@@ -25912,6 +26052,7 @@ fn glass_mode_line_honors_font_lock_face_string_properties() {
     .expect("mode-line form exists");
     interp.eval(&form, &mut env).expect("mode-line form runs");
     let window_id = interp.selected_window_id();
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window_id);
     let (_, spans) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
@@ -25921,6 +26062,8 @@ fn glass_mode_line_honors_font_lock_face_string_properties() {
             text_height: 22,
             window_end: 1,
         },
+        80,
+        &measure,
     )
     .expect("mode line renders");
     assert_eq!(spans, vec![(0, 11, Value::Symbol("error".into()))]);
@@ -26426,12 +26569,15 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         text_height: 10,
         window_end: 14,
     };
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id);
     let (mode_line, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
         lower_id.id,
         9,
         metrics,
+        80,
+        &measure,
     )
     .expect("mode line renders");
     assert!(
@@ -26477,15 +26623,21 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         &mut env,
     )
     .expect("dedicate softly");
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id);
     let (softly, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
         lower_id.id,
         9,
         metrics,
+        80,
+        &measure,
     )
     .expect("mode line renders");
-    assert!(softly.ends_with('d'), "weak dedication shows d: {softly:?}");
+    assert!(
+        softly.trim_end().ends_with('d'),
+        "weak dedication shows d: {softly:?}"
+    );
     call(
         &mut interp,
         "set-window-dedicated-p",
@@ -26493,16 +26645,19 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         &mut env,
     )
     .expect("dedicate strongly");
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id);
     let (strongly, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
         lower_id.id,
         9,
         metrics,
+        80,
+        &measure,
     )
     .expect("mode line renders");
     assert!(
-        strongly.ends_with('D'),
+        strongly.trim_end().ends_with('D'),
         "strong dedication shows D: {strongly:?}"
     );
 }

@@ -340,7 +340,7 @@ pub(super) fn current_category_table(interp: &mut Interpreter) -> CharTableRef {
 }
 
 /// CATEGORY_MEMBER of a category set (a bool-vector).
-pub(super) fn category_member(interp: &Interpreter, set: &Value, category: u8) -> bool {
+pub(crate) fn category_member(interp: &Interpreter, set: &Value, category: u8) -> bool {
     match set.kind() {
         Kind::Record(id) => interp.find_record(id).is_some_and(|record| {
             record.kind == crate::lisp::eval::RecordKind::BoolVector

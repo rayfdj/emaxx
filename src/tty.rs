@@ -25,6 +25,8 @@ use crate::lisp::primitives::{
 };
 use crate::lisp::types::{Env, Kind, LispError, LispErrorKind, Value};
 
+mod layout;
+
 /// Append diagnostics to `EMAXX_TTY_LOG' when set; raw-mode sessions have
 /// no usable stderr, so a file is the only trace channel.
 fn debug_log(message: &str) {
@@ -129,6 +131,87 @@ fn merge_cell_attrs(base: CellAttrs, over: CellAttrs) -> CellAttrs {
     }
 }
 
+/// A padding glyph: a cell after the first of a wide character (term.c
+/// append_glyph's padding_p glyphs).  The terminal draws the character
+/// across it, so it is never printed.
+const PADDING_GLYPH: char = '\0';
+/// In display text, the character after this marker draws in the cell
+/// before it: a zero-width character the terminal composes with that
+/// cell's (a tty composition's components, compose-gstring-for-terminal).
+/// Control characters never reach display text untranslated, so neither
+/// marker can be a real glyph.
+const ATTACHED_GLYPH: char = '\u{1}';
+
+/// The cell each display offset of TEXT begins at, one past the end
+/// included: a padding glyph is a cell, an attached character and its
+/// marker take none.
+fn display_cells(text: &str) -> Vec<usize> {
+    let mut cells = Vec::with_capacity(text.len() + 1);
+    let mut cell = 0usize;
+    let mut attaching = false;
+    for character in text.chars() {
+        cells.push(cell);
+        if character == ATTACHED_GLYPH {
+            attaching = true;
+        } else if attaching {
+            attaching = false;
+        } else {
+            cell += 1;
+        }
+    }
+    cells.push(cell);
+    cells
+}
+
+/// The terminal cells display text TEXT takes.
+fn cell_count(text: &str) -> usize {
+    let mut cells = 0usize;
+    let mut attaching = false;
+    for character in text.chars() {
+        if character == ATTACHED_GLYPH {
+            attaching = true;
+        } else if attaching {
+            attaching = false;
+        } else {
+            cells += 1;
+        }
+    }
+    cells
+}
+
+/// The first CELLS cells of display text TEXT, as display_string ends a
+/// row: a wide character whose padding would not fit is left out and
+/// PAD fills its cells (pad_mode_line: `-' in a mode line, a space in a
+/// header or tab line).  Also the cells kept before that fill.
+fn take_cells_padded(text: &str, cells: usize, pad: char) -> (String, usize) {
+    let chars: Vec<char> = text.chars().collect();
+    let starts = display_cells(text);
+    let mut end = starts
+        .partition_point(|&cell| cell < cells)
+        .min(chars.len());
+    // Keep the characters attached to the last kept cell.
+    while end < chars.len() && starts[end] == cells && chars[end] == ATTACHED_GLYPH {
+        end += 2;
+    }
+    let mut kept: String = chars[..end.min(chars.len())].iter().collect();
+    if end < chars.len() && chars[end] == PADDING_GLYPH {
+        // The wide character starting the last kept run loses its padding.
+        let mut start = end;
+        while start > 0 && chars[start - 1] == PADDING_GLYPH {
+            start -= 1;
+        }
+        let start = start.saturating_sub(1);
+        kept = chars[..start].iter().collect();
+        kept.extend(std::iter::repeat_n(pad, end - start));
+        return (kept, starts[start]);
+    }
+    (kept, cells)
+}
+
+fn take_cells(text: &str, cells: usize) -> String {
+    take_cells_padded(text, cells, ' ').0
+}
+
 /// One painted terminal row: its characters and each cell's face
 /// attributes.  Two rows compare equal exactly when the glass would look
 /// identical.
@@ -136,6 +219,8 @@ fn merge_cell_attrs(base: CellAttrs, over: CellAttrs) -> CellAttrs {
 struct PaintRow {
     text: Vec<char>,
     attrs: Vec<CellAttrs>,
+    /// Zero-width characters printed after a cell's own, by cell.
+    marks: Vec<(usize, char)>,
 }
 
 impl PaintRow {
@@ -143,6 +228,7 @@ impl PaintRow {
         Self {
             text: vec![' '; cols],
             attrs: vec![CellAttrs::default(); cols],
+            marks: Vec::new(),
         }
     }
 
@@ -151,26 +237,79 @@ impl PaintRow {
         Self {
             text: vec!['\u{0}'],
             attrs: vec![CellAttrs::default()],
+            marks: Vec::new(),
+        }
+    }
+
+    /// Put CHARACTER in cell COL, dropping the cell's marks and blanking
+    /// what remains of a wide character the write cuts.
+    fn put_cell(&mut self, col: usize, character: char) {
+        if col >= self.text.len() {
+            return;
+        }
+        if self.text[col] == PADDING_GLYPH && character != PADDING_GLYPH {
+            let mut start = col;
+            while start > 0 && self.text[start - 1] == PADDING_GLYPH {
+                start -= 1;
+            }
+            if start > 0 {
+                self.text[start - 1] = ' ';
+                self.marks.retain(|(cell, _)| *cell != start - 1);
+            }
+            for cell in start..col {
+                self.text[cell] = ' ';
+            }
+        }
+        let mut after = col + 1;
+        while after < self.text.len() && self.text[after] == PADDING_GLYPH {
+            self.text[after] = ' ';
+            after += 1;
+        }
+        self.marks.retain(|(cell, _)| *cell != col);
+        self.text[col] = character;
+    }
+
+    /// Write display text TEXT from cell COL: padding glyphs take their
+    /// cells, attached characters join the cell before them.
+    fn write_cells(&mut self, col: usize, text: &str, attrs: Option<CellAttrs>) {
+        let mut at = col;
+        let mut attaching = false;
+        for character in text.chars() {
+            if character == ATTACHED_GLYPH {
+                attaching = true;
+                continue;
+            }
+            if attaching {
+                attaching = false;
+                if at > col && at - 1 < self.text.len() {
+                    let cell = at - 1;
+                    let index = self.marks.partition_point(|(mark, _)| *mark <= cell);
+                    self.marks.insert(index, (cell, character));
+                }
+                continue;
+            }
+            if at >= self.text.len() {
+                break;
+            }
+            if character == PADDING_GLYPH {
+                self.marks.retain(|(cell, _)| *cell != at);
+                self.text[at] = PADDING_GLYPH;
+            } else {
+                self.put_cell(at, character);
+            }
+            if let Some(attrs) = attrs {
+                self.attrs[at] = attrs;
+            }
+            at += 1;
         }
     }
 
     fn blit(&mut self, col: usize, text: &str, attrs: CellAttrs) {
-        for (offset, c) in text.chars().enumerate() {
-            let Some(cell) = self.text.get_mut(col + offset) else {
-                break;
-            };
-            *cell = c;
-            self.attrs[col + offset] = attrs;
-        }
+        self.write_cells(col, text, Some(attrs));
     }
 
     fn blit_text(&mut self, col: usize, text: &str) {
-        for (offset, character) in text.chars().enumerate() {
-            let Some(cell) = self.text.get_mut(col + offset) else {
-                break;
-            };
-            *cell = character;
-        }
+        self.write_cells(col, text, None);
     }
 
     /// Layer FACE attributes over the cells in [FROM, TO): attributes the
@@ -582,19 +721,23 @@ fn wrap_echo_paint(long: &PaintRow, cols: usize, max_rows: usize) -> Vec<PaintRo
         .zip(long.attrs.iter())
         .rposition(|(c, attrs)| *c != ' ' || *attrs != CellAttrs::default())
         .map(|last| last + 1)
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .max(long.marks.last().map_or(0, |(cell, _)| cell + 1));
     let has_newline = long.text[..used].contains(&'\n');
+    let copy_cell = |row: &mut PaintRow, col: usize, index: usize| {
+        row.text[col] = long.text[index];
+        row.attrs[col] = long.attrs[index];
+        row.marks.extend(
+            long.marks
+                .iter()
+                .filter(|(cell, _)| *cell == index)
+                .map(|(_, mark)| (col, *mark)),
+        );
+    };
     if used <= cols && !has_newline {
         let mut row = PaintRow::blank(cols);
-        for (col, (c, attrs)) in long
-            .text
-            .iter()
-            .zip(long.attrs.iter())
-            .enumerate()
-            .take(cols)
-        {
-            row.text[col] = *c;
-            row.attrs[col] = *attrs;
+        for index in 0..long.text.len().min(cols) {
+            copy_cell(&mut row, index, index);
         }
         return vec![row];
     }
@@ -612,16 +755,33 @@ fn wrap_echo_paint(long: &PaintRow, cols: usize, max_rows: usize) -> Vec<PaintRo
             }
             continue;
         }
-        if col == usable {
-            row.text[usable] = '\\';
+        if c == PADDING_GLYPH && col == 0 {
+            // The rest of a wide character that moved to this row.
+            continue;
+        }
+        // A wide character whose padding would reach the last column
+        // moves down whole, the cells it leaves filled with `'.
+        let width = 1 + long.text[index + 1..used]
+            .iter()
+            .take_while(|cell| **cell == PADDING_GLYPH)
+            .count();
+        let wraps = c != PADDING_GLYPH && col < usable && col + width > usable;
+        if col == usable || wraps {
+            for cell in col..cols {
+                row.text[cell] = '\\';
+            }
             rows.push(std::mem::replace(&mut row, PaintRow::blank(cols)));
             col = 0;
             if rows.len() == max_rows {
                 return rows;
             }
         }
-        row.text[col] = c;
-        row.attrs[col] = long.attrs[index];
+        if c == PADDING_GLYPH {
+            row.text[col] = PADDING_GLYPH;
+            row.attrs[col] = long.attrs[index];
+        } else {
+            copy_cell(&mut row, col, index);
+        }
         col += 1;
     }
     // A terminal display string ending in a newline terminates its final
@@ -658,14 +818,22 @@ fn wrapped_echo_cursor(
     let mut row = 0usize;
     let mut col = 0usize;
     for index in 0..position.min(extent) {
-        if long.text[index] == '\n' {
+        let c = long.text[index];
+        if c == '\n' {
             if row + 1 >= max_rows {
                 break;
             }
             row += 1;
             col = 0;
         } else {
-            if col == usable {
+            // wrap_echo_paint's row breaks, a wide character moving down
+            // whole.
+            let width = 1 + long.text[index + 1..extent]
+                .iter()
+                .take_while(|cell| **cell == PADDING_GLYPH)
+                .count();
+            let wraps = c != PADDING_GLYPH && col < usable && col + width > usable;
+            if col == usable || wraps {
                 if row + 1 >= max_rows {
                     break;
                 }
@@ -738,6 +906,7 @@ fn draw_echo_row_composed(
         mini_rows = echo_paint.len();
     }
     echo_paint.resize(mini_rows, PaintRow::blank(cols));
+    encode_terminal_cells(interpreter, &mut echo_paint);
     let base = (rows.max(4) as usize).saturating_sub(mini_rows);
     let mut out = terminal_output();
     for (index, echo_row) in echo_paint.iter().enumerate() {
@@ -1437,11 +1606,22 @@ fn window_render_geometry(
             };
         };
         let point_pos = info.point.clamp(buffer.point_min(), buffer.point_max());
-        let point_line = buffer.line_number_at_pos(point_pos);
-        let line_text = displayed_line_text(&buffer, point_line);
-        let point_dcol =
-            display_column(&line_text, point_pos - buffer.line_start_at(point_pos)) as i64;
-        let line_w = display_width(&line_text);
+        // hscroll_window_tree measures the cursor's row with the display
+        // iterator: the visual line's laid-out columns, prefix included.
+        let spec = resolve_buffer_invisibility(interpreter, &buffer, info.buffer_id);
+        let context = CharacterDisplayContext::new(interpreter, info.buffer_id, info.window_id)
+            .with_line_numbers(lnum_cols);
+        let point_line =
+            visual_line_first_line(&buffer, &spec, buffer.line_number_at_pos(point_pos));
+        let visual = glyphless_visual_line_at(&buffer, &spec, point_line, Some(&context));
+        let laid = layout::lay_out_visual_line(&visual, body_width, true);
+        let point_index = visual
+            .map
+            .get(point_pos - buffer.line_start_of(point_line))
+            .copied()
+            .unwrap_or_else(|| visual.map.last().copied().unwrap_or(0));
+        let point_dcol = laid.columns[point_index.min(laid.columns.len() - 1)] as i64;
+        let line_w = laid.columns.last().copied().unwrap_or(0);
         let w = body_width as i64;
         let margin = interpreter
             .lookup_var("hscroll-margin", env)
@@ -1470,7 +1650,9 @@ fn window_render_geometry(
             || (row_truncated_right && cursor_x >= text_w - margin)
             || (current_line_only && hscroll != state.min_hscroll && hscroll > 0);
         if trigger {
-            let at_eol = point_dcol >= line_w as i64;
+            // ITERATOR_AT_END_OF_LINE_P: the iterator sits on a newline
+            // (at ZV it does not, so the cursor centers).
+            let at_eol = buffer.char_at(point_pos) == Some('\n');
             // hscroll_window_tree's iterator runs with the line-number
             // glyphs produced, so its current_x carries their columns.
             let current_x = point_dcol + lnum_cols as i64;
@@ -1641,7 +1823,38 @@ struct CharacterDisplayContext<'a> {
     interpreter: &'a Interpreter,
     table_id: Option<crate::lisp::types::CharTableRef>,
     display_table: Option<crate::lisp::types::CharTableRef>,
-    terminal_coding: String,
+    /// The coding whose charsets the terminal's t->charset_list holds
+    /// (None: every character is drawn).
+    charset_list_coding: Option<String>,
+    buffer_id: u64,
+    window_id: u64,
+    /// The buffer's `word-wrap', with `word-wrap-by-category'.
+    line_wrap: layout::LineWrap,
+    /// The buffer's category table, read when wrapping by category.
+    category_table: Option<crate::lisp::types::CharTableRef>,
+    tab_width: usize,
+    /// The buffer's `line-prefix' and `wrap-prefix' values.
+    line_prefix: Value,
+    wrap_prefix: Value,
+    /// Whether any text property or overlay of the buffer carries a
+    /// `line-prefix' or `wrap-prefix' (computed on first use).
+    prefix_properties: std::cell::Cell<Option<bool>>,
+    /// Columns of the window's `display-line-numbers' gutter, which
+    /// precedes each row's prefix and text (it->lnum_pixel_width).
+    lnum_cols: usize,
+    /// The buffer's `ctl-arrow' (it->ctl_arrow_p).
+    ctl_arrow: bool,
+    char_width_table: Option<crate::lisp::types::CharTableRef>,
+    printable_chars: Option<crate::lisp::types::CharTableRef>,
+    unicode_category_table: Option<crate::lisp::types::CharTableRef>,
+    /// `nobreak-char-display': nil, t (highlight), or another value
+    /// (show the escape glyph).
+    nobreak_char_display: Value,
+    nobreak_char_ascii_display: bool,
+    display_raw_bytes_as_hex: bool,
+    /// Automatic composition is on for this terminal: a zero-width
+    /// character composes with the cell before it.
+    auto_composition: bool,
 }
 
 impl<'a> CharacterDisplayContext<'a> {
@@ -1680,13 +1893,391 @@ impl<'a> CharacterDisplayContext<'a> {
         };
         // The shared term.c policy is what makes LANG=C produce glyphless
         // hex escapes instead of sending raw UTF-8.
-        let terminal_coding = interpreter.effective_terminal_coding_system();
+        let charset_list_coding = interpreter.terminal_charset_list_coding();
+        // Redisplay reads these with the window's buffer current.
+        let local = |name: &str| {
+            interpreter
+                .buffer_local_toplevel_value(buffer_id, name)
+                .or_else(|| interpreter.default_toplevel_value(name))
+                .unwrap_or(Value::Nil)
+        };
+        let line_wrap = if local("word-wrap").is_truthy() {
+            layout::LineWrap::Word {
+                by_category: interpreter
+                    .default_toplevel_value("word-wrap-by-category")
+                    .is_some_and(|value| value.is_truthy()),
+            }
+        } else {
+            layout::LineWrap::Window
+        };
+        let category_table = match line_wrap {
+            layout::LineWrap::Word { by_category: true } => match local("category-table").kind() {
+                Kind::CharTable(table) => Some(table),
+                _ => interpreter.standard_category_table(),
+            },
+            _ => None,
+        };
+        // buffer.h's SANE_TAB_WIDTH.
+        let tab_width = match local("tab-width").kind() {
+            Kind::Integer(width) if (1..=1000).contains(&width) => width as usize,
+            _ => 8,
+        };
+        // Redisplay reads these C variables with the window's buffer
+        // current, so a buffer-local binding applies.
+        let local_char_table = |name: &str| match local(name).kind() {
+            Kind::CharTable(table) => Some(table),
+            _ => None,
+        };
+        // composite.c inhibit_auto_composition: nil turns automatic
+        // composition off, a string only on the terminal type it names.
+        let composition_mode = local("auto-composition-mode");
+        let auto_composition = match crate::lisp::primitives::string_text(&composition_mode) {
+            Ok(terminal) => interpreter
+                .tty_terminal_type()
+                .is_none_or(|current| *current != terminal),
+            Err(_) => composition_mode.is_truthy(),
+        };
         Self {
             interpreter,
             table_id,
             display_table,
-            terminal_coding,
+            charset_list_coding,
+            buffer_id,
+            window_id,
+            line_wrap,
+            category_table,
+            tab_width,
+            line_prefix: local("line-prefix"),
+            wrap_prefix: local("wrap-prefix"),
+            prefix_properties: std::cell::Cell::new(None),
+            lnum_cols: 0,
+            ctl_arrow: local("ctl-arrow").is_truthy(),
+            char_width_table: local_char_table("char-width-table"),
+            printable_chars: local_char_table("printable-chars"),
+            unicode_category_table: local_char_table("unicode-category-table"),
+            nobreak_char_display: local("nobreak-char-display"),
+            nobreak_char_ascii_display: local("nobreak-char-ascii-display").is_truthy(),
+            display_raw_bytes_as_hex: local("display-raw-bytes-as-hex").is_truthy(),
+            auto_composition,
         }
+    }
+
+    /// The same context for a window whose rows start with a LNUM_COLS
+    /// line-number gutter.
+    fn with_line_numbers(mut self, lnum_cols: usize) -> Self {
+        self.lnum_cols = lnum_cols;
+        self
+    }
+
+    /// The context display_string draws a mode, header or tab line in:
+    /// reseat_to_string's iterator uses `standard-display-table' when it
+    /// is a display table, else the window's.
+    fn for_mode_line(interpreter: &'a Interpreter, buffer_id: u64, window_id: u64) -> Self {
+        let mut context = Self::new(interpreter, buffer_id, window_id);
+        if let Some(Kind::CharTable(table)) = interpreter
+            .default_toplevel_value("standard-display-table")
+            .map(|value| value.kind())
+            && table.has_purpose("display-table")
+            && table.extra_count() == 6
+        {
+            context.display_table = Some(table);
+        }
+        context
+    }
+
+    /// produce_stretch_glyph's width, in cells, of a `(space . PLIST)'
+    /// display spec at X on a mode-line row: an :align-to position there
+    /// counts from the text area's left edge when it names no window
+    /// position.
+    fn mode_line_stretch_width(&self, plist: &[Value], x: usize) -> usize {
+        let get = |key: &str| {
+            plist
+                .chunks(2)
+                .find(|pair| matches!(pair[0].kind(), Kind::Symbol(name) if name == key))
+                .and_then(|pair| pair.get(1).copied())
+                .filter(|value| !value.is_nil())
+        };
+        let (width, zero_ok) = if let Some(width) =
+            get(":width").and_then(|prop| self.pixel_width(&prop, None))
+        {
+            (width as i64, true)
+        } else if let Some(factor) = get(":relative-width").and_then(|prop| prop.as_float().ok())
+            && factor > 0.0
+        {
+            (factor as i64, false)
+        } else if let Some(prop) = get(":align-to") {
+            let mut align_to = -1i64;
+            match self.pixel_width(&prop, Some(&mut align_to)) {
+                Some(target) => {
+                    let left = self
+                        .interpreter
+                        .window_margins(self.window_id)
+                        .0
+                        .unwrap_or(0)
+                        .max(0);
+                    let origin = if align_to < 0 { left } else { align_to };
+                    ((target as i64 + origin - x as i64).max(0), true)
+                }
+                None => (1, false),
+            }
+        } else {
+            (1, false)
+        };
+        if width < 0 || (width == 0 && !zero_ok) {
+            1
+        } else {
+            width as usize
+        }
+    }
+
+    /// The `word-wrap-by-category' bits (layout.rs) of CHARACTER.
+    fn wrap_category_bits(&self, character: char) -> u8 {
+        let Some(table) = self.category_table else {
+            return 0;
+        };
+        let set = table.get(u32::from(character));
+        let member = |category: u8| {
+            crate::lisp::primitives::category_member(self.interpreter, &set, category)
+        };
+        let mut bits = 0;
+        if member(b'|') {
+            bits |= layout::LINE_BREAKABLE;
+        }
+        if member(b'<') {
+            bits |= layout::NOT_AT_EOL;
+        }
+        if member(b'>') {
+            bits |= layout::NOT_AT_BOL;
+        }
+        bits
+    }
+
+    /// The `line-prefix' (or with WRAP the `wrap-prefix') at POS:
+    /// get_line_prefix_it_property's char property, else the variable.
+    fn prefix_value_at(&self, buffer: &crate::buffer::Buffer, pos: usize, wrap: bool) -> Value {
+        let name = if wrap { "wrap-prefix" } else { "line-prefix" };
+        let has_properties = match self.prefix_properties.get() {
+            Some(known) => known,
+            None => {
+                let known = buffer.has_text_property_named("line-prefix")
+                    || buffer.has_text_property_named("wrap-prefix")
+                    || buffer.overlays.iter().any(|overlay| {
+                        !overlay.is_dead()
+                            && (overlay
+                                .get_prop(&Value::Symbol("line-prefix".into()))
+                                .is_some()
+                                || overlay
+                                    .get_prop(&Value::Symbol("wrap-prefix".into()))
+                                    .is_some())
+                    });
+                self.prefix_properties.set(Some(known));
+                known
+            }
+        };
+        if has_properties && pos <= buffer.point_max() {
+            let property = crate::lisp::primitives::highest_priority_overlay_property(
+                self.interpreter,
+                buffer,
+                pos,
+                name,
+                false,
+                Some(self.window_id),
+            )
+            .filter(|value| !value.is_nil())
+            .or_else(|| buffer.text_property_at(pos, name))
+            .filter(|value| !value.is_nil());
+            if let Some(property) = property {
+                return property;
+            }
+        }
+        if wrap {
+            self.wrap_prefix
+        } else {
+            self.line_prefix
+        }
+    }
+
+    /// The glyphs push_prefix_prop shows for prefix VALUE: a string's
+    /// characters, or a `(space ...)' stretch of blanks; anything else
+    /// (or an empty string) pushes no prefix.
+    fn prefix_glyphs(&self, value: &Value) -> Option<String> {
+        if value.is_nil() {
+            return None;
+        }
+        if let Ok(text) = crate::lisp::primitives::string_text(value) {
+            return (!text.is_empty()).then(|| self.prefix_string_cells(&text).0);
+        }
+        let items = value.to_vec().ok()?;
+        if !matches!(items.first().map(|v| v.kind()), Some(Kind::Symbol(head)) if head == "space") {
+            return None;
+        }
+        Some(" ".repeat(self.stretch_width(&items[1..])))
+    }
+
+    /// A prefix string's glyphs, from the row's start: its display
+    /// translations and widths, a TAB to the next tab stop from where it
+    /// starts (term.c measures a prefix's TABs from the row, not the
+    /// line), and the cell each of TEXT's characters begins at, one past
+    /// the end included.
+    fn prefix_string_cells(&self, text: &str) -> (String, Vec<usize>) {
+        let display = self.translate(text);
+        let mut glyphs = String::with_capacity(display.text.len());
+        let mut cells = Vec::with_capacity(display.offsets.len());
+        let mut cell_of_offset = Vec::with_capacity(display.text.len() + 1);
+        let mut cell = 0usize;
+        let mut attaching = false;
+        for character in display.text.chars() {
+            cell_of_offset.push(cell);
+            if character == ATTACHED_GLYPH {
+                attaching = true;
+                glyphs.push(character);
+            } else if attaching {
+                attaching = false;
+                glyphs.push(character);
+            } else if character == '\t' {
+                let next = (cell + self.tab_width) / self.tab_width * self.tab_width;
+                glyphs.extend(std::iter::repeat_n(' ', next - cell));
+                cell = next;
+            } else {
+                glyphs.push(character);
+                cell += 1;
+            }
+        }
+        cell_of_offset.push(cell);
+        for offset in &display.offsets {
+            cells.push(cell_of_offset[(*offset).min(cell_of_offset.len() - 1)]);
+        }
+        (glyphs, cells)
+    }
+
+    /// produce_stretch_glyph's width, in cells, of a `(space . PLIST)'
+    /// display spec at the start of a row.
+    fn stretch_width(&self, plist: &[Value]) -> usize {
+        let get = |key: &str| {
+            plist
+                .chunks(2)
+                .find(|pair| matches!(pair[0].kind(), Kind::Symbol(name) if name == key))
+                .and_then(|pair| pair.get(1).copied())
+                .filter(|value| !value.is_nil())
+        };
+        let (width, zero_ok) = if let Some(width) =
+            get(":width").and_then(|prop| self.pixel_width(&prop, None))
+        {
+            (width as i64, true)
+        } else if let Some(factor) = get(":relative-width").and_then(|prop| prop.as_float().ok())
+            && factor > 0.0
+        {
+            // The width of the character the stretch replaces: one cell.
+            (factor as i64, false)
+        } else if let Some(prop) = get(":align-to") {
+            let mut align_to = -1i64;
+            match self.pixel_width(&prop, Some(&mut align_to)) {
+                Some(target) => ((target as i64 + align_to.max(0)).max(0), true),
+                None => (1, false),
+            }
+        } else {
+            (1, false)
+        };
+        if width < 0 || (width == 0 && !zero_ok) {
+            1
+        } else {
+            width as usize
+        }
+    }
+
+    /// xdisp.c calc_pixel_width_or_height on a terminal, width
+    /// dimension: canonical character units are one cell, symbols read
+    /// the buffer-local value, `(NUM)' is NUM cells.  With ALIGN_TO the
+    /// first window element names an X position.  None is an invalid
+    /// spec.
+    fn pixel_width(&self, prop: &Value, mut align_to: Option<&mut i64>) -> Option<f64> {
+        match prop.kind() {
+            Kind::Nil => Some(0.0),
+            Kind::Symbol(name) => {
+                match name.as_str() {
+                    // A terminal frame has no resolution for physical units.
+                    "in" | "mm" | "cm" => return None,
+                    "height" | "width" => return Some(1.0),
+                    "text" => return Some(self.text_area_width() as f64),
+                    _ => {}
+                }
+                if let Some(target) = align_to.as_deref_mut()
+                    && *target < 0
+                {
+                    let position = match name.as_str() {
+                        "left" | "left-margin" | "left-fringe" | "scroll-bar" => Some(0),
+                        "center" => Some(self.text_area_width() as i64 / 2),
+                        "right" | "right-fringe" | "right-margin" => {
+                            Some(self.text_area_width() as i64)
+                        }
+                        _ => None,
+                    };
+                    if let Some(position) = position {
+                        *target = position;
+                        return Some(0.0);
+                    }
+                } else if matches!(
+                    name.as_str(),
+                    "left-fringe" | "right-fringe" | "left-margin" | "right-margin" | "scroll-bar"
+                ) {
+                    return Some(0.0);
+                }
+                let value = self
+                    .interpreter
+                    .buffer_local_toplevel_value(self.buffer_id, &name)
+                    .or_else(|| self.interpreter.default_toplevel_value(&name))
+                    .unwrap_or(Value::Nil);
+                if matches!(value.kind(), Kind::Symbol(_)) {
+                    // A symbol naming a symbol: GNU evaluates once.
+                    return value.as_float().ok();
+                }
+                self.pixel_width(&value, align_to)
+            }
+            Kind::Integer(_) | Kind::Float(_) => prop.as_float().ok(),
+            Kind::Cons(cell) => {
+                let car = cell.car.get();
+                let cdr = cell.cdr.get();
+                let mut car = car;
+                if let Kind::Symbol(name) = car.kind() {
+                    if name == "+" || name == "-" {
+                        let mut pixels = 0.0;
+                        let mut first = true;
+                        let mut tail = cdr;
+                        while let Kind::Cons(item) = tail.kind() {
+                            let px = self.pixel_width(&item.car.get(), align_to.as_deref_mut())?;
+                            if first {
+                                pixels = if name == "+" { px } else { -px };
+                                first = false;
+                            } else {
+                                pixels += px;
+                            }
+                            tail = item.cdr.get();
+                        }
+                        return Some(if name == "-" { -pixels } else { pixels });
+                    }
+                    car = self
+                        .interpreter
+                        .buffer_local_toplevel_value(self.buffer_id, &name)
+                        .or_else(|| self.interpreter.default_toplevel_value(&name))
+                        .unwrap_or(Value::Nil);
+                }
+                if matches!(car.kind(), Kind::Integer(_) | Kind::Float(_)) {
+                    let pixels = car.as_float().ok()?;
+                    if cdr.is_nil() {
+                        return Some(pixels);
+                    }
+                    let factor = self.pixel_width(&cdr, align_to)?;
+                    return Some(pixels * factor);
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// window_box_width of the window's text area, in cells.
+    fn text_area_width(&self) -> usize {
+        crate::lisp::primitives::window_text_area_columns(self.interpreter, self.window_id)
     }
 
     fn method_from_value(value: Value, no_font_fallback: bool) -> Option<GlyphlessDisplayMethod> {
@@ -1711,29 +2302,174 @@ impl<'a> CharacterDisplayContext<'a> {
         Some(method)
     }
 
-    fn method_for(&self, character: char) -> Option<GlyphlessDisplayMethod> {
-        if let Some(table_id) = self.table_id
-            && let Some(method) = self
-                .interpreter
-                .char_table_get(table_id, u32::from(character))
-                .and_then(|value| Self::method_from_value(value, false))
-        {
-            return Some(method);
+    /// The method `glyphless-char-display' itself names for CHARACTER.
+    fn table_method_for(&self, character: char) -> Option<GlyphlessDisplayMethod> {
+        let table_id = self.table_id?;
+        self.interpreter
+            .char_table_get(table_id, u32::from(character))
+            .and_then(|value| Self::method_from_value(value, false))
+    }
+
+    /// CHARACTER_WIDTH of a display character: one cell for ASCII, else
+    /// `char-width-table''s entry, sanitized.
+    fn cell_width(&self, character: char) -> usize {
+        if character.is_ascii() {
+            return 1;
         }
-        self.no_font_method_for(character)
+        match self
+            .char_width_table
+            .and_then(|table| self.interpreter.char_table_get(table, u32::from(character)))
+            .map(|width| width.kind())
+        {
+            Some(Kind::Integer(width)) if (0..=1000).contains(&width) => width as usize,
+            Some(Kind::Integer(_)) => 1000,
+            _ => 1,
+        }
+    }
+
+    /// term.c produce_glyphs for a displayable CHARACTER: its glyph and
+    /// a padding glyph for each further cell.  A zero-width character
+    /// composes with the cell before it (compose-gstring-for-terminal,
+    /// which composes one with no base character after a space); with
+    /// automatic composition off it produces no glyph.
+    fn push_cells(&self, display: &mut CharacterDisplay, count: &mut usize, character: char) {
+        match self.cell_width(character) {
+            0 => {
+                if !self.auto_composition {
+                    return;
+                }
+                if display
+                    .text
+                    .chars()
+                    .next_back()
+                    .is_none_or(|base| base == '\n' || base == '\t')
+                {
+                    display.text.push(' ');
+                    *count += 1;
+                }
+                display.text.push(ATTACHED_GLYPH);
+                display.text.push(character);
+                *count += 2;
+            }
+            width => {
+                display.text.push(character);
+                display
+                    .text
+                    .extend(std::iter::repeat_n(PADDING_GLYPH, width - 1));
+                *count += width;
+            }
+        }
+    }
+
+    /// A display-table glyph slot of the window's display table (DISP_
+    /// ESCAPE_GLYPH is extra slot 2, DISP_CTRL_GLYPH slot 3): its
+    /// character and the face it names, else DEFAULT in `escape-glyph'.
+    fn special_glyph(&self, slot: usize, default: char) -> (char, Value) {
+        let escape_face = Value::symbol("escape-glyph");
+        let Some((code, face_id)) = self
+            .display_table
+            .and_then(|table| self.interpreter.char_table_extra_slot(table, slot))
+            .and_then(display_table_glyph)
+        else {
+            return (default, escape_face);
+        };
+        let character = crate::lisp::primitives::char_from_integer(code).unwrap_or(default);
+        let face = (face_id > 0)
+            .then(|| {
+                self.interpreter
+                    .lisp_face_states
+                    .iter()
+                    .find(|face| face.id == Some(face_id))
+                    .map(|face| Value::symbol(&face.name))
+            })
+            .flatten()
+            .unwrap_or(escape_face);
+        (character, face)
+    }
+
+    /// xdisp.c get_next_display_element's translation of a control
+    /// character (`^C' under `ctl-arrow', else `\003'), a non-ASCII space
+    /// or hyphen under `nobreak-char-display', a raw byte (`\200', or
+    /// `\x80' under `display-raw-bytes-as-hex') or a character outside
+    /// `printable-chars': the glyphs it shows as and the face merged
+    /// over them.  MODE_LINE translates a newline too.
+    fn escape_glyphs(&self, character: char, mode_line: bool) -> Option<(Vec<char>, Value)> {
+        let code = crate::lisp::primitives::string_character_code(true, character);
+        let raw_byte = crate::lisp::primitives::raw_byte_from_regex_char(character);
+        let ascii = code < 0x80;
+        let nobreak = !ascii && !self.nobreak_char_display.is_nil();
+        let nonascii_space = nobreak
+            && self
+                .unicode_category_table
+                .and_then(|table| self.interpreter.char_table_get(table, code as u32))
+                .is_some_and(|category| category.integer_value() == Some(UNICODE_CATEGORY_ZS));
+        let nonascii_hyphen = nobreak && matches!(code, 0xAD | 0x2010 | 0x2011);
+        let translate = if code < 0x20 || code == 0x7F {
+            (mode_line && character != '\t') || (character != '\n' && character != '\t')
+        } else {
+            nonascii_space
+                || nonascii_hyphen
+                || raw_byte.is_some()
+                || !((0x20..0x7F).contains(&code)
+                    || self.printable_chars.is_some_and(|table| {
+                        self.interpreter
+                            .char_table_get(table, code as u32)
+                            .is_some_and(|value| !value.is_nil())
+                    }))
+        };
+        if !translate {
+            return None;
+        }
+        if ascii && self.ctl_arrow {
+            let (caret, face) = self.special_glyph(3, '^');
+            let control = char::from_u32((code ^ 0o100) as u32).unwrap_or('?');
+            return Some((vec![caret, control], face));
+        }
+        let highlight = self.nobreak_char_display.symbol_str() == Some("t");
+        if nonascii_space && highlight {
+            let shown = if self.nobreak_char_ascii_display {
+                ' '
+            } else {
+                character
+            };
+            return Some((vec![shown], Value::symbol("nobreak-space")));
+        }
+        if nonascii_hyphen && highlight {
+            let shown = if self.nobreak_char_ascii_display {
+                '-'
+            } else {
+                character
+            };
+            return Some((vec![shown], Value::symbol("nobreak-hyphen")));
+        }
+        let (escape, face) = self.special_glyph(2, '\\');
+        if nonascii_space || nonascii_hyphen {
+            return Some((vec![escape, if nonascii_space { ' ' } else { '-' }], face));
+        }
+        let value = raw_byte.map_or(code, i64::from);
+        let digits = if self.display_raw_bytes_as_hex {
+            format!("x{value:02x}")
+        } else {
+            format!("{value:03o}")
+        };
+        let mut glyphs = vec![escape];
+        glyphs.extend(digits.chars());
+        Some((glyphs, face))
     }
 
     fn no_font_method_for(&self, character: char) -> Option<GlyphlessDisplayMethod> {
-        // Raw eight-bit characters bypass terminal encoding in term.c and
-        // are always emitted as their byte.  Every ordinary scalar is tested
-        // against the same coding implementation used by Lisp conversion.
+        // term.c produce_glyphs draws a character of the terminal's
+        // t->charset_list (every charset while it is nil); raw eight-bit
+        // characters always go out as their byte.
         let encodable = character.is_ascii()
             || crate::lisp::primitives::raw_byte_from_regex_char(character).is_some()
-            || crate::lisp::primitives::terminal_char_encodable(
-                self.interpreter,
-                &self.terminal_coding,
-                character as u32,
-            );
+            || self.charset_list_coding.as_deref().is_none_or(|coding| {
+                crate::lisp::primitives::terminal_char_encodable(
+                    self.interpreter,
+                    coding,
+                    character as u32,
+                )
+            });
         if encodable {
             return None;
         }
@@ -1749,6 +2485,17 @@ impl<'a> CharacterDisplayContext<'a> {
     }
 
     fn translate(&self, text: &str) -> CharacterDisplay {
+        self.translate_for(text, false)
+    }
+
+    /// TEXT as display glyphs, one display character a terminal cell
+    /// (PADDING_GLYPH and ATTACHED_GLYPH mark the rest), in the order
+    /// get_next_display_element and produce_glyphs apply: a display-table
+    /// vector, an explicit `glyphless-char-display' method, the escape
+    /// translations, then a character the terminal cannot encode as a
+    /// no-font glyphless method.  MODE_LINE is display_string's row in a
+    /// mode, header or tab line.
+    fn translate_for(&self, text: &str, mode_line: bool) -> CharacterDisplay {
         let mut display = CharacterDisplay {
             text: String::with_capacity(text.len()),
             offsets: Vec::with_capacity(text.chars().count() + 1),
@@ -1792,10 +2539,11 @@ impl<'a> CharacterDisplayContext<'a> {
                         display.text.push_str(&replacement);
                         display.glyphless_spans.push((from, count));
                     } else {
-                        display
-                            .text
-                            .push(character.expect("encodable glyph has a character"));
-                        count += 1;
+                        self.push_cells(
+                            &mut display,
+                            &mut count,
+                            character.expect("encodable glyph has a character"),
+                        );
                     }
                     if face_id > 0
                         && let Some(face) = self
@@ -1809,23 +2557,51 @@ impl<'a> CharacterDisplayContext<'a> {
                             .push((from, count, Value::symbol(&face.name)));
                     }
                 }
-            } else if let Some(method) = self.method_for(character) {
+            } else if let Some(method) = self.table_method_for(character) {
+                self.push_glyphless(&mut display, &mut count, &method, character);
+            } else if let Some((glyphs, face)) = self.escape_glyphs(character, mode_line) {
                 let from = count;
-                let replacement = method.render(character);
-                count += replacement.chars().count();
-                display.text.push_str(&replacement);
-                if from < count {
-                    display.glyphless_spans.push((from, count));
+                for glyph in glyphs {
+                    match self.no_font_method_for(glyph) {
+                        Some(method) => {
+                            self.push_glyphless(&mut display, &mut count, &method, glyph)
+                        }
+                        None => self.push_cells(&mut display, &mut count, glyph),
+                    }
                 }
+                if from < count {
+                    display.face_spans.push((from, count, face));
+                }
+            } else if let Some(method) = self.no_font_method_for(character) {
+                self.push_glyphless(&mut display, &mut count, &method, character);
             } else {
-                display.text.push(character);
-                count += 1;
+                self.push_cells(&mut display, &mut count, character);
             }
         }
         display.offsets.push(count);
         display
     }
+
+    fn push_glyphless(
+        &self,
+        display: &mut CharacterDisplay,
+        count: &mut usize,
+        method: &GlyphlessDisplayMethod,
+        character: char,
+    ) {
+        let from = *count;
+        let replacement = method.render(character);
+        *count += replacement.chars().count();
+        display.text.push_str(&replacement);
+        if from < *count {
+            display.glyphless_spans.push((from, *count));
+        }
+    }
 }
+
+/// enum unicode_category's Zs (character.h), as `unicode-category-table'
+/// stores it.
+const UNICODE_CATEGORY_ZS: i64 = 23;
 
 /// dispextern.h:GLYPH_CODE_P accepts a packed character/face integer or a
 /// (character . face-id) pair.  Invalid entries display a space.
@@ -1875,9 +2651,62 @@ impl CharacterDisplay {
     }
 }
 
-/// Translate display-table vectors before glyphless fallback, keeping faces in
-/// display-character offsets. Window layout and echo composition use the same
-/// translator so expansion and removal also move point and face boundaries.
+/// A mode, header or tab line's text as display_string shows it: the
+/// window's display translations and glyph widths, with SPANS moved
+/// from character offsets to the cells the glyphs take.
+/// The terminal's measures of a window's mode, header or tab line row
+/// for the interpreter's display_string.
+pub(crate) struct ModeLineMeasure {
+    buffer_id: u64,
+    window_id: u64,
+}
+
+impl ModeLineMeasure {
+    /// The measures of WINDOW_ID's rows, which show its buffer.
+    #[cfg(test)]
+    pub(crate) fn for_window(interpreter: &Interpreter, window_id: u64) -> Self {
+        let buffer_id = crate::lisp::primitives::window_buffer_id(
+            interpreter,
+            &interpreter.record_value(window_id),
+        )
+        .unwrap_or_else(|| interpreter.current_buffer_id());
+        Self {
+            buffer_id,
+            window_id,
+        }
+    }
+}
+
+impl crate::lisp::primitives::ModeLineCells for ModeLineMeasure {
+    fn widths(&self, interpreter: &Interpreter, text: &[char]) -> Vec<usize> {
+        let source: String = text.iter().collect();
+        let display =
+            CharacterDisplayContext::for_mode_line(interpreter, self.buffer_id, self.window_id)
+                .translate_for(&source, true);
+        let glyphs: Vec<char> = display.text.chars().collect();
+        display
+            .offsets
+            .windows(2)
+            .map(|pair| {
+                let piece: String = glyphs[pair[0].min(glyphs.len())..pair[1].min(glyphs.len())]
+                    .iter()
+                    .collect();
+                cell_count(&piece)
+            })
+            .collect()
+    }
+
+    fn stretch(&self, interpreter: &Interpreter, plist: &[Value], x: usize) -> usize {
+        CharacterDisplayContext::for_mode_line(interpreter, self.buffer_id, self.window_id)
+            .mode_line_stretch_width(plist, x)
+    }
+
+    fn width_of(&self, interpreter: &Interpreter, spec: &Value) -> Option<f64> {
+        CharacterDisplayContext::for_mode_line(interpreter, self.buffer_id, self.window_id)
+            .pixel_width(spec, None)
+    }
+}
+
 fn apply_character_display(
     interpreter: &Interpreter,
     buffer_id: u64,
@@ -1885,7 +2714,8 @@ fn apply_character_display(
     text: String,
     spans: &mut Vec<(usize, usize, Value)>,
 ) -> String {
-    let display = CharacterDisplayContext::new(interpreter, buffer_id, window_id).translate(&text);
+    let display = CharacterDisplayContext::for_mode_line(interpreter, buffer_id, window_id)
+        .translate_for(&text, true);
     display.remap_faces(spans);
     spans.extend(display.face_spans);
     spans.extend(
@@ -1894,6 +2724,12 @@ fn apply_character_display(
             .into_iter()
             .map(|(from, to)| (from, to, Value::symbol("glyphless-char"))),
     );
+    let cells = display_cells(&display.text);
+    let cell_of = |offset: usize| cells[offset.min(cells.len() - 1)];
+    for (from, to, _) in spans.iter_mut() {
+        *from = cell_of(*from);
+        *to = cell_of(*to);
+    }
     display.text
 }
 
@@ -1915,6 +2751,16 @@ struct VisualLine {
     glyphless_spans: Vec<(usize, usize)>,
     /// Faces carried by overlay before/after strings, in display indexes.
     display_face_spans: Vec<(usize, usize, Value)>,
+    /// `line-prefix'/`wrap-prefix' runs over the line's raw offsets.
+    prefixes: Vec<layout::PrefixRun>,
+    /// The buffer's `word-wrap' (and `word-wrap-by-category').
+    line_wrap: layout::LineWrap,
+    /// `word-wrap-by-category' category bits of each display index.
+    wrap_categories: Vec<u8>,
+    /// SANE_TAB_WIDTH of the buffer.
+    tab_width: usize,
+    /// Columns of the line-number gutter before each row's prefix.
+    lnum_cols: usize,
 }
 
 /// Render an overlay before/after string under the window buffer's
@@ -2027,6 +2873,11 @@ fn visual_line_at(
             ellipses: Vec::new(),
             glyphless_spans: Vec::new(),
             display_face_spans: Vec::new(),
+            prefixes: Vec::new(),
+            line_wrap: layout::LineWrap::Window,
+            wrap_categories: Vec::new(),
+            tab_width: 8,
+            lnum_cols: 0,
         };
     }
     let line_begin = buffer.line_start_of(first_line);
@@ -2318,6 +3169,11 @@ fn visual_line_at(
         ellipses,
         glyphless_spans: Vec::new(),
         display_face_spans,
+        prefixes: Vec::new(),
+        line_wrap: layout::LineWrap::Window,
+        wrap_categories: Vec::new(),
+        tab_width: 8,
+        lnum_cols: 0,
     }
 }
 
@@ -2331,6 +3187,10 @@ fn glyphless_visual_line_at(
     let Some(context) = context else {
         return visual;
     };
+    visual.line_wrap = context.line_wrap;
+    visual.tab_width = context.tab_width;
+    visual.lnum_cols = context.lnum_cols;
+    visual.prefixes = line_prefix_runs(buffer, context, buffer.line_start_of(first_line), &visual);
     let display = context.translate(&visual.text);
     let final_raw = visual.raw_of_display.last().copied().unwrap_or(0);
     let mut raw_of_display = Vec::with_capacity(display.offset(usize::MAX) + 1);
@@ -2354,7 +3214,209 @@ fn glyphless_visual_line_at(
     visual.text = display.text;
     visual.raw_of_display = raw_of_display;
     visual.glyphless_spans = display.glyphless_spans;
+    if context.category_table.is_some() {
+        visual.wrap_categories = visual
+            .text
+            .chars()
+            .map(|character| context.wrap_category_bits(character))
+            .collect();
+    }
     visual
+}
+
+/// One display line of a window's buffer as its terminal redisplay lays
+/// it out (layout.rs): where each glyph row begins, and the row and
+/// screen column of each of the line's buffer positions.  Interactive
+/// `vertical-motion', `posn-at-point', recentering and scrolling walk
+/// these rows, exactly as GNU's commands walk its display iterator.
+pub(crate) struct ScreenLineLayout {
+    /// Buffer position where each row begins.
+    pub(crate) row_starts: Vec<usize>,
+    /// The width the line was laid out in, and whether it truncates.
+    pub(crate) text_width: usize,
+    pub(crate) truncate: bool,
+    /// Columns a `display-line-numbers' gutter takes left of the text.
+    pub(crate) lnum_cols: usize,
+    bol: usize,
+    /// (row, column) of each raw offset from BOL, one past the end
+    /// included.
+    cells: Vec<(usize, usize)>,
+}
+
+impl ScreenLineLayout {
+    /// The row showing POS and POS's screen column on it.
+    pub(crate) fn position_cell(&self, pos: usize) -> (usize, usize) {
+        let offset = pos.saturating_sub(self.bol).min(self.cells.len() - 1);
+        self.cells[offset]
+    }
+
+    /// The first position on ROW drawn at or right of screen column
+    /// COLUMN (move_it_in_display_line to an X), else the row's last.
+    pub(crate) fn position_at_column(&self, row: usize, column: usize) -> usize {
+        let mut last = None;
+        for (offset, &(cell_row, cell_column)) in self.cells.iter().enumerate() {
+            if cell_row != row {
+                if cell_row > row && last.is_some() {
+                    break;
+                }
+                continue;
+            }
+            if cell_column >= column {
+                return self.bol + offset;
+            }
+            last = Some(offset);
+        }
+        self.bol
+            + last.unwrap_or_else(|| {
+                self.row_starts
+                    .get(row)
+                    .map_or(0, |start| start.saturating_sub(self.bol))
+            })
+    }
+}
+
+/// The current buffer's display line starting at BOL, laid out as WINDOW
+/// (showing that buffer) lays it out TEXT_WIDTH cells wide right of a
+/// LNUM_COLS line-number gutter, wrapped or, with TRUNCATE, truncated.
+pub(crate) fn screen_line_layout(
+    interpreter: &Interpreter,
+    window_id: u64,
+    bol: usize,
+    text_width: usize,
+    truncate: bool,
+    lnum_cols: usize,
+) -> ScreenLineLayout {
+    let buffer_id = interpreter.current_buffer_id();
+    let buffer = interpreter.buffer.borrow();
+    let spec = resolve_buffer_invisibility(interpreter, &buffer, buffer_id);
+    let context = CharacterDisplayContext::new(interpreter, buffer_id, window_id)
+        .with_line_numbers(lnum_cols);
+    let first_line = visual_line_first_line(&buffer, &spec, buffer.line_number_at_pos(bol));
+    let line_start = buffer.line_start_of(first_line);
+    let visual = glyphless_visual_line_at(&buffer, &spec, first_line, Some(&context));
+    let laid = layout::lay_out_motion_line(&visual, text_width.max(1), truncate);
+    let raw_of = |index: usize| {
+        visual
+            .raw_of_display
+            .get(index)
+            .copied()
+            .unwrap_or_else(|| visual.raw_of_display.last().copied().unwrap_or(0))
+    };
+    let mut row_starts: Vec<usize> = laid
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(row, segment)| {
+            if row == 0 {
+                line_start
+            } else {
+                line_start + raw_of(segment.start_index)
+            }
+        })
+        .collect();
+    // move_it_by_lines past a truncated row reseats at the next line
+    // start; for a last line ending at ZV that is ZV itself, one more
+    // screen line down (count-screen-lines sees it, the glass does not).
+    let line_end = line_start + visual.raw_of_display.last().copied().unwrap_or(0);
+    if truncate
+        && line_end == buffer.point_max()
+        && line_end > line_start
+        && laid.columns.last().copied().unwrap_or(0) >= text_width.max(1)
+    {
+        row_starts.push(line_end);
+    }
+    let cells = (0..visual.map.len())
+        .map(|offset| {
+            let index = visual.map[offset];
+            let column = laid.columns[index.min(laid.columns.len() - 1)];
+            if truncate {
+                (0, column)
+            } else {
+                wrapped_position_of_column(
+                    &laid.rows,
+                    column,
+                    visual
+                        .glyphless_spans
+                        .iter()
+                        .any(|(from, _)| *from == index),
+                )
+            }
+        })
+        .collect();
+    ScreenLineLayout {
+        row_starts,
+        text_width: text_width.max(1),
+        truncate,
+        lnum_cols,
+        bol: line_start,
+        cells,
+    }
+}
+
+/// init_iterator's choice to truncate rather than continue WINDOW's
+/// lines: `truncate-lines' in its buffer, a partial-width window under
+/// `truncate-partial-width-windows', or a horizontal scroll.
+pub(crate) fn window_truncates(interpreter: &Interpreter, window_id: u64, buffer_id: u64) -> bool {
+    let value = |name: &str| {
+        interpreter
+            .buffer_local_value(buffer_id, name)
+            .or_else(|| interpreter.default_value(name))
+            .unwrap_or(Value::Nil)
+    };
+    if value("truncate-lines").is_truthy()
+        || crate::lisp::primitives::window_hscroll_state(interpreter, window_id).hscroll > 0
+    {
+        return true;
+    }
+    let width = crate::lisp::primitives::window_total_columns(interpreter, window_id);
+    width < interpreter.frame_width()
+        && match value("truncate-partial-width-windows").kind() {
+            Kind::Integer(columns) => columns > width,
+            other => other.value().is_truthy(),
+        }
+}
+
+/// The `line-prefix' and `wrap-prefix' over the raw offsets of VISUAL
+/// (whose first raw line starts at LINE_BEGIN): one run per stretch
+/// where neither the text properties nor the overlays change.
+fn line_prefix_runs(
+    buffer: &crate::buffer::Buffer,
+    context: &CharacterDisplayContext<'_>,
+    line_begin: usize,
+    visual: &VisualLine,
+) -> Vec<layout::PrefixRun> {
+    let raw_end = visual.raw_of_display.last().copied().unwrap_or(0);
+    let mut runs: Vec<layout::PrefixRun> = Vec::new();
+    let mut raw = 0usize;
+    loop {
+        let pos = line_begin + raw;
+        let line = context.prefix_glyphs(&context.prefix_value_at(buffer, pos, false));
+        let wrap = context.prefix_glyphs(&context.prefix_value_at(buffer, pos, true));
+        if runs
+            .last()
+            .is_none_or(|run| run.line != line || run.wrap != wrap)
+        {
+            runs.push(layout::PrefixRun {
+                raw_start: raw,
+                line,
+                wrap,
+            });
+        }
+        if context.prefix_properties.get() != Some(true) || pos >= buffer.point_max() {
+            break;
+        }
+        let (_, property_end) = buffer.text_property_interval_around(pos);
+        let overlay_end = crate::lisp::primitives::next_overlay_change_position(buffer, pos);
+        let next = property_end.min(overlay_end).max(pos + 1);
+        if next >= line_begin + raw_end {
+            break;
+        }
+        raw = next - line_begin;
+    }
+    if runs.len() == 1 && runs[0].line.is_none() && runs[0].wrap.is_none() {
+        runs.clear();
+    }
+    runs
 }
 
 /// One buffer line as redisplay lays it out: a character carrying a
@@ -2453,10 +3515,6 @@ fn displayed_line_with_map(
     }
 }
 
-fn displayed_line_text(buffer: &crate::buffer::Buffer, line: usize) -> String {
-    displayed_line_with_map(buffer, line).0
-}
-
 /// Plan one window's text: adopt a commanded window-start, keep point
 /// visible with GNU's recenter-on-jump model (selected window only), and
 /// render the visible rows under the window's own wrap-or-truncate
@@ -2498,19 +3556,24 @@ fn plan_window_text(
         .get(point_offset)
         .copied()
         .unwrap_or_else(|| point_visual.map.last().copied().unwrap_or(0));
-    let point_dcol = display_column(&point_visual.text, point_index);
+    let point_layout = layout::lay_out_visual_line(&point_visual, body_width, truncate);
+    let point_dcol = point_layout.columns[point_index.min(point_layout.columns.len() - 1)];
     let (point_seg, cursor_col) = if truncate {
         // Without a line-number gutter, the left `$' occupies one screen
         // cell before source column HSCROLL.  A point hidden farther left
         // still clamps to the marker itself.
-        let on_screen = HscrollLayout::new(&point_visual, hscroll, lnum_cols == 0)
-            .screen_column(point_dcol)
-            .unwrap_or(0);
+        let on_screen = HscrollLayout::new(
+            &point_visual,
+            &point_layout.columns,
+            hscroll,
+            lnum_cols == 0,
+        )
+        .screen_column(point_dcol)
+        .unwrap_or(0);
         (0, on_screen.min(body_width.saturating_sub(1)))
     } else {
-        let wrapped = wrap_glyphless_visual_line(&point_visual, body_width);
         wrapped_position_of_column(
-            &wrapped,
+            &point_layout.rows,
             point_dcol,
             point_visual
                 .glyphless_spans
@@ -2521,7 +3584,7 @@ fn plan_window_text(
     let cursor_hidden_left = truncate
         && hscroll > 0
         && lnum_cols > 0
-        && HscrollLayout::new(&point_visual, hscroll, false)
+        && HscrollLayout::new(&point_visual, &point_layout.columns, hscroll, false)
             .screen_column(point_dcol)
             .is_none();
     let cursor_col = if lnum_cols == 0 {
@@ -2547,13 +3610,14 @@ fn plan_window_text(
             .get(start_offset)
             .copied()
             .unwrap_or_else(|| start_visual.map.last().copied().unwrap_or(0));
-        let start_dcol = display_column(&start_visual.text, start_index);
         view.top_line = start_line;
         view.top_seg = if truncate {
             0
         } else {
+            let start_layout = layout::lay_out_visual_line(&start_visual, body_width, false);
+            let start_dcol = start_layout.columns[start_index.min(start_layout.columns.len() - 1)];
             wrapped_position_of_column(
-                &wrap_glyphless_visual_line(&start_visual, body_width),
+                &start_layout.rows,
                 start_dcol,
                 start_visual
                     .glyphless_spans
@@ -3101,6 +4165,8 @@ fn redraw_with_echo_policy(
         left: usize,
         body_width: usize,
         metrics: crate::lisp::primitives::InteractiveWindowMetrics,
+        /// The window's mode line shows in `mode-line-active'.
+        active: bool,
     }
     let mut mode_line_jobs: Vec<ModeLineJob> = Vec::new();
     // A tab line and header line consume body rows above the window text,
@@ -3240,7 +4306,8 @@ fn redraw_with_echo_policy(
             };
             let invisibility = resolve_buffer_invisibility(interpreter, &buffer, info.buffer_id);
             let glyphless =
-                CharacterDisplayContext::new(interpreter, info.buffer_id, info.window_id);
+                CharacterDisplayContext::new(interpreter, info.buffer_id, info.window_id)
+                    .with_line_numbers(geometry.lnum.map_or(0, |layout| layout.cols));
             let plan = plan_window_text(
                 &buffer,
                 &invisibility,
@@ -3525,6 +4592,13 @@ fn redraw_with_echo_policy(
             view.deferred_mode_line_point =
                 (mode_line_point != info.point).then_some(mode_line_point);
         }
+        let mode_line_active = info.selected
+            || interpreter
+                .lookup_var("mode-line-in-non-selected-windows", env)
+                .is_some_and(|value| value.is_nil())
+            || (interpreter.minibuffer_depth() > 0
+                && interpreter.minibuffer_selected_window_id() == Some(info.window_id)
+                && interpreter.selected_window_id() == interpreter.minibuffer_window_id());
         mode_line_jobs.push(ModeLineJob {
             window_id: info.window_id,
             buffer_id: info.buffer_id,
@@ -3533,6 +4607,7 @@ fn redraw_with_echo_policy(
             left: info.left,
             body_width,
             metrics,
+            active: mode_line_active,
         });
         if header_rows > 0 {
             header_line_jobs.push(ModeLineJob {
@@ -3543,6 +4618,7 @@ fn redraw_with_echo_policy(
                 left: info.left,
                 body_width,
                 metrics,
+                active: mode_line_active,
             });
         }
         if tab_rows > 0 {
@@ -3554,6 +4630,7 @@ fn redraw_with_echo_policy(
                 left: info.left,
                 body_width,
                 metrics,
+                active: mode_line_active,
             });
         }
     }
@@ -3621,7 +4698,8 @@ fn redraw_with_echo_policy(
             }
         };
         let job_invisibility = resolve_buffer_invisibility(interpreter, &buffer, job.buffer_id);
-        let glyphless = CharacterDisplayContext::new(interpreter, job.buffer_id, job.window_id);
+        let glyphless = CharacterDisplayContext::new(interpreter, job.buffer_id, job.window_id)
+            .with_line_numbers(job.lnum_cols);
         for (index, (line, seg, row_start, row_hscroll)) in job.rows.iter().enumerate() {
             if *row_start == usize::MAX {
                 continue;
@@ -3634,30 +4712,35 @@ fn redraw_with_echo_policy(
                 .unwrap_or(job.window_end);
             let visual =
                 glyphless_visual_line_at(&buffer, &job_invisibility, *line, Some(&glyphless));
-            let line_text = visual.text.clone();
-            let wrapped =
-                (!job.truncate).then(|| wrap_glyphless_visual_line(&visual, job.body_width));
-            let segment = wrapped.as_ref().and_then(|segments| segments.get(*seg));
+            let laid = layout::lay_out_visual_line(&visual, job.body_width, job.truncate);
+            let column_of = |index: usize| laid.columns[index.min(laid.columns.len() - 1)];
+            let line_width = laid.columns.last().copied().unwrap_or(0);
+            let wrapped = (!job.truncate).then_some(&laid.rows);
+            let segment = wrapped.and_then(|segments| segments.get(*seg));
             let segment_start = segment.map_or(0, |segment| segment.start_column);
             let segment_visible_end = segment.map_or(usize::MAX, |segment| {
                 segment
                     .end_column
-                    .min(segment.start_column + segment.text.chars().count())
+                    .min(segment.start_column + cell_count(&segment.text))
             });
-            let hscroll_layout = HscrollLayout::new(&visual, *row_hscroll, job.lnum_cols == 0);
+            let hscroll_layout =
+                HscrollLayout::new(&visual, &laid.columns, *row_hscroll, job.lnum_cols == 0);
             let line_begin = buffer.line_start_of(*line);
             // The right-truncation `$' glyph keeps the default face
             // (produce_special_glyphs); spans stop one cell short of it.
-            let col_cap = (if wrapped
-                .as_ref()
-                .is_some_and(|segments| *seg + 1 < segments.len())
-            {
-                job.usable
+            // A continued row's glyphs end at its own end column: a
+            // word-wrapped row before the full width (GNU paints the rest
+            // only from a face with `:extend', extend_face_to_end_of_line),
+            // a `\' row one cell short of it.
+            let continued_row = wrapped.is_some_and(|segments| *seg + 1 < segments.len());
+            let col_cap = (if continued_row {
+                segment.map_or(job.usable, |segment| {
+                    (segment.end_column - segment.start_column).min(job.usable)
+                })
             } else {
                 job.body_width
             }) - usize::from(
-                job.truncate
-                    && truncated_on_right(display_width(&line_text), *row_hscroll, job.body_width),
+                job.truncate && truncated_on_right(line_width, *row_hscroll, job.body_width),
             );
             for (span_begin, span_end, attrs) in &resolved {
                 let begin = (*span_begin).max(*row_start);
@@ -3686,7 +4769,7 @@ fn redraw_with_echo_policy(
                 // column zero and text resumes from column one.
                 let col_of = |pos: usize| {
                     let offset = display_index_of(pos);
-                    let column = display_column(&line_text, offset);
+                    let column = column_of(offset);
                     if *row_hscroll > 0 {
                         hscroll_layout
                             .screen_column(column)
@@ -3702,15 +4785,23 @@ fn redraw_with_echo_policy(
                 let line_chars = visual.map.len().saturating_sub(1);
                 let mut to_col = col_of(end);
                 let covers_newline = end > begin && buffer.char_at(end - 1) == Some('\n');
-                let extends_row =
-                    attrs.extend && (covers_newline || end.saturating_sub(line_begin) > line_chars);
+                // A word-wrapped row extends an `:extend' face that runs on
+                // into the next row (back_to_wrap's
+                // extend_face_to_end_of_line); a `\' row is already full.
+                let extends_wrapped = attrs.extend
+                    && continued_row
+                    && *span_end > row_end
+                    && segment.is_some_and(|segment| !segment.continued_glyph);
+                let extends_row = extends_wrapped
+                    || (attrs.extend
+                        && (covers_newline || end.saturating_sub(line_begin) > line_chars));
                 if end.saturating_sub(line_begin) > line_chars {
                     to_col = if attrs.extend {
                         job.body_width + job.right_margin
                     } else {
                         to_col + 1
                     };
-                } else if covers_newline && attrs.extend {
+                } else if (covers_newline && attrs.extend) || extends_wrapped {
                     to_col = job.body_width + job.right_margin;
                 }
                 let to_col = to_col.min(if extends_row {
@@ -3728,8 +4819,8 @@ fn redraw_with_echo_policy(
             // buffer/overlay faces so unspecified attributes inherit from
             // that underlying face exactly as merge_glyphless_glyph_face does.
             for &(span_begin, span_end) in &visual.glyphless_spans {
-                let begin_column = display_column(&line_text, span_begin).max(segment_start);
-                let end_column = display_column(&line_text, span_end).min(segment_visible_end);
+                let begin_column = column_of(span_begin).max(segment_start);
+                let end_column = column_of(span_end).min(segment_visible_end);
                 if begin_column >= end_column {
                     continue;
                 }
@@ -3759,8 +4850,8 @@ fn redraw_with_echo_policy(
                 }
             }
             for (span_begin, span_end, face) in &visual.display_face_spans {
-                let begin_column = display_column(&line_text, *span_begin).max(segment_start);
-                let end_column = display_column(&line_text, *span_end).min(segment_visible_end);
+                let begin_column = column_of(*span_begin).max(segment_start);
+                let end_column = column_of(*span_end).min(segment_visible_end);
                 if begin_column >= end_column {
                     continue;
                 }
@@ -3790,11 +4881,47 @@ fn redraw_with_echo_policy(
                     ));
                 }
             }
+            // The row's prefix cells (handle_line_prefix): a stretch
+            // takes the face of the row's first position, a string shows
+            // its own `face' properties over the default face.
+            let laid_row = if job.truncate {
+                laid.rows.first()
+            } else {
+                laid.rows.get(*seg)
+            };
+            if *row_hscroll == 0
+                && let Some(row) = laid_row
+                && row.prefix_cols > 0
+            {
+                let prefix_end = row.prefix_cols.min(col_cap);
+                let value = glyphless.prefix_value_at(&buffer, *row_start, row.continuation);
+                if let Ok(text) = crate::lisp::primitives::string_text(&value) {
+                    let (_, cells) = glyphless.prefix_string_cells(&text);
+                    let cell_of = |offset: usize| cells[offset.min(cells.len() - 1)];
+                    for (from, to, face) in crate::lisp::primitives::string_face_spans(&value) {
+                        let (from, to) = (cell_of(from), cell_of(to).min(prefix_end));
+                        if from < to {
+                            display_face_jobs.push((
+                                job.top + index,
+                                job.left + from,
+                                job.left + to,
+                                face,
+                            ));
+                        }
+                    }
+                } else {
+                    for (span_begin, span_end, attrs) in &resolved {
+                        if *span_begin <= *row_start && *row_start < *span_end {
+                            frame[job.top + index].overlay(job.left, job.left + prefix_end, *attrs);
+                        }
+                    }
+                }
+            }
             // The ellipsis takes the face of the text before it
             // (display_ellipsis draws with the iterator's saved face):
             // copy the preceding cell's attributes over the dots.
             for &ellipsis_index in &visual.ellipses {
-                let mut column = display_column(&line_text, ellipsis_index);
+                let mut column = column_of(ellipsis_index);
                 if *row_hscroll > 0 {
                     let Some(shifted) = hscroll_layout.screen_column(column) else {
                         continue;
@@ -3905,7 +5032,8 @@ fn redraw_with_echo_policy(
         let current_attrs = resolve("line-number-current-line");
         let major_attrs = (layout.major_tick > 0).then(|| resolve("line-number-major-tick"));
         let minor_attrs = (layout.minor_tick > 0).then(|| resolve("line-number-minor-tick"));
-        let glyphless = CharacterDisplayContext::new(interpreter, job.buffer_id, job.window_id);
+        let glyphless = CharacterDisplayContext::new(interpreter, job.buffer_id, job.window_id)
+            .with_line_numbers(layout.cols);
         let Some(buffer) = (if job.buffer_id == interpreter.current_buffer_id() {
             Some(interpreter.buffer.borrow())
         } else {
@@ -3978,9 +5106,10 @@ fn redraw_with_echo_policy(
                         .get(offset)
                         .copied()
                         .unwrap_or_else(|| visual.map.last().copied().unwrap_or(0));
-                    let column = display_column(&visual.text, index);
+                    let laid = layout::lay_out_visual_line(&visual, job.text_width, false);
+                    let column = laid.columns[index.min(laid.columns.len() - 1)];
                     wrapped_position_of_column(
-                        &wrap_glyphless_visual_line(&visual, job.text_width),
+                        &laid.rows,
                         column,
                         visual
                             .glyphless_spans
@@ -4064,9 +5193,9 @@ fn redraw_with_echo_policy(
             frame[job.top + row_index].blit(job.left, &text, attrs);
             if !beyond
                 && row_hscroll > 0
-                && display_width(
-                    &glyphless_visual_line_at(&buffer, &spec, line, Some(&glyphless)).text,
-                ) > 0
+                && !glyphless_visual_line_at(&buffer, &spec, line, Some(&glyphless))
+                    .text
+                    .is_empty()
             {
                 frame[job.top + row_index].blit(job.left, "$", CellAttrs::default());
             }
@@ -4076,29 +5205,34 @@ fn redraw_with_echo_policy(
     // Mode lines: each window's real `mode-line-format', rendered by the
     // interpreter's engine in that window's context and painted in the
     // realized mode-line face.
-    let mode_line_attrs = *state
-        .face_cache
-        .entry("mode-line".into())
-        .or_insert_with(|| {
-            crate::lisp::primitives::resolve_tty_face_attrs(
-                interpreter,
-                env,
-                &Value::Symbol("mode-line".into()),
-            )
-        });
+    // CURRENT_MODE_LINE_ACTIVE_FACE_ID: `mode-line-active' for the
+    // selected window (and the window a selected minibuffer was entered
+    // from), `mode-line-inactive' for the others.
+    let mut mode_line_face = |name: &str| {
+        *state.face_cache.entry(name.into()).or_insert_with(|| {
+            crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &Value::symbol(name))
+        })
+    };
+    let mode_line_active_attrs = mode_line_face("mode-line-active");
+    let mode_line_inactive_attrs = mode_line_face("mode-line-inactive");
     for job in &mode_line_jobs {
+        let measure = ModeLineMeasure {
+            buffer_id: job.buffer_id,
+            window_id: job.window_id,
+        };
         let (mut mode_line, mut spans) = match crate::lisp::primitives::render_window_mode_line(
             interpreter,
             env,
             job.window_id,
             job.point,
             job.metrics,
+            job.body_width,
+            &measure,
         ) {
-            Ok((text, spans)) if !text.is_empty() => (text, spans),
+            Ok((text, spans)) => (text, spans),
             // A GNU-shaped fabrication here would feed the very
             // differential tool that checks mode lines; render failures
             // must be visible.
-            Ok(_) => ("[mode-line: empty render]".to_string(), Vec::new()),
             Err(error) => {
                 debug_log(&format!("mode-line render: {error:?}"));
                 (format!("[mode-line render error: {error:?}]"), Vec::new())
@@ -4111,13 +5245,21 @@ fn redraw_with_echo_policy(
             mode_line,
             &mut spans,
         );
-        if mode_line.chars().count() < job.body_width {
-            let missing = job.body_width - mode_line.chars().count();
-            mode_line.extend(std::iter::repeat_n('-', missing));
+        // display_mode_line fills the row with spaces; a wide character
+        // cut at its edge leaves pad_mode_line's `-'.
+        let cells = cell_count(&mode_line);
+        if cells < job.body_width {
+            mode_line.extend(std::iter::repeat_n(' ', job.body_width - cells));
         }
-        if mode_line.chars().count() > job.body_width {
-            mode_line = mode_line.chars().take(job.body_width).collect();
+        let mut shown = job.body_width;
+        if cells > job.body_width {
+            (mode_line, shown) = take_cells_padded(&mode_line, job.body_width, '-');
         }
+        let mode_line_attrs = if job.active {
+            mode_line_active_attrs
+        } else {
+            mode_line_inactive_attrs
+        };
         frame[job.row].blit(job.left, &mode_line, mode_line_attrs);
         // The renderer's face spans (the buffer name's mode-line-buffer-id)
         // layer over the base mode-line face, clipped to the body.
@@ -4126,8 +5268,8 @@ fn redraw_with_echo_policy(
             let attrs = *state.face_cache.entry(key).or_insert_with(|| {
                 crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
             });
-            let from = job.left + from.min(job.body_width);
-            let to = job.left + to.min(job.body_width);
+            let from = job.left + from.min(shown);
+            let to = job.left + to.min(shown);
             frame[job.row].overlay(from, to, attrs);
         }
     }
@@ -4147,12 +5289,18 @@ fn redraw_with_echo_policy(
                 )
             });
         for job in &tab_line_jobs {
+            let measure = ModeLineMeasure {
+                buffer_id: job.buffer_id,
+                window_id: job.window_id,
+            };
             let (mut tab, mut spans) = match crate::lisp::primitives::render_window_tab_line(
                 interpreter,
                 env,
                 job.window_id,
                 job.point,
                 job.metrics,
+                job.body_width,
+                &measure,
             ) {
                 Ok((text, spans)) => (text, spans),
                 Err(error) => {
@@ -4162,13 +5310,14 @@ fn redraw_with_echo_policy(
             };
             tab =
                 apply_character_display(interpreter, job.buffer_id, job.window_id, tab, &mut spans);
-            if tab.chars().count() > job.body_width {
-                tab = tab.chars().take(job.body_width).collect();
+            let mut shown = job.body_width;
+            if cell_count(&tab) > job.body_width {
+                (tab, shown) = take_cells_padded(&tab, job.body_width, ' ');
             }
             let mut padded = tab.clone();
             padded.extend(std::iter::repeat_n(
                 ' ',
-                job.body_width.saturating_sub(tab.chars().count()),
+                job.body_width.saturating_sub(cell_count(&tab)),
             ));
             frame[job.row].blit(job.left, &padded, tab_attrs);
             for (from, to, face) in spans {
@@ -4176,8 +5325,8 @@ fn redraw_with_echo_policy(
                 let attrs = *state.face_cache.entry(key).or_insert_with(|| {
                     crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
                 });
-                let from = job.left + from.min(job.body_width);
-                let to = job.left + to.min(job.body_width);
+                let from = job.left + from.min(shown);
+                let to = job.left + to.min(shown);
                 frame[job.row].overlay(from, to, attrs);
             }
         }
@@ -4198,12 +5347,18 @@ fn redraw_with_echo_policy(
                 )
             });
         for job in &header_line_jobs {
+            let measure = ModeLineMeasure {
+                buffer_id: job.buffer_id,
+                window_id: job.window_id,
+            };
             let (mut header, mut spans) = match crate::lisp::primitives::render_window_header_line(
                 interpreter,
                 env,
                 job.window_id,
                 job.point,
                 job.metrics,
+                job.body_width,
+                &measure,
             ) {
                 Ok((text, spans)) => (text, spans),
                 Err(error) => {
@@ -4218,13 +5373,14 @@ fn redraw_with_echo_policy(
                 header,
                 &mut spans,
             );
-            if header.chars().count() > job.body_width {
-                header = header.chars().take(job.body_width).collect();
+            let mut shown = job.body_width;
+            if cell_count(&header) > job.body_width {
+                (header, shown) = take_cells_padded(&header, job.body_width, ' ');
             }
             let mut padded = header.clone();
             padded.extend(std::iter::repeat_n(
                 ' ',
-                job.body_width.saturating_sub(header.chars().count()),
+                job.body_width.saturating_sub(cell_count(&header)),
             ));
             frame[job.row].blit(job.left, &padded, header_attrs);
             for (from, to, face) in spans {
@@ -4232,8 +5388,8 @@ fn redraw_with_echo_policy(
                 let attrs = *state.face_cache.entry(key).or_insert_with(|| {
                     crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
                 });
-                let from = job.left + from.min(job.body_width);
-                let to = job.left + to.min(job.body_width);
+                let from = job.left + from.min(shown);
+                let to = job.left + to.min(shown);
                 frame[job.row].overlay(from, to, attrs);
             }
         }
@@ -4304,6 +5460,7 @@ fn redraw_with_echo_policy(
     }
     state.painted_rows.resize(frame_rows, PaintRow::unpainted());
 
+    encode_terminal_cells(interpreter, &mut frame);
     let mut out = terminal_output();
     queue!(out, cursor::Hide)?;
     for (row, rendered) in frame.into_iter().enumerate() {
@@ -4324,6 +5481,7 @@ fn redraw_with_echo_policy(
     state.painted_message_tick = crate::lisp::primitives::echo_area_message_tick();
     let mut echo_paint = echo_paint;
     echo_paint.resize(state.echo_rows, PaintRow::blank(cols));
+    encode_terminal_cells(interpreter, &mut echo_paint);
     if state.painted_echo != echo_paint {
         for (index, echo_row) in echo_paint.iter().enumerate() {
             paint_row(&mut out, frame_rows + index, echo_row)?;
@@ -4657,13 +5815,16 @@ fn translate_echo_paint(
     let display =
         CharacterDisplayContext::new(interpreter, buffer_id, interpreter.minibuffer_window_id())
             .translate(&text);
-    let cursor = cursor.map(|offset| display.offset(offset));
+    // Display offsets to the cells their glyphs take.
+    let cells = display_cells(&display.text);
+    let cell_of = |offset: usize| cells[offset.min(cells.len() - 1)];
+    let cursor = cursor.map(|offset| cell_of(display.offset(offset)));
     let mut row = PaintRow::blank(cols);
     row.blit(0, &display.text, CellAttrs::default());
     for (index, offsets) in display.offsets.windows(2).enumerate() {
         row.replace_attrs(
-            offsets[0].min(cols),
-            offsets[1].min(cols),
+            cell_of(offsets[0]).min(cols),
+            cell_of(offsets[1]).min(cols),
             source.attrs[index],
         );
     }
@@ -4676,7 +5837,7 @@ fn translate_echo_paint(
         let attrs = *face_cache.entry(format!("{face}")).or_insert_with(|| {
             crate::lisp::primitives::resolve_tty_face_attrs(interpreter, env, &face)
         });
-        row.overlay(from.min(cols), to.min(cols), attrs);
+        row.overlay(cell_of(from).min(cols), cell_of(to).min(cols), attrs);
     }
     (row, cursor)
 }
@@ -4736,6 +5897,44 @@ fn sgr_sequence(attrs: &CellAttrs) -> String {
     format!("\x1b[{}m", codes.join(";"))
 }
 
+/// term.c encode_terminal_code: a glyph the output coding (the
+/// terminal's, or the safe coding when that converts nothing) cannot
+/// encode goes out as `?', once for each cell it takes, and so does a
+/// character composed into a cell.
+fn encode_terminal_cells(interpreter: &Interpreter, rows: &mut [PaintRow]) {
+    let coding = interpreter.effective_terminal_coding_system();
+    let mut known = std::collections::HashMap::new();
+    let mut encodable = |character: char| {
+        character.is_ascii()
+            || crate::lisp::primitives::raw_byte_from_regex_char(character).is_some()
+            || *known.entry(character).or_insert_with(|| {
+                crate::lisp::primitives::terminal_char_encodable(
+                    interpreter,
+                    &coding,
+                    u32::from(character),
+                )
+            })
+    };
+    for row in rows {
+        let mut index = 0;
+        while index < row.text.len() {
+            if row.text[index] != PADDING_GLYPH && !encodable(row.text[index]) {
+                row.text[index] = '?';
+                while index + 1 < row.text.len() && row.text[index + 1] == PADDING_GLYPH {
+                    index += 1;
+                    row.text[index] = '?';
+                }
+            }
+            index += 1;
+        }
+        for (_, mark) in &mut row.marks {
+            if !encodable(*mark) {
+                *mark = '?';
+            }
+        }
+    }
+}
+
 /// Emit one terminal row from its paint model: runs of same-attribute
 /// cells print inside one SGR selection, and trailing blank
 /// default-attribute cells are cleared, not printed.
@@ -4748,7 +5947,11 @@ fn paint_row(out: &mut impl Write, row: usize, rendered: &PaintRow) -> io::Resul
     let cols = rendered.text.len();
     let default_attrs = CellAttrs::default();
     let mut end = cols;
-    while end > 0 && rendered.text[end - 1] == ' ' && rendered.attrs[end - 1] == default_attrs {
+    while end > 0
+        && rendered.text[end - 1] == ' '
+        && rendered.attrs[end - 1] == default_attrs
+        && !rendered.marks.iter().any(|(cell, _)| *cell == end - 1)
+    {
         end -= 1;
     }
     let mut at = 0usize;
@@ -4758,7 +5961,20 @@ fn paint_row(out: &mut impl Write, row: usize, rendered: &PaintRow) -> io::Resul
         while run_end < end && rendered.attrs[run_end] == attrs {
             run_end += 1;
         }
-        let text: String = rendered.text[at..run_end].iter().collect();
+        let mut text = String::new();
+        let mut marks = rendered
+            .marks
+            .iter()
+            .skip_while(|(cell, _)| *cell < at)
+            .peekable();
+        for cell in at..run_end {
+            if rendered.text[cell] != PADDING_GLYPH {
+                text.push(rendered.text[cell]);
+            }
+            while let Some((_, mark)) = marks.next_if(|(mark_cell, _)| *mark_cell == cell) {
+                text.push(*mark);
+            }
+        }
         if attrs == default_attrs {
             queue!(out, style::Print(&text))?;
         } else {
@@ -4774,33 +5990,80 @@ fn paint_row(out: &mut impl Write, row: usize, rendered: &PaintRow) -> io::Resul
     Ok(())
 }
 
-/// A buffer line as a truncating window shows it: at most WIDTH columns,
-/// with GNU's `$' marker in the last column when the line fills it — a
-/// line exactly the body width truncates too, like the wrap geometry's
-/// exactly-cols-wide case.
-fn truncate_row(line: &str, width: usize) -> String {
-    let expanded = expand_tabs(line);
-    if display_width(line) < width {
-        return expanded;
-    }
-    let mut row: String = expanded.chars().take(width.saturating_sub(1)).collect();
-    row.push('$');
-    row
-}
-
 /// An hscrolled row when a line-number column precedes the text: the
 /// left `$' replaces the column's own first glyph (produce_special_glyphs
 /// overwrites the row's first glyph, which is now a line-number cell),
 /// so the text area uses the gutter form of `HscrollLayout' and truncates
 /// on the right as usual.
 fn truncate_row_from(visual: &VisualLine, width: usize, hscroll: usize) -> String {
+    let (expanded, columns) = truncated_cells(visual, width);
     if hscroll == 0 {
-        return truncate_row(&visual.text, width);
+        return clip_truncated(&expanded, width);
     }
-    let expanded = expand_tabs(&visual.text);
-    let layout = HscrollLayout::new(visual, hscroll, false);
-    let visible: String = expanded.chars().skip(layout.source_start).collect();
-    truncate_row(&visible, width)
+    let layout = HscrollLayout::new(visual, &columns, hscroll, false);
+    let visible = skip_cells(&expanded, layout.source_start);
+    clip_truncated(&visible, width)
+}
+
+/// Display text TEXT without its first CELLS cells; a wide character
+/// the cut splits leaves blanks in its remaining cells.
+fn skip_cells(text: &str, cells: usize) -> String {
+    let starts = display_cells(text);
+    let mut rest = String::with_capacity(text.len());
+    let mut leading = true;
+    for (index, character) in text.chars().enumerate() {
+        if starts[index] < cells {
+            continue;
+        }
+        if leading && character == PADDING_GLYPH {
+            rest.push(' ');
+            continue;
+        }
+        leading = false;
+        rest.push(character);
+    }
+    rest
+}
+
+/// VISUAL laid out unwrapped (layout.rs): its cells -- `line-prefix'
+/// first, TABs expanded -- and the column of each display index.
+fn truncated_cells(visual: &VisualLine, width: usize) -> (String, Vec<usize>) {
+    let laid = layout::lay_out_visual_line(visual, width, true);
+    let text = laid
+        .rows
+        .iter()
+        .map(|row| row.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (text, laid.columns)
+}
+
+/// Laid-out cells as a truncating window of WIDTH shows them: once they
+/// reach the last column, display_line's truncation glyphs replace the
+/// glyph there from its character's first cell to the row's end, so a
+/// wide character cut by the edge leaves `$$'.
+fn clip_truncated(expanded: &str, width: usize) -> String {
+    if cell_count(expanded) < width {
+        return expanded.to_string();
+    }
+    let kept = take_cells(expanded, width);
+    let chars: Vec<char> = kept.chars().collect();
+    let starts = display_cells(&kept);
+    // The last character starting a cell of the row, back over padding.
+    let mut last = chars.len();
+    while last > 0 {
+        last -= 1;
+        if chars[last] != PADDING_GLYPH
+            && chars[last] != ATTACHED_GLYPH
+            && (last == 0 || chars[last - 1] != ATTACHED_GLYPH)
+        {
+            break;
+        }
+    }
+    let first_cell = starts[last];
+    let mut row: String = chars[..last].iter().collect();
+    row.extend(std::iter::repeat_n('$', width.saturating_sub(first_cell)));
+    row
 }
 
 /// GNU's horizontal-scroll layout for the text area.  Normally text starts at
@@ -4818,7 +6081,8 @@ struct HscrollLayout {
 }
 
 impl HscrollLayout {
-    fn new(visual: &VisualLine, hscroll: usize, left_marker: bool) -> Self {
+    /// COLUMNS are the truncated layout's (layout.rs) columns of VISUAL.
+    fn new(visual: &VisualLine, columns: &[usize], hscroll: usize, left_marker: bool) -> Self {
         if hscroll == 0 {
             return Self {
                 source_start: 0,
@@ -4826,9 +6090,10 @@ impl HscrollLayout {
             };
         }
         let screen_start = usize::from(left_marker);
+        let column_of = |index: usize| columns[index.min(columns.len() - 1)];
         let glyphless_start = visual.glyphless_spans.iter().find_map(|(from, to)| {
-            let from = display_column(&visual.text, *from);
-            let to = display_column(&visual.text, *to);
+            let from = column_of(*from);
+            let to = column_of(*to);
             (from <= hscroll && hscroll < to).then_some(from)
         });
         let source_start = glyphless_start
@@ -4847,23 +6112,18 @@ impl HscrollLayout {
 }
 
 fn truncate_row_hscrolled(visual: &VisualLine, width: usize, hscroll: usize) -> String {
+    let (expanded, columns) = truncated_cells(visual, width);
     if hscroll == 0 {
-        return truncate_row(&visual.text, width);
+        return clip_truncated(&expanded, width);
     }
-    let expanded = expand_tabs(&visual.text);
     if expanded.is_empty() {
         return expanded;
     }
-    let layout = HscrollLayout::new(visual, hscroll, true);
-    let remaining: Vec<char> = expanded.chars().skip(layout.source_start).collect();
+    let layout = HscrollLayout::new(visual, &columns, hscroll, true);
+    let remaining = skip_cells(&expanded, layout.source_start);
     let available = width.saturating_sub(1).max(1);
     let mut row = String::from("$");
-    if remaining.len() < available {
-        row.extend(remaining);
-    } else {
-        row.extend(remaining[..available.saturating_sub(1)].iter());
-        row.push('$');
-    }
+    row.push_str(&clip_truncated(&remaining, available));
     row
 }
 
@@ -4882,18 +6142,11 @@ fn position_of_visual_row(
         return start;
     }
     let visual = glyphless_visual_line_at(buffer, spec, line, glyphless);
-    let target = wrap_glyphless_visual_line(&visual, usable + 1)
+    let index = wrap_glyphless_visual_line(&visual, usable + 1)
         .get(seg)
-        .map_or(seg * usable, |segment| segment.start_column);
-    let mut col = 0usize;
-    let mut index = 0usize;
-    for c in visual.text.chars() {
-        if col >= target {
-            break;
-        }
-        col += if c == '\t' { 8 - (col % 8) } else { 1 };
-        index += 1;
-    }
+        .map_or(visual.raw_of_display.len().saturating_sub(1), |segment| {
+            segment.start_index
+        });
     start
         + visual
             .raw_of_display
@@ -4902,109 +6155,29 @@ fn position_of_visual_row(
             .unwrap_or_else(|| visual.raw_of_display.last().copied().unwrap_or(0))
 }
 
-/// A buffer line's display form: tabs expanded to 8-column stops.
-fn expand_tabs(line: &str) -> String {
-    let mut expanded = String::with_capacity(line.len());
-    let mut column = 0usize;
-    for c in line.chars() {
-        if c == '\t' {
-            let next_stop = (column / 8 + 1) * 8;
-            while column < next_stop {
-                expanded.push(' ');
-                column += 1;
-            }
-        } else {
-            expanded.push(c);
-            column += 1;
-        }
-    }
-    expanded
-}
-
-/// Display width of a buffer line under tab expansion.
-fn display_width(line: &str) -> usize {
-    let mut column = 0usize;
-    for c in line.chars() {
-        if c == '\t' {
-            column = (column / 8 + 1) * 8;
-        } else {
-            column += 1;
-        }
-    }
-    column
-}
-
-/// Render a buffer line as visual rows: continuation rows carry
-/// `usable' (= cols - 1) columns plus GNU's trailing `\' marker; the
-/// final row holds the remainder.  A line wraps exactly when its display
-/// width exceeds usable.  Glyphless display elements that cross a row edge
-/// restart in full on the continuation row, matching a GNU tty.
+/// One glyph row of a display line (layout.rs): its cells as drawn --
+/// prefix, glyphs and any `\' continuation glyph -- and the columns it
+/// covers in GNU's x + continuation_lines_width space.  A row restarting
+/// an element that straddled the previous row's edge begins at that
+/// edge, while the element's own column stays where it first appeared.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WrappedVisualSegment {
     text: String,
-    /// Display-column range in the unwrapped visual line.  A glyphless
-    /// element that straddles a row boundary can make the next segment start
-    /// before the preceding segment ended: GNU restarts that whole display
-    /// element on the continuation row.
     start_column: usize,
     end_column: usize,
+    /// First display index the row shows (after its prefix).
+    start_index: usize,
+    /// Leading cells taken by `line-prefix' or `wrap-prefix'.
+    prefix_cols: usize,
+    /// Whether the row continues its line (its prefix is `wrap-prefix').
+    continuation: bool,
+    /// Whether the row ends in the `\' continuation glyph (a mid-word
+    /// break) rather than at a word-wrap point or the line's end.
+    continued_glyph: bool,
 }
 
 fn wrap_glyphless_visual_line(visual: &VisualLine, cols: usize) -> Vec<WrappedVisualSegment> {
-    let usable = cols.saturating_sub(1).max(1);
-    let expanded = expand_tabs(&visual.text);
-    let chars: Vec<char> = expanded.chars().collect();
-    let width = chars.len();
-    let glyphless_columns: Vec<(usize, usize)> = visual
-        .glyphless_spans
-        .iter()
-        .map(|(from, to)| {
-            (
-                display_column(&visual.text, *from),
-                display_column(&visual.text, *to),
-            )
-        })
-        .collect();
-    let mut segments = Vec::with_capacity(width.div_ceil(usable).max(1));
-    let mut hard_start = 0usize;
-    loop {
-        let newline = chars[hard_start..]
-            .iter()
-            .position(|character| *character == '\n')
-            .map(|offset| hard_start + offset);
-        let hard_end = newline.unwrap_or(width);
-        let boundary_end = hard_end + usize::from(newline.is_some());
-        let mut start = hard_start;
-        while hard_end.saturating_sub(start) > usable {
-            let end = start + usable;
-            let mut text: String = chars[start..end].iter().collect();
-            text.push('\\');
-            segments.push(WrappedVisualSegment {
-                text,
-                start_column: start,
-                end_column: end,
-            });
-            let restart = glyphless_columns
-                .iter()
-                .find_map(|(from, to)| (*from < end && end < *to).then_some(*from))
-                .filter(|restart| *restart > start)
-                .unwrap_or(end);
-            start = restart;
-        }
-        segments.push(WrappedVisualSegment {
-            text: chars[start..hard_end].iter().collect(),
-            start_column: start,
-            end_column: boundary_end,
-        });
-        let Some(newline) = newline else {
-            break;
-        };
-        hard_start = newline + 1;
-        if hard_start == width {
-            break;
-        }
-    }
-    segments
+    layout::lay_out_visual_line(visual, cols, false).rows
 }
 
 fn wrapped_position_of_column(
@@ -5031,19 +6204,6 @@ fn wrapped_position_of_column(
                 .map_or(0, |segment| segment.start_column);
             (index, column.saturating_sub(start))
         })
-}
-
-/// Display column of a character offset within LINE under tab expansion.
-fn display_column(line: &str, char_offset: usize) -> usize {
-    let mut column = 0usize;
-    for c in line.chars().take(char_offset) {
-        if c == '\t' {
-            column = (column / 8 + 1) * 8;
-        } else {
-            column += 1;
-        }
-    }
-    column
 }
 
 // ── Interpreter plumbing ────────────────────────────────────────────────
@@ -5184,7 +6344,10 @@ mod tests {
         );
         assert_eq!(rendered, "ABZ");
         assert_eq!(spans[0], (0, 2, Value::symbol("italic")));
-        assert_eq!(display_column(&visual.text, visual.map[3]), 3);
+        assert_eq!(
+            layout::lay_out_visual_line(&visual, 80, false).columns[visual.map[3]],
+            3
+        );
     }
 
     #[test]
@@ -5334,6 +6497,11 @@ mod tests {
             ellipses: Vec::new(),
             glyphless_spans: Vec::new(),
             display_face_spans: Vec::new(),
+            prefixes: Vec::new(),
+            line_wrap: layout::LineWrap::Window,
+            wrap_categories: Vec::new(),
+            tab_width: 8,
+            lnum_cols: 0,
         }
     }
 
@@ -5386,9 +6554,89 @@ mod tests {
             1,
             Some(&context),
         );
-        assert_eq!(visual.text, "AöB€C😀D");
-        assert_eq!(visual.map, (0..=7).collect::<Vec<_>>());
+        // The emoji's `char-width-table' width is 2: a padding glyph
+        // follows it (term.c append_glyph).
+        assert_eq!(visual.text, "AöB€C😀\0D");
+        assert_eq!(visual.map, vec![0, 1, 2, 3, 4, 5, 7, 8]);
         assert!(visual.glyphless_spans.is_empty());
+    }
+
+    // get_next_display_element's escape translations, with the faces GNU
+    // merges over them.
+    #[test]
+    fn control_raw_and_nobreak_characters_translate_like_get_next_display_element() {
+        let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
+        let mut env = crate::lisp::types::Env::new();
+        crate::test_support::eval_lisp(&mut interpreter, &mut env, "(erase-buffer)")
+            .expect("erase scratch");
+        interpreter.set_terminal_coding_system(Some("utf-8-unix".into()));
+        let raw = crate::lisp::primitives::raw_byte_regex_char(0x80);
+        interpreter
+            .buffer
+            .borrow_mut()
+            .insert(&format!("a\u{1}\u{7f}{raw}\u{85}\u{a0}\u{ad}中\u{301}\n"));
+        let line = |interpreter: &Interpreter| {
+            let context = CharacterDisplayContext::new(
+                interpreter,
+                interpreter.current_buffer_id(),
+                interpreter.selected_window_id(),
+            );
+            let visual = glyphless_visual_line_at(
+                &interpreter.buffer.borrow(),
+                &InvisibilitySpec::default(),
+                1,
+                Some(&context),
+            );
+            (visual.text, visual.display_face_spans)
+        };
+        let (text, faces) = line(&interpreter);
+        assert_eq!(text, "a^A^?\\200\\205\u{a0}\u{ad}中\0\u{1}\u{301}");
+        let face_names: Vec<String> = faces
+            .iter()
+            .map(|(from, to, face)| format!("{from}-{to} {face}"))
+            .collect();
+        assert_eq!(
+            face_names,
+            vec![
+                "1-3 escape-glyph",
+                "3-5 escape-glyph",
+                "5-9 escape-glyph",
+                "9-13 escape-glyph",
+                "13-14 nobreak-space",
+                "14-15 nobreak-hyphen",
+            ]
+        );
+        crate::test_support::eval_lisp(
+            &mut interpreter,
+            &mut env,
+            "(setq ctl-arrow nil nobreak-char-display 'escape)",
+        )
+        .expect("set display options");
+        let (text, _) = line(&interpreter);
+        assert_eq!(text, "a\\001\\177\\200\\205\\ \\-中\0\u{1}\u{301}");
+    }
+
+    #[test]
+    fn wide_padding_fills_the_row_with_continuation_glyphs_like_display_line() {
+        let visual = test_visual_line(&format!("{}中\0文\0", "a".repeat(78)));
+        assert_eq!(
+            laid_rows(&visual, 80),
+            vec![format!("{}\\\\", "a".repeat(78)), "中\0文\0".to_string()]
+        );
+        // Under word-wrap the padding rule comes first; move_it's motion
+        // layout backs up to the wrap point instead.
+        let words =
+            prefixed_test_line(&format!("{} 中\0文\0", "b".repeat(75)), None, None, true, 8);
+        assert_eq!(
+            laid_rows(&words, 80),
+            vec![format!("{} 中\0\\\\", "b".repeat(75)), "文\0".to_string()]
+        );
+        let motion = layout::lay_out_motion_line(&words, 80, false);
+        assert_eq!(motion.rows[1].start_index, 76);
+        assert_eq!(
+            clip_truncated(&format!("{}中\0文\0", "a".repeat(78)), 80),
+            format!("{}$$", "a".repeat(78))
+        );
     }
 
     #[test]
@@ -5483,20 +6731,28 @@ mod tests {
                 .iter()
                 .map(|segment| (segment.start_column, segment.end_column))
                 .collect::<Vec<_>>(),
-            vec![(0, 79), (76, 83)]
+            vec![(0, 79), (79, 86)]
         );
         assert_eq!(wrapped_position_of_column(&segments, 76, true), (0, 76));
-        assert_eq!(wrapped_position_of_column(&segments, 83, false), (1, 7));
+        assert_eq!(wrapped_position_of_column(&segments, 86, false), (1, 7));
         let boundary = vec![
             WrappedVisualSegment {
                 text: String::new(),
                 start_column: 0,
                 end_column: 79,
+                start_index: 0,
+                prefix_cols: 0,
+                continuation: false,
+                continued_glyph: true,
             },
             WrappedVisualSegment {
                 text: String::new(),
                 start_column: 79,
                 end_column: 85,
+                start_index: 79,
+                prefix_cols: 0,
+                continuation: true,
+                continued_glyph: false,
             },
         ];
         assert_eq!(wrapped_position_of_column(&boundary, 79, true), (1, 0));
@@ -6158,16 +7414,23 @@ mod tests {
     #[test]
     fn hscroll_marker_precedes_the_requested_source_column() {
         let ordinary = test_visual_line("abcdef");
+        let ordinary_columns = layout::lay_out_visual_line(&ordinary, 80, true).columns;
         assert_eq!(truncate_row_hscrolled(&ordinary, 80, 3), "$ef");
         assert_eq!(truncate_row_from(&ordinary, 80, 3), "def");
-        assert_eq!(HscrollLayout::new(&ordinary, 0, true).source_start, 0);
-        assert_eq!(HscrollLayout::new(&ordinary, 3, true).source_start, 4);
         assert_eq!(
-            HscrollLayout::new(&ordinary, 3, true).screen_column(4),
+            HscrollLayout::new(&ordinary, &ordinary_columns, 0, true).source_start,
+            0
+        );
+        assert_eq!(
+            HscrollLayout::new(&ordinary, &ordinary_columns, 3, true).source_start,
+            4
+        );
+        assert_eq!(
+            HscrollLayout::new(&ordinary, &ordinary_columns, 3, true).screen_column(4),
             Some(1)
         );
         assert_eq!(
-            HscrollLayout::new(&ordinary, 3, false).screen_column(3),
+            HscrollLayout::new(&ordinary, &ordinary_columns, 3, false).screen_column(3),
             Some(0)
         );
 
@@ -6184,7 +7447,8 @@ mod tests {
         assert_eq!(truncate_row_hscrolled(&glyphless, 80, 8), "$DEFG");
         assert_eq!(truncate_row_from(&glyphless, 80, 1), "B\\u00F6CDEFG");
         assert_eq!(truncate_row_from(&glyphless, 80, 8), "CDEFG");
-        let inside = HscrollLayout::new(&glyphless, 3, true);
+        let glyphless_columns = layout::lay_out_visual_line(&glyphless, 80, true).columns;
+        let inside = HscrollLayout::new(&glyphless, &glyphless_columns, 3, true);
         assert_eq!(inside.source_start, 3);
         assert_eq!(inside.screen_column(2), None);
         assert_eq!(inside.screen_column(3), Some(1));
@@ -6477,6 +7741,8 @@ mod tests {
 
     #[test]
     fn truncated_rows_carry_the_dollar_marker_in_the_last_column() {
+        let truncate_row =
+            |line: &str, width: usize| truncate_row_from(&test_visual_line(line), width, 0);
         assert_eq!(truncate_row("short", 39), "short");
         assert_eq!(truncate_row(&"W".repeat(38), 39), "W".repeat(38));
         // A line exactly the body width truncates, per the GNU tty.
@@ -6786,12 +8052,214 @@ mod tests {
         assert_eq!(append_prefix_echo("C-u-", "C-u"), "C-u C-u-");
     }
 
+    fn prefixed_test_line(
+        line: &str,
+        line_prefix: Option<&str>,
+        wrap_prefix: Option<&str>,
+        word_wrap: bool,
+        tab_width: usize,
+    ) -> VisualLine {
+        let mut visual = test_visual_line(line);
+        visual.prefixes = vec![layout::PrefixRun {
+            raw_start: 0,
+            line: line_prefix.map(String::from),
+            wrap: wrap_prefix.map(String::from),
+        }];
+        visual.line_wrap = if word_wrap {
+            layout::LineWrap::Word { by_category: false }
+        } else {
+            layout::LineWrap::Window
+        };
+        visual.tab_width = tab_width;
+        visual
+    }
+
+    fn laid_rows(visual: &VisualLine, cols: usize) -> Vec<String> {
+        layout::lay_out_visual_line(visual, cols, false)
+            .rows
+            .into_iter()
+            .map(|row| row.text.trim_end().to_string())
+            .collect()
+    }
+
+    // The expected rows are GNU 30's `-nw' screen in an 80-column tmux pane.
+    #[test]
+    fn word_wrap_breaks_rows_at_gnus_wrap_points() {
+        let lorem = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod \
+                     tempor incididunt ut labore et dolore magna aliqua.";
+        let plain = prefixed_test_line(&format!("plain no prefix: {lorem}"), None, None, true, 8);
+        assert_eq!(
+            laid_rows(&plain, 80),
+            vec![
+                "plain no prefix: Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed",
+                "do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+            ]
+        );
+        // No wrap point on the row: a mid-word break with the `\' glyph.
+        let long = prefixed_test_line(
+            &format!("{} tail word", "x".repeat(100)),
+            None,
+            None,
+            true,
+            8,
+        );
+        assert_eq!(
+            laid_rows(&long, 80),
+            vec![
+                format!("{}\\", "x".repeat(79)),
+                format!("{} tail word", "x".repeat(21))
+            ]
+        );
+        // A word reaching the last usable column moves down: the space
+        // after it would overflow, so the row backs up to its wrap point.
+        let edge = prefixed_test_line(
+            &format!("aaaa bbbb {} dddd eeee", "c".repeat(69)),
+            None,
+            None,
+            true,
+            8,
+        );
+        assert_eq!(
+            laid_rows(&edge, 80),
+            vec![
+                "aaaa bbbb".to_string(),
+                format!("{} dddd eeee", "c".repeat(69))
+            ]
+        );
+        let spaces = prefixed_test_line(
+            &format!(
+                "spaces at edge{}    next words here and there",
+                " ".repeat(64)
+            ),
+            None,
+            None,
+            true,
+            8,
+        );
+        assert_eq!(
+            laid_rows(&spaces, 80),
+            vec![
+                "spaces at".to_string(),
+                format!("edge{}next", " ".repeat(68)),
+                "words here and there".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn line_and_wrap_prefixes_start_rows_like_gnu() {
+        let text = "0<tester> Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do \
+                    eiusmod tempor incididunt ut labore et dolore magna aliqua.";
+        let wrapped = prefixed_test_line(text, Some("    "), Some(&" ".repeat(13)), true, 8);
+        let laid = layout::lay_out_visual_line(&wrapped, 80, false);
+        assert_eq!(
+            laid.rows
+                .iter()
+                .map(|row| row.text.trim_end())
+                .collect::<Vec<_>>(),
+            vec![
+                "    0<tester> Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do",
+                "             eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+            ]
+        );
+        // Row 2 begins where row 1 ended, its wrap prefix first: the
+        // text's first column follows the prefix.
+        assert_eq!(laid.rows[1].start_column, laid.rows[0].end_column);
+        assert_eq!(
+            laid.columns[laid.rows[1].start_index],
+            laid.rows[1].start_column + 13
+        );
+        // Without word-wrap the prefix still narrows each row, and a TAB
+        // after a prefix stops where x + continuation_lines_width says.
+        let tabbed = prefixed_test_line(
+            "1\tLorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor \
+             incididunt ut labore et dolore magna aliqua.",
+            Some("ab"),
+            Some("cde"),
+            false,
+            8,
+        );
+        assert_eq!(
+            laid_rows(&tabbed, 80),
+            vec![
+                "ab1     Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod\\",
+                "cde tempor incididunt ut labore et dolore magna aliqua.",
+            ]
+        );
+        // A truncated row carries its line prefix.
+        let (cells, _) = truncated_cells(&tabbed, 80);
+        assert!(cells.starts_with("ab1     Lorem"));
+    }
+
+    #[test]
+    fn word_wrap_tab_stops_follow_tab_width() {
+        let tabs = prefixed_test_line(
+            "tabs\tat\tfour\tcolumns\twith\tword\twrap\tenabled\there\tand\tthere\tagain\tand\tagain\tmore\twords",
+            None,
+            None,
+            true,
+            4,
+        );
+        // A 76-cell text area: GNU's screen beside a 4-column line-number gutter.
+        let mut tabs = tabs;
+        tabs.lnum_cols = 4;
+        assert_eq!(
+            laid_rows(&tabs, 76),
+            vec![
+                "tabs    at  four    columns with    word    wrap    enabled here    and",
+                "there   again   and again   more    words",
+            ]
+        );
+    }
+
+    // term.c measures a continuation row's TAB from current_x plus
+    // continuation_lines_width (every row's full x, gutter included) less
+    // the wrap-prefix's width, with the gutter left out.
+    #[test]
+    fn continuation_tab_stops_follow_term_c() {
+        let line = format!(
+            "{}\tA\tBB\tCCC\tD\tEEEE\tF\tGG\tH\tI\tJ\tK\tL\tM\tN\tO\tP\tQ\tR",
+            "x".repeat(70)
+        );
+        let x70 = "x".repeat(70);
+        let prefixed = prefixed_test_line(&line, None, Some("    "), false, 8);
+        assert_eq!(
+            laid_rows(&prefixed, 80),
+            vec![
+                format!("{x70}  A      \\"),
+                "     BB      CCC     D       EEEE    F       GG      H       I       J       K \\"
+                    .to_string(),
+                "      L       M       N       O       P       Q       R".to_string(),
+            ]
+        );
+        let mut numbered = test_visual_line(&line);
+        numbered.lnum_cols = 4;
+        assert_eq!(
+            laid_rows(&numbered, 76),
+            vec![
+                format!("{x70}  A  \\"),
+                " BB      CCC     D       EEEE    F       GG      H       I       J       K \\"
+                    .to_string(),
+                "  L       M       N       O       P       Q       R".to_string(),
+            ]
+        );
+        let mut both = prefixed;
+        both.lnum_cols = 4;
+        assert_eq!(
+            laid_rows(&both, 76),
+            vec![
+                format!("{x70}  A  \\"),
+                "         BB      CCC     D       EEEE    F       GG      H       I       J \\"
+                    .to_string(),
+                "          K       L       M       N       O       P       Q       R".to_string(),
+            ]
+        );
+    }
+
     #[test]
     fn display_columns_match_tab_expansion() {
-        assert_eq!(display_column("a\tb", 0), 0);
-        assert_eq!(display_column("a\tb", 1), 1);
-        assert_eq!(display_column("a\tb", 2), 8);
-        assert_eq!(display_column("a\tb", 3), 9);
+        let columns = layout::lay_out_visual_line(&test_visual_line("a\tb"), 80, false).columns;
+        assert_eq!(columns, vec![0, 1, 8, 9]);
     }
 
     #[test]

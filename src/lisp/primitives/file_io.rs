@@ -1037,10 +1037,22 @@ fn write_region_with_coding(
             visit.is_nil() || matches!(visit.kind(), Kind::T) || string_like(visit).is_some()
         })
     {
-        call_named_function(
+        // fileio.c write_region: the expanded VISIT name, else the
+        // expanded FILENAME, through message_with_string.
+        let visit_file = match args.get(4) {
+            Some(visit) if string_like(visit).is_some() => string_text(visit)?,
+            _ => logical_path.to_string(),
+        };
+        let visit_file = expand_file_name_runtime(interp, env, &visit_file, None)?;
+        let format = match args.get(3).map(|append| append.kind()) {
+            Some(Kind::Integer(_) | Kind::Float(_)) => "Updated %s",
+            Some(_) if args[3].is_truthy() => "Added to %s",
+            _ => "Wrote %s",
+        };
+        super::dispatch::display::message_with_string(
             interp,
-            "message",
-            &[Value::String(format!("Wrote {logical_path}").into())],
+            format,
+            Value::string(&visit_file),
             env,
         )?;
     }
