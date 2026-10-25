@@ -106,26 +106,41 @@ fn pattern_codes(bytes: &[u8], multibyte: bool) -> Vec<u32> {
 /// are that form already (ASCII, or multibyte UTF-8 with no character the
 /// stored form reads otherwise), else the decoded text and its side table.
 enum StringText<'v> {
-    InPlace(&'v str),
+    /// The string's data, whose character and byte indices convert
+    /// through fns.c's string_char_to_byte cache.
+    InPlace(&'v str, StringObjectRef),
     Decoded(String, Vec<(usize, u32)>),
+}
+
+/// Whether BYTES, a string's data, are the matcher's stored form.
+fn stored_form_in_place(bytes: &[u8], multibyte: bool) -> bool {
+    bytes.is_ascii()
+        || (multibyte
+            && std::str::from_utf8(bytes).is_ok_and(|text| {
+                !text.chars().any(|ch| {
+                    rx_storage_ambiguous(ch) && ch != crate::lisp::json::INVALID_UNICODE_SENTINEL
+                })
+            }))
 }
 
 impl StringText<'_> {
     fn new(value: &Value) -> Option<StringText<'_>> {
-        let (bytes, multibyte, _) = string_bytes(value)?;
-        if bytes.is_ascii() {
-            // SAFETY: ASCII is UTF-8.
-            return Some(StringText::InPlace(unsafe {
-                std::str::from_utf8_unchecked(bytes)
-            }));
-        }
-        if multibyte
-            && let Ok(text) = std::str::from_utf8(bytes)
-            && !text.chars().any(|ch| {
-                rx_storage_ambiguous(ch) && ch != crate::lisp::json::INVALID_UNICODE_SENTINEL
-            })
+        let (bytes, multibyte, chars) = string_bytes(value)?;
+        let Kind::StringObject(state) = value.kind() else {
+            return None;
+        };
+        // A multibyte string of a byte a character is ASCII; otherwise
+        // the scan is remembered while the string holds the cache.
+        if (multibyte && bytes.len() == chars)
+            || state
+                .borrow()
+                .stored_text_in_place(|bytes| stored_form_in_place(bytes, multibyte))
         {
-            return Some(StringText::InPlace(text));
+            // SAFETY: stored_form_in_place found the bytes UTF-8.
+            return Some(StringText::InPlace(
+                unsafe { std::str::from_utf8_unchecked(bytes) },
+                state,
+            ));
         }
         let (text, extended) =
             crate::lisp::types::string_data::decode_bytes(bytes, multibyte).ok()?;
@@ -134,15 +149,39 @@ impl StringText<'_> {
 
     fn text(&self) -> &str {
         match self {
-            StringText::InPlace(text) => text,
+            StringText::InPlace(text, _) => text,
             StringText::Decoded(text, _) => text,
         }
     }
 
     fn extended(&self) -> &[(usize, u32)] {
         match self {
-            StringText::InPlace(_) => &[],
+            StringText::InPlace(..) => &[],
             StringText::Decoded(_, extended) => extended,
+        }
+    }
+
+    /// The string read in place, whose positions convert through the cache.
+    fn in_place(&self) -> Option<StringObjectRef> {
+        match self {
+            StringText::InPlace(_, state) => Some(*state),
+            StringText::Decoded(..) => None,
+        }
+    }
+
+    /// The byte offset in `text' of character INDEX.
+    fn char_to_byte(&self, index: usize) -> usize {
+        match self {
+            StringText::InPlace(_, state) => state.borrow().char_to_byte(index),
+            StringText::Decoded(text, _) => ropey::str_utils::char_to_byte_idx(text, index),
+        }
+    }
+
+    /// The character index of byte offset OFFSET in `text'.
+    fn byte_to_char(&self, offset: usize) -> usize {
+        match self {
+            StringText::InPlace(_, state) => state.borrow().byte_to_char(offset),
+            StringText::Decoded(text, _) => ropey::str_utils::byte_to_char_idx(text, offset),
         }
     }
 }
@@ -169,6 +208,8 @@ enum Object<'t> {
         /// The string's data, read in place.
         text: &'t str,
         extended: &'t [(usize, u32)],
+        /// The string whose own bytes TEXT is, for its position cache.
+        in_place: Option<StringObjectRef>,
         /// The string object (`re_match_object'), None for text without
         /// one (GNU's t).
         string: Option<Value>,
@@ -305,6 +346,10 @@ impl<'a, 't> LispMatchEnv<'a, 't> {
                     begv + rope.byte_to_char(at)
                 }
             }
+            Object::String {
+                in_place: Some(state),
+                ..
+            } => state.borrow().byte_to_char(at),
             Object::String { text, .. } => ropey::str_utils::byte_to_char_idx(text, at),
             Object::None => at,
         }
@@ -914,7 +959,7 @@ pub(super) fn string_match_1(
     let pos_byte = if ascii {
         pos
     } else {
-        ropey::str_utils::char_to_byte_idx(haystack, pos)
+        string_text.char_to_byte(pos)
     };
     let text = Text::from_str(
         haystack,
@@ -927,6 +972,7 @@ pub(super) fn string_match_1(
     menv.object = Object::String {
         text: haystack,
         extended: string_text.extended(),
+        in_place: string_text.in_place(),
         string: Some(*string),
     };
     let result = rx::re_search(
@@ -946,7 +992,7 @@ pub(super) fn string_match_1(
         if ascii {
             offset
         } else {
-            ropey::str_utils::byte_to_char_idx(haystack, offset)
+            string_text.byte_to_char(offset)
         }
     };
     let start = registers.regs[0].expect("group 0").0;
@@ -1216,6 +1262,7 @@ pub(crate) fn fast_string_match(
         env,
         regexp,
         Some(*string),
+        string_text.in_place(),
         string_text.text(),
         &extended,
         multibyte,
@@ -1244,6 +1291,7 @@ pub(crate) fn fast_text_match(
         env,
         regexp,
         None,
+        None,
         haystack,
         extended,
         multibyte,
@@ -1252,13 +1300,15 @@ pub(crate) fn fast_text_match(
     )
 }
 
-/// fast_string_match_internal on HAYSTACK, the text of STRING when given.
+/// fast_string_match_internal on HAYSTACK, the text of STRING when given
+/// (its own bytes when IN_PLACE names it).
 #[allow(clippy::too_many_arguments)]
 fn text_match(
     interp: &mut Interpreter,
     env: &mut Env,
     regexp: &Value,
     string: Option<Value>,
+    in_place: Option<StringObjectRef>,
     haystack: &str,
     extended: &[(usize, u32)],
     multibyte: bool,
@@ -1271,6 +1321,7 @@ fn text_match(
     menv.object = Object::String {
         text: haystack,
         extended,
+        in_place,
         string,
     };
     let result = rx::re_search(
@@ -1290,10 +1341,10 @@ fn text_match(
         Err(error) => return Err(match_error(error)),
     };
     let start = registers.regs[0].expect("group 0").0;
-    Ok(Some(if haystack.is_ascii() {
-        start
-    } else {
-        ropey::str_utils::byte_to_char_idx(haystack, start)
+    Ok(Some(match in_place {
+        Some(state) => state.borrow().byte_to_char(start),
+        None if haystack.is_ascii() => start,
+        None => ropey::str_utils::byte_to_char_idx(haystack, start),
     }))
 }
 
@@ -1326,6 +1377,7 @@ pub(crate) fn fast_c_string_match_ignore_case(
     menv.object = Object::String {
         text: &haystack,
         extended: &[],
+        in_place: None,
         string: None,
     };
     let result = rx::re_search(
@@ -1386,7 +1438,7 @@ pub(crate) fn fast_looking_at(
         if ascii {
             index
         } else {
-            ropey::str_utils::char_to_byte_idx(haystack, index)
+            string_text.char_to_byte(index)
         }
     };
     let text = Text::from_str(haystack, multibyte, !string_text.extended().is_empty());
@@ -1395,6 +1447,7 @@ pub(crate) fn fast_looking_at(
     menv.object = Object::String {
         text: haystack,
         extended: string_text.extended(),
+        in_place: string_text.in_place(),
         string: Some(*string),
     };
     let result = rx::re_match(&mut entry.pattern, &text, byte(pos), byte(limit), &mut menv);
@@ -1408,7 +1461,7 @@ pub(crate) fn fast_looking_at(
         if ascii {
             end
         } else {
-            ropey::str_utils::byte_to_char_idx(haystack, end)
+            string_text.byte_to_char(end)
         } - pos,
     ))
 }

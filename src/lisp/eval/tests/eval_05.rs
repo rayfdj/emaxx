@@ -8729,3 +8729,129 @@ fn unibyte_conversion_keeps_each_byte_and_maps_point() {
         ])
     );
 }
+
+#[test]
+fn string_positions_convert_through_gnu_cache() {
+    // fns.c string_char_to_byte / string_byte_to_char: forward, backward
+    // and random indices, Faset changing a character's width, and the
+    // primitives that start from a character index (GNU 30.2's values).
+    assert_eq!(
+        eval_str(
+            r#"(prin1-to-string
+                (let* ((s (concat "aé" (make-string 3 ?b) "€x\377" "ü"))
+                       (out nil))
+                  (dotimes (i (length s)) (push (aref s i) out))
+                  (let ((i (length s)))
+                    (while (> i 0) (setq i (1- i)) (push (aref s i) out)))
+                  (dolist (i '(7 1 6 2 0 8 3)) (push (aref s i) out))
+                  (aset s 1 ?e)
+                  (push (list (aref s 1) (aref s 2) (aref s 6) (length s) (string-bytes s)) out)
+                  (aset s 0 ?€)
+                  (push (list (aref s 0) (aref s 1) (aref s 5) (aref s 8) (string-bytes s)) out)
+                  (aset s 7 ?y)
+                  (push (list s (aref s 7) (aref s 8) (string-bytes s)) out)
+                  (push (list (substring s 2 5) (substring s 5) (substring s -2)) out)
+                  (push (list (string-match "b+" s 1) (match-end 0) (string-match "€" s 3)
+                              (string-match "y" s) (string-match "ü" s 8))
+                        out)
+                  (push (list (string-search "b" s 3) (string-search "€" s 1)
+                              (string-search "ü" s) (string-search "zz" s)
+                              (string-search "" s 4)
+                              (condition-case e (string-search "a" s 99) (error e)))
+                        out)
+                  (let ((text "(a é) \"é€\" [b ü] c") (pos 0) forms)
+                    (condition-case nil
+                        (while t
+                          (let ((r (read-from-string text pos)))
+                            (push r forms)
+                            (setq pos (cdr r))))
+                      (end-of-file nil))
+                    (push (nreverse forms) out)
+                    (push (read-from-string text 2 9) out))
+                  (nreverse out)))"#
+        ),
+        Value::string(
+            "(97 233 98 98 98 8364 120 4194303 252 252 4194303 120 8364 98 98 98 233 97 \
+             4194303 233 120 98 97 252 98 (101 98 120 9 13) (8364 101 8364 252 15) \
+             (\"€ebbb€xyü\" 121 252 14) (\"bbb\" \"€xyü\" \"yü\") (2 5 5 7 8) \
+             (3 5 8 nil 4 (args-out-of-range 99)) \
+             (((a é) . 5) (\"é€\" . 10) ([b ü] . 16) (c . 18)) (é . 4))"
+        )
+    );
+}
+
+#[test]
+fn string_search_converts_needle_representation_like_gnu() {
+    assert_eq!(
+        eval_str(
+            r#"(prin1-to-string
+                (list (string-search "\351" "a\351b")
+                      (string-search (string-to-multibyte "\351") "a\351b")
+                      (string-search "é" "aéb" 1)
+                      (string-search "" "abc" 3)
+                      (string-search "b" (string-to-multibyte "a\351b"))
+                      (string-search "\351" (string-to-multibyte "a\351b"))
+                      (string-search "é" "abc")
+                      (string-search "abcd" "abc")))"#
+        ),
+        Value::string("(1 1 1 3 2 1 nil nil)")
+    );
+}
+
+#[test]
+fn string_property_edits_touch_only_the_spans_they_meet() {
+    assert_eq!(
+        eval_str(
+            r#"(prin1-to-string
+                (let ((s (copy-sequence "abcdefghij")))
+                  (put-text-property 2 5 'face 'bold s)
+                  (put-text-property 4 7 'face 'italic s)
+                  (put-text-property 0 10 'x 1 s)
+                  (put-text-property 3 4 'face 'bold s)
+                  (remove-text-properties 5 6 '(x nil) s)
+                  (put-text-property 8 9 'face 'bold s)
+                  (put-text-property 9 10 'face 'italic s)
+                  (let ((many (make-string 40 ?z)))
+                    (dotimes (i 10) (put-text-property (* 4 i) (+ 2 (* 4 i)) 'n i many))
+                    (put-text-property 5 27 'm t many)
+                    (remove-text-properties 9 13 '(n nil) many)
+                    (list (object-intervals s)
+                          (next-single-property-change 0 'm many)
+                          (text-properties-at 9 many)
+                          (text-properties-at 4 many)
+                          (text-properties-at 26 many)))))"#
+        ),
+        Value::string(
+            "(((0 2 (x 1)) (2 4 (x 1 face bold)) (4 5 (x 1 face italic)) (5 6 (face italic)) \
+             (6 7 (x 1 face italic)) (7 8 (x 1)) (8 9 (face bold x 1)) (9 10 (face italic x 1))) \
+             5 (m t) (n 1) (m t))"
+        )
+    );
+}
+
+#[test]
+fn reading_a_buffer_takes_its_text_in_place() {
+    assert_eq!(
+        eval_str(
+            r#"(prin1-to-string
+                (with-temp-buffer
+                  (insert "(a é) ; c\n\"é€\" [b ü] #s(hash-table data (k v)) c")
+                  (goto-char (point-min))
+                  (let (forms)
+                    (condition-case nil
+                        (while t (push (list (read (current-buffer)) (point)) forms))
+                      (end-of-file nil))
+                    (goto-char 2)
+                    (narrow-to-region 2 8)
+                    (push (list (read (current-buffer)) (point)) forms)
+                    (widen)
+                    (goto-char (point-min))
+                    (push (read-positioning-symbols (current-buffer)) forms)
+                    (nreverse forms))))"#
+        ),
+        Value::string(
+            "(((a é) 6) (\"é€\" 15) ([b ü] 21) (#s(hash-table data (k v)) 47) (c 49) (a 3) \
+             (#<symbol a at 2> #<symbol é at 4>))"
+        )
+    );
+}

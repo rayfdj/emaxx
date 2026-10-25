@@ -9,6 +9,7 @@ use super::{Kind, LispError, StringObjectRef, StringPropertySpan, Value};
 use crate::lisp::alloc::{
     PendingStringData, StringAllocation, retire_string_data, string_data_size,
 };
+use std::cell::Cell;
 use std::ptr::{self, NonNull};
 
 mod concat;
@@ -59,6 +60,7 @@ impl PartialEq for SharedStringState {
 
 impl Drop for SharedStringState {
     fn drop(&mut self) {
+        self.forget_char_byte_cache();
         let bytes = self.storage_bytes();
         if bytes != 0 {
             // SAFETY: the swept header exclusively owns its sdata entry;
@@ -404,6 +406,50 @@ impl StringObjectRef {
     }
 }
 
+/// fns.c's string_char_byte_cache_string, _charpos and _bytepos: the
+/// string of the last conversion between character and byte indices and
+/// the positions it found.  The header's address names the string, and
+/// its data and sizes must agree too: a store that moves characters
+/// forgets the entry, as Faset's clear_string_char_byte_cache does.
+/// TEXT_IN_PLACE memoizes `stored_text_in_place' for the same contents.
+#[derive(Clone, Copy)]
+struct StringCharByteCache {
+    header: *const SharedStringState,
+    data: *const u8,
+    size: usize,
+    size_byte: isize,
+    charpos: usize,
+    bytepos: usize,
+    text_in_place: Option<bool>,
+}
+
+thread_local! {
+    static STRING_CHAR_BYTE_CACHE: Cell<Option<StringCharByteCache>> =
+        const { Cell::new(None) };
+}
+
+/// character.h BYTES_BY_CHAR_HEAD.
+#[inline]
+fn bytes_by_char_head(byte: u8) -> usize {
+    if byte & 0x80 == 0 {
+        1
+    } else if byte & 0x20 == 0 {
+        2
+    } else if byte & 0x10 == 0 {
+        3
+    } else if byte & 0x08 == 0 {
+        4
+    } else {
+        5
+    }
+}
+
+/// character.h CHAR_HEAD_P.
+#[inline]
+fn char_head_p(byte: u8) -> bool {
+    byte & 0xC0 != 0x80
+}
+
 impl SharedStringState {
     pub(crate) fn empty(multibyte: bool) -> Self {
         Self {
@@ -412,6 +458,158 @@ impl SharedStringState {
             props: StringProperties::default(),
             data: NonNull::from(&EMPTY_DATA),
         }
+    }
+
+    /// This string's entry in the conversion cache, if it holds one.
+    fn char_byte_cache(&self) -> Option<StringCharByteCache> {
+        STRING_CHAR_BYTE_CACHE.with(Cell::get).filter(|cache| {
+            ptr::eq(cache.header, self)
+                && cache.data == self.data.as_ptr().cast_const()
+                && cache.size == self.size
+                && cache.size_byte == self.size_byte
+        })
+    }
+
+    fn set_char_byte_cache(&self, charpos: usize, bytepos: usize, text_in_place: Option<bool>) {
+        STRING_CHAR_BYTE_CACHE.with(|cell| {
+            cell.set(Some(StringCharByteCache {
+                header: self,
+                data: self.data.as_ptr().cast_const(),
+                size: self.size,
+                size_byte: self.size_byte,
+                charpos,
+                bytepos,
+                text_in_place,
+            }));
+        });
+    }
+
+    /// fns.c:clear_string_char_byte_cache, for a store into this string's
+    /// bytes or its reclamation.
+    fn forget_char_byte_cache(&self) {
+        STRING_CHAR_BYTE_CACHE.with(|cell| {
+            if cell.get().is_some_and(|cache| {
+                ptr::eq(cache.header, self) || cache.data == self.data.as_ptr().cast_const()
+            }) {
+                cell.set(None);
+            }
+        });
+    }
+
+    /// fns.c:string_char_to_byte: the byte index of character CHAR_INDEX
+    /// (at most the length), scanned from the nearest of the start, the
+    /// end and the cached position, which then moves there.
+    pub(crate) fn char_to_byte(&self, char_index: usize) -> usize {
+        assert!(char_index <= self.size, "character index within the string");
+        let (mut below, mut below_byte) = (0, 0);
+        let (mut above, mut above_byte) = (self.size, self.storage_bytes());
+        if above == above_byte {
+            return char_index;
+        }
+        let cache = self.char_byte_cache();
+        if let Some(cache) = cache {
+            if cache.charpos < char_index {
+                (below, below_byte) = (cache.charpos, cache.bytepos);
+            } else {
+                (above, above_byte) = (cache.charpos, cache.bytepos);
+            }
+        }
+        let bytes = self.bytes();
+        let byte_index = if char_index - below < above - char_index {
+            let mut p = below_byte;
+            while below < char_index {
+                p += bytes_by_char_head(bytes[p]);
+                below += 1;
+            }
+            p
+        } else {
+            let mut p = above_byte;
+            while above > char_index {
+                p -= 1;
+                while !char_head_p(bytes[p]) {
+                    p -= 1;
+                }
+                above -= 1;
+            }
+            p
+        };
+        self.set_char_byte_cache(
+            char_index,
+            byte_index,
+            cache.and_then(|cache| cache.text_in_place),
+        );
+        byte_index
+    }
+
+    /// fns.c:string_byte_to_char: the character index of the character
+    /// that starts at byte BYTE_INDEX (at most the byte length).
+    pub(crate) fn byte_to_char(&self, byte_index: usize) -> usize {
+        let (mut below, mut below_byte) = (0, 0);
+        let (mut above, mut above_byte) = (self.size, self.storage_bytes());
+        assert!(byte_index <= above_byte, "byte index within the string");
+        if above == above_byte {
+            return byte_index;
+        }
+        let cache = self.char_byte_cache();
+        if let Some(cache) = cache {
+            if cache.bytepos < byte_index {
+                (below, below_byte) = (cache.charpos, cache.bytepos);
+            } else {
+                (above, above_byte) = (cache.charpos, cache.bytepos);
+            }
+        }
+        let bytes = self.bytes();
+        let (char_index, byte_index) = if byte_index - below_byte < above_byte - byte_index {
+            let mut p = below_byte;
+            while p < byte_index {
+                p += bytes_by_char_head(bytes[p]);
+                below += 1;
+            }
+            (below, p)
+        } else {
+            let mut p = above_byte;
+            while p > byte_index {
+                p -= 1;
+                while !char_head_p(bytes[p]) {
+                    p -= 1;
+                }
+                above -= 1;
+            }
+            (above, p)
+        };
+        self.set_char_byte_cache(
+            char_index,
+            byte_index,
+            cache.and_then(|cache| cache.text_in_place),
+        );
+        char_index
+    }
+
+    /// The byte offset COUNT characters after byte offset FROM.
+    pub(crate) fn bytes_after_chars(&self, from: usize, count: usize) -> usize {
+        if !self.is_multibyte() || self.size == self.storage_bytes() {
+            return from + count;
+        }
+        let bytes = self.bytes();
+        let mut p = from;
+        for _ in 0..count {
+            p += bytes_by_char_head(bytes[p]);
+        }
+        p
+    }
+
+    /// Whether this string's bytes are already the text a consumer reads,
+    /// as COMPUTE decides, remembered with the conversion cache while the
+    /// string holds it.
+    pub(crate) fn stored_text_in_place(&self, compute: impl FnOnce(&[u8]) -> bool) -> bool {
+        let cache = self.char_byte_cache();
+        if let Some(known) = cache.and_then(|cache| cache.text_in_place) {
+            return known;
+        }
+        let in_place = compute(self.bytes());
+        let (charpos, bytepos) = cache.map_or((0, 0), |cache| (cache.charpos, cache.bytepos));
+        self.set_char_byte_cache(charpos, bytepos, Some(in_place));
+        in_place
     }
 
     /// The caller has excluded all borrows before relocating this header's
@@ -431,6 +629,7 @@ impl SharedStringState {
     }
 
     fn replace_storage(&mut self, bytes: Vec<u8>, characters: usize, multibyte: bool) {
+        self.forget_char_byte_cache();
         let nbytes = bytes.len();
         assert!(nbytes < isize::MAX as usize - 16 && (multibyte || characters == nbytes));
         let old_bytes = self.storage_bytes();
@@ -660,17 +859,7 @@ impl SharedStringState {
     }
 
     pub(crate) fn byte_offset(&self, index: usize) -> Option<usize> {
-        if index > self.len() {
-            return None;
-        }
-        if !self.is_multibyte() {
-            return Some(index);
-        }
-        let mut offset = 0;
-        for _ in 0..index {
-            offset += decode_character(&self.bytes()[offset..]).ok()?.1;
-        }
-        Some(offset)
+        (index <= self.len()).then(|| self.char_to_byte(index))
     }
 
     /// Every character as fetch_string_char_advance reads it: a unibyte
@@ -777,6 +966,10 @@ impl SharedStringState {
             }
             self.size_byte = nbytes as isize;
         }
+        // The characters before INDEX kept their bytes, so the cached
+        // position Faset found stays right (string_char_to_byte's cache
+        // names the string, not its size).
+        self.set_char_byte_cache(index, offset, None);
         Ok(true)
     }
 
@@ -809,6 +1002,7 @@ impl SharedStringState {
                 "Attempt to change byte length of a string".into(),
             ));
         }
+        self.forget_char_byte_cache();
         if width == 1 {
             self.bytes_mut().fill(encoded[0]);
         } else {
@@ -824,6 +1018,7 @@ impl SharedStringState {
         // STRING_SET_UNIBYTE replaces a zero-length local value; it must
         // not change the original shared empty multibyte header.
         let nbytes = self.storage_bytes();
+        self.forget_char_byte_cache();
         if nbytes != 0 {
             self.bytes_mut().fill(0);
             self.size = nbytes;

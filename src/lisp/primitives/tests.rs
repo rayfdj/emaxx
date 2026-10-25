@@ -14629,15 +14629,10 @@ fn assert_linux_inotify_contract(program: &str, expected: &str, label: &str) {
 fn assert_oracle_contract_matches_interpreter(program: &str, expected: &str, label: &str) {
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
-    let form = Reader::new(program)
-        .read_all()
-        .unwrap_or_else(|error| panic!("read {label} program: {error:?}"))
-        .remove(0);
     let mut env = crate::lisp::types::Env::new();
-    let form = interp
-        .intern_read_symbols_in_value(form, &env)
-        .and_then(|form| interp.materialize_read_object_literals(form, &mut env))
-        .unwrap_or_else(|error| panic!("finish reading {label} program: {error:?}"));
+    let form = crate::lisp::read_next_load_form(&mut interp, program, &mut 0, &mut env)
+        .unwrap_or_else(|error| panic!("read {label} program: {error:?}"))
+        .unwrap_or_else(|| panic!("{label} program has a form"));
     // Compare through the interpreter's own printer, as the oracle side is
     // compared through GNU's: the Rust Display form is not print.c (it
     // renders a shared sublist as circular and does not escape quotes).
@@ -28959,18 +28954,11 @@ fn assert_purecopy_callback_contract(program: &str, expected: &str) {
     let mut interp = crate::test_support::initialized_upstream_interactive_interpreter();
     let mut env = Env::new();
     interp.set_variable("noninteractive", Value::Nil, &mut env);
-    let forms = Reader::new(program)
-        .read_all()
-        .expect("read purecopy callback fixture");
-    assert_eq!(forms.len(), 1);
-    // The raw reader precedes lread's obarray and literal materialization
-    // steps. Enter through the same symbols as the loaded Lisp runtime.
-    let form = interp
-        .intern_read_symbols_in_value(forms[0], &env)
-        .expect("intern purecopy fixture symbols");
-    let form = interp
-        .materialize_read_object_literals(form, &mut env)
-        .expect("materialize purecopy fixture literals");
+    // Read as `load' reads: through the same symbols as the loaded Lisp
+    // runtime, with its literals built.
+    let form = crate::lisp::read_next_load_form(&mut interp, program, &mut 0, &mut env)
+        .expect("read purecopy callback fixture")
+        .expect("purecopy callback fixture has a form");
     let previous_metrics = interactive_window_metrics();
     set_interactive_window_metrics(Some(InteractiveWindowMetrics {
         text_height: 22,

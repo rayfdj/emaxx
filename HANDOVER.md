@@ -6128,6 +6128,54 @@ setup_process_coding_systems's check now refuses). A 13-form
   with the documented local skips (eval_04, 255, includes the column
   test; primitives, 753, the two motion tests), and the same 89 GNU test
   files (1,785 tests) as GNU.
+- **Round 83: character and byte positions in strings, the reader's
+  inputs and `load''s read loop.** A survey of 515 GNU test files
+  (survey82) put Emaxx at 0.71 of GNU's total but small files at 1.6 to
+  2.4 times; profiles of them showed per-call costs that grow with the
+  string or text (quadratic loops) and a reader doing extra passes.
+  (1) fns.c string_char_to_byte and string_byte_to_char with GNU's
+  one-entry cache (the string and the character and byte positions last
+  converted) replace a scan from the start of a multibyte string for each
+  character index: `aref', `substring', `compare-strings', Faset (which
+  leaves the cache at the stored character, as GNU's does), `string-match'
+  and `looking-at' on strings convert their START and the match registers
+  through it, and the matcher's text-property lookups on a string read in
+  place too. On a 100,001-character string holding one non-ASCII
+  character, 100,001 `aref's took 11.8 s (GNU 0.037 s) and now 0.023 s;
+  10,000 `substring's 2.4 s, now 0.014 s (GNU 0.019); 50,000 `string-match'
+  calls with START 3.8 s, now 0.019 s (GNU 0.029). The cache entry also
+  remembers whether the string's bytes are the matcher's stored form, so
+  `string-match' no longer validates the whole string on every call.
+  (2) `read-from-string' converts only START (read_internal_start), so
+  reading a 2,782-form text form by form went from 11.0 s to 0.15 s (GNU
+  0.095). (3) fns.c Fstring_search is ported: memmem over the strings'
+  bytes from START's byte, the needle converted to the haystack's
+  representation as GNU converts it (a unibyte non-ASCII needle to
+  eight-bit characters, a raw-byte needle to unibyte), the out-of-range
+  error `(args-out-of-range START)' as GNU signals it. (4) `read' from a
+  buffer or marker reads the buffer's rope in place instead of copying the
+  text from point to the end for every call. (5) A string's text
+  properties are edited only over the spans the change meets, with their
+  equal neighbours merged; the old code cloned every span's plist on each
+  `put-text-property' (128 times GNU on a string of 2,000 intervals, now
+  12). (6) `load' of a file is lread.c's readevalloop: each form is read
+  with its symbols interned in the obarray current then, then evaluated
+  before the next is read, so a read error comes after the forms before it
+  ran and the separate whole-form interning walk is gone; the
+  unescaped-character-literal warning is computed after the forms
+  (Fload's load_warn_unescaped_character_literals). (7) The reader skips
+  ASCII whitespace a byte at a time, comments with memchr, and checks for
+  NO-BREAK SPACE only at its lead byte; a token is tried as a number only
+  when it starts with a sign, digit or period (string_to_number), which
+  also stops `infe+INF' reading as a float.
+  Known differences kept: Emaxx merges a string's adjacent intervals with
+  equal plists and drops a string's intervals whose plists are all empty
+  (GNU's `object-intervals' shows (8 9 ...) (9 10 ...) and ((0 3 nil))).
+  Local validation: the full gate, 3,223 passed across its ten groups
+  with the documented local skips (eval_05, 361, includes four new tests
+  of the position cache, `string-search', string property edits and
+  buffer reads, whose values are GNU 30.2's); clippy `-D warnings',
+  rustfmt and `git diff --check' pass.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -6831,6 +6879,8 @@ frozen passed on its first attempt (run 40213827546).
 **On `1d47612`** (round 81): full Rust gate passed (run 40221555021),
 frozen passed on its first attempt (run 40221557268); PR #107 merged
 rounds 80 and 81 into main (`e5a16c0`).
+**On `b2c9e9d`** (round 82): full Rust gate passed (run 40230698235),
+frozen passed on its first attempt (run 40230700102).
 
 **Findings recorded, not fixed:**
 - `features`, `values` and `top-level` are special variables in Emaxx

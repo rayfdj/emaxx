@@ -2,7 +2,6 @@ use std::cell::RefCell;
 use std::sync::{Condvar, Mutex, OnceLock};
 
 use crate::lisp::eval::Interpreter;
-use crate::lisp::reader::Reader;
 use crate::lisp::types::{Env, LispError, Value};
 
 const MAX_CONCURRENT_HOST_HEAVY_TESTS: usize = 2;
@@ -419,11 +418,11 @@ pub(crate) fn eval_lisp(
     source: &str,
 ) -> Result<Value, LispError> {
     interpreter.select_symbol_owner();
-    let forms = Reader::new(source).read_all()?;
+    let mut offset = 0;
     let mut result = Value::Nil;
-    for form in forms {
-        let form = interpreter.intern_read_symbols_in_value(form, environment)?;
-        let form = interpreter.materialize_read_object_literals(form, environment)?;
+    while let Some(form) =
+        crate::lisp::read_next_load_form(interpreter, source, &mut offset, environment)?
+    {
         result = interpreter.eval(&form, environment)?;
     }
     Ok(result)

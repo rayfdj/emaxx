@@ -343,6 +343,28 @@ impl<'a> Reader<'a> {
         reader
     }
 
+    /// A buffer's text, read in place from its rope.
+    pub(crate) fn from_rope(
+        rope: ropey::RopeSlice<'a>,
+        symbol_shorthands: Vec<(String, String)>,
+    ) -> Self {
+        let mut reader = Self::with_symbol_shorthands("", symbol_shorthands);
+        reader.input = Input::rope(rope);
+        reader
+    }
+
+    /// `read-positioning-symbols' on a buffer's rope, as on encoded text.
+    pub(crate) fn from_rope_positioned(
+        rope: ropey::RopeSlice<'a>,
+        symbol_shorthands: Vec<(String, String)>,
+        position_base: i64,
+    ) -> Self {
+        let mut reader = Self::from_rope(rope, symbol_shorthands);
+        reader.locate_symbols = true;
+        reader.position_base = position_base;
+        reader
+    }
+
     /// `read-positioning-symbols' on an encoded source: each symbol
     /// occurrence gets its character position, offset by BASE.
     pub(crate) fn from_encoded_positioned(
@@ -421,6 +443,12 @@ impl<'a> Reader<'a> {
     }
 
     fn peek_char(&mut self) -> Result<Option<char>, LispError> {
+        if let Input::Text(bytes) | Input::Encoded { bytes, .. } = &self.input
+            && let Some(&byte) = bytes.get(self.pos)
+            && byte < 0x80
+        {
+            return Ok(Some(byte as char));
+        }
         if matches!(self.input, Input::Encoded { .. }) {
             return Ok(self.input.encoded_character(self.pos)?.map(|(code, _)| {
                 if (0x3fff80..=0x3fffff).contains(&code) {
@@ -469,7 +497,15 @@ impl<'a> Reader<'a> {
 
     fn skip_whitespace_and_comments(&mut self) -> Result<(), LispError> {
         loop {
-            // Skip whitespace
+            // Skip whitespace: ASCII a byte at a time, NO-BREAK SPACE as a
+            // character.
+            while let Some(byte) = self.peek()? {
+                if byte <= b' ' {
+                    self.advance()?;
+                } else {
+                    break;
+                }
+            }
             while let Some(ch) = self.peek_char()? {
                 if ch <= ' ' || ch == '\u{a0}' {
                     self.advance_char()?;
@@ -479,6 +515,10 @@ impl<'a> Reader<'a> {
             }
             // Skip line comments (;)
             if self.peek()? == Some(b';') {
+                if let Some(next) = self.input.skip_line(self.pos) {
+                    self.pos = next;
+                    continue;
+                }
                 while let Some(ch) = self.advance()? {
                     if ch == b'\n' {
                         break;
@@ -1709,6 +1749,10 @@ impl<'a> Reader<'a> {
             }
             return self.position_base + self.position_cursor_char;
         }
+        if let Input::Rope(input) = &self.input {
+            // The bytes consumed are whole characters of the rope's text.
+            return self.position_base + input.rope.byte_to_char(self.pos) as i64;
+        }
         let Input::Text(bytes) = &self.input else {
             unreachable!()
         };
@@ -1756,7 +1800,8 @@ impl<'a> Reader<'a> {
             // and comma (read0 stops at "\"';()[]#`,"), so `,flags, hop-real'
             // reads as two unquotes rather than a symbol named "flags,".
             if ch <= b' '
-                || self.peek_char()? == Some('\u{a0}')
+                // NO-BREAK SPACE: C2 A0 in each representation read here.
+                || (ch == 0xC2 && self.peek_char()? == Some('\u{a0}'))
                 || ch == b'('
                 || ch == b')'
                 || ch == b'['
@@ -1815,8 +1860,11 @@ impl<'a> Reader<'a> {
                 .map(Some);
         }
 
-        // Try parsing as integer
-        if syntax == AtomSyntax::Ordinary {
+        // Try parsing as integer.  lread.c string_to_number accepts only a
+        // token that starts with a sign, a digit or a period.
+        if syntax == AtomSyntax::Ordinary
+            && matches!(token.as_bytes()[0], b'+' | b'-' | b'.' | b'0'..=b'9')
+        {
             if let Ok(n) = token.parse::<i64>() {
                 return Ok(Some(Value::Integer(n)));
             }

@@ -53,12 +53,6 @@ pub(super) fn loadable(symbol: &SymbolName) -> bool {
         )
 }
 
-#[derive(Default)]
-struct ReadSymbolContainers {
-    cons: HashSet<usize>,
-    vectors: HashSet<usize>,
-}
-
 impl BacktraceFrame {
     pub(super) fn function_snapshot(&self) -> Value {
         self.source_form()
@@ -1026,125 +1020,6 @@ impl Interpreter {
                 _ => {}
             }
         }
-    }
-
-    /// Give symbols produced by the Lisp reader the identity selected by the
-    /// dynamically active `obarray'.  The parser itself is intentionally
-    /// interpreter-free, so ordinary standard-obarray reads only need the
-    /// membership walk above.  A private obarray also requires replacing each
-    /// parsed symbol object with that table's identity-bearing value.
-    pub(crate) fn intern_read_symbols_in_value(
-        &mut self,
-        value: Value,
-        env: &Env,
-    ) -> Result<Value, LispError> {
-        let obarray = self.lookup_var("obarray", env).unwrap_or(Value::Nil);
-        if !matches!(obarray.kind(), Kind::Record(id) if !self.is_standard_obarray_id(id.id)) {
-            self.intern_symbols_in_value(&value);
-            return Ok(value);
-        }
-        self.intern_read_symbols_in_obarray(value, &obarray, &mut ReadSymbolContainers::default())
-    }
-
-    fn intern_read_symbols_in_obarray(
-        &mut self,
-        value: Value,
-        obarray: &Value,
-        seen: &mut ReadSymbolContainers,
-    ) -> Result<Value, LispError> {
-        match value.kind() {
-            Kind::Symbol(name) if crate::lisp::types::visible_symbol_name(&name) == name => {
-                crate::lisp::primitives::intern_in_obarray(self, obarray, &name)
-            }
-            Kind::Cons(cell) => {
-                if seen
-                    .cons
-                    .insert(crate::lisp::types::ConsCell::identity(&cell))
-                {
-                    let car = cell.car.get();
-                    let cdr = cell.cdr.get();
-                    let car = self.intern_read_symbols_in_obarray(car, obarray, seen)?;
-                    let cdr = self.intern_read_symbols_in_obarray(cdr, obarray, seen)?;
-                    cell.car.set(car);
-                    cell.cdr.set(cdr);
-                }
-                Ok(Value::Cons(cell))
-            }
-            Kind::Vector(vector) => {
-                if seen.vectors.insert(vector.identity()) {
-                    let slots = vector.slots().collect::<Vec<_>>();
-                    let mapped = self.intern_read_symbol_fields(&slots, obarray, seen)?;
-                    for (index, value) in mapped.into_iter().enumerate() {
-                        vector.set(index, value);
-                    }
-                }
-                Ok(Value::Vector(vector))
-            }
-            Kind::StringObject(state) => {
-                if state.borrow().props.is_empty() {
-                    return Ok(Value::StringObject(state));
-                }
-                let mut borrowed = state.borrow_mut();
-                for span in &mut borrowed.props {
-                    for (name, property_value) in &mut span.props {
-                        *name = crate::lisp::types::PropertyName::new(
-                            self.intern_read_symbols_in_obarray(name.value(), obarray, seen)?,
-                        );
-                        *property_value =
-                            self.intern_read_symbols_in_obarray(*property_value, obarray, seen)?;
-                    }
-                }
-                drop(borrowed);
-                Ok(Value::StringObject(state))
-            }
-            Kind::ReaderForm(form) => {
-                use crate::lisp::types::ReaderForm;
-
-                let mapped = match form.as_ref() {
-                    ReaderForm::CircularLabel { id, payload } => ReaderForm::CircularLabel {
-                        id: *id,
-                        payload: self.intern_read_symbols_in_obarray(*payload, obarray, seen)?,
-                    },
-                    ReaderForm::CircularReference(id) => ReaderForm::CircularReference(*id),
-                    ReaderForm::HashTable { fields } => ReaderForm::HashTable {
-                        fields: self.intern_read_symbol_fields(fields, obarray, seen)?,
-                    },
-                    ReaderForm::CharTable { fields } => ReaderForm::CharTable {
-                        fields: self.intern_read_symbol_fields(fields, obarray, seen)?,
-                    },
-                    ReaderForm::SubCharTable { fields } => ReaderForm::SubCharTable {
-                        fields: self.intern_read_symbol_fields(fields, obarray, seen)?,
-                    },
-                    ReaderForm::Record { slots } => ReaderForm::Record {
-                        slots: self.intern_read_symbol_fields(slots, obarray, seen)?,
-                    },
-                    ReaderForm::Closure { kind, slots } => ReaderForm::Closure {
-                        kind: *kind,
-                        slots: self.intern_read_symbol_fields(slots, obarray, seen)?,
-                    },
-                    ReaderForm::BoolVector { bits } => {
-                        ReaderForm::BoolVector { bits: bits.clone() }
-                    }
-                };
-                Ok(Value::ReaderForm(
-                    crate::lisp::alloc::VectorlikeRef::allocate(mapped),
-                ))
-            }
-            other => Ok(other.value()),
-        }
-    }
-
-    fn intern_read_symbol_fields(
-        &mut self,
-        fields: &[Value],
-        obarray: &Value,
-        seen: &mut ReadSymbolContainers,
-    ) -> Result<Vec<Value>, LispError> {
-        fields
-            .iter()
-            .cloned()
-            .map(|field| self.intern_read_symbols_in_obarray(field, obarray, seen))
-            .collect()
     }
 
     pub(crate) fn is_standard_obarray_id(&self, id: u64) -> bool {

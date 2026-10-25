@@ -558,14 +558,6 @@ fn append_message(interp: &mut eval::Interpreter, text: &str) {
     }
 }
 
-fn unescaped_character_literal_value(reader: &reader::Reader<'_>) -> types::Value {
-    types::Value::list(
-        reader
-            .unescaped_character_literals()
-            .map(types::Value::Integer),
-    )
-}
-
 pub(crate) fn unescaped_character_literal_warning(
     interp: &mut eval::Interpreter,
     env: &mut types::Env,
@@ -1197,7 +1189,11 @@ pub(crate) fn read_source_forms_with_unescaped_literals(
     let mut reader =
         reader::Reader::with_symbol_shorthands(source, settings.read_symbol_shorthands);
     let forms = reader.read_all()?;
-    let literals = unescaped_character_literal_value(&reader);
+    let literals = types::Value::list(
+        reader
+            .unescaped_character_literals()
+            .map(types::Value::Integer),
+    );
     Ok((forms, literals))
 }
 
@@ -1255,6 +1251,43 @@ pub(crate) fn load_file_strict_opened(
     let result = read_lisp_file_bytes(interp, path, bytes, Some(history), |_| false, |_| false);
     drop(file);
     result.map(|_| ())
+}
+
+/// One readevalloop read: the form of SOURCE at byte OFFSET, read in the
+/// current obarray with the current `read-symbol-shorthands', its
+/// identity-bearing literals built, OFFSET moved past it.  None at the end.
+pub(crate) fn read_next_load_form(
+    interp: &mut eval::Interpreter,
+    source: &str,
+    offset: &mut usize,
+    env: &mut types::Env,
+) -> Result<Option<types::Value>, types::LispError> {
+    let shorthands = primitives::read_symbol_shorthands_in_env(interp, env)?;
+    let obarray = interp
+        .lookup_var("obarray", env)
+        .unwrap_or(types::Value::Nil);
+    let (value, needs_materialization, unescaped) = {
+        let mut resolve_symbol = |name: &str| primitives::intern_in_obarray(interp, &obarray, name);
+        let mut reader = reader::Reader::with_symbol_shorthands(&source[*offset..], shorthands)
+            .with_symbol_resolver(&mut resolve_symbol);
+        let value = reader.read();
+        *offset += reader.position();
+        let value = value?;
+        (
+            value,
+            reader.emitted_reader_forms(),
+            reader.unescaped_character_literals().collect::<Vec<_>>(),
+        )
+    };
+    if !unescaped.is_empty() {
+        primitives::record_unescaped_character_literals(interp, unescaped, env);
+    }
+    match value {
+        Some(value) if needs_materialization => interp
+            .materialize_read_object_literals(value, env)
+            .map(Some),
+        value => Ok(value),
+    }
 }
 
 fn read_lisp_file_bytes(
@@ -1363,74 +1396,22 @@ fn read_lisp_file_bytes(
                 }
             }
         }
-        let mut source_reader = reader::Reader::with_symbol_shorthands(
-            &source,
-            settings.read_symbol_shorthands.clone(),
-        );
-        let forms = match source_reader.read_all() {
-            Ok(forms) => forms,
-            Err(error) => {
-                if trace_load_errors_enabled() {
-                    eprintln!(
-                        "read error in {} at byte offset {}: {error:?}",
-                        path.display(),
-                        source_reader.position()
-                    );
-                }
-                let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
-                interp.set_current_load_file(previous);
-                return Err(error);
-            }
-        };
-        interp.set_variable(
-            "lread--unescaped-character-literals",
-            unescaped_character_literal_value(&source_reader),
-            &mut env,
-        );
-        let warning_message = match (if outer_load_history.is_some() {
-            Ok(None)
-        } else {
-            unescaped_character_literal_warning(interp, &mut env)
-        })
-        .and_then(|warning| {
-            warning
-                .map(|warning| format_loading_warning(interp, &mut env, path, warning))
-                .transpose()
-        }) {
-            Ok(message) => message,
-            Err(error) => {
-                let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
-                interp.set_current_load_file(previous);
-                return Err(error);
-            }
-        };
-        // GNU's readevalloop reads, constructs, and evaluates one top-level object
-        // before reading the next.  Emaxx's parser produces all syntax trees up
-        // front, but the observable Interpreter-dependent reader work must remain
-        // in that same per-form order: a later compiled object can depend on a
-        // definition installed by an earlier top-level form.
+        // lread.c:readevalloop reads one form, interning each symbol in the
+        // obarray current then and building its objects, and evaluates it
+        // before reading the next: an earlier form can change the obarray,
+        // `read-symbol-shorthands' or the definitions a later literal needs,
+        // and a read error comes only after the forms before it ran.
         let mut stopped = false;
-        for (form_index, form) in forms.into_iter().enumerate() {
-            // GNU's reader interns ordinary symbols and returns fully constructed
-            // identity-bearing objects before invoking the Lisp-owned eager
-            // macroexpander.  Delaying source `#^[...]' materialization until eval
-            // leaked a private ReaderForm into macroexp.el and made generated
-            // Unicode tables look like source syntax instead of opaque values.
-            let form = match interp.intern_read_symbols_in_value(form, &env) {
-                Ok(form) => form,
-                Err(error) => {
-                    let _ =
-                        restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
-                    interp.set_current_load_file(previous);
-                    return Err(error);
-                }
-            };
-            let form = match interp.materialize_read_object_literals(form, &mut env) {
-                Ok(form) => form,
+        let mut offset = 0;
+        let mut form_index = 0;
+        loop {
+            let form = match read_next_load_form(interp, &source, &mut offset, &mut env) {
+                Ok(Some(form)) => form,
+                Ok(None) => break,
                 Err(error) => {
                     if trace_load_errors_enabled() {
                         eprintln!(
-                            "literal materialization error in {} at form {}: {error:?}",
+                            "read error in {} at byte offset {offset} (form {}): {error:?}",
                             path.display(),
                             form_index + 1
                         );
@@ -1441,6 +1422,7 @@ fn read_lisp_file_bytes(
                     return Err(error);
                 }
             };
+            form_index += 1;
             if stop_before(&form) {
                 stopped = true;
                 break;
@@ -1495,6 +1477,25 @@ fn read_lisp_file_bytes(
                 });
             interp.commit_entire_load_history(&types::Value::string(&load_file), current_load_list);
         }
+        // Fload's load_warn_unescaped_character_literals, once the forms
+        // have run and before the load's bindings unwind.
+        let warning_message = match (if outer_load_history.is_some() {
+            Ok(None)
+        } else {
+            unescaped_character_literal_warning(interp, &mut env)
+        })
+        .and_then(|warning| {
+            warning
+                .map(|warning| format_loading_warning(interp, &mut env, path, warning))
+                .transpose()
+        }) {
+            Ok(message) => message,
+            Err(error) => {
+                let _ = restore_special_dynamic_bindings(interp, &mut dynamic_restores, &mut env);
+                interp.set_current_load_file(previous);
+                return Err(error);
+            }
+        };
         if let Some(message) = warning_message {
             append_message(interp, &message);
         }

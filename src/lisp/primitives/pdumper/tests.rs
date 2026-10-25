@@ -1851,16 +1851,12 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
             (define-key m "\C-c" 'car)
             (setq zz-image-child m zz-image-parent p))
           t)"#;
-    let form = crate::lisp::reader::Reader::new(program)
-        .read()
-        .expect("setup parses")
-        .expect("setup has a form");
     // As in the ordinary reader, publish the names in the interpreter's
     // obarray before evaluation. That real image root owns the symbols
     // whose value cells hold the two maps.
-    let form = interp
-        .intern_read_symbols_in_value(form, &env)
-        .expect("setup names are interned in the image obarray");
+    let form = crate::lisp::read_next_load_form(&mut interp, program, &mut 0, &mut env)
+        .expect("setup parses")
+        .expect("setup has a form");
     interp.eval(&form, &mut env).expect("setup evaluates");
     interp.keyboard_input.recent_keys = vec![Value::Integer(97), Value::symbol("f1")];
     interp.keyboard_input.command_keys = vec![Value::Integer(97)];

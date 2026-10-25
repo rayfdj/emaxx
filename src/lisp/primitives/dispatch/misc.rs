@@ -448,8 +448,15 @@ define_dispatch!(
                     args.get(2).copied().unwrap_or(Value::Nil),
                     length,
                 )?;
-                let first = contents.byte_offset(start).expect("validated string start");
-                let last = contents.byte_offset(end).expect("validated string end");
+                // read_internal_start converts only START, through fns.c's
+                // string_char_to_byte cache; reading on from where the
+                // last read stopped scans only the characters between.
+                let first = contents.char_to_byte(start);
+                let last = if end == length {
+                    contents.bytes().len()
+                } else {
+                    contents.bytes_after_chars(first, end - start)
+                };
                 match read_encoded_form_in_env(
                     interp,
                     &contents.bytes()[first..last],
