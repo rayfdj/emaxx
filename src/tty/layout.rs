@@ -9,7 +9,7 @@
 //! GNU's does and a continued row's start column is the previous row's
 //! end.
 
-use super::{VisualLine, WrappedVisualSegment};
+use super::{ATTACHED_GLYPH, PADDING_GLYPH, VisualLine, WrappedVisualSegment, cell_count};
 
 /// Category bits a display character carries for
 /// `word-wrap-by-category' (kinsoku.el and characters.el).
@@ -49,14 +49,16 @@ pub(super) struct LineLayout {
 
 /// One display element: display indexes [START, END) produce their
 /// glyphs together, and a row edge inside them restarts the whole
-/// element on the next row (glyphless acronyms, hex codes).
+/// element on the next row (glyphless acronyms, hex codes, a wide
+/// character with its padding glyphs).
 #[derive(Clone, Copy)]
 struct Element {
     start: usize,
     end: usize,
 }
 
-fn elements_of(visual: &VisualLine, count: usize) -> Vec<Element> {
+fn elements_of(visual: &VisualLine, chars: &[char]) -> Vec<Element> {
+    let count = chars.len();
     let mut elements = Vec::with_capacity(count);
     let mut spans = visual.glyphless_spans.iter().peekable();
     let mut index = 0usize;
@@ -64,29 +66,73 @@ fn elements_of(visual: &VisualLine, count: usize) -> Vec<Element> {
         while spans.peek().is_some_and(|(_, to)| *to <= index) {
             spans.next();
         }
-        let end = match spans.peek() {
+        let mut end = match spans.peek() {
             Some(&&(from, to)) if from == index && to > from => to.min(count),
             _ => index + 1,
         };
+        // A glyph's padding glyphs and the characters composed into its
+        // cell belong to it.
+        loop {
+            match chars.get(end) {
+                Some(&PADDING_GLYPH) => end += 1,
+                Some(&ATTACHED_GLYPH) => end = (end + 2).min(count),
+                _ => break,
+            }
+        }
         elements.push(Element { start: index, end });
         index = end;
     }
     elements
 }
 
-/// Give the display indexes of ELEMENT the columns of the glyphs it
-/// produces from COLUMN on, unless an earlier row already showed them
-/// (an element restarted after a row edge keeps its first position).
+/// A glyph of a row: display characters [FROM, TO) drawn in one cell (a
+/// character and those attached to it, or a padding glyph), or one cell
+/// of a TAB's spaces.
+#[derive(Clone, Copy)]
+enum Cell {
+    Chars(usize, usize),
+    Space,
+}
+
+/// The glyphs ELEMENT's display characters take, one a cell.
+fn element_cells(chars: &[char], element: Element) -> Vec<Cell> {
+    let mut cells = Vec::new();
+    let mut index = element.start;
+    while index < element.end {
+        let start = index;
+        index += 1;
+        while index < element.end && chars[index] == ATTACHED_GLYPH {
+            index = (index + 2).min(element.end);
+        }
+        cells.push(Cell::Chars(start, index));
+    }
+    cells
+}
+
+/// Give the display indexes of ELEMENT the columns of the cells they
+/// draw in from COLUMN on, unless an earlier row already showed them (an
+/// element restarted after a row edge keeps its first position).
 fn record_element_columns(
     columns: &mut [usize],
     assigned: &mut [bool],
+    chars: &[char],
     element: Element,
     column: usize,
-    nglyphs: usize,
 ) {
-    for (offset, index) in (element.start..element.end).enumerate() {
+    let mut cell = 0usize;
+    let mut attaching = false;
+    for index in element.start..element.end {
+        if index > element.start {
+            if chars[index] == ATTACHED_GLYPH {
+                attaching = true;
+            } else if attaching {
+                attaching = false;
+            } else {
+                cell += 1;
+            }
+        }
         if !assigned[index] {
-            columns[index] = column + offset.min(nglyphs.saturating_sub(1));
+            columns[index] = column + cell;
             assigned[index] = true;
         }
     }
@@ -114,9 +160,22 @@ fn prefix_at(visual: &VisualLine, index: usize, continuation: bool) -> Option<St
 /// column holds the continuation or truncation glyph).  TRUNCATE lays
 /// the line out as one row running past the edge; the caller clips it.
 pub(super) fn lay_out_visual_line(visual: &VisualLine, cols: usize, truncate: bool) -> LineLayout {
+    lay_out(visual, cols, truncate, false)
+}
+
+/// VISUAL's rows as move_it_in_display_line_to walks them (vertical
+/// motion, `posn-at-point', recentering): the same as display_line's
+/// except that a wide character whose padding glyph does not fit goes
+/// back to a word-wrap point, where display_line instead fills the row
+/// with continuation glyphs.
+pub(super) fn lay_out_motion_line(visual: &VisualLine, cols: usize, truncate: bool) -> LineLayout {
+    lay_out(visual, cols, truncate, true)
+}
+
+fn lay_out(visual: &VisualLine, cols: usize, truncate: bool, motion: bool) -> LineLayout {
     let chars: Vec<char> = visual.text.chars().collect();
     let count = chars.len();
-    let elements = elements_of(visual, count);
+    let elements = elements_of(visual, &chars);
     let last_visible_x = cols.saturating_sub(1).max(1);
     let tab_width = visual.tab_width.max(1);
     let (word_wrap, by_category) = match visual.line_wrap {
@@ -161,7 +220,7 @@ pub(super) fn lay_out_visual_line(visual: &VisualLine, cols: usize, truncate: bo
         let start_index = elements.get(element).map_or(count, |e| e.start);
         let prefix = prefix_at(visual, start_index, continuation_width > 0);
         let mut text = prefix.clone().unwrap_or_default();
-        let prefix_cols = text.chars().count();
+        let prefix_cols = cell_count(&text);
         // it->wrap_prefix_width: current_x past a continuation row's
         // pushed prefix, gutter included.
         let wrap_prefix_width = if continuation_width > 0 && prefix.is_some() {
@@ -175,9 +234,8 @@ pub(super) fn lay_out_visual_line(visual: &VisualLine, cols: usize, truncate: bo
         let mut x = prefix_cols;
         let mut hpos = prefix_cols;
         let mut may_wrap = false;
-        // (element, x, glyphs in the row) of the last wrap point.
+        // (element, x, text length) of the last wrap point.
         let mut wrap_point: Option<(usize, usize, usize)> = None;
-        let mut glyph_count = prefix_cols;
         let mut continued_to: Option<usize> = None;
         let mut continued_glyph = false;
         let mut hard_newline = false;
@@ -194,11 +252,11 @@ pub(super) fn lay_out_visual_line(visual: &VisualLine, cols: usize, truncate: bo
             if word_wrap {
                 let next_may_wrap = can_wrap_after(&current);
                 if may_wrap && can_wrap_before(&current) {
-                    wrap_point = Some((element, x, glyph_count));
+                    wrap_point = Some((element, x, text.len()));
                 }
                 may_wrap = next_may_wrap;
             }
-            let glyphs: Vec<char> =
+            let glyphs: Vec<Cell> =
                 if chars[current.start] == '\t' && current.end == current.start + 1 {
                     // term.c produce_glyphs: current_x plus
                     // continuation_lines_width less the wrap-prefix's
@@ -210,15 +268,20 @@ pub(super) fn lay_out_visual_line(visual: &VisualLine, cols: usize, truncate: bo
                         x
                     };
                     let next_tab_x = (tab_x + tab_width) / tab_width * tab_width;
-                    vec![' '; next_tab_x - tab_x]
+                    vec![Cell::Space; next_tab_x - tab_x]
                 } else {
-                    chars[current.start..current.end].to_vec()
+                    element_cells(&chars, current)
                 };
             let nglyphs = glyphs.len();
             let column = row_start_column + x;
             let record_columns = |columns: &mut [usize], assigned: &mut [bool]| {
-                record_element_columns(columns, assigned, current, column, nglyphs);
+                record_element_columns(columns, assigned, &chars, current, column);
             };
+            let push_cell = |text: &mut String, glyph: &Cell| match *glyph {
+                Cell::Chars(from, to) => text.extend(&chars[from..to]),
+                Cell::Space => text.push(' '),
+            };
+            let text_before = text.len();
             let new_x = x + nglyphs;
             if nglyphs == 0 {
                 record_columns(&mut columns, &mut assigned);
@@ -227,8 +290,9 @@ pub(super) fn lay_out_visual_line(visual: &VisualLine, cols: usize, truncate: bo
             }
             if truncate || new_x < last_visible_x || (nglyphs == 1 && subject_to_prefix) {
                 record_columns(&mut columns, &mut assigned);
-                text.extend(glyphs);
-                glyph_count += nglyphs;
+                for glyph in &glyphs {
+                    push_cell(&mut text, glyph);
+                }
                 hpos += nglyphs;
                 x = new_x;
                 element += 1;
@@ -243,23 +307,35 @@ pub(super) fn lay_out_visual_line(visual: &VisualLine, cols: usize, truncate: bo
                 if glyph_new_x > last_visible_x
                     && (!subject_to_prefix || (i != 0 && glyph_x > last_visible_x))
                 {
+                    let padding =
+                        matches!(*glyph, Cell::Chars(from, _) if chars[from] == PADDING_GLYPH);
                     if hpos == 0 {
                         // The only glyph on the row: it stays, overflowing.
                         if i == 0 {
                             record_columns(&mut columns, &mut assigned);
                         }
-                        text.push(*glyph);
+                        push_cell(&mut text, glyph);
                         hpos += 1;
                         if i + 1 == nglyphs {
                             element += 1;
                         }
                         continued_to = Some(continuation_width + glyph_new_x);
-                    } else if let Some((wrap_element, wrap_x, wrap_glyphs)) = wrap_point {
+                    } else if padding && !(motion && wrap_point.is_some()) {
+                        // A padding glyph that doesn't fit: the whole
+                        // character moves down, and continuation glyphs
+                        // fill the rest of the row "like in 20.x" (this
+                        // precedes any word-wrap point).
+                        assigned[current.start..current.end].fill(false);
+                        text.truncate(text_before);
+                        text.extend(std::iter::repeat_n('\\', cols.saturating_sub(x)));
+                        continued_glyph = true;
+                        continued_to = Some(continuation_width + x);
+                    } else if let Some((wrap_element, wrap_x, wrap_text)) = wrap_point {
                         // back_to_wrap: the row ends before the wrap point,
                         // with no continuation glyph.
                         assigned[elements[wrap_element].start..count].fill(false);
                         element = wrap_element;
-                        text = text.chars().take(wrap_glyphs).collect();
+                        text.truncate(wrap_text);
                         continued_to = Some(continuation_width + wrap_x);
                     } else {
                         // The glyphs that fit stay; `\' fills the last column
@@ -277,13 +353,12 @@ pub(super) fn lay_out_visual_line(visual: &VisualLine, cols: usize, truncate: bo
                 if i == 0 {
                     record_columns(&mut columns, &mut assigned);
                 }
-                text.push(*glyph);
+                push_cell(&mut text, glyph);
                 hpos += 1;
             }
             if ended {
                 break;
             }
-            glyph_count += nglyphs;
             x = new_x;
             element += 1;
             subject_to_prefix = false;

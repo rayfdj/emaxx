@@ -1726,7 +1726,21 @@ define_dispatch!(
                     .ok_or_else(|| wrong_type_argument("terminal-live-p", *target))?;
                 let coding = checked_coding_name(interp, &args[0])?;
                 if name == "set-terminal-coding-system-internal" {
-                    terminal.borrow_mut().terminal_coding = coding;
+                    // tset_charset_list: the coding's charsets when it
+                    // encodes at all, else ASCII alone (nil sets up
+                    // `undecided', which converts nothing).
+                    let encodes = coding.as_deref().is_some_and(|coding| {
+                        !matches!(
+                            interp.coding_system_kind_name(coding).as_deref(),
+                            Some("no-conversion" | "raw-text" | "undecided")
+                        )
+                    });
+                    let mut terminal = terminal.borrow_mut();
+                    terminal.charset_list_coding = Some(match &coding {
+                        Some(coding) if encodes => coding.clone(),
+                        _ => "us-ascii".into(),
+                    });
+                    terminal.terminal_coding = coding;
                 } else {
                     terminal.borrow_mut().keyboard_coding =
                         coding.or_else(|| Some("no-conversion".into()));

@@ -11,6 +11,11 @@ pub(crate) struct TerminalState {
     pub kind: Option<String>,
     pub colors: i64,
     pub terminal_coding: Option<String>,
+    /// The coding system whose charsets t->charset_list holds: the
+    /// characters produce_glyphs draws rather than shows as glyphless.
+    /// None until `set-terminal-coding-system-internal' sets it, when
+    /// every character with a charset is drawn.
+    pub charset_list_coding: Option<String>,
     pub keyboard_coding: Option<String>,
     pub keyboard: std::collections::HashMap<String, Value, crate::lisp::primitives::FnvBuildHasher>,
     pub pending_input: Vec<u8>,
@@ -26,6 +31,7 @@ impl TerminalState {
             kind: None,
             colors: 0,
             terminal_coding: None,
+            charset_list_coding: None,
             keyboard_coding: Some("no-conversion".into()),
             keyboard: Default::default(),
             pending_input: Vec::new(),
@@ -529,6 +535,7 @@ impl Interpreter {
                     kind: Some(kind.into()),
                     colors: device.colors,
                     terminal_coding: None,
+                    charset_list_coding: None,
                     keyboard_coding: Some("no-conversion".into()),
                     keyboard,
                     pending_input: Vec::new(),

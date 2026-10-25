@@ -5674,10 +5674,84 @@ setup_process_coding_systems's check now refuses). A 13-form
   and the `write_region'/`append' tests passed after them), and 82 GNU
   test files (dired, edebug, every ERC file, flymake, python, replace,
   simple, so-long and others) as GNU (python-tests'
-  `python-nav-end-of-statement--infloop' fails in GNU too). Not covered:
-  double-width characters still take one cell, as before; a TAB inside
-  a `line-prefix' or `wrap-prefix' string still takes one cell (GNU
+  `python-nav-end-of-statement--infloop' fails in GNU too). Not covered
+  then (round 78 covers both): double-width characters took one cell; a
+  TAB inside a `line-prefix' or `wrap-prefix' string took one cell (GNU
   expands it from the row's start).
+
+- **Round 78: get_next_display_element's character translation and
+  term.c's glyph widths on terminal frames.** (1) Display text is now
+  one character a terminal cell: `translate' (window text, overlay and
+  display strings, prefixes, mode, header and tab lines, the echo area)
+  emits a wide character followed by PADDING_GLYPH cells (append_glyph's
+  padding_p glyphs; `char-width-table', sanitized, gives the width) and a
+  zero-width character as ATTACHED_GLYPH plus the character, drawn in the
+  cell before it (the terminal composition compose-gstring-for-terminal
+  makes; with no base it follows a space, and with
+  `auto-composition-mode' off it produces no glyph). PaintRow keeps each
+  cell's attached characters, never prints padding, and a blit that cuts
+  a wide character blanks its remains. The order is GNU's: a display-table
+  vector, an explicit `glyphless-char-display' method, the escape
+  translations, then the no-font method for a character outside the
+  terminal's charset list. (2) Escape translations: a control character
+  shows as `^C' under the buffer's `ctl-arrow' (else `\003'), DEL as `^?',
+  a newline only in mode lines; a raw byte as `\200' (`\x80' under
+  `display-raw-bytes-as-hex'); a character outside `printable-chars' (C1
+  controls) as its octal code; under `nobreak-char-display' t a non-ASCII
+  space (Zs) or soft/non-breaking hyphen keeps its glyph (or ` '/`-' under
+  `nobreak-char-ascii-display') in `nobreak-space'/`nobreak-hyphen', and
+  under another non-nil value shows the escape glyph and ` ' or `-'.
+  Escape glyphs take `escape-glyph' or the display table's escape/control
+  glyph (extra slots 2 and 3) with its face; each glyph is its own
+  element, so `^A^B^' can end a row and `C' start the next as GNU does.
+  These variables are read buffer-locally, as redisplay sees them. (3)
+  Layout: an element is a glyph with its padding and attached
+  characters; a padding glyph that does not fit fills the rest of the
+  row with `\' and moves the character down, before any word-wrap point
+  (GNU's word-wrapped CJK row ends `\\'), while vertical motion,
+  `posn-at-point' and recentering walk move_it_in_display_line_to's rows,
+  which go back to the wrap point instead; a truncated row's `$' replaces
+  from the first cell of the character in the last column (`$$' for a
+  wide one); hscroll skips cells; the echo area wraps a wide character
+  whole. A prefix string goes through the same translation, its TABs
+  measured from the row start and its faces moved to cells. (4) term.c's
+  charset list: a terminal's t->charset_list is nil (every character
+  drawn) until `set-terminal-coding-system-internal' sets it to the
+  coding's charsets, or ASCII when that coding converts nothing, and
+  output writes `?' for each cell (and composed character) the output
+  coding (the terminal's, else the safe coding) cannot encode: with LANG=C
+  GNU shows `??' for a CJK character, which Emaxx had drawn as a hex-code
+  glyphless escape. (5) Mode lines: CURRENT_MODE_LINE_ACTIVE_FACE_ID, so
+  a non-selected window's mode line is `mode-line-inactive' (all were
+  `mode-line'), the selected window's and, while the minibuffer is
+  selected, the window it was entered from `mode-line-active', all of
+  them when `mode-line-in-non-selected-windows' is nil; a wide character
+  cut at the edge leaves pad_mode_line's `-' (a space in header and tab
+  lines) in the row's base face. Probes in 80x34 tmux panes, UTF-8 and
+  LANG=C: wide characters at the continuation edge, after 79 and 77
+  columns, under `word-wrap' (CJK words and Japanese with no spaces), a
+  line of 30 CJK characters, TABs after them, combining marks after a
+  base, a CJK character and at line start, truncated lines with CJK at
+  the edge and `$$', hscroll into CJK text, a split frame with a CJK
+  buffer name cut in the mode line, a CJK `line-prefix' with a TAB, faces
+  over CJK, an echo message wrapping CJK, and every control, raw-byte,
+  C1, non-ASCII space and hyphen, and zero-width case under both
+  `ctl-arrow' values and `nobreak-char-display' t and 1, give GNU's
+  screen (with SGR attributes), cursor, `vertical-motion' rows,
+  `count-screen-lines', `window-end' and `posn-at-point'; round 77's wrap,
+  prefix, truncation, motion and TAB probes are unchanged. Not covered:
+  `posn-at-point' of a position after a wide character whose padding
+  ends exactly at a truncated row's last column reports GNU's (80 . 1)
+  only through posn-at-x-y's coordinate classification, which Emaxx
+  clamps to (79 . 0); compositions beyond base plus zero-width marks
+  (composition-function-table rules, grapheme clusters, point
+  adjustment) are not consulted; `format-mode-line' still ignores FACE,
+  WINDOW and BUFFER (GNU formats in WINDOW's buffer and keeps faces).
+  Local validation: the full gate, 3,207 passed across its ten groups
+  with the documented local skips (the tty group, 68, includes the new
+  continuation-TAB, translation and padding-fill tests), and 81 GNU test
+  files (dired, edebug, every ERC file, flymake, python, replace,
+  simple, so-long and others) as GNU.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -6333,7 +6407,9 @@ frozen failed only GNU's known `eglot-test-rust-completion-exit-function`
 oracle flake (7,669 passed, 1 unexpected), and its rerun passed (run
 40171630795, attempt 2).
 **On `b8c4e84`** (round 76): full Rust gate passed (run 40177432296),
-frozen passed on its first attempt (run 40177433903). Locally the gate
+frozen passed on its first attempt (run 40177433903).
+**On `0cde30d`** (round 77): full Rust gate passed (run 40188636495),
+frozen passed on its first attempt (run 40188638449). Locally the gate
 (all groups, gate profile, `LANG=C LC_ALL=C`, the known as-root and
 image tests skipped) passed 3,202 of 3,202 before the
 `accept-process-output` grace fix, after which the 101 process tests and
