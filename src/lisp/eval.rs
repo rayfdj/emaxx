@@ -3855,9 +3855,10 @@ impl Interpreter {
     /// the type index and the id allocator ahead of it.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn install_record(&mut self, mut state: RecordState) -> RecordRef {
-        let index = self.record_index_for(state.id);
-        let previous_type =
-            self.records[index].and_then(|record| record.symbol_type_name().map(str::to_owned));
+        let previous_type = self
+            .records
+            .get(&state.id)
+            .and_then(|record| record.symbol_type_name().map(str::to_owned));
         if let Some(type_name) = previous_type
             && let Some(ids) = self.record_ids_by_type_index.get_mut(&type_name)
         {
@@ -3871,21 +3872,10 @@ impl Interpreter {
         }
         self.next_record_id = self.next_record_id.max(state.id + 1);
         state.owner = self.record_owner;
+        let id = state.id;
         let record = RecordRef::allocate(state);
-        self.records[index] = Some(record);
+        self.records.insert(id, record);
         record
-    }
-
-    /// The registry is indexed by id (`find_record'): the slot for ID,
-    /// with any gap below it left empty, as the image installs records
-    /// in image order and a remembered next id can exceed the records
-    /// the image carried.
-    pub(crate) fn record_index_for(&mut self, id: u64) -> usize {
-        let index = usize::try_from(id - 1).expect("record id fits");
-        if self.records.len() <= index {
-            self.records.resize(index + 1, None);
-        }
-        index
     }
 
     /// The record ID names in this state's id space, if the sweeps have
@@ -3893,8 +3883,7 @@ impl Interpreter {
     /// records), and a freed record's slot is cleared after the sweep
     /// (`purge_freed_records').
     pub(crate) fn record_ref(&self, id: u64) -> Option<RecordRef> {
-        let index = usize::try_from(id.checked_sub(1)?).ok()?;
-        self.records.get(index).copied().flatten()
+        self.records.get(&id).copied()
     }
 
     /// The record ID names, as a value: for the side tables that still
@@ -3920,15 +3909,12 @@ impl Interpreter {
                 continue;
             }
             let id = record.id;
-            let Some(index) = usize::try_from(id - 1).ok() else {
-                continue;
-            };
             // The registry names the freed cell under this id, or it names
             // the record an image load put in its place (whose side tables
             // are its own): only the former leaves.
-            match self.records.get_mut(index) {
-                Some(slot) if slot.is_some_and(|held| held.identity() == record.identity) => {
-                    *slot = None;
+            match self.records.get(&id) {
+                Some(held) if held.identity() == record.identity => {
+                    self.records.remove(&id);
                 }
                 _ => continue,
             }
@@ -4667,8 +4653,7 @@ impl Interpreter {
         debug_assert_eq!(
             obarrays,
             self.records
-                .iter()
-                .flatten()
+                .values()
                 .filter(|record| record.kind == RecordKind::Obarray)
                 .count(),
             "an obarray-kind record is outside the obarray and abbrev-table types"
@@ -4853,13 +4838,11 @@ impl Interpreter {
             for program in clone.ccl_programs.iter_mut().flatten() {
                 program.1 = c.copy(&program.1.clone());
             }
-            for slot in clone.records.iter_mut() {
-                if let Some(record) = *slot {
-                    let Kind::Record(copied) = c.copy(&Value::Record(record)).kind() else {
-                        unreachable!("a record copies to a record")
-                    };
-                    *slot = Some(copied);
-                }
+            for slot in clone.records.values_mut() {
+                let Kind::Record(copied) = c.copy(&Value::Record(*slot)).kind() else {
+                    unreachable!("a record copies to a record")
+                };
+                *slot = copied;
             }
             for event in &mut clone.keyboard_input.command_keys {
                 *event = c.copy(event);
@@ -5416,8 +5399,10 @@ pub struct InterpreterState {
     buffer_case_tables: Vec<(u64, coding::CaseTables)>,
     /// Allocated record objects.
     /// The records by id (`find_record'), a registry and not a root:
-    /// a record the sweep frees leaves it (`purge_freed_records').
-    records: Vec<Option<RecordRef>>,
+    /// a record the sweep frees leaves it (`purge_freed_records').  Ids
+    /// are sparse (an image's records keep the ids of the dumping
+    /// process), so the registry holds only the records.
+    records: std::collections::BTreeMap<u64, RecordRef>,
     /// This state's id space, for the records' `owner'.
     record_owner: u32,
     /// Host pseudovector IDs grouped by their fixed type tags, principally
@@ -5737,6 +5722,22 @@ impl Interpreter {
     }
 
     pub fn new() -> Self {
+        Self::construct(false)
+    }
+
+    /// The state a process that loads an image starts from: emacs.c:main
+    /// runs the syms_of_* functions only `if (!initialized)', since the
+    /// dump's symbols carry the subrs, DEFSYMs and DEFVAR values they make.
+    /// The image's symbols are installed whole (value, flags, function cell
+    /// and plist), so the definitions only an image overwrites are left
+    /// out; everything else -- this process's environment, terminal, frame
+    /// and the Rust-side tables -- is made as `new' makes it.  A process
+    /// whose image does not load starts again from `new'.
+    pub(crate) fn for_image() -> Self {
+        Self::construct(true)
+    }
+
+    fn construct(image: bool) -> Self {
         // Each editor owns the symbols whose fields it will initialize.
         // Select once before constructing any Lisp object; the public entry
         // scope restores its caller on exit. Lisp thread state transfers do
@@ -6195,7 +6196,10 @@ impl Interpreter {
             standard_category_table_id: None,
             standard_case_tables: None,
             buffer_case_tables: Vec::new(),
-            records: vec![Some(main_thread), Some(standard_obarray)],
+            records: std::collections::BTreeMap::from([
+                (main_thread_id, main_thread),
+                (standard_obarray_id, standard_obarray),
+            ]),
             record_owner,
             record_ids_by_type_index: [
                 ("thread".into(), BTreeSet::from([main_thread_id])),
@@ -6725,22 +6729,25 @@ impl Interpreter {
         // The DEFVAR_* slots of the contracted oracle build whose C owners
         // have no Emaxx counterpart (X11, Cairo, font tables, text
         // conversion): bind each as the oracle binds it at `-Q --batch',
-        // read back from the oracle's own printed value.
-        for (name, printed) in crate::lisp::primitives::gnu_c_forwarded_defaults() {
-            if interp.default_value(name).is_some() {
-                continue;
+        // read back from the oracle's own printed value.  An image's
+        // symbols hold the values these were given.
+        if !image {
+            for (name, printed) in crate::lisp::primitives::gnu_c_forwarded_defaults() {
+                if interp.default_value(name).is_some() {
+                    continue;
+                }
+                let read = crate::lisp::primitives::call(
+                    &mut interp,
+                    "read-from-string",
+                    &[Value::string(printed)],
+                    &mut crate::lisp::types::Env::new(),
+                );
+                let value = match read.map(|v| v.kind()) {
+                    Ok(Kind::Cons(cell)) => cell.car.get(),
+                    _ => panic!("the oracle's printed default for `{name}' does not read back"),
+                };
+                interp.define_special_variable(name, value);
             }
-            let read = crate::lisp::primitives::call(
-                &mut interp,
-                "read-from-string",
-                &[Value::string(printed)],
-                &mut crate::lisp::types::Env::new(),
-            );
-            let value = match read.map(|v| v.kind()) {
-                Ok(Kind::Cons(cell)) => cell.car.get(),
-                _ => panic!("the oracle's printed default for `{name}' does not read back"),
-            };
-            interp.define_special_variable(name, value);
         }
         interp.mark_forwarded_variables();
         // minibuf.c's history controls, read by subr.el's `add-to-history'.
@@ -7615,21 +7622,50 @@ impl Interpreter {
         // base struct exists (keymaps, tables, and window objects).  Reconcile
         // the completed image through the same registry before exposing it;
         // later user `setq' calls are intentionally outside this boundary.
-        let completed_startup_globals = interp
+        // syms_of_*: the DEFVARs, DEFSUBRs and DEFSYMs, which a loaded
+        // image's symbols carry (`for_image').
+        if !image {
+            interp.define_static_symbols();
+        }
+        // editfns.c:init_editfns: emacs.c:main computes the user names
+        // once in every process.
+        interp.init_editfns();
+        // data.c, buffer.c and font.c call make_symbol_constant on these
+        // actual C-created objects. Reusing their names does not recreate
+        // either the constant bit or the dedicated C slot.
+        for name in [
+            "most-positive-fixnum",
+            "most-negative-fixnum",
+            "enable-multibyte-characters",
+            "font-weight-table",
+            "font-slant-table",
+            "font-width-table",
+        ] {
+            SymbolName::intern_str(name).cell().set_constant(true);
+        }
+        crate::lisp::native_comp::initialize_runtime(&mut interp);
+        interp
+    }
+
+    /// The syms_of_* definitions an image's symbols carry: every global
+    /// made so far is special, each configured C primitive is in its
+    /// symbol's function cell, and every DEFSYM is interned.
+    fn define_static_symbols(&mut self) {
+        let completed_startup_globals = self
             .globals
             .iter()
             .map(|(name, _)| name.as_str().to_owned())
             .collect::<Vec<_>>();
         for name in completed_startup_globals {
-            interp.mark_special_variable(&name);
+            self.mark_special_variable(&name);
         }
         // lread.c:defsubr interns each configured C primitive and stores
         // its actual subr in the function cell. The same registration
         // objects define availability, identity and the native ABI.
         for subr in crate::lisp::native_comp::abi::native_subrs() {
-            interp.intern_symbol_name(subr.name);
+            self.intern_symbol_name(subr.name);
             let symbol = SymbolName::intern_str(subr.name);
-            interp.globals.set_function(
+            self.globals.set_function(
                 &symbol,
                 Some(Value::BuiltinFunc(
                     crate::lisp::types::BuiltinRef::from_subr(subr),
@@ -7669,28 +7705,10 @@ impl Interpreter {
                     .split(", ")
                     .any(|file| compiled_files.contains(file))
                 {
-                    interp.intern_symbol_name(defsym.name);
+                    self.intern_symbol_name(defsym.name);
                 }
             }
         }
-        // editfns.c:init_editfns: emacs.c:main computes the user names
-        // once in every process.
-        interp.init_editfns();
-        // data.c, buffer.c and font.c call make_symbol_constant on these
-        // actual C-created objects. Reusing their names does not recreate
-        // either the constant bit or the dedicated C slot.
-        for name in [
-            "most-positive-fixnum",
-            "most-negative-fixnum",
-            "enable-multibyte-characters",
-            "font-weight-table",
-            "font-slant-table",
-            "font-width-table",
-        ] {
-            SymbolName::intern_str(name).cell().set_constant(true);
-        }
-        crate::lisp::native_comp::initialize_runtime(&mut interp);
-        interp
     }
 
     pub fn current_global_map_value(&self) -> Value {

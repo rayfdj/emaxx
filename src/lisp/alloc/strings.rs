@@ -390,29 +390,7 @@ pub(crate) fn allocate_string<E>(
     if kind == StringAllocation::Ordinary && characters == 0 {
         return Ok(empty_string(multibyte));
     }
-    let head = FREE_LIST.load(Ordering::Relaxed);
-    let cell = if head.is_null() {
-        let next = BUMP_NEXT.load(Ordering::Relaxed);
-        if next < BUMP_END.load(Ordering::Relaxed) {
-            BUMP_NEXT.store(next + STRING_CELL_SIZE, Ordering::Relaxed);
-            next as *mut StringCell
-        } else {
-            let block = new_block(BlockKind::String);
-            BUMP_NEXT.store(block + STRING_CELL_SIZE, Ordering::Relaxed);
-            BUMP_END.store(
-                block + STRINGS_PER_BLOCK * STRING_CELL_SIZE,
-                Ordering::Relaxed,
-            );
-            block as *mut StringCell
-        }
-    } else {
-        // SAFETY: a free cell's first word is the free list link.
-        FREE_LIST.store(
-            unsafe { head.cast::<*mut StringCell>().read() },
-            Ordering::Relaxed,
-        );
-        head
-    };
+    let cell = take_cell();
     // SAFETY: initialize a valid empty header before exposing its final
     // address. The construction guard also rejects reentrant collection.
     unsafe { cell.write(StringCell::new(SharedStringState::empty(multibyte), false)) };
@@ -456,6 +434,64 @@ pub(crate) fn allocate_string<E>(
     drop(state);
     std::mem::forget(construction);
     Ok(handle)
+}
+
+/// A free cell: the free list's head, else the next cell of the newest
+/// block.
+#[inline(always)]
+fn take_cell() -> *mut StringCell {
+    let head = FREE_LIST.load(Ordering::Relaxed);
+    if head.is_null() {
+        let next = BUMP_NEXT.load(Ordering::Relaxed);
+        if next < BUMP_END.load(Ordering::Relaxed) {
+            BUMP_NEXT.store(next + STRING_CELL_SIZE, Ordering::Relaxed);
+            next as *mut StringCell
+        } else {
+            let block = new_block(BlockKind::String);
+            BUMP_NEXT.store(block + STRING_CELL_SIZE, Ordering::Relaxed);
+            BUMP_END.store(
+                block + STRINGS_PER_BLOCK * STRING_CELL_SIZE,
+                Ordering::Relaxed,
+            );
+            block as *mut StringCell
+        }
+    } else {
+        // SAFETY: a free cell's first word is the free list link.
+        FREE_LIST.store(
+            unsafe { head.cast::<*mut StringCell>().read() },
+            Ordering::Relaxed,
+        );
+        head
+    }
+}
+
+/// `allocate_string' of a restored string whose header is complete at
+/// birth: pdumper's string, its data where the image keeps it.  No
+/// initializer runs, so no construction guard is taken.
+///
+/// # Safety
+/// STATE's data is valid for its bytes for as long as the string lives,
+/// and nothing else owns it.
+pub(crate) unsafe fn allocate_restored_string(state: SharedStringState) -> StringObjectRef {
+    let bytes = state.storage_bytes();
+    let spans = state.props.len();
+    let cell = take_cell();
+    // SAFETY: a free cell, initialized whole before its handle is made.
+    let handle = unsafe {
+        cell.write(StringCell::new(state, false));
+        StringObjectRef::from_raw(cell)
+    };
+    super::super::types::note_string_allocation(bytes);
+    LIVE_STRINGS.store(LIVE_STRINGS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+    LIVE_BYTES.store(
+        LIVE_BYTES.load(Ordering::Relaxed) + bytes,
+        Ordering::Relaxed,
+    );
+    LIVE_SPANS.store(
+        LIVE_SPANS.load(Ordering::Relaxed) + spans,
+        Ordering::Relaxed,
+    );
+    handle
 }
 
 /// # Safety

@@ -207,6 +207,13 @@ enum ColdOp {
     Bignum(Value),
     /// COLD_OP_BUFFER: a buffer's text.
     Buffer(Value),
+    /// COLD_OP_NATIVE_SUBR: a native subr's `symbol_name' and
+    /// `native_c_name', the record's words at NAMES that point at them.
+    NativeSubr {
+        names: u32,
+        name: String,
+        c_name: String,
+    },
 }
 
 enum EmacsRelocPayload {
@@ -1453,25 +1460,20 @@ impl DumpContext {
         for (index, slot) in slots.iter().enumerate() {
             self.field_lv(start, &mut words, index + 4, slot, WEIGHT_STRONG);
         }
+        // dump_subr's `dump_field_fixup_later' of both names, which
+        // dump_cold_native_subr writes as C strings.
         let name_index = slots.len() + 4;
-        self.field_lv(
-            start,
-            &mut words,
-            name_index,
-            &Value::string(name),
-            WEIGHT_STRONG,
-        );
-        self.field_lv(
-            start,
-            &mut words,
-            name_index + 1,
-            &Value::string(c_name),
-            WEIGHT_STRONG,
-        );
+        words[name_index] = FIXUP_PLACEHOLDER;
+        words[name_index + 1] = FIXUP_PLACEHOLDER;
         let offset = self.object_finish(&words)?;
         if self.flags.dump_object_contents {
             self.dump_relocs[VERY_LATE_RELOCS].push((offset, DumpRelocKind::NativeSubr, None));
         }
+        self.remember_cold_op(ColdOp::NativeSubr {
+            names: offset + (name_index * 8) as u32,
+            name: name.to_owned(),
+            c_name: c_name.to_owned(),
+        });
         Ok(offset)
     }
 
@@ -2090,6 +2092,11 @@ impl DumpContext {
                 }
                 ColdOp::Bignum(object) => self.dump_cold_bignum(&object)?,
                 ColdOp::Buffer(object) => self.dump_cold_buffer(interp, &object)?,
+                ColdOp::NativeSubr {
+                    names,
+                    name,
+                    c_name,
+                } => self.dump_cold_native_subr(names, &name, &c_name)?,
             }
         }
         self.flags = old_flags;
@@ -2153,6 +2160,25 @@ impl DumpContext {
         let end = entry + crate::lisp::alloc::string_data_size(bytes.len()) as u32;
         let padding = (end - self.offset) as usize;
         self.write(&[0; 2 * crate::lisp::alloc::STRING_DATA_ALIGNMENT][..padding])
+    }
+
+    /// dump_cold_native_subr: each name with its NUL, and the fixup that
+    /// points the record's word at it.
+    fn dump_cold_native_subr(
+        &mut self,
+        names: u32,
+        name: &str,
+        c_name: &str,
+    ) -> Result<(), DumpError> {
+        for (index, text) in [name, c_name].into_iter().enumerate() {
+            if text.as_bytes().contains(&0) {
+                return Err(LispError::Signal("NUL in a native function's name".into()).into());
+            }
+            self.remember_fixup_ptr_raw(names + 8 * index as u32, self.offset);
+            self.write(text.as_bytes())?;
+            self.write(&[0])?;
+        }
+        Ok(())
     }
 
     /// dump_cold_bignum: the limbs, least significant first.

@@ -5418,6 +5418,54 @@ setup_process_coding_systems's check now refuses). A 13-form
   editfns, casefiddle, chartab and cl-lib tests give GNU's results; the
   pdumper tests and the local gate pass (3,202 tests, the as-root and
   image exceptions below skipped).
+- **Round 74: the image's tables read at a fixed stride, image names as
+  C strings, a process that loads an image skips what the image defines.**
+  Startup (`-Q --batch --eval `(princ "x")'`) was 298M instructions (GNU
+  166M) and 0.076 s median against GNU's 0.056 s. Phases measured with
+  per-phase counters (callgrind dumps at each boundary): the table reads
+  28.5M, `Interpreter::new` 20.3M, building the image`s strings 31.3M,
+  its symbols, cons placeholders and vectors 45.6M, relocating fields
+  64M, native code 27M. Changes: (1) `ImageTable` is typed by its entry
+  length (`[[u8; 12]]` relocations, `[[u8; 8]]` object starts), so an
+  entry's word is one bounds check at a constant offset, not a multiply
+  by a run-time stride behind an assertion; the order check is one
+  branch-free pass with the failure located after; the rank index (a bit
+  a word, counts a block) is gone, a read past the cursor searching
+  outward from it in doubling steps; (2) a cons's two fields and a symbol
+  record's three are read by a const-length `field_array`, inlined, with
+  `immediate_value` inline and its error cold; (3) a dumped string is
+  made by `allocate_restored_string` (alloc.c`s allocate_string for a
+  header complete at birth, no initializer or construction guard), its
+  four header words read at once; (4) the 5,901 native subrs' names are
+  written as dump_cold_native_subr writes them: NUL-terminated bytes in
+  the cold section, the record's two words raw dump pointers to them
+  (they were two Lisp strings each, 11,802 objects), and the loaded
+  `Lisp_Subr` points at them (`set_image_names`, never freed), as a
+  dumped subr's `symbol_name` and `native_c_name` point into the dump; a
+  first version pointed at the old name strings' data, which a collection
+  of those unreferenced strings retires (the entry's first bytes take the
+  size), and the image round-trip tests caught the garbled name;
+  RELOC_NATIVE_SUBR's dlsym takes that C string and calls Fgethash and
+  Fputhash directly instead of by name;
+  (5) char-table and sub-char-table slots are stored at once with one
+  store count, and the 177,573 cons placeholders are made at once
+  (`allocate_nil_conses`: Fcons of nil and nil from the newest block's
+  untouched cells, a run at a time, allocation bits set a word at a
+  time); (6) the record registry is a `BTreeMap` by id (ids reach
+  190,000 for 800 records: the vector was 1.5 MB, zeroed); (7) emacs.c
+  runs syms_of_* only `if (!initialized)`: `Interpreter::for_image`
+  leaves out the oracle's printed C defaults read through the reader,
+  the mark-all-globals-special pass, the DEFSUBR loop and the DEFSYM
+  interning, all of which an image's symbols carry whole (value, flags,
+  function cell, plist); a process whose image does not load starts again
+  from `Interpreter::new`. A dump of all 18,003 symbols (flags, boundp,
+  fboundp, function type, plist length, value) is identical between the
+  two constructors in one binary except the allocation counters (2
+  conses, 2 strings) and timing values. Result: 221M instructions
+  (`Interpreter` construction 7.8M, tables 5.2M, native 24.4M), 0.068 s
+  median against GNU's 0.057 s (40 interleaved runs), 7,438 page faults
+  (GNU 5,614), RSS 72 MB (GNU 55 MB). The local gate passes (3,202
+  tests).
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -6063,7 +6111,9 @@ gate passed (run 40134441249), frozen passed on its first attempt (run
 frozen passed on its first attempt (run 40139905885).
 **On `cae8d39`** (round 72): full Rust gate passed (run 40146208215),
 frozen passed on its first attempt (run 40146209717).
-**On round 73's commit**: the full Rust gate and frozen runs are
+**On `caa70a2`** (round 73): full Rust gate passed (run 40154530346),
+frozen passed on its first attempt (run 40154532135).
+**On round 74's commit**: the full Rust gate and frozen runs are
 dispatched with it; their results go in the next round's record. Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that

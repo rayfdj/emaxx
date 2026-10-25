@@ -228,12 +228,24 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
+    #[inline]
     fn word(&self, offset: u32) -> Result<u64, LoadError> {
+        let [word] = self.words(offset)?;
+        Ok(word)
+    }
+
+    /// The N consecutive words at OFFSET.
+    #[inline]
+    fn words<const N: usize>(&self, offset: u32) -> Result<[u64; N], LoadError> {
         let start = offset as usize;
-        self.bytes
-            .get(start..start + 8)
-            .map(|slice| u64::from_le_bytes(slice.try_into().expect("eight bytes")))
-            .ok_or_else(|| LoadError::Error(format!("word at {offset} is outside the image")))
+        let Some(bytes) = self.bytes.get(start..start + 8 * N) else {
+            return Err(outside_image(offset));
+        };
+        let mut words = [0; N];
+        for (word, bytes) in words.iter_mut().zip(bytes.as_chunks::<8>().0) {
+            *word = u64::from_le_bytes(*bytes);
+        }
+        Ok(words)
     }
 
     fn u32(&self, offset: u32) -> Result<u32, LoadError> {
@@ -245,6 +257,11 @@ impl Reader<'_> {
                 LoadError::Error(format!("table entry at {offset} is outside the image"))
             })
     }
+}
+
+#[cold]
+fn outside_image(offset: u32) -> LoadError {
+    LoadError::Error(format!("word at {offset} is outside the image"))
 }
 
 /// The validation pdumper_load performs before the point of no return.
@@ -288,30 +305,17 @@ pub(crate) fn load_permanent_image(
     let reader = Reader {
         bytes: image.bytes(),
     };
-    let starts = ImageTable::sorted(
-        &reader,
-        header.object_starts,
-        TABLE_ENTRY_LEN,
-        "object start",
-    )?;
-    let relocs = |phase: usize, indexed| {
-        ImageTable::read(
-            &reader,
-            header.dump_relocs[phase],
-            RELOC_ENTRY_LEN,
-            "relocation",
-            indexed,
-        )
-    };
+    let starts = StartTable::read(&reader, header.object_starts, "object start")?;
+    let relocs = |phase: usize| RelocTable::read(&reader, header.dump_relocs[phase], "relocation");
     let mut loader = Loader {
         objects: object_slots(starts.len()),
         starts,
-        relocs: relocs(EARLY_RELOCS, true)?,
+        relocs: relocs(EARLY_RELOCS)?,
         reloc_cursor: 0,
         reloc_last: 0,
         reloc_next: 0,
-        late_relocs: relocs(LATE_RELOCS, false)?,
-        very_late_relocs: relocs(VERY_LATE_RELOCS, false)?,
+        late_relocs: relocs(LATE_RELOCS)?,
+        very_late_relocs: relocs(VERY_LATE_RELOCS)?,
         subrs: HashMap::default(),
         reader,
         image,
@@ -335,129 +339,83 @@ fn object_slots(n: usize) -> Vec<Value> {
     }
 }
 
-/// One of the image's tables of entries sorted by offset -- the object
-/// starts, a phase's dump relocations -- read where the image maps it, as
-/// pdumper.c reads its tables.  The early relocations' entry at an offset
-/// is found through a rank index over the offsets: a bit an aligned image
-/// word and the count of entries before each 64-word block, so a lookup
-/// is a bit test and a population count.  The other tables are searched.
-struct ImageTable<'a> {
-    entries: &'a [u8],
-    entry_len: usize,
-    len: usize,
-    bits: Vec<u64>,
-    before: Vec<u32>,
+/// One of the image's tables of LEN-byte entries sorted by offset -- the
+/// object starts, a phase's dump relocations -- read where the image maps
+/// it, as pdumper.c reads its tables.  An entry is found by searching the
+/// offsets, from a known position outward when there is one: the loader
+/// reads fields in ascending order, so the entry it wants next is the
+/// cursor's or a few after it.
+struct ImageTable<'a, const LEN: usize> {
+    entries: &'a [[u8; LEN]],
 }
 
-impl<'a> ImageTable<'a> {
-    fn sorted(
-        reader: &Reader<'a>,
-        locator: TableLocator,
-        entry_len: usize,
-        what: &str,
-    ) -> Result<Self, LoadError> {
-        Self::read(reader, locator, entry_len, what, false)
-    }
+/// The object-start table: an object's offset and type code.
+type StartTable<'a> = ImageTable<'a, TABLE_ENTRY_LEN>;
+/// A relocation table: the field's offset, the relocation's code and the
+/// number of the object it names.
+type RelocTable<'a> = ImageTable<'a, RELOC_ENTRY_LEN>;
 
-    fn read(
-        reader: &Reader<'a>,
-        locator: TableLocator,
-        entry_len: usize,
-        what: &str,
-        indexed: bool,
-    ) -> Result<Self, LoadError> {
+impl<'a, const LEN: usize> ImageTable<'a, LEN> {
+    fn read(reader: &Reader<'a>, locator: TableLocator, what: &str) -> Result<Self, LoadError> {
         let len = locator.nr_entries as usize;
         let start = locator.offset as usize;
         let entries = start
-            .checked_add(len * entry_len)
+            .checked_add(len * LEN)
             .and_then(|end| reader.bytes.get(start..end))
-            .ok_or_else(|| LoadError::Error(format!("the {what} table is outside the image")))?;
-        let mut table = Self {
-            entries,
-            entry_len,
-            len,
-            bits: Vec::new(),
-            before: Vec::new(),
-        };
-        if indexed && let Some(last) = len.checked_sub(1) {
-            let blocks = table.offset(last) as usize / DUMP_ALIGNMENT / 64 + 1;
-            table.bits = vec![0; blocks];
-            table.before = vec![0; blocks];
+            .ok_or_else(|| LoadError::Error(format!("the {what} table is outside the image")))?
+            .as_chunks::<LEN>()
+            .0;
+        let table = Self { entries };
+        // Each key is an aligned image word, once: a second entry for the
+        // same word would be lost.  One pass checks every entry, and a
+        // failure is located after.
+        let mut previous = -1_i64;
+        let mut misplaced = false;
+        for entry in entries {
+            let offset = entry_word(entry, 0);
+            misplaced |=
+                !(offset as usize).is_multiple_of(DUMP_ALIGNMENT) || i64::from(offset) <= previous;
+            previous = i64::from(offset);
         }
-        let mut block = 0;
-        let mut previous = None;
-        for index in 0..len {
-            let offset = table.offset(index);
-            // Each key is an aligned image word, once: a second entry
-            // for the same word would be lost.
-            if !(offset as usize).is_multiple_of(DUMP_ALIGNMENT)
-                || previous.is_some_and(|last| last >= offset)
-            {
-                return Err(LoadError::Error(format!(
-                    "{what} table entry {index} at {offset} is unaligned or out of order"
-                )));
-            }
-            previous = Some(offset);
-            if indexed {
-                let slot = offset as usize / DUMP_ALIGNMENT;
-                while block <= slot / 64 {
-                    table.before[block] = index as u32;
-                    block += 1;
-                }
-                table.bits[slot / 64] |= 1 << (slot % 64);
-            }
+        if misplaced {
+            let index = (0..len)
+                .find(|&index| {
+                    let offset = table.offset(index);
+                    !(offset as usize).is_multiple_of(DUMP_ALIGNMENT)
+                        || index > 0 && table.offset(index - 1) >= offset
+                })
+                .unwrap_or_default();
+            return Err(LoadError::Error(format!(
+                "{what} table entry {index} at {} is unaligned or out of order",
+                table.offset(index)
+            )));
         }
         Ok(table)
     }
 
+    #[inline(always)]
     fn len(&self) -> usize {
-        self.len
+        self.entries.len()
     }
 
     /// The offset of entry INDEX, which is below `len'.
     #[inline(always)]
     fn offset(&self, index: usize) -> u32 {
-        self.word(index, 0)
+        entry_word(&self.entries[index], 0)
     }
 
     /// The offset of entry INDEX, u32::MAX past the last.
     #[inline(always)]
     fn offset_or_end(&self, index: usize) -> u32 {
-        if index < self.len {
-            self.offset(index)
-        } else {
-            u32::MAX
-        }
+        self.entries
+            .get(index)
+            .map_or(u32::MAX, |entry| entry_word(entry, 0))
     }
 
     /// The code of entry INDEX, which is below `len'.
     #[inline(always)]
     fn code(&self, index: usize) -> u32 {
-        self.word(index, 4)
-    }
-
-    /// The object number of relocation INDEX, which is below `len'.
-    #[inline(always)]
-    fn target(&self, index: usize) -> u32 {
-        self.word(index, 8)
-    }
-
-    #[inline(always)]
-    fn word(&self, index: usize, at: usize) -> u32 {
-        assert!(
-            index < self.len && at + 4 <= self.entry_len,
-            "table entry {index} of {}",
-            self.len
-        );
-        // SAFETY: the table holds `len' entries of `entry_len' bytes, the
-        // index is one of them, and the word is inside the entry.
-        u32::from_le_bytes(unsafe {
-            self.entries
-                .as_ptr()
-                .add(index * self.entry_len + at)
-                .cast::<[u8; 4]>()
-                .read()
-        })
+        entry_word(&self.entries[index], 4)
     }
 
     /// The relocation at OFFSET.
@@ -465,57 +423,71 @@ impl<'a> ImageTable<'a> {
         DumpRelocKind::from_u32(self.code(self.find(offset)?))
     }
 
-    /// The number of entries before OFFSET.
-    #[inline]
-    fn rank(&self, offset: u32) -> usize {
-        let slot = (offset as usize).div_ceil(DUMP_ALIGNMENT);
-        if self.bits.is_empty() {
-            let (mut low, mut high) = (0, self.len);
-            while low < high {
-                let middle = (low + high) / 2;
-                if self.offset(middle) < offset {
-                    low = middle + 1;
-                } else {
-                    high = middle;
+    /// The number of entries before OFFSET, searched outward from entry
+    /// HINT in steps that double, then within the last step.
+    fn rank_from(&self, hint: usize, offset: u32) -> usize {
+        let len = self.len();
+        let hint = hint.min(len);
+        let (mut low, mut high) = (0, len);
+        if hint < len && self.offset(hint) < offset {
+            low = hint + 1;
+            let mut step = 1;
+            while hint + step < len {
+                if self.offset(hint + step) >= offset {
+                    high = hint + step;
+                    break;
                 }
+                low = hint + step + 1;
+                step *= 2;
             }
-            return low;
-        }
-        match self.bits.get(slot / 64) {
-            None => self.len,
-            Some(&word) => {
-                self.before[slot / 64] as usize
-                    + (word & ((1_u64 << (slot % 64)) - 1)).count_ones() as usize
+        } else {
+            high = hint;
+            let mut step = 1;
+            while step <= hint {
+                if self.offset(hint - step) < offset {
+                    low = hint - step + 1;
+                    break;
+                }
+                high = hint - step;
+                step *= 2;
             }
         }
+        low + self.entries[low..high].partition_point(|entry| entry_word(entry, 0) < offset)
     }
 
-    /// The index of the entry at OFFSET: its bit, and the entries before.
-    #[inline]
+    /// The index of the entry at OFFSET.
     fn find(&self, offset: u32) -> Option<usize> {
-        if self.bits.is_empty() {
-            let index = self.rank(offset);
-            return (index < self.len && self.offset(index) == offset).then_some(index);
-        }
-        let slot = offset as usize / DUMP_ALIGNMENT;
-        let word = *self.bits.get(slot / 64)?;
-        let bit = 1_u64 << (slot % 64);
-        if word & bit == 0 || !(offset as usize).is_multiple_of(DUMP_ALIGNMENT) {
-            return None;
-        }
-        Some(self.before[slot / 64] as usize + (word & (bit - 1)).count_ones() as usize)
+        let index = self
+            .entries
+            .partition_point(|entry| entry_word(entry, 0) < offset);
+        (index < self.len() && self.offset(index) == offset).then_some(index)
     }
+}
+
+impl RelocTable<'_> {
+    /// The object number of relocation INDEX, which is below `len'.
+    #[inline(always)]
+    fn target(&self, index: usize) -> u32 {
+        entry_word(&self.entries[index], 8)
+    }
+}
+
+/// The little-endian word AT bytes into ENTRY.
+#[inline(always)]
+fn entry_word<const LEN: usize>(entry: &[u8; LEN], at: usize) -> u32 {
+    let word: [u8; 4] = entry[at..at + 4].try_into().expect("a word of the entry");
+    u32::from_le_bytes(word)
 }
 
 struct Loader<'a> {
     reader: Reader<'a>,
     image: PermanentImage,
     /// The object-start table: an object's number is its entry's index.
-    starts: ImageTable<'a>,
+    starts: StartTable<'a>,
     /// The reconstructed objects by number; `nil' for an entry that stands
     /// for no Lisp object (text properties, built-in cells).
     objects: Vec<Value>,
-    relocs: ImageTable<'a>,
+    relocs: RelocTable<'a>,
     /// The relocations' cursor: the number of entries at or before the
     /// field read last (`reloc_last') and the offset of the next one
     /// (`reloc_next', u32::MAX past the end).  Fields are read in
@@ -525,10 +497,14 @@ struct Loader<'a> {
     reloc_cursor: usize,
     reloc_last: u32,
     reloc_next: u32,
-    late_relocs: ImageTable<'a>,
-    very_late_relocs: ImageTable<'a>,
+    late_relocs: RelocTable<'a>,
+    very_late_relocs: RelocTable<'a>,
     /// The subr each copied record of the Emacs image names.
-    subrs: HashMap<u32, crate::lisp::native_comp::abi::BuiltinRef>,
+    subrs: HashMap<
+        u32,
+        crate::lisp::native_comp::abi::BuiltinRef,
+        crate::lisp::types::IdentityBuildHasher,
+    >,
     interp: &'a mut Interpreter,
 }
 
@@ -570,7 +546,20 @@ impl Loader<'_> {
         }
 
         // Phase 2: objects whose construction needs a name, and the
-        // containers as placeholders.
+        // containers as placeholders.  The conses first, all at once.
+        let objects = &mut self.objects;
+        let mut conses = kinds
+            .iter()
+            .enumerate()
+            .filter(|&(_, &kind)| kind == DumpType::Cons)
+            .map(|(number, _)| number);
+        crate::lisp::alloc::allocate_nil_conses(
+            kinds.iter().filter(|&&kind| kind == DumpType::Cons).count(),
+            |cell| {
+                let number = conses.next().expect("an object for each cons");
+                objects[number] = Value::Cons(cell);
+            },
+        );
         SymbolName::reserve_interned(
             kinds
                 .iter()
@@ -597,9 +586,6 @@ impl Loader<'_> {
                     let symbol = self.symbol_of_record(offset, flags, name)?;
                     self.objects[number] = Value::Symbol(symbol);
                     symbol_records.push((offset, symbol, flags));
-                }
-                DumpType::Cons => {
-                    self.objects[number] = Value::cons(Value::Nil, Value::Nil);
                 }
                 DumpType::Closure => {
                     let size = self.reader.word(offset)? as usize;
@@ -796,15 +782,14 @@ impl Loader<'_> {
             let offset = self.starts.offset(number);
             match kind {
                 DumpType::Cons => {
-                    let mut pair = [Value::Nil; 2];
-                    self.fields(offset, &mut pair)?;
-                    let Kind::Cons(cell) = self.objects[number].kind() else {
-                        unreachable!("a cons placeholder was installed in phase 2")
-                    };
+                    let [car, cdr] = self.field_array(offset)?;
+                    let cell = self.objects[number]
+                        .cons_ref()
+                        .expect("a cons placeholder was installed in phase 2");
                     // The placeholder's relocated words, stored as
                     // pdumper.c stores them: nothing has seen the cell.
-                    cell.car.set(pair[0]);
-                    cell.cdr.set(pair[1]);
+                    cell.car.set(car);
+                    cell.cdr.set(cdr);
                 }
                 DumpType::Closure => {
                     let Kind::Closure(closure) = self.objects[number].kind() else {
@@ -881,22 +866,11 @@ impl Loader<'_> {
         let mut native_functions = Vec::new();
         for (offset, function, nslots) in native_function_records {
             let names_at = offset + 32 + 8 * nslots as u32;
-            let name = self.value_at(names_at)?;
-            let c_name = self.value_at(names_at + 8)?;
-            let text = |value: Value, what: &str| {
-                let text = string_like(&value)
-                    .map(|string| string.text)
-                    .ok_or_else(|| {
-                        LoadError::Error(format!("native function {what} is not a string"))
-                    })?;
-                std::ffi::CString::new(text)
-                    .map_err(|_| LoadError::Error(format!("NUL in native function {what}")))
-            };
-            let name = text(name, "name")?;
-            let c_name = text(c_name, "C name")?;
-            // SAFETY: this load's newly allocated object is unpublished. No
-            // borrowed C-name view exists while the initial names are replaced.
-            unsafe { &mut *function.as_ptr() }.set_names(name, c_name);
+            let name = self.image_c_string(names_at, "name")?;
+            let c_name = self.image_c_string(names_at + 8, "C name")?;
+            // SAFETY: this load's newly allocated object is unpublished, and
+            // both names are C strings of the permanent image.
+            unsafe { (*function.as_ptr()).set_image_names(name, c_name) };
             native_functions.push(crate::lisp::native_comp::DumpedNativeFunction { function });
         }
         for (offset, id, nslots) in obarray_records {
@@ -913,16 +887,12 @@ impl Loader<'_> {
         for (offset, table) in char_tables {
             scratch.resize(table.slot_count(), Value::Nil);
             self.fields(offset + 8, &mut scratch)?;
-            for (index, &value) in scratch.iter().enumerate() {
-                table.set_slot(index, value);
-            }
+            table.set_slots(&scratch);
         }
         for (offset, table) in sub_char_tables {
             scratch.resize(table.slots().len(), Value::Nil);
             self.fields(offset + 16, &mut scratch)?;
-            for (index, &value) in scratch.iter().enumerate() {
-                table.set_slot(index, value);
-            }
+            table.set_slots(&scratch);
         }
         for (string, props_offset) in string_props {
             let spans = self.load_text_properties(props_offset)?;
@@ -1013,9 +983,7 @@ impl Loader<'_> {
         // Phase 5: the symbol records.
         let mut symbols = Vec::with_capacity(symbol_records.len());
         for (offset, symbol, flags) in symbol_records {
-            let mut cells = [Value::Nil; 3];
-            self.fields(offset + 16, &mut cells)?;
-            let [val, function, plist] = cells;
+            let [val, function, plist] = self.field_array(offset + 16)?;
             let nwatchers = self.reader.word(offset + 40)? as u32;
             let mut watchers = Vec::new();
             for index in 0..nwatchers {
@@ -1179,50 +1147,50 @@ impl Loader<'_> {
         hit.then_some(cursor)
     }
 
-    /// The first relocation at or after FIELD: a few entries on from the
-    /// cursor, else through the index.
+    /// The first relocation at or after FIELD, searched from the cursor.
     fn reloc_position(&self, field: u32) -> usize {
-        let mut cursor = self.reloc_cursor;
-        if field > self.reloc_last {
-            let mut steps = 0;
-            while self.relocs.offset_or_end(cursor) < field && steps < 8 {
-                cursor += 1;
-                steps += 1;
-            }
-            if self.relocs.offset_or_end(cursor) >= field {
-                return cursor;
-            }
-        }
-        self.relocs.rank(field)
+        self.relocs.rank_from(self.reloc_cursor, field)
     }
 
     /// The values of the consecutive fields from START into OUT: the
     /// relocations walked alongside the words, as pdumper.c applies its
     /// sorted relocations in order.
     fn fields(&mut self, start: u32, out: &mut [Value]) -> Result<(), LoadError> {
+        self.read_fields(start, out)
+    }
+
+    /// `fields' of N fields, the count known where it is read.
+    #[inline(always)]
+    fn field_array<const N: usize>(&mut self, start: u32) -> Result<[Value; N], LoadError> {
+        let mut out = [Value::Nil; N];
+        self.read_fields(start, &mut out)?;
+        Ok(out)
+    }
+
+    #[inline(always)]
+    fn read_fields(&mut self, start: u32, out: &mut [Value]) -> Result<(), LoadError> {
         if out.is_empty() {
             return Ok(());
         }
-        let bytes = self.reader.bytes;
         let words = (start as usize)
             .checked_add(out.len() * 8)
-            .and_then(|end| bytes.get(start as usize..end))
+            .and_then(|end| self.reader.bytes.get(start as usize..end))
             .ok_or_else(|| LoadError::Error(format!("fields at {start} are outside the image")))?;
-        let mut cursor = if start > self.reloc_last && start <= self.reloc_next {
-            self.reloc_cursor
+        let (mut cursor, mut next) = if start > self.reloc_last && start <= self.reloc_next {
+            (self.reloc_cursor, self.reloc_next)
         } else {
-            self.reloc_position(start)
+            let cursor = self.reloc_position(start);
+            (cursor, self.relocs.offset_or_end(cursor))
         };
-        let mut next = self.relocs.offset_or_end(cursor);
         let mut field = start;
         for (slot, word) in out.iter_mut().zip(words.as_chunks::<8>().0) {
             let word = u64::from_le_bytes(*word);
             *slot = if field == next {
-                let reloc = cursor;
+                let entry = &self.relocs.entries[cursor];
                 cursor += 1;
                 next = self.relocs.offset_or_end(cursor);
-                let code = self.relocs.code(reloc);
-                match self.object(self.relocs.target(reloc) as usize) {
+                let code = entry_word(entry, 4);
+                match self.object(entry_word(entry, 8) as usize) {
                     Some(value) if code >> 8 == 1 => value,
                     _ => self.relocated_value(field, code, word)?,
                 }
@@ -1390,15 +1358,40 @@ impl Loader<'_> {
         Ok(SymbolName::intern_with_lisp_name(name_text, Some(name)))
     }
 
+    /// The C string the raw dump pointer at FIELD names: a native subr's
+    /// name in the cold section (dump_cold_native_subr), NUL-terminated
+    /// UTF-8 that lives as long as the process.
+    fn image_c_string(&self, field: u32, what: &str) -> Result<*const std::ffi::c_char, LoadError> {
+        let invalid =
+            || LoadError::Error(format!("native function {what} is not an image C string"));
+        if self
+            .relocs
+            .find(field)
+            .map(|reloc| DumpRelocKind::from_u32(self.relocs.code(reloc)))
+            != Some(Some(DumpRelocKind::DumpToDumpPtrRaw))
+        {
+            return Err(invalid());
+        }
+        let start = usize::try_from(self.reader.word(field)?).map_err(|_| invalid())?;
+        let text = self
+            .image
+            .bytes()
+            .get(start..)
+            .and_then(|bytes| std::ffi::CStr::from_bytes_until_nul(bytes).ok())
+            .ok_or_else(invalid)?;
+        if text.is_empty() || text.to_str().is_err() {
+            return Err(invalid());
+        }
+        Ok(text.as_ptr())
+    }
+
     fn load_string(
         &mut self,
         offset: u32,
         kind: DumpType,
     ) -> Result<(Value, Option<u32>), LoadError> {
-        let size = self.reader.word(offset)? as usize;
-        let size_byte = self.reader.word(offset + 8)?;
-        let intervals = self.reader.word(offset + 16)? as u32;
-        let data = self.reader.word(offset + 24)? as u32;
+        let [size, size_byte, intervals, data] = self.reader.words(offset)?;
+        let (size, intervals, data) = (size as usize, intervals as u32, data as u32);
         let multibyte = size_byte != u64::MAX;
         let nbytes = if multibyte { size_byte as usize } else { size };
         let bytes = self
@@ -1940,20 +1933,22 @@ fn symbol_of(value: Value, what: &str) -> Result<SymbolName, LoadError> {
 }
 
 /// A word without a relocation is self-representing.
+#[inline(always)]
 fn immediate_value(word: u64) -> Result<Value, LoadError> {
     if let Some(fixnum) = word_fixnum(word) {
         return Ok(Value::Integer(fixnum));
     }
-    Ok(match word {
-        WORD_NIL => Value::Nil,
-        WORD_T => Value::T,
-        WORD_UNBOUND => Value::Unbound,
-        _ => {
-            return Err(LoadError::Error(format!(
-                "unknown immediate word {word:#x}"
-            )));
-        }
-    })
+    match word {
+        WORD_NIL => Ok(Value::Nil),
+        WORD_T => Ok(Value::T),
+        WORD_UNBOUND => Ok(Value::Unbound),
+        _ => Err(unknown_immediate(word)),
+    }
+}
+
+#[cold]
+fn unknown_immediate(word: u64) -> LoadError {
+    LoadError::Error(format!("unknown immediate word {word:#x}"))
 }
 
 /// GNU's internal multibyte form back to Emaxx's text plus the

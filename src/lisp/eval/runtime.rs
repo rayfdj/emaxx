@@ -1820,7 +1820,6 @@ impl Interpreter {
         }
         let id = self.alloc_record_id();
         let indexed_type = type_tag.symbol_str().map(str::to_owned);
-        let index = self.record_index_for(id);
         // alloc.c's allocate_record: the object in a vector block; the
         // registry names it by id for the side tables.
         let record = RecordRef::allocate(RecordState {
@@ -1830,7 +1829,7 @@ impl Interpreter {
             slots,
             kind,
         });
-        self.records[index] = Some(record);
+        self.records.insert(id, record);
         if let Some(type_name) = indexed_type {
             self.record_ids_by_type_index
                 .entry(type_name)
@@ -1911,8 +1910,7 @@ impl Interpreter {
         filter: impl Fn(&RecordState) -> bool,
     ) -> Vec<RecordRef> {
         self.records
-            .iter()
-            .flatten()
+            .values()
             .copied()
             .filter(|record| record.kind == kind && filter(record))
             .collect()

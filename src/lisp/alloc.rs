@@ -36,8 +36,8 @@ pub use strings::StringObjectRef;
 pub(crate) use strings::string_data_census;
 pub(crate) use strings::{
     CodeState, PendingStringData, STRING_DATA_ALIGNMENT, STRING_DATA_PREFIX, StringAllocation,
-    allocate_string, borrowed_string_roots, code_changes, live_string_object_census,
-    retire_string_data, string_data_size, sweep_strings,
+    allocate_restored_string, allocate_string, borrowed_string_roots, code_changes,
+    live_string_object_census, retire_string_data, string_data_size, sweep_strings,
 };
 pub(crate) mod vectors;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
@@ -1423,6 +1423,30 @@ impl ConsMark<'_> {
         marked.set(marked.get() | mask);
     }
 
+    /// `allocate' for this cell and the COUNT - 1 after it in its block,
+    /// a bitmap word at a time.
+    fn allocate_run(&self, count: usize, epoch: u32) {
+        debug_assert!(self.index() + count <= CELLS_PER_BLOCK);
+        if self.block.epoch.get() != epoch {
+            self.clear_marks(epoch);
+        }
+        let bits = usize::BITS as usize;
+        let mut slot = self.slot;
+        let end = self.slot + count;
+        while slot < end {
+            let word = slot / bits - CONS_FIRST_WORD;
+            let first = slot % bits;
+            let last = (end - (slot - first)).min(bits);
+            let mask = (usize::MAX >> (bits - (last - first))) << first;
+            debug_assert!(self.block.serial_given[word].get() & mask == 0);
+            let allocated = &self.block.allocated[word];
+            allocated.set(allocated.get() | mask);
+            let marked = &self.block.marked[word];
+            marked.set(marked.get() | mask);
+            slot += last - first;
+        }
+    }
+
     /// A block's first mark of a collection: the marks of the last one
     /// are stale.
     #[cold]
@@ -1626,6 +1650,49 @@ pub(crate) fn allocate_cons(cell: ConsCell) -> ConsRef {
     };
     // SAFETY: SLOT is a free cell of a block.
     unsafe { fill_cons(slot, cell) }
+}
+
+/// Fcons (Qnil, Qnil) COUNT times, each cell handed to EACH in allocation
+/// order: pdumper's cons placeholders.  Cells come as Fcons takes them,
+/// the free list's first; a run of the newest block's untouched cells is
+/// written and counted at once, its allocation bits set a word at a time.
+pub(crate) fn allocate_nil_conses(mut count: usize, mut each: impl FnMut(ConsRef)) {
+    let nil = || ConsCell {
+        car: std::cell::Cell::new(Value::Nil),
+        cdr: std::cell::Cell::new(Value::Nil),
+    };
+    while count > 0 {
+        let next = BUMP_NEXT.load(Ordering::Relaxed);
+        let available = BUMP_END.load(Ordering::Relaxed).saturating_sub(next) / CELL_SIZE;
+        if !FREE_LIST.load(Ordering::Relaxed).is_null() || available == 0 {
+            each(
+                Value::cons(Value::Nil, Value::Nil)
+                    .cons_ref()
+                    .expect("a cons"),
+            );
+            count -= 1;
+            continue;
+        }
+        let run = available.min(count);
+        crate::lisp::native_comp::note_lisp_allocation(run * CELL_SIZE);
+        let first = next as *mut ConsCell;
+        BUMP_NEXT.store(next + run * CELL_SIZE, Ordering::Relaxed);
+        LIVE_CONSES.store(LIVE_CONSES.load(Ordering::Relaxed) + run, Ordering::Relaxed);
+        counters::tally(&counters::CONS_CELLS_CONSED, run as i64);
+        // SAFETY: the RUN cells from FIRST are the newest block's bump
+        // region, never allocated: each is written before its handle is
+        // made, and their bits are this block's.
+        unsafe {
+            for index in 0..run {
+                std::ptr::write(first.add(index), nil());
+            }
+            cons_mark(first).allocate_run(run, super::types::current_mark_epoch());
+            for index in 0..run {
+                each(ConsRef(NonNull::new_unchecked(first.add(index))));
+            }
+        }
+        count -= run;
+    }
 }
 
 /// Fcons's `cons_block_index == CONS_BLOCK_SIZE' arm.  Out of line, and

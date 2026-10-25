@@ -256,8 +256,23 @@ pub(crate) enum DumpType {
 }
 
 impl DumpType {
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The type of object-start code VALUE: a table lookup, as the loader
+    /// asks once for each object.
+    #[inline]
     pub(crate) fn from_u32(value: u32) -> Option<Self> {
+        const TYPES: [Option<DumpType>; 32] = {
+            let mut types = [None; 32];
+            let mut code = 0;
+            while code < 32 {
+                types[code] = DumpType::decode(code as u32);
+                code += 1;
+            }
+            types
+        };
+        TYPES.get(value as usize).copied().flatten()
+    }
+
+    const fn decode(value: u32) -> Option<Self> {
         Some(match value {
             1 => Self::Cons,
             2 => Self::String,

@@ -336,17 +336,14 @@ impl StringObjectRef {
         // SAFETY: the caller's entry holds NBYTES bytes at DATA.
         let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr(), nbytes) };
         check_character_count(bytes, characters, multibyte)?;
-        crate::lisp::alloc::allocate_string(
-            characters,
-            multibyte,
-            StringAllocation::Restored,
-            |state| {
-                state.size = characters;
-                state.size_byte = if multibyte { nbytes as isize } else { -1 };
-                state.data = data;
-                Ok::<(), StringError>(())
-            },
-        )
+        let state = SharedStringState {
+            size: characters,
+            size_byte: if multibyte { nbytes as isize } else { -1 },
+            props: StringProperties::default(),
+            data,
+        };
+        // SAFETY: the caller's entry outlives the string and is its alone.
+        Ok(unsafe { crate::lisp::alloc::allocate_restored_string(state) })
     }
 
     pub(crate) fn from_text(

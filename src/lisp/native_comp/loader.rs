@@ -15,7 +15,8 @@ use super::runtime::{NativeCallingConvention, NativeRuntime, NativeWord};
 use crate::lisp::alloc::vectors::native_functions::NativeFunctionSpec;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::primitives::{
-    is_vector_value, read_from_lisp_source, string_like, string_storage_error, values_equal,
+    check_hash_table, hash_table_lookup, hash_table_put, is_vector_value, read_from_lisp_source,
+    string_like, string_storage_error, values_equal,
 };
 use crate::lisp::types::{Env, Kind, LispError, NativeFunctionRef, NativeUnitRef, Value};
 use libloading::Library;
@@ -1606,7 +1607,13 @@ pub(super) fn resolve_dumped_function(
         dump_load_error(format!("NULL handle in compilation unit {}", unit_file()))
     })?;
     let c_name = function.c_name();
-    let target = unsafe { function_symbol(&library, c_name) }.map_err(|_| {
+    // dynlib_sym (comp_u->handle, c_name): the name with its NUL, as the
+    // record keeps it.
+    let target = unsafe {
+        library.get::<unsafe extern "C" fn()>(function.c_name_c_str().to_bytes_with_nul())
+    }
+    .map(|symbol| (*symbol as *const ()).cast::<c_void>())
+    .map_err(|_| {
         dump_load_error(format!(
             "can't find function \"{c_name}\" in compilation unit {}",
             unit_file()
@@ -1615,13 +1622,17 @@ pub(super) fn resolve_dumped_function(
     function.set_target(target);
 
     let lambda_guard = unit.field(2);
-    let lambda_name_index = unit.field(3);
-    let lambda_data_index = super::lisp::call_c_primitive(
+    // Fgethash (build_string (c_name), comp_u->lambda_c_name_idx_h, Qnil).
+    let lambda_name_index = check_hash_table(&unit.field(3))?;
+    let (_, slot) = hash_table_lookup(
         interpreter,
+        lambda_name_index,
+        &Value::string(c_name),
         environment,
-        "gethash",
-        &[Value::string(c_name), lambda_name_index, Value::Nil],
     )?;
+    let lambda_data_index = slot
+        .and_then(|slot| lambda_name_index.entry(slot))
+        .map_or(Value::Nil, |(_, value)| value);
     if lambda_data_index.is_truthy() {
         // This is an anonymous lambda.  We must fixup d_reloc_imp so the
         // lambda can be referenced by code.
@@ -1642,11 +1653,13 @@ pub(super) fn resolve_dumped_function(
         let subr = Value::NativeFunction(function);
         let word = runtime.encode_relocations(std::slice::from_ref(&subr))?[0];
         unsafe { std::ptr::write(unit.impure_relocations().add(index), word) };
-        super::lisp::call_c_primitive(
+        // Fputhash (tem, Qt, comp_u->lambda_gc_guard_h).
+        hash_table_put(
             interpreter,
+            check_hash_table(&lambda_guard)?,
+            subr,
+            Value::T,
             environment,
-            "puthash",
-            &[subr, Value::T, lambda_guard],
         )?;
     }
     Ok(())
