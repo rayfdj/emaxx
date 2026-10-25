@@ -5466,6 +5466,81 @@ setup_process_coding_systems's check now refuses). A 13-form
   median against GNU's 0.057 s (40 interleaved runs), 7,438 page faults
   (GNU 5,614), RSS 72 MB (GNU 55 MB). The local gate passes (3,202
   tests).
+- **Round 75: process.c's get_process, non-blocking connects, deletion
+  and EOF on connections, timers bounding the wait.** A survey of the 519
+  GNU test files (each under GNU and Emaxx, `-l ert -f
+  ert-run-tests-batch-and-exit`) took 1,616 s against GNU's 1,842 s; what
+  stood out was correctness: 21 `erc-scenarios-*` files, outside the
+  frozen selection (`:expensive-test`, local servers), failed under Emaxx
+  and passed under GNU. Startup was looked at again first: a linear probe
+  of the relocation cursor gained nothing (137.17M against 137.13M
+  instructions in the loader) and is not kept; skipping the dumped
+  strings' character recount saves 2.9M instructions and no page faults
+  (the faults are the 11 MB of objects the loader makes, 2,956 of them
+  in the symbol and container phase), so the check stays. Changes: (1)
+  process.c's `get_process` (a process, a process's or buffer's name, a
+  buffer, nil for the current buffer's process; "Process NAME does not
+  exist", "Attempt to get process for a dead buffer", "Buffer NAME has no
+  process", else CHECK_PROCESS) for `delete-process` (now 0 to 1
+  arguments, its interactive `message` reporting "Deleted process"),
+  `process-status` (a name finds only a process, none being nil),
+  `process-type`, `process-send-string`, `process-send-region`,
+  `process-send-eof`, `process-running-child-p`, the signal functions and
+  `internal-default-signal-process`; they took a process object only, or
+  answered `processp` for every designator; (2) Fget_buffer_process: nil
+  has no process, a buffer object is taken as it is, killed or not, a
+  name finds its live buffer, anything else is CHECK_STRING's error; it
+  signaled "Selecting deleted buffer" for a killed buffer, which every
+  ERC test's cleanup asks about, and read nil as the current buffer (the
+  mode line's `%s` and `process-send-eof` now pass the current buffer);
+  (3) a `:nowait t` client connects as connect_network_socket's
+  non-blocking client: a socket per address, O_NONBLOCK and FD_CLOEXEC,
+  connect returning EINPROGRESS, the process `connect` with the addresses
+  left (status (connect . ADDRINFOS)), `:remote` the address dialed; the
+  event loop's wait finds the socket writable and reads SO_ERROR: zero
+  is `open` (after any TLS), an error goes on to the next address, and
+  with none left the status is (failed ERRNO) and the sentinel hears
+  "failed with code 111"; a socket still connecting is not read, and a
+  connect that cannot start on any address leaves the process failed;
+  the client connected synchronously and signaled `file-error` at once,
+  so ERC's reconnect timers and connectivity probe never ran; (4)
+  Fdelete_process: a connection's status becomes (exit 0) whatever is
+  left of its socket, a child still running is killed, and status_notify
+  reports `status_message` of the new status to a process still on the
+  process alist only; a connection whose peer closed leaves the alist
+  (`delete-exited-processes`) before its "connection broken by remote
+  peer" sentinel, so a later `delete-process` notifies no one; the sentinel
+  heard "killed" for a closed connection; (5) server_accept_connection's
+  HOST: "open from 127.0.0.1" and "accept from 127.0.0.1\n" (the port was
+  in both and the log line had no newline), IPv6 children named "NAME
+  <[HOST]:PORT>" with HOST_FORMAT_IN6; (6) Fprocess_send_eof on a
+  connection shuts down its sending half and points output at the null
+  device (`output_to_null`), as for a pipe or a non-pty child; a serial
+  port drains (tcdrain); it did nothing for a connection, so a server
+  never read the end; (7) timer_check's delay: the wait
+  (`wait_pumping_processes`) is bounded by the earliest timer on
+  `timer-list`; it napped in 10 ms steps, so a 1 s timer fired up to
+  10 ms late (erc-d's "Lingered for 1.00 seconds" read "1.01"); a 1 s,
+  0.25 s and 0.3 s timer now fire at 1.0003, 0.2503 and 0.3003 s (GNU
+  1.0004, 0.2503, 0.3006); (8) send_process's wait_while_connecting:
+  `process-send-string`, `process-send-region` and `process-send-eof` on
+  a connection still connecting wait (running timers, reading other
+  processes) until it is open or failed; they wrote to the socket still
+  connecting; (9) buffer.c's Frename_buffer: UNIQUE asks
+  `generate-new-buffer-name` with the old name as IGNORE, so `a<2>`
+  renamed uniquely to `a` stays `a<2>` (it became `a<4>` with `a<3>`
+  present, and ERC, renaming a reconnected channel's buffer, took another
+  buffer's name), a non-unique rename to the buffer's own name returns
+  early, an empty name signals "Empty string is invalid as a buffer
+  name", and a buffer visiting no file with an auto-save file name calls
+  `rename-auto-save-file` through its function cell. Of the 21 failing
+  files, 19 pass. The other two run their test in a child Emacs under
+  `term`: status-sidebar's nickbar test needs window.c's tree operations
+  (its `delete-other-windows` deletes the speedbar's side window, which
+  carries `no-delete-other-windows`, because `delete-other-windows-internal`
+  ignores ROOT; the speedbar then turns itself off and kills its buffer
+  while the test waits on a marker in it); keep-place-indicator's follow
+  test times out after 21 s.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -6113,8 +6188,16 @@ frozen passed on its first attempt (run 40139905885).
 frozen passed on its first attempt (run 40146209717).
 **On `caa70a2`** (round 73): full Rust gate passed (run 40154530346),
 frozen passed on its first attempt (run 40154532135).
-**On round 74's commit**: the full Rust gate and frozen runs are
-dispatched with it; their results go in the next round's record. Run
+**On `8ec8a70`** (round 74): full Rust gate passed (run 40162780501),
+frozen passed on its first attempt (run 40162782011); PR #104 merged
+rounds 71 to 74 into main (`a6640b6`).
+**On round 75's commit**: the local gate (all groups, gate profile,
+`LANG=C LC_ALL=C`, the known as-root and image tests skipped) passed
+3,201 of 3,202; the failure was the anti-cheat scan catching
+`rename-auto-save-file` called through the native dispatcher, now called
+through its function cell, after which the anti-cheat tests pass. The
+full Rust gate and frozen runs are dispatched with it; their results go
+in the next round's record. Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that
 locale. With none set here, `char_charset_family_follows_charset_c` and

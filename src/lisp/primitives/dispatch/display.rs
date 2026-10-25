@@ -6286,7 +6286,8 @@ fn decode_mode_line_spec(
             // xdisp.c:28899 case 's': the status of the current buffer's
             // process -- Fget_buffer_process, "no process" when there is
             // none, else the `process-status' symbol's name.
-            match super::call(interp, "get-buffer-process", &[Value::Nil], env) {
+            let buffer = Value::Buffer(interp.buffer);
+            match super::call(interp, "get-buffer-process", &[buffer], env) {
                 Ok(process) if process.is_truthy() => {
                     match super::call(interp, "process-status", &[process], env).map(|v| v.kind()) {
                         Ok(Kind::Symbol(status)) => status.to_string(),

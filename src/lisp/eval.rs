@@ -1975,8 +1975,9 @@ enum ProcessStatus {
     Exit,
     /// Subprocess terminated by an operating-system signal.
     Signal,
-    /// Nonblocking network connection not yet reported as established.
-    Connect,
+    /// process.c's (connect . ADDRINFOS): a non-blocking connect under
+    /// way, and the addresses to try after it.
+    Connect(Vec<std::net::SocketAddr>),
     /// Network connection established (client or accepted server child).
     Open,
     /// Network connection closed.
@@ -2002,7 +2003,7 @@ impl ProcessStatus {
             Self::Stop => "stop",
             Self::Exit => "exit",
             Self::Signal => "signal",
-            Self::Connect => "connect",
+            Self::Connect(_) => "connect",
             Self::Open => "open",
             Self::Closed => "closed",
             Self::Failed => "failed",
@@ -2013,7 +2014,7 @@ impl ProcessStatus {
     fn is_live(&self) -> bool {
         matches!(
             self,
-            Self::Run | Self::Stop | Self::Connect | Self::Open | Self::Listen
+            Self::Run | Self::Stop | Self::Connect(_) | Self::Open | Self::Listen
         )
     }
 }
@@ -2430,6 +2431,7 @@ impl Clone for ProcessState {
             stdout_eof: self.stdout_eof,
             stderr_eof: self.stderr_eof,
             encoder: Default::default(),
+            output_to_null: self.output_to_null,
         }
     }
 }
@@ -2515,6 +2517,9 @@ struct ProcessState {
     stderr_eof: bool,
     /// proc_encode_coding_system[] for the output channel.
     encoder: crate::lisp::primitives::coding::EncoderSpec,
+    /// Fprocess_send_eof reopened the output channel on the null device
+    /// (p->outfd): what is sent after the EOF goes nowhere.
+    output_to_null: bool,
 }
 
 #[derive(Clone, Debug)]

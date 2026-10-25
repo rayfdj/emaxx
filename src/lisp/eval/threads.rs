@@ -560,6 +560,7 @@ impl Interpreter {
             stdout_eof: false,
             stderr_eof: false,
             encoder: Default::default(),
+            output_to_null: false,
         });
         Ok(process)
     }
@@ -576,7 +577,7 @@ impl Interpreter {
         sentinel: Option<Value>,
         log: Option<Value>,
         plist: Value,
-        network: NetworkRuntime,
+        network: Option<NetworkRuntime>,
         contact_host: Option<String>,
         contact_service: Option<i64>,
         remote: Option<String>,
@@ -586,10 +587,16 @@ impl Interpreter {
         encoding: Value,
     ) -> Result<Value, LispError> {
         let status = match &network {
-            NetworkRuntime::Listener(_) | NetworkRuntime::UnixListener(_) => ProcessStatus::Listen,
-            NetworkRuntime::Stream(_)
-            | NetworkRuntime::Datagram { .. }
-            | NetworkRuntime::UnixStream(_) => ProcessStatus::Open,
+            Some(NetworkRuntime::Listener(_) | NetworkRuntime::UnixListener(_)) => {
+                ProcessStatus::Listen
+            }
+            Some(
+                NetworkRuntime::Stream(_)
+                | NetworkRuntime::Datagram { .. }
+                | NetworkRuntime::UnixStream(_),
+            ) => ProcessStatus::Open,
+            // A non-blocking client none of whose addresses would connect.
+            None => ProcessStatus::Failed,
         };
         let process = self.create_pseudovector(RecordKind::Process, "process", Vec::new());
         let Kind::Record(record_id) = process.kind() else {
@@ -628,7 +635,7 @@ impl Interpreter {
             exit_signal: None,
             os_pid: None,
             runtime: None,
-            network: Some(network),
+            network,
             serial: None,
             module_pipe: None,
             contact_host,
@@ -646,6 +653,7 @@ impl Interpreter {
             stdout_eof: false,
             stderr_eof: false,
             encoder: Default::default(),
+            output_to_null: false,
         });
         self.setup_process_coding_systems(decoding, encoding)?;
         Ok(process)
@@ -724,6 +732,7 @@ impl Interpreter {
             stdout_eof: false,
             stderr_eof: false,
             encoder: Default::default(),
+            output_to_null: false,
         });
         self.setup_process_coding_systems(decoding, encoding)?;
         Ok(process)
@@ -1107,6 +1116,8 @@ impl Interpreter {
                         | Some(NetworkRuntime::UnixStream(_))
                 ) || process.serial.is_some())
                     && process.status.is_live()
+                    // A connecting socket is read once it connects.
+                    && !matches!(process.status, ProcessStatus::Connect(_))
                     && process
                         .thread_id
                         .is_none_or(|thread_id| thread_id == self.active_thread_id)
@@ -1220,7 +1231,14 @@ impl Interpreter {
     /// wait_reading_process_output at a connection's end of stream:
     /// deactivate_process, the status `(exit 256)' process-status shows
     /// as `closed'.
+    /// wait_reading_process_output on a connection's end: deactivate_process
+    /// and status (exit 256), which status_notify, with
+    /// `delete-exited-processes', takes off the process alist before the
+    /// sentinel hears of it.
     pub fn close_connection_stream(&mut self, record_id: u64) {
+        let remove = self
+            .lookup_var("delete-exited-processes", &Env::new())
+            .is_none_or(|value| value.is_truthy());
         if let Some(process) = self.find_process_state_mut(record_id) {
             process.gnutls.session = None;
             process.gnutls.active = false;
@@ -1228,6 +1246,7 @@ impl Interpreter {
             process.exit_code = Some(256);
             process.network = None;
             process.serial = None;
+            process.sentinel_notified |= remove;
         }
     }
 
@@ -1291,7 +1310,7 @@ impl Interpreter {
             ProcessStatus::Failed => {
                 format!("failed with code {}\n", process.exit_code.unwrap_or(0))
             }
-            ProcessStatus::Run | ProcessStatus::Open | ProcessStatus::Connect => "run".into(),
+            ProcessStatus::Run | ProcessStatus::Open | ProcessStatus::Connect(_) => "run".into(),
             ProcessStatus::Listen => "listen".into(),
         }
     }
@@ -1304,7 +1323,7 @@ impl Interpreter {
             .ok_or_else(|| wrong_type_argument("processp", self.record_value(record_id)))?;
         if matches!(
             process.status,
-            ProcessStatus::Run | ProcessStatus::Open | ProcessStatus::Connect
+            ProcessStatus::Run | ProcessStatus::Open | ProcessStatus::Connect(_)
         ) {
             return Ok(());
         }
@@ -1533,12 +1552,109 @@ impl Interpreter {
             .map(|process| Value::Integer(process.exit_code.unwrap_or(0) as i64))
     }
 
-    pub(crate) fn mark_network_process_connecting(&mut self, record_id: u64) -> bool {
+    /// connect_network_socket's non-blocking client: status (connect .
+    /// ADDRESSES), the addresses to try should this connect fail.
+    pub(crate) fn mark_network_process_connecting(
+        &mut self,
+        record_id: u64,
+        addresses: Vec<std::net::SocketAddr>,
+    ) -> bool {
         let Some(process) = self.find_process_state_mut(record_id) else {
             return false;
         };
-        process.status = ProcessStatus::Connect;
+        process.status = ProcessStatus::Connect(addresses);
         true
+    }
+
+    /// wait_reading_process_output's test of a non-blocking connect: None
+    /// while its socket is not yet writable, else the socket's SO_ERROR,
+    /// zero once connected.  A stream that is no TCP socket connected
+    /// when it was made.
+    #[cfg(unix)]
+    pub(crate) fn network_connect_error(&self, record_id: u64) -> Option<i32> {
+        use std::os::fd::AsRawFd;
+        let process = self.find_process_state(record_id)?;
+        let Some(NetworkRuntime::Stream(stream)) = process.network.as_ref() else {
+            return Some(0);
+        };
+        let fd = stream.as_raw_fd();
+        let mut poll = libc::pollfd {
+            fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: one live descriptor, and no wait.
+        if unsafe { libc::poll(&mut poll, 1, 0) } <= 0 {
+            return None;
+        }
+        let mut error: libc::c_int = 0;
+        let mut length = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: ERROR is an int of LENGTH bytes.
+        let failed = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_ERROR,
+                (&raw mut error).cast(),
+                &mut length,
+            )
+        } != 0;
+        if failed {
+            error = std::io::Error::last_os_error()
+                .raw_os_error()
+                .unwrap_or(libc::EIO);
+        }
+        Some(error)
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn network_connect_error(&self, _record_id: u64) -> Option<i32> {
+        Some(0)
+    }
+
+    /// connecting_status: a non-blocking connect is still under way.
+    pub(crate) fn network_process_connecting(&self, record_id: u64) -> bool {
+        self.find_process_state(record_id)
+            .is_some_and(|process| matches!(process.status, ProcessStatus::Connect(_)))
+    }
+
+    /// The addresses a failed non-blocking connect goes on to, taken from
+    /// its status.
+    pub(crate) fn take_network_connect_addresses(
+        &mut self,
+        record_id: u64,
+    ) -> Vec<std::net::SocketAddr> {
+        match self
+            .find_process_state_mut(record_id)
+            .map(|process| &mut process.status)
+        {
+            Some(ProcessStatus::Connect(addresses)) => std::mem::take(addresses),
+            _ => Vec::new(),
+        }
+    }
+
+    /// connect_network_socket again, on the next address: the new
+    /// connecting stream replaces the failed one.
+    pub(crate) fn restart_network_connect(
+        &mut self,
+        record_id: u64,
+        stream: std::net::TcpStream,
+        addresses: Vec<std::net::SocketAddr>,
+    ) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.network = Some(NetworkRuntime::Stream(stream));
+            process.status = ProcessStatus::Connect(addresses);
+        }
+    }
+
+    /// A non-blocking connect that failed with ERRNO: deactivate_process
+    /// closes its socket, and the status is (failed ERRNO).
+    pub(crate) fn fail_network_connect(&mut self, record_id: u64, errno: i32) {
+        if let Some(process) = self.find_process_state_mut(record_id) {
+            process.network = None;
+            process.status = ProcessStatus::Failed;
+            process.exit_code = Some(errno);
+        }
     }
 
     pub(crate) fn connecting_network_processes(&self) -> Vec<u64> {
@@ -1546,7 +1662,7 @@ impl Interpreter {
         self.process_states
             .iter()
             .filter(|process| {
-                process.status == ProcessStatus::Connect
+                matches!(process.status, ProcessStatus::Connect(_))
                     && process.network.is_some()
                     && process
                         .thread_id
@@ -1875,7 +1991,12 @@ impl Interpreter {
         Ok(())
     }
 
-    pub fn delete_process(&mut self, record_id: u64) -> Result<(&'static str, bool), LispError> {
+    /// process.c:Fdelete_process: a connection's status becomes (exit 0),
+    /// a child still running is killed, and status_notify reports the new
+    /// status to the sentinel -- of a process still on the process alist
+    /// only, as status_notify walks Vprocess_alist.  Returns the message
+    /// and whether to notify.
+    pub fn delete_process(&mut self, record_id: u64) -> Result<(String, bool), LispError> {
         let record_id_value = self.record_value(record_id);
         let process = self
             .find_process_state_mut(record_id)
@@ -1908,23 +2029,17 @@ impl Interpreter {
                 // tests delete it themselves.
                 NetworkRuntime::Listener(_) | NetworkRuntime::UnixListener(_) => {}
             }
-            process.status = ProcessStatus::Closed;
-            process.runtime = None;
-            process.sentinel_notified = true;
-            return Ok(("deleted\n", notify_sentinel));
         }
-        if process.serial.take().is_some() {
-            process.status = ProcessStatus::Closed;
-            process.runtime = None;
-            process.sentinel_notified = true;
-            return Ok(("deleted\n", notify_sentinel));
-        }
-        if kind == ProcessKind::Pipe {
-            process.module_pipe = None;
+        process.serial = None;
+        process.module_pipe = None;
+        if matches!(
+            kind,
+            ProcessKind::Network | ProcessKind::Serial | ProcessKind::Pipe
+        ) {
             process.status = ProcessStatus::Closed;
             process.exit_code = Some(0);
             process.exit_signal = None;
-        } else {
+        } else if !matches!(process.status, ProcessStatus::Exit | ProcessStatus::Signal) {
             process.status = ProcessStatus::Signal;
             #[cfg(unix)]
             {
@@ -1937,16 +2052,8 @@ impl Interpreter {
                 process.exit_signal = None;
             }
         }
-        process.runtime = None;
         process.sentinel_notified = true;
-        Ok((
-            if kind == ProcessKind::Pipe {
-                "finished\n"
-            } else {
-                "killed\n"
-            },
-            notify_sentinel,
-        ))
+        Ok((Self::process_status_message(process), notify_sentinel))
     }
 
     pub fn process_send_string(
@@ -1964,6 +2071,9 @@ impl Interpreter {
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
+        if process.output_to_null {
+            return Ok((Vec::new(), Vec::new()));
+        }
         if matches!(process.kind, ProcessKind::Network | ProcessKind::Serial) {
             self.connection_send(record_id, input)?;
             return Ok((Vec::new(), Vec::new()));
@@ -2082,7 +2192,40 @@ impl Interpreter {
         let process = self
             .find_process_state_mut(record_id)
             .ok_or_else(|| wrong_type_argument("processp", record_id_value))?;
+        // Fprocess_send_eof: a serial port drains its output; a
+        // connection shuts down its sending half, so the peer reads the
+        // end, and the output channel becomes the null device.
+        if let Some(serial) = process.serial.as_ref() {
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsRawFd;
+                // SAFETY: tcdrain on the port's live descriptor.
+                if unsafe { libc::tcdrain(serial.port.as_raw_fd()) } != 0 {
+                    return Err(LispError::Signal(format!(
+                        "Failed tcdrain: {}",
+                        std::io::Error::last_os_error()
+                    )));
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = serial;
+            return Ok((Vec::new(), Vec::new()));
+        }
+        if process.kind == ProcessKind::Network {
+            match process.network.as_ref() {
+                Some(NetworkRuntime::Stream(stream)) => {
+                    let _ = stream.shutdown(std::net::Shutdown::Write);
+                }
+                Some(NetworkRuntime::UnixStream(stream)) => {
+                    let _ = stream.shutdown(std::net::Shutdown::Write);
+                }
+                _ => {}
+            }
+            process.output_to_null = true;
+            return Ok((Vec::new(), Vec::new()));
+        }
         let Some(runtime) = process.runtime.as_mut() else {
+            process.output_to_null = true;
             return Ok((Vec::new(), Vec::new()));
         };
         // A PTY uses canonical Ctrl-D for EOF (as GNU's child_setup_tty
@@ -2094,6 +2237,9 @@ impl Interpreter {
                 .map_err(|error| LispError::Signal(error.to_string()))?;
             pty.flush()
                 .map_err(|error| LispError::Signal(error.to_string()))?;
+        }
+        if runtime.pty_input.is_none() {
+            process.output_to_null = true;
         }
         drop(runtime.child.stdin.take());
         // GNU only makes EOF visible after already queued input and returns.

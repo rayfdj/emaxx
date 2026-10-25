@@ -2373,7 +2373,7 @@ pub(crate) fn delete_process_notifying(
     if !notify_sentinel {
         return Ok(());
     }
-    match run_process_sentinel(interp, process_id, event, env).map_err(LispError::into_kind) {
+    match run_process_sentinel(interp, process_id, &event, env).map_err(LispError::into_kind) {
         Ok(()) => Ok(()),
         Err(error @ LispErrorKind::Throw(_, _)) => Err(LispError::from(error)),
         Err(error) => {
@@ -2494,6 +2494,105 @@ pub(super) fn network_server_error(error: &std::io::Error) -> LispError {
     ]))
 }
 
+/// connect_network_socket's loop for a non-blocking client: the first of
+/// ADDRESSES whose connect has started (EINPROGRESS) or finished, the
+/// address, and the addresses after it; else the last address's error.
+#[cfg(unix)]
+fn connect_nonblocking(
+    addresses: &[std::net::SocketAddr],
+) -> std::io::Result<(
+    std::net::TcpStream,
+    std::net::SocketAddr,
+    Vec<std::net::SocketAddr>,
+)> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let mut last_error = std::io::Error::from_raw_os_error(libc::EADDRNOTAVAIL);
+    for (index, address) in addresses.iter().enumerate() {
+        let (family, storage, length) = socket_address(address);
+        // SAFETY: socket makes a descriptor or fails; nothing is borrowed.
+        let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
+        if fd < 0 {
+            last_error = std::io::Error::last_os_error();
+            continue;
+        }
+        // SAFETY: FD is the socket just made, owned here alone.
+        let socket = unsafe { OwnedFd::from_raw_fd(fd) };
+        // SAFETY: fcntl on the owned descriptor, as emacs_socket and
+        // connect_network_socket set O_NONBLOCK and FD_CLOEXEC.
+        unsafe {
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+            libc::fcntl(
+                fd,
+                libc::F_SETFL,
+                libc::fcntl(fd, libc::F_GETFL) | libc::O_NONBLOCK,
+            );
+        }
+        // SAFETY: STORAGE holds ADDRESS as a sockaddr of LENGTH bytes.
+        let started = unsafe { libc::connect(fd, (&raw const storage).cast(), length) } == 0;
+        let error = std::io::Error::last_os_error();
+        if started || error.raw_os_error() == Some(libc::EINPROGRESS) {
+            let stream = std::net::TcpStream::from(socket);
+            return Ok((stream, *address, addresses[index + 1..].to_vec()));
+        }
+        last_error = error;
+    }
+    Err(last_error)
+}
+
+#[cfg(not(unix))]
+fn connect_nonblocking(
+    addresses: &[std::net::SocketAddr],
+) -> std::io::Result<(
+    std::net::TcpStream,
+    std::net::SocketAddr,
+    Vec<std::net::SocketAddr>,
+)> {
+    let stream = std::net::TcpStream::connect(addresses)?;
+    stream.set_nonblocking(true)?;
+    let remote = stream.peer_addr()?;
+    Ok((stream, remote, Vec::new()))
+}
+
+/// ADDRESS as the sockaddr connect takes: its family, the bytes, their
+/// length.
+#[cfg(unix)]
+fn socket_address(
+    address: &std::net::SocketAddr,
+) -> (libc::c_int, libc::sockaddr_storage, libc::socklen_t) {
+    // SAFETY: an all-zero sockaddr_storage is an empty address.
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    match address {
+        std::net::SocketAddr::V4(v4) => {
+            // SAFETY: sockaddr_storage holds and aligns any sockaddr.
+            let inet = unsafe { &mut *(&raw mut storage).cast::<libc::sockaddr_in>() };
+            inet.sin_family = libc::AF_INET as libc::sa_family_t;
+            inet.sin_port = v4.port().to_be();
+            inet.sin_addr.s_addr = u32::from_ne_bytes(v4.ip().octets());
+            let length = std::mem::size_of::<libc::sockaddr_in>();
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+            {
+                inet.sin_len = length as u8;
+            }
+            (libc::AF_INET, storage, length as libc::socklen_t)
+        }
+        std::net::SocketAddr::V6(v6) => {
+            // SAFETY: as above.
+            let inet6 = unsafe { &mut *(&raw mut storage).cast::<libc::sockaddr_in6>() };
+            inet6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+            inet6.sin6_port = v6.port().to_be();
+            inet6.sin6_flowinfo = v6.flowinfo();
+            inet6.sin6_addr.s6_addr = v6.ip().octets();
+            inet6.sin6_scope_id = v6.scope_id();
+            let length = std::mem::size_of::<libc::sockaddr_in6>();
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+            {
+                inet6.sin6_len = length as u8;
+            }
+            (libc::AF_INET6, storage, length as libc::socklen_t)
+        }
+    }
+}
+
 pub(super) fn network_client_error(error: &std::io::Error, args: &[Value]) -> LispError {
     let condition = if error.kind() == std::io::ErrorKind::NotFound {
         "file-missing"
@@ -2513,6 +2612,7 @@ fn activate_network_client(
     interp: &mut Interpreter,
     process: Value,
     nowait: bool,
+    untried: Vec<std::net::SocketAddr>,
     tls_parameters: &Value,
     env: &mut Env,
 ) -> Result<Value, LispError> {
@@ -2521,7 +2621,7 @@ fn activate_network_client(
         interp.set_process_gnutls_boot_parameters(process_id, *tls_parameters);
     }
     if nowait {
-        interp.mark_network_process_connecting(process_id);
+        interp.mark_network_process_connecting(process_id, untried);
         return Ok(process);
     }
     if !tls_parameters.is_nil() {
@@ -2774,7 +2874,7 @@ pub(crate) fn make_network_process(
             sentinel,
             log,
             plist,
-            crate::lisp::eval::NetworkRuntime::Datagram { socket, remote },
+            Some(crate::lisp::eval::NetworkRuntime::Datagram { socket, remote }),
             host,
             service,
             None,
@@ -2821,7 +2921,7 @@ pub(crate) fn make_network_process(
                 sentinel,
                 log,
                 plist,
-                crate::lisp::eval::NetworkRuntime::UnixListener(listener),
+                Some(crate::lisp::eval::NetworkRuntime::UnixListener(listener)),
                 Some(path),
                 None,
                 None,
@@ -2854,7 +2954,7 @@ pub(crate) fn make_network_process(
             sentinel,
             log,
             plist,
-            crate::lisp::eval::NetworkRuntime::UnixStream(stream),
+            Some(crate::lisp::eval::NetworkRuntime::UnixStream(stream)),
             Some(path),
             None,
             None,
@@ -2863,7 +2963,7 @@ pub(crate) fn make_network_process(
             decoding,
             encoding,
         )?;
-        return activate_network_client(interp, process, nowait, &tls_parameters, env);
+        return activate_network_client(interp, process, nowait, Vec::new(), &tls_parameters, env);
     }
 
     if is_server {
@@ -2907,7 +3007,7 @@ pub(crate) fn make_network_process(
             sentinel,
             log,
             plist,
-            crate::lisp::eval::NetworkRuntime::Listener(listener),
+            Some(crate::lisp::eval::NetworkRuntime::Listener(listener)),
             host,
             bound_port,
             None,
@@ -2933,19 +3033,30 @@ pub(crate) fn make_network_process(
                 "make-network-process: no requested-family address for {connect_host}"
             )));
         }
-        // GNU iterates getaddrinfo results until one connection succeeds.
-        // Passing the full filtered slice gives Rust's socket layer the same
-        // fallback behavior (notably localhost resolving to IPv6 before an
-        // IPv4-only listener) without duplicating connection error policy.
-        let stream = std::net::TcpStream::connect(addresses.as_slice())
-            .map_err(|error| network_client_error(&error, args))?;
-        stream
-            .set_nonblocking(true)
-            .map_err(|error| network_client_error(&error, args))?;
-        if let Ok(addr) = stream.peer_addr() {
+        // process.c:connect_network_socket tries the getaddrinfo results
+        // in turn.  A blocking client connects before its process exists,
+        // and a failure is an error.  A non-blocking one (`:nowait t')
+        // takes the first address whose connect starts, and its process
+        // waits as (connect . ADDRINFOS) until the event loop sees the
+        // connect end; when none starts, the process is made failed.
+        let (stream, remote, untried, failure) = if nowait {
+            match connect_nonblocking(&addresses) {
+                Ok((stream, remote, untried)) => (Some(stream), Some(remote), untried, None),
+                Err(error) => (None, None, Vec::new(), Some(error)),
+            }
+        } else {
+            let stream = std::net::TcpStream::connect(addresses.as_slice())
+                .map_err(|error| network_client_error(&error, args))?;
+            stream
+                .set_nonblocking(true)
+                .map_err(|error| network_client_error(&error, args))?;
+            let remote = stream.peer_addr().ok();
+            (Some(stream), remote, Vec::new(), None)
+        };
+        if let Some(addr) = remote {
             plist_items_put(&mut contact_items, ":remote", sockaddr_vector(addr));
         }
-        if let Ok(addr) = stream.local_addr() {
+        if let Some(addr) = stream.as_ref().and_then(|stream| stream.local_addr().ok()) {
             plist_items_put(&mut contact_items, ":local", sockaddr_vector(addr));
         }
         let process = interp.create_network_process(
@@ -2956,7 +3067,7 @@ pub(crate) fn make_network_process(
             sentinel,
             log,
             plist,
-            crate::lisp::eval::NetworkRuntime::Stream(stream),
+            stream.map(crate::lisp::eval::NetworkRuntime::Stream),
             host,
             service,
             None,
@@ -2965,9 +3076,14 @@ pub(crate) fn make_network_process(
             decoding,
             encoding,
         )?;
+        if let Some(error) = failure {
+            let process_id = interp.resolve_process_id(&process)?;
+            interp.fail_network_connect(process_id, error.raw_os_error().unwrap_or(0));
+            return Ok(process);
+        }
         // GNU runs the sentinel with "open\n" only after any requested TLS
         // negotiation has completed.
-        activate_network_client(interp, process, nowait, &tls_parameters, env)
+        activate_network_client(interp, process, nowait, untried, &tls_parameters, env)
     }
 }
 
@@ -3482,6 +3598,9 @@ pub(crate) fn wait_pumping_processes(
         if let Some(due) = interp.next_timer_due() {
             nap = nap.min(due.saturating_duration_since(now));
         }
+        if run_timers && let Some(delay) = crate::lisp::primitives::next_timer_delay(interp, env) {
+            nap = nap.min(delay);
+        }
         if let Some(grace) = delivery_grace_deadline {
             nap = nap.min(grace.saturating_duration_since(now));
         }
@@ -3496,6 +3615,27 @@ pub(crate) fn wait_pumping_processes(
         delivered
     };
     Ok(result)
+}
+
+/// process.c:wait_while_connecting: what is sent to a connection still
+/// connecting waits for the connect (and here its TLS negotiation) to end.
+pub(crate) fn wait_while_connecting(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    process_id: u64,
+) -> Result<(), LispError> {
+    while interp.network_process_connecting(process_id) {
+        wait_pumping_processes(
+            interp,
+            env,
+            Some(std::time::Duration::from_millis(20)),
+            false,
+            None,
+            None,
+            true,
+        )?;
+    }
+    Ok(())
 }
 
 /// Accept pending server connections and deliver stream input/closure to
@@ -3514,15 +3654,51 @@ fn pump_connection_processes_for(
 ) -> Result<bool, LispError> {
     let mut progressed = false;
 
-    // `:nowait t' exposes a freshly created client as `connect' until the
-    // event loop reports completion.  The OS connection is already usable
-    // in this compatibility runtime, but deferring the `open' transition
-    // lets callers install their sentinel before it runs, like GNU Emacs.
+    // wait_reading_process_output: a `:nowait t' client's socket that
+    // turns writable has finished connecting.  A failure goes on to the
+    // addresses left, as connect_network_socket does, and with none left
+    // the status is (failed ERRNO), reported to the sentinel.
     for process_id in interp.connecting_network_processes() {
         if only_process_id.is_some_and(|id| process_id != id) {
             continue;
         }
+        let Some(errno) = interp.network_connect_error(process_id) else {
+            continue;
+        };
         progressed = true;
+        if errno != 0 {
+            let addresses = interp.take_network_connect_addresses(process_id);
+            if addresses.is_empty() {
+                interp.fail_network_connect(process_id, errno);
+                run_process_sentinel(
+                    interp,
+                    process_id,
+                    &format!("failed with code {errno}\n"),
+                    env,
+                )?;
+                continue;
+            }
+            match connect_nonblocking(&addresses) {
+                Ok((stream, remote, untried)) => {
+                    let mut contact = interp
+                        .process_contact_plist(process_id)
+                        .and_then(|contact| contact.to_vec().ok())
+                        .unwrap_or_default();
+                    plist_items_put(&mut contact, ":remote", sockaddr_vector(remote));
+                    if let Ok(local) = stream.local_addr() {
+                        plist_items_put(&mut contact, ":local", sockaddr_vector(local));
+                    }
+                    interp.set_process_contact_plist(process_id, Value::list(contact))?;
+                    interp.restart_network_connect(process_id, stream, untried);
+                }
+                // connect_network_socket sets (failed ...) here and
+                // notifies no one.
+                Err(error) => {
+                    interp.fail_network_connect(process_id, error.raw_os_error().unwrap_or(errno))
+                }
+            }
+            continue;
+        }
         match progress_async_gnutls(interp, process_id)? {
             AsyncGnuTlsProgress::NotRequested | AsyncGnuTlsProgress::Ready => {
                 interp.mark_network_process_open(process_id);
@@ -3573,12 +3749,26 @@ fn pump_connection_processes_for(
                 .to_vec()
                 .unwrap_or_default();
             plist_items_put(&mut contact_items, ":server", Value::Nil);
+            // server_accept_connection's HOST: HOST_FORMAT_IN, or
+            // HOST_FORMAT_IN6 over the address's 16-bit words as memory
+            // holds them; a unix peer has none (t, "-" in messages).
+            let host = peer_addr.map(|peer_addr| match peer_addr.ip() {
+                std::net::IpAddr::V4(ip) => ip.to_string(),
+                std::net::IpAddr::V6(ip) => ip
+                    .octets()
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|word| format!("{:x}", u16::from_ne_bytes(*word)))
+                    .collect::<Vec<_>>()
+                    .join(":"),
+            });
             let remote = match peer_addr {
                 Some(peer_addr) => {
                     plist_items_put(
                         &mut contact_items,
                         ":host",
-                        Value::String(peer_addr.ip().to_string().into()),
+                        Value::String(host.clone().unwrap_or_default().into()),
                     );
                     plist_items_put(
                         &mut contact_items,
@@ -3618,8 +3808,13 @@ fn pump_connection_processes_for(
             let base_name = interp.process_name(server_id).unwrap_or_default();
             // GNU names inet children "NAME <HOST:PORT>" (note the space)
             // and unnamed-peer children "NAME <N>" from connect_counter.
-            let child_name = if peer_addr.is_some() {
-                interp.unique_process_name(&format!("{base_name} <{remote}>"))
+            let child_name = if let (Some(peer_addr), Some(host)) = (peer_addr, &host) {
+                let port = peer_addr.port();
+                interp.unique_process_name(&if peer_addr.is_ipv6() {
+                    format!("{base_name} <[{host}]:{port}>")
+                } else {
+                    format!("{base_name} <{host}:{port}>")
+                })
             } else {
                 interp.unique_process_name(&format!("{base_name} <{connect_number}>"))
             };
@@ -3636,7 +3831,7 @@ fn pump_connection_processes_for(
                 server_sentinel,
                 server_log,
                 server_plist,
-                child_runtime,
+                Some(child_runtime),
                 None,
                 None,
                 Some(remote.clone()),
@@ -3646,14 +3841,15 @@ fn pump_connection_processes_for(
                 child_encoding,
             )?;
             let child_id = interp.resolve_process_id(&child)?;
+            let host = host.as_deref().unwrap_or("-");
             run_process_log(
                 interp,
                 server_id,
                 child_id,
-                &format!("accept from {remote}"),
+                &format!("accept from {host}\n"),
                 env,
             )?;
-            run_process_sentinel(interp, child_id, &format!("open from {remote}\n"), env)?;
+            run_process_sentinel(interp, child_id, &format!("open from {host}\n"), env)?;
         }
     }
 

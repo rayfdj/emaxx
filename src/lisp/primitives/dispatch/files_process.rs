@@ -1952,13 +1952,16 @@ define_dispatch!(
             "make-process" | "make-pipe-process" => make_process_value(interp, env, args),
             "get-buffer-process" => {
                 need_arg_range(name, args, 1, 1)?;
-                let buffer_id = match args.first().map(|v| v.kind()) {
-                    None | Some(Kind::Nil) => Some(interp.current_buffer_id()),
-                    Some(buffer) if string_like(&buffer.value()).is_some() => {
-                        string_like(&buffer.value())
-                            .and_then(|name| interp.find_buffer(&name.text).map(|(id, _)| id))
-                    }
-                    Some(buffer) => Some(interp.resolve_buffer_id(&buffer.value())?),
+                // process.c:Fget_buffer_process: nil names no buffer, and
+                // Fget_buffer takes a buffer object as it is, killed or
+                // not, and a name to its live buffer.
+                let buffer_id = match args[0].kind() {
+                    Kind::Nil => None,
+                    Kind::Buffer(buffer) => Some(buffer.id),
+                    _ => match string_like(&args[0]) {
+                        Some(name) => interp.find_buffer(&name.text).map(|(id, _)| id),
+                        None => return Err(wrong_type_argument("stringp", args[0])),
+                    },
                 };
                 Ok(buffer_id
                     .and_then(|id| interp.process_value_for_buffer(id))
@@ -1982,7 +1985,16 @@ define_dispatch!(
             }
             "process-status" => {
                 need_args(name, args, 1)?;
-                let process_id = interp.resolve_process_id(&args[0])?;
+                // Fprocess_status: a name finds only a process, and none
+                // is nil; anything else is get_process's.
+                let process = match string_like(&args[0]) {
+                    Some(text) => match interp.find_process_id_by_name(&text.text) {
+                        Some(id) => interp.record_value(id),
+                        None => return Ok(Value::Nil),
+                    },
+                    None => get_process(interp, args.first())?,
+                };
+                let process_id = interp.resolve_process_id(&process)?;
                 interp
                     .process_status_value(process_id)
                     .ok_or_else(|| LispError::Signal("Invalid process state".into()))
@@ -2155,7 +2167,7 @@ define_dispatch!(
             }
             "process-type" => {
                 need_args(name, args, 1)?;
-                let process = process_designator_value(interp, args.first())?;
+                let process = get_process(interp, args.first())?;
                 let process_id = interp.resolve_process_id(&process)?;
                 Ok(Value::symbol(interp.process_type_name(process_id)?))
             }
@@ -2191,7 +2203,7 @@ define_dispatch!(
             }
             "process-running-child-p" => {
                 need_arg_range(name, args, 0, 1)?;
-                let process = process_designator_value(interp, args.first())?;
+                let process = get_process(interp, args.first())?;
                 let process_id = interp.resolve_process_id(&process)?;
                 interp.process_running_child_value(process_id)
             }
@@ -2351,16 +2363,23 @@ define_dispatch!(
                 Ok(Value::list(addresses.into_iter().map(sockaddr_vector)))
             }
             "delete-process" => {
-                need_args(name, args, 1)?;
-                let process_value = process_designator_value(interp, args.first())?;
+                need_arg_range(name, args, 0, 1)?;
+                // Fdelete_process: the interactive spec passes `message'
+                // for the current buffer's process, and reports it.
+                let interactive = args.first().and_then(Value::symbol_str) == Some("message");
+                let designator = if interactive { None } else { args.first() };
+                let process_value = get_process(interp, designator)?;
                 let process_id = interp.resolve_process_id(&process_value)?;
                 delete_process_notifying(interp, process_id, env)?;
+                if interactive {
+                    super::call(interp, "message", &[Value::string("Deleted process")], env)?;
+                }
                 Ok(Value::Nil)
             }
             "internal-default-interrupt-process" => {
                 need_arg_range(name, args, 0, 2)?;
                 let original = args.first().cloned().unwrap_or(Value::Nil);
-                let process = process_designator_value(interp, args.first())?;
+                let process = get_process(interp, args.first())?;
                 let process_id = interp.resolve_process_id(&process)?;
                 #[cfg(unix)]
                 interp.signal_process_group(
@@ -2390,7 +2409,7 @@ define_dispatch!(
             "kill-process" => {
                 need_arg_range(name, args, 0, 2)?;
                 let original = args.first().cloned().unwrap_or(Value::Nil);
-                let process_value = process_designator_value(interp, args.first())?;
+                let process_value = get_process(interp, args.first())?;
                 let process_id = interp.resolve_process_id(&process_value)?;
                 #[cfg(unix)]
                 interp.signal_process_group(
@@ -2407,7 +2426,7 @@ define_dispatch!(
             "quit-process" => {
                 need_arg_range(name, args, 0, 2)?;
                 let original = args.first().cloned().unwrap_or(Value::Nil);
-                let process = process_designator_value(interp, args.first())?;
+                let process = get_process(interp, args.first())?;
                 let process_id = interp.resolve_process_id(&process)?;
                 #[cfg(unix)]
                 interp.signal_process_group(
@@ -2424,7 +2443,7 @@ define_dispatch!(
             "stop-process" | "continue-process" => {
                 need_arg_range(name, args, 0, 2)?;
                 let original = args.first().cloned().unwrap_or(Value::Nil);
-                let process = process_designator_value(interp, args.first())?;
+                let process = get_process(interp, args.first())?;
                 let process_id = interp.resolve_process_id(&process)?;
                 let stop = name == "stop-process";
                 if !interp.set_process_traffic_stopped(process_id, stop)? {
@@ -2512,11 +2531,9 @@ define_dispatch!(
             }
             "process-send-eof" => {
                 need_arg_range(name, args, 0, 1)?;
-                let process = match args.first() {
-                    Some(value) if !value.is_nil() => *value,
-                    _ => call(interp, "get-buffer-process", &[Value::Nil], env)?,
-                };
+                let process = get_process(interp, args.first())?;
                 let process_id = interp.resolve_process_id(&process)?;
+                crate::lisp::primitives::processes::wait_while_connecting(interp, env, process_id)?;
                 // Fprocess_send_eof: a coding that requires flushing is
                 // flushed first.
                 crate::lisp::primitives::processes::flush_process_encoder(interp, process_id, env)?;
@@ -2531,7 +2548,10 @@ define_dispatch!(
                 let Some(string) = string_like(&args[1]) else {
                     return Err(LispError::WrongTypeArgument("stringp".into(), args[1]));
                 };
-                let process_id = interp.resolve_process_id(&args[0])?;
+                let process = get_process(interp, args.first())?;
+                let process_id = interp.resolve_process_id(&process)?;
+                // send_process: wait_while_connecting.
+                crate::lisp::primitives::processes::wait_while_connecting(interp, env, process_id)?;
                 let encoded = crate::lisp::primitives::processes::encode_process_input(
                     interp,
                     process_id,
@@ -2547,7 +2567,9 @@ define_dispatch!(
                 need_args(name, args, 3)?;
                 // Fprocess_send_region: the region's text with the current
                 // buffer as the object, encoded as its multibyteness says.
-                let process_id = interp.resolve_process_id(&args[0])?;
+                let process = get_process(interp, args.first())?;
+                let process_id = interp.resolve_process_id(&process)?;
+                crate::lisp::primitives::processes::wait_while_connecting(interp, env, process_id)?;
                 // validate_region, then the region's text.
                 validate_region(interp, &args[1], &args[2])?;
                 let text = super::buffer_edit::direct_buffer_substring_no_properties(
@@ -2955,32 +2977,50 @@ define_dispatch!(
     }
 );
 
-fn process_designator_value(
-    interp: &mut Interpreter,
-    designator: Option<&Value>,
-) -> Result<Value, LispError> {
-    let requested = designator.cloned().unwrap_or(Value::Nil);
-    let process = match designator.map(|v| v.kind()) {
-        None | Some(Kind::Nil) => interp.process_value_for_buffer(interp.current_buffer_id()),
-        Some(process @ Kind::Record(_)) => Some(process.value()),
-        Some(value) if string_like(&value.value()).is_some() => {
-            let name = string_text(&value.value())?;
-            interp
-                .find_process_id_by_name(&name)
-                .map(|id| interp.record_value(id))
-                .or_else(|| {
-                    interp
-                        .resolve_buffer_id(&value.value())
-                        .ok()
-                        .and_then(|buffer_id| interp.process_value_for_buffer(buffer_id))
-                })
+/// process.c:get_process: the process NAME designates -- a process, the
+/// name of a process or of a buffer, a buffer, or nil for the current
+/// buffer -- signaling when there is none.
+fn get_process(interp: &mut Interpreter, name: Option<&Value>) -> Result<Value, LispError> {
+    let name = name.copied().unwrap_or(Value::Nil);
+    let buffer = if let Some(text) = string_like(&name) {
+        // Fget_process, then Fget_buffer.
+        if let Some(id) = interp.find_process_id_by_name(&text.text) {
+            return Ok(interp.record_value(id));
         }
-        Some(value) => interp
-            .resolve_buffer_id(&value.value())
-            .ok()
-            .and_then(|buffer_id| interp.process_value_for_buffer(buffer_id)),
+        interp
+            .find_buffer_id(&text.text)
+            .ok_or_else(|| LispError::Signal(format!("Process {} does not exist", text.text)))?
+    } else {
+        match name.kind() {
+            Kind::Nil => interp.current_buffer_id(),
+            Kind::Buffer(buffer)
+                if interp
+                    .buffer_object(buffer.id)
+                    .is_some_and(|live| live.ptr_eq(&buffer)) =>
+            {
+                buffer.id
+            }
+            Kind::Buffer(_) => {
+                return Err(LispError::Signal(
+                    "Attempt to get process for a dead buffer".into(),
+                ));
+            }
+            _ => {
+                // CHECK_PROCESS.
+                interp.resolve_process_id(&name)?;
+                return Ok(name);
+            }
+        }
     };
-    process.ok_or_else(|| wrong_type_argument("processp", requested))
+    interp.process_value_for_buffer(buffer).ok_or_else(|| {
+        let buffer_name = interp
+            .buffer_list
+            .iter()
+            .find(|(id, _)| *id == buffer)
+            .map(|(_, name)| name.as_str())
+            .unwrap_or_default();
+        LispError::Signal(format!("Buffer {buffer_name} has no process"))
+    })
 }
 
 fn make_process_value(
@@ -3295,7 +3335,7 @@ fn signal_process_target_pid(
             .map(Some)
             .map_err(|_| LispError::Signal("Process id is out of range".into()));
     }
-    let process = process_designator_value(interp, Some(target))?;
+    let process = get_process(interp, Some(target))?;
     let process_id = interp.resolve_process_id(&process)?;
     let name = interp.process_name(process_id).unwrap_or_default();
     interp

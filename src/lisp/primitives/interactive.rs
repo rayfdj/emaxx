@@ -1304,6 +1304,40 @@ pub(crate) fn tty_current_idle_duration() -> Option<std::time::Duration> {
         .map(|start| start.elapsed())
 }
 
+/// keyboard.c's decode_timer: the timer vector's exact timestamp, compared
+/// against the C clock.  Going back through the Lisp accessors here is
+/// observably wrong: applications are free to advise or redefine
+/// `float-time' for presentation, and that must not make every delayed
+/// timer immediately ripe.
+fn decode_timer(interp: &Interpreter, timer: &Value) -> Option<ExactTimeValue> {
+    let slots = vector_items(timer).ok()?;
+    // Exactly ten slots, an untriggered timer (vec[0] nil -- on BOTH timer
+    // lists), and a fixnum USECS slot; anything else "is not a proper
+    // timer" and is skipped.
+    if slots.len() != 10 || slots[0].is_truthy() || !matches!(slots[2].kind(), Kind::Integer(_)) {
+        return None;
+    }
+    exact_time_from_old_style(interp, &[slots[1], slots[2], slots[3], slots[8]]).ok()
+}
+
+/// timer_check's result: how long until the earliest timer on
+/// `timer-list' is ripe, zero when one already is, which bounds
+/// wait_reading_process_output's wait.  (Idle timers ripen only while
+/// keyboard input is awaited.)
+pub(crate) fn next_timer_delay(
+    interp: &mut Interpreter,
+    env: &mut Env,
+) -> Option<std::time::Duration> {
+    let timers = interp.lookup_var("timer-list", env)?.to_vec().ok()?;
+    let now = exact_time_to_f64(&current_time_value().ok()?);
+    timers
+        .iter()
+        .filter_map(|timer| decode_timer(interp, timer))
+        .map(|time| (exact_time_to_f64(&time) - now).max(0.0))
+        .min_by(f64::total_cmp)
+        .map(std::time::Duration::from_secs_f64)
+}
+
 pub(crate) fn run_due_timers(
     interp: &mut Interpreter,
     env: &mut Env,
@@ -1312,22 +1346,6 @@ pub(crate) fn run_due_timers(
     if interp.lookup_function("timer-event-handler", env).is_err() {
         return Ok(false);
     }
-    // keyboard.c's decode_timer reads the timer vector and compares its
-    // exact timestamp against the C clock.  Going back through the Lisp
-    // accessors here is observably wrong: applications are free to advise or
-    // redefine `float-time' for presentation, and that must not make every
-    // delayed timer immediately ripe.
-    let decode_timer = |interp: &Interpreter, timer: &Value| {
-        let slots = vector_items(timer).ok()?;
-        // keyboard.c decode_timer: exactly ten slots, an untriggered
-        // timer (vec[0] nil -- on BOTH timer lists), and a fixnum USECS
-        // slot; anything else "is not a proper timer" and is skipped.
-        if slots.len() != 10 || slots[0].is_truthy() || !matches!(slots[2].kind(), Kind::Integer(_))
-        {
-            return None;
-        }
-        exact_time_from_old_style(interp, &[slots[1], slots[2], slots[3], slots[8]]).ok()
-    };
     let wall_now = current_time_value().ok();
     let idle_now = exact_time_from_float(idle_seconds).ok();
     let mut ran = false;
