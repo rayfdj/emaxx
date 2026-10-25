@@ -1755,7 +1755,21 @@ impl Interpreter {
             slots.resize(primitives::WINDOW_FRAME_SLOT + 1, Value::Nil);
             slots[primitives::WINDOW_FRAME_SLOT] = self.selected_frame_value();
         }
-        self.create_record_with_kind(Value::symbol(type_name), slots, kind)
+        let record = self.create_record_with_kind(Value::symbol(type_name), slots, kind);
+        // window.c:make_window and copy_window: `++sequence_number'.
+        if kind == RecordKind::Window
+            && let Kind::Record(id) = record.kind()
+        {
+            self.window_sequence_number += 1;
+            let number = self.window_sequence_number;
+            self.window_sequence_numbers.insert(id.id, number);
+        }
+        record
+    }
+
+    /// The window's `sequence_number', as print.c prints it.
+    pub(crate) fn window_sequence_number(&self, id: u64) -> Option<i64> {
+        self.window_sequence_numbers.get(&id).copied()
     }
 
     /// alloc.c:Fmake_closure.  Both the ordinary primitive dispatcher and

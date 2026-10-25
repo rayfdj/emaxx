@@ -390,13 +390,17 @@ fn emit_batch_error_message(interpreter: &mut Interpreter, error: &LispError) {
     // print_error_message: the same rendering `error-message-string'
     // performs (error-message property through `substitute-command-keys',
     // condition-specific data quoting), falling back to the native text
-    // if that primitive cannot run this early.
-    let message = lisp::primitives::call(
-        interpreter,
-        "error-message-string",
-        &[lisp::eval::error_condition_value(error)],
-        &mut crate::lisp::types::Env::new(),
-    )
+    // if that primitive cannot run this early.  cmd_error sets
+    // `print-level' and `print-length' to 10 around it, against circular
+    // data.
+    let message = lisp::primitives::with_cmd_error_print_limits(interpreter, |interpreter| {
+        lisp::primitives::call(
+            interpreter,
+            "error-message-string",
+            &[lisp::eval::error_condition_value(error)],
+            &mut crate::lisp::types::Env::new(),
+        )
+    })
     .ok()
     .and_then(|value| lisp::primitives::string_like(&value).map(|text| text.text))
     .unwrap_or_else(|| error.to_string());

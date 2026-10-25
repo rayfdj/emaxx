@@ -5306,6 +5306,65 @@ setup_process_coding_systems's check now refuses). A 13-form
   fewer intervals than GNU where GNU keeps them apart; (2) deletions do
   not run update_buffer_properties (del_range_2 makes the deleted text a
   string with properties); (3) round 70's items (2) to (5).
+- **Round 72: print.c's print, print_preprocess and print_object.** The
+  printer walked an object by host recursion, each level returning its
+  text for the level above to copy, so printing N nested levels cost
+  O(N^2) (`print-deeply-nested`'s shape at 16,000 levels took 1.63 s,
+  GNU 0.009 s) and 100,000 levels overflowed the stack (GNU prints
+  400,000). It is now print.c's: one output, print_object's explicit
+  stack (PE_list with Brent's tortoise, PE_rbrac, PE_vector, PE_hash),
+  print_depth, being_printed and new_backquote_output as the shared
+  printer state, and the C recursion only where print.c recurses
+  (backquote and comma, string intervals, hash-table test and weakness,
+  symbol-with-pos, native compilation units). 16,000 levels print in
+  0.013 s, 400,000 in 0.54 s (GNU 0.55 s), release builds; ASCII
+  characters skip the multibyte decode and encode, fixnums and symbol
+  names go to the output without host strings, a result's character
+  count is its length when it is ASCII, and the escape variables are read
+  once a print and again after `print-unreadable-function' runs, so a flat
+  150,000-element list prints in 0.020 s (GNU 0.036 s; 0.052 s before)
+  and with `print-circle' in 0.175 s (GNU 0.155 s; 0.223 s). `print-circle` labels are
+  `print-number-table`'s, as print.c keeps them: print_preprocess fills
+  the table (t, then the negated next `print_number_index`), print()
+  drops the entries seen once, print_object reads and writes the table by
+  Fgethash/Fputhash (a string value printed in place), and the table is
+  left in the variable after the print; before, a private count table
+  stood in for it, so a print left `print-number-table` nil, continuous
+  numbering did not number the table itself, and labels were looked up
+  by a scan of all entries. `print-level` applies before `print-quoted`'s
+  shorthands (`'b` at a too-deep level is `...`), backquote and comma
+  print their operand one level deeper, string interval positions and
+  plists print through print_object (`print-length` limits the plist, not
+  the intervals; `print-integers-as-characters` applies), a sub
+  char-table's slots count from SUB_CHAR_TABLE_OFFSET under
+  `print-length`, and a list's cycle detection runs under `print-circle`
+  too. `print-unreadable-function` runs for every unreadable object
+  (windows, frames, processes, threads, symbols with positions, ...) but
+  not closures, with ESCAPEFLAG as its second argument and itself bound to
+  nil, any non-nil value handling the object; before, it ran only for
+  closures, subrs, buffers, markers and overlays, with t, and recursed on
+  itself. Windows print as `#<window N on BUFFER>` with window.c's
+  sequence numbers (they printed their record slots),
+  window configurations as `#<window-configuration>`, a marker that
+  advances and has no buffer as GNU writes it, an empty-named gensym as
+  `#:`, and a symbol of a private obarray with `#:` under
+  `print-gensym`. keyboard.c's cmd_error sets `print-level` and
+  `print-length` to 10 around the batch error report and
+  `command-error-function`. Probes: 100 printer cases (circle, continuous
+  numbering, gensyms, `print--preprocess`, hash tables, char tables,
+  records, closures, strings with properties, print-level/length,
+  quoting, unreadable objects) give GNU's output; print-tests,
+  cl-print-tests, lread-tests, pp-tests, fns-tests, data-tests,
+  subr-tests, bytecomp-tests and editfns-tests give GNU's results; the
+  local gate passes (3,160 tests, the as-root and image exceptions below
+  skipped; `subprocess_exit_is_event_driven_and_notifies_newest_process_first_once`
+  failed once under a parallel release build, its child exiting before
+  the first `process-live-p`, and passes alone). Still open: fonts,
+  tree-sitter objects and sqlite handles still print as their record
+  slots, not as print_vectorlike_unreadable writes them. Note on the CI
+  timings: the frozen run builds the gate profile (debug assertions,
+  overflow checks, thin LTO), which puts nearly every file at 2.0 to 2.3
+  times GNU; release-build comparisons are made locally.
 
 **Local validation of this round** (gate profile, `--test-threads=1`): the
 36 message tests, 114 backtrace/forwarded-variable/`format`/`nthcdr` tests,
@@ -5947,7 +6006,9 @@ Frozen passed on its first attempt (run 40123869891). **On `13dfb41`**
 first attempt (run 40133164494). **On `896ba25`** (round 70): full Rust
 gate passed (run 40134441249), frozen passed on its first attempt (run
 40134442777); PR #103 merged rounds 61 to 70 into main (`7b960e7`).
-**On round 71's commit**: the full Rust gate and frozen runs are
+**On `e3bc9ef`** (round 71): full Rust gate passed (run 40139903681),
+frozen passed on its first attempt (run 40139905885).
+**On round 72's commit**: the full Rust gate and frozen runs are
 dispatched with it; their results go in the next round's record. Run
 the local gate with CI's `LANG=C LC_ALL=C`: the oracle tests start GNU
 with the inherited environment and their answers were recorded under that

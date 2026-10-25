@@ -188,6 +188,11 @@ const KEY_NAMES: &[&str] = &[
     "buffer-display-count",
     "buffer-display-time",
     "fundamental-mode",
+    "quote",
+    "function",
+    "`",
+    ",",
+    ",@",
 ];
 
 struct Symbols {

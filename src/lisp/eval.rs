@@ -5552,6 +5552,12 @@ pub struct InterpreterState {
     /// temporary table is later unwound, and continuous printer calls reuse
     /// it while their public table remains non-nil.
     pub(crate) print_number_index: usize,
+    /// print.c's `print_depth', `being_printed' and `new_backquote_output'.
+    pub(crate) print_globals: crate::lisp::primitives::print::PrintGlobals,
+    /// window.c's `sequence_number': the last one given a window, and each
+    /// live window's (struct window's `sequence_number').
+    pub(crate) window_sequence_number: i64,
+    pub(crate) window_sequence_numbers: HashMap<u64, i64>,
     pub lossage_size: i64,
     interactive_call_depth: usize,
     pub(crate) lisp_face_states: Vec<LispFaceState>,
@@ -6248,6 +6254,9 @@ impl Interpreter {
             batch_standard_output_last_char: None,
             batch_stdout_need_newline: false,
             print_number_index: 0,
+            print_globals: Default::default(),
+            window_sequence_number: 0,
+            window_sequence_numbers: HashMap::new(),
             lossage_size: 300,
             interactive_call_depth: 0,
             lisp_face_states: vec![LispFaceState {

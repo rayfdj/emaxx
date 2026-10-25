@@ -40,7 +40,11 @@ impl PrintOutput {
     }
 
     pub(crate) fn push_code(&mut self, code: u32) {
-        self.multibyte |= code >= 128;
+        if code < 0x80 {
+            self.bytes.push(code as u8);
+            return;
+        }
+        self.multibyte = true;
         let (bytes, count) = encode_character(code).expect("printer emits valid Emacs characters");
         self.bytes.extend_from_slice(&bytes[..count]);
     }
@@ -95,31 +99,12 @@ impl PrintOutput {
         self.bytes.extend_from_slice(other.bytes());
     }
 
-    pub(crate) fn join(parts: &[Self], separator: &str) -> Self {
-        let mut output = Self::default();
-        for (index, part) in parts.iter().enumerate() {
-            if index != 0 {
-                output.push_str(separator);
-            }
-            output.append(part);
-        }
-        output
-    }
-
     pub(crate) fn enclosed(self, before: &str, after: &str) -> Self {
         let mut result = Self::with_capacity(before.len() + self.bytes.len() + after.len());
         result.push_str(before);
         result.append(&self);
         result.push_str(after);
         result
-    }
-
-    pub(crate) fn dotted(parts: &[Self], tail: Self) -> Self {
-        let mut output = Self::join(parts, " ").enclosed("(", "");
-        output.push_str(" . ");
-        output.append(&tail);
-        output.push(')');
-        output
     }
 
     pub(crate) fn codes(&self) -> impl Iterator<Item = u32> + '_ {
@@ -155,7 +140,12 @@ impl PrintOutput {
     }
 
     pub(crate) fn into_value(self, interp: &Interpreter, env: &Env) -> Result<Value, LispError> {
-        let characters = self.codes().count();
+        // Every ASCII byte is a character of its own.
+        let characters = if self.bytes.is_ascii() {
+            self.bytes.len()
+        } else {
+            self.codes().count()
+        };
         let multibyte = self.multibyte;
         let bytes = if multibyte || self.bytes.is_ascii() {
             self.bytes
